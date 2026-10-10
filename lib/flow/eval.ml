@@ -300,6 +300,7 @@ type cenv = { base : value Smap.t; over : cnode Smap.t; budget : int ref }
 
 let compile_budget = 2048
 let compile_residuals = ref true
+let core_residuals = ref false
 
 let add_values a b = Value.arith "sum" ( +. ) a b
 
@@ -425,11 +426,20 @@ and force_res c r =
           | W.State {init; zone; _} -> state_previous c r.renv zone init
           | _ -> assert false
         else ev c r.renv r.rterm in
-      let compiled = if c.st.compiled_residuals then fast_of r else None in
-      let v = match c.st.time, compiled with
+      let classic () =
+        let compiled = if c.st.compiled_residuals then fast_of r else None in
+        match c.st.time, compiled with
         | Some t, Some f ->
             (try f t with Fail _ | Needs_t | Not_found | Invalid_argument _ | Failure _ -> slow ())
         | _ -> slow () in
+      let v = match c.st.time,c.st.execute with
+        | Some live,Some execute when !core_residuals && c.st.compiled_residuals ->
+            let saved = Option.map fork_state c.st.state in
+            let result = try execute r live with _ -> None in
+            (match result with Some (Ok v) -> v | _ ->
+              Option.iter (fun saved -> restore_state (Option.get c.st.state) saved) saved;
+              classic ())
+        | _ -> classic () in
       Hashtbl.replace c.st.memo r.rid v;
       v
 
@@ -1258,6 +1268,7 @@ module Private = struct
           count, at
       | _ -> fail "E_TYPE" "A map probe needs a checked map.")
   let compile_residuals = compile_residuals
+  let core_residuals = core_residuals
   let rec compiled = function
     | Residual { fast = Ready _; _ } -> 1
     | List xs -> Array.fold_left (fun n x -> n + compiled x) 0 xs

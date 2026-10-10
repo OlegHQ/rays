@@ -1,7 +1,7 @@
 (library
  (name flow_ir)
  (public_name rays.flow_ir)
- (modules operators packed core core_lower flow_ir)
+ (modules operators packed core core_lower core_exec flow_ir)
  (libraries flow param rays_math))
 
 (test

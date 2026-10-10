@@ -2,6 +2,7 @@ module Operators = Operators
 module Packed = Packed
 module Core = Core
 module Core_lower = Core_lower
+module Core_exec = Core_exec
 module E = Flow.Eval
 module W = Flow.Workspace
 module V = Flow.Value
@@ -540,6 +541,7 @@ let of_evaluation ws catalog evaluation =
 
 module Executor = struct
   type program = { ir : t; value : E.value; dataflow : bool; templates : Packed.t list Atomic.t;
+    core : (E.residual * Core.program option) list Atomic.t;
     count_source : Packed.count_source; profile : Profile.t option; approx:W.Paths.t;
     sink:sink option;mutable gpu_kernel:(Gpu.backend*Packed.t*Gpu.kernel)option }
   let compile ?profile ?(approx=W.Paths.empty) ?sink ?(count_source = fun _ _ -> None) v =
@@ -549,7 +551,7 @@ module Executor = struct
       let dataflow = Array.exists (function
         | {kind = Kernel {body = Packed_map _; _}; tier = Cpu_kernel; _} -> true
         | _ -> false) ir.nodes in
-      {ir; value = v; dataflow; templates = Atomic.make []; count_source; profile;
+      {ir; value = v; dataflow; templates = Atomic.make []; core = Atomic.make []; count_source; profile;
         approx;sink;gpu_kernel=None}) (optimize (finish b [|root|]))
   let graph p = p.ir
   let force ?state ?elems ?resolve ?(reference = false) program ~live =
@@ -565,7 +567,7 @@ module Executor = struct
     let fell_back = ref reference in
     let fallback () = fell_back := true; E.Private.force_reference ~state ?elems ?resolve program.value ~live in
     let force_with_packed value ~live =
-      let execute r live =
+      let execute_packed r live =
         let cached = Atomic.get program.templates in
         let prepared = match List.find_map (fun p -> Packed.rebind p r) cached with
           | Some p -> Some p
@@ -579,8 +581,24 @@ module Executor = struct
         | Some p when not (Option.fold ~none:false ~some:(fun count -> Cost.packed ~count <> Cpu_kernel) (Packed.static_count p)) ->
             Some (Packed.force ~state ?elems ?resolve ?measure p ~live)
         | _ -> None in
+      let execute r live =
+        let core = try if not !(E.Private.core_residuals) then None else
+          let cached = Atomic.get program.core in
+          let prepared = match List.find_opt (fun (key,_) -> key == r) cached with
+            | Some (_,p) -> p
+            | None ->
+                let prepared = Result.to_option (Core_lower.lower r) in
+                (* ponytail: linear lookup bounded to 64 immutable residuals;
+                   use an identity map if profiling finds lookup significant. *)
+                let rec take n = function [] -> [] | _ when n=0 -> [] | x::xs -> x::take (n-1) xs in
+                ignore (Atomic.compare_and_set program.core cached ((r,prepared)::take 63 cached));
+                prepared in
+          Option.bind prepared (fun p -> match Core_exec.run p ~live with
+            | Ok v -> Some (Ok v) | Error _ -> None)
+          with _ -> None in
+        match core with Some _ -> core | None -> execute_packed r live in
       E.Private.force_with_executor ~state ?elems ?resolve ~execute value ~live in
-    let run () = if reference then fallback () else if not program.dataflow then force_with_packed program.value ~live else
+    let run () = if reference then fallback () else if !(E.Private.core_residuals) || not program.dataflow then force_with_packed program.value ~live else
     match Frame_input.validate live with
     | Error _ -> fallback ()
     | Ok () ->

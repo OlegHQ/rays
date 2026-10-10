@@ -536,7 +536,12 @@ Phase 1
   current leaf/expansion coverage decline by name; P1.2a records that remaining
   operator work and must pass before the phase review.
 - [ ] P1.2a S
-- [ ] P1.3 S
+- [x] P1.3 S
+  Direct core execution and the default-off evaluator-owned switch added.
+  Native leaves reuse existing operator bodies/coercions. Executor caches
+  successful/refused immutable residual identities with capacity 64.
+  Hook errors/exceptions restore state before the existing path retries.
+  Unchanged `@lib/flow/runtest` and `@lib/flow_ir/runtest` passed on 2026-10-11.
 - [ ] P1.4 H
 - [ ] P1.5 S
 - [ ] P1.6 S

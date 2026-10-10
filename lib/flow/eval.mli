@@ -287,6 +287,11 @@ module Private : sig
       when its term is in the compilable subset.  Tests switch it off to compare the
       closure against the interpreter bit for bit. *)
 
+  val core_residuals : bool ref
+  (** Default false. Offer forced residuals to the state-owned executor before
+      the closure tier; a decline, error or exception restores state and retries
+      the existing path. Reference forcing bypasses this switch. *)
+
   val compiled : value -> int
   (** How many residuals inside the value have a compiled closure (after a {!force}). *)
 end
