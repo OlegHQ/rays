@@ -1,7 +1,7 @@
 {
   "generator": "tools/api_manifest/api_manifest.exe",
   "kind": "stable_high_level",
-  "module_count": 176,
+  "module_count": 178,
   "modules": [
     {
       "api": [
@@ -218,10 +218,11 @@
         "val eval_term : ? state : state -> ? elems : ( string * value ) list -> ? resolve : ( value -> ( value , Diagnostic.t ) result ) -> residual -> Workspace.term -> live : live -> ( value , Diagnostic.t ) result",
         "val map_probe : ? state : state -> ? resolve : ( value -> ( value , Diagnostic.t ) result ) -> ? offset : int -> residual -> live : live -> ( int * ( int -> ( ( Workspace.path * ( int list * value ) list ) list , Diagnostic.t ) result ) , Diagnostic.t ) result",
         "val compile_residuals : bool ref",
+        "val core_residuals : bool ref",
         "val compiled : value -> int",
         "end"
       ],
-      "api_sha256": "0966e5bec1f618e8d40177e310f51da08f721e2a309ceb83b7b99bd948a182ec",
+      "api_sha256": "59e7c75a31e86795d4f112f8bf2896f70539583b0c5a3ebcee9056547b3fc603",
       "excluded_legacy_symbols": [],
       "library": "flow",
       "module": "Eval",
@@ -726,9 +727,11 @@
         "type region = Region_ref of Packed.t",
         "type program = { constants : literal array ; locals : Flow.Ty.t array ; body : statement list ; results : int array ; state_slots : state_slot array ; regions : region array ; }",
         "val primitive_name : primitive -> string",
+        "val literal_of_value : Flow.Eval.value -> literal option",
+        "val value_of_literal : literal -> Flow.Eval.value",
         "val pp : Format.formatter -> program -> unit"
       ],
-      "api_sha256": "ea14e87c3d6e49a8340b9bde2fdbc297e2f79a7a97016bf2624dbcbcc48ecea7",
+      "api_sha256": "e8f14455a21e870986fe5b6395836f7680dc64e3fa4777da830698c459453983",
       "excluded_legacy_symbols": [],
       "library": "flow_ir",
       "module": "Core",
@@ -736,9 +739,31 @@
     },
     {
       "api": [
+        "val run : Core.program -> live : Frame_input.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result"
+      ],
+      "api_sha256": "39db5d6cb64224464df110db313d034f8191bf9e6341f264bb10b6bd0dfd817b",
+      "excluded_legacy_symbols": [],
+      "library": "flow_ir",
+      "module": "Core_exec",
+      "source": "lib/flow_ir/core_exec.mli"
+    },
+    {
+      "api": [
+        "val lower : Flow.Eval.residual -> ( Core.program , string ) result"
+      ],
+      "api_sha256": "5488199d7045b421eb9a8da89764bab6dcdc24629b9ad00abed705b2d5f271b4",
+      "excluded_legacy_symbols": [],
+      "library": "flow_ir",
+      "module": "Core_lower",
+      "source": "lib/flow_ir/core_lower.mli"
+    },
+    {
+      "api": [
         "module Operators = Operators",
         "module Packed = Packed",
         "module Core = Core",
+        "module Core_lower = Core_lower",
+        "module Core_exec = Core_exec",
         "val qualify_workspace : ? record : bool -> ? inputs : ( string * ( string * Flow.Eval.value ) list ) list -> ? observe : ( Flow.Workspace.path option -> Flow.Eval.residual -> unit ) -> Flow.Workspace.t -> ( Flow.Workspace.t * Flow.Eval.t , Flow.Diagnostic.t ) result",
         "type id = Flow.Workspace.path * int list",
         "module Count : sig",
@@ -791,7 +816,7 @@
         "val force_display : ? state : Flow.Eval.state -> ? reference : bool -> ? policy : Gpu.policy -> program -> live : Frame_input.t -> ( displayed , Flow.Diagnostic.t ) result",
         "end"
       ],
-      "api_sha256": "3cf00252415a75d5b50060f9d7bbfd9eee50b985ebf5f80dd60672f9cbdc69eb",
+      "api_sha256": "4ef3590325e57734b1fff3590c4cdd9161bbce5d168377ef0b2e6021fa543795",
       "excluded_legacy_symbols": [],
       "library": "flow_ir",
       "module": "Flow_ir",
