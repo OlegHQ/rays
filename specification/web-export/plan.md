@@ -471,7 +471,12 @@ Phase 0
   Additional `@tools/runtest` exposed an existing `pxui_shell` API-manifest
   mismatch (explicit signatures in source, module aliases in the manifest);
   the manifest was not promoted.
-- [ ] P0.2 S
+- [x] P0.2 S
+  Specification includes both execution levels, state/drawing/intrinsics and
+  54 frame primitives. On 2026-10-11 the census/table audit found exactly
+  114 unique lowering rows with no missing/extra heads; whitespace passed.
+  These task commits are in /private/tmp/rays-web-export-progress while the
+  shared checkout's .git is read-only; a bundle preserves their history.
 - [ ] P0.3 S
 - [ ] P0.4 S
 - [ ] P0.5 S
