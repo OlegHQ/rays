@@ -1,5 +1,10 @@
 (cram
- (deps %{bin:rays-lisp}))
+ (deps %{bin:rays-lisp}
+  %{exe:../../core_census.exe}
+  ../../../specification/core.md
+  (glob_files_rec ../../../examples/*.rays)
+  (glob_files_rec ../../../sketches/*.rays)
+  (glob_files_rec ../../../specification/*.rays)))
 
 (copy_files ../delimiter.ml)
 
