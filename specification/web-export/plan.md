@@ -481,7 +481,10 @@ Phase 0
   Numeric contract checked against Value/Op/Packed and native probes on
   2026-10-11: signed 63-bit wrapping, quotient/remainder signs, distinct
   explicit/coercion rounding and BigInt target boundaries.
-- [ ] P0.4 S
+- [x] P0.4 S
+  List contract checked against Workspace/Eval/Frame_input on 2026-10-11:
+  static/live lengths, product/skip bounds, flattened record columns and
+  oversized-source fallback/refusal; no new universal language cap.
 - [ ] P0.5 S
 - [ ] P0.6 H
 - [ ] P0.7 H

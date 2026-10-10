@@ -285,6 +285,63 @@ doubles frequency and halves amplitude each octave, then divides sum by
 weights. Packed noise supports octaves 1..32 with a constant seed and constant
 octave count; non-constant or out-of-range settings keep their current refusals.
 
+## List model
+
+The core represents lists of at most 4,096 elements. This is a representation
+limit, not a new source-language rejection. Today `range`, `linspace`,
+`concat` and non-packed product loops enforce `E_ITER_BOUND`, but a list
+literal, a supplied list value or `frame/input` events is not universally
+length-checked by the walker. An oversized value that survives static
+evaluation must therefore decline native core lowering/execution and use
+the native reference path; the web target must issue a source-located
+list-limit refusal. It cannot drop events, truncate data or change the
+walker's errors to enforce the core limit. A large static list that is wholly
+consumed at compile time need not survive in the core.
+
+| List producer/use | Length facts and lowering |
+| --- | --- |
+| Literal `list` | Its authored number of elements is known. Evaluate elements in order and join their actual element types, then coerce every element to that joined type. Static contents fold; otherwise build a fixed-length list. |
+| `range(n)` / `range(a,b)` | Length is `max(0,n)` / `max(0,b-a)`. Static endpoints fold or unroll; input-dependent endpoints produce a bounded dynamic list. End is exclusive and elements are Int. Existing source bounds/overflow behavior remain the native oracle. |
+| `linspace(a,b,n)` | Length `max(0,n)`; literal n gives a known count even when endpoints are live. For n=1 the single element is a; otherwise element k is `a+(b-a)*k/(n-1)` in source operation order. |
+| `map` | List inputs zip to minimum count; known input counts make the result count known. It may be unrolled only within the lowering budget; otherwise use the same bounded structured loop. |
+| `filter` | Result count depends on the predicate; live predicates imply live length even with a fixed source count. Preserve order and joined element layout. |
+| `sort-by` / `reverse` | Count is the source count. Compute keys once and sort stably; reverse copies source elements in descending index order. |
+| `concat` | Sum input counts, retain input/element order, join element types and coerce, then enforce the source 4,096 cap. No repeated append of an ever-growing prefix. |
+| `take` / `drop` / `rest` | `take` retains the first min(max(0,n),length) elements; `drop` removes that many; `rest` removes one if present. A live n or live source length implies dynamic length. |
+| `for` / `scan` | Product iteration count, minus skipped tuples, controls the collected length. Later clauses may depend on earlier items. List loops count attempted iterations for the 4,096 bound, including skips. |
+| `fold` / `sum` / `reduce` | No collected output list except the accumulator's own data. Empty fold/reduce returns the seed; empty sum returns Int 0. Ordered accumulation and coercion/widening are preserved. |
+| Frame events / state-held list fields | Bounded dynamic length when represented in core; the source frame/event and state identity rules still apply. Length is not made static merely by flattening a record. |
+
+The checker distinguishes live values from live list lengths. Literal list
+count is fixed even if elements mention t. Range/linspace counts are marked
+live when their arguments are live; take/drop also inherit source-length
+liveness. Branches, record fields, graph overrides and state propagate length
+facts. `E_TIME_COUNT` rejects a live-length source in a `for` that would
+produce graph nodes. A `sum` may consume a live length; `fold`/`scan` may
+consume it when their accumulator is data, and packed data arrays may have
+live lengths. Shape-producing calls that splice a live list retain the
+checker's refusal. Core loops do not bypass checking.
+
+A record element's flattened layout is ordered depth-first by authored field
+order. For example `{:p vec2 :label text :style {:width int :visible bool}}`
+has lanes `p.x`, `p.y`, `label`, `style.width`, `style.visible`, with their
+scalar types. A list is a shared length plus one column per lane. Numeric
+columns use the corresponding scalar storage; text and nested-list columns
+hold their typed values/descriptors. A nested packed-array field is a buffer
+reference/count/width, not thousands of copied scalar lanes. Column i at
+row j always belongs to the same logical record, and filtering/slicing moves
+all columns together. Layout metadata reconstructs field order, nesting and
+component grouping for `show` and `equal?`. Published columns are immutable;
+`assoc` on an element creates its changed value, without mutating the source.
+
+`nth` checks a Float index for whole-numberness before conversion, then checks
+the converted index against [0,length); failures are `E_LIST_RANGE`. A sequence
+pattern requires at least its number of pattern elements (additional source
+elements are permitted); shortage is `E_PATTERN`. Empty `first`/`last` fail
+with `E_LIST_RANGE`; empty `rest` remains empty. Packed-array indexing instead
+uses `E_ARRAY_RANGE`, non-negative whole numeric indices, and element widths.
+Packed arrays never inherit the 4,096 list cap.
+
 ## Region form
 
 The initial body is exactly today's `Flow_ir.Packed.instruction` set, not a
