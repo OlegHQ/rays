@@ -342,6 +342,113 @@ with `E_LIST_RANGE`; empty `rest` remains empty. Packed-array indexing instead
 uses `E_ARRAY_RANGE`, non-negative whole numeric indices, and element widths.
 Packed arrays never inherit the 4,096 list cap.
 
+## Packed-array leaves
+
+The seven array leaves use element counts. Widths 1/2/3/4 store floats or
+interleaved vector components; array length divides storage length by width.
+An imported vector storage length not divisible by its width is
+`E_ARRAY_TYPE`. Input validation checks every stored component for finiteness.
+This validation happens at the input boundary, not on every slice or read.
+
+The count/index conversion first converts the source number to binary64,
+then requires a non-negative whole value no greater than
+`Sys.max_floatarray_length`; failure is `E_ARRAY_RANGE` with
+"<operator> needs a non-negative whole length." It then truncates to Int.
+This is distinct from `coerce` and the narrower `4e18` conversion. The native
+maximum is the platform storage ceiling; exported counts also obey the
+chosen target's allocation and dispatch limits, with located refusals before
+allocation. Neither ceiling permits truncating a requested array.
+
+| Leaf | Behavior |
+| --- | --- |
+| `array/range(count)` | Fresh width-1 storage containing Float values 0 through count-1. |
+| `array/float(count,value)` | Fresh width-1 storage filled with the numeric value; omitted value is Float zero. |
+| `array/vec3(count,value)` | Fresh width-3 storage; omitted value is Vec3 zero. A Vec3 fills its components; a scalar Int/Float/Bool broadcasts numerically. Other widths fail with `E_ARRAY_TYPE`. |
+| `array/count(array)` | Int element count; non-array or malformed width is `E_ARRAY_TYPE`. |
+| `array/nth(array,index)` | Convert index as above, require index < element count, and return Float or the matching vector. Out of bounds is `E_ARRAY_RANGE` ("Array index is outside its length."). |
+| `array/slice(array,first,count)` | Convert first and count as above; require first <= length and count <= length-first. Copy the component range into fresh same-kind storage. An empty slice at length is legal. Range failure is `E_ARRAY_RANGE` ("An array slice must be within its source."); non-array is `E_TYPE`. |
+| `array/concat(first,second)` | Both operands must have the exact same array kind/width; otherwise `E_ARRAY_TYPE` ("Concatenated arrays must have the same element type."). Copy first then second into fresh same-kind storage, checking target storage bounds. |
+
+Allocation checks count <= maximum component count / width before multiplying.
+Each constructed component passes the finite check named `array`. Width-1
+construction accepts Int/Float/Bool through number conversion; vectors fail
+there with `E_TYPE`. Generic region construction supports Vec2/3/4, broadcasts
+numeric scalars, and rejects other element layouts with `E_ARRAY_TYPE`.
+Zero-count construction does not examine the fill value's numeric contents;
+its argument expression still evaluates. Slice/concat copy existing validated
+storage without re-quantizing or coercing components. Published arrays are
+immutable, including empty arrays.
+
+## Coercion and color leaves
+
+`coerce(wanted,value)` uses a statically supplied checker type. It is a
+conversion rather than general validation: Any leaves the value unchanged;
+Float to Int uses the coercion rounding above; Bool to Int gives 0/1;
+Int/Bool to Float uses numeric conversion; Int/Float to Bool uses `truthy`.
+Int/Float broadcasts to Vec2/3/4; Bool does not broadcast in this leaf.
+List coercion recursively converts each element into fresh list storage.
+Record coercion traverses the actual fields in their original order, converts
+fields named in the wanted record, and retains unmatched fields unchanged.
+It neither adds missing fields nor sorts them. All other pairs stay unchanged,
+including packed arrays and already matching scalars/vectors. During native
+staging a Residual stays unchanged until forced; a finished core value cannot
+contain one. Layout checking by lowering must not invent a runtime coercion
+error for a pair the source leaves unchanged.
+
+`color/parse` returns four byte channels (Ints 0..255) from precisely these
+source kinds:
+
+- Text: remove one initial `#` if present. Length 3/4 doubles each character;
+  resulting length must be 6/8, otherwise `E_DRAW_COLOR` with
+  "Color.hex: expected #rgb, #rgba, #rrggbb, or #rrggbbaa". Each two-character
+  channel is parsed in base 16, case insensitive. Besides two hex digits, the
+  native integer parser accepts a hex digit followed by `_` as that single
+  digit (e.g. `f_0000` is RGB 15,0,0). A leading underscore, sign or any other
+  character fails with `E_DRAW_COLOR` ("Color.hex: invalid hexadecimal digit").
+  Alpha defaults to 255. No whitespace trimming or named colors.
+- Vec3: finite-check components named `red`, `green`, `blue`, then convert
+  each through the unclamped-input byte path below; alpha is 255.
+- List of exactly four elements: number-convert and finite-check each channel
+  named `color`, then use the unclamped-input path, including alpha.
+
+Every other kind, including Vec4 and lists of another length, is `E_TYPE`
+("A color is hex text, vec3 or (list r g b a)."). Parsing does not first
+coerce a Vec4 into a List. A color returned to Lisp is normalized by dividing
+bytes by 255: Vec3 when alpha is 255, otherwise a four-Float List. `color/hsla`
+always returns the four-Float List, even for opaque alpha.
+
+`color/byte` has a static conversion mode chosen by the compiler:
+
+1. **Clamped input** (HSL): clamp the finite channel to [0,1], multiply by 255,
+   add 0.5, truncate toward zero, then clamp the integer to [0,255].
+2. **Unclamped input** (Vec3/List color): multiply the finite channel by 255,
+   add 0.5, perform the native Apple-Silicon float-to-integer conversion, then
+   clamp the resulting signed 63-bit integer to [0,255]. It is not the checked
+   `int` leaf. The intermediate double may overflow: truncate toward zero and
+   saturate to signed 64-bit bounds, then keep the low 63 bits and interpret
+   them as signed; NaN converts to zero. Positive overflow/infinity therefore
+   becomes -1, negative overflow/infinity becomes zero. The input finite check
+   still rejects an authored non-finite channel before this conversion.
+
+For example native `Color.of_floats 1e20 (-1e20) 0.5 1.` is RGBA 0,0,128,255;
+clamping inputs first would incorrectly make its red channel 255. This mode
+also preserves ordinary slightly negative values and half-byte rounding.
+JavaScript implements the signed conversion using BigInt after double
+arithmetic, then `BigInt.asIntN(63, ...)`, with explicit saturation at +/-2^63.
+This is a color leaf parameter, not an extra numeric language operator.
+
+`value/hsv` is a compiler expansion, with hue in turns and no saturation/value
+clamp or byte quantization. Set h to
+`remainder(remainder(h,1)+1,1)`, i to trunc(floor(h*6)), and f to h*6-float(i).
+Set p=v*(1-s), q=v*(1-f*s), t=v*(1-(1-f)*s). The i mod 6 sectors select
+`(v,t,p)`, `(q,v,p)`, `(p,v,t)`, `(p,q,v)`, `(t,p,v)`, `(v,p,q)` in order.
+Return Vec3 and finite-check its final channels named `value/hsv`.
+`value/lerp` evaluates a,b,u once and computes `a*(1-u)+b*u`, retaining that
+arithmetic order, returning Float or Vec3. A scalar partner broadcasts to
+Vec3. Native Vec2/4 operands are unsupported here (`E_TYPE`), despite the
+broader vector arithmetic contract. It does not clamp u; final components
+are finite-checked named `value/lerp`. Neither expansion becomes a target leaf.
+
 ## Text, display and equality
 
 Text values retain decoded contents, with no quoting, escaping, Unicode

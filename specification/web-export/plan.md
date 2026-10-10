@@ -478,7 +478,12 @@ Phase 0
   114 unique lowering rows with no missing/extra heads; whitespace passed.
   These task commits are in /private/tmp/rays-web-export-progress while the
   shared checkout's .git is read-only; a bundle preserves their history.
-- [ ] P0.2a S
+- [x] P0.2a S
+  Remaining leaf clauses now state color parsing/quantization, packed-array
+  construction/access/copying, recursive coercion and HSV/lerp expansions.
+  Native edge probes and P0.6 passed on 2026-10-11, including huge finite
+  channels, trailing hex underscores, zero-count unused fills, empty endpoint
+  slices, width/range refusals, record order and unclamped HSV/lerp values.
 - [x] P0.3 S
   Numeric contract checked against Value/Op/Packed and native probes on
   2026-10-11: signed 63-bit wrapping, quotient/remainder signs, distinct
