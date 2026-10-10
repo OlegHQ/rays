@@ -485,7 +485,10 @@ Phase 0
   List contract checked against Workspace/Eval/Frame_input on 2026-10-11:
   static/live lengths, product/skip bounds, flattened record columns and
   oversized-source fallback/refusal; no new universal language cap.
-- [ ] P0.5 S
+- [x] P0.5 S
+  Display and equality contract checked against native probes on 2026-10-11:
+  typed/ordered equality, fixed-format tie adjustment and large-value spelling.
+  In particular show(17179869184.03125) is 17179869184.0312.
 - [ ] P0.6 H
 - [ ] P0.7 H
 - [ ] P0.R R

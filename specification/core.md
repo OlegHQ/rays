@@ -165,8 +165,8 @@ unlisted calls in `prims.js`.
 | `coerce`, `truthy`, `fail` | 3 | Explicit checked source-value coercion, condition truth conversion, and a diagnostic with a code, message and source span. Coercion preserves record order and list element joins. |
 
 Total: 8 + 1 + 5 + 5 + 8 + 5 + 3 + 5 + 7 + 4 + 3 = **54**.
-P0.3, P0.4 and P0.5 complete the detailed numeric, list and text models
-before P0.R; this inventory fixes their implementation boundary.
+The numeric, list and text models below fix the behavior of these leaves;
+P0.R reviews them with the inventory.
 
 Convenience operators lower to these leaves. For example `value/polar` is a
 vector built from `*`, `cos`, `sin` and its optional height, `length` is an
@@ -341,6 +341,88 @@ elements are permitted); shortage is `E_PATTERN`. Empty `first`/`last` fail
 with `E_LIST_RANGE`; empty `rest` remains empty. Packed-array indexing instead
 uses `E_ARRAY_RANGE`, non-negative whole numeric indices, and element widths.
 Packed arrays never inherit the 4,096 list cap.
+
+## Text, display and equality
+
+Text values retain decoded contents, with no quoting, escaping, Unicode
+normalization, case folding or trimming at runtime. `str` evaluates its
+arguments in order, concretizes each, applies `show` and joins the results
+with no separator. The exporter must preserve text contents through its
+JavaScript string encoding; a value it cannot encode losslessly requires a
+located refusal, not replacement characters. Text never enters a region.
+
+| Value kind | `show` result |
+| --- | --- |
+| Int | Full signed base-10 integer, no exponent or floating conversion. |
+| Float | The display-number rule below. |
+| Bool | `true` or `false`. |
+| Text | Its contents, without quotes. |
+| Vec2/3/4 | `[` followed by display-formatted components separated by one space, then `]`. |
+| List | `[` followed by recursively shown elements separated by one space, then `]`; empty is `[]`. |
+| Record | `{` followed by ordered `:name value` pairs separated by one space, then `}`; empty is `{}`. |
+| Packed array | Element count, space, multiplication sign, space, element name, e.g. `12 × vec3`. Storage component count is divided by width. |
+| Residual in a diagnostic/debug display | `?`; frame program values are concretized before normal display. |
+| Other native value | Its type spelling, e.g. `geometry`, `image`, `drawing`, `sample`, `fn`; this does not make the value legal for web export. |
+
+Display-number formatting follows the actual `Value.show_with` implementation,
+not the shorter intent comment in `value.ml` and not `Flow.Lisp.float`:
+
+1. NaN displays `NaN`, positive/negative infinity `Infinity` / `-Infinity`.
+   These spellings make debug display total; they do not allow non-finite
+   numeric inputs or literals into a checked frame.
+2. For a finite x, take its absolute binary64 magnitude. Format that magnitude
+   to exactly 40 fractional decimal places with nearest-even rounding. A tie
+   flag is true when fractional digit 5 is `5` and fractional digits 6..40
+   are all zero (digits are counted starting at 1).
+3. If flagged, add the binary64 value `1e-6` to the magnitude, rounding that
+   addition to binary64. Otherwise retain the magnitude. Format the resulting
+   double to exactly four fractional decimal places with nearest-even
+   rounding, with a fixed decimal point and no exponent.
+4. Remove trailing fractional zeroes and then an empty decimal point. Prefix
+   `-` only when x<0 and the trimmed result is not `0`. Both signed zeros and
+   a negative value rounded to zero display `0`.
+
+A target can implement the fixed-format steps from the exact binary64 ratio:
+decode sign/exponent/mantissa, scale the non-negative ratio by 10^places,
+divide as integers, and increment the quotient if remainder exceeds half the
+denominator, or equals half with an odd quotient. Decimal padding supplies
+the specified fractional width. BigInt supplies these fixed-format steps in
+JavaScript; Number supplies the intervening `+ 1e-6` exactly as above. Plain
+`toFixed(4)`, `Math.round(x*10000)` or conversion back through Number is not a
+complete implementation: large values switch to exponent notation, and the
+native tie adjustment can disappear below an ULP.
+
+Examples verified against the native implementation:
+
+| Float | Display |
+| --- | --- |
+| `0.03125` | `0.0313` |
+| `-0.03125` | `-0.0313` |
+| `17179869184.03125` | `17179869184.0312` (the 1e-6 tie adjustment rounds away) |
+| `1e21` | `1000000000000000000000` |
+| `-0.0` | `0` |
+| `0.00005` | `0.0001` |
+
+Source-number printing remains separate: `Flow.Lisp.float` tries 15, 16,
+then 17 significant digits until the result reads back as the same double,
+expands any exponent to fixed decimal notation, and supplies a dot (`1.0`,
+not `1`). Non-finite source-print input is `0.0`; a writer that needs to reject
+it must do so before printing. Displaying `1.0` gives `1`; writing that
+Float back to Lisp gives `1.0`. Neither printer is a reason to change the
+other's contract.
+
+`equal?` is typed structural equality, with no scalar numeric coercion.
+Int 1 and Float 1.0 are unequal; Bool true and Int 1 are unequal. Floats compare
+numerically within their Float tag, so positive and negative zero are equal;
+NaN is unequal to itself. Vectors must have the same width and equal ordered
+components. Lists/packed arrays must have the same value kind, element layout,
+length and equal ordered elements/components. Records must have the same
+ordered names and equal values: swapping two field pairs changes equality.
+Text compares exact contents, not a collation order. Admissible finite core
+data needs no pointer-identity rule. Native function comparison can fail with
+`E_TYPE` ("Functions cannot be compared."); exported/core stored data does
+not contain callable values. `=` and `case` numeric matching use the separate
+numeric conversion rule, rather than substituting `equal?`.
 
 ## Region form
 
