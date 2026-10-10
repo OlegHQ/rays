@@ -305,7 +305,8 @@ slice is the tree walker: results are bit-identical, as the closure tier's are.
 | P1.3 | S | P1.2 | `lib/flow_ir/core_exec.ml`, `.mli`, `flow_ir.ml`, `lib/flow/eval.ml`, `.mli` | A direct interpreter of frame-level core returning `Flow.Eval.value`, using the walker's operator bodies and coercions. Add `Flow.Eval.Private.core_residuals : bool ref`, default `false`. When set, a residual is offered to the executor through the `execute` hook before the closure tier; on `Error` or any exception, fall through unchanged | `@lib/flow/runtest` and `@lib/flow_ir/runtest`, no test changed |
 | P1.4 | H | P1.3 | `lib/flow_ir/test_core_parity.ml`, `dune` | For each fixture and expression in `test_workspace_eval.ml:435-487`, force with `core_residuals` on, off, and with `compile_residuals` off; assert bit-equal values (copy `same_bits`) and equal diagnostics on the error cases | `@lib/flow_ir/runtest` |
 | P1.5 | S | P1.4 | core types/lowering/execution, Flow callable/bypass hooks, packed/IR bypass consumers, tests | Slice B: vectors of 2 and 4; `Cond`, `Case`; `Let` with destructuring patterns; `Call_fn` and local `Fn` by inlining the call site's checked body; `Expanded`; `Bypass`. `pp` and parity cases for each. Share the authored positional bypass selector across checking, evaluation and compilers | `@lib/flow/runtest`, `@lib/flow_ir/runtest` |
-| P1.6 | S | P1.5 | same | Slice C: records (`Record`, `Get`, `Assoc`) flattened to locals; text, `Str` through the `show` primitive, `equal?` | same |
+| P1.6 | S | P1.5 | `core_lower.ml`, Flow aggregate equality/coercion paths, tests, `results.md` | Slice C: records (`Record`, `Get`, `Assoc`) flattened to locals; text, `Str` through the `show` primitive, `equal?`. Resolve reactive captured data at the equality/coercion boundary in both native tiers | `@lib/flow/runtest`, `@lib/flow_ir/runtest` |
+| P1.6a | S | P1.7 | record-fold benchmark, core lowering/execution, `results.md` | Repair the allocation regression measured during Slice C: prepare and force the same record fold through Executor's core path, keeping record accumulators as field locals. Reuse the structured loops from P1.7. Keep the interpreter/direct native checks | Focused Flow/IR tests; native record-fold median at most 1.1 times the P1.5 baseline time and allocations at most 1.05 times the baseline bytes, measured on the same machine |
 | P1.7 | S | P1.6 | same | Slice D: lists per `core.md`: `List_lit`, `range`, `nth`, `count`, `concat`, `take`, `rest`, `reverse`; `Hof` `Map`, `Filter`, `Reduce`, `Sort_by`; `Loop` `For`, `Fold`, `Scan`, `Sum` with `skip`. Keep `E_ITER_BOUND` at 4,096 and `Sum` of an empty list as `Int 0` | same |
 | P1.8 | S | P1.7 | same, `lib/flow/eval.ml` | Slice E: `State` as slots, keeping the keys of `state_previous` (`eval.ml:666`) and `begin_frame` (`:170`) so `fork_state` and `transaction` still work. Frame operators and `frame/input` events as a bounded list of records | `@lib/flow/runtest` including `test_state` and `test_frame`, switch on and off |
 | P1.9 | S | P1.8 | same | Slice F: packed-array operators outside regions (`array/range`, `array/vec3`, `array/nth`, `array/count`, `array/slice`, `array/concat`) as primitives; a packed `map`, `for`, `sum`, `fold` or `reduce` becomes a `Region_ref` that calls `Packed.force` unchanged | `@lib/flow_ir/runtest` including `test_frame_kernel` |
@@ -315,7 +316,7 @@ slice is the tree walker: results are bit-identical, as the closure tier's are.
 | P1.13 | H | P1.11 | `tools/bench_core.ml`, `tools/dune`, `results.md` | A new bench printing three rows for one scalar residual (the expression of the `Closure` row in `flow_ir.ml:133-160`): tree walker, closure tier, core. Add it to `bench-build`. Record the rows | Rows printed; entry present |
 | P1.14 | S | P1.13 | `core_exec.ml` | Only if the core row is more than 1.1 times the closure row: compile a core program once into OCaml closures instead of interpreting it, keeping the interpreter as the test reference. Re-record | Core at most 1.1 times closure; P1.4 and P1.11 pass |
 | P1.15 | S | P1.14 | `lib/flow/eval.ml` | Flip `core_residuals` to default `true` | All default tests, and `@test/test_workspace_ir` |
-| P1.R | R | P1.15, P1.2a | | Run `--ship` and `@runtest-native`. Confirm P1.12 shows full coverage. Re-list the callers of `fast_of`, `closure_available` and `compile_residuals` for P1.16 | All green |
+| P1.R | R | P1.15, P1.2a, P1.6a | | Run `--ship` and `@runtest-native`. Confirm P1.12 shows full coverage. Re-list the callers of `fast_of`, `closure_available` and `compile_residuals` for P1.16 | All green |
 | P1.16 | S | P1.R | `lib/flow/eval.ml`, `.mli`, callers | Delete `compile`, `cnode`, `fast`, `fast_of` and both switches. Keep the `Closure` tier name in `Flow_ir.tier`, now meaning a core frame program, so placement tests are unchanged. Promote the API manifest in a second commit | `--ship` |
 
 ## Phase 2: kernels on the core
@@ -559,8 +560,25 @@ Phase 1
   now share the authored positional selector. Packed scalar/vector bypasses
   match direct/reference execution; unsupported rounding coercions decline.
   Both focused gates passed on 2026-10-11; existing expectations are unchanged.
-- [ ] P1.6 S
+- [x] P1.6 S
+  Ordered/nested record fields flatten to locals; branch order, replacement
+  coercion, field access, text/display and structural equality have direct,
+  closure/reference and Executor parity at ten times. Reactive captured
+  equality and old-field coercion exposed native bugs, now fixed at their
+  shared boundaries. Unrelated old fields remain lazy. Existing expectations
+  are unchanged; focused Flow/IR gates passed on 2026-10-11. A native record
+  fold improved in wall time but increased allocations; results.md records
+  the reproducible measurement, and P1.6a must pass before P1.R.
+- [ ] P1.6a S
+  Required allocation repair after P1.7's structured loops: baseline
+  0.076312s / 152,390,016 bytes; Slice C 0.058664s / 297,986,736 bytes for
+  30 frames x 4,096 items. Measure prepared core execution on the same input.
 - [ ] P1.7 S
+  Slice C's native probes found that Workspace.hof checks a specialized body
+  but retains the generic function term. An unannotated record accumulator's
+  generic Assoc has no updates, so reduction silently returns its seed. Reuse
+  instantiate_fn at HOF call sites and include a generic/bound record-updater
+  parity case in this slice; do not preserve the erased generic body.
 - [ ] P1.8 S
 - [ ] P1.9 S
 - [ ] P1.10 S

@@ -189,25 +189,6 @@ let fn_call c fid count = match c.st.time with
       Hashtbl.replace c.st.fn_calls fid (k + 1); k
 
 let key_of v = Value.key_of ~residual:(fun r -> r.rid) v
-(* [coerce v to the type of w]: fold accumulators, reduce, assoc *)
-let rec coerce_like w v =
-  match w, v with
-  | _, Residual _ | Residual _, _ -> v
-  | Int _, (Float _ | Bool _) -> coerce_to Ty.Int v
-  | Float _, (Int _ | Bool _) -> coerce_to Ty.Float v
-  | Bool _, (Int _ | Float _) -> coerce_to Ty.Bool v
-  | Vec3 _, (Int _ | Float _) -> coerce_to Ty.Vec3 v
-  | Vec2 _, (Int _ | Float _) -> coerce_to Ty.Vec2 v
-  | Vec4 _, (Int _ | Float _) -> coerce_to Ty.Vec4 v
-  | List a, List b when Array.length a > 0 -> List (Array.map (coerce_like a.(0)) b)
-  | Record wf, Record fs ->
-      Record (List.map (fun (n, x) -> match List.assoc_opt n wf with
-        | Some w -> (n, coerce_like w x) | None -> (n, x)) fs)
-  | _ -> v
-
-(* an accumulator: as [coerce_like], but an int seed such as [0] does not round a float step *)
-let widen_like w v = match w, v with Int _, Float _ -> v | _ -> coerce_like w v
-
 let join_values xs = let t = elem_ty xs in Array.map (coerce_to t) xs
 
 let rec pat_key = function
@@ -334,6 +315,14 @@ let rec fast_of (r : residual) : (Frame_input.t -> value) option =
 
 and cnode_of_value = function
   | Residual r -> (match fast_of r with Some f -> Dyn f | None -> raise Unsupported)
+  | List values -> map_nodes (fun values -> List (Array.of_list values))
+      (Array.to_list (Array.map cnode_of_value values))
+  | Record fields ->
+      let names,nodes=List.split (List.map (fun (name,v) -> name,cnode_of_value v) fields) in
+      map_nodes (fun values -> Record (List.combine names values)) nodes
+  | Struct (name,ty,fields) ->
+      let names,nodes=List.split (List.map (fun (name,v) -> name,cnode_of_value v) fields) in
+      map_nodes (fun values -> Struct (name,ty,List.combine names values)) nodes
   | v -> Const v
 
 and compile ce (x : W.term) : cnode =
@@ -358,10 +347,11 @@ and compile ce (x : W.term) : cnode =
   | W.Ref_binding (b, fs) ->
       let start = match Smap.find_opt b ce.over with
         | Some n -> n
-        | None -> (match Smap.find_opt b ce.base with Some v -> cnode_of_value v | None -> raise Unsupported) in
-      List.fold_left (fun n f -> match n with
+        | None -> (match Smap.find_opt b ce.base with Some v -> Const v | None -> raise Unsupported) in
+      let selected=List.fold_left (fun n f -> match n with
         | Const v -> Const (lookup_field b v f)
-        | Dyn g -> Dyn (fun t -> lookup_field b (g t) f)) start fs
+        | Dyn g -> Dyn (fun t -> lookup_field b (g t) f)) start fs in
+      (match selected with Const v -> cnode_of_value v | Dyn _ -> selected)
   | W.Op { op; args; _ } ->
       let o = match Op.find op Context.value with
         | Some o when o.ctx = Context.value && o.shape = Op.Scalar -> o
@@ -647,7 +637,7 @@ and ev_raw c env (x : W.term) : value =
       let fs = List.fold_left (fun fs (n, t) ->
         let v = ev (sub c n) env t in
         match List.assoc_opt n fs with
-        | Some old -> List.map (fun (k, x) -> if k = n then (k, coerce_like old v) else (k, x)) fs
+        | Some old -> List.map (fun (k, x) -> if k = n then (k, coerce_like c old v) else (k, x)) fs
         | None -> fs @ [ (n, v) ]) fs ups in
       Record fs
   | W.Str ts -> Text (String.concat "" (List.map (show_with (concrete c)) (evs c env "" ts)))
@@ -680,6 +670,27 @@ and state_data c value =
       Struct (name, ty, List.map (fun (name, value) -> name, state_data c value) fields)
   | value -> value
 
+and concrete_data c value =
+  match concrete c value with
+  | List values -> List (Array.map (concrete_data c) values)
+  | Record fields -> Record (List.map (fun (name,v) -> name,concrete_data c v) fields)
+  | Struct (name,ty,fields) -> Struct (name,ty,List.map (fun (name,v) -> name,concrete_data c v) fields)
+  | value -> value
+
+(* Resolve only the old fields/elements that the new value actually updates. *)
+and coerce_like c w v =
+  match concrete c w,concrete c v with
+  | List a,(List _ as v) when Array.length a=0 -> v
+  | List a,List b when Array.length a>0 -> List (Array.map (coerce_like c a.(0)) b)
+  | Record wf,Record fs -> Record (List.map (fun (name,v) -> name,
+      match List.assoc_opt name wf with Some old -> coerce_like c old v | None -> v) fs)
+  | w,v -> coerce_to (Value.ty_of w) v
+
+(* Numeric accumulators widen an Int seed; record updates retain its tag. *)
+and widen_like c w v =
+  let w=concrete c w and v=concrete c v in
+  match w,v with Int _,Float _ -> v | _ -> coerce_like c w v
+
 and apply_op c ?(authored = 0) name (vals : (string * value) list) : value =
   let o = match Op.find ~extra:c.st.ops name Context.value with
     | Some o -> o | None -> failf "E_UNKNOWN" "Unknown operator %s." name in
@@ -690,7 +701,9 @@ and apply_op c ?(authored = 0) name (vals : (string * value) list) : value =
           | v -> [ (n, v) ]) vals
     | _ -> vals in
   let vals = match o.shape with
-    | Op.Scalar when o.ctx = Context.value -> List.map (fun (n, v) -> n, concrete c v) vals
+    | Op.Scalar when o.ctx = Context.value ->
+        let force=if o.name="equal?" then concrete_data c else concrete c in
+        List.map (fun (n,v) -> n,force v) vals
     | _ -> vals in
   o.check vals;
   let live = match c.st.time with
@@ -820,7 +833,7 @@ and hof c env term kind f rest =
       let acc = ref init in
       for i = 0 to count - 1 do
         let value = call fv [!acc; get i] in
-        acc := widen_like !acc (if packed then concrete c value else value)
+        acc := widen_like c !acc (if packed then concrete c value else value)
       done;
       !acc
   | _ -> fail "E_ARITY" "A higher-order form got the wrong number of arguments." in
@@ -886,7 +899,7 @@ and loop c env ~out kind accs clauses skip body zone =
       let v = if packed then concrete c v else v in
       (match kind, !acc with
        | (`Fold | `Scan), Some a ->
-           let a' = widen_like a v in
+           let a' = widen_like c a v in
            acc := Some a';
            if kind = `Scan then collect a'
        | `Sum, _ -> total := Some (match !total with None -> v | Some t -> add t v)

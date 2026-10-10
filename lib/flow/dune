@@ -76,4 +76,4 @@
  (deps
   (glob_files ../../specification/workspace/cases/*.lisp)
   ../sop_catalog/flow_manifest.sexp)
- (libraries flow param))
+ (libraries flow param unix))

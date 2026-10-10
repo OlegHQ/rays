@@ -67,6 +67,22 @@ let nodes_of (r : Eval.t) kind = List.filter (fun (n : Eval.node) -> n.kind = ki
 let arg (n : Eval.node) k = List.assoc k n.args
 let count_of r kind = List.length (nodes_of r kind)
 
+let () =
+  if Array.length Sys.argv=2 && Sys.argv.(1)="--bench-records" then begin
+    let v=result (static (check (value
+      "(let* [a (fold [a {:n 0.}] [x (array/range 4096)] (assoc a :n (+ a.n t)))] a.n)"))) "g" in
+    let force time=ignore (ok (Eval.force v ~live:(Frame_input.at_time time))) in
+    force 0.1;
+    let samples=List.init 3 (fun _ ->
+      Gc.full_major ();
+      let bytes=Gc.allocated_bytes () and start=Unix.gettimeofday () in
+      for i=1 to 30 do force (float i /. 100.) done;
+      Unix.gettimeofday () -. start,Gc.allocated_bytes () -. bytes) in
+    let seconds,bytes=List.nth (List.sort (fun (a,_) (b,_) -> Float.compare a b) samples) 1 in
+    Printf.printf "Record fold: %.6fs, %.0f allocated bytes; 30 frames x 4096 items; domains=1; median of 3\n" seconds bytes;
+    exit 0
+  end
+
 (* IR walk, for the static types *)
 let rec walk f (x : Workspace.term) =
   f x;
@@ -811,6 +827,33 @@ let () =
       ["(image/noise :width 2 :height 2 :frequency (+ 0.3 t))", "frequency", Eval.Float 2.3;
        "(image/load (if (< t 1.0) \"before.png\" \"after.png\"))", "path", Eval.Text "after.png";
        "(image/render (ref drawing) :width (if (< t 1.0) 2 3) :height 2)", "width", Eval.Int 3]);
+  t "equality compares current captured record/list fields in both execution tiers" (fun () ->
+    List.iter (fun (body,want) ->
+      let v=result (static (check (value body))) "g" in
+      List.iter (fun compiled ->
+        let old= !(Eval.Private.compile_residuals) in
+        Fun.protect ~finally:(fun () -> Eval.Private.compile_residuals:=old) (fun () ->
+          Eval.Private.compile_residuals:=compiled;
+          List.iter (fun time -> assert (Eval.force v ~live:(Frame_input.at_time time) = Ok (Eval.Bool want)))
+            [0.;0.37;2.])) [false;true])
+      ["(let* [a {:v t} b {:v t}] (equal? a b))",true;
+       "(let* [a (list {:v t}) b (list {:v t})] (equal? a b))",true;
+       "(let* [a {:v {:x t}}] (equal? a {:v {:x t}}))",true;
+       "(let* [a {:x t :y 2.} b {:y 2. :x t}] (equal? a b))",false;
+       "(let* [a {:x t} b {:x (+ t 1.)}] (equal? a b))",false]);
+  t "updates and accumulators use the current captured field tag" (fun () ->
+    List.iter (fun body ->
+      let v=result (static (check (value body))) "g" in
+      List.iter (fun time -> match Eval.force v ~live:(Frame_input.at_time time) with
+        | Ok (Eval.Int 2) -> ()
+        | Ok actual -> failwith (Printf.sprintf "%s at %g: got %s" body time (Eval.show actual))
+        | Error d -> failwith (Diagnostic.to_string d))
+        [-2.5;0.;0.37;2.])
+      ["(let* [r {:n (int t)} updated (assoc r :n 1.7)] updated.n)";
+       "(let* [r {:v {:n (int t)} :unused (exp (* t 100000.))} updated (assoc r :v {:n 1.7})] updated.v.n)";
+       "(let* [r {:n (int t)} updated (fold [a r] [x (array/range 2)] (assoc a :n 1.7))] updated.n)";
+       "(let* [r {:n (int t)} xs (scan [a r] [x (range 2)] (assoc a :n 1.7))] (get (nth xs 0) :n))";
+       "(let* [r {:n (int t)} updated (reduce (fn [(a : {:n int}) x] (assoc a :n 1.7)) r (list 0))] updated.n)"]);
   t "operator function values use declaration argument names" (fun () ->
     is (value "(let* [lengths (map array/count (list (array/float 2) (array/float 4)))] (+ (first lengths) (last lengths)))")
       (Eval.Int 6));

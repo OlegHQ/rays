@@ -1521,6 +1521,9 @@ wrapping multiplication. They support the recursive rectangle example's original
 without converting its large integer products through a float. Division by zero is `E_RANGE`.
 
 `equal? a b` compares data (including event text); numeric `=` keeps its numeric contract.
+Captured reactive list/record fields are resolved before equality compares
+their current values. Record updates resolve the old fields they replace so
+the current Int/Float tag controls coercion; unrelated fields remain lazy.
 `exp x` supplies native exponential damping. Pure-data folds/scans may follow a live list
 length, still with the 4096-iteration evaluator bound; geometry folds keep their fixed topology
 rule. Drawing topology stays fixed; dynamic stroke data feeds statically declared batch nodes.

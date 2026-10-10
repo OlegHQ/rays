@@ -106,6 +106,17 @@ chain of component/field reads; its missing-field diagnostic is `E_FIELD`.
 `assoc` evaluates the record first and updates in authored order, preserving
 existing field position, coercing an existing field to its prior layout, and
 appending a new field at the end.
+An existing reactive field is resolved before its tag controls coercion.
+Nested coercion reads only old fields present in the replacement record;
+unrelated captured fields remain lazy. Accumulator coercion follows the same
+rule, with the numeric Int-to-Float widening described below.
+
+Record construction and matching ordered branch layouts retain field locals;
+reconstruction occurs only at a structured result or primitive operand. A
+branch whose records have different field order retains that order in its
+selected structured value. A joined numeric local may still hold an Int from
+one branch: explicit Float coercion must convert it, and `assoc` must use the
+selected old value's tag rather than the checker's joined type.
 
 `if` evaluates its condition and only the selected branch. `cond` tests arms in
 order and stops at the first true test. `case` evaluates its scrutinee once;
@@ -525,6 +536,8 @@ Float back to Lisp gives `1.0`. Neither printer is a reason to change the
 other's contract.
 
 `equal?` is typed structural equality, with no scalar numeric coercion.
+Reactive fields in a captured list or record are concretized before comparison;
+the evaluator's residual representation is never an equality operand.
 Int 1 and Float 1.0 are unequal; Bool true and Int 1 are unequal. Floats compare
 numerically within their Float tag, so positive and negative zero are equal;
 NaN is unequal to itself. Vectors must have the same width and equal ordered
