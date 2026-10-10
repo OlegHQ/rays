@@ -9,6 +9,15 @@
  (libraries unix))
 
 (executable
+ (name core_census)
+ (modules core_census)
+ (libraries flow))
+
+(rule
+ (alias runtest)
+ (action (run %{exe:core_census.exe} --self-check)))
+
+(executable
  (name bench_gpu)
  (modules bench_gpu)
  (libraries ogpu rays_execution rays_math unix))

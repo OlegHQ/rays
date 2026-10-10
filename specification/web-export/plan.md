@@ -3,9 +3,9 @@
 Task-level plan for compiling a Rays Lisp workspace into a standalone WebGPU
 browser application. It is written so that a small model can take one task per
 loop iteration. Every file and line reference was read at commit `923dcecf`
-(2026-10-10); nothing here has been built or run. Nothing in this plan is
-implemented yet: do not code against a name this file introduces until the task
-that creates it is ticked in the ledger at the end.
+(2026-10-10). Implementation progress and verified gates are recorded in the
+ledger at the end. Do not code against a name this file introduces until the
+task that creates it is ticked there.
 
 ## The design in one page
 
@@ -464,7 +464,13 @@ and touch no browser code. Tick a task in the commit that completes it; add
 `note:` lines under a task that stopped.
 
 Phase 0
-- [ ] P0.1 H
+- [x] P0.1 H
+  Gate: `dune build tools/core_census.exe && _build/default/tools/core_census.exe`
+  passed on 2026-10-10: 45 files, exactly the 15 expected eligible workspaces.
+  `--self-check` passed; two complete census runs were byte-identical.
+  Additional `@tools/runtest` exposed an existing `pxui_shell` API-manifest
+  mismatch (explicit signatures in source, module aliases in the manifest);
+  the manifest was not promoted.
 - [ ] P0.2 S
 - [ ] P0.3 S
 - [ ] P0.4 S
