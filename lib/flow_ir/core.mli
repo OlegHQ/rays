@@ -54,5 +54,7 @@ type program = {
 }
 
 val primitive_name : primitive -> string
+val literal_of_value : Flow.Eval.value -> literal option
+val value_of_literal : literal -> Flow.Eval.value
 val pp : Format.formatter -> program -> unit
 (** Deterministic diagnostic printer, including every statement's source identity. *)

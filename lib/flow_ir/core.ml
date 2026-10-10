@@ -74,6 +74,29 @@ let frame_name = function
   | Time -> "t" | Dt -> "dt" | Index -> "frame" | Tick -> "tick" | Width -> "width" | Height -> "height"
   | Pointer_x -> "pointer/x" | Pointer_y -> "pointer/y" | Input -> "input"
 
+exception Not_literal
+let literal_of_value value =
+  let rec convert : Flow.Eval.value -> literal = function
+    | Int n -> Int n | Float x -> Float x | Bool b -> Bool b | Text s -> Text s
+    | Vec2 (x,y) -> Vector [|x;y|] | Vec3 (x,y,z) -> Vector [|x;y;z|]
+    | Vec4 (x,y,z,w) -> Vector [|x;y;z;w|]
+    | List xs when Array.length xs <= 4096 -> List (Array.map convert xs)
+    | Record xs -> Record (List.map (fun (n,v) -> n,convert v) xs)
+    | Float_array data -> Array {width=1;data} | Vec2_array data -> Array {width=2;data}
+    | Vec3_array data -> Array {width=3;data} | Vec4_array data -> Array {width=4;data}
+    | No_geo -> Empty_geometry | _ -> raise Not_literal in
+  try Some (convert value) with Not_literal -> None
+
+let rec value_of_literal : literal -> Flow.Eval.value = function
+  | Int n -> Int n | Float x -> Float x | Bool b -> Bool b | Text s -> Text s
+  | Vector [|x;y|] -> Vec2 (x,y) | Vector [|x;y;z|] -> Vec3 (x,y,z)
+  | Vector [|x;y;z;w|] -> Vec4 (x,y,z,w)
+  | List xs -> List (Array.map value_of_literal xs)
+  | Record xs -> Record (List.map (fun (n,v) -> n,value_of_literal v) xs)
+  | Array {width=1;data} -> Float_array data | Array {width=2;data} -> Vec2_array data
+  | Array {width=3;data} -> Vec3_array data | Array {width=4;data} -> Vec4_array data
+  | Empty_geometry -> No_geo | Vector _ | Array _ -> invalid_arg "Core.value_of_literal: width"
+
 let pp fmt p =
   let out format = Format.fprintf fmt format in
   let separated render xs = List.iteri (fun i x -> if i > 0 then out " "; render x) xs in

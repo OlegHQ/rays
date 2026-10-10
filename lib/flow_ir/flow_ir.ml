@@ -1,6 +1,7 @@
 module Operators = Operators
 module Packed = Packed
 module Core = Core
+module Core_lower = Core_lower
 module E = Flow.Eval
 module W = Flow.Workspace
 module V = Flow.Value

@@ -3,6 +3,7 @@
 module Operators = Operators
 module Packed = Packed
 module Core = Core
+module Core_lower = Core_lower
 
 val qualify_workspace :
   ?record:bool -> ?inputs:(string * (string * Flow.Eval.value) list) list ->

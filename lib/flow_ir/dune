@@ -1,12 +1,18 @@
 (library
  (name flow_ir)
  (public_name rays.flow_ir)
- (modules operators packed core flow_ir)
+ (modules operators packed core core_lower flow_ir)
  (libraries flow param rays_math))
 
 (test
  (name test_core)
  (modules test_core)
+ (libraries flow_ir flow))
+
+(test
+ (name test_core_lower)
+ (modules test_core_lower)
+ (deps core_lower.expected)
  (libraries flow_ir flow))
 
 (test

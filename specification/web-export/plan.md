@@ -301,6 +301,7 @@ slice is the tree walker: results are bit-identical, as the closure tier's are.
 | --- | --- | --- | --- | --- | --- |
 | P1.1 | S | P0.R | `lib/flow_ir/core.ml`, `.mli`, `dune`, `test_core.ml` | The frame-level types from `specification/core.md`: expressions, statements, a program with numbered locals and state slots, and a `Region_ref` placeholder holding an existing `Packed.t`. A deterministic printer `Core.pp`. Test: three hand-built programs against inline expected strings | `@lib/flow_ir/runtest` |
 | P1.2 | S | P1.1 | `lib/flow_ir/core_lower.ml`, `.mli`, `test_core_lower.ml` | `lower : Flow.Eval.residual -> (Core.program, string) result` for exactly the forms `Flow.Eval.compile` handles (`eval.ml:337` onward). Anything else returns `Error` with the form's name. Read captures through `Eval.Private.residual_view`. Test: `pp` expectations for the expressions in `test_workspace_eval.ml:435-487` | `@lib/flow_ir/runtest` |
+| P1.2a | S | P1.4 | `core_lower.ml`, tests | Complete operator coverage within the initial forms: audit every `Context.value` scalar operator accepted by the old closure compiler, and add the remaining shared expansions (HSV, list convenience operations, packed sum, held-key/button membership). Preserve named refusal for reached values outside the core layout/size contract; do not add target-side operator dispatch | `@lib/flow_ir/runtest`; compare successful lowering and native bits against every old-closure operator case |
 | P1.3 | S | P1.2 | `lib/flow_ir/core_exec.ml`, `.mli`, `flow_ir.ml`, `lib/flow/eval.ml`, `.mli` | A direct interpreter of frame-level core returning `Flow.Eval.value`, using the walker's operator bodies and coercions. Add `Flow.Eval.Private.core_residuals : bool ref`, default `false`. When set, a residual is offered to the executor through the `execute` hook before the closure tier; on `Error` or any exception, fall through unchanged | `@lib/flow/runtest` and `@lib/flow_ir/runtest`, no test changed |
 | P1.4 | H | P1.3 | `lib/flow_ir/test_core_parity.ml`, `dune` | For each fixture and expression in `test_workspace_eval.ml:435-487`, force with `core_residuals` on, off, and with `compile_residuals` off; assert bit-equal values (copy `same_bits`) and equal diagnostics on the error cases | `@lib/flow_ir/runtest` |
 | P1.5 | S | P1.4 | `core_lower.ml`, `core_exec.ml`, tests | Slice B: vectors of 2 and 4; `Cond`, `Case`; `Let` with destructuring patterns; `Call_fn` and local `Fn` by inlining the call site's checked body; `Expanded`; `Bypass`. `pp` and parity cases for each | `@lib/flow_ir/runtest` |
@@ -314,7 +315,7 @@ slice is the tree walker: results are bit-identical, as the closure tier's are.
 | P1.13 | H | P1.11 | `tools/bench_core.ml`, `tools/dune`, `results.md` | A new bench printing three rows for one scalar residual (the expression of the `Closure` row in `flow_ir.ml:133-160`): tree walker, closure tier, core. Add it to `bench-build`. Record the rows | Rows printed; entry present |
 | P1.14 | S | P1.13 | `core_exec.ml` | Only if the core row is more than 1.1 times the closure row: compile a core program once into OCaml closures instead of interpreting it, keeping the interpreter as the test reference. Re-record | Core at most 1.1 times closure; P1.4 and P1.11 pass |
 | P1.15 | S | P1.14 | `lib/flow/eval.ml` | Flip `core_residuals` to default `true` | All default tests, and `@test/test_workspace_ir` |
-| P1.R | R | P1.15 | | Run `--ship` and `@runtest-native`. Confirm P1.12 shows full coverage. Re-list the callers of `fast_of`, `closure_available` and `compile_residuals` for P1.16 | All green |
+| P1.R | R | P1.15, P1.2a | | Run `--ship` and `@runtest-native`. Confirm P1.12 shows full coverage. Re-list the callers of `fast_of`, `closure_available` and `compile_residuals` for P1.16 | All green |
 | P1.16 | S | P1.R | `lib/flow/eval.ml`, `.mli`, callers | Delete `compile`, `cnode`, `fast`, `fast_of` and both switches. Keep the `Closure` tier name in `Flow_ir.tier`, now meaning a core frame program, so placement tests are unchanged. Promote the API manifest in a second commit | `--ship` |
 
 ## Phase 2: kernels on the core
@@ -460,7 +461,7 @@ until then the tasks after it are provisional.
 
 ## Ledger
 
-94 tasks: 62 for Sonnet, 25 for Haiku, 7 reviews. Phases 0 to 4 are 67 of them
+95 tasks: 63 for Sonnet, 25 for Haiku, 7 reviews. Phases 0 to 4 are 68 of them
 and touch no browser code. Tick a task in the commit that completes it; add
 `note:` lines under a task that stopped.
 
@@ -527,7 +528,14 @@ Phase 1
   Core data types, closed primitive inventory, source identities and deterministic
   printer added. Three hand-built scalar/branch/loop-and-state programs pass
   inline printer expectations. `@lib/flow_ir/runtest` passed on 2026-10-11.
-- [ ] P1.2 S
+- [x] P1.2 S
+  Initial lowering slice and reviewed printer expectations for all eleven
+  closure-tier expressions added. Static folding, captured residual sharing,
+  branch scope and unrolled iteration identities are explicit core data.
+  `@lib/flow_ir/runtest` passed on 2026-10-11. Scalar operations outside the
+  current leaf/expansion coverage decline by name; P1.2a records that remaining
+  operator work and must pass before the phase review.
+- [ ] P1.2a S
 - [ ] P1.3 S
 - [ ] P1.4 H
 - [ ] P1.5 S
