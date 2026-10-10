@@ -49,6 +49,12 @@ order. Every statement retains its authored path, graph instance, iteration
 identity and half-open source byte span. Printers use these to generate
 `program.map`; a diagnostic points to the original `.rays` form.
 
+Inlining retains the callable's graph instance and prefix. A per-frame counter
+slot supplies each invoked closure's next call index; only a selected branch
+increments it. Constructing a local callable resets its slot, including each
+loop iteration. Iteration identities contain static indices and local reads of
+these call indices, so state inside an inlined function retains native keys.
+
 The core contains data, not callbacks. A primitive is a closed member of the
 inventory below with explicit operands and result layout. An intrinsic is a
 closed effect/resource operation with target legality. Captures are constants,

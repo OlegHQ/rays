@@ -2,6 +2,7 @@ module C = Core
 module V = Flow.Value
 let run program ~live =
   let values = Array.make (Array.length program.C.locals) Flow.Eval.No_geo in
+  let calls = Array.make program.call_slots 0 in
   let get n = values.(n) in
   let apply name args = match Flow.Op.find ~extra:Operators.all name Flow.Context.value with
     | Some op -> op.body ~live ~node:(fun _ _ -> V.fail "E_CORE" "Core primitives cannot create catalog nodes.") args
@@ -45,6 +46,7 @@ let run program ~live =
   let expression = function
     | C.Constant n -> C.value_of_literal program.constants.(n)
     | Local n -> get n
+    | Call_index slot -> let n=calls.(slot) in calls.(slot)<-n+1; V.Int n
     | Frame field ->
         (match field with C.Time -> V.Float live.t | Tick -> V.Int live.tick
         | Dt -> apply "frame/dt" [] | Index -> apply "frame/index" []
@@ -69,6 +71,7 @@ let run program ~live =
     List.iter (fun (s : C.statement) ->
       try match s.node with
       | Assign (n,e) -> values.(n)<-expression e
+      | Reset_call slot -> calls.(slot)<-0
       | If {condition;yes;no} -> execute (if V.truthy (get condition) then yes else no)
       | Iterate {sequence;index;item;limit;body} ->
           let source=get sequence in

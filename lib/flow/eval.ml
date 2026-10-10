@@ -46,7 +46,8 @@ let free_names term =
         | Cond (arms, default) -> List.fold_left (fun names (test, body) -> walk bound (walk bound names test) body) (walk bound names default) arms
         | Case (subject, arms, default) -> fields bound (all bound names [subject; default]) arms
         | Assoc (record, updates) -> fields bound (walk bound names record) updates
-        | Get (body, _) | Bypass body | Expanded {body; _} -> walk bound names body
+        | Get (body, _) | Expanded {body; _} -> walk bound names body
+        | Bypass call -> Option.fold ~none:names ~some:(walk bound names) (W.bypass_input call)
         | Lit _ | Text _ | Nil | Time -> names in
       let names = walk Names.empty Names.empty term in
       (* ponytail: bound weak memo; workloads above 16k distinct live terms recompute.
@@ -656,19 +657,7 @@ and ev_raw c env (x : W.term) : value =
       if Array.length xs > max_concat then fail "E_ITER_BOUND" "concat exceeds 4,096 elements.";
       List xs
   | W.Bypass t ->
-      let entries = match t.node with
-        | W.Call { args; _ } | W.Op { args; _ } -> List.map snd args
-        | W.Call_fn { args; _ } -> args
-        | _ -> [] in
-      (* as the checker counts it: the first positional argument, after the keyword pairs *)
-      let index = match t.node, t.form.node with
-        | _, S.List (_ :: args) ->
-            let rec first i = function
-              | { S.node = S.Kw _; _ } :: _ :: rest -> first (i + 1) rest
-              | _ -> i in
-            first 0 args
-        | _ -> 0 in
-      (match List.nth_opt entries index with
+      (match W.bypass_input t with
        | Some input -> coerce_to t.ty (ev (sub c "bypass") env input)
        | None -> fail "E_BYPASS" "Nothing to pass through.")
   | W.Expanded { body; _ } -> ev c env body
@@ -1113,7 +1102,8 @@ and term_dependent frame st env (term : W.term) =
   | W.Cond (arms, d) -> any (d :: List.concat_map (fun (a, b) -> [a; b]) arms)
   | W.Case (s, arms, d) -> any (s :: d :: List.map snd arms)
   | W.Fn {capture = Some original; _} -> term_dep original
-  | W.Fn {body; _} | W.Expanded {body; _} | W.Get (body, _) | W.Bypass body -> term_dep body
+  | W.Fn {body; _} | W.Expanded {body; _} | W.Get (body, _) -> term_dep body
+  | W.Bypass call -> Option.fold ~none:false ~some:term_dep (W.bypass_input call)
   | W.Assoc (r, args) -> term_dep r || fields args
   | W.Lit _ | W.Text _ | W.Nil -> false
 
@@ -1226,6 +1216,10 @@ module Private = struct
   let function_body = function Closure cl -> Some (cl.params, cl.body) | Named _ -> None
   let function_scope = function
     | Closure cl -> Some (cl.at.prefix @ cl.zone, cl.at.iter) | Named _ -> None
+  let function_origin = function
+    | Closure cl -> Some (cl.at.inst, cl.at.prefix, cl.zone) | Named _ -> None
+  let function_name = function Named n -> Some n.name | Closure _ -> None
+  let residual_definition r name = Hashtbl.find_opt r.rc.st.defs name
   type residual_view = {
     term : W.term;
     bindings : (string * value) list;
@@ -1233,10 +1227,12 @@ module Private = struct
     owner : W.path;
     iter : int list;
     instance : int;
+    prefix : W.path;
     previous : bool;
   }
   let residual_view r = {term = r.rterm; bindings = Smap.bindings r.renv;
-    site = site r.rc; owner = r.rc.base; iter = r.rc.iter; instance = r.rc.inst; previous = r.previous}
+    site = site r.rc; owner = r.rc.base; iter = r.rc.iter; instance = r.rc.inst;
+    prefix = r.rc.prefix; previous = r.previous}
   let residual_id r = r.rid
   let residual_ops r = r.rc.st.ops
   let force_reference ?state ?elems ?resolve v ~live = force_with ?state ?elems ?resolve ~compiled:false v ~live

@@ -118,7 +118,8 @@ let rec reads_names names (term : W.term) =
   | If (c, a, b) -> any [c; a; b]
   | Cond (arms, d) -> any (d :: List.concat_map (fun (a, b) -> [a; b]) arms)
   | Case (s, arms, d) -> any (s :: d :: fields arms)
-  | Get (body, _) | Bypass body | Expanded {body; _} -> reads_names names body
+  | Get (body, _) | Expanded {body; _} -> reads_names names body
+  | Bypass call -> Option.fold ~none:false ~some:(reads_names names) (W.bypass_input call)
   | Assoc (r, args) -> any (r :: fields args)
   | Lit _ | Text _ | Nil | Time | Fn_ref _ -> false
 
@@ -364,7 +365,16 @@ let rec compile_impl ?(fusion = true) ?(dynamic = false)
             | W.Name n -> (n, expression env t) :: env
             | _ -> refuse ~at:t "E_PACKED_FORM" "Packed let bindings require name patterns.") env bindings in
           expression env result
-      | Expanded {body; _} | Bypass body -> expression env body
+      | Expanded {body; _} -> expression env body
+      | Bypass call ->
+          (match W.bypass_input call with
+           | Some input when input.ty=t.ty
+               || t.ty=Ty.Float && List.mem input.ty [Ty.Int;Bool] -> expression env input
+           | Some input when List.mem t.ty [Ty.Vec2;Vec3;Vec4]
+               && List.mem input.ty [Ty.Int;Float] ->
+               let e=expression env input in
+               {registers=Array.make (width_of t.ty) e.registers.(0);constant=None}
+           | _ -> refuse ~at:t "E_PACKED_TYPE" "Bypass coercion requires reference evaluation.")
       | _ -> refuse ~at:t "E_PACKED_FORM" ("Unsupported packed body form " ^
           Option.value ~default:(Ty.to_string t.ty) (Flow.Syntax.head t.form) ^ ".")
       with V.Fail (code, message, span) ->
@@ -388,7 +398,8 @@ let rec compile_impl ?(fusion = true) ?(dynamic = false)
     let rec paths sites (t : W.term) =
       let sites = match t.path with Some p -> (view.instance, p, view.iter) :: sites | None -> sites in
       let children = match t.node with
-        | W.Vec ts -> ts | Get (t, _) | Bypass t | Expanded {body = t; _} -> [t]
+        | W.Vec ts -> ts | Get (t, _) | Expanded {body = t; _} -> [t]
+        | Bypass call -> Option.to_list (W.bypass_input call)
         | If (a, b, c) -> [a;b;c] | Op {args; _} -> List.map snd args
         | Cond (arms, d) -> d :: List.concat_map (fun (a,b) -> [a;b]) arms
         | Case (s, arms, d) -> s :: d :: List.map snd arms

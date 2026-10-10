@@ -86,6 +86,10 @@ type graph = {
   form : Syntax.t;
 }
 
+val bypass_input : term -> term option
+(** Resolve the first authored positional input against checked arguments, which
+    may be in declaration order. Shared by checking, evaluation and lowering. *)
+
 type packed_form = Candidate of Paths.t | Refused of Diagnostic.t list
 (** A candidate links an authored path to the producers that require actual
     capture qualification. Structural refusals do not prevent CPU evaluation. *)

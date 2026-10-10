@@ -240,6 +240,15 @@ module Private : sig
   (** Authored zone and enclosing iteration tuple of an instantiated local
       function, for a host supplying selected bulk-call probes. *)
 
+  val function_origin : fn -> (int * Workspace.path * Workspace.path) option
+  (** A closure's instance, runtime prefix and authored zone, for inlining. *)
+
+  val function_name : fn -> string option
+  (** The referenced declaration/operator name of a named callable. *)
+
+  val residual_definition : residual -> string -> Workspace.graph option
+  (** Read the immutable declaration in this residual's workspace. *)
+
   type residual_view = {
     term : Workspace.term;
     bindings : (string * value) list;
@@ -249,6 +258,7 @@ module Private : sig
             not always the checker's cx.path for anonymous input expressions. *)
     iter : int list;
     instance : int;
+    prefix : Workspace.path;
     previous : bool;
   }
   val residual_view : residual -> residual_view

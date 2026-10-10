@@ -31,6 +31,31 @@ let compile ?fusion residual term =
    | _ -> assert false);
   legacy
 let () =
+  List.iter (fun (body,expected) ->
+    let value=recorded body in
+    let packed=match value with E.Residual r ->
+      Option.get (compile r (E.Private.residual_view r).term) | _ -> assert false in
+    List.iter (fun time ->
+      let live=Frame_input.at_time time in
+      let output=I.Packed.force packed ~live in
+      assert (same output (E.Private.force_reference value ~live));
+      assert (same output (Ok (expected time)))) [0.;0.37;2.])
+    ["(map (fn [x] ^:bypass (+ (+ x t) (exp 10000.))) (array/range 4))",
+       (fun time -> E.Float_array (Array.init 4 (fun i -> float i +. time)));
+     "(map (fn [x] ^:bypass (+ (+ x t) [5. 5.])) (array/range 4))",
+       (fun time -> E.Vec2_array (Array.init 8 (fun i -> float (i/2) +. time)))];
+  let rounded={(Option.get (Flow.Op.find "float" Flow.Context.value)) with
+    name="test/int_result";out=(fun _ -> Flow.Ty.Int);arithmetic=None;packed_extension=None} in
+  let value=recorded ~ops:[rounded]
+    "(map (fn [x] (float ^:bypass (test/int_result (+ x t)))) (array/range 4))" in
+  let r=match value with E.Residual r -> r | _ -> assert false in
+  assert (compile r (E.Private.residual_view r).term=None);
+  let program=ok (I.Executor.compile value) in
+  let live=Frame_input.at_time 0.7 in
+  assert (same (I.Executor.force program ~live) (E.Private.force_reference value ~live));
+  assert (same (I.Executor.force program ~live) (Ok (E.Float_array [|1.;2.;3.;4.|])))
+
+let () =
   List.iter (fun (x,y,z) ->
     let expression = Printf.sprintf "(length [%.17g %.17g %.17g])" x y z in
     let expected = E.Float (sqrt ((x *. x +. y *. y) +. z *. z)) in

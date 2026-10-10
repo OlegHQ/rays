@@ -304,7 +304,7 @@ slice is the tree walker: results are bit-identical, as the closure tier's are.
 | P1.2a | S | P1.9 | `core_lower.ml`, tests | Complete operator coverage within the initial forms: audit every `Context.value` scalar operator accepted by the old closure compiler, and add the remaining shared expansions (HSV, list convenience operations, packed sum, held-key/button membership). Reuse the list/frame/region lowering from slices D to F. Preserve named refusal for reached values outside the core layout/size contract; do not add target-side operator dispatch | `@lib/flow_ir/runtest`; compare successful lowering and native bits against every old-closure operator case |
 | P1.3 | S | P1.2 | `lib/flow_ir/core_exec.ml`, `.mli`, `flow_ir.ml`, `lib/flow/eval.ml`, `.mli` | A direct interpreter of frame-level core returning `Flow.Eval.value`, using the walker's operator bodies and coercions. Add `Flow.Eval.Private.core_residuals : bool ref`, default `false`. When set, a residual is offered to the executor through the `execute` hook before the closure tier; on `Error` or any exception, fall through unchanged | `@lib/flow/runtest` and `@lib/flow_ir/runtest`, no test changed |
 | P1.4 | H | P1.3 | `lib/flow_ir/test_core_parity.ml`, `dune` | For each fixture and expression in `test_workspace_eval.ml:435-487`, force with `core_residuals` on, off, and with `compile_residuals` off; assert bit-equal values (copy `same_bits`) and equal diagnostics on the error cases | `@lib/flow_ir/runtest` |
-| P1.5 | S | P1.4 | `core_lower.ml`, `core_exec.ml`, tests | Slice B: vectors of 2 and 4; `Cond`, `Case`; `Let` with destructuring patterns; `Call_fn` and local `Fn` by inlining the call site's checked body; `Expanded`; `Bypass`. `pp` and parity cases for each | `@lib/flow_ir/runtest` |
+| P1.5 | S | P1.4 | core types/lowering/execution, Flow callable/bypass hooks, packed/IR bypass consumers, tests | Slice B: vectors of 2 and 4; `Cond`, `Case`; `Let` with destructuring patterns; `Call_fn` and local `Fn` by inlining the call site's checked body; `Expanded`; `Bypass`. `pp` and parity cases for each. Share the authored positional bypass selector across checking, evaluation and compilers | `@lib/flow/runtest`, `@lib/flow_ir/runtest` |
 | P1.6 | S | P1.5 | same | Slice C: records (`Record`, `Get`, `Assoc`) flattened to locals; text, `Str` through the `show` primitive, `equal?` | same |
 | P1.7 | S | P1.6 | same | Slice D: lists per `core.md`: `List_lit`, `range`, `nth`, `count`, `concat`, `take`, `rest`, `reverse`; `Hof` `Map`, `Filter`, `Reduce`, `Sort_by`; `Loop` `For`, `Fold`, `Scan`, `Sum` with `skip`. Keep `E_ITER_BOUND` at 4,096 and `Sum` of an empty list as `Int 0` | same |
 | P1.8 | S | P1.7 | same, `lib/flow/eval.ml` | Slice E: `State` as slots, keeping the keys of `state_previous` (`eval.ml:666`) and `begin_frame` (`:170`) so `fork_state` and `transaction` still work. Frame operators and `frame/input` events as a bounded list of records | `@lib/flow/runtest` including `test_state` and `test_frame`, switch on and off |
@@ -550,7 +550,15 @@ Phase 1
   compare exact diagnostics; 358 successful direct core executions match native
   bits. Hook success/decline/error/exception cases assert entry and state rollback.
   `@lib/flow_ir/runtest` passed on 2026-10-11 without refreshing expectations.
-- [ ] P1.5 S
+- [x] P1.5 S
+  Vectors, patterned lets, Cond/Case, specialized local/named/operator calls,
+  macros and bypasses have deterministic printer and direct walker parity
+  cases at seven times. Call counters reset on construction and advance only
+  in executed branches; provenance preserves prefixes and dynamic indices.
+  Keyword-first bypass exposed a native selector bug; all semantic consumers
+  now share the authored positional selector. Packed scalar/vector bypasses
+  match direct/reference execution; unsupported rounding coercions decline.
+  Both focused gates passed on 2026-10-11; existing expectations are unchanged.
 - [ ] P1.6 S
 - [ ] P1.7 S
 - [ ] P1.8 S

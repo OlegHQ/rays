@@ -58,7 +58,8 @@ let qualify_workspace ?record ?inputs ?observe (workspace : W.t) =
     | Cond (arms,d) -> List.iter (fun (a,b) -> all [a;b]) arms; visit owner d
     | Case (s,arms,d) -> visit owner s; fields arms; visit owner d
     | Assoc (r,updates) -> visit owner r; fields updates
-    | Get (t,_) | Bypass t | Expanded {body=t;_} -> visit owner t
+    | Get (t,_) | Expanded {body=t;_} -> visit owner t
+    | Bypass call -> Option.iter (visit owner) (W.bypass_input call)
     | Lit _ | Text _ | Nil | Time | Ref_binding _ | Fn_ref _ -> () in
   List.iter (fun (graph : W.graph) -> callable ["def:" ^ graph.name] graph.body) workspace.defs;
   List.iter (fun collect -> List.iter (fun (graph : W.graph) ->
@@ -514,7 +515,10 @@ and residual b r =
               term env (child id "@result") result
           | Get (record, field) -> add b id t.ty count (kernel (Field field))
               [{name = "value"; node = term env (child id "value") record}] Static
-          | Expanded {body; _} | Bypass body -> term env id body
+          | Expanded {body; _} -> term env id body
+          | Bypass call -> (match W.bypass_input call with
+              | Some input when input.ty=t.ty -> term env id input
+              | _ -> raise Unsupported)
           | _ -> raise Unsupported in
         try term (List.map (fun (name, v) -> name, `Value v) view.bindings) id view.term
         with Unsupported -> b.checks <- saved_checks; make_reference () in

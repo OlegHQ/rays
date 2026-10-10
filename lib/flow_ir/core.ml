@@ -22,18 +22,22 @@ type frame_field = Time | Dt | Index | Tick | Width | Height | Pointer_x | Point
 
 type expr =
   | Constant of int | Local of int | Frame of frame_field
+  | Call_index of int
   | Prim of primitive * (string * int) list
   | Vec of int list | Fields of (string * int) list | Items of int list
   | Field of int * string
 
+type iteration = Static_index of int | Local_index of int
 type source = {
   site : Flow.Workspace.path; owner : Flow.Workspace.path;
-  instance : int; iter : int list; span : Flow.Diagnostic.span option;
+  instance : int; prefix : Flow.Workspace.path;
+  iter : iteration list; span : Flow.Diagnostic.span option;
 }
 
 type statement = { id : int; source : source; node : statement_node }
 and statement_node =
   | Assign of int * expr
+  | Reset_call of int
   | If of { condition : int; yes : statement list; no : statement list }
   | Iterate of { sequence : int; index : int; item : int; limit : int; body : statement list }
   | Store of { sequence : int; index : int; value : int }
@@ -51,6 +55,7 @@ type program = {
   constants : literal array; locals : Flow.Ty.t array;
   body : statement list; results : int array;
   state_slots : state_slot array; regions : region array;
+  call_slots : int;
 }
 
 let primitive_name = function
@@ -112,6 +117,7 @@ let pp fmt p =
     | Empty_geometry -> out "nil" in
   let expression = function
     | Constant n -> out "$%d" n | Local n -> local n | Frame f -> out "frame.%s" (frame_name f)
+    | Call_index n -> out "call[%d]++" n
     | Prim (op,args) ->
         out "%s" (primitive_name op);
         (match op with Coerce ty -> out "<%s>" (Flow.Ty.to_string ty)
@@ -125,7 +131,8 @@ let pp fmt p =
   let path xs = out "["; separated (fun s -> out "%S" s) xs; out "]" in
   let source s =
     out " @"; path s.site; out " owner="; path s.owner; out " instance=%d iter=[" s.instance;
-    separated (fun n -> out "%d" n) s.iter; out "]";
+    separated (function Static_index n -> out "%d" n | Local_index n -> local n) s.iter; out "]";
+    if s.prefix <> [] then (out " prefix="; path s.prefix);
     Option.iter (fun (s : Flow.Diagnostic.span) -> out " span=%d..%d" s.start s.finish) s.span in
   let rec statements depth xs =
     List.iter (fun s ->
@@ -134,6 +141,7 @@ let pp fmt p =
         out "%s}" (String.make (depth * 2) ' ') in
       (match s.node with
       | Assign (n,e) -> local n; out " = "; expression e
+      | Reset_call n -> out "call[%d] <- 0" n
       | If {condition;yes;no} -> out "if "; local condition; out " "; nested "then" yes;
           out " "; nested "else" no
       | Iterate {sequence;index;item;limit;body} -> out "iterate "; local sequence;
@@ -145,6 +153,7 @@ let pp fmt p =
       | Invoke {region;args;result} -> local result; out " = region[%d](" region; separated local args; out ")");
       source s.source; out "\n") xs in
   out "core\n";
+  if p.call_slots > 0 then out "  calls %d\n" p.call_slots;
   Array.iteri (fun n v -> out "  $%d = " n; literal v; out "\n") p.constants;
   Array.iteri (fun n ty -> out "  %%%d : %s\n" n (Flow.Ty.to_string ty)) p.locals;
   Array.iteri (fun n (s : state_slot) -> out "  state[%d] : %s plane=%s prefix=" n (Flow.Ty.to_string s.ty)

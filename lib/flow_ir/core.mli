@@ -22,18 +22,22 @@ type frame_field = Time | Dt | Index | Tick | Width | Height | Pointer_x | Point
 
 type expr =
   | Constant of int | Local of int | Frame of frame_field
+  | Call_index of int
   | Prim of primitive * (string * int) list
   | Vec of int list | Fields of (string * int) list | Items of int list
   | Field of int * string
 
+type iteration = Static_index of int | Local_index of int
 type source = {
   site : Flow.Workspace.path; owner : Flow.Workspace.path;
-  instance : int; iter : int list; span : Flow.Diagnostic.span option;
+  instance : int; prefix : Flow.Workspace.path;
+  iter : iteration list; span : Flow.Diagnostic.span option;
 }
 
 type statement = { id : int; source : source; node : statement_node }
 and statement_node =
   | Assign of int * expr
+  | Reset_call of int
   | If of { condition : int; yes : statement list; no : statement list }
   | Iterate of { sequence : int; index : int; item : int; limit : int; body : statement list }
   | Store of { sequence : int; index : int; value : int }
@@ -51,6 +55,7 @@ type program = {
   constants : literal array; locals : Flow.Ty.t array;
   body : statement list; results : int array;
   state_slots : state_slot array; regions : region array;
+  call_slots : int;
 }
 
 val primitive_name : primitive -> string

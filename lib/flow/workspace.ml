@@ -42,6 +42,22 @@ and node =
 
 type graph = { name : string; context : context;
   inputs : (string * Ty.t * term option) list; body : term; form : S.t }
+
+let bypass_input term =
+  let entries=match term.node with
+    | Call {args;_} | Op {args;_} -> List.map snd args
+    | Call_fn {args;_} -> args | _ -> [] in
+  let rec first = function
+    | {S.node=Kw _;_}::_::rest -> first rest
+    | input::_ -> Some input | [] -> None in
+  match term.form.node with
+  | S.List (_::args) ->
+      Option.bind (first args) (fun input ->
+        match List.find_opt (fun (t : term) -> t.form == input) entries with
+        | Some _ as found -> found
+        | None -> List.find_opt (fun (t : term) ->
+            t.form.id=input.id && t.form.span=input.span) entries)
+  | _ -> List.nth_opt entries 0
 type packed_form = Candidate of Paths.t | Refused of Diagnostic.t list
 type t = { name : string; graphs : graph list; defs : graph list; macros : S.t list;
   source : S.t list; live : Paths.t; invariant : Paths.t; approx : Paths.t;
@@ -153,7 +169,11 @@ let rec packed_body ~ops (term : term) =
       && List.for_all (fun ((literal : S.t), value) ->
         (match literal.node with S.Num _ | S.Sym ("true" | "false") -> true | _ -> false)
         && body value) arms
-  | Bypass t | Expanded {body = t; _} -> body t
+  | Expanded {body = t; _} -> body t
+  | Bypass call -> Option.fold ~none:false ~some:(fun (input : term) ->
+      (input.ty=term.ty || term.ty=Ty.Float && List.mem input.ty [Ty.Int;Bool]
+       || List.mem term.ty [Ty.Vec2;Vec3;Vec4] && List.mem input.ty [Ty.Int;Float])
+      && body input) (bypass_input call)
   | _ -> false
 let rec list_fields = function
   | Ty.List _ -> [[]]
@@ -1616,13 +1636,9 @@ let check ?(ops = []) ?(library = false) catalog forms =
                | _ :: _ -> Some i in
              (match first 0 args with
               | None -> bad x "E_BYPASS" (Printf.sprintf "can't bypass %s: it has no positional input to pass through." h)
-              | Some i ->
+              | Some _ ->
                   let (t, v) = plain cx bare in
-                  let entries = match t.node with
-                    | Call { args; _ } | Op { args; _ } -> List.map snd args
-                    | Call_fn { args; _ } -> args
-                    | _ -> [] in
-                  (match List.nth_opt entries i with
+                  (match bypass_input t with
                    | Some a ->
                        if not (Ty.fits a.ty v.ty) || Ty.has_fn a.ty then
                          err x "E_BYPASS" (Printf.sprintf "can't bypass %s: its input is %s but it returns %s." h (show a.ty) (show v.ty));

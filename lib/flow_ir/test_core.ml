@@ -1,8 +1,8 @@
 module C = Flow_ir.Core
-let source : C.source = {site=["g";"value"];owner=["g"];instance=2;iter=[3];span=Some {start=10;finish=20}}
+let source : C.source = {site=["g";"value"];owner=["g"];instance=2;prefix=[];iter=[Static_index 3];span=Some {start=10;finish=20}}
 let s id node : C.statement = {id;source;node}
 let program constants locals body results : C.program =
-  {constants;locals;body;results;state_slots=[||];regions=[||]}
+  {constants;locals;body;results;state_slots=[||];regions=[||];call_slots=0}
 let check p expected =
   let actual = Format.asprintf "%a" C.pp p in
   if actual <> expected then failwith ("Unexpected core print:\n" ^ actual);

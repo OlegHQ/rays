@@ -5,12 +5,20 @@ module C = Core
 module Names = Map.Make (String)
 exception Unsupported of string
 let refuse name = raise (Unsupported name)
-type lowered = Known of E.value | Computed of int * Flow.Ty.t
+type lowered = Known of E.value | Computed of int * Flow.Ty.t | Callable of callable
+and callable =
+  | Closure of { params : (W.pattern * Flow.Ty.t option) list; body : W.term;
+      env : lowered Names.t; instance : int; prefix : W.path; zone : W.path; identity : int }
+  | Named of { name : string; identity : int }
 
 let lower root =
   let constants = ref [] and locals = ref [] and next_constant = ref 0
   and next_local = ref 0 and next_statement = ref 0 in
   let budget = ref 2048 and active = Hashtbl.create 8 in
+  let calls = Hashtbl.create 8 and next_call = ref 0 and next_function = ref (-1) in
+  let new_identity () = let n= !next_function in decr next_function; n in
+  let call_slot identity = match Hashtbl.find_opt calls identity with
+    | Some n -> n | None -> let n= !next_call in incr next_call; Hashtbl.add calls identity n; n in
   let local ty = let n = !next_local in incr next_local; locals := ty :: !locals; n in
   let number () = let n = !next_statement in incr next_statement; n in
   let statement id source node : C.statement = {id;source;node} in
@@ -20,6 +28,7 @@ let lower root =
     Computed (n,ty) in
   let ensure statements source = function
     | Computed (n,_) -> n
+    | Callable _ -> refuse "fn"
     | Known value ->
         let value_literal = match C.literal_of_value value with Some v -> v | None -> refuse "capture" in
         let index = !next_constant in incr next_constant; constants := value_literal :: !constants;
@@ -34,15 +43,30 @@ let lower root =
     | Known v ->
         let v = match v,name with
           | V.Record xs, name -> (match List.assoc_opt name xs with Some v -> v | None -> refuse "get")
+          | Vec2 (x,_),"x" -> V.Float x | Vec2 (_,y),"y" -> Float y
           | Vec3 (x,_,_),"x" -> V.Float x | Vec3 (_,y,_),"y" -> Float y
           | Vec3 (_,_,z),"z" -> Float z
+          | Vec4 (x,_,_,_),"x" -> V.Float x | Vec4 (_,y,_,_),"y" -> Float y
+          | Vec4 (_,_,z,_),"z" -> Float z | Vec4 (_,_,_,w),"w" -> Float w
           | _ -> refuse "get" in Known v
+    | Callable _ -> refuse "get"
     | Computed (n,value_ty) ->
         let ty = match value_ty with
           | Flow.Ty.Vec2 | Vec3 | Vec4 -> Flow.Ty.Float
           | Record fields -> Option.value ~default:ty (List.assoc_opt name fields)
           | _ -> ty in
         emit statements source ty (Field (n,name)) in
+  let coerce statements source ty = function
+    | Known value -> Known (V.coerce_to ty value)
+    | Callable _ as v when Flow.Ty.has_fn ty || ty=Flow.Ty.Any -> v
+    | Callable _ -> refuse "fn"
+    | Computed (_,have) as v when ty=Flow.Ty.Any || have=ty -> v
+    | value -> primitive statements source ty (Coerce ty) ["value",value] in
+  let source_of_view (view : E.Private.residual_view) : C.source =
+    {site=List.filteri (fun i _ -> i >= List.length view.prefix) view.site;
+     owner=view.owner;instance=view.instance;prefix=view.prefix;
+     iter=List.map (fun n -> C.Static_index n) view.iter;span=None} in
+  let type_of = function Known v -> V.ty_of v | Computed (_,ty) -> ty | Callable _ -> Flow.Ty.Fn None in
   let primitive_of_name name =
     match Flow.Packed_ops.binary name with Some op -> Some (C.Numeric op) | None ->
     match Flow.Packed_ops.unary name with Some op -> Some (C.Math op) | None ->
@@ -64,7 +88,7 @@ let lower root =
     Hashtbl.add active id ();
     Fun.protect ~finally:(fun () -> Hashtbl.remove active id) (fun () ->
       let env = Names.of_seq (List.to_seq (List.map (fun (name,v) -> name,Known v) view.bindings)) in
-      let source : C.source = {site=view.site;owner=view.owner;instance=view.instance;iter=view.iter;span=None} in
+      let source = source_of_view view in
       let value = term statements cache source env view.term in
       Hashtbl.add cache id value;
       value)
@@ -78,48 +102,100 @@ let lower root =
     | Lit (Param.Bool_value b) -> Known (V.Bool b)
     | Text s -> Known (V.Text s) | Nil -> Known V.No_geo
     | Time -> emit statements source Flow.Ty.Float (Frame Time)
-    | Vec [a;b;c] ->
-        let args = List.map compile [a;b;c] in
-        (match args with
-        | [Known a;Known b;Known c] -> Known (V.Vec3 (V.num a,V.num b,V.num c))
+    | Vec ts when List.length ts >= 2 && List.length ts <= 4 ->
+        let args = List.map compile ts in
+        (match known_values (List.map (fun v -> "",v) args) with
+        | Some values -> Known (C.value_of_literal (Vector (Array.of_list (List.map (fun (_,v) -> V.num v) values))))
         | _ -> emit statements source x.ty (Vec (List.map (ensure statements source) args)))
     | Ref_binding (name,_) when String.starts_with ~prefix:"$elem:" name -> refuse "element"
     | Ref_binding (name,fields) ->
-        let start = match Names.find_opt name env with Some (Known (V.Residual r)) -> residual statements cache r
-          | Some v -> v | None -> refuse "binding" in
+        let start = match Names.find_opt name env with Some v -> resolve statements cache v | None -> refuse "binding" in
         List.fold_left (fun v name -> field statements source x.ty v name) start fields
     | Op {op;args;_} ->
-        let o = match Flow.Op.find op Flow.Context.value with
+        let o = match Flow.Op.find ~extra:(E.Private.residual_ops root) op Flow.Context.value with
           | Some o when o.ctx=Flow.Context.value && o.shape=Flow.Op.Scalar -> o | _ -> refuse op in
         let args = List.map (fun (n,t) -> n,compile t) args in
         (match known_values args with
         | Some values when not o.live ->
-            Known (o.body ~live:(Frame_input.at_time 0.) ~node:(fun _ _ -> refuse op) values)
+            (try Known (o.body ~live:(Frame_input.at_time 0.) ~node:(fun _ _ -> refuse op) values)
+             with V.Fail (code,message,_) -> primitive statements source x.ty (Fail (code,message)) [])
         | _ -> operation statements source x.ty op args)
     | Let (bindings,body) ->
         let env = List.fold_left (fun env (pattern,value) ->
-          match pattern,term statements cache source env value with
-          | W.Name name,(Known _ as v) -> Names.add name v env | _ -> refuse "let*") env bindings in
+          let value=term statements cache source env value in
+          bind statements cache source env pattern value) env bindings in
         term statements cache source env body
     | If (condition,yes,no) ->
-        (match compile condition with
-        | Known v -> compile (if V.truthy v then yes else no)
-        | condition ->
-            let condition = ensure statements source condition in
-            let id = number () and result = local x.ty in
-            let branch t =
-              let body = ref [] in
-              let value = ensure body source (term body (Hashtbl.copy cache) source env t) in
-              body := statement (number ()) source (Assign (result,Local value)) :: !body;
-              List.rev !body in
-            let yes = branch yes in let no = branch no in
-            statements := statement id source (If {condition;yes;no}) :: !statements;
-            Computed (result,x.ty))
+        branch statements cache source x.ty (compile condition)
+          (fun body cache -> term body cache source env yes)
+          (fun body cache -> term body cache source env no)
+    | Cond (arms,default) ->
+        let rec arms_lower statements cache = function
+          | [] -> term statements cache source env default
+          | (condition,value)::rest ->
+              let condition=term statements cache source env condition in
+              branch statements cache source x.ty condition
+                (fun body cache -> term body cache source env value)
+                (fun body cache -> arms_lower body cache rest) in
+        arms_lower statements cache arms
+    | Case (scrutinee,arms,default) ->
+        let scrutinee=compile scrutinee in
+        let rec arms_lower statements cache = function
+          | [] -> term statements cache source env default
+          | (lit,value)::rest ->
+              let lit : E.value = match lit.Flow.Syntax.node with
+                | Str s -> V.Text s | Sym s -> Bool (s="true")
+                | Num s -> (match if String.contains s '.' then None else int_of_string_opt s with
+                    | Some n -> Int n | None -> Float (float_of_string s))
+                | _ -> refuse "case" in
+              let condition=match scrutinee with
+                | Known sv ->
+                    let boolean=function V.Bool b -> b | v -> V.num v <> 0. in
+                    Known (V.Bool (match sv,lit with
+                      | Bool _,_ | _,Bool _ -> boolean sv=boolean lit
+                      | Text a,Text b -> a=b
+                      | (Int _|Float _),(Int _|Float _) -> V.num sv=V.num lit | _ -> false))
+                | _ when type_of scrutinee=Flow.Ty.Bool || V.ty_of lit=Flow.Ty.Bool ->
+                    let a=primitive statements source Flow.Ty.Bool Truthy ["value",scrutinee] in
+                    let b=Known (V.Bool (V.truthy lit)) in
+                    primitive statements source Flow.Ty.Bool Equal ["a",a;"b",b]
+                | _ when List.mem (type_of scrutinee) [Flow.Ty.Int;Float]
+                    && List.mem (V.ty_of lit) [Flow.Ty.Int;Float] ->
+                    primitive statements source Flow.Ty.Bool (Numeric Eq) ["a",scrutinee;"b",Known lit]
+                | _ -> primitive statements source Flow.Ty.Bool Equal ["a",scrutinee;"b",Known lit] in
+              branch statements cache source x.ty condition
+                (fun body cache -> term body cache source env value)
+                (fun body cache -> arms_lower body cache rest) in
+        arms_lower statements cache arms
+    | Call_fn {fn;args;body} ->
+        let values=List.map compile args in
+        (match Names.find_opt fn env with
+        | Some f -> call statements cache source x.ty body (as_callable source f) values
+        | None -> definition statements cache source fn body values)
+    | Fn_ref name ->
+        let identity=new_identity () in
+        statements := statement (number ()) source (Reset_call (call_slot identity)) :: !statements;
+        Callable (Named {name;identity})
+    | Fn {params;body;zone;capture} ->
+        let closure=match capture with
+          | Some original -> (match as_callable source (compile original) with
+              | Closure cl -> Closure {cl with params;body}
+              | Named n -> Closure {params;body;zone;env=Names.empty;instance=source.instance;
+                  prefix=source.prefix;identity=n.identity})
+          | None ->
+              let identity=new_identity () in
+              statements := statement (number ()) source (Reset_call (call_slot identity)) :: !statements;
+              Closure {params;body;zone;env;instance=source.instance;prefix=source.prefix;identity} in
+        Callable closure
+    | Expanded {body;_} -> compile body
+    | Bypass inner ->
+        (match W.bypass_input inner with Some input -> coerce statements source inner.ty (compile input)
+          | None -> refuse "bypass")
     | Loop {kind=(`For|`Sum) as kind;accs=[];clauses=[W.Name name,items];skip=[];body;_} ->
         let items = match compile items with Known (V.List xs) when Array.length xs <= 4096 -> xs
           | _ -> refuse (if kind=`For then "for" else "sum") in
         let values = Array.mapi (fun index item ->
-          let source={source with C.iter=source.iter @ [index]} in
+          let source={source with C.iter=source.iter @ [Static_index index]} in
           term statements cache source (Names.add name (Known item) env) body) items in
         if Array.for_all (function Known _ -> true | _ -> false) values then
           let values = Array.map (function Known v -> v | _ -> assert false) values in
@@ -133,13 +209,106 @@ let lower root =
         else Array.fold_left (fun acc v -> primitive statements source x.ty (Numeric Add) ["a",acc;"b",v])
           values.(0) (Array.sub values 1 (Array.length values-1))
     | node -> refuse (match node with
-        | Vec _ -> "vector" | Lit _ -> "literal" | Call _ -> "call" | Call_fn _ -> "call_fn"
-        | Fn_ref _ -> "fn_ref" | Graph_ref _ -> "ref" | State _ -> "state" | Loop {kind;_} ->
+        | Vec _ -> "vector" | Lit _ -> "literal" | Call _ -> "call"
+        | Graph_ref _ -> "ref" | State _ -> "state" | Loop {kind;_} ->
             (match kind with `For -> "for" | `Sum -> "sum" | `Fold -> "fold" | `Scan -> "scan")
-        | Cond _ -> "cond" | Case _ -> "case" | Fn _ -> "fn" | Hof _ -> "higher_order"
+        | Hof _ -> "higher_order"
         | List_lit _ -> "list" | Record _ -> "record" | Get _ -> "get" | Assoc _ -> "assoc"
-        | Str _ -> "str" | List_op _ -> "list_op" | Bypass _ -> "bypass" | Expanded _ -> "expanded"
+        | Str _ -> "str" | List_op _ -> "list_op"
         | _ -> assert false)
+  and resolve statements cache = function
+    | Known (V.Residual r) -> residual statements cache r | v -> v
+  and branch statements cache source ty condition yes no =
+    match condition with
+    | Known v -> (if V.truthy v then yes else no) statements cache
+    | condition ->
+        let condition=ensure statements source condition in
+        let id=number () and result=local ty in
+        let arm lower =
+          let body=ref [] in
+          let value=ensure body source (lower body (Hashtbl.copy cache)) in
+          body:=statement (number ()) source (Assign (result,Local value)) :: !body;
+          List.rev !body in
+        let yes=arm yes in let no=arm no in
+        statements:=statement id source (If {condition;yes;no}) :: !statements;
+        Computed (result,ty)
+  and bind statements cache source env pattern value =
+    match pattern with
+    | W.Name name -> Names.add name value env
+    | Keys keys ->
+        let value=resolve statements cache value in
+        List.fold_left (fun env name -> Names.add name (field statements source Flow.Ty.Any value name) env) env keys
+    | Seq patterns ->
+        let value=resolve statements cache value in
+        let parts=match value with
+          | Known v -> (match v with
+              | V.List xs -> Array.to_list (Array.map (fun v -> Known v) xs)
+              | Vec2 (x,y) -> [Known (Float x);Known (Float y)]
+              | Vec3 (x,y,z) -> [Known (Float x);Known (Float y);Known (Float z)]
+              | Vec4 (x,y,z,w) -> [Known (Float x);Known (Float y);Known (Float z);Known (Float w)]
+              | _ -> refuse "pattern")
+          | Computed (_,ty) -> (match ty with
+              | Flow.Ty.Vec2 | Vec3 | Vec4 ->
+                  let fields=match ty with Flow.Ty.Vec2 -> ["x";"y"] | Vec3 -> ["x";"y";"z"] | _ -> ["x";"y";"z";"w"] in
+                  List.map (field statements source Flow.Ty.Float value) fields
+              | List elem ->
+                  let count=primitive statements source Flow.Ty.Int Sequence_length ["list",value] in
+                  let short=primitive statements source Flow.Ty.Bool (Numeric Lt)
+                    ["a",count;"b",Known (V.Int (List.length patterns))] in
+                  ignore (branch statements cache source Flow.Ty.Int short
+                    (fun body _ -> primitive body source Flow.Ty.Int (Fail ("E_PATTERN","Not enough elements to destructure.")) [])
+                    (fun _ _ -> Known (V.Int 0)));
+                  List.mapi (fun index _ -> primitive statements source elem Sequence_get
+                    ["list",value;"index",Known (V.Int index)]) patterns
+              | _ -> refuse "pattern")
+          | Callable _ -> refuse "pattern" in
+        if List.length parts < List.length patterns then refuse "pattern";
+        let rec bind_all env patterns parts = match patterns,parts with
+          | [],_ -> env | p::ps,v::vs -> bind_all (bind statements cache source env p v) ps vs
+          | _ -> refuse "pattern" in
+        bind_all env patterns parts
+  and as_callable source = function
+    | Callable f -> f
+    | Known (V.Fn f) ->
+        let identity=E.Private.function_id f in
+        (match E.Private.function_body f,E.Private.function_origin f with
+        | Some (params,body),Some (instance,prefix,zone) ->
+            let env=Names.of_seq (List.to_seq (List.map (fun (n,v) -> n,Known v) (E.Private.function_bindings f))) in
+            Closure {params;body;env;instance;prefix;zone;identity}
+        | _ -> (match E.Private.function_name f with Some name -> Named {name;identity} | None -> refuse "fn"))
+    | _ -> ignore source; refuse "fn"
+  and call statements cache source ty specialized fn values =
+    let identity=match fn with Closure cl -> cl.identity | Named n -> n.identity in
+    let index=ensure statements source (emit statements source Flow.Ty.Int (Call_index (call_slot identity))) in
+    let source={source with C.iter=source.iter @ [Local_index index]} in
+    match fn with
+    | Closure cl ->
+        if List.compare_lengths cl.params values <> 0 then refuse "call_fn";
+        let source={source with C.instance=cl.instance;prefix=cl.prefix;site=cl.zone;owner=cl.zone} in
+        let env=List.fold_left2 (fun env (pattern,ty) value ->
+          let value=match ty with None -> value | Some ty -> coerce statements source ty value in
+          bind statements cache source env pattern value) cl.env cl.params values in
+        term statements cache source env (Option.value specialized ~default:cl.body)
+    | Named n ->
+        (match E.Private.residual_definition root n.name with
+        | Some _ -> definition statements cache source n.name specialized values
+        | None ->
+            let o=match Flow.Op.find ~extra:(E.Private.residual_ops root) n.name Flow.Context.value with
+              | Some o when o.ctx=Flow.Context.value && o.shape=Flow.Op.Scalar -> o | _ -> refuse n.name in
+            let names=Array.of_list (List.map fst (o.signature.pos @ o.signature.opt)) in
+            let args=List.mapi (fun i v -> (if i<Array.length names then names.(i) else
+                match o.signature.rest with Some (n,_) -> n | None -> refuse n.name),v) values in
+            match known_values args with
+            | Some args when not o.live -> Known (o.body ~live:(Frame_input.at_time 0.) ~node:(fun _ _ -> refuse n.name) args)
+            | _ -> operation statements source ty n.name args)
+  and definition statements cache source name specialized values =
+    let declaration=match E.Private.residual_definition root name with Some d -> d | None -> refuse "call_fn" in
+    if List.compare_lengths declaration.inputs values <> 0 then refuse "call_fn";
+    let zone=["def:"^name] in
+    let source={source with C.prefix=source.prefix @ source.site;site=zone;owner=zone} in
+    let env=List.fold_left2 (fun env (name,ty,_) value ->
+      Names.add name (coerce statements source ty value) env) Names.empty declaration.inputs values in
+    term statements cache source env (Option.value specialized ~default:declaration.body)
   and operation statements source ty name args =
     let prim ty op args = primitive statements source ty op args in
     let arg key = List.assoc key args in
@@ -187,9 +356,9 @@ let lower root =
     let body = ref [] in
     let result = residual body (Hashtbl.create 16) root in
     let view = E.Private.residual_view root in
-    let source : C.source = {site=view.site;owner=view.owner;instance=view.instance;iter=view.iter;span=Some view.term.form.span} in
+    let source = { (source_of_view view) with C.span=Some view.term.form.span } in
     let result = ensure body source result in
     Ok {C.constants=Array.of_list (List.rev !constants);locals=Array.of_list (List.rev !locals);
-      body=List.rev !body;results=[|result|];state_slots=[||];regions=[||]}
+      body=List.rev !body;results=[|result|];state_slots=[||];regions=[||];call_slots= !next_call}
   with Unsupported name -> Error name
     | V.Fail _ | Not_found | Invalid_argument _ | Failure _ -> Error "constant"
