@@ -703,7 +703,9 @@ The first coherent set includes:
   joins the last point to the first; a solid from explicit points is that closed curve
   swept along a short curve with `sop/sweep :caps true` (`examples/sop_gallery`). `(sop/merge ... :source_attribute "src"
   :source_base 10)` writes the primitive integer attribute `src`, valued `source_base` plus the
-  input index, beside the lowering's own provenance tag;
+  input index, beside the lowering's own provenance tag. Both tags share one
+  geometry merge; existing tags retain their values and the original exact
+  attribute-schema requirements apply;
 - generators: immutable feedback snapshot, points, finite directed polygon or
   free-point Line, explicit polyline, production Box with triangle/quad,
   surface-point, and volume-lattice output, independent divisions, optional

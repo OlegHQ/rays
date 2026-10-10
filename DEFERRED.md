@@ -66,7 +66,15 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
 
 ## Known costs and behaviour changes to confirm
 
-- A `sop/merge` that names `:source_attribute` merges its inputs twice.
+- Fixed and verified 2026-10-11: a `sop/merge` with `:source_attribute` merges
+  geometry once and builds only the additional primitive tag array. Existing
+  tags, attribute order, schema refusals and cancellation are preserved;
+  `@lib/flow_sop/runtest` passes, including byte comparisons with the original
+  two-merge implementation at one and eight domains. For 20 cooks of eight
+  inputs / 98,304 output primitives, median time falls from 0.138822 to
+  0.071613 seconds and allocation from 266,731,296 to 149,511,776 bytes at one
+  domain. Command and both domain measurements are in
+  `specification/web-export/results.md`.
 - `/ e` on a scene with no World writes a `scene/world` member plus a `sky` world graph; it
   used to adopt a host-made daylight World.
 - Deleting a World from the scene leaves the world graph alone; it used to write
