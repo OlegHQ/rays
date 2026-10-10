@@ -16,6 +16,13 @@
  (libraries flow_ir flow))
 
 (test
+ (name test_core_parity)
+ (modules test_core_parity)
+ (deps ../sop_catalog/flow_manifest.sexp
+  (glob_files ../../specification/workspace/cases/*.lisp))
+ (libraries flow_ir flow))
+
+(test
  (name test_ir)
  (modules test_ir)
  (deps ../sop_catalog/flow_manifest.sexp

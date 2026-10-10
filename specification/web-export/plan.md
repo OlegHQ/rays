@@ -542,7 +542,12 @@ Phase 1
   successful/refused immutable residual identities with capacity 64.
   Hook errors/exceptions restore state before the existing path retries.
   Unchanged `@lib/flow/runtest` and `@lib/flow_ir/runtest` passed on 2026-10-11.
-- [ ] P1.4 H
+- [x] P1.4 H
+  All five existing fixtures and eleven scalar expressions compared under core,
+  closure and reference settings at six times. Additional failing expressions
+  compare exact diagnostics; 358 successful direct core executions match native
+  bits. Hook success/decline/error/exception cases assert entry and state rollback.
+  `@lib/flow_ir/runtest` passed on 2026-10-11 without refreshing expectations.
 - [ ] P1.5 S
 - [ ] P1.6 S
 - [ ] P1.7 S
