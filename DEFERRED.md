@@ -27,12 +27,18 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   subject was pruned. The survivors pass, but nobody has read what each one still covers.
   `test_scene_execution_metal`, `test_automatic_scratch` and `test_offscreen_metal` were cut
   twice.
-- `test_instances` can no longer pass `~grain`, so its one-domain against four-domain
-  comparison runs at the default grain only.
+- Verified 2026-10-11: `test_instances` compares complete geometry bytes at one and four
+  domains below, at and above the default 16,384-point grain and across several chunks;
+  it also checks output cardinalities and unchanged source geometry/transforms.
+  `_build/default/lib/rdk/test_main.exe test_instances` and
+  `_build/default/tools/check.exe @lib/rdk/test_mesh` pass. No grain option was restored.
 - The zero-budget carry case in `test_materials` is gone; an over-budget carry is untested.
-- About 130 "rejected" cases in `lib/sop/test_nodes.ml` were removed because Lisp cannot
-  write a non-finite number (`nan` and `inf` are unbound). Non-finite input is now tested
-  only through `Node.apply_parameters` in the inspector tests.
+- Verified 2026-10-11: the existing SOP declaration and cache sweeps now check every
+  floating field through `Node.apply_parameters`: NaN and both infinities must fail
+  with a finite-value error, including after a valid edit, and leave the original
+  node's parameters and key unchanged. The focused gate
+  `_build/default/tools/check.exe @lib/sop/test_nodes` passes with 464,386 floating
+  field instances (three non-finite cases each). Lisp's reader remains finite-only.
 - The gallery's own `--check-all` cook is gone; `test/test_workspace_ir` sweeps the gallery
   instead.
 

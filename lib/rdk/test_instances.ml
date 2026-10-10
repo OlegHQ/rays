@@ -112,6 +112,28 @@ let run () =
     Instance_copy.materialize_instances ~transforms:matrices source |> get_rdk) in
   check (geometry_equal one four)
     "packed materialization differs across domain counts";
+  check (geometry_bytes one = geometry_bytes four)
+    "packed materialization changes authored bytes across domain counts";
+  (* The small semantic fixture stays below the production 16,384-point
+     grain. Exercise its boundary and several actual parallel chunks too. *)
+  let boundary = (16_384 + Geometry.point_count source - 1) / Geometry.point_count source in
+  let original = geometry_bytes source in
+  List.iter (fun count ->
+    let matrices = transforms count in
+    let original_matrices = Marshal.to_string matrices [Marshal.No_sharing] in
+    let materialize domains = Parallel.run ~domains (fun () ->
+      Instance_copy.materialize_instances ~transforms:matrices source |> get_rdk) in
+    let one = materialize 1 and four = materialize 4 in
+    check (geometry_bytes one = geometry_bytes four)
+      (Printf.sprintf "default-grain instance bytes differ at %d copies" count);
+    check (Geometry.point_count one = count * Geometry.point_count source
+      && Geometry.vertex_count one = count * Geometry.vertex_count source
+      && Geometry.primitive_count one = count * Geometry.primitive_count source)
+      "default-grain materialization changed output cardinality";
+    check (geometry_bytes source = original
+      && Marshal.to_string matrices [Marshal.No_sharing] = original_matrices)
+      "default-grain materialization mutated its inputs")
+    [boundary - 1; boundary; boundary + 1; 4 * boundary + 1];
 
   let identity = Instance_copy.materialize_instances ~transforms:[|Mat4.identity|] source
       |> get_rdk in

@@ -334,7 +334,31 @@ let from_factory ?optional_inputs factory values inputs =
     | Some inputs -> Edit_graph.instantiate_optional factory inputs) |> get in
   fst (Node.apply_parameters node values |> get)
 
+let nonfinite_fields = ref 0
+let reject_nonfinite name node =
+  let fields = Node.parameter_fields node and key = Node.parameter_key node in
+  List.iter (fun (field : Parameter.field_view) -> match field.kind with
+    | Parameter.Floating_view range ->
+        incr nonfinite_fields;
+        let current = match field.current with Parameter.Float_value n -> n | _ -> assert false in
+        let valid = Parameter.Float_value
+            (if Some current = range.hard_max then current -. 0.25 else current +. 0.25) in
+        List.iter (fun value ->
+          (* A valid edit preceding the invalid one must not escape either. *)
+          match Node.apply_parameters node [field.name, valid;
+              field.name, Parameter.Float_value value] with
+          | Error message ->
+              check (contains message "finite")
+                (name ^ ": " ^ field.name ^ " rejected for an unrelated reason");
+              check (Node.parameter_key node = key && Node.parameter_fields node = fields)
+                (name ^ ": rejected nonfinite edit mutated its node")
+          | Ok _ -> fail (name ^ ": " ^ field.name ^ " accepted a nonfinite parameter"))
+          [Float.nan; Float.infinity; Float.neg_infinity]
+    | _ -> ()) fields
+
 let same_node name ~typed ~catalog =
+  reject_nonfinite name typed;
+  reject_nonfinite name catalog;
   check (Node.parameter_key typed = Node.parameter_key catalog && Node.parameter_key typed <> "")
     (name ^ ": Lisp node and factory share the schema key");
   let one = cook 1 typed in
@@ -363,6 +387,7 @@ let changed (view : Parameter.field_view) = match view.kind, view.current with
   | _ -> fail (view.name ^ ": view and value disagree")
 
 let cache_identity ?(changes = []) ?(companions = []) name node =
+  reject_nonfinite name node;
   let session = Session.create ~max_entries:64 ~max_payload_bytes:200_000_000 |> get in
   let context = Context.create ~domains:1 ~grain:97 ~seed:42L () |> get in
   (* a changed text may name a group the input lacks: that cook fails, which
@@ -7200,4 +7225,6 @@ weight")|});
   check (Rdk.Geometry.point_count prism = 36
       && sizes = List.init 18 (fun _ -> 4) @ [18; 18])
     "a swept closed curve is not an 18-sided prism with two 18-point caps";
-  print_endline "SOP node declaration tests passed"
+  check (!nonfinite_fields >= 130) "nonfinite declaration coverage fell below the removed cases";
+  Printf.printf "SOP node declaration tests passed; %d floating field instances reject NaN and both infinities atomically\n"
+    !nonfinite_fields
