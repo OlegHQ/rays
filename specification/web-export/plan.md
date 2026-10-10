@@ -283,12 +283,13 @@ records). Richest kernels: `sketches/flow_shader`.
 | --- | --- | --- | --- | --- | --- |
 | P0.1 | H | | `tools/core_census.ml`, `tools/dune` | A tool that parses every `.rays` under `examples/`, `sketches/` and `specification/` with `Flow.Syntax.parse` and prints (a) each file's graph contexts and whether its draw graphs reach a `sop` or `scene` graph through `(ref ...)`, (b) the count of each head symbol inside `draw`, `host`, `image` and `value` graphs and top-level `defn` and `defmacro` bodies. Sorted, deterministic | `dune build tools/core_census.exe && _build/default/tools/core_census.exe` lists the 15 files above as eligible |
 | P0.2 | S | P0.1 | `specification/core.md` | The specification: the two levels; value types; control forms; the region form (state that it is today's `Packed.instruction` set); state slots; draw statements; intrinsics. One table with a row for every head P0.1 prints and a column `rule`: `primitive`, `compiler rule` (naming the primitives it expands to), `region`, `intrinsic`, or `refused on web` | P0.R |
+| P0.2a | S | P0.2, P0.7 | `specification/core.md` | P0.R repair: state the remaining leaf behavior without requiring a second reader to infer it from source: `color/parse` and both channel-conversion paths (including Apple-Silicon signed integer conversion for very large finite channels), packed-array defaults/index/count/layout checks, recursive `coerce`, and the `value/hsv` / `value/lerp` compiler expansions. Preserve the 54-leaf inventory; validate edge examples against the native bodies | P0.6 and native edge probes; P0.R |
 | P0.3 | S | P0.2 | `specification/core.md` | Numeric model: frame-level floats are 64-bit; region floats are 32-bit on GPU and 64-bit on CPU as today; integer width and overflow for `int`, `int/div`, `int/mul`, `int/mod`, `int/and`, `int/xor`, from their bodies in `lib/flow/op.ml`, and what a JavaScript target must do to match | P0.R |
 | P0.4 | S | P0.2 | `specification/core.md` | List model, from `E_TIME_COUNT` (`lib/flow/workspace.ml:882`) and `E_ITER_BOUND` (`eval.ml:646`, `:876`): which lists have static length (unrolled at lowering) and which are bounded dynamic lists; the element layout for a list of records | P0.R |
 | P0.5 | S | P0.2 | `specification/core.md` | Text model, from `Value.show_with` (`lib/flow/value.ml:119`) and the float spelling rule (`specification/flow.md:693`, `:1455`). Specify `show` and `equal?` precisely enough to implement twice | P0.R |
 | P0.6 | H | P0.2 | `tools/lisp/test/core_census.t`, `tools/lisp/test/dune` | A cram test: run the census tool, extract its head list, fail if any head has no row in the table of `specification/core.md` | `_build/default/tools/check.exe @tools/lisp/test/runtest` |
 | P0.7 | H | P0.2 | `README.md`, `AGENTS.md`, `specification/flow.md` | Link `specification/core.md` from the README specification list (lines 213-224), the design-notes sentence in `AGENTS.md`, and `flow.md` section 14 | `git diff --check` |
-| P0.R | R | P0.3 to P0.7 | | Every census head has a rule; the primitive list is written out and counted; no rule says "same as OCaml" without stating the behaviour. Record the primitive count at the top of `core.md`. If the count is large enough that two targets would each be a second implementation, stop the loop and report | P0.6 passes |
+| P0.R | R | P0.3 to P0.7, P0.2a | | Every census head has a rule; the primitive list is written out and counted; no rule says "same as OCaml" without stating the behaviour. Record the primitive count at the top of `core.md`. If the count is large enough that two targets would each be a second implementation, stop the loop and report | P0.6 passes |
 
 ## Phase 1: lowering and native executor
 
@@ -346,7 +347,7 @@ an adapter feeds it.
 | Id | M | Needs | Files | Do | Gate |
 | --- | --- | --- | --- | --- | --- |
 | P3.1 | H | P1.R | `test/test_draw_snapshot.ml`, `test/draw_snapshots/*`, `test/dune` | Before any change: for each of the 15 eligible workspaces, at fixed-step frames 0, 1 and 30 with a pinned size and pointer, write the SHA-256 of `Scene_command.Render_ir.serialize` of the draw graph's scene, built with `Drawing.prepare` and `Drawing.render_prepared` as `Rays_editor.Workspace.export` does (`rays_editor.ml:187-209`). No GPU callback. The test regenerates and diffs | `_build/default/tools/check.exe @test/runtest` |
-| P3.2 | S | P0.R | `specification/marks.md` | The run-time contract: a frame is an ordered mark table. An entry is a mark set (kind: rect, circle, line, point; count; per attribute a constant or a buffer reference with width; attributes: position, size or radius, fill, stroke, stroke width), an image, a text run, or a push or pop of view transform or clip. Units (logical points), colour encoding, defaults taken from `drawing.ml`, the cap on count, painter order | P3.R |
+| P3.2 | S | P0.R | `specification/marks.md` | The run-time contract: a frame is an ordered mark table. An entry is a mark set (kind: rect, circle, line, point; count; per attribute a constant or a buffer reference with width; attributes: position, size or radius, fill, stroke, stroke width), indexed path geometry produced by the existing pure `Scene_command.Shape2` helpers, an image, a text run, or a push or pop of view transform or clip. The geometry entry is required for P3.6's rounded-rectangle/polygon/polyline native serialization and pixel parity; preserve fill/stroke order and do not approximate paths by overlapping marks. Units (logical points), colour encoding, defaults taken from `drawing.ml`, the cap on count, painter order | P3.R |
 | P3.3 | S | P3.2 | `lib/scene_command/marks.ml`, `.mli`, `test_marks.ml`, `dune` | The contract as pure data with no dependencies: types, a validity check, and a stable little-endian `serialize` in the style of `Render_ir.serialize`. A buffer reference is an abstract integer id plus count and width | `@lib/scene_command/runtest` |
 | P3.3b | H | P3.3 | `lib/flow_ir/dune`, `test/dependency_gate.ml`, `AGENTS.md`, `specification/backend.md` | Boundary change: `flow_ir` may depend on `scene_command` (a leaf with no dependencies). Add it to `flow_ir`'s entry in `only`, to the Dependency rules sentence and Libraries row in `AGENTS.md`, and to `backend.md`. `flow_ir` still never reaches `rays`, the `gpu` group or any UI library | `_build/default/tools/check.exe @test/runtest` |
 | P3.4 | S | P3.3b, P1.R | `lib/flow_ir/core.ml`, `core_lower.ml`, tests | Draw statements in the core and lowering rules, slice 1: `draw/background`, `draw/rect`, `draw/circle`, `draw/line`, `draw/point`, `draw/merge`, `draw/translate`, `draw/rotate`, `draw/scale`. Move each default out of `drawing.ml` into its rule (fill white when neither fill nor stroke is given; stroke width 1; `draw/translate` rounds to integers; `E_DRAW_RANGE`) | `pp` expectations; `@lib/flow_ir/runtest` |
@@ -459,7 +460,7 @@ until then the tasks after it are provisional.
 
 ## Ledger
 
-93 tasks: 61 for Sonnet, 25 for Haiku, 7 reviews. Phases 0 to 4 are 66 of them
+94 tasks: 62 for Sonnet, 25 for Haiku, 7 reviews. Phases 0 to 4 are 67 of them
 and touch no browser code. Tick a task in the commit that completes it; add
 `note:` lines under a task that stopped.
 
@@ -477,6 +478,7 @@ Phase 0
   114 unique lowering rows with no missing/extra heads; whitespace passed.
   These task commits are in /private/tmp/rays-web-export-progress while the
   shared checkout's .git is read-only; a bundle preserves their history.
+- [ ] P0.2a S
 - [x] P0.3 S
   Numeric contract checked against Value/Op/Packed and native probes on
   2026-10-11: signed 63-bit wrapping, quotient/remainder signs, distinct
@@ -498,6 +500,17 @@ Phase 0
   Links to `specification/core.md` added to README, the repository design-notes
   paragraph and Flow section 14. `git diff --check` passed on 2026-10-11.
 - [ ] P0.R R
+  Review on 2026-10-11: P0.6 passes, all 114 census heads have one rule, and
+  the 54 primitive names/counts are explicit. The scalar/list/text/state
+  boundaries are consistent with the native probes. Most leaves reuse existing
+  native bodies or stdlib operations; structured control and operator expansions
+  remain shared compiler work, rather than target-side Lisp interpretation.
+  Repair P0.2a is required before this phase passes: color, array and coercion
+  leaves still need complete behavior clauses. A native channel-conversion
+  probe showed `int_of_float 1e20 = -1` and `int_of_float (-1e20) = 0` on this
+  Apple-Silicon OCaml switch, so clamping before conversion would change pixels.
+  P3.2 now explicitly includes the indexed geometry required by P3.6; its
+  omission would otherwise make the native path snapshot gate impossible.
 
 Phase 1
 - [ ] P1.1 S
