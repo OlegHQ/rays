@@ -6,7 +6,8 @@ Rays is an OCaml creative-coding framework for interactive native desktop
 programs. It ships native Apple-Silicon Metal only, through OGPU, whose API is
 backend-agnostic by design. Keep the public API small and functional where
 practical. Never add a CPU raster, browser/web, SDL2/Tsdl, or OpenGL fallback;
-Metal unavailability is a typed startup error.
+Metal unavailability is a typed startup error. Web export (see Direction) is a
+separate compiler target, not a fallback: the native program never selects it.
 
 Nested `AGENTS.md` files hold subsystem rules: `lib/metal`, `lib/ogpu`
 (also for `lib/ogpu_core`),
@@ -34,6 +35,13 @@ only OCaml programs are `examples/pathtracer` and the sketches `cube_cage`, `sha
 differ, Lisp decides: its names, defaults, ranges and errors are the contract, and the OCaml function is derived to match (`specification/sop.md`,
 "one declaration", for SOPs). A new capability ships in Lisp first; do not add an OCaml-only
 parameter or behaviour.
+
+Web export, roadmap, not yet built (rely on nothing it names until its task has landed): the
+compiler emits a standalone browser application from a Lisp workspace. Its scope is the 2D canvas only (`:context draw` graphs
+and the values that feed them). PXUI and the editor are never exported; they are editor chrome and
+stay native. `scene` and `sop` graphs are a later phase, after the majority of SOPs are written in
+Rays Lisp, since a node whose body is OCaml has nothing to export. The design summary and the
+task plan are `specification/web-export/plan.md`.
 
 ## Libraries
 
