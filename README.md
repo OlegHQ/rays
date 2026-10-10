@@ -213,6 +213,7 @@ test/          automated tests
 ## Specification
 
 - [Rays Flow, the workspace language and editor](specification/flow.md)
+- [Shared frame and region core](specification/core.md)
 - [Workspace cases and iteration](specification/workspace/iteration.md)
 - [Public API](specification/api.md) and [native backend](specification/backend.md)
 - [Graphics](specification/graphics.md), [3D rendering](specification/3d.md)

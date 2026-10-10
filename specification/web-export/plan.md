@@ -494,7 +494,9 @@ Phase 0
   shared source tree on 2026-10-11. The new cram case checks the live corpus
   and proves that an added unknown head fails the coverage gate. The same run
   included `@lib/flow/runtest`, which passed without changing its tests.
-- [ ] P0.7 H
+- [x] P0.7 H
+  Links to `specification/core.md` added to README, the repository design-notes
+  paragraph and Flow section 14. `git diff --check` passed on 2026-10-11.
 - [ ] P0.R R
 
 Phase 1

@@ -1393,6 +1393,9 @@ to the original OCaml example.
 
 ## 14. Libraries
 
+The native/web compiler's shared frame and numeric region contract is specified
+in [core.md](core.md); its implementation sequence is [web-export/plan.md](web-export/plan.md).
+
 | Library | Owns, for Flow |
 |---|---|
 | `param` | field schemas, with `primary` and `vec3` |

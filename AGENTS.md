@@ -13,7 +13,8 @@ Nested `AGENTS.md` files hold subsystem rules: `lib/metal`, `lib/ogpu`
 (also for `lib/ogpu_core`),
 `lib/runtime`, `lib/rdk`, `lib/rays_editor`, `lib/pxui_graph`, `lib/sop_catalog`.
 Read the one for the directory you change. Design notes live in `specification/`;
-update them when behavior or architecture changes materially.
+the shared frame/region compiler contract is [specification/core.md](specification/core.md).
+Update them when behavior or architecture changes materially.
 
 The SOP network editor is Rays Flow: a left-to-right
 typed canvas with value ports, drives, graph/list/text views and a
