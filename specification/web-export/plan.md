@@ -477,7 +477,10 @@ Phase 0
   114 unique lowering rows with no missing/extra heads; whitespace passed.
   These task commits are in /private/tmp/rays-web-export-progress while the
   shared checkout's .git is read-only; a bundle preserves their history.
-- [ ] P0.3 S
+- [x] P0.3 S
+  Numeric contract checked against Value/Op/Packed and native probes on
+  2026-10-11: signed 63-bit wrapping, quotient/remainder signs, distinct
+  explicit/coercion rounding and BigInt target boundaries.
 - [ ] P0.4 S
 - [ ] P0.5 S
 - [ ] P0.6 H

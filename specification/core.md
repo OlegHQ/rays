@@ -185,6 +185,106 @@ A one-stop gradient returns that stop. `color/hsl` wraps hue in degrees to
 sectors, adds `l-c/2` to each channel, quantizes and divides by 255. Its alpha
 is 255. These formulas are compiler rules shared by both targets.
 
+## Numeric model
+
+Frame and CPU-region floating arithmetic is IEEE-754 binary64. GPU regions
+use binary32 inputs, uniforms, registers and outputs, as the existing Metal
+emitter does. An instruction rounds to its own result precision before the
+next instruction; lowering may not reassociate an ordered sum or introduce a
+fused multiply/add that removes a rounding step. A GPU constant or uniform is
+encoded by its binary32 bits. Converting a GPU attribute buffer to a CPU
+consumer is an explicit readback/precision boundary, subject to target
+legality; it is not an implicit float conversion.
+
+Native Int has 63 signed bits: minimum -4,611,686,018,427,387,904 (`-2^62`),
+maximum 4,611,686,018,427,387,903 (`2^62-1`). This range is distinct from the
+checked float-to-int boundary: that conversion accepts only a finite double
+with absolute value strictly less than `4e18`, then truncates toward zero.
+An exact existing Int is not put through that narrower float boundary unless
+the operator explicitly converts it to a double. Failures there are
+`E_NONFINITE`, with the operator name in the message.
+
+Number conversion maps Int to its rounded binary64 value, Bool to 0 or 1,
+and Float to itself; any other value is `E_TYPE` ("Expected a number.").
+Truth conversion accepts Bool unchanged and Int/Float unequal to zero;
+all other kinds are `E_TYPE` ("Expected a bool."). Signed floating zero is
+false. These conversions are not JavaScript's general `Number` or truthiness
+on objects, strings and lists.
+
+| Operation | Exact order and result |
+| --- | --- |
+| `int(x)` | Number conversion, truncate toward zero, checked float-to-int conversion; Int result. Thus `int(-2.7) = -2`. |
+| `floor(x)`, `ceil(x)` | Number conversion, floor/ceiling, checked float-to-int conversion; Int result. |
+| `round(x)` | Number conversion, nearest integer with an exact halfway case away from zero, then checked float-to-int conversion. `round(-2.5) = -3`. |
+| Coercion to Int / `Value.int_of` | Number conversion, `floor(x + 0.5)` in binary64, then checked float-to-int conversion. This includes the rounding of the addition. Coercing `-2.5` gives `-2`. Bool-to-Int coercion directly gives 0 or 1. |
+| `float(x)` | Number conversion; Float result, including an Int value rounded to binary64. |
+| Ordinary `+`, `-`, `*`, `mod`, `min`, `max` | Convert both scalars to doubles, apply the operation, reject a non-finite result, then return Int only when both actual operands are Int. That Int result uses `floor(result + 0.5)` and the checked conversion. It is not exact integer arithmetic. |
+| Ordinary `/` | Convert operands to doubles. If the divisor equals either signed zero, result is positive zero; otherwise divide. Reject a non-finite result and return Float. |
+| Ordinary `mod` | If the divisor is zero, positive zero; otherwise `remainder(remainder(a,b) + b,b)`, in that order. This is not integer remainder and is not one remainder calculation. |
+| Ordinary `pow` | `pow(abs(a),b)` with double operands; reject a non-finite result; Float result even for two Int inputs. |
+| Vector arithmetic | Matching-width vectors apply the scalar floating operation in component order. A scalar numeric operand broadcasts to that width. Every result component is finite; result is a vector, not Int components. The checker rejects mismatched widths. |
+| Scalar `sin`, `cos`, `exp` | Number conversion followed by scalar math and the named finite-result check; Float result. |
+| Scalar `sqrt` | Number conversion followed by `sqrt(abs(x))`; Float result. Packed instructions additionally check every numeric result for finiteness. |
+| Scalar `abs` | An Int input uses signed integer absolute value, retaining the native wrap at minimum Int (`abs(min_int) = min_int`); all other numeric inputs use floating absolute value and yield Float. |
+| `<`, `<=`, `>`, `>=`, `=` | Compare converted doubles, even for two Int inputs. In particular, numeric `=` may equate distinct large integers after double rounding; structural `equal?` does not. |
+| `and`, `or`, `not` | Operands have already evaluated in authored order. Truth-convert operands as the source operator does and produce Bool. `and`/`or` may short-circuit the second truth conversion, but never the evaluation of the second operand expression. |
+
+For an `int/*` operand, an existing Int is used directly; a Float or Bool
+passes through `Value.int_of`, not explicit `int` truncation. The five
+operations then work in the signed 63-bit domain:
+
+| Integer primitive | Behavior |
+| --- | --- |
+| `int/mul(a,b)` | Multiply exactly, keep the low 63 bits, interpret those bits as signed. `int/mul(max_int,2) = -2`. |
+| `int/div(a,b)` | Signed quotient truncated toward zero. Zero divisor is `E_RANGE` ("Integer division by zero."). The overflow pair `min_int / -1` wraps to `min_int`. |
+| `int/mod(a,b)` | Signed remainder `a - trunc(a/b)*b`, with the dividend's sign. Zero divisor has the same `E_RANGE`; `-7 mod 3 = -1`, `7 mod -3 = 1`, and `min_int mod -1 = 0`. |
+| `int/and(a,b)` | Bitwise AND of their 63-bit two's-complement representations, then signed interpretation. |
+| `int/xor(a,b)` | Bitwise XOR of those representations, then signed interpretation. `min_int xor max_int = -1`. |
+
+The JavaScript target represents Int as `BigInt` and Float as `Number`.
+Integer literals are emitted as decimal BigInt literals, never parsed through
+Number first. `int/*` arithmetic wraps with `BigInt.asIntN(63, value)`; BigInt
+division/remainder have the required truncation/sign, with explicit zero
+checks and wrapping for quotient overflow. The target uses `Number(integer)`
+only at the numeric-double conversion boundary. A checked Float-to-Int
+conversion tests the finite/magnitude condition before creating a BigInt
+from the truncated Number. Intermediate local tags, list joins and state
+coercions remain explicit; a large integer must not lose bits on a field read,
+in structural equality, in state, or in JSON fixture serialization. JSON
+fixtures encode integers in decimal text with their Int tag.
+
+`value/rand` is the keyed numeric hash, not mutable random state. Start at
+unsigned 32-bit `h=0x9e3779b9`. For each numeric key in order, compute
+`k=ToUint32(floor(key*1000003))`, then
+`h=imul(h xor k,0x85ebca6b)`, `h=h xor (h >>> 13)`,
+`h=imul(h,0xc2b2ae35)`, `h=h xor (h >>> 16)`. `imul` retains the low 32
+bits; right shift is logical. `ToUint32` truncates a finite value modulo
+`2^32` into [0,`2^32`); a non-finite value maps to zero, including overflow
+of the key multiplication. The result is `(unsigned h mod 1000000)/1000000`.
+JavaScript's 32-bit operations are appropriate for this hash only, not `int/*`.
+
+Noise uses a seeded permutation of 0..255 duplicated to 512 entries, Perlin
+gradient interpolation and optional ordered fBm. Static seed permutations
+are exported as data. The dynamic permutation generator shuffles backwards
+from index 255 to 1, taking the unsigned SplitMix64 output modulo index+1.
+Its state adds `0x9e3779b97f4a7c15` modulo `2^64`, mixes with logical shifts
+30, 27 and 31 and multipliers `0xbf58476d1ce4e5b9` and
+`0x94d049bb133111eb`, also modulo `2^64`. Each generated index swaps two
+entries; it does not consume a global generator.
+
+For a sample, floor the position, use each integer lattice coordinate's low
+8 bits and the permutation to select eight corner hashes. With `h=hash&15`,
+gradient uses `u=x` if h<8 else y; `v=y` if h<4, x if h=12 or 14, else z;
+bit 0 negates u and bit 1 negates v, then add. Fade is
+`t*t*t*(t*(t*6-15)+10)`, with operations in that order. Interpolate by
+`a+t*(b-a)`, along x for each corner pair, then y, then z. Map the raw result
+with `(raw+1)/2` and clamp to [0,1]. Default seed is 0 and octaves is 1;
+frame octaves outside 1..32 are `E_NOISE_RANGE`. fBm starts at frequency and
+amplitude 1, adds sample*amplitude and amplitude to ordered sum/weights,
+doubles frequency and halves amplitude each octave, then divides sum by
+weights. Packed noise supports octaves 1..32 with a constant seed and constant
+octave count; non-constant or out-of-range settings keep their current refusals.
+
 ## Region form
 
 The initial body is exactly today's `Flow_ir.Packed.instruction` set, not a
