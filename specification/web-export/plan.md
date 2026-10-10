@@ -523,7 +523,10 @@ Phase 0
   runtimes do not require two Lisp interpreters. Phase 1 may start.
 
 Phase 1
-- [ ] P1.1 S
+- [x] P1.1 S
+  Core data types, closed primitive inventory, source identities and deterministic
+  printer added. Three hand-built scalar/branch/loop-and-state programs pass
+  inline printer expectations. `@lib/flow_ir/runtest` passed on 2026-10-11.
 - [ ] P1.2 S
 - [ ] P1.3 S
 - [ ] P1.4 H

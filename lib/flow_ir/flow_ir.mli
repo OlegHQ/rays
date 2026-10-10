@@ -2,6 +2,7 @@
     in [flow]; downstream hosts own catalog cooking and display sinks. *)
 module Operators = Operators
 module Packed = Packed
+module Core = Core
 
 val qualify_workspace :
   ?record:bool -> ?inputs:(string * (string * Flow.Eval.value) list) list ->
