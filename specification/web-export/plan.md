@@ -504,7 +504,7 @@ Phase 0
 - [x] P0.7 H
   Links to `specification/core.md` added to README, the repository design-notes
   paragraph and Flow section 14. `git diff --check` passed on 2026-10-11.
-- [ ] P0.R R
+- [x] P0.R R
   Review on 2026-10-11: P0.6 passes, all 114 census heads have one rule, and
   the 54 primitive names/counts are explicit. The scalar/list/text/state
   boundaries are consistent with the native probes. Most leaves reuse existing
@@ -516,6 +516,11 @@ Phase 0
   Apple-Silicon OCaml switch, so clamping before conversion would change pixels.
   P3.2 now explicitly includes the indexed geometry required by P3.6; its
   omission would otherwise make the native path snapshot gate impossible.
+  Re-review after P0.2a on 2026-10-11 passed: 114 unique census rules,
+  54 explicit frame leaves, complete numeric/list/text/color/array/coercion
+  clauses, and P0.6 green. The inventory is bounded scalar/storage work;
+  operator expansions and control stay in the shared lowering, so two target
+  runtimes do not require two Lisp interpreters. Phase 1 may start.
 
 Phase 1
 - [ ] P1.1 S
