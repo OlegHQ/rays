@@ -146,9 +146,31 @@ let qualify ~name (workspace : Editor_document.Workspace_doc.t) =
       reasons) checked.approx_reasons;
   checked, evaluated
 
+(* RAYS_CORE_COVERAGE: every residual the evaluator offers the executor at the four
+   times, counted once by Core_lower's verdict. Declining keeps the walker's result. *)
+let core_coverage ~name evaluated =
+  let seen = Hashtbl.create 64 and lowered = ref 0 and refused = Hashtbl.create 8 in
+  let execute r _live =
+    if not (Hashtbl.mem seen (E.Private.residual_id r)) then begin
+      Hashtbl.add seen (E.Private.residual_id r) ();
+      match I.Core_lower.lower r with
+      | Ok _ -> incr lowered
+      | Error form -> Hashtbl.replace refused form (1 + Option.value ~default:0 (Hashtbl.find_opt refused form))
+    end;
+    None in
+  with_core_residuals true (fun () -> List.iter (fun time ->
+    let live = Frame_input.at_time time in
+    List.iter (fun v -> ignore (E.Private.force_with_executor ~state:(E.create_state ()) ~execute v ~live))
+      (values evaluated)) [0.;0.125;1.25;7.]);
+  let forms = List.sort compare (Hashtbl.fold (fun form n acc -> (form, n) :: acc) refused []) in
+  Printf.printf "RAYS_CORE_COVERAGE %s: lowered %d, refused %d%s\n%!" name !lowered
+    (List.fold_left (fun acc (_, n) -> acc + n) 0 forms)
+    (String.concat "" (List.map (fun (form, n) -> Printf.sprintf ", %s %d" form n) forms))
+
 let check ?directory ?(commands = false) ~factories ~name (workspace : Editor_document.Workspace_doc.t) =
   let catalog = Editor_document.Contexts.catalog ~version:Flow_sop.Manifest.version factories |> ok in
   let evaluated = E.static ~record:true ~inputs:workspace.inputs workspace.checked |> ok in
+  if Sys.getenv_opt "RAYS_CORE_COVERAGE" <> None then core_coverage ~name evaluated;
   let checked, qualified = qualify ~name workspace in
   if signature evaluated <> signature qualified then
     failwith (name ^ ": qualification changed static evaluation");

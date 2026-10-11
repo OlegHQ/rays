@@ -640,7 +640,16 @@ Phase 1
   the core pass included. The gate ran about 20 minutes wall on the M1 host
   (the comparison now runs twice); no timing claim is made. `workspace_parity.mli`
   unchanged, so no API manifest change.
-- [ ] P1.12 H
+- [x] P1.12 H
+  `RAYS_CORE_COVERAGE` prints lowered and refused residuals per workspace from
+  `Workspace_parity.check` (the test file is unchanged; the gate still passes,
+  EXIT=0). Table and command in results.md, 2026-10-11. Zero-error NOT met: 46
+  refused residuals in 7 of the 15 eligible workspaces: examples/drawing (`ref` 1),
+  generative (`packed_higher_order` 6), noise (`packed_higher_order` 8),
+  particles (`packed_higher_order` 6), pxui (`packed_higher_order` 2),
+  recursive_rectangles (`packed_higher_order` 17, `color/hsl` 1),
+  sketches/flow_particles_gpu (`noise3` 4, `packed_higher_order` 1). A lowering
+  slice task must close these.
 - [ ] P1.13 H
 - [ ] P1.14 S
 - [ ] P1.15 S

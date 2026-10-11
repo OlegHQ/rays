@@ -394,3 +394,36 @@ operators' own bodies on locals and return shared booleans. Against the P1.5
 baseline the core path is 0.68 times the time and 0.56 times the bytes (limits
 1.1 and 1.05). Values and diagnostics are unchanged: the Flow and Flow IR
 focused gates pass. This is one input on one machine, not a general claim.
+
+## 2026-10-11 — P1.12 core residual coverage
+
+Command: `RAYS_CORE_COVERAGE=1 _build/default/tools/check.exe @test/test_workspace_ir`
+(the same gate as P1.11, with the variable set; `EXIT=0`). Machine: Apple M1,
+OCaml 5.3.0, domains 1 and 8. Input: the 15 eligible workspaces of the plan's
+corpus, forced at times 0, 0.125, 1.25 and 7, each residual counted once per
+workspace by its evaluator identity. "Lowered" is `Core_lower.lower` returning
+`Ok`; "refused" is `Error`, and the form is the string it returned. Counts are
+residuals the evaluator offers the executor, including the packed-kernel
+handles it offers at the same hook. This is a count, not a timing.
+
+| Workspace | Lowered | Refused | Refused forms (count) |
+| --- | ---: | ---: | --- |
+| examples/audio | 27 | 0 | |
+| examples/basic | 6 | 0 | |
+| examples/drawing | 1,824 | 1 | ref 1 |
+| examples/file_dialog | 30 | 0 | |
+| examples/generative | 8 | 6 | packed_higher_order 6 |
+| examples/noise | 6 | 8 | packed_higher_order 8 |
+| examples/particles | 4 | 6 | packed_higher_order 6 |
+| examples/pxui | 5 | 2 | packed_higher_order 2 |
+| examples/recursive_rectangles | 15 | 18 | packed_higher_order 17, color/hsl 1 |
+| sketches/flow_contours | 5 | 0 | |
+| sketches/flow_image | 0 | 0 | |
+| sketches/flow_image_kernel | 1 | 0 | |
+| sketches/flow_particles_gpu | 5 | 5 | noise3 4, packed_higher_order 1 |
+| sketches/flow_shader | 24 | 0 | |
+| sketches/flow_vectors | 3 | 0 | |
+
+Total: 1,963 lowered, 46 refused across 7 of the 15 workspaces. The zero-error
+target of P1.12 is not met; the refused forms are the input to a lowering slice.
+The sweep itself passes, and the parity test is unchanged.
