@@ -12,7 +12,9 @@ deleted, not ticked.
     compared them statement by statement with the versions before `0d136464`.
 - `runtime_live_resize` is wall-clock based: it failed once under machine load ("a programmatic
   resize stalled the frame loop for 1016 ms") and has passed since. Rerun it once before
-  reading a failure as a regression.
+  reading a failure as a regression. Looked at 2026-10-12, not changed: `Runtime` has no
+  injected clock, and the gap spans the pump and `Runtime.render`, whose presented flag the
+  test ignores, so a failure does not say which of the two stalled.
 
 ## Lisp gaps
 
