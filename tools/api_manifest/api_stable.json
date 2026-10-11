@@ -1,7 +1,7 @@
 {
   "generator": "tools/api_manifest/api_manifest.exe",
   "kind": "stable_high_level",
-  "module_count": 182,
+  "module_count": 180,
   "modules": [
     {
       "api": [
@@ -2807,14 +2807,6 @@
       "source": "lib/rdk/curve/curve_ops.mli"
     },
     {
-      "api": [],
-      "api_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "excluded_legacy_symbols": [],
-      "library": "rdk",
-      "module": "Curve_sampling",
-      "source": "lib/rdk/curve/curve_sampling.mli"
-    },
-    {
       "api": [
         "type centroid_piece_owner = | Centroid_piece_points | Centroid_piece_primitives",
         "type centroid_run_over = | Centroid_detail | Centroid_primitives | Centroid_pieces of { owner : centroid_piece_owner ; attribute : string ; }",
@@ -4063,14 +4055,6 @@
       "library": "sop",
       "module": "Image_nodes",
       "source": "lib/sop/image_nodes.mli"
-    },
-    {
-      "api": [],
-      "api_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "excluded_legacy_symbols": [],
-      "library": "sop",
-      "module": "Instances",
-      "source": "lib/sop/instances.mli"
     },
     {
       "api": [
