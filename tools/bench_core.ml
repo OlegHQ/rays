@@ -1,4 +1,4 @@
-(* Scalar rows by default; `kernels` times packed kernels with the core-region switch off and on.
+(* Scalar rows by default; `kernels` times packed kernels (the core-region switch is gone: compare against commit 035c1506^).
    One scalar residual evaluated by the tree walker and the core executor. Median of three samples per row, one domain. *)
 module E = Flow.Eval
 module I = Flow_ir
@@ -74,18 +74,16 @@ let kernels () =
     "fused maps 1,000,000", Printf.sprintf "(map (fn [y] (* y 0.5)) %s)" (map 1_000_000), 5;
     "sum 1,000,000", "(sum [x (array/range 1000000)] (* x t))", 5 ] in
   Printf.printf "Packed kernels; median of 3 samples; compile in microseconds, force in milliseconds\n";
-  Printf.printf "%-22s %-7s %-6s %12s %12s\n" "case" "switch" "domains" "compile us" "force ms";
+  Printf.printf "%-22s %-6s %12s %12s\n" "case" "domains" "compile us" "force ms";
   List.iter (fun (label, body, repeat) ->
     let r = kernel_residual body in
     let term = (E.Private.residual_view r).term in
-    List.iter (fun switch ->
-      I.Packed.Private.core_regions := switch;
-      let compile = time_median ~repeat:2000 (fun () -> ignore (I.Packed.compile r term)) in
+    let compile = time_median ~repeat:2000 (fun () -> ignore (I.Packed.compile r term)) in
       let packed = Option.get (I.Packed.compile r term) in
       List.iter (fun domains ->
         let force = Rays_math.Parallel.run ~domains (fun () ->
           time_median ~repeat (fun () -> ignore (ok (I.Packed.force packed ~live)))) in
-        Printf.printf "%-22s %-7s %-6d %12.2f %12.3f\n%!" label (if switch then "on" else "off") domains
-          (compile *. 1e6) (force *. 1e3)) [1; 8]) [false; true]) cases
+        Printf.printf "%-22s %-6d %12.2f %12.3f\n%!" label domains
+          (compile *. 1e6) (force *. 1e3)) [1; 8]) cases
 
 let () = if Array.length Sys.argv > 1 && Sys.argv.(1) = "kernels" then kernels () else scalar ()

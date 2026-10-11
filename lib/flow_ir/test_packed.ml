@@ -19,26 +19,7 @@ let has_cpu p = Array.exists (fun (n : I.node) -> n.tier = Cpu_kernel) (I.Execut
 let stages p = Array.fold_left (fun count (n : I.node) -> match n.kind with
   | Kernel {body = Packed_map p; _} -> max count (I.Packed.stage_count p) | _ -> count)
   0 (I.Executor.graph p).nodes
-(* The lowering to a core region is the term-walking compiler, unfused. *)
-let same_lowering residual term =
-  let trace = !I.Packed.Private.trace in
-  I.Packed.Private.trace := ignore;
-  let packed = I.Packed.compile_result ~fusion:false residual term in
-  I.Packed.Private.trace := trace;
-  match I.Core_region.lower ~fusion:false residual term, packed with
-  | Ok region, Ok packed ->
-      (match I.Packed.of_region region with
-       | Ok again -> assert (I.Packed.Private.view again = I.Packed.Private.view packed)
-       | Error _ -> assert false);
-      let expected = I.Packed.to_region packed in
-      assert (region.count = expected.count && region.origin = expected.origin && region.skip = expected.skip
-        && region.sites = expected.sites && region.uniform_names = expected.uniform_names
-        && region.binding_fn = expected.binding_fn && region.iteration = expected.iteration
-        && region.widths = expected.widths && Array.length region.uniforms = Array.length expected.uniforms)
-  | Error a, Error b -> assert (List.map Flow.Diagnostic.to_string a = List.map Flow.Diagnostic.to_string b)
-  | _ -> assert false
 let compile ?fusion residual term =
-  same_lowering residual term;
   let legacy = I.Packed.compile ?fusion residual term in
   (match legacy, I.Packed.compile_result ?fusion residual term with
    | None, Error [_] -> ()
