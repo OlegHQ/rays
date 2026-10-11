@@ -3,7 +3,7 @@
 (library
  (name flow_web)
  (public_name rays.flow_web)
- (modules flow_web wgsl js)
+ (modules flow_web wgsl js target kernel_table)
  (libraries flow flow_ir param rays_math scene_command))
 
 (test
@@ -28,3 +28,8 @@
   ../../tools/web/test/frame_semantics.mjs ../../tools/web/test/rt_shim.mjs
   ../../tools/web/runtime/prims.js ../../tools/web/runtime/runtime.js ../../tools/web/runtime/workers.js)
  (libraries flow_web flow flow_ir frame_input scene_command str))
+
+(test
+ (name test_target)
+ (modules test_target test_program)
+ (libraries flow_web flow flow_ir))

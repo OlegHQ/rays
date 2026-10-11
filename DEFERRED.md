@@ -390,6 +390,9 @@ later. Numbers and commands are in `specification/web-export/results.md`.
   sum 1.11 to 1.28 (+15); fused pair unchanged. Likely cause: building the region record
   and then `of_region` (validation pass, `dependent` recomputation, a second record copy).
   Force time is unaffected. Once per kernel, not per frame, so left alone.
+- `tools/web/runtime/gpu.js` re-uploads every kernel input on each dispatch (it converts to f32 and
+  `writeBuffer`s the whole array); native skips sources whose stamp is unchanged. Static sources
+  should be uploaded once and kept.
 
 ## Lisp gaps
 
