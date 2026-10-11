@@ -232,7 +232,7 @@ value changes (physical equality) and restarts accumulation.
 - `RAYS_PATHTRACER_BSDF_ONLY=1` at `create` disables all light sampling
   on the World path (debugging and the unbiasedness test).
 
-Tests (`test_world.ml`, headless, default `runtest`): a uniform-radiance
+Historical native checks: a uniform-radiance
 World furnace resolves to 224 like the dome furnace (a mutation that drops
 the MIS weights reads 241); a peaked map with a sun converges to the same
 image with MIS as with BSDF-only sampling (mean 34.04 vs 33.93 on RGBA8) and
@@ -240,6 +240,12 @@ at 16 spp has RMSE 6.6 vs 17.7 against the converged image; a `Color`
 background resolves to exactly its tone-mapped value; `Transparent` misses
 have alpha 0; a rect light behind the camera appears in a mirror sphere under
 BSDF-only sampling (so only by being hit) and MIS agrees.
+
+Current audit (2026-10-11): `test_world.run` is empty and the qualification
+`test_parity.run` reports success without comparing images. These checks
+must be restored; the historical measurements above do not establish current
+coverage. World and pathtracer checks belong to the native/qualification
+aliases, rather than the window-free default `runtest`.
 
 ## Determinism and tests
 
@@ -266,6 +272,13 @@ has no live Metal handle delta after 30 further frames. It also renders the
 GPU-backed image through an independent offscreen Canvas target. The Scene execution
 Metal test checks exact sampling, zero texture-upload bytes, and rejection of
 malformed, foreign, and destroyed GPU textures.
+
+The 2026-10-11 restoration wires the formerly unused pixel counters in
+`test_pathtracer` and `test_scene` to explicit GPU film readback, including
+lens determinism, preview detail, instance residence and mixed-geometry
+visibility. Both executables build and typecheck. Forced native runs on the
+managed runner fail at Metal device acquisition, so the numerical assertions
+and thresholds remain unverified here.
 
 ## Performance
 

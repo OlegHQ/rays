@@ -50,15 +50,34 @@ let run () =
         ; (Rdk.Transform_ops.transform (M.mul t2 b) ball, blue)
         ; (floor, gray) ]) in
       let placed = scene_of t1 in
-      get (P.replace_mesh tracer placed);
-      get (P.replace_mesh tracer composed);
+      let capture mesh =
+        get (P.replace_mesh tracer mesh); P.reset tracer;
+        for _ = 1 to 2 do get (P.render tracer camera); get (P.flush tracer) done;
+        Test_pathtracer.pixels tracer in
+      let placed_pixels = capture placed and composed_pixels = capture composed in
+      assert (Bytes.length placed_pixels = 64 * 48 * 4 &&
+        Bytes.length composed_pixels = Bytes.length placed_pixels);
       let total = ref 0 and outliers = ref 0 in
+      Bytes.iteri (fun i value -> if i mod 4 <> 3 then begin
+        let difference = abs (Char.code value - Char.code (Bytes.get composed_pixels i)) in
+        total := !total + difference;
+        if difference > 8 then incr outliers
+      end) placed_pixels;
       let mean = float !total /. float (64 * 48 * 3) in
       Printf.printf "pathtracer scene: vs composed mean |diff| %.3f, %d outliers\n" mean !outliers;
       assert (mean < 1.0 && !outliers < 64 * 48 * 3 / 100);
       (* A translated object moves in the image: the box's red excess
          centroid shifts right. *)
-      get (P.replace_mesh tracer (scene_of (M.mul (M.translation (V.create 0.8 0. 0.)) t1)));
+      let shifted_pixels = capture (scene_of (M.mul (M.translation (V.create 0.8 0. 0.)) t1)) in
+      let red_center bytes =
+        let sum = ref 0 and weighted = ref 0 in
+        for pixel = 0 to 64 * 48 - 1 do
+          let channel i = Char.code (Bytes.get bytes (pixel * 4 + i)) in
+          let weight = max 0 (channel 0 - max (channel 1) (channel 2)) in
+          sum := !sum + weight; weighted := !weighted + weight * (pixel mod 64)
+        done;
+        assert (!sum > 0); float !weighted /. float !sum in
+      assert (red_center shifted_pixels > red_center placed_pixels);
       (match P.scene_mesh [] with Error _ -> () | Ok _ -> failwith "empty scene accepted");
       get (P.replace_mesh tracer (get (P.scene_mesh [ (M.identity, placed) ])));
       let t1' = M.mul (M.translation (V.create 0.8 0. 0.)) t1 in
@@ -94,6 +113,27 @@ let run () =
       (* 2. One mesh with triangles and analytic spheres builds (one BLAS per
          kind under a TLAS) and shows both: an emissive red sphere over the
          lit floor. *)
+      let spheres = [{ P.center = V.create 0. 1. 0.; radius = 0.5;
+        sphere_material = P.material ~emission:(rgb 4. 0. 0.) (rgb 0. 0. 0.) }] in
+      let mixed = get (P.mesh ~spheres [floor, gray]) in
+      let mixed_pixels = capture mixed in
+      let red_pixels = ref 0 in
+      for pixel = 0 to 64 * 48 - 1 do
+        let channel i = Char.code (Bytes.get mixed_pixels (pixel * 4 + i)) in
+        if channel 0 > 200 && channel 1 < 20 && channel 2 < 20 then incr red_pixels
+      done;
+      assert (!red_pixels > 10);
+      let without_floor = capture (get (P.mesh ~spheres [])) in
+      let point = Option.get (Rays.Camera.world_to_screen ~viewport:(0,0,64,48)
+        camera (V.create 3. 0. 0.)) in
+      let pixel = int_of_float point.y * 64 + int_of_float point.x in
+      let difference = ref 0 in
+      for channel = 0 to 2 do
+        let at = pixel * 4 + channel in
+        difference := !difference + abs (Char.code (Bytes.get mixed_pixels at) -
+          Char.code (Bytes.get without_floor at))
+      done;
+      assert (!difference > 10);
       get (P.flush tracer);
       (match P.move tracer [ M.identity ] with Error _ -> () | Ok () -> failwith "move of a non-scene accepted");
       print_endline "pathtracer scene: mixed triangles and spheres ok";
@@ -104,9 +144,17 @@ let run () =
       let plane = { P.objects = [ (floor, P.material ~roughness:1. (rgb 0.8 0.8 0.8)) ]; spheres = []; strands = []
                   ; environment = black; lights = [] } in
       let tracer = get (P.create ~spp:4 ~width:32 ~height:32 plane) in
+      let camera = Rays.Camera.perspective ~fov_y:0.1 ~at:(V.create 0. 4. 0.001)
+        ~target:V.zero () in
       let check name light expected =
         get (P.set_lights tracer [ P.light_of light ]);
+        P.reset tracer;
+        for _ = 1 to 128 do get (P.render tracer camera); get (P.flush tracer) done;
+        let pixels = Test_pathtracer.pixels tracer in
         let sum = ref 0. in
+        for y = 12 to 19 do for x = 12 to 19 do
+          sum := !sum +. float (Char.code (Bytes.get pixels ((y * 32 + x) * 4)))
+        done done;
         let measured = unresolve (!sum /. 64.) in
         Printf.printf "pathtracer light_of %s: %.4f expected %.4f\n" name measured expected;
         assert (Float.abs (measured -. expected) < 0.06 *. expected) in

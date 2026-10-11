@@ -28,6 +28,17 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
 
 ## Tests that got weaker
 
+- Restored, native verification pending 2026-10-11: `test_pathtracer` and
+  `test_scene` now read actual GPU film bytes. Their formerly empty counters
+  check deterministic/non-flat/opaque output, full-resolution previews,
+  transformed-instance agreement, lens determinism, BLAS residence, floor
+  and analytic-sphere furnaces, per-instance material/motion coverage, curve
+  capability behavior, composed scenes, translated-object centroids, mixed
+  geometry and converted-light irradiance. Typechecking and executable builds
+  pass. Both forced native attempts fail at device acquisition because Metal
+  has no system default device; numerical thresholds need native validation.
+  The additional audit found `test_world.run` is a no-op and `test_parity.run`
+  reports success without rendering. Those two restorations remain open.
 - Restored 2026-10-11: `test_ui_pipeline` previously created and destroyed
   a native execution, then printed "matches Scene2" without drawing. It now
   captures the UI batch and independently constructed Scene2 geometry at 1x
@@ -173,6 +184,11 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   typechecking and dependency checks pass. The removed public record field
   has a separate reviewed API promotion. Native pixels remain unverified.
 - Fields that are constant but still threaded: the path tracer `scale`.
+  Tracing confirms `dispatch_size` always returns scale 1, but removal still
+  needs the native performance and pixel checks. This runner has neither a
+  Metal device nor the optional Metal compiler toolchain: an actual
+  `xcrun -sdk macosx metal -c lib/rays_pathtracer/pathtrace.metal` attempt
+  fails with "cannot execute tool 'metal' due to missing Metal Toolchain".
 - `lib/sop/sop_topology.ml` keeps its prefix (`Topology` would shadow `Rdk.Topology`), and
   `Leader.keymap3` keeps its suffix (`Leader.keymap` is taken).
 - `lib/rays` is still 30 modules: the editor is built on `Sketch`/`Frame`/`Scene`, and

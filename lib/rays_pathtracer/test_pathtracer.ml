@@ -5,6 +5,7 @@ module P = Rays_pathtracer
 let rgb = P.Linear_color.rgb
 
 let get = function Ok v -> v | Error e -> failwith e
+let pixels tracer = Bytes.copy (get (Rays.Image.Private.pixels (P.image tracer)))
 let live_handles = let _, live = Ogpu.Impl.create_driver () in live
 
 let run () =
@@ -37,16 +38,34 @@ let run () =
       (match P.render tracer unsupported with Error _ -> ()
        | Ok () -> failwith "orthographic path-tracer camera was accepted");
       assert (P.samples tracer = 0);
-      let run () = P.reset tracer; get (P.render tracer camera); get (P.flush tracer); get (P.render tracer camera); get (P.flush tracer) in
-      let _first = run () and _second = run () in
+      let capture camera frames =
+        (* Settle a camera change before resetting, so its preview cannot
+           change the counted sample total in a deterministic comparison. *)
+        for _ = 1 to 2 do get (P.render tracer camera); get (P.flush tracer) done;
+        P.reset tracer;
+        for _ = 1 to frames do get (P.render tracer camera); get (P.flush tracer) done;
+        pixels tracer in
+      let run () = capture camera 2 in
+      let first = run () and second = run () in
+      assert (first = second && Bytes.length first = 48 * 32 * 4);
       assert (P.samples tracer = 4);
       let distinct = Hashtbl.create 64 in
+      for pixel = 0 to 48 * 32 - 1 do
+        assert (Bytes.get first (pixel * 4 + 3) = '\255');
+        Hashtbl.replace distinct (Bytes.get_int32_le first (pixel * 4)) ()
+      done;
       assert (Hashtbl.length distinct > 8);
       let moved = Rays.Camera.with_position
         (Rays.Vec3.create 0.4 2. 6.) camera in
       get (P.render tracer moved); get (P.flush tracer);
       assert (P.samples tracer = 0);
       let varying_block = ref false in
+      let preview = pixels tracer in
+      for y = 0 to 15 do for x = 0 to 23 do
+        let at dx dy = Bytes.get_int32_le preview (((2 * y + dy) * 48 + 2 * x + dx) * 4) in
+        if at 0 0 <> at 1 0 || at 0 0 <> at 0 1 || at 0 0 <> at 1 1 then
+          varying_block := true
+      done done;
       assert !varying_block;
       P.reset tracer;
       get (P.render tracer camera); get (P.flush tracer);
@@ -62,11 +81,16 @@ let run () =
       get (P.replace_mesh tracer instanced);
       get (P.render tracer camera); get (P.flush tracer);
       get (P.render tracer camera); get (P.flush tracer);
+      let instanced_pixels = pixels tracer in
       let transformed = Rdk.Transform_ops.transform matrix sphere in
       get (P.replace_mesh tracer (get (P.mesh [transformed, P.material (rgb 0.7 0.5 0.3)])));
       get (P.render tracer camera); get (P.flush tracer);
       get (P.render tracer camera); get (P.flush tracer);
       let largest_difference = ref 0 in
+      let transformed_pixels = pixels tracer in
+      assert (Bytes.length instanced_pixels = Bytes.length transformed_pixels);
+      Bytes.iteri (fun i value -> largest_difference := max !largest_difference
+        (abs (Char.code value - Char.code (Bytes.get transformed_pixels i)))) instanced_pixels;
       assert (!largest_difference <= 2);
       get (P.queue_mesh tracer instanced);
       get (P.queue_mesh tracer (get (P.mesh [transformed, P.material (rgb 0.7 0.5 0.3)])));
@@ -89,6 +113,13 @@ let run () =
       (* Depth of field: a lens blurs the image deterministically; a pinhole
          lens restores the exact pinhole frame. *)
       get (P.replace_mesh tracer (get (P.mesh [sphere, P.material ~roughness:0.2 ~metallic:1. (rgb 0.9 0.7 0.4); floor, P.material ~roughness:0.8 (rgb 0.6 0.6 0.6)])));
+      let pinhole = run () in
+      let lens = Rays.Camera.with_lens { Rays.Camera.aperture = 0.2;
+        focus_distance = Some 2. } camera in
+      let blur () = capture lens 16 in
+      let blurred = blur () in
+      assert (blurred <> pinhole && blur () = blurred);
+      assert (run () = pinhole);
       P.destroy tracer;
       (* An instance structure only references its BLAS: without declaring
          it read each dispatch the device evicts it over time and a fresh
@@ -110,6 +141,9 @@ let run () =
       let fresh () =
         P.reset tracer; get (P.render tracer camera); get (P.flush tracer);
         let sum = ref 0 in
+        Bytes.iteri (fun i value -> if i mod 4 <> 3 then sum := !sum + Char.code value)
+          (pixels tracer);
+        assert (!sum > 0);
         !sum in
       let first = fresh () in
       for _ = 1 to 60 do get (P.render tracer camera); get (P.flush tracer) done;
@@ -133,6 +167,8 @@ let run () =
         for _ = 1 to 16 do get (P.render tracer camera); get (P.flush tracer) done;
         get (P.flush tracer);
         let sum = ref 0 in
+        Bytes.iteri (fun i value -> if i mod 4 = 0 then sum := !sum + Char.code value)
+          (pixels tracer);
         P.destroy tracer;
         float !sum /. 1024. in
       let plain = furnace [] in
@@ -144,6 +180,11 @@ let run () =
          by the intersection function table must conserve energy like the
          floor, which checks sphere hits, normals, and the table binding. *)
       let sphere_furnace =
+        let scene = { P.objects = []; strands = [];
+          spheres = [{ P.center = Rays.Vec3.zero; radius = 1.;
+            sphere_material = P.material ~roughness:0.8 (rgb 0.8 0.8 0.8) }];
+          environment = { P.sky = rgb 1. 1. 1.; ground = rgb 1. 1. 1.; panels = [] };
+          lights = [] } in
         let tracer = get (P.create ~spp:4 ~width:32 ~height:32 scene) in
         let camera = Rays.Camera.perspective ~fov_y:0.3
           ~at:(Rays.Vec3.create 0. 0. 6.)
@@ -151,6 +192,8 @@ let run () =
         for _ = 1 to 16 do get (P.render tracer camera); get (P.flush tracer) done;
         get (P.flush tracer);
         let sum = ref 0 in
+        Bytes.iteri (fun i value -> if i mod 4 = 0 then sum := !sum + Char.code value)
+          (pixels tracer);
         P.destroy tracer;
         float !sum /. 1024. in
       Printf.printf "pathtracer: sphere furnace mean %.1f (expected 224)\n" sphere_furnace;
@@ -169,10 +212,28 @@ let run () =
       and green = P.material ~emission:(rgb 0. 4. 0.) (rgb 0. 0. 0.) in
       let static_mesh = get (P.mesh_instanced ~prototype:(sphere, P.material (rgb 0.5 0.5 0.5))
         ~materials:[| red; green |] [| place (-2.); place 2. |]) in
-      get (P.replace_mesh tracer static_mesh);
+      let camera = Rays.Camera.perspective ~fov_y:0.9
+        ~at:(Rays.Vec3.create 0. 1. 10.) ~target:(Rays.Vec3.create 0. 1. 0.) () in
+      let capture mesh =
+        get (P.replace_mesh tracer mesh); P.reset tracer;
+        for _ = 1 to 32 do get (P.render tracer camera); get (P.flush tracer) done;
+        pixels tracer in
+      let static_pixels = capture static_mesh in
+      let channel_at bytes point channel =
+        let point = Option.get (Rays.Camera.world_to_screen ~viewport:(0,0,64,32) camera point) in
+        let x = int_of_float point.x and y = int_of_float point.y in
+        Char.code (Bytes.get bytes ((y * 64 + x) * 4 + channel)) in
+      let left = Rays.Vec3.create (-2.) 1. 0. and right = Rays.Vec3.create 2. 1. 0.
+      and end_point = Rays.Vec3.create 4.5 1. 0. in
+      assert (channel_at static_pixels left 0 > 200 && channel_at static_pixels left 1 = 0);
+      assert (channel_at static_pixels right 1 > 200 && channel_at static_pixels right 0 = 0);
       let moving = get (P.mesh_instanced ~prototype:(sphere, P.material (rgb 0.5 0.5 0.5))
         ~materials:[| red; green |] ~motion:[| place (-2.); place 4.5 |] [| place (-2.); place 2. |]) in
-      get (P.replace_mesh tracer moving);
+      let moving_pixels = capture moving in
+      assert (channel_at static_pixels end_point 1 = 0);
+      assert (channel_at moving_pixels end_point 1 > 0);
+      assert (channel_at moving_pixels right 1 > 0 &&
+        channel_at moving_pixels right 1 < channel_at static_pixels right 1);
       (match P.mesh_instanced ~prototype:(sphere, red) ~materials:[| red |] [| place 0.; place 1. |] with
        | Error _ -> () | Ok _ -> failwith "mismatched instance material count was accepted");
       (match P.mesh_instanced ~prototype:(sphere, red) ~motion:[| place 0. |] [| place 0.; place 1. |] with
@@ -216,6 +277,26 @@ let run () =
         end)
         (List.concat_map (fun i -> List.concat_map (fun m -> List.concat_map (fun s -> List.concat_map (fun c -> [ ((i, m, s, c), false); ((i, m, s, c), true) ]) [ false; true ]) [ false; true ]) [ false; true ]) [ false; true ]);
       assert (!shapes = 16);
+      let curves = Ogpu.Caps.has (Ogpu.Backend.capabilities device) Ray_tracing_curves in
+      let strand_scene = { P.objects = []; spheres = [];
+        strands = [{ P.points = [|Rays.Vec3.create (-0.6) 0. 0.; Rays.Vec3.zero;
+          Rays.Vec3.create 0.6 0. 0.|]; thickness = 0.2;
+          strand_material = P.material ~emission:(rgb 4. 0. 0.) (rgb 0. 0. 0.) }];
+        environment = black; lights = [] } in
+      (match P.create ~spp:1 ~width:32 ~height:32 strand_scene with
+       | Error message when not curves ->
+           assert (message = "path tracer strands need curve primitives, which this device does not intersect")
+       | Error message -> failwith message
+       | Ok strand_tracer ->
+           Fun.protect ~finally:(fun () -> P.destroy strand_tracer) (fun () ->
+             assert curves;
+             let camera = Rays.Camera.perspective ~fov_y:0.5
+               ~at:(Rays.Vec3.create 0. 0. 4.) ~target:Rays.Vec3.zero () in
+             get (P.render strand_tracer camera); get (P.flush strand_tracer);
+             let red = ref 0 in
+             Bytes.iteri (fun i value -> if i mod 4 = 0 && Char.code value > 200 then incr red)
+               (pixels strand_tracer);
+             assert (!red > 0)));
       get (Result.map_error Ogpu.Error.to_string (Ogpu.Backend.destroy_library library));
       get (Result.map_error Ogpu.Error.to_string (Ogpu.Backend.destroy_device device));
       Printf.printf "pathtracer: %d kernel specializations compile\n" !shapes;
