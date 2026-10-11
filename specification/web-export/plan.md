@@ -707,8 +707,8 @@ Phase 1
   `test_frame.ml`, `test_workspace_eval.ml`, `test_core_parity.ml` and `tools/bench_core.ml`.
 - [x] P1.14b S
   Postfix superinstructions and depth-sized stack (ratio 1.23, min 1.21) plus whole-frame repairs in `Core_exec` (results.md). The 1.1 gate was not met (ratio 1.26 at review); the project owner waived it on 2026-10-11.
-- [ ] P1.R R
-  Review on 2026-10-11 (commit after 06149f40). Green: `--ship` (all, runtest, smoke, diff check;
+- [x] P1.R R
+  Accepted 2026-10-11: P1.14 to P1.14b ticked on the owner's waiver of the micro-bench gate (see them). Review on 2026-10-11 (commit after 06149f40). Green: `--ship` (all, runtest, smoke, diff check;
   807 s, the only failure was the API manifest for the P1.14a `.mli` change, promoted in its own
   commit, then 2 s cached rerun EXIT=0) and `@runtest-native` (one run failed
   `runtime_live_resize` "a programmatic resize stalled the frame loop for 1033 ms" at load average
