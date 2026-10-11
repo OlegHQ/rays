@@ -74,7 +74,8 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
 - Large files not split, or only partly: `lib/rdk/test_rdk.ml` (3,914 lines, one `run ()`),
   `lib/pxui_graph/scope_pane.ml` (2,682 lines after the wires moved out),
   `lib/rays_editor/environment.ml` (about 940 lines).
-- `_out/` (53 MB, untracked) was not deleted.
+- Verified 2026-10-11: `_out/` is absent from this worktree; there is no stale
+  output directory left to delete. The ignore rule remains for future PNG saves.
 
 ## Known costs and behaviour changes to confirm
 
@@ -96,7 +97,11 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   still uses stays unchanged. No `(world/none)` is written. This corrects the
   earlier note that every world graph remains. The creation, both deletion
   cases and reload parity pass under `@test/test_scene_sync`.
-- The gallery build prints two `W_SOFT_RANGE` warnings for `sop/grid :columns 100 :rows 100`.
+- Confirmed 2026-10-11: the gallery's two `W_SOFT_RANGE` warnings are advisory
+  bounds of 64 for columns/rows, not hard limits. The authored values remain
+  100 and cook to 10,201 points / 20,000 triangles. `@test/test_sop_catalog`
+  checks the actual gallery's warning codes and this resolution without
+  changing the example or its declared ranges.
 
 ## Lisp gaps
 

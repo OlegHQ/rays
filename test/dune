@@ -179,11 +179,12 @@
 
 (rule
  (alias test_sop_catalog)
- (deps ../sketches/ws_morph/sketch.rays)
+ (deps ../sketches/ws_morph/sketch.rays ../examples/sop_gallery/gallery.rays)
  (action (run %{exe:test_main.exe} test_sop_catalog)))
 
 (rule
  (aliases qualification qualification-scale test_sop_catalog_exhaustive)
+ (deps ../sketches/ws_morph/sketch.rays ../examples/sop_gallery/gallery.rays)
  (action (run %{exe:test_main.exe} test_sop_catalog_exhaustive)))
 
 (rule

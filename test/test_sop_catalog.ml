@@ -44,6 +44,25 @@ let cook session node = match Session.cook session
   | Ok output -> (Result.get_ok (Sop.Payload.geometry output.Session.payload))
   | Error error -> fail (Diagnostic.error_to_string error)
 
+let gallery_grid_warning () =
+  let catalog = Rays_editor.workspace_catalog () |> Result.get_ok in
+  let text = In_channel.with_open_bin "../examples/sop_gallery/gallery.rays" In_channel.input_all in
+  let _, warnings = Editor_document.Workspace_doc.check_text catalog text |> Result.get_ok in
+  check (List.map (fun (d : Flow.Diagnostic.t) -> d.code, d.severity) warnings
+    = ["W_SOFT_RANGE", Flow.Diagnostic.Warning; "W_SOFT_RANGE", Flow.Diagnostic.Warning])
+    "gallery soft-range warnings changed or became errors";
+  let node = Lisp_sop.node "(sop/grid :columns 100 :rows 100 :size 10 :width 10 :height 10)" in
+  List.iter (fun name ->
+    let field = List.find (fun (field : Parameter.field_view) -> field.name = name)
+        (Node.parameter_fields node) in
+    check (field.current = Parameter.Int_value 100) "a soft grid range clamped the gallery")
+    ["columns"; "rows"];
+  let session = Session.create ~max_entries:8 ~max_payload_bytes:16_777_216 |> Result.get_ok in
+  Fun.protect ~finally:(fun () -> Session.close session) (fun () ->
+    let geometry = cook session node in
+    check (Rdk.Geometry.point_count geometry = 10_201 && Rdk.Geometry.primitive_count geometry = 20_000)
+      "the gallery's 100x100 grid did not cook at its authored resolution")
+
 let catalog_node key inputs changes =
   let factory = List.find (fun factory -> Edit_graph.factory_key factory = key)
       Sop_catalog.Editor.factories in
@@ -312,6 +331,7 @@ let set_color_test () =
   Session.close session
 
 let run ?(exhaustive = false) () =
+  gallery_grid_warning ();
   test_motion ();
   let labelled label ?with_ text = Node.relabel label (Lisp_sop.node ?with_ text) in
   let source = labelled "box"
