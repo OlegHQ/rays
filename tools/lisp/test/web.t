@@ -48,10 +48,23 @@ A draw graph that reaches a sop graph is refused, with the span of the reference
   $ test -e refused && echo written || echo nothing written
   nothing written
 
-So is a draw image, which needs a host image resolver.
+An image kind without a web implementation is refused explicitly.
 
   $ rays-lisp web ../../../sketches/flow_image/sketch.rays -o image 2>&1 | sed -n 2p
-  Error [E_WEB_IMAGE]: The web export cannot draw an image yet: a draw image needs a host image resolver.
+  Error [E_WEB_IMAGE]: The web export supports generated image/map images; image/noise is not supported yet.
+
+Generated images export deterministically, with kernels and compiled live arguments, without UV data.
+
+  $ rays-lisp web ../../../sketches/flow_contours/sketch.rays -o contours
+  $ rays-lisp web ../../../sketches/flow_contours/sketch.rays -o contours_again
+  $ diff -r contours contours_again && echo identical
+  identical
+  $ grep -c '"id":"image[0-9]*"' contours/kernels.json
+  6
+  $ test ! -s contours/data.bin && echo 'UVs are computed on the GPU'
+  UVs are computed on the GPU
+  $ rays-lisp web ../../../sketches/flow_image_kernel/sketch.rays -o image_kernel
+  $ rays-lisp web ../../../sketches/flow_shader/sketch.rays -o shader
 
 A mark set whose attributes are GPU regions never invokes them on the CPU: the frame names a device array, and two
 attributes of equal count and rate share one kernel with an output each.

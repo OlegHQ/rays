@@ -232,7 +232,7 @@
 (executable
  (name marks_shot)
  (modules marks_shot marks_scene)
- (libraries web_export flow flow_ir frame_input rays scene_command))
+ (libraries web_export flow flow_ir flow_sop flow_gpu sop ogpu rays_execution frame_input rays scene_command))
 
 ; GPU attribute regions in real Chrome (plan P6.4a): the export places a mark set's regions on the GPU, one device is shared
 ; by gpu.js and present.js, and the canvas equals the native picture; window counters prove no CPU invoke ran.
@@ -243,6 +243,16 @@
   (source_tree ../sketches/flow_particles_gpu))
  (action
   (system "if command -v node >/dev/null 2>&1; then node web/test/gpu_marks_e2e.mjs lisp/lisp.exe marks_shot.exe ..; else echo 'gpu_marks_e2e: skipped (node not found)'; fi")))
+
+; Generated-image pixel parity, animation, sharing, static reuse, resize and reload (P6.4b).
+(rule
+ (alias qualification-web)
+ (deps web/test/gpu_images_e2e.mjs web/test/png.mjs web/test/chrome.mjs
+  (glob_files web/runtime/*.js) web/runtime/marks.wgsl lisp/lisp.exe marks_shot.exe
+  (source_tree ../sketches/flow_contours) (source_tree ../sketches/flow_image_kernel)
+  (source_tree ../sketches/flow_shader))
+ (action
+  (system "if command -v node >/dev/null 2>&1; then node web/test/gpu_images_e2e.mjs lisp/lisp.exe marks_shot.exe ..; else echo 'gpu_images_e2e: skipped (node not found)'; fi")))
 
 (executable
  (name web_shot)

@@ -3,7 +3,7 @@ module D = Flow.Diagnostic
 module Doc = Editor_document.Workspace_doc
 module C = Flow_ir.Core
 
-type lowered = { program : C.program; span : D.span; root : Flow.Eval.residual option }
+type lowered = { program : C.program; span : D.span; root : Flow.Eval.residual option; plan : Flow.Eval.plan }
 
 let ( let* ) = Result.bind
 
@@ -62,7 +62,7 @@ let lower (doc : Doc.t) =
   let evaluated = lowered.evaluated in
   let value = List.assoc draw.name evaluated.results in
   match Flow_ir.Core_draw.lower evaluated.plan value with
-  | Ok (program, root) -> Ok {program; span = draw.form.span; root}
+  | Ok (program, root) -> Ok {program; span = draw.form.span; root; plan = evaluated.plan}
   | Error message ->
       Error (D.error ~span:draw.form.span ~code:"E_WEB_LOWER" ("This draw graph does not lower to the core: " ^ message))
 
@@ -266,15 +266,65 @@ await start(document.getElementById("canvas"), program, { data });
 </script>
 |} name
 
+(* Image maps share the packed compiler with native images. One dummy UV is enough to compile the
+   body; WGSL derives the real UV from the pixel index. Dimensions and scalar captures use the same
+   core/JS lowering as the frame, so animated captures are evaluated rather than frozen at export. *)
+let image_entry (lowered : lowered) id =
+  let module E = Flow.Eval in
+  let span = lowered.span in
+  let refuse message = Error (D.error ~span ~code:"E_WEB_IMAGE" message) in
+  let node = lowered.plan.nodes.(id) in
+  if node.kind <> "image/map" then
+    refuse ("The web export supports generated image/map images; " ^ node.kind ^ " is not supported yet.")
+  else
+  let arg name fallback = Option.value (List.assoc_opt name node.args) ~default:fallback in
+  match arg "function" (E.Int 0) with
+  | E.Fn fn ->
+      let* pixels = E.Private.map_function ~site:(node.inst, node.site, node.iter)
+        ~signature:Flow.Ty.{params=[Vec2]; result=Vec4} fn [E.Vec2_array [|0.5; 0.5|]] in
+      (match pixels with
+       | E.Residual r ->
+           let* packed = Flow_ir.Packed.compile_result r (E.Private.residual_view r).term
+             |> Result.map_error (function d :: _ -> d | [] -> D.error ~span ~code:"E_WEB_IMAGE" "Image kernel did not compile.") in
+           let region = Flow_ir.Packed.to_region packed in
+           let* () = match Flow_web.Target.region packed ~count:None with d :: _ -> Error d | [] -> Ok () in
+           let* wgsl = Flow_web.Wgsl.kernel ~image:true packed in
+           let values = [arg "width" (E.Int 256); arg "height" (E.Int 256)] @ Array.to_list region.uniforms in
+           let results = ref [] in
+           let source : C.source = {site=node.site; owner=node.site; instance=node.inst;
+             prefix=[]; iter=List.map (fun i -> C.Static_index i) node.iter; span=Some span} in
+           let* args = Flow_ir.Core_lower.lower_draw ~root:(lazy r) (fun ctx ->
+             results := List.map (ctx.value source) values)
+             |> Result.map_error (fun name -> D.error ~span ~code:"E_WEB_IMAGE" ("Image arguments do not lower to the core: " ^ name)) in
+           if args.regions <> [||] || args.state_slots <> [||] then
+             refuse "Image dimensions and captures must be scalar frame values, without packed regions or state."
+           else
+           let args = {args with results=Array.of_list !results} in
+           let* js = Flow_web.Js.frame args in
+           let module_file = Printf.sprintf "image%d-%s.js" id (Digest.to_hex (Digest.string js)) in
+           let animated = List.exists E.frame_dependent values
+             || Array.exists (function C.Region.Frame _ -> true | _ -> false) region.code in
+           let frames = Array.to_list region.code |> List.mapi (fun slot -> function
+             | C.Region.Frame name -> [slot, name] | _ -> []) |> List.concat in
+           let* () = match List.find_opt (fun (_, name) -> not (List.mem name frame_facts)) frames with
+             | None -> Ok ()
+             | Some (_, name) -> refuse ("Image kernel reads an unavailable frame fact: " ^ name) in
+           let metadata = Printf.sprintf "\"%d\": {kernel: \"image%d\", args: image%d, animated: %b, frame: %s}"
+             id id id animated (list (fun (slot, name) -> Printf.sprintf "[%d, %s]" slot (Flow_web.Kernel_table.json_string name)) frames) in
+           Ok (Printf.sprintf "import { frame as image%d } from \"./%s\";\n" id module_file,
+             (module_file, js), metadata, (Printf.sprintf "image%d" id, wgsl))
+       | _ -> refuse "Image map did not produce a packed pixel body.")
+  | _ -> refuse "Image map needs a pixel function."
 
 let files (doc : Doc.t) (lowered : lowered) : (files, D.t) result =
   let program = lowered.program in
   let statements = all_statements program.body in
-  let* () = match List.find_opt (fun (s : C.statement) -> match s.node with Draw (Image _) -> true | _ -> false) statements with
-    | Some s ->
-        Error (D.error ~span:(Option.value s.source.span ~default:lowered.span) ~code:"E_WEB_IMAGE"
-          "The web export cannot draw an image yet: a draw image needs a host image resolver.")
-    | None -> Ok () in
+  let image_ids = List.filter_map (fun (s : C.statement) -> match s.node with
+    | Draw (Image {source=(_, id); _}) -> Some id | _ -> None) statements |> List.sort_uniq Int.compare in
+  let* images = if List.length image_ids > 64 then
+    Error (D.error ~span:lowered.span ~code:"E_WEB_IMAGE" "A web workspace owns at most 64 generated images.")
+    else List.fold_left (fun acc id -> let* acc = acc in let* entry = image_entry lowered id in Ok (entry :: acc)) (Ok []) image_ids
+      |> Result.map List.rev in
   let data = Buffer.create 4096 in
   let stored = Hashtbl.create 16 in
   let store values =
@@ -305,13 +355,18 @@ let files (doc : Doc.t) (lowered : lowered) : (files, D.t) result =
   let kernels = List.concat (List.mapi (fun k (e : region_entry) -> match Hashtbl.find_opt group_of k with
     | Some (g, _) -> if List.hd g.members = k then [kernel g.id g.wgsl] else []
     | None -> (match e.kernel with Some w -> [kernel (Printf.sprintf "k%d" k) w] | None -> [])) (Array.to_list entries)) in
+  let image_imports = String.concat "" (List.map (fun (imports, _, _, _) -> imports) images) in
+  let image_table = if images = [] then "" else "export const images = {"
+    ^ String.concat ",\n  " (List.map (fun (_, _, metadata, _) -> metadata) images) ^ "};\n" in
+  let kernels = kernels @ List.map (fun (_, _, _, (id, w)) -> kernel id w) images in
   let name = Doc.name doc in
-  Ok ([ "program.js", js ^ "\n" ^ regions ^ table;
+  Ok ([ "program.js", image_imports ^ js ^ "\n" ^ regions ^ table ^ image_table;
         "program.map", Flow_web.Js.frame_map program;
         "kernels.json", Flow_web.Kernel_table.table (List.map fst kernels);
         "kernels.wgsl", String.concat "\n" (List.map snd kernels);
         "data.bin", Buffer.contents data;
         "index.html", index_html name ]
+      @ List.map (fun (_, file, _, _) -> file) images
       @ List.map (fun (file, text) -> "runtime/" ^ file, text) Web_runtime.files)
 
 let load path =

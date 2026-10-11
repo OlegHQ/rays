@@ -30,8 +30,11 @@ type wgsl = private {
   input_widths : int array;
 }
 
-val kernel : Flow_ir.Packed.t -> (wgsl, Flow.Diagnostic.t) result
+val kernel : ?image:bool -> Flow_ir.Packed.t -> (wgsl, Flow.Diagnostic.t) result
 (** Elements are f32; dispatch [ceil(count/64)] workgroups in x. The status
     word becomes 1 when any computed value is not finite (exponent-bits test);
     the host zeroes it before dispatch and turns 1 into [E_KERNEL]. Dispatch is
-    one-dimensional, so [count <= 64 * maxComputeWorkgroupsPerDimension]. *)
+    one-dimensional, so [count <= 64 * maxComputeWorkgroupsPerDimension].
+    [image] replaces the sole vec2 source with pixel-center UV coordinates,
+    using the [image:width] and [image:height] uniforms; output must be vec4.
+    No UV storage buffer is allocated or uploaded. *)

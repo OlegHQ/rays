@@ -5,12 +5,12 @@ type lowered = {
   program : Flow_ir.Core.program;
   span : Flow.Diagnostic.span;  (** the draw graph *)
   root : Flow.Eval.residual option;  (** the residual whose state the program reads *)
+  plan : Flow.Eval.plan;  (** image producers referenced by the draw program *)
 }
 
 val lower : Editor_document.Workspace_doc.t -> (lowered, Flow.Diagnostic.t) result
 (** Run the static stage with graph inputs at their defaults and lower the first draw graph. A draw graph
-    that reaches a [sop] or [scene] graph, a host effect or an image is refused with the span of the
-    reference ([E_WEB_GRAPH], [E_WEB_HOST], [E_WEB_IMAGE]). *)
+    that reaches a [sop] or [scene] graph is refused with the reference's span ([E_WEB_GRAPH]). *)
 
 type files = (string * string) list
 (** Relative path and contents, in a fixed order. *)
@@ -33,9 +33,16 @@ val files : Editor_document.Workspace_doc.t -> lowered -> (files, Flow.Diagnosti
       one set with equal count and rate are merged by {!Flow_ir.Core_fuse.merge} into one kernel with an output
       each (id of the first member). Any other region is invoked on the CPU, since a frame that reads a value
       would need an in-frame readback, which is illegal on the web.
+    - Generated [image/map] producers compile through the packed compiler to WGSL vec4 output. Pixel-center UVs
+      are derived on the GPU without a UV buffer. [program.js] exports [images], keyed by plan id, with [kernel],
+      [args] (a core-compiled function for dimensions and scalar captures), [animated] and [frame]. The argument
+      functions are imported from content-addressed [image<ID>-<digest>.js] modules so watch reload cannot reuse
+      stale captures. The shared device converts output to straight-alpha RGBA8 (clamp, ties to even) and presents
+      its resident texture. Static images dispatch once per load, shared images at most once per frame. Capacity 64.
     - [data.bin]: little-endian doubles; offsets are multiples of 8.
     - [index.html] and [runtime/*.js].
-    Refused: an image ([E_WEB_IMAGE]), a region that is not a collecting single-output one
+    Refused: an image other than [image/map], image arguments requiring packed regions or state ([E_WEB_IMAGE]),
+    a region that is not a collecting single-output one
     ([E_WEB_REGION]), or one whose inputs change from frame to frame ([E_WEB_CAPTURE]), each with a span. *)
 
 val load : string -> string * (Editor_document.Workspace_doc.t, Flow.Diagnostic.t list) result

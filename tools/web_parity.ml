@@ -55,15 +55,17 @@ let entry buffers = function
 (* The native frames, as the editor runs them (lib/rays_editor/drawing.ml render_core). *)
 let native (lowered : Web_export.lowered) =
   let prepared = C.prepare lowered.program and state = E.create_state () and buffers = C.Buffers.create () in
+  let image = function E.Deferred (_, id) -> Ok (id + 1)
+    | _ -> Error (Flow.Diagnostic.error ~code:"E_IMAGE" "Expected an image plan node.") in
   List.init frames (fun k ->
     let i = k + 1 in
     let live = { (Frame_input.at_time (float i *. dt)) with dt; frame = i; tick = i; size; pointer = (100., 100.) } in
     C.Buffers.clear buffers;
     let drawn = ref (Error (Flow.Diagnostic.error ~code:"E_CORE" "The draw program did not run.")) in
     (match lowered.root with
-     | None -> drawn := C.draw prepared ~live ~size ~buffers
+     | None -> drawn := C.draw ~image prepared ~live ~size ~buffers
      | Some root ->
-         let execute r live = drawn := C.draw ~root:r prepared ~live ~size ~buffers; Some (Ok (E.Int 0)) in
+         let execute r live = drawn := C.draw ~root:r ~image prepared ~live ~size ~buffers; Some (Ok (E.Int 0)) in
          ignore (E.Private.force_with_executor ~state ~execute (E.Residual root) ~live));
     match !drawn with
     | Ok marks -> Printf.sprintf {|{"ok":%s}|} (list (entry buffers) (Array.to_list marks))

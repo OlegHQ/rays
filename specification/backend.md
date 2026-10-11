@@ -5,6 +5,8 @@ macOS on Apple Silicon with Metal available. Backend initialization either
 creates that native stack or returns a typed startup error; applications do
 not select an alternate renderer through environment variables or public API.
 Web export is a separate compiler target emitted from a Lisp workspace (`flow_web`, `specification/web-export/plan.md`), not a fallback: the native program never selects it.
+Generated `image/map` pixels use the shared packed compiler and WGSL target, then a GPU RGBA8 conversion and the
+existing textured-quad presenter on one WebGPU device; no native renderer or geometry dependency enters `flow_web`.
 An absent system-default Metal device maps to OGPU `No_adapter`. A failure reading the
 device's registry identifier remains `Device_lost`, with source operation
 `Metal.Device.registry_id`; other native failures and typed guard errors keep their kinds.

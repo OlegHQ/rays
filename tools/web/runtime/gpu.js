@@ -34,6 +34,25 @@ const WORKGROUP = 64;
 const fail = message => { throw Object.assign(new Error(message), { code: 'E_KERNEL' }); };
 const isBuffer = x => x && typeof x.mapAsync === 'function';
 const KIND = { read: 'read-only-storage', read_write: 'storage', uniform: 'uniform' };
+// Image_sink's RGBA8 conversion: straight alpha, clamp, nearest with ties to even, padded rows.
+const IMAGE_SINK = `
+@group(0) @binding(0) var<storage, read> colors: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> pixels: array<u32>;
+@group(0) @binding(2) var<uniform> size: vec4<u32>;
+fn channel(c: f32) -> u32 {
+  let q = clamp(c, 0.0, 1.0) * 255.0;
+  let n = u32(floor(q));
+  let f = q - f32(n);
+  return n + select(0u, 1u, f > 0.5 || (f == 0.5 && (n & 1u) == 1u));
+}
+@compute @workgroup_size(64)
+fn image_rgba8(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i >= size.x) { return; }
+  let c = colors[i];
+  pixels[(i / size.y) * size.z + i % size.y] = channel(c.x) | (channel(c.y) << 8u)
+    | (channel(c.z) << 16u) | (channel(c.w) << 24u);
+}`;
 
 export async function requestDevice(win = globalThis) {
   const say = text => { if (win.document?.body) win.document.body.textContent = text; else console.error(text); };
@@ -87,6 +106,9 @@ export async function createGpu(table, { onError = e => console.error(e), win = 
   };
   const pending = [];   // {staging, done, kernel}
   const maxBinding = device.limits.maxStorageBufferBindingSize;
+  const images = new Map();   // one texture per exported image (export caps these at 64)
+  let imagePipeline = null;
+  const releaseImages = () => { for (const t of images.values()) t.texture.destroy(); images.clear(); };
 
   const gpu = {
     device, kernels, compileMs,
@@ -101,6 +123,9 @@ export async function createGpu(table, { onError = e => console.error(e), win = 
       for (const k of kernels.values()) if (!keep.has(k.tableBuffer)) k.tableBuffer?.destroy();
       kernels.clear();
       for (const k of built) kernels.set(k.id, k);
+      for (const o of owned.values()) o.buffer.destroy();
+      owned.clear();
+      releaseImages();
     },
     // An input that stays on the device between dispatches: the elements as f32 (finite), in a buffer the caller destroys.
     upload(array) {
@@ -192,6 +217,44 @@ export async function createGpu(table, { onError = e => console.error(e), win = 
     },
     async flush() { await Promise.all(pending.map(p => p.promise)); gpu.poll(); },
     buffer: id => owned.get(id)?.buffer ?? null,
+    // A generated image stays on the shared device: vec4 producer -> padded RGBA8 -> sampled texture.
+    // Dimensions are logical image pixels, independent of the presentation canvas's DPR.
+    image(kernelId, { width, height, uniforms }) {
+      const count = width * height, pitch = Math.ceil(width * 4 / 256) * 256;
+      if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0
+        || width > device.limits.maxTextureDimension2D || height > device.limits.maxTextureDimension2D
+        || count * 16 > maxBinding || pitch * height > maxBinding
+        || Math.ceil(count / WORKGROUP) > device.limits.maxComputeWorkgroupsPerDimension)
+        throw Object.assign(new Error('Image dimensions exceed WebGPU storage or dispatch bounds.'), { code: 'E_IMAGE' });
+      if (kernels.get(kernelId)?.output_widths.join(',') !== '4') fail('Image kernel must return one vec4 per pixel.');
+      if (!imagePipeline) imagePipeline = device.createComputePipeline({ layout: 'auto',
+        compute: { module: device.createShaderModule({ code: IMAGE_SINK, label: 'image RGBA8' }), entryPoint: 'image_rgba8' } });
+      const { outputs } = gpu.dispatch(kernelId, { count, uniforms: { ...uniforms, 'image:width': width, 'image:height': height } });
+      let t = images.get(kernelId);
+      if (!t || t.w !== width || t.h !== height) {
+        const texture = device.createTexture({ label: kernelId, size: [width, height], format: 'rgba8unorm',
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC });
+        t?.texture.destroy();
+        t = { texture, view: texture.createView(), w: width, h: height };
+        images.set(kernelId, t);
+      }
+      const pixels = own(`${kernelId}:pixels`, pitch * height, U.STORAGE | U.COPY_SRC);
+      const size = own(`${kernelId}:size`, 16, U.UNIFORM | U.COPY_DST);
+      device.queue.writeBuffer(size.buffer, 0, Uint32Array.of(count, width, pitch / 4, 0));
+      const encoder = device.createCommandEncoder(), pass = encoder.beginComputePass();
+      pass.setPipeline(imagePipeline);
+      pass.setBindGroup(0, device.createBindGroup({ layout: imagePipeline.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: outputs[0].buffer, size: count * 16 } },
+        { binding: 1, resource: { buffer: pixels.buffer, size: pitch * height } },
+        { binding: 2, resource: { buffer: size.buffer, size: 16 } },
+      ] }));
+      pass.dispatchWorkgroups(Math.ceil(count / WORKGROUP));
+      pass.end();
+      encoder.copyBufferToTexture({ buffer: pixels.buffer, bytesPerRow: pitch, rowsPerImage: height }, { texture: t.texture }, [width, height]);
+      device.queue.submit([encoder.finish()]);
+      return t;
+    },
+    imageTexture: id => images.get(id) ?? null,
     // Tests only: a copy of the buffer's used bytes as f32. Production frames never read back.
     async readback(id) {
       const o = owned.get(id);
@@ -205,7 +268,7 @@ export async function createGpu(table, { onError = e => console.error(e), win = 
       staging.destroy();
       return out;
     },
-    dispose() { for (const o of owned.values()) o.buffer.destroy(); for (const k of kernels.values()) k.tableBuffer?.destroy(); owned.clear(); device.destroy(); },
+    dispose() { releaseImages(); for (const o of owned.values()) o.buffer.destroy(); for (const k of kernels.values()) k.tableBuffer?.destroy(); owned.clear(); device.destroy(); },
   };
   return gpu;
 }
