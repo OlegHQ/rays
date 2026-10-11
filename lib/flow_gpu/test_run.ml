@@ -50,6 +50,14 @@ let () = match Rays_execution.acquire_gpu () with
                 assert(Flow_gpu.Run.Private.input_uploads runner=3)
               end))
             (Test_program.fixtures count @ Test_program.vector_fixtures count)) [1024;65536];
+        (let program=Test_program.two_outputs()in
+        let runner=Flow_gpu.Run.create gpu pipelines (Test_program.ok(Flow_gpu.Emit.kernel program))in
+        Fun.protect ~finally:(fun()->Flow_gpu.Run.close runner)(fun()->
+          let live=Frame_input.at_time 1. in
+          let output=Test_program.ok(Flow_gpu.Run.dispatch runner (Test_program.ok(Flow_ir.Packed.Private.prepare program ~live)))in
+          let expected=Test_program.ok(Flow_ir.Packed.force_all program ~live)in
+          List.iteri(fun index expected->
+            assert(array(Test_program.ok(Flow_gpu.Run.readback ~index output))=array expected))expected));
         let hidden=Test_program.compile
           "(map (fn [x] (if (> (+ x t) 0) 0 (* (* (+ x t) 1e20) (* (+ x t) 1e20)))) (array/range 1024))"in
         let msl=Test_program.ok(Flow_gpu.Emit.kernel hidden)in

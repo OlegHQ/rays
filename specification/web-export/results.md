@@ -565,3 +565,36 @@ generic dispatch for `array/nth`, `array/count` and `frame/*`. Repaired in `Core
 256 locals, lazily allocated builders, one handler per block, invariants set at loop entry, direct operators). What
 remains in particles is the interpreter itself (10,000 elements times about 50 statements per map). The owner waived
 further performance work; the comparison tool was not kept.
+
+## 2026-10-11 — P2.8 kernels through core regions
+
+Commands: `_build/default/tools/bench_core.exe kernels` and `_build/default/tools/bench_gpu.exe`. Machine: Apple M1,
+OCaml 5.3.0, dune dev profile, load average 6.5 to 8.5 from other work (not quiet, one run only, no noise chasing).
+"switch" is `Packed.Private.core_regions`. Compile is `Packed.compile` of an already checked residual (median of
+three samples of 2,000 calls); force is one `Packed.force` of the compiled kernel (median of three samples).
+Forcing runs the same register program either way, so differences in the force column are noise.
+
+| Case | switch | domains | compile us | force ms |
+| --- | --- | ---: | ---: | ---: |
+| map 1,024 | off | 1 | 1.46 | 0.038 |
+| map 1,024 | off | 8 | 1.46 | 0.043 |
+| map 1,024 | on | 1 | 2.19 | 0.043 |
+| map 1,024 | on | 8 | 2.19 | 0.042 |
+| map 1,000,000 | off | 1 | 2.18 | 19.283 |
+| map 1,000,000 | off | 8 | 2.18 | 11.231 |
+| map 1,000,000 | on | 1 | 2.38 | 22.039 |
+| map 1,000,000 | on | 8 | 2.38 | 10.346 |
+| fused maps 1,000,000 | off | 1 | 4.42 | 20.020 |
+| fused maps 1,000,000 | off | 8 | 4.42 | 10.605 |
+| fused maps 1,000,000 | on | 1 | 4.27 | 20.045 |
+| fused maps 1,000,000 | on | 8 | 4.27 | 10.819 |
+| sum 1,000,000 | off | 1 | 1.11 | 18.003 |
+| sum 1,000,000 | off | 8 | 1.11 | 18.080 |
+| sum 1,000,000 | on | 1 | 1.28 | 18.028 |
+| sum 1,000,000 | on | 8 | 1.28 | 18.117 |
+
+Compile with the switch on is slower for three of four cases (map 1,024 +50 percent, map 1,000,000 +9, sum +15; fused
+pair -3); the absolute cost is under a microsecond and runs once per kernel, not per frame. Recorded in
+`DEFERRED.md`; not optimized. `bench_gpu.exe` (Metal emission is unchanged by the switch): noise kernel, 1,024 /
+65,536 / 1,000,000 elements, total seconds with readback 0.000188 / 0.002917 / 0.037077, display (no readback)
+0.000153 / 0.001235 / 0.017531; pipeline compile 0.008152 s once.

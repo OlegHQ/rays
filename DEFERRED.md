@@ -384,6 +384,12 @@ later. Numbers and commands are in `specification/web-export/results.md`.
   array captures; 40 residuals in the corpus) run as a counted frame-level loop over
   `Array_nth`, single-threaded, not as a region. Correct, not fast; widening
   `Packed.compile` would move them to parallel blocks or the GPU.
+- Compiling a packed kernel through `Core_region.lower` and `of_region` (P2.4 to P2.6) costs
+  more than walking the term: `tools/bench_core.exe kernels`, compile of one map over 1,024
+  elements 1.46 to 2.19 microseconds (+50 percent), 1,000,000-element map 2.18 to 2.38 (+9),
+  sum 1.11 to 1.28 (+15); fused pair unchanged. Likely cause: building the region record
+  and then `of_region` (validation pass, `dependent` recomputation, a second record copy).
+  Force time is unaffected. Once per kernel, not per frame, so left alone.
 
 ## Lisp gaps
 

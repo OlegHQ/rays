@@ -1,12 +1,12 @@
 (library
  (name flow_ir)
  (public_name rays.flow_ir)
- (modules operators packed core core_lower core_exec flow_ir core_draw core_marks)
+ (modules operators packed core core_region core_fuse core_lower core_exec flow_ir core_draw core_marks)
  (libraries flow param rays_math scene_command))
 
 (test
  (name test_core)
- (modules test_core)
+ (modules test_core test_program)
  (libraries flow_ir flow))
 
 (test
@@ -53,7 +53,8 @@
 
 (test
  (name test_packed)
- (modules test_packed)
+ (modules test_packed region_snapshot test_program)
+ (deps (glob_files snapshots/*.txt))
  (libraries flow_ir flow rays_math))
 
 (test
@@ -98,3 +99,14 @@
  (modules test_core_marks)
  (deps core_marks.expected)
  (libraries flow_ir flow scene_command))
+
+(test
+ (name test_region_snapshot)
+ (modules test_region_snapshot region_snapshot test_program)
+ (deps (glob_files snapshots/*.txt) ../sop_catalog/flow_manifest.sexp
+  ../../examples/particles/sketch.rays
+  ../../sketches/flow_shader/sketch.rays
+  ../../sketches/flow_particles_gpu/sketch.rays
+  ../../sketches/flow_image_kernel/sketch.rays)
+ (libraries flow_ir flow rays_math))
+

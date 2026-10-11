@@ -23,3 +23,12 @@ let vector_fixtures count =
      (map (fn [x] [x (+ x 1)]) " ^ array ^ "))");
    "vec4-input", compile ~fusion:false ("(let* [offset [t 1 2 3]]
      (map (fn [(p : vec4)] (+ p offset)) (map (fn [x] [x 1 2 3]) " ^ array ^ ")))")]
+
+(* Attribute fusion will produce several outputs; no surface does yet, so the
+   region is built by hand: a scalar and a vec2 from one register program. *)
+let two_outputs () =
+  let region = Flow_ir.Packed.to_region (compile "(map (fn [x] [x (+ x t)]) (array/range 1024))") in
+  let o = region.Flow_ir.Core.Region.outputs.(0) in
+  match Flow_ir.Packed.of_region {region with Flow_ir.Core.Region.outputs = [|[|o.(1)|]; [|o.(0); o.(1)|]|]} with
+  | Ok program -> program
+  | Error ds -> failwith (String.concat "; " (List.map Flow.Diagnostic.to_string ds))

@@ -1,7 +1,7 @@
 {
   "generator": "tools/api_manifest/api_manifest.exe",
   "kind": "stable_high_level",
-  "module_count": 178,
+  "module_count": 180,
   "modules": [
     {
       "api": [
@@ -487,11 +487,11 @@
     },
     {
       "api": [
-        "type msl = private { source : string ; entry : string ; interface : Ogpu.Shader.binding list ; uniform_layout : ( string * int * int ) list ; uniform_bytes : int ; table_seeds : int array ; output_width : int ; input_widths : int array }",
+        "type msl = private { source : string ; entry : string ; interface : Ogpu.Shader.binding list ; uniform_layout : ( string * int * int ) list ; uniform_bytes : int ; table_seeds : int array ; output_widths : int array ; input_widths : int array }",
         "val names : string list",
         "val kernel : Flow_ir.Packed.t -> ( msl , Flow.Diagnostic.t ) result"
       ],
-      "api_sha256": "3992d9c270063595d5beee665fad37555a10008b2b4709bd8dcf42cd00f7400a",
+      "api_sha256": "1c05dadc1bdab3f4116514a05a7dbbbb0b53554cde0e8ce91c8f8b55e14421dc",
       "excluded_legacy_symbols": [],
       "library": "flow_gpu",
       "module": "Emit",
@@ -561,8 +561,8 @@
         "type output",
         "val create : Rays_execution.gpu -> Pipelines.t -> Emit.msl -> t",
         "val dispatch : t -> Flow_ir.Packed.Private.inputs -> ( output , Flow.Diagnostic.t ) result",
-        "val readback : output -> ( Flow.Eval.value , Flow.Diagnostic.t ) result",
-        "val buffer : output -> Ogpu.Backend.buffer option",
+        "val readback : ? index : int -> output -> ( Flow.Eval.value , Flow.Diagnostic.t ) result",
+        "val buffer : ? index : int -> output -> Ogpu.Backend.buffer option",
         "val count : output -> int",
         "val width : output -> int",
         "val gpu_seconds : output -> float option",
@@ -576,7 +576,7 @@
         "val create_owned : Ogpu.Backend.device -> Ogpu.Backend.queue -> Pipelines.t -> Emit.msl -> t",
         "end"
       ],
-      "api_sha256": "4e38e5c693c8abca54dc9706019ded9c10a354b908c9abbe52752d68e7287e00",
+      "api_sha256": "6db8f4bd878619f2e8a730022b8ebbbfb6a8a10dbaede09167d1df2b6a75a4cf",
       "excluded_legacy_symbols": [],
       "library": "flow_gpu",
       "module": "Run",
@@ -735,14 +735,22 @@
         "type source = { site : Flow.Workspace.path ; owner : Flow.Workspace.path ; instance : int ; prefix : Flow.Workspace.path ; iter : iteration list ; span : Flow.Diagnostic.span option ; }",
         "type statement = { id : int ; source : source ; node : statement_node } and statement_node = | Assign of int * expr | Reset_call of int | If of { condition : int ; yes : statement list ; no : statement list } | Iterate of { sequence : int ; index : int ; item : int ; limit : int ; body : statement list } | Counted of { first : int ; last : int ; count : int ; index : int ; item : int ; limit : int ; init : statement list ; body : statement list } | Store of { sequence : int ; index : int ; value : int } | State_read of { slot : int ; result : int ; init : statement list ; initial : int } | State_peek of { slot : int ; found : int ; value : int } | State_write of { slot : int ; value : int } | Invoke of { region : int ; args : int list ; result : int }",
         "type state_slot = { source : source ; prefix : Flow.Workspace.path ; zone : Flow.Workspace.path ; plane : [ `Frame | `Host ] ; ty : Flow.Ty.t ; }",
-        "type region = Region_ref of Packed.t",
+        "module Region : sig",
+        "type instruction = | Const of float | Input of int * int * int | Uniform of int * int | Frame of string | Accumulator of int | Binary of Flow.Packed_ops.binary * int * int | Unary of Flow.Packed_ops.unary * int | Noise3 of int * int * int * int * int | Select of int * int * int",
+        "type iteration = Zip | Product",
+        "type result = Collect | Sum of bool | Accumulate of Flow.Workspace.term * bool",
+        "type origin = Flow.Workspace.path * int list",
+        "type count_source = Flow.Eval.residual -> Flow.Workspace.term -> origin option",
+        "type t = { residual : Flow.Eval.residual ; term : Flow.Workspace.term ; sources : ( Flow.Eval.residual * Flow.Workspace.term ) array ; widths : int array ; uniforms : Flow.Eval.value array ; uniform_names : ( string * string list ) array ; code : instruction array ; outputs : int array array ; count : int option ; origin : origin option ; iteration : iteration ; result : result ; skip : int array ; stages : ( Flow.Eval.residual * Flow.Workspace.term ) list ; fusion : bool ; dynamic : bool ; count_source : count_source ; body : Flow.Workspace.term ; binding_fn : string option ; sites : ( int * Flow.Workspace.path * int list ) list }",
+        "end",
+        "type region = Region.t",
         "type program = { constants : literal array ; locals : Flow.Ty.t array ; body : statement list ; results : int array ; state_slots : state_slot array ; regions : region array ; call_slots : int ; }",
         "val primitive_name : primitive -> string",
         "val literal_of_value : Flow.Eval.value -> literal option",
         "val value_of_literal : literal -> Flow.Eval.value",
         "val pp : Format.formatter -> program -> unit"
       ],
-      "api_sha256": "fff6cbf63bee14cf8131c0d4627b3d6351e07fa472abc53a81c3b4df18cf325b",
+      "api_sha256": "340b56807e06bc96d2af46bf954d200709c7368b99cf7cd2fd30b0a609bf9966",
       "excluded_legacy_symbols": [],
       "library": "flow_ir",
       "module": "Core",
@@ -764,6 +772,16 @@
     },
     {
       "api": [
+        "val fuse : Core.Region.t -> Core.Region.t"
+      ],
+      "api_sha256": "7e06cc5bd24620f7e69f69c57ebda578a56e0b4feda51e337e0ef16e5b8e2522",
+      "excluded_legacy_symbols": [],
+      "library": "flow_ir",
+      "module": "Core_fuse",
+      "source": "lib/flow_ir/core_fuse.mli"
+    },
+    {
+      "api": [
         "val lower : Flow.Eval.residual -> ( Core.program , string ) result"
       ],
       "api_sha256": "5488199d7045b421eb9a8da89764bab6dcdc24629b9ad00abed705b2d5f271b4",
@@ -774,9 +792,25 @@
     },
     {
       "api": [
+        "exception Unsupported",
+        "val lower : ? fusion : bool -> ? dynamic : bool -> ? count_source : Core.Region.count_source -> Flow.Eval.residual -> Flow.Workspace.term -> ( Core.Region.t , Flow.Diagnostic.t list ) result",
+        "val rebind : Core.Region.t -> Flow.Eval.residual -> Core.Region.t option",
+        "val width_of : Flow.Ty.t -> int",
+        "val components : Flow.Eval.value -> float array",
+        "val count_of : Flow.Eval.residual -> Flow.Workspace.term -> int option"
+      ],
+      "api_sha256": "00d72071c11ac438710de3f211cabf4c8801c85a902929621f196ce55e66a286",
+      "excluded_legacy_symbols": [],
+      "library": "flow_ir",
+      "module": "Core_region",
+      "source": "lib/flow_ir/core_region.mli"
+    },
+    {
+      "api": [
         "module Operators = Operators",
         "module Packed = Packed",
         "module Core = Core",
+        "module Core_region = Core_region",
         "module Core_lower = Core_lower",
         "module Core_exec = Core_exec",
         "val qualify_workspace : ? record : bool -> ? inputs : ( string * ( string * Flow.Eval.value ) list ) list -> ? observe : ( Flow.Workspace.path option -> Flow.Eval.residual -> unit ) -> Flow.Workspace.t -> ( Flow.Workspace.t * Flow.Eval.t , Flow.Diagnostic.t ) result",
@@ -831,7 +865,7 @@
         "val force_display : ? state : Flow.Eval.state -> ? reference : bool -> ? policy : Gpu.policy -> program -> live : Frame_input.t -> ( displayed , Flow.Diagnostic.t ) result",
         "end"
       ],
-      "api_sha256": "4ef3590325e57734b1fff3590c4cdd9161bbce5d168377ef0b2e6021fa543795",
+      "api_sha256": "9cd67ed7705c14646f0daf6385d785525a779fde59e49488fb05d0e9fc0d7b78",
       "excluded_legacy_symbols": [],
       "library": "flow_ir",
       "module": "Flow_ir",
@@ -855,13 +889,15 @@
         "type t",
         "type binary = Flow.Packed_ops.binary = Add | Sub | Mul | Div | Mod | Pow | Min | Max | Lt | Le | Gt | Ge | Eq | And | Or",
         "type unary = Flow.Packed_ops.unary = Sin | Cos | Sqrt | Abs | Not",
-        "type instruction = Const of float | Input of int * int * int | Uniform of int * int | Frame of string | Accumulator of int | Binary of binary * int * int | Unary of unary * int | Noise3 of int * int * int * int * int | Select of int * int * int",
+        "type instruction = Core.Region.instruction = Const of float | Input of int * int * int | Uniform of int * int | Frame of string | Accumulator of int | Binary of binary * int * int | Unary of unary * int | Noise3 of int * int * int * int * int | Select of int * int * int",
         "type origin = Flow.Workspace.path * int list",
         "type count_source = Flow.Eval.residual -> Flow.Workspace.term -> origin option",
         "val compile_result : ? fusion : bool -> ? count_source : count_source -> Flow.Eval.residual -> Flow.Workspace.term -> ( t , Flow.Diagnostic.t list ) Stdlib.result",
         "val compile : ? fusion : bool -> ? count_source : count_source -> Flow.Eval.residual -> Flow.Workspace.term -> t option",
         "val compile_template : ? count_source : count_source -> Flow.Eval.residual -> Flow.Workspace.term -> t option",
         "val rebind : t -> Flow.Eval.residual -> t option",
+        "val of_region : Core.Region.t -> ( t , Flow.Diagnostic.t list ) Stdlib.result",
+        "val to_region : t -> Core.Region.t",
         "val static_count : t -> int option",
         "val count_origin : t -> origin option",
         "val elementwise : t -> bool",
@@ -870,17 +906,19 @@
         "val provenance : t -> ( int * Flow.Workspace.path * int list ) list",
         "val site : t -> int * Flow.Workspace.path * int list",
         "val force : ? state : Flow.Eval.state -> ? elems : ( string * Flow.Eval.value ) list -> ? resolve : ( Flow.Eval.value -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> ? measure : ( ( unit -> float ) * ( t -> seconds : float -> reference : bool -> unit ) ) -> t -> live : Flow.Eval.live -> ( Flow.Eval.value , Flow.Diagnostic.t ) result",
+        "val force_all : ? state : Flow.Eval.state -> ? elems : ( string * Flow.Eval.value ) list -> ? resolve : ( Flow.Eval.value -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> ? measure : ( ( unit -> float ) * ( t -> seconds : float -> reference : bool -> unit ) ) -> t -> live : Flow.Eval.live -> ( Flow.Eval.value list , Flow.Diagnostic.t ) result",
         "val reference : ? state : Flow.Eval.state -> ? elems : ( string * Flow.Eval.value ) list -> ? resolve : ( Flow.Eval.value -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> t -> live : Flow.Eval.live -> ( Flow.Eval.value , Flow.Diagnostic.t ) result",
         "module Private : sig",
+        "val trace : ( ( t , Flow.Diagnostic.t list ) Stdlib.result -> unit ) ref",
         "val ordered_add : t -> bool",
         "val output_reachable : t -> bool array",
-        "type view = { code : instruction array ; widths : int array ; output : int array ; uniform_widths : int array ; collecting : bool ; }",
+        "type view = { code : instruction array ; widths : int array ; outputs : int array array ; uniform_widths : int array ; collecting : bool ; }",
         "val view : t -> view",
         "type inputs = { arrays : float array array ; uniforms : float array array ; frame : float array ; count : int }",
         "val prepare : ? state : Flow.Eval.state -> ? resolve : ( Flow.Eval.value -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> ? measure : ( ( unit -> float ) * ( t -> seconds : float -> reference : bool -> unit ) ) -> t -> live : Flow.Eval.live -> ( inputs , Flow.Diagnostic.t ) result",
         "end"
       ],
-      "api_sha256": "f04aa97d7bdc811e033b0beda94a0667f43040faa521c87991eb7c4d54bf77b2",
+      "api_sha256": "1dc0cfb6650aae238cfe638bbd92731b6b3b8a824df5fa13a63bcfa9fc293e99",
       "excluded_legacy_symbols": [],
       "library": "flow_ir",
       "module": "Packed",

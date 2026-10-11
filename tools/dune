@@ -136,7 +136,7 @@
 (executable
  (name bench_core)
  (modules bench_core)
- (libraries flow flow_ir frame_input unix))
+ (libraries flow flow_ir frame_input rays_math unix))
 
 (executable
  (name bench_marks)

@@ -3,7 +3,7 @@
 type t
 type binary = Flow.Packed_ops.binary = Add | Sub | Mul | Div | Mod | Pow | Min | Max | Lt | Le | Gt | Ge | Eq | And | Or
 type unary = Flow.Packed_ops.unary = Sin | Cos | Sqrt | Abs | Not
-type instruction = Const of float | Input of int * int * int
+type instruction = Core.Region.instruction = Const of float | Input of int * int * int
   | Uniform of int * int | Frame of string | Accumulator of int
   | Binary of binary * int * int | Unary of unary * int
   | Noise3 of int * int * int * int * int | Select of int * int * int
@@ -28,6 +28,11 @@ val rebind : t -> Flow.Eval.residual -> t option
     code with the next step's immutable bindings. A changed function body or a
     fused lexical scope requires a fresh specialization. *)
 
+val of_region : Core.Region.t -> (t, Flow.Diagnostic.t list) Stdlib.result
+(** The register program of a region; refuses a region whose registers are not defined in order. *)
+
+val to_region : t -> Core.Region.t
+
 val static_count : t -> int option
 val count_origin : t -> origin option
 val elementwise : t -> bool
@@ -51,18 +56,29 @@ val force : ?state:Flow.Eval.state -> ?elems:(string * Flow.Eval.value) list ->
   ?resolve:(Flow.Eval.value -> (Flow.Eval.value, Flow.Diagnostic.t) result) ->
   ?measure:((unit -> float) * (t -> seconds:float -> reference:bool -> unit)) ->
   t -> live:Flow.Eval.live -> (Flow.Eval.value, Flow.Diagnostic.t) result
+val force_all : ?state:Flow.Eval.state -> ?elems:(string * Flow.Eval.value) list ->
+  ?resolve:(Flow.Eval.value -> (Flow.Eval.value, Flow.Diagnostic.t) result) ->
+  ?measure:((unit -> float) * (t -> seconds:float -> reference:bool -> unit)) ->
+  t -> live:Flow.Eval.live -> (Flow.Eval.value list, Flow.Diagnostic.t) result
+(** One packed array per output, in output order. A program with several outputs
+    only collects and has no reference fallback; [force] is the single-output
+    accessor and refuses such a program. *)
+
 val reference : ?state:Flow.Eval.state -> ?elems:(string * Flow.Eval.value) list ->
   ?resolve:(Flow.Eval.value -> (Flow.Eval.value, Flow.Diagnostic.t) result) ->
   t -> live:Flow.Eval.live -> (Flow.Eval.value, Flow.Diagnostic.t) result
 
 module Private : sig
+  val trace : ((t, Flow.Diagnostic.t list) Stdlib.result -> unit) ref
+  (** Called with every public compilation result; tests record snapshots through it. *)
+
   val ordered_add : t -> bool
   (** Recognizes the exact component-wise non-collecting ordered-add program. *)
 
   val output_reachable : t -> bool array
   (** Fresh instruction mask used by GPU qualification and code generation. *)
 
-  type view = {code : instruction array; widths : int array; output : int array;
+  type view = {code : instruction array; widths : int array; outputs : int array array;
     uniform_widths : int array; collecting : bool; }
   val view : t -> view
   (* Borrowed immutable arrays for downstream compilation. *)

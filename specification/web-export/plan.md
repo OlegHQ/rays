@@ -730,20 +730,33 @@ Phase 1
   The closure tier (`compile`, `cnode`, `fast`, `fast_of`) and both switches (`compile_residuals`, `core_residuals`) are deleted; core residuals are the only path, `Closure` stays the tier name. `--ship` and `@test/test_workspace_ir` green on 2026-10-11 (the API manifest is promoted in the next commit). `tools/bench_core.exe` keeps the walker and core rows.
 
 Phase 2
-- [ ] P2.1 H
-- [ ] P2.2 S
-- [ ] P2.3 S
-- [ ] P2.4 S
-- [ ] P2.5 S
-- [ ] P2.6 S
-- [ ] P2.7 H
-- [ ] P2.8 H
-- [ ] P2.9 S
-- [ ] P2.R R
-- [ ] P2.10 S
+- [x] P2.1 H
+  Done 2026-10-11. `Packed.Private.trace` records every public compilation result; `lib/flow_ir/snapshots/` holds the register programs (`code`, `widths`, `output`, `uniform_widths`, `collecting`, `gpu_refusals`, refusals with spans) of `test_packed` (deduplicated), the `test_program` fixtures and the kernels of `examples/particles`, `sketches/flow_shader`, `flow_image_kernel`; `test_program.ml` moved to `lib/flow_ir` and is linked into `lib/flow_gpu` by `copy_files`. `sketches/flow_particles_gpu` is recorded as skipped: it holds a `sop` graph that `flow_ir` tests cannot check. Two generation runs were byte-identical. `@lib/flow_ir/runtest` and `@lib/flow_gpu/runtest` pass.
+- [x] P2.2 S
+  Done 2026-10-11. `Core.Region` (instruction, iteration, result, origin, `t`) replaces `Region_ref of Packed.t`; `Core` no longer depends on `Packed`. A region is a register program (instruction n defines register n) plus sources, widths, captured uniforms, count, origin, skip, stages and the compile options, reusing `Flow.Packed_ops.binary`/`unary`. `Core.pp` prints it in full. Because `Packed` now depends on `Core`, `Packed.of_region` and `Packed.to_region` (lossless, `of_region` checks register order and the 64-register limit) land here; `Core_lower`/`Core_exec` convert at the boundary. test_core prints a region and round-trips it. `@lib/flow_ir/runtest`, `@lib/flow_gpu/runtest` pass; snapshots untouched.
+- [x] P2.3 S
+  Done 2026-10-11. `Core_region.lower` (new module, so `Packed` can call it without a cycle; the concurrent Phase 3 work in `core_lower.ml` is untouched) lowers a map, reduce, numeric loop or `array/sum` to a `Core.Region.t`, covering exactly what `Packed.expression` accepts and refusing with the same `E_PACKED_*` codes, spans and messages. `captured_value`, `count_of`, `reads_names` and the like moved there; `Packed` aliases them. Every program `test_packed` compiles (refusal cases included) is also lowered and compared with the old compiler (register program, count, origin, skip, sites, uniforms, or the same diagnostics). `@lib/flow_ir/runtest`, `@lib/flow_gpu/runtest` pass.
+- [x] P2.4 S
+  Done 2026-10-11. `Packed.Private.core_regions` (default off) routes `compile_impl` through `Core_region.lower` and `of_region` (the old `fuse_maps` still fuses the result until P2.6). Both snapshot tests also run in dune with the switch on (`REGION_CORE=1`) and match the P2.1 files byte for byte. With the default temporarily flipped, all of `@lib/flow_ir/runtest` (template counts of `test_frame_kernel` included) and `@lib/flow_gpu/runtest` (Metal goldens) passed. (`of_region` itself arrived in P2.2, which `Core`/`Packed` needed to stop depending on each other.)
+- [x] P2.5 S
+  Done 2026-10-11. The live-or-dynamic `Uniform` rule and `captured_value` were already part of `Core_region.lower` (P2.3: a template is `lower ~dynamic:true`). `rebind` now works on a region (`Core_region.rebind`); `Packed.rebind` delegates to it through `to_region`/`of_region`, and the term-based copy is deleted (it is not a term walker). `test_frame_kernel` template counts (2 compiled, 10 rebound, 12 executed; 1/5/6) are unchanged with the switch on and off; all of `@lib/flow_ir/runtest` passes with the default flipped.
+- [x] P2.6 S
+  Done 2026-10-11. `Core_fuse.fuse` (new module) ports `fuse_maps` to regions with the same rules: Collect + Zip children of equal static count or origin, a shared-instruction table (`Marshal` key, so equal instructions share a register), the 64-register limit declining to the unfused region, count/origin recorded even without a fusable child. With `core_regions` on, `compile_impl` is `Core_region.lower` then `Core_fuse.fuse` then `of_region`; the old `fuse_maps` serves the switch-off path until P2.10. P2.1 snapshots identical with the switch on (dune reruns both snapshot tests with it); all of `@lib/flow_ir/runtest` and `@lib/flow_gpu/runtest` pass with the default flipped.
+- [x] P2.7 H
+  Done 2026-10-11 with `core_regions` temporarily defaulted on (not committed): `@lib/flow_ir/runtest`, `@lib/flow_gpu/runtest` (three Metal goldens) and `@runtest-native` all passed (exit 0, including `runtime_live_resize`); `git status` shows `lib/flow_gpu/goldens` and the P2.1 snapshots untouched.
+- [x] P2.8 H
+  Done 2026-10-11. `tools/bench_core.exe kernels` (map 1,024 and 1,000,000, fused pair, sum loop; switch off and on; 1 and 8 domains) and `bench_gpu.exe` recorded in results.md. Force times are the same program, so unchanged within noise; compile with the switch on regresses by up to 50 percent (under a microsecond, once per kernel), recorded in DEFERRED.md per the owner decision that speed gates never block.
+- [x] P2.9 S
+  Done 2026-10-11. `Packed.Private.core_regions` now defaults to true; the dune reruns of the snapshot tests use `REGION_CORE=0` to keep the term-walking path covered until P2.10. Gates on the flipped tree: `@all`, `@runtest` (SDL dummy, includes `@test/test_workspace_ir`, 42 standard files, 13 fixtures, cooked payloads equal), `@runtest-native` and `@smoke` all exit 0, snapshots and Metal goldens untouched. The only `@runtest` failure was the API manifest for the `Core.Region`/`Core_region`/`Packed` interfaces of P2.2 to P2.6, promoted in the next commit.
+- [x] P2.R R
+  Review 2026-10-11: `git log 02ef72f5..HEAD -- lib/flow_ir/snapshots lib/flow_gpu/goldens` is empty, so the snapshots and the three Metal goldens are byte-identical since P2.1; P2.9 gates were green. Dead in `packed.ml` now that `core_regions` defaults on: the `expression` record type, `Compile_refused`, the term-walking branch of `compile_impl` (the whole `try` body), `source_program`, `fuse_maps`, the aliases `captured_value`, `count_of`, `count_of_sources`, `reads_names`, and the `core_regions` switch with its `Private` export and the `REGION_CORE` dune reruns. Still live: `force`, `Private.view`/`inputs`/`prepare`, `gpu_refusals`, `of_region`, `to_region`, `rebind`, `width_of`, `components`, `Unsupported`.
+- [x] P2.10 S
+  Done 2026-10-11. Deleted from `packed.ml` (864 to 433 lines): the term-walking `compile_impl` body, `expression`, `source_program`, `fuse_maps`, `Compile_refused`, the `captured_value`/`count_of`/`count_of_sources`/`reads_names` aliases and the `core_regions` switch; `compile_impl` is now `Core_region.lower`, `Core_fuse.fuse`, `of_region`. Kept: `force`, `Private.view`/`inputs`/`prepare`, `gpu_refusals`, `of_region`, `to_region`, `rebind`. `test_packed`'s old-against-new lowering comparison and the `REGION_CORE=0` dune reruns are removed with the path they compared; the P2.1 snapshots (unchanged) are the oracle. `bench_core.exe kernels` lost its switch column. Gates: `@all`, `@runtest` (SDL dummy; includes `@test/test_workspace_ir`), `@runtest-native` and `@smoke` pass; the API manifest diff is promoted in the next commit.
 
 Phase 3
 - [x] P3.1 H
+  Order dependence explained 2026-10-11 (b147a1ec): text images take ids from the process-global
+  texture counter and `Render_ir.serialize` includes them; not frame state. One process per workspace.
   Snapshots taken 2026-10-11 before any change to the drawing path: 15 eligible workspaces, 640x480,
   pointer (100, 100) with no buttons, fixed dt 1/60, frames 0..30 rendered in sequence, frames 0, 1 and 30
   recorded as SHA-256 of `Render_ir.serialize` (`test/draw_snapshots/`, generated by `test/test_draw_snapshot.ml`).
@@ -763,15 +776,26 @@ Phase 3
 - [x] P3.3b H
   `flow_ir` may depend on `scene_command` (dependency-free marks contract) 2026-10-11: added to
   `lib/flow_ir/dune`, the gate's `only` table, AGENTS.md and backend.md. `@test/runtest` passed.
-- [ ] P3.4 S
-- [ ] P3.5 S
-- [ ] P3.6 S
-- [ ] P3.7 S
-- [ ] P3.8 S
-- [ ] P3.9 S
-- [ ] P3.10 S
-- [ ] P3.11 H
-- [ ] P3.12 S
+- [x] P3.4 S
+  Done 2026-10-11 on branch `worktree-agent-a30ec1f3dd78d1287` (commit b42c19e6); focused gates green.
+- [x] P3.5 S
+  Done 2026-10-11 on branch `worktree-agent-a30ec1f3dd78d1287` (commit 9caa36e2); focused gates green.
+- [x] P3.6 S
+  Done 2026-10-11 on branch `worktree-agent-a30ec1f3dd78d1287` (commit a15b7deb); focused gates green.
+- [x] P3.7 S
+  Done 2026-10-11 on branch `worktree-agent-a30ec1f3dd78d1287` (commit dae1acd7); focused gates green.
+- [x] P3.8 S
+  26 draw graphs serialize byte for byte the same through `Drawing` and core/marks/`Marks_scene`;
+  text and image are checked at the marks level only. Adds `Scene.Affine` (six coefficients kept verbatim).
+  Done 2026-10-11 on branch `worktree-agent-a30ec1f3dd78d1287` (commit 99ae9860); focused gates green.
+- [x] P3.9 S
+  2026-10-11, branch `worktree-agent-a30ec1f3dd78d1287`, 3bcc3199: `Drawing.core_drawing` switch; all 15 P3.1 snapshots byte-identical and `@test/test_workspace_pixels` green with it on.
+- [x] P3.10 S
+  2026-10-11, branch `worktree-agent-a30ec1f3dd78d1287`, f36a55a5: kept GPU path. `Marks` has no GPU attribute, so a frame with a GPU backend and a `draw/circles` node still uses the old arm and its token; everything else is core. The contract-level GPU buffer lands with P4.9. `@runtest-native` green.
+- [x] P3.11 H
+  2026-10-11, branch `worktree-agent-a30ec1f3dd78d1287`, d3896d87: `tools/bench_marks.ml`. Animated circles/rects at 10k to 1M: core path 4 to 6 times faster, about 45% fewer bytes (results in the P3.11 report; static rows are retention hits).
+- [x] P3.12 S
+  2026-10-11, branch `worktree-agent-a30ec1f3dd78d1287`, 982eff2a: `core_drawing` defaults on. `@all`, default suite (API manifest diff only), `@smoke`, `@runtest-native`, pixels green. Old arms still tested through `--arms` and the switch-off pixel rule.
 - [ ] P3.R R
 - [ ] P3.13 S
 
@@ -780,7 +804,8 @@ Phase 4
 - [ ] P4.2 S
 - [ ] P4.3 S
 - [ ] P4.4 S
-- [ ] P4.5 S
+- [x] P4.5 S
+  Done 2026-10-11. `Core.Region.t.output : int array` is now `outputs : int array array` (component registers per output; `Packed.of_region` refuses an empty list, or several outputs unless the region collects). `Packed.Private.view.outputs` is the same. `Packed.force_all` returns one packed array per output (`Eval.value list`); `Packed.force` stays the single-output accessor and errors on a multi-output program, which has no reference fallback. `Core_fuse` fuses a multi-output parent but never absorbs a multi-output child. The Metal emitter declares one buffer per output (`output` when single, `output0..` otherwise) at bindings `n..n+k-1`, then uniforms, status, table; `Emit.msl.output_width` became `output_widths`; `Run` owns one buffer per output and `Run.readback ?index`/`Run.buffer ?index` pick one. A single-output program prints as before: the P2.1 snapshots and the `arithmetic`, `select`, `noise` goldens are byte-identical (no mechanical reformat was needed); the new `two_outputs.metal` golden and the `Test_program.two_outputs` fixture (built at region level) are checked by `test_emit`, `test_packed` (1 and 8 domains, byte-equal) and natively by `test_run`. `@lib/flow_ir/runtest`, `@lib/flow_gpu/runtest`, `@runtest-native` pass.
 - [ ] P4.6 S
 - [ ] P4.7 S
 - [ ] P4.8 S

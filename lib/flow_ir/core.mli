@@ -78,7 +78,31 @@ type state_slot = {
   source : source; prefix : Flow.Workspace.path; zone : Flow.Workspace.path;
   plane : [ `Frame | `Host ]; ty : Flow.Ty.t;
 }
-type region = Region_ref of Packed.t
+(* A region: a pure numeric loop body over packed arrays, as a register program
+    (instruction [n] defines register [n] from earlier registers). *)
+module Region : sig
+  type instruction =
+    | Const of float | Input of int * int * int  (** source, width, component *)
+    | Uniform of int * int | Frame of string | Accumulator of int
+    | Binary of Flow.Packed_ops.binary * int * int | Unary of Flow.Packed_ops.unary * int
+    | Noise3 of int * int * int * int * int | Select of int * int * int
+  type iteration = Zip | Product
+  type result = Collect | Sum of bool | Accumulate of Flow.Workspace.term * bool
+  type origin = Flow.Workspace.path * int list
+  type count_source = Flow.Eval.residual -> Flow.Workspace.term -> origin option
+  type t = {
+    residual : Flow.Eval.residual; term : Flow.Workspace.term;
+    sources : (Flow.Eval.residual * Flow.Workspace.term) array; widths : int array;
+    uniforms : Flow.Eval.value array; uniform_names : (string * string list) array;
+    code : instruction array; outputs : int array array;
+    count : int option; origin : origin option;
+    iteration : iteration; result : result; skip : int array;
+    stages : (Flow.Eval.residual * Flow.Workspace.term) list;
+    fusion : bool; dynamic : bool; count_source : count_source;
+    body : Flow.Workspace.term; binding_fn : string option;
+    sites : (int * Flow.Workspace.path * int list) list }
+end
+type region = Region.t
 
 type program = {
   constants : literal array; locals : Flow.Ty.t array;

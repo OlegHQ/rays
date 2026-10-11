@@ -71,7 +71,30 @@ type state_slot = {
   source : source; prefix : Flow.Workspace.path; zone : Flow.Workspace.path;
   plane : [ `Frame | `Host ]; ty : Flow.Ty.t;
 }
-type region = Region_ref of Packed.t
+module Region = struct
+  type instruction =
+    | Const of float | Input of int * int * int
+    | Uniform of int * int | Frame of string | Accumulator of int
+    | Binary of Flow.Packed_ops.binary * int * int | Unary of Flow.Packed_ops.unary * int
+    | Noise3 of int * int * int * int * int | Select of int * int * int
+  type iteration = Zip | Product
+  type result = Collect | Sum of bool | Accumulate of Flow.Workspace.term * bool
+  type origin = Flow.Workspace.path * int list
+  type count_source = Flow.Eval.residual -> Flow.Workspace.term -> origin option
+  type t = {
+    residual : Flow.Eval.residual; term : Flow.Workspace.term;
+    sources : (Flow.Eval.residual * Flow.Workspace.term) array; widths : int array;
+    uniforms : Flow.Eval.value array; uniform_names : (string * string list) array;
+    code : instruction array;
+    outputs : int array array; (* component registers of each output; [Collect] regions only may have several *)
+    count : int option; origin : origin option;
+    iteration : iteration; result : result; skip : int array;
+    stages : (Flow.Eval.residual * Flow.Workspace.term) list;
+    fusion : bool; dynamic : bool; count_source : count_source;
+    body : Flow.Workspace.term; binding_fn : string option;
+    sites : (int * Flow.Workspace.path * int list) list }
+end
+type region = Region.t
 
 type program = {
   constants : literal array; locals : Flow.Ty.t array;
@@ -206,9 +229,26 @@ let pp fmt p =
   Array.iteri (fun n (s : state_slot) -> out "  state[%d] : %s plane=%s prefix=" n (Flow.Ty.to_string s.ty)
     (match s.plane with `Frame -> "frame" | `Host -> "host"); path s.prefix; out " zone="; path s.zone;
     source s.source; out "\n") p.state_slots;
-  Array.iteri (fun n (Region_ref r) ->
-    let v = Packed.Private.view r in
-    out "  region[%d] instructions=%d outputs=[" n (Array.length v.code);
-    separated (fun n -> out "%d" n) (Array.to_list v.output); out "]\n") p.regions;
+  Array.iteri (fun n (r : Region.t) ->
+    let names a = String.concat " " (Array.to_list (Array.map string_of_int a)) in
+    out "  region[%d] %s %s count=%s widths=[%s] output=[%s] uniforms=%d skip=[%s] stages=%d\n" n
+      (match r.iteration with Region.Zip -> "zip" | Product -> "product")
+      (match r.result with Collect -> "collect" | Sum zero -> if zero then "sum0" else "sum"
+        | Accumulate (_, scan) -> if scan then "scan" else "fold")
+      (match r.count with Some c -> string_of_int c | None -> "?")
+      (names r.widths) (String.concat " | " (Array.to_list (Array.map names r.outputs))) (Array.length r.uniforms) (names r.skip) (List.length r.stages);
+    Array.iteri (fun i (x : Region.instruction) ->
+      out "    r%d = " i;
+      (match x with
+       | Const f -> out "%s" (Flow.Lisp.float f)
+       | Input (s, w, c) -> out "input[%d].%d/%d" s c w
+       | Uniform (u, c) -> out "uniform[%d].%d" u c
+       | Frame name -> out "frame.%s" name
+       | Accumulator c -> out "accumulator.%d" c
+       | Binary (op, a, b) -> out "%s(r%d r%d)" (primitive_name (Numeric op)) a b
+       | Unary (op, a) -> out "%s(r%d)" (primitive_name (Math op)) a
+       | Noise3 (x, y, z, seed, octaves) -> out "noise3(r%d r%d r%d seed=%d octaves=%d)" x y z seed octaves
+       | Select (c, a, b) -> out "select(r%d r%d r%d)" c a b);
+      out "\n") r.code) p.regions;
   statements 1 p.body;
   out "  return "; separated local (Array.to_list p.results); out "\n"

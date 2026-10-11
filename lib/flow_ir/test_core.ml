@@ -64,3 +64,21 @@ let () =
   #5 state[0] <- %3 @["g" "value"] owner=["g"] instance=2 iter=[3] span=10..20
   return %3
 |}
+
+(* A region prints its register program; Packed rebuilds the same program from it. *)
+let () =
+  let packed = Test_program.compile "(map (fn [x] (+ (* x 2) t)) (array/range 4))" in
+  let region = Flow_ir.Packed.to_region packed in
+  check {(program [||] [||] [] [||]) with regions = [|region|]}
+{|core
+  region[0] zip collect count=4 widths=[1] output=[4] uniforms=0 skip=[] stages=1
+    r0 = input[0].0/1
+    r1 = 2.0
+    r2 = *(r0 r1)
+    r3 = frame.t
+    r4 = +(r2 r3)
+  return 
+|};
+  match Flow_ir.Packed.of_region region with
+  | Ok again -> assert (Flow_ir.Packed.Private.view again = Flow_ir.Packed.Private.view packed)
+  | Error _ -> assert false

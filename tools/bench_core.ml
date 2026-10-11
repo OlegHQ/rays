@@ -1,4 +1,5 @@
-(* One scalar residual evaluated by the tree walker and the core executor. Median of three samples per row, one domain. *)
+(* Scalar rows by default; `kernels` times packed kernels (the core-region switch is gone: compare against commit 035c1506^).
+   One scalar residual evaluated by the tree walker and the core executor. Median of three samples per row, one domain. *)
 module E = Flow.Eval
 module I = Flow_ir
 
@@ -27,7 +28,7 @@ let measure force =
   let samples = Array.init 3 (fun _ -> sample ()) in
   median (Array.map fst samples), median (Array.map snd samples)
 
-let () =
+let scalar () =
   let value = List.assoc "g" (ok (E.static (check ("(workspace w (graph g :context value " ^ body ^ "))")))).results in
   let program = ok (I.Executor.compile value) in
   let reference = E.Private.force_reference value ~live in
@@ -46,3 +47,43 @@ let () =
   match rows with
   | [_, walker, _; _, core, _] -> Printf.printf "walker/core ratio %.2f\n" (walker /. core)
   | _ -> ()
+
+(* Packed kernels: compile cost (microseconds) and force time per call, switch off and on, 1 and 8 domains. *)
+let kernel_residual body =
+  let ws = Flow.Workspace.check ~ops:I.Operators.all catalog
+      (ok (Flow.Syntax.parse ("(workspace w (graph g :context value (let* [tested " ^ body ^ "] 0.0)))"))) in
+  match ws with
+  | Some ws, [] ->
+      (match List.assoc ["g"; "tested"] (ok (E.static ~record:true ws)).records |> List.hd |> snd with
+       | E.Residual r -> r
+       | _ -> failwith "kernel did not defer")
+  | _ -> failwith "kernel does not check"
+
+let time_median ~repeat f =
+  let sample () =
+    let start = Unix.gettimeofday () in
+    for _ = 1 to repeat do f () done;
+    (Unix.gettimeofday () -. start) /. float repeat in
+  median (Array.init 3 (fun _ -> sample ()))
+
+let kernels () =
+  let map n = Printf.sprintf "(map (fn [x] (+ (* x 2) t)) (array/range %d))" n in
+  let cases = [
+    "map 1,024", map 1024, 4000;
+    "map 1,000,000", map 1_000_000, 5;
+    "fused maps 1,000,000", Printf.sprintf "(map (fn [y] (* y 0.5)) %s)" (map 1_000_000), 5;
+    "sum 1,000,000", "(sum [x (array/range 1000000)] (* x t))", 5 ] in
+  Printf.printf "Packed kernels; median of 3 samples; compile in microseconds, force in milliseconds\n";
+  Printf.printf "%-22s %-6s %12s %12s\n" "case" "domains" "compile us" "force ms";
+  List.iter (fun (label, body, repeat) ->
+    let r = kernel_residual body in
+    let term = (E.Private.residual_view r).term in
+    let compile = time_median ~repeat:2000 (fun () -> ignore (I.Packed.compile r term)) in
+      let packed = Option.get (I.Packed.compile r term) in
+      List.iter (fun domains ->
+        let force = Rays_math.Parallel.run ~domains (fun () ->
+          time_median ~repeat (fun () -> ignore (ok (I.Packed.force packed ~live)))) in
+        Printf.printf "%-22s %-6d %12.2f %12.3f\n%!" label domains
+          (compile *. 1e6) (force *. 1e3)) [1; 8]) cases
+
+let () = if Array.length Sys.argv > 1 && Sys.argv.(1) = "kernels" then kernels () else scalar ()
