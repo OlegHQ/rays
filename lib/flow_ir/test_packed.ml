@@ -1,4 +1,5 @@
 module E = Flow.Eval
+let () = Region_snapshot.start ()
 module I = Flow_ir
 let ok = function Ok x -> x | Error d -> failwith (Flow.Diagnostic.to_string d)
 let checked ?(ops = []) body =
@@ -281,3 +282,5 @@ let () =
        parity value packed
    | _ -> assert false);
   print_endline "Packed diagnostics: refusal reasons/spans, 64-register boundary, captures and unfused fallback passed"
+
+let () = Region_snapshot.finish "test_packed"

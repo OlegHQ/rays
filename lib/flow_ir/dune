@@ -53,7 +53,8 @@
 
 (test
  (name test_packed)
- (modules test_packed)
+ (modules test_packed region_snapshot)
+ (deps (glob_files snapshots/*.txt))
  (libraries flow_ir flow rays_math))
 
 (test
@@ -86,3 +87,13 @@
  (name test_core_errors)
  (modules test_core_errors)
  (libraries flow_ir flow))
+
+(test
+ (name test_region_snapshot)
+ (modules test_region_snapshot region_snapshot test_program)
+ (deps (glob_files snapshots/*.txt) ../sop_catalog/flow_manifest.sexp
+  ../../examples/particles/sketch.rays
+  ../../sketches/flow_shader/sketch.rays
+  ../../sketches/flow_particles_gpu/sketch.rays
+  ../../sketches/flow_image_kernel/sketch.rays)
+ (libraries flow_ir flow rays_math))

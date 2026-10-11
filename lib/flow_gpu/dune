@@ -1,3 +1,5 @@
+(copy_files ../flow_ir/test_program.ml)
+
 (library
  (name flow_gpu)
  (public_name rays.flow_gpu)

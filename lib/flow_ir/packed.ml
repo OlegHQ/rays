@@ -513,9 +513,12 @@ and fuse_maps t =
 
 let static_count t = t.count
 let count_origin t = t.origin
-let compile_result ?fusion ?count_source r term = compile_impl ?fusion ?count_source r term
+let trace : ((t, Flow.Diagnostic.t list) Stdlib.result -> unit) ref = ref ignore
+let traced result = !trace result; result
+let compile_result ?fusion ?count_source r term = traced (compile_impl ?fusion ?count_source r term)
 let compile ?fusion ?count_source r term = compile_result ?fusion ?count_source r term |> Result.to_option
-let compile_template ?count_source r term = compile_impl ~dynamic:true ?count_source r term |> Result.to_option
+let compile_template ?count_source r term =
+  traced (compile_impl ~dynamic:true ?count_source r term) |> Result.to_option
 let rebind t residual =
   let view = E.Private.residual_view residual in
   if not t.dynamic || List.length t.stages <> 1 || t.term != view.term || view.previous
@@ -815,6 +818,7 @@ and force_uniforms ~state ?elems ?resolve ?measure t ~live =
   | _ -> assert false
 
 module Private = struct
+  let trace = trace
   let ordered_add = ordered_add
   let output_reachable = output_reachable
   type view = {code : instruction array; widths : int array; output : int array;

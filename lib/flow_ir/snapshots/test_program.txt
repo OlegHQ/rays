@@ -1,0 +1,76 @@
+program
+  r0 = Input 0 1 0
+  r1 = Const 0x1.47ae147ae147bp-6
+  r2 = Binary Mul 0 1
+  r3 = Frame "t"
+  r4 = Const 0x1p-2
+  r5 = Const 0x1.fp+4
+  r6 = Const 0x1.8p+1
+  r7 = Noise3 2 3 4 seed=31 octaves=3
+  widths [1]
+  output [7]
+  uniform_widths []
+  collecting true
+
+program
+  r0 = Input 0 1 0
+  r1 = Frame "t"
+  r2 = Binary Lt 0 1
+  r3 = Const 0x1p+0
+  r4 = Binary Add 0 3
+  r5 = Const 0x1p+0
+  r6 = Binary Sub 0 5
+  r7 = Select 2 4 6
+  widths [1]
+  output [7]
+  uniform_widths []
+  collecting true
+
+program
+  r0 = Input 0 1 0
+  r1 = Const 0x1p+1
+  r2 = Binary Mul 0 1
+  r3 = Frame "t"
+  r4 = Binary Add 2 3
+  widths [1]
+  output [4]
+  uniform_widths []
+  collecting true
+
+program
+  r0 = Input 0 4 0
+  r1 = Input 0 4 1
+  r2 = Input 0 4 2
+  r3 = Input 0 4 3
+  r4 = Uniform 0 0
+  r5 = Uniform 0 1
+  r6 = Uniform 0 2
+  r7 = Uniform 0 3
+  r8 = Binary Add 0 4
+  r9 = Binary Add 1 5
+  r10 = Binary Add 2 6
+  r11 = Binary Add 3 7
+  widths [4]
+  output [8;9;10;11]
+  uniform_widths [4]
+  collecting true
+
+program
+  r0 = Input 0 2 0
+  r1 = Input 0 2 1
+  r2 = Frame "t"
+  r3 = Const 0x1p+0
+  widths [2]
+  output [1;0;2;3]
+  uniform_widths []
+  collecting true
+
+program
+  r0 = Input 0 1 0
+  r1 = Frame "t"
+  r2 = Binary Add 0 1
+  widths [1]
+  output [0;2]
+  uniform_widths []
+  collecting true
+

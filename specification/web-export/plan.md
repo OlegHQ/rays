@@ -730,7 +730,8 @@ Phase 1
   The closure tier (`compile`, `cnode`, `fast`, `fast_of`) and both switches (`compile_residuals`, `core_residuals`) are deleted; core residuals are the only path, `Closure` stays the tier name. `--ship` and `@test/test_workspace_ir` green on 2026-10-11 (the API manifest is promoted in the next commit). `tools/bench_core.exe` keeps the walker and core rows.
 
 Phase 2
-- [ ] P2.1 H
+- [x] P2.1 H
+  Done 2026-10-11. `Packed.Private.trace` records every public compilation result; `lib/flow_ir/snapshots/` holds the register programs (`code`, `widths`, `output`, `uniform_widths`, `collecting`, `gpu_refusals`, refusals with spans) of `test_packed` (deduplicated), the `test_program` fixtures and the kernels of `examples/particles`, `sketches/flow_shader`, `flow_image_kernel`; `test_program.ml` moved to `lib/flow_ir` and is linked into `lib/flow_gpu` by `copy_files`. `sketches/flow_particles_gpu` is recorded as skipped: it holds a `sop` graph that `flow_ir` tests cannot check. Two generation runs were byte-identical. `@lib/flow_ir/runtest` and `@lib/flow_gpu/runtest` pass.
 - [ ] P2.2 S
 - [ ] P2.3 S
 - [ ] P2.4 S
