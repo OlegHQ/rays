@@ -13,3 +13,7 @@ val render_prepared : ?state:Flow.Eval.state ->
   ?gpu_policy:Flow_ir.Gpu.policy -> ?reference:bool -> prepared ->
   live:Frame_input.t -> size:int * int -> (Rays.Scene.t, Flow.Diagnostic.t) result
 (** The reference option uses the independent evaluator for pixel-parity checks. *)
+
+val core_drawing : bool ref
+(** Private switch (tests and benches): [render_prepared] runs the core draw path and
+    {!Marks_scene} instead of its per-kind arms. Off by default. *)

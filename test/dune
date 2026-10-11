@@ -18,6 +18,14 @@
   (run %{exe:test_workspace_ir.exe} ..))))
 
 (rule
+ (alias test_workspace_pixels)
+ (locks smoke_window)
+ (deps (source_tree ../examples) (source_tree ../sketches) ../specification/pxui-kit/kit.rays
+  (glob_files ../specification/workspace/cases/*.lisp) (glob_files ../specification/workspace/cases/*.rays))
+ (action (setenv RAYS_CORE_DRAWING 1 (setenv RAYS_WORKSPACE_PIXELS /tmp/rays-workspace-pixels-core
+  (run %{exe:test_workspace_ir.exe} ..)))))
+
+(rule
  (aliases qualification test_scene3_float32_gallery)
  (locks smoke_window)
  (deps (source_tree ../examples) (source_tree ../sketches) ../specification/pxui-kit/kit.rays
@@ -352,6 +360,44 @@
  (name test_draw_snapshot)
  (modules test_draw_snapshot)
  (libraries rays rays_editor editor_document flow flow_sop sop_catalog scene_command frame_input))
+
+(rule
+ (alias runtest)
+ (deps (source_tree ../examples) (source_tree ../sketches) (source_tree draw_snapshots))
+ (action
+  (setenv SDL_VIDEODRIVER dummy
+   (setenv SDL_AUDIODRIVER dummy
+    (progn
+     (with-stdout-to core_examples_audio.txt (run %{exe:test_draw_snapshot.exe} --core examples_audio))
+     (diff draw_snapshots/examples_audio.txt core_examples_audio.txt)
+     (with-stdout-to core_examples_basic.txt (run %{exe:test_draw_snapshot.exe} --core examples_basic))
+     (diff draw_snapshots/examples_basic.txt core_examples_basic.txt)
+     (with-stdout-to core_examples_drawing.txt (run %{exe:test_draw_snapshot.exe} --core examples_drawing))
+     (diff draw_snapshots/examples_drawing.txt core_examples_drawing.txt)
+     (with-stdout-to core_examples_file_dialog.txt (run %{exe:test_draw_snapshot.exe} --core examples_file_dialog))
+     (diff draw_snapshots/examples_file_dialog.txt core_examples_file_dialog.txt)
+     (with-stdout-to core_examples_generative.txt (run %{exe:test_draw_snapshot.exe} --core examples_generative))
+     (diff draw_snapshots/examples_generative.txt core_examples_generative.txt)
+     (with-stdout-to core_examples_noise.txt (run %{exe:test_draw_snapshot.exe} --core examples_noise))
+     (diff draw_snapshots/examples_noise.txt core_examples_noise.txt)
+     (with-stdout-to core_examples_particles.txt (run %{exe:test_draw_snapshot.exe} --core examples_particles))
+     (diff draw_snapshots/examples_particles.txt core_examples_particles.txt)
+     (with-stdout-to core_examples_pxui.txt (run %{exe:test_draw_snapshot.exe} --core examples_pxui))
+     (diff draw_snapshots/examples_pxui.txt core_examples_pxui.txt)
+     (with-stdout-to core_examples_recursive_rectangles.txt (run %{exe:test_draw_snapshot.exe} --core examples_recursive_rectangles))
+     (diff draw_snapshots/examples_recursive_rectangles.txt core_examples_recursive_rectangles.txt)
+     (with-stdout-to core_sketches_flow_contours.txt (run %{exe:test_draw_snapshot.exe} --core sketches_flow_contours))
+     (diff draw_snapshots/sketches_flow_contours.txt core_sketches_flow_contours.txt)
+     (with-stdout-to core_sketches_flow_image.txt (run %{exe:test_draw_snapshot.exe} --core sketches_flow_image))
+     (diff draw_snapshots/sketches_flow_image.txt core_sketches_flow_image.txt)
+     (with-stdout-to core_sketches_flow_image_kernel.txt (run %{exe:test_draw_snapshot.exe} --core sketches_flow_image_kernel))
+     (diff draw_snapshots/sketches_flow_image_kernel.txt core_sketches_flow_image_kernel.txt)
+     (with-stdout-to core_sketches_flow_particles_gpu.txt (run %{exe:test_draw_snapshot.exe} --core sketches_flow_particles_gpu))
+     (diff draw_snapshots/sketches_flow_particles_gpu.txt core_sketches_flow_particles_gpu.txt)
+     (with-stdout-to core_sketches_flow_shader.txt (run %{exe:test_draw_snapshot.exe} --core sketches_flow_shader))
+     (diff draw_snapshots/sketches_flow_shader.txt core_sketches_flow_shader.txt)
+     (with-stdout-to core_sketches_flow_vectors.txt (run %{exe:test_draw_snapshot.exe} --core sketches_flow_vectors))
+     (diff draw_snapshots/sketches_flow_vectors.txt core_sketches_flow_vectors.txt))))))
 
 (rule
  (alias runtest)
