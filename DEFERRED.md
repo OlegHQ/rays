@@ -11,6 +11,11 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   that replaced the old gallery-only float32 check sweeps every workspace. That rule
   (`test_scene3_float32_gallery` in `test/dune`) is now under `@qualification`, and the
   native run has not been repeated since.
+  On 2026-10-11, the command suite's existing canvas-size check failed with
+  `E_GPU: Ogpu_metal.Device.system_default: Metal has no system default device`
+  in this managed runner (report: `/private/tmp/rays-canvas-size-debug/editor.txt`).
+  Its assertion remains intact; native rendering gates still need a runner
+  with an available Metal device.
 - `dune build @smoke` and `@smoke-all` have not been run. `examples/particles` and
   `examples/procedural_modeling` now generate `lisp.exe` like the other examples (built,
   not launched).
@@ -82,10 +87,15 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   0.071613 seconds and allocation from 266,731,296 to 149,511,776 bytes at one
   domain. Command and both domain measurements are in
   `specification/web-export/results.md`.
-- `/ e` on a scene with no World writes a `scene/world` member plus a `sky` world graph; it
-  used to adopt a host-made daylight World.
-- Deleting a World from the scene leaves the world graph alone; it used to write
-  `(world/none)`.
+- Confirmed 2026-10-11: `/ e` writes a `scene/world` member and a `sky` graph
+  containing a sky and sun as one `Add World` history entry. Reopening the
+  existing World preserves document identity; one undo restores the World-free
+  document. `_build/default/tools/check.exe @test/test_world_command` passes.
+- Confirmed 2026-10-11: World deletion follows the documented graph ownership
+  rule: an unreferenced world graph is removed, while a graph another reference
+  still uses stays unchanged. No `(world/none)` is written. This corrects the
+  earlier note that every world graph remains. The creation, both deletion
+  cases and reload parity pass under `@test/test_scene_sync`.
 - The gallery build prints two `W_SOFT_RANGE` warnings for `sop/grid :columns 100 :rows 100`.
 
 ## Lisp gaps

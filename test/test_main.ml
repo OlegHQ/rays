@@ -7,6 +7,7 @@ let tests = [
   "test_editor_document", Test_editor_document.run;
   "test_editor_input", Test_editor_input.run;
   "test_editor_commands", Test_editor_commands.run;
+  "test_world_command", Test_editor_commands.world_command;
   "test_editor_cook", Test_editor_cook.run;
   "test_editor_transactions", Test_editor_transactions.run;
   "test_scene_tree", (fun () -> Test_scene_tree.run (); Test_scene_tree.run_host ());

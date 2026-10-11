@@ -70,6 +70,7 @@ One gesture is one undo entry (`Core.Syntax_batch`: all the rewrites or none).
 | `/ a` Geometry | a new SOP graph (a box), a `scene/geometry (ref it)` binding and one more merge input |
 | `/ a` Geometry of... graph | the object and its merge input only; two objects share the graph and it cooks once (the second takes a distinct `:name`) |
 | `/ a` World | a world graph (a sky and a sun), a `scene/world` binding and its merge input; refused when the scene has one |
+| `/ e` World | enters the World; when none exists, writes the same world graph and member as `/ a` World in one `Add World` entry; reopening an existing World writes nothing |
 | `/ a` Merge | with two or more objects selected, `Flow_edit.Group_merge`: a new merge between the selection and the old one; with none, an empty merge to wire |
 | select wire, delete | the merge loses the input (`Disconnect`); the binding stays as an unwired node and wires back with an ordinary wire (the design drops a "+" stub for it: the prototype draws one, the editor does without) |
 | `b` on a scene object | `:visible false` on its call (again, `:visible true`): one key takes an object out of the render without removing it, as `b` bypasses a SOP node. A node that can be bypassed keeps `b` as the bypass (`Scope_pane.hide_row`) |

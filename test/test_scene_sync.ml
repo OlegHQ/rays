@@ -883,7 +883,10 @@ let run_compose () =
   let bare = open_text {|(workspace a (graph g :context sop (sop/box))
     (graph scene :context scene (scene/root (scene/merge (scene/geometry (ref g))))))|} in
   let worlded = okx (apply_ops bare (Result.get_ok (Sync.add_world bare))) in
-  check (Objects.ids "world" (scene worlded) <> [] && contains (flat (source worlded)) "(scene/world (ref sky))")
+  check (Objects.ids "world" (scene worlded) <> []
+    && contains (flat (source worlded)) "(scene/world (ref sky))"
+    && contains (flat (source worlded)) "(graph sky :context world"
+    && contains (flat (source worlded)) "(world/sun (world/sky))")
     ("add World: " ^ source worlded);
   same_after_reload worlded "add World";
   let call head args = Flow.Syntax.make (Flow.Syntax.List (Flow.Syntax.make (Flow.Syntax.Sym head) :: args)) in
@@ -892,6 +895,22 @@ let run_compose () =
       expr = call "scene/world" [ call "ref" [ sym "sky" ] ] } ] with
    | Error message -> check (contains message "E_SCENE_WORLD" || contains message "World") ("one-World add: " ^ message)
    | Ok _ -> failwith "a second World was added to one root");
+  let delete_world doc = ok (write doc (Sync.Delete (Objects.ids "world" (scene doc)))) in
+  let deleted = delete_world worlded in
+  check (Objects.ids "world" (scene deleted) = [] && not (List.mem "sky" (graph_names deleted))
+    && not (contains (source deleted) "world/none")) "deleting a World did not remove its orphan graph";
+  same_after_reload deleted "delete orphan World";
+  let saved = Flow.Syntax.parse "(graph saved :context world (ref sky))" |> Result.get_ok |> List.hd in
+  let shared = okx (apply_ops worlded [Flow_graph.Flow_edit.Set_graph {name="saved"; form=saved}]) in
+  let sky_text doc =
+    let graph = List.find (fun (g : Flow.Workspace.graph) -> g.name = "sky")
+        (fst doc.Document.workspace).checked.graphs in
+    fst (Flow.Lisp.print [graph.form]) in
+  let retained = delete_world shared in
+  check (Objects.ids "world" (scene retained) = [] && List.mem "saved" (graph_names retained)
+    && sky_text retained = sky_text shared && not (contains (source retained) "world/none"))
+    "deleting a World changed the graph another reference still uses";
+  same_after_reload retained "delete shared World";
   (* take a wire out of the merge: the object stays as an unwired binding, and wires back *)
   let rock = open_text {|(workspace rocks
     (graph rock :context sop (sop/box))

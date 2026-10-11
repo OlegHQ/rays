@@ -79,7 +79,8 @@ let canvas_frame_size () =
         | Scene_command.Render_ir.Image i -> Some (i.destination.width, i.destination.height) | _ -> None))
       (E3.Private.canvas_scenes e) in
     check (match sizes with [ w, h ] -> w > 0. && w < 500. && h > 0. && h < 640. | _ -> false)
-      "frame/width and frame/height in a canvas pane are not the pane's size")
+      ("frame/width and frame/height in a canvas pane are not the pane's size: "
+       ^ String.concat ", " (List.map (fun (w, h) -> Printf.sprintf "%.0fx%.0f" w h) sizes)))
 
 (* every language form of the add menu starts as an expression that checks *)
 let menu_forms () =
@@ -106,6 +107,28 @@ let with_editor text f =
   let editor = Result.get_ok (E3.create ~workspace ~await:true ~domains:1 ~prepare:(fun _ _ -> Ok ())
     ~scene3:(fun _ () -> Rays.Scene3.empty) ()) in
   Fun.protect ~finally:(fun () -> E3.close editor) (fun () -> f editor)
+
+let world_command () =
+  let module E3 = Rays_editor.Editor in
+  let module L = Rays_editor.Private.Leader in
+  with_editor {|(workspace world_command
+    (graph g :context sop (sop/box))
+    (graph scene :context scene (scene/root (scene/merge (scene/geometry (ref g))))))|}
+    (fun editor ->
+      let editor = E3.update editor (Test_editor_input.frame (450., 300.) [] 0) in
+      let before = E3.workspace editor in
+      let step editor actions count = Rays_editor.Reduce.step editor actions
+          (Test_editor_input.frame (450., 300.) [] count) in
+      let created = step editor [L.Go_world] 1 in
+      let source = Editor_document.Workspace_doc.to_text (E3.workspace created) in
+      check (has source "(scene/world (ref sky))" && has source "(graph sky :context world"
+        && has source "(world/sun (world/sky))" && E3.undo_label created = Some "Add World")
+        "/ e did not write the World and its graph as one Add World entry";
+      let repeated = step created [L.Go_world] 2 in
+      check (E3.workspace repeated == E3.workspace created)
+        "opening an existing World rewrote the document";
+      let undone = step repeated [L.Undo] 3 in
+      check (E3.workspace undone == before) "one undo did not restore the World-free document")
 
 (* an image-context workspace is not a geometry object: the cook has nothing to reject *)
 let image_cook () =
@@ -273,4 +296,5 @@ let run () =
   menu_forms ();
   image_cook ();
   new_graphs ();
+  world_command ();
   print_endline "editor commands: the host guide and key routing"

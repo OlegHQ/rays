@@ -157,6 +157,10 @@
  (action (run %{exe:test_main.exe} test_editor_commands)))
 
 (rule
+ (alias test_world_command)
+ (action (run %{exe:test_main.exe} test_world_command)))
+
+(rule
  (alias test_editor_cook)
  (action (run %{exe:test_main.exe} test_editor_cook)))
 
