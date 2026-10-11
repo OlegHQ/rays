@@ -185,7 +185,7 @@ unlisted calls in `prims.js`.
 | --- | ---: | --- |
 | `+`, `-`, `*`, `/`, `mod`, `pow`, `min`, `max` | 8 | Numeric arithmetic with scalar/vector broadcasting and the source result tags. `/` and `mod` return zero for a zero divisor; `mod` is the double-remainder rule; `pow` uses the absolute base. Integer results of ordinary arithmetic pass through the double arithmetic and integer conversion boundary. |
 | `remainder` | 1 | Raw floating remainder with the dividend's sign; used by color lowering. It must not add the divisor or repeat the remainder calculation as `mod` does, since that changes double rounding. A non-finite result fails with the operation's span. |
-| `sin`, `cos`, `sqrt`, `exp`, `abs` | 5 | Scalar math; `sqrt` takes the absolute input. `abs` retains an Int input's tag. Non-finite results follow the source operator's finite check. |
+| `sin`, `cos`, `sqrt`, `exp`, `abs` | 5 | Scalar math; `sqrt` takes the absolute input. `abs` retains an Int input's tag. `sin`, `cos` and `exp` apply the source finite check; `sqrt`, `float` and `abs` of a Float have none. |
 | `floor`, `ceil`, `round`, `int`, `float` | 5 | Numeric conversion; explicit `int` truncates. `round` uses the source explicit-round rule, while type coercion to Int uses the separate coercion rule. |
 | `<`, `<=`, `>`, `>=`, `=`, `and`, `or`, `not` | 8 | Numeric comparisons and numeric boolean truth. These are not generic string/array comparisons, nor JavaScript truthiness. |
 | `int/mul`, `int/div`, `int/mod`, `int/and`, `int/xor` | 5 | Signed integer operations, including native integer overflow, division and remainder; zero integer divisor is `E_RANGE`. No 32-bit JavaScript bitwise truncation. |
@@ -255,8 +255,9 @@ on objects, strings and lists.
 | Ordinary `pow` | `pow(abs(a),b)` with double operands; reject a non-finite result; Float result even for two Int inputs. |
 | Vector arithmetic | Matching-width vectors apply the scalar floating operation in component order. A scalar numeric operand broadcasts to that width. Every result component is finite; result is a vector, not Int components. The checker rejects mismatched widths. |
 | Scalar `sin`, `cos`, `exp` | Number conversion followed by scalar math and the named finite-result check; Float result. |
-| Scalar `sqrt` | Number conversion followed by `sqrt(abs(x))`; Float result. Packed instructions additionally check every numeric result for finiteness. |
-| Scalar `abs` | An Int input uses signed integer absolute value, retaining the native wrap at minimum Int (`abs(min_int) = min_int`); all other numeric inputs use floating absolute value and yield Float. |
+| Scalar `sqrt` | Number conversion followed by `sqrt(abs(x))`; Float result. There is no finite check at frame level: `sqrt(NaN)` is NaN and `sqrt(inf)` is `inf`. Packed instructions additionally check every numeric result for finiteness. |
+| Scalar `float` | Number conversion only. No finite check: NaN and the infinities pass through. |
+| Scalar `abs` | An Int input uses signed integer absolute value, retaining the native wrap at minimum Int (`abs(min_int) = min_int`); all other numeric inputs use floating absolute value and yield Float. A Float is not finite-checked: `abs(-inf)` is `inf`, `abs(NaN)` is NaN. |
 | `<`, `<=`, `>`, `>=`, `=` | Compare converted doubles, even for two Int inputs. In particular, numeric `=` may equate distinct large integers after double rounding; structural `equal?` does not. |
 | `and`, `or`, `not` | Operands have already evaluated in authored order. Truth-convert operands as the source operator does and produce Bool. `and`/`or` may short-circuit the second truth conversion, but never the evaluation of the second operand expression. |
 
@@ -365,8 +366,14 @@ all columns together. Layout metadata reconstructs field order, nesting and
 component grouping for `show` and `equal?`. Published columns are immutable;
 `assoc` on an element creates its changed value, without mutating the source.
 
-`nth` checks a Float index for whole-numberness before conversion, then checks
-the converted index against [0,length); failures are `E_LIST_RANGE`. A sequence
+`nth` (`sequence/get`) checks a Float index for whole-numberness before
+conversion, then checks the converted index against [0,length); failures are
+`E_LIST_RANGE`. The non-whole message prints the index with C `%g` (six
+significant digits, `1.23457e+08`, `nan`, `inf`), not the display printer; an
+Int index is never non-whole. `sequence/build` fills its elements with empty
+placeholders (the native `No_geo`), which an ordered store replaces; with a
+`width` it allocates zeroed packed storage instead, and the packed ceiling
+below applies, not the 4,096 list cap. A sequence
 pattern requires at least its number of pattern elements (additional source
 elements are permitted); shortage is `E_PATTERN`. Empty `first`/`last` fail
 with `E_LIST_RANGE`; empty `rest` remains empty. Packed-array indexing instead
@@ -389,6 +396,14 @@ This is distinct from `coerce` and the narrower `4e18` conversion. The native
 maximum is the platform storage ceiling; exported counts also obey the
 chosen target's allocation and dispatch limits, with located refusals before
 allocation. Neither ceiling permits truncating a requested array.
+
+The ceiling is checked twice. The count/index conversion above compares the
+count with `Sys.max_floatarray_length` (2^54-1 on 64-bit) and fails with the
+"needs a non-negative whole length" message. A builder (`array/*` construction
+and `sequence/build` with a width) then requires `count <= ceiling / width`;
+a count just below the ceiling but above that quotient fails with `E_ARRAY_RANGE`
+"Array length is outside native storage bounds." (`value.ml` `array_init`).
+`sequence/build` with a width has only this second check.
 
 | Leaf | Behavior |
 | --- | --- |
@@ -436,11 +451,17 @@ source kinds:
   native integer parser accepts a hex digit followed by `_` as that single
   digit (e.g. `f_0000` is RGB 15,0,0). A leading underscore, sign or any other
   character fails with `E_DRAW_COLOR` ("Color.hex: invalid hexadecimal digit").
-  Alpha defaults to 255. No whitespace trimming or named colors.
+  Alpha defaults to 255. No whitespace trimming or named colors. The length
+  counts UTF-8 bytes, not characters: `#é1` is three bytes, so it doubles to
+  six and fails on its digit, not on its length.
 - Vec3: finite-check components named `red`, `green`, `blue`, then convert
-  each through the unclamped-input byte path below; alpha is 255.
+  each through the unclamped-input byte path below; alpha is 255. The checks
+  run blue, then green, then red (OCaml evaluates the arguments right to
+  left), so a vector with several non-finite channels reports `blue` first.
 - List of exactly four elements: number-convert and finite-check each channel
-  named `color`, then use the unclamped-input path, including alpha.
+  named `color`, then use the unclamped-input path, including alpha. Element 3
+  is checked first and element 0 last, so a non-number in any element fails
+  `E_TYPE` or `E_NONFINITE` for the highest-indexed offender.
 
 Every other kind, including Vec4 and lists of another length, is `E_TYPE`
 ("A color is hex text, vec3 or (list r g b a)."). Parsing does not first
