@@ -849,7 +849,8 @@ Phase 5
   `@tools/lisp/test/runtest` passed; a deliberately broken copy was detected.
 - [x] P5.10 S
   2026-10-11. `rays-lisp web FILE -o DIR` (`tools/lisp/web_export.ml`, library `web_export`, so `tools/web_parity.exe` shares it): `lower` runs the static stage and `Core_draw.lower`; `files` writes `program.js` (`Js.frame` with packed constants as views into `rt.data`, then `export const regions`), `program.map`, `kernels.json`/`kernels.wgsl` (GPU-legal kernels, `Kernel_table`), `data.bin`, `index.html` and `runtime/` (embedded by `embed.exe` at build time). Formats are in `web_export.mli` and `specification/flow.md` section 12. Refusals with spans: `E_WEB_GRAPH`, `E_WEB_LOWER`, `E_WEB_IMAGE`, `E_WEB_REGION`, `E_WEB_CAPTURE`. Also fixed: `Js.frame` refused every `not` (its argument is named `a`). Gate: `dune build tools/lisp/lisp.exe`, `@tools/lisp/test/runtest`, `@lib/flow_web/runtest`.
-- [ ] P5.11 H
+- [x] P5.11 H
+  2026-10-11. `tools/lisp/test/web.t`: exports `sketches/flow_vectors`, lists the files, a second run is byte-identical, a particles export keeps its arrays in `data.bin`, a draw graph reaching a `sop` graph is refused at the `(ref geometry)` span (`E_WEB_GRAPH`, nothing written), and so is a draw image. `@tools/lisp/test/runtest` green.
 - [ ] P5.12 S
 - [ ] P5.13 H
 - [ ] P5.R R
