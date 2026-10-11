@@ -996,3 +996,99 @@ Findings:
   fixed in this entry; it is a candidate for a follow-up task.
 - The 1-frame runs of static and panning at 1M take about 22 s and allocate about 79 GB (`allocated_words` near 9.9e9),
   against 0.4 s for animated at 1M. The subtraction removes this first-frame cost, but it is unexplained and worth a look.
+
+## P7.4 evaluation
+
+Date 2026-10-11. Every number below is copied from the section named in its table, or counted by the commands
+listed under table 4 on this date. Nothing was re-measured. A value that is not in results.md is written "not recorded".
+
+### 1. Meaning preserved
+
+| Check | Source section | Scope | Result | Worst difference | Pixels differing by more than 8 |
+| --- | --- | --- | --- | --- | --- |
+| Node vs native marks, 120 frames | P5.13, addendum (P6.4a) | 15 workspaces | 11 pass, 4 refused `E_WEB_IMAGE`, 0 fail | n/a (floats within 1e-6, rest exact) | n/a |
+| Hand-built pixel tables (`present_check.mjs`) | P6.4 | 76 checks, 100x100 | 0 failures at colour tolerance 2/255 | not recorded (tolerance 2, not the 8 metric) | not recorded |
+| End to end, `sketches/flow_vectors` | P6.4 | 5 frames, 307,200 px | pass | 1 | 0 of 307,200 |
+| End to end, `examples/basic` | P6.4 | 5 frames, 300,060 px outside text | pass | 0 | 0 of 300,060 |
+| Synthetic 2,048 circles, GPU positions and radii | P6.4a | 5 frames, 307,200 px | pass | 1 | 0 of 307,200 |
+| `sketches/flow_particles_gpu`, 1,000,000 circles on the GPU | P6.4a | 5 frames, 480,000 px | pass | 1 | 0 of 480,000 |
+| `examples/particles`, frame 1 | P6.8 | 800x600 vs `marks_shot` | pass | 0 | 0 of 480,000 |
+| `examples/particles`, frame 30 | P6.8 | same | pass | 0 | 0 of 480,000 |
+| `examples/particles`, frame 120 | P6.8 | same | pass | 0 | 0 of 480,000 |
+
+The P5.13 main table (10 pass, 5 refused) is superseded by its addendum (11 pass, 4 refused). The pixel gate is at
+most 0.5% of pixels above 8 and none above 64. Text is excluded from the per-pixel counts: P6.4 compares text boxes
+by total brightness because Chrome's ink differs from SDL_ttf's. Image, blend and clip entries are not reached by an
+export (P6.4 "Not covered"), so no row here covers them.
+
+### 2. Coverage
+
+| Workspace | Export (P5.13, addendum) | Node parity, 120 frames (P5.13, addendum) | Opens in Chrome (P6.R) |
+| --- | --- | --- | --- |
+| `examples/audio` | yes | pass | opened |
+| `examples/basic` | yes | pass | opened |
+| `examples/drawing` | yes | pass (refused `E_WEB_LOWER` before the P5.13a budget raise) | opened |
+| `examples/file_dialog` | yes | pass | opened |
+| `examples/generative` | yes | pass | opened |
+| `examples/noise` | yes | pass | opened |
+| `examples/particles` | yes | pass | opened |
+| `examples/pxui` | yes | pass | opened |
+| `examples/recursive_rectangles` | yes | pass | opened |
+| `sketches/flow_contours` | refused `E_WEB_IMAGE` 77:3 | not run (not exported) | refused at export |
+| `sketches/flow_image` | refused `E_WEB_IMAGE` 5:3 | not run (not exported) | refused at export |
+| `sketches/flow_image_kernel` | refused `E_WEB_IMAGE` 7:3 | not run (not exported) | refused at export |
+| `sketches/flow_particles_gpu` | yes | pass | opened |
+| `sketches/flow_shader` | refused `E_WEB_IMAGE` 67:3 | not run (not exported) | refused at export |
+| `sketches/flow_vectors` | yes | pass | opened |
+
+Totals: 11 export and pass parity and open; 4 are refused with a code and a span; 0 fail.
+
+### 3. Run-time cost
+
+| Marks | Case | Native CPU ms/frame (P7.2) | Native bytes/frame (P7.2) | Browser uncapped median ms/frame (P7.3) | Browser load ms (P7.3) | Browser compile ms (P7.3) |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 10,000 | static | 3.7 | 302,297 | 1.93 | 254 | 0.0 (no kernel) |
+| 10,000 | panning | 6.4 | 1,883,692 | 2.00 | 255 | 0.0 (no kernel) |
+| 10,000 | animated | 4.1 | 360,968 | 1.17 | 264 | 2.3 |
+| 1,000,000 | static | 4.3 | 301,993 | 34.1 | 311 | 0.0 (no kernel) |
+| 1,000,000 | panning | 51.6 | 233,420,712 | 39.5 | 295 | 0.0 (no kernel) |
+| 1,000,000 | animated | 5.4 | 357,910 | 29.9 | 297 | 14.8 |
+
+Native CPU excludes GPU execution, and native wall time is left out because every wall value is a multiple of the
+60 Hz vsync interval, so it is a cap, not a cost (P7.2). Both sets come from the same Apple M1 under shared-machine
+load (native 1-minute load 1.56 to 5.03, browser 3.8 to 17), so the numbers are indicative; browser load is measured
+from navigation start and has no native counterpart. The native and browser columns are different measurements and
+no ratio between them is given.
+
+### 4. Lines shared against lines per target
+
+| Target | Files counted | Lines |
+| --- | --- | ---: |
+| Shared: `lib/flow_ir` library modules (`.ml` and `.mli`) | 10 modules | 4,674 |
+| Native-only: `lib/flow_gpu` library modules | 5 modules | 615 |
+| Web-only: `lib/flow_web` library modules | 5 modules | 894 |
+| Web-only: `tools/web/runtime` (`*.js`, `*.wgsl`) | 7 files (6 `.js`, 1 `.wgsl`) | 1,480 |
+| Native total (shared + native-only) | | 5,289 |
+| Web total (shared + web-only, both rows) | | 7,048 |
+| Tests: `lib/flow_ir` `test_*.ml`, plus `core_fixtures.ml` and `region_snapshot.ml` | 2,349 + 176 + 65 | 2,590 |
+| Tests: `lib/flow_gpu` `test_*.ml` | | 856 |
+| Tests: `lib/flow_web` `test_*.ml` | | 537 |
+| Tests: `tools/web/test/*.mjs` | | 1,408 |
+| Tests total | | 5,391 |
+
+Commands, from the repository root:
+
+    find lib/flow_ir -maxdepth 1 \( -name '*.ml' -o -name '*.mli' \) ! -name 'test_*' ! -name core_fixtures.ml ! -name region_snapshot.ml | xargs wc -l | tail -1
+    find lib/flow_gpu -maxdepth 1 \( -name '*.ml' -o -name '*.mli' \) ! -name 'test_*' | xargs wc -l | tail -1
+    find lib/flow_web -maxdepth 1 \( -name '*.ml' -o -name '*.mli' \) ! -name 'test_*' | xargs wc -l | tail -1
+    wc -l tools/web/runtime/*.js tools/web/runtime/*.wgsl | tail -1
+    find lib/flow_ir -maxdepth 1 -name 'test_*.ml' | xargs wc -l | tail -1
+    wc -l lib/flow_ir/core_fixtures.ml lib/flow_ir/region_snapshot.ml | tail -1
+    find lib/flow_gpu -maxdepth 1 -name 'test_*.ml' | xargs wc -l | tail -1
+    find lib/flow_web -maxdepth 1 -name 'test_*.ml' | xargs wc -l | tail -1
+    find tools/web/test -maxdepth 1 -name '*.mjs' | xargs wc -l | tail -1
+
+The shared set is the library's `(modules ...)` list in `lib/flow_ir/dune`. `core_fixtures.ml` and
+`region_snapshot.ml` are excluded because only test stanzas link them. The literal `find` with only
+`! -name 'test_*'` gives 4,915, which includes them. Goldens (`*.expected`, `*.metal`, `goldens/*`, `snapshots/*`)
+are data and are not counted. These are line counts, not a measure of complexity.
