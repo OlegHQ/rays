@@ -78,4 +78,19 @@ let () =
    | E.Vec3_array d -> assert (Array.length d = 600000 && d.(3 * 199999) = sin 199999.)
    | _ -> failwith "a vec3 array");
   if seconds > 2. then failwith (Printf.sprintf "a 200,000-element static map took %.2f s: it was walked" seconds);
+  (* Allocation: past the walked head each element costs its 24 result bytes and little else. Two
+     sizes on one domain (the counter is the calling domain's) give the marginal bytes per element,
+     which a closure or a boxed value made per element would multiply: the output loop of
+     Packed.force_all once allocated about 112 of them (155 bytes in all, now 43). *)
+  let allocated n =
+    let ws = checked (Printf.sprintf "(map (fn [i] [(sin i) (cos i) 0]) (array/range %d))" n) in
+    Rays_math.Parallel.run ~domains:1 (fun () ->
+      let before = Gc.allocated_bytes () in
+      ignore (ok (Flow_ir.static ws));
+      Gc.allocated_bytes () -. before) in
+  ignore (allocated 20000);
+  let small = allocated 100000 and large = allocated 300000 in
+  let per_element = (large -. small) /. 200000. in
+  if per_element > 64. then
+    failwith (Printf.sprintf "a large static map allocates %.0f bytes per element (24 are the result)" per_element);
   print_endline "Static maps: kernel-made values, records and failures equal the walker's"
