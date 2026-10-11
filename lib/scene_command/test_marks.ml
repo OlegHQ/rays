@@ -25,6 +25,17 @@ let () =
         Push_clip { x = 0.; y = 0.; width = 1.; height = 1. };
         Pop_clip; Pop_transform |];
   ok (rect ());
+  (* A device colour is a region's float r, g, b: three floats per instance, like a colour buffer. *)
+  let device ?(count = 2) width = Marks.Device { id = 4; count; width } in
+  let coloured fill stroke =
+    [| Marks.Mark_set { count = 2; kind = Circle { position = device 3; radius = device 1;
+         fill; stroke; stroke_width = c 1. } } |] in
+  ok (coloured (device 3) (device 3));
+  ok [| Marks.Mark_set { count = 2; kind = Line { position = buf 2; end_ = buf ~id:2 2;
+        stroke = device 3; stroke_width = c 1. } } |];
+  bad (coloured (device 4) (c 0l));
+  bad (coloured (c 0l) (device 1));
+  bad (coloured (device ~count:3 3) (c 0l));
   (* Refusals. *)
   bad (rect ~count:(-1) ());
   bad (rect ~count:1_000_001 ~position:(c (0., 0.)) ~size:(c (1., 1.)) ());

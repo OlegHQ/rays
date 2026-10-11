@@ -90,7 +90,58 @@ let dump () =
     | Ok _ -> failwith ("expected " ^ code ^ " for " ^ body)) errors;
   Format.pp_print_flush fmt ();
   Buffer.contents buffer
+(* A host that takes every region it is offered (here it runs them on the CPU and hands back a
+   token). A region read only as attributes of mark sets is offered, a colour like a position, and
+   becomes a device buffer of its width; one the frame program also reads is not offered. *)
+let device_marks body =
+  let evaluation = ok (E.static (checked body)) in
+  let program, root = Result.get_ok (Flow_ir.Core_draw.lower evaluation.plan (List.assoc "g" evaluation.results)) in
+  let live = Frame_input.at_time 0.25 in
+  let offered = ref 0 in
+  let device packed =
+    let count, width = match ok (Flow_ir.Packed.force packed ~live) with
+      | E.Float_array xs -> Array.length xs, 1 | Vec2_array xs -> Array.length xs / 2, 2
+      | Vec3_array xs -> Array.length xs / 3, 3 | _ -> failwith "a region is a packed array" in
+    incr offered; Ok (Some (!offered, count, width)) in
+  let marks = ok (Flow_ir.Core_exec.draw ?root ~device (Flow_ir.Core_exec.prepare program) ~live
+    ~size:(200, 100) ~buffers:(Buffers.create ())) in
+  !offered, marks
+let devices () =
+  let p = "p (map (fn [i] [(* i 10) (* i t) 0]) (array/range 3))"
+  and c = "c (map (fn [i] [(/ i 4) t 0]) (array/range 3))" in
+  let device : type a. int -> a M.attr -> bool = fun width -> function
+    | M.Device {count = 3; width = w; _} -> w = width | _ -> false in
+  (match device_marks (Printf.sprintf "(let* [%s %s] (draw/rects p [10 10 0] :fill c :stroke c))" p c) with
+   | 2, [|M.Mark_set {count = 3; kind = Rect {position; size = Constant _; fill; stroke; _}}|] ->
+       assert (device 3 position && device 3 fill && device 3 stroke)
+   | _ -> failwith "rect positions, fill and stroke are device buffers");
+  (match device_marks (Printf.sprintf "(let* [%s %s r (map (fn [i] (+ i t)) (array/range 3))] (draw/circles p :radius r :fill c))" p c) with
+   | 3, [|M.Mark_set {kind = Circle {position; radius; fill; stroke = Constant 0l; _}; _}|] ->
+       assert (device 3 position && device 1 radius && device 3 fill)
+   | _ -> failwith "circle positions, radii and fill are device buffers");
+  (match device_marks (Printf.sprintf "(let* [%s %s] (draw/lines p p :color c))" p c) with
+   | 2, [|M.Mark_set {kind = Line {position; end_; stroke; _}; _}|] ->
+       assert (device 3 position && device 3 end_ && device 3 stroke)
+   | _ -> failwith "line ends and colour are device buffers");
+  (* The frame reads the colours too (their count), so they stay a host buffer. *)
+  (match device_marks (Printf.sprintf
+      "(let* [%s %s] (draw/merge (draw/rects p [10 10 0] :fill c) (draw/text [0 0 0] (str (array/count c)))))" p c) with
+   | 1, [|M.Mark_set {kind = Rect {position; fill = Buffer {count = 3; width = 3; _}; _}; _}; M.Text _|] ->
+       assert (device 3 position)
+   | _ -> failwith "a colour array the frame reads is a host buffer");
+  (* A device colour of another length than the positions is the host buffer's error. *)
+  let evaluation = ok (E.static (checked (Printf.sprintf
+    "(let* [%s c (map (fn [i] [(/ i 4) t 0]) (array/range 2))] (draw/rects p [10 10 0] :fill c))" p))) in
+  let program, root = Result.get_ok (Flow_ir.Core_draw.lower evaluation.plan (List.assoc "g" evaluation.results)) in
+  let live = Frame_input.at_time 0.25 in
+  let device packed = match ok (Flow_ir.Packed.force packed ~live) with
+    | E.Vec3_array xs -> Ok (Some (1, Array.length xs / 3, 3)) | _ -> Ok None in
+  (match Flow_ir.Core_exec.draw ?root ~device (Flow_ir.Core_exec.prepare program) ~live ~size:(200, 100)
+           ~buffers:(Buffers.create ()) with
+   | Error d -> assert (d.code = "E_DRAW_LENGTH")
+   | Ok _ -> failwith "a device colour of the wrong length is refused")
 let () =
+  devices ();
   let actual = dump () in
   if Array.length Sys.argv = 2 && Sys.argv.(1) = "--print" then print_string actual
   else if actual <> In_channel.with_open_bin "core_marks.expected" In_channel.input_all

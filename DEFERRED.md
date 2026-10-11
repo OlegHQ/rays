@@ -393,15 +393,17 @@ later. Numbers and commands are in `specification/web-export/results.md`.
 - `tools/web/runtime/gpu.js` re-uploads every kernel input on each dispatch (it converts to f32 and
   `writeBuffer`s the whole array); native skips sources whose stamp is unchanged. Static sources
   should be uploaded once and kept.
-- Per-instance GPU marks (P4.13). Plan gate was per-instance circles and rects at 1,000,000 within 2 times
-  the uniform-style GPU row (`lib/rays_editor/native_qualification/bench_marks_gpu.exe`, M1, load 6 to 9).
-  Reached 8.3x (circles, 73.7 ms against 8.9) and 8.8x (rects, 80.4 against 9.1). A per-instance radius or size
-  on the GPU costs 1.4x and 2.1x; a per-instance fill costs 7.7 to 7.9x. Likely cause: a colour attribute cannot
-  be a GPU region yet, so the fill is a CPU `map` over 1,000,000 vec3 colours that `Marks_scene` converts through
-  `drawing_color` into packed words (188 MB allocated per frame). The `Marks` shader already reads float rgb
-  (fill mode 1); letting `fill`, `stroke` and `color` be `Marks.Device` buffers (a `Core_exec.device_regions`
-  name list, `Marks.validate`, `Marks_scene.words`) would remove it. Still 2.1x faster than the CPU path
-  (animated circles 1M, 153 ms).
+- Native mark attributes are one kernel dispatch each (found closing P4.13, whose gate is met:
+  `results.md`, 2026-10-11 addendum). A mark set whose radius and fill both read `t` beside GPU positions is
+  three dispatches, 14.3 ms at 1,000,000 against 4.6 for one (`bench_marks_gpu.exe`, "moving both"). Two things
+  are left. The draw program invokes its regions one by one, where the web export fuses the attributes of one
+  set into one kernel (`Core_fuse.merge` in `tools/lisp/web_export.ml`, `groups`); the native counterpart is to
+  merge the device-eligible `Invoke`s of one `Batch` in `Core_exec.prepare`. And a kernel whose source is an
+  inline static expression (`(map f (array/range n))`) evaluates, packs and uploads that source on every
+  dispatch (8 MB and most of the 4.7 ms): `Packed.Private.prepare` asks the walker for the source term each
+  frame, and `Run.dispatch` only skips an upload when the array is physically the same. Keeping the value of a
+  source the static stage could have finished (no frame fact, state, element or host source) per `Packed.t`
+  would remove it; a source bound in a `let*` is already a shared constant.
 - Static CPU attribute buffers are re-uploaded every frame by the web presenter (P7.3,
   `results.md`, `million_marks` with the drift removed, 1,000,000 marks, M1, headless Chrome 154,
   load 4 to 17): 34 ms per frame static and 39 ms panning against 30 ms for the animated GPU kernel

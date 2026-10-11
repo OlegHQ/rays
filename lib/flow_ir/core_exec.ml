@@ -49,7 +49,7 @@ let static_invokes (program : C.program) =
     | Invoke {result; _} -> invokes.(result) <- static.(result) | _ -> ()) program.body;
   invokes
 
-(* A region whose every result is read only as the positions, sizes, radius, from or to of a
+(* A region whose every result is read only as the positions, sizes, radius, from, to or a colour of a
    mark set may run on the GPU instead; the others are read by the frame program. *)
 let device_regions (program : C.program) =
   let n = Array.length program.locals in
@@ -62,7 +62,7 @@ let device_regions (program : C.program) =
     | Vec ns | Items ns -> List.iter use ns in
   let draw : C.draw -> unit = function
     | Batch {args; _} -> List.iter (fun (name, a) ->
-        if List.mem name ["positions"; "from"; "to"; "sizes"; "radius"] then eligible.(a) <- true else use a) args
+        if List.mem name ["positions"; "from"; "to"; "sizes"; "radius"; "fill"; "stroke"; "color"] then eligible.(a) <- true else use a) args
     | Background a | Push (_, a) -> use a
     | Point {at; ink} -> use at; use ink
     | Mark {args; _} | Path {args; _} -> List.iter (fun (_, a) -> use a) args

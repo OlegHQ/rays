@@ -1,6 +1,9 @@
-(* A mark set whose positions (and per-instance radii) are GPU region outputs is drawn by the
-   Marks family with those buffers bound directly, inside a transform too, and lights the same
-   pixels as the CPU path. Inputs are multiples of 1/8, exact in binary32. *)
+(* A mark set whose positions, radii and colours are GPU region outputs is drawn by the Marks
+   family with those buffers bound directly, inside a transform too, and lights the same pixels
+   as the CPU path. The regions that read [t] (positions, radii, the rects' fill, the lines'
+   colour) stay on the GPU; the static ones (sizes, line ends) run once on the CPU and ride in the
+   same draw as host buffers. Inputs are multiples of 1/8, exact in binary32, and so is every
+   colour byte. *)
 let ok = function Ok value -> value | Error d -> failwith (Flow.Diagnostic.to_string d)
 module L = Flow_sop.Lower
 let source = {|(workspace gpu_marks
@@ -9,14 +12,14 @@ let source = {|(workspace gpu_marks
            positions (map (fn [i] (let* [column (mod i 64)
                                          row (/ (- i column) 64)]
                                     [(+ (* column 2) (* t 8)) (* row 2) 0])) indices)
-           radii (map (fn [i] (+ 1 (* (mod i 3) 0.5))) indices)]
+           radii (map (fn [i] (+ 1 (* (mod (+ i (* t 8)) 3) 0.5))) indices)]
       (draw/merge (draw/background "#102030")
         (draw/translate [5 7 0] (draw/circles positions :radius radii :fill "#76baca" :stroke "#ffffff"))
         (draw/translate [3 40 0]
           (draw/rects positions (map (fn [i] [2 1.5 0]) indices)
-            :fill (map (fn [i] [(/ (mod i 8) 8) 0.5 0.25]) indices) :stroke "#ff8800"))
+            :fill (map (fn [i] [(/ (mod (+ i (* t 8)) 8) 8) 0.5 0.25]) indices) :stroke "#ff8800"))
         (draw/lines positions (map (fn [i] [(+ (* (mod i 64) 2) 3) (+ (/ (- i (mod i 64)) 32) 5) 0]) indices)
-          :color (map (fn [i] [0.5 (/ (mod i 4) 4) 1]) indices) :width 1.5)))))|}
+          :color (map (fn [i] [0.5 (/ (mod (+ i (* t 8)) 4) 4) 1]) indices) :width 1.5)))))|}
 
 let () =
   let lowered = Flow.Syntax.parse source |> ok |> L.workspace ~factories:Sop_catalog.Editor.factories |> ok in
@@ -68,6 +71,8 @@ let () =
     let a = render (fst both) in
     assert (a = render (snd both)));
   let host, _, _, _, _ = Workspace_gpu.image_stats gpu in
-  assert (host.runners_created >= 1);
+  (* Positions, radii, the fill and the line colour: four kernels in each of the two drawings. *)
+  if host.runners_created <> 8 then
+    failwith (Printf.sprintf "expected 8 GPU kernels (positions, radii, fill, colour, twice), got %d" host.runners_created);
   Workspace_gpu.close gpu;
-  print_endline "GPU marks: circle, rect and line sets with GPU positions, radii, sizes and ends, CPU colour buffers, inside a transform, equal the CPU path"
+  print_endline "GPU marks: circle, rect and line sets with GPU positions, radii, fills and colours and host sizes and ends, inside a transform, equal the CPU path"

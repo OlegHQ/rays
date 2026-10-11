@@ -1190,3 +1190,60 @@ readback, resize, cursor, text input and background, and two offscreen ones, in 
 `OBJC_DEBUG_MISSING_POOLS=YES`, and fails on any report from the initial thread: 773 with the Cocoa fix reverted, 454
 with the bridge fix reverted, 0 now. `examples/pxui`, `sketches/million_marks` and `examples/pathtracer` report 0
 by hand as well. `dune build @runtest-native` passes.
+
+## 2026-10-11 addendum: per-instance GPU mark colours (P4.13 gate)
+
+Command: `_build/default/lib/rays_editor/native_qualification/bench_marks_gpu.exe` (same method as P4.13: one
+`Drawing.render_prepared` with GPU positions under the qualification policy, median of 5 frames at 1,000,000, wall
+milliseconds and bytes allocated per frame; the render pass is not included). Apple M1, OCaml 5.3.0, dune dev
+profile, 1-minute load 4.3 to 7.7 (another agent building). Before = `49c0f65d` libraries under the new bench source;
+the three "moving" rows are new and make the per-instance attribute read `t`, so it is a region of every frame.
+"kernels" is the number of GPU runners the frame used.
+
+| kind | style | before ms | before bytes | kernels | after ms | after bytes | kernels | after against uniform |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| circles | uniform | 10.511 | 40,025,808 | 1 | 4.608 | 8,026,472 | 1 | 1.0x |
+| circles | radius | 15.602 | 60,025,864 | 1 | 4.769 | 8,026,552 | 1 | 1.0x |
+| circles | fill | 78.331 | 188,025,648 | 1 | 4.908 | 8,026,376 | 1 | 1.1x |
+| circles | per-instance | 83.222 | 208,025,704 | 1 | 4.701 | 8,026,456 | 1 | 1.0x |
+| circles | moving radius | 21.077 | 80,041,848 | 2 | 9.446 | 16,042,512 | 2 | 2.0x |
+| circles | moving fill | 122.982 | 269,956,200 | 1 | 9.272 | 16,042,864 | 2 | 2.0x |
+| circles | moving both | 148.119 | 308,003,432 | 2 | 14.349 | 24,059,072 | 3 | 3.1x |
+| rects | uniform | 10.415 | 40,025,832 | 1 | 4.844 | 8,026,384 | 1 | 1.0x |
+| rects | radius | 24.136 | 100,025,832 | 1 | 4.733 | 8,026,416 | 1 | 1.0x |
+| rects | fill | 78.545 | 188,025,672 | 1 | 4.705 | 8,026,288 | 1 | 1.0x |
+| rects | per-instance | 91.941 | 248,025,672 | 1 | 4.833 | 8,026,320 | 1 | 1.0x |
+| rects | moving radius | 20.756 | 80,042,424 | 2 | 9.786 | 16,042,976 | 2 | 2.0x |
+| rects | moving fill | 123.720 | 266,018,040 | 1 | 9.296 | 16,042,776 | 2 | 1.9x |
+| rects | moving both | 142.444 | 306,034,216 | 2 | 14.452 | 24,059,536 | 3 | 3.0x |
+
+At 100,000 the after rows are 0.66 (uniform), 0.82 (per-instance), 1.44 (moving fill) and 2.08 ms (moving both).
+
+The P4.13 gate (per-instance within 2 times the uniform row at 1,000,000) is met: 1.0x for circles and rects, from
+7.9x and 8.8x in the same run. What the note in `DEFERRED.md` guessed was half of it. Three causes, three changes:
+
+1. The bench's per-instance radius, size and fill do not read `t`: they are static regions, computed once on the CPU
+   and not placed on the GPU (the frame uses one kernel, the positions; the P4.13 note took the radius for a second
+   GPU region). `Marks_scene.gpu_set` nevertheless converted every host attribute of a device set on every frame
+   (1,000,000 colours through `drawing_color` into words: 148 MB and 68 ms; a radius or size array into float32).
+   Now the bytes of a host array are kept while the array is physically the previous frame's, so they are neither
+   converted nor uploaded again (`Rays_execution.gpu_marks` already skipped identical bytes).
+2. A colour could not be a device attribute, so a fill that does read `t` ran as a CPU region and was converted the
+   same way (123 ms). `fill`, `stroke` and `color` are now offered like positions (`Core_exec.device_regions`),
+   `Core_marks.colour_attr` and `Marks.validate` accept a device colour of width 3, and `gpu_marks` sets the shader's
+   colour mode 1 (float r, g, b) for it. The web export already placed colour regions on the GPU; this is the native
+   half.
+3. `array/range` boxed a value per index (40 bytes each): 40 MB and about 5 ms a frame for the inline
+   `(array/range 1000000)` every kernel of the bench reads. It fills its array directly (8 MB). That is the whole
+   change of the uniform row.
+
+Remaining, and why "moving both" is 3x: each frame-rate attribute is its own kernel dispatch on native (the draw
+program invokes its regions one by one; `Core_fuse.merge` is used by the web export only), and each dispatch
+evaluates, packs and uploads its inline static source again (the 8 MB a kernel still allocates), about 4.7 ms at
+1,000,000. A source bound once (`(let* [indices (array/range n)] ...)`, as `sketches/million_marks` does) is a
+constant the kernels share and do not upload again.
+
+Correctness: `test_workspace_gpu_marks` (`@lib/rays_editor/runtest-native`) now draws radii, a rect fill and a line
+colour that read `t` on the GPU beside host sizes and line ends, requires 8 kernels for its two drawings and equal
+pixels with the CPU path at three times; `test_core_marks` checks which attributes become device buffers and the
+length refusal; `test_marks` the validation of a device colour. Draw snapshots (CPU scenes) are unchanged.

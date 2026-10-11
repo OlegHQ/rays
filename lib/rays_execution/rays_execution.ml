@@ -1185,8 +1185,10 @@ module Private=struct
         Result.bind buffer(fun b->Result.map(fun rest->b::rest)(bind(index+1)))end in
       Result.bind(bind 0)(fun buffers->
         let params=Bytes.create 32 in
+        (* A device colour is a region's float r, g, b (mode 1); a host one is packed words. *)
+        let mode index=match attributes.(index)with Device _->1|Host _->0 in
         Array.iteri(fun i word->Bytes.set_int32_le params(i*4)(Int32.of_int word))
-          [|kind;strides.(0);strides.(1);strides.(2);strides.(3);strides.(4);0;0|];
+          [|kind;strides.(0);strides.(1);strides.(2);strides.(3);strides.(4);mode 2;mode 3|];
         Result.bind(upload 5 params)(fun params_buffer->
           let device=List.rev !device in
           if not !changed&&valid_gpu_marks value&&List.length device=List.length value.marks_device

@@ -56,12 +56,16 @@ let device sink = function
   | _ -> None
 
 let colors_length () = V.fail "E_DRAW_LENGTH" "Colors and positions have different lengths."
-(* A packed colour array is per instance; anything else one constant. *)
-let colour_attr sink count v : int32 M.attr = match v with
-  | E.Vec3_array xs ->
+(* A packed colour array is per instance, on the host or left on the GPU; anything else one constant. *)
+let colour_attr sink count v : int32 M.attr = match device sink v, v with
+  | Some (id, n, width), _ ->
+      if width <> 3 then V.fail "E_TYPE" "A color is hex text, vec3 or (list r g b a).";
+      if n <> count then colors_length ();
+      Device {id; count; width}
+  | None, E.Vec3_array xs ->
       if Array.length xs <> 3 * count then colors_length ();
       Buffer {id = Buffers.add sink.buffers xs; count; width = 3}
-  | v -> Constant (rgba (color v))
+  | None, v -> Constant (rgba (color v))
 let check_colors count args = List.iter (fun key -> match List.assoc_opt key args with
   | Some (E.Vec3_array xs) when Array.length xs <> 3 * count -> colors_length ()
   | _ -> ()) ["fill"; "stroke"; "color"]

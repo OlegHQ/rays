@@ -26,9 +26,11 @@ val scene : buffers:Flow_ir.Core_exec.Buffers.t -> ?image:(int -> Rays.Image.t) 
 
     A mark set with a [Device] attribute (its buffer id resolved by [device]) goes to [gpu] and
     becomes one [Marks]-family draw; its CPU attributes are uploaded in the same layout (a
-    colour buffer as packed words). Every other mark set stays a [Shape_batch], so a CPU-only
-    frame is unchanged. Without [gpu] a [Device] attribute is [E_GPU].
+    colour buffer as packed words; a [Device] colour is the region's float r, g, b, bound as it
+    is). Every other mark set stays a [Shape_batch], so a CPU-only frame is unchanged. Without
+    [gpu] a [Device] attribute is [E_GPU].
 
     With [cache], a rect, circle, line or point set whose entry and attribute arrays (physically)
     equal the previous frame's at the same position reuses its node: a static batch is not built
-    again. *)
+    again. In a device set the bytes of each host array are kept the same way (at most five per
+    set), so a static attribute beside a GPU one is converted once and not uploaded again. *)

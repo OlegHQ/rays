@@ -46,8 +46,7 @@ let check_entry i = function
       | Constant v ->
         if not (bounded v) then bad "entry %d: %s not finite" i name;
         if v < 0. then bad "entry %d: %s negative" i name in
-    let colour name = function Buffer b -> buf name [3] b | Constant _ -> ()
-      | Device _ -> bad "entry %d: %s cannot be a device buffer" i name in
+    let colour name = function Buffer b | Device b -> buf name [3] b | Constant _ -> () in
     (match kind with
      | Rect r ->
        pair "position" [2; 3] false r.position; pair "size" [2; 3] true r.size;

@@ -29,6 +29,6 @@ val draw : ?root:Flow.Eval.residual ->
     an image node to a host resource id. A failure is the core's own diagnostic.
 
     [device] offers each region whose results are read only as the positions, sizes, radius,
-    from or to of a mark set (the others are the frame program's): [Some (token, count, width)]
+    from, to, fill, stroke or color of a mark set (the others are the frame program's): [Some (token, count, width)]
     means the host ran it on the GPU, and the mark set carries a [Marks.Device] buffer whose id
     {!Buffers.device} resolves to [token]; [None] runs the region on the CPU as usual. *)
