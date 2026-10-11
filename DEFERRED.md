@@ -10,6 +10,11 @@ deleted, not ticked.
   - The Metal safe suites lost most of their statements to the binding prunes of 2026-09-26
     and 2026-10-06, before this restructure. They now cover the calls that are left; nobody
     compared them statement by statement with the versions before `0d136464`.
+    2026-10-12: compared (five ranges of `test_metal.ml` and the XPC executables by identifier
+    scan only); device, texture, sampler, function-constant and render-pipeline statements are
+    back, while render encoder, render ICB pixel loops, ICB ownership, acceleration build, M1
+    ray query, argument reflection and encoder, presentation and the two stress lanes are
+    identified and still missing.
 - `runtime_live_resize` is wall-clock based: it failed once under machine load ("a programmatic
   resize stalled the frame loop for 1016 ms") and has passed since. Rerun it once before
   reading a failure as a regression. Looked at 2026-10-12, not changed: `Runtime` has no
