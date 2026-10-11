@@ -104,9 +104,14 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   modules (the largest was 925 lines at extraction). Every extracted body
   matched the original byte for byte, with the same call order and shared geometry values;
   `@lib/rdk/runtest` passes, including the existing one/four-domain cases.
-- Large files still not split: `lib/pxui_graph/scope_pane.ml`
-  (2,682 lines after the wires moved out),
-  `lib/rays_editor/environment.ml` (about 940 lines).
+- Split and verified 2026-10-11: the 2,682-line graph pane now keeps state,
+  commands and painting in three private modules with explicit interfaces;
+  `scope_pane.ml` keeps frame gestures. Every moved implementation body is
+  unchanged, the public API manifest is identical, all 455 pane checks pass
+  and the dependency gate passes. The 2,001-node frame benchmark is recorded
+  in `specification/web-export/results.md`; its visible frame allocates 0.19%
+  more, while the tiny pane retains its original allocation count.
+- Large file still not split: `lib/rays_editor/environment.ml` (about 940 lines).
 - Verified 2026-10-11: `_out/` is absent from this worktree; there is no stale
   output directory left to delete. The ignore rule remains for future PNG saves.
 

@@ -8,6 +8,12 @@ scopes and dispatches them. Every interactive element is a `Ui.box` keyed by sta
 cull tiles and resolve wire hits; there is no second hit-test, capture or text-entry path. The design is
 `specification/flow.md` §5 to §7.
 
+The pane has four private parts: `Scope_state` owns the immutable view state,
+layout and culling queries; `Scope_commands` maps keys and menus to typed
+requests; `Scope_paint` draws the kit's cards, wires, zones and footers;
+`Scope_pane` builds the frame's boxes and interprets their signals. They share
+one PXUI handle. `Scope_wires` owns geometry, routing and bucket indices.
+
 ## Current contract
 
 Card geometry is the kit sheet's box model (`graph.html`, `kit.css` `.node .nh .nr .port`), measured
@@ -35,7 +41,7 @@ Rules that hold throughout:
 
 - Wires are straight segments, port to port, 1.5 points in the source port's colour, drawn with `Ui.line`; a wire
   that would pass under a card is a two-or-more segment polyline bent clear of it (a 5-point square marks each
-  bend, `route` in `scope_pane.ml`). `:wires "rect"` keeps the old orthogonal routing. No curves; bends are
+  bend, `route` in `scope_wires.ml`). `:wires "rect"` keeps the old orthogonal routing. No curves; bends are
   computed, never authored or saved.
 - New interactions return new `change` cases; the host (`Rays_editor.Core`, through `Doc.syntax_edit` and
   `Doc.layout_edit`) is the only reducer, and each gesture is one history entry (`flow.md` §4.3).
@@ -56,7 +62,7 @@ selector, socket, field and toggle boxes are its children. The host maps
 `with_scope ~at ~level ~pin ~collapsed ~probe ~frames`. Rules: build only visible
 items (a zone body is drawn once, whatever its iteration count); a row under
 the pointer comes from the pointer and the tile's rectangle, never a second
-hit tree; the pane draws ↵ ◊ t ↑ ► ▼ for ⟲ ◆ ◷ ↥ ▸ ▾ (see `scope_pane.ml`).
+hit tree; the pane draws ↵ ◊ t ↑ ► ▼ for ⟲ ◆ ◷ ↥ ▸ ▾ (see `scope_paint.ml`).
 
 Footers: `with_records` takes a `Flow_graph.Probe.t`; footers are built
 only for visible cards at zoom >= 0.4, and a sparkline draws at most 16 segments

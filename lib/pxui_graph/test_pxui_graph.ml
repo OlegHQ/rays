@@ -1110,9 +1110,9 @@ let bench_scope_big () =
     let runs = 100 in
     let started = Unix.gettimeofday () and allocated = Gc.allocated_bytes () in
     for _ = 1 to runs do view := fst (Pxui.Ui.frame ui (frame ()) (fun ui -> Scope.update !view ui (frame ()))) done;
-    Printf.printf "%-28s %.3f ms, %.2f MB allocated\n%!" label
+    Printf.printf "%-28s %.3f ms, %.0f bytes allocated\n%!" label
       ((Unix.gettimeofday () -. started) *. 1000. /. float runs)
-      ((Gc.allocated_bytes () -. allocated) /. float runs /. 1e6) in
+      ((Gc.allocated_bytes () -. allocated) /. float runs) in
   idle "2001 nodes: frame" view;
   idle "2001 nodes: frame, 16 x 16" (ref (Scope.create ~width:16 ~height:16 () |> Scope.with_scope ~key:"g" scope));
   time "2001 nodes: Point_all" 5 (fun () -> Scope.run_command !view Scope.Point_all);

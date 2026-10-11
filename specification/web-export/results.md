@@ -67,3 +67,41 @@ On this input, one-domain wall time falls by 48% and allocation by 44%.
 Eight-domain wall time falls by 47% and allocation by 45%; scheduling can
 vary the pool's allocation count. This measurement covers the native SOP
 cook and does not claim a browser or core-executor speedup.
+
+## 2026-10-11 — Deferred private graph-pane split
+
+Machine: managed Darwin arm64 runner, OCaml 5.3.0 native executable in the
+development profile, one domain. Input: a 2,001-node graph with a backward
+wire every seventh node, a 1,000 × 700 viewport and an 11-point font. Frames
+use five warmups and 100 measured iterations; creation uses five iterations,
+repeated layout 20, and each command five. Values below are medians of three
+process runs, with frame allocation measured by `Gc.allocated_bytes`. No
+profiler was attached. Both paths use the same benchmark source.
+
+Build and run from the repository root:
+
+```sh
+_build/default/tools/check.exe lib/pxui_graph/test_main.exe
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
+  _build/default/lib/pxui_graph/test_main.exe bench_scope_big
+```
+
+| Operation | Before ms | After ms | Before bytes/frame | After bytes/frame |
+| --- | ---: | ---: | ---: | ---: |
+| Initial `with_scope` | 21.802 | 22.151 | — | — |
+| Repeated `with_scope` | 14.509 | 13.790 | — | — |
+| Visible frame | 2.154 | 2.156 | 6,846,593 | 6,859,817 |
+| 16 × 16 frame | 0.013 | 0.012 | 49,009 | 49,009 |
+| `Point_all` | 0.392 | 0.380 | — | — |
+| `Set_arg` edit | 27.289 | 27.192 | — | — |
+
+State, commands and painting move into private modules; frame gestures stay
+in `Scope_pane`. Moved bodies match the original byte for byte, public API
+manifests compare equal, and all 455 graph-pane checks and the dependency
+gate pass. Two tiny coordinate transforms remain local to painting and
+gestures: exposing them across the opaque development-build boundary added
+36,104 bytes per visible frame and 1,344 bytes per tiny frame. Keeping them
+local reduces that increase to 13,224 bytes (0.19%) in the visible frame and
+zero in the tiny frame. The timing differences are small; this is an
+organizational change, with no claimed rendering speedup or native pixel
+comparison.
