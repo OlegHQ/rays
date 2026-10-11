@@ -797,14 +797,20 @@ Phase 3
   2026-10-11, branch `worktree-agent-a30ec1f3dd78d1287`, d3896d87: `tools/bench_marks.ml`. Animated circles/rects at 10k to 1M: core path 4 to 6 times faster, about 45% fewer bytes (results in the P3.11 report; static rows are retention hits).
 - [x] P3.12 S
   2026-10-11, branch `worktree-agent-a30ec1f3dd78d1287`, 982eff2a: `core_drawing` defaults on. `@all`, default suite (API manifest diff only), `@smoke`, `@runtest-native`, pixels green. Old arms still tested through `--arms` and the switch-off pixel rule.
-- [ ] P3.R R
-- [ ] P3.13 S
+- [x] P3.R R
+  2026-10-11, 8c94e79b: draw snapshots unchanged since 7e806d2a; `marks.md` brought in line with `marks.mli` (Affine, image ids, Buffers).
+- [x] P3.13 S
+  2026-10-11, ac5c5eaa: arms and switch deleted; a lowering error is a diagnostic. Kept: `render_gpu` (GPU circles, narrower than the old arm: a transform around GPU circles now takes the CPU core path) until P4.9. Draw lowering budget raised to 32768 so `examples/drawing` lowers (this also resolves P5.13a natively). `?reference` removed from `render_prepared`; `test_marks_scene` checks 26 digests taken from the old arms.
 
 Phase 4
-- [ ] P4.1 H
-- [ ] P4.2 S
-- [ ] P4.3 S
-- [ ] P4.4 S
+- [x] P4.1 H
+  2026-10-11, 4ad9125a: baseline rows at 100k and 1M (animated circles 1M: 160 ms, 608 MB/frame; moving translate 1M: 49 ms, 320 MB/frame).
+- [x] P4.2 S
+  2026-10-11, eb134dae: `Marks` pipeline family and shader; six storage buffers + affine; layout in `marks.md`.
+- [x] P4.3 S
+  2026-10-11, d109a87d: a GPU vertex source may carry several buffers; signatures cover every buffer id.
+- [x] P4.4 S
+  2026-10-11, 312972a1: byte-exact native pixel parity of `Marks` against `Shape_batch` at 63, 64, 65 and 100,000 instances, rect/circle/line, styled and unstyled, 1x and 2x.
 - [x] P4.5 S
   Done 2026-10-11. `Core.Region.t.output : int array` is now `outputs : int array array` (component registers per output; `Packed.of_region` refuses an empty list, or several outputs unless the region collects). `Packed.Private.view.outputs` is the same. `Packed.force_all` returns one packed array per output (`Eval.value list`); `Packed.force` stays the single-output accessor and errors on a multi-output program, which has no reference fallback. `Core_fuse` fuses a multi-output parent but never absorbs a multi-output child. The Metal emitter declares one buffer per output (`output` when single, `output0..` otherwise) at bindings `n..n+k-1`, then uniforms, status, table; `Emit.msl.output_width` became `output_widths`; `Run` owns one buffer per output and `Run.readback ?index`/`Run.buffer ?index` pick one. A single-output program prints as before: the P2.1 snapshots and the `arithmetic`, `select`, `noise` goldens are byte-identical (no mechanical reformat was needed); the new `two_outputs.metal` golden and the `Test_program.two_outputs` fixture (built at region level) are checked by `test_emit`, `test_packed` (1 and 8 domains, byte-equal) and natively by `test_run`. `@lib/flow_ir/runtest`, `@lib/flow_gpu/runtest`, `@runtest-native` pass.
 - [x] P4.6 S
@@ -868,8 +874,10 @@ Phases 6 and 7
   2026-10-11. `tools/web/runtime/workers.js`: `checkIsolation` (one plain message, no fallback), `createPool({size, spawn})` over one adapter (`spawnWorker`: browser `Worker` from a Blob, or `node:worker_threads` with `eval`), `pool.load(id, source)`, `pool.alloc(n)` (shared `Float64Array`), `pool.collect(id, inputs, uniforms, outputs, count)` (async; chunks of 16 blocks x 1,024 as `packed.ml:208-209`, one chunk or fewer runs in the caller as `parallel.ml:123-137` does, calls served in order) and `pool.region(id)` for the ordered Sum/Accumulate path on the main thread. `tools/web/test/workers.mjs` (cram `web_runtime.t`): the four goldens, byte-equal to one call at 1 and 8 workers for 100,003, 3 x 16,384 and 1,000 elements, plus non-finite status, concurrent calls and the isolation message. Because workers are asynchronous, a frame that uses `collect` must be `async`. `@tools/lisp/test/runtest` green.
 - [x] P6.3 S
   2026-10-11. `tools/web/runtime/gpu.js` (`createGpu(table, {onError, win})`, `dispatch`, `poll`, `flush`, `buffer`, `readback`, `dispose`; kernel table format in its header; `runtime.js` takes `gpu` and polls it each frame). `test_wgsl.exe --write-kernel-table DIR` writes `kernels.json`; `tools/web/test/gpu_check.mjs` + `chrome.mjs` (reusable launcher) compile and run the four goldens plus an `ops` kernel in headless Chrome 154 (`--headless=new` alone gives an Apple Metal adapter) and match the CPU regions; alias `@qualification-web`. The first real compile found no WGSL error; the goldens are unchanged. Result and tolerances in `results.md`.
-- [ ] P6.4 S
-- [ ] P6.5 S
+- [x] P6.4 S
+  2026-10-11. `tools/web/runtime/present.js` + `marks.wgsl` (port of the Metal `Marks` family; geometry, point sets; transform stack as `compose_raster`; clip as scissor; the six blends). `start` presents after each frame. `present_check.mjs`: 76 pixel probes in headless Chrome, 0 failures; `present_e2e.mjs`: `flow_vectors` and `examples/basic` equal the native picture (0 pixels outside text over 8, worst 1). `@qualification-web`, `@tools/lisp/test/runtest` green. results.md.
+- [x] P6.5 S
+  2026-10-11. Text (white string on a 2D canvas at dpr, tinted quad) and images (`images(resource)`, linear quad) in `present.js`; text is close, not exact (results.md); images tested by hand-built table only.
 - [x] P6.6 S
   2026-10-11. `rays-lisp web --watch FILE [-o DIR] [--port N]` (`tools/lisp/web_server.ml`, `.mli`; `lisp.ml`; stdlib and `unix`): one `select` loop on 127.0.0.1 (default port 8000, 0 picks a free one and the banner `serving http://127.0.0.1:PORT/` says which), polls the SHA-256 of FILE every 0.5 s, re-exports on change (`web_files` = check, `Web_export.lower`, `Web_export.files`; the files are renamed into DIR), and on a refusal prints the diagnostic and keeps serving the last good export (a refused text is not retried until it changes). GET only (405), paths with `..` or outside DIR are 404, every response carries COOP `same-origin` and COEP `require-corp`, `/version` is the SHA-256 of the export files. Imports of FILE are not watched. Gate `tools/lisp/test/web_server.t` (client `http_get.exe`): headers on 200, 404 and 405, content types, traversal attempts, version change on edit, refusal keeps the version. `@tools/lisp/test/runtest` green.
 - [x] P6.7 H

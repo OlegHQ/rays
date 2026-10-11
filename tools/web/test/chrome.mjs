@@ -11,11 +11,12 @@ export const CHROME = process.env.CHROME ?? '/Applications/Google Chrome.app/Con
 export const chromeAvailable = () => existsSync(CHROME);
 const TYPES = { html: 'text/html', js: 'text/javascript', mjs: 'text/javascript', json: 'application/json', wgsl: 'text/plain' };
 
-// files: { '/path': string | Buffer }. Returns {url, close()}. localhost is a secure context, which WebGPU needs.
-export async function serve(files) {
+// files: { '/path': string | Buffer }; headers: extra response headers (ISOLATION below). Returns {url, close()}. localhost is a secure context, which WebGPU needs.
+export async function serve(files, headers = {}) {
   const server = http.createServer((req, res) => {
     const body = files[new URL(req.url, 'http://x').pathname];
     if (body === undefined) { res.statusCode = 404; return res.end(); }
+    for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
     res.setHeader('content-type', TYPES[req.url.split('.').pop()] ?? 'text/html');
     res.end(body);
   });
@@ -52,7 +53,7 @@ export async function launch(url, flags = ['--headless=new']) {
       let j;   // the first navigation can destroy the context under us: retry
       for (let tries = 0; tries < 20; tries++) {
         j = await call('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-        if (!/context was destroyed/.test(j.error?.message ?? '')) break;
+        if (!/context was destroyed|default execution context/.test(j.error?.message ?? '')) break;
         await new Promise(r => setTimeout(r, 200));
       }
       if (j.error || j.result.exceptionDetails) throw new Error(JSON.stringify(j.error ?? j.result.exceptionDetails));
@@ -61,3 +62,6 @@ export async function launch(url, flags = ['--headless=new']) {
     close() { socket.close(); chrome.kill(); setTimeout(() => rmSync(dir, { recursive: true, force: true }), 500); },
   };
 }
+
+// What the worker pool needs (workers.js checkIsolation); pass as serve's second argument.
+export const ISOLATION = { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' };

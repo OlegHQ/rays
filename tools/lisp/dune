@@ -4,7 +4,7 @@
 
 (rule
  (targets web_runtime.ml)
- (deps (glob_files ../web/runtime/*.js))
+ (deps (glob_files ../web/runtime/*.js) (glob_files ../web/runtime/*.wgsl))
  (action (with-stdout-to web_runtime.ml (run ./embed.exe %{deps}))))
 
 (library

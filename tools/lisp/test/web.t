@@ -9,6 +9,8 @@ The web export: a draw graph becomes a standalone browser application. A second 
   out/program.js
   out/program.map
   out/runtime/gpu.js
+  out/runtime/marks.wgsl
+  out/runtime/present.js
   out/runtime/prims.js
   out/runtime/runtime.js
   out/runtime/shape2.js

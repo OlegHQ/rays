@@ -714,3 +714,43 @@ protocol with a fake server (version change swaps the program and resets slots, 
 compiled again, `gpu.update` compiles only changed kernels, a 404 or fetch error stops silently).
 Fixed on the way: `createRuntime` read the original program for `region(k)` and the worker load after `rt.load`,
 so a reload kept running the old regions.
+
+## 2026-10-11: browser presenter, pixels in real Chrome (P6.4, P6.5)
+
+Machine: Apple M1, Google Chrome 154 `--headless=new` (Metal WebGPU adapter), node 24. Gate: `dune build
+@qualification-web` (`tools/web/test/present_check.mjs`, `present_e2e.mjs`; native oracle `tools/marks_shot.exe`:
+core executor, `Marks_scene`, `Canvas` at density 1).
+
+Hand-built tables (`present_check.mjs`, 100x100 points, dpr 1 unless noted; canvas read back with `drawImage` in the
+submitting task): 76 checks, 0 failures at colour tolerance 2/255. Every probe is at least 2 device pixels from an
+edge, so antialiasing never enters. Cases: rect fill and stroke (9 probes), stroke only (4), circle fill and stroke
+(8), circle with per-instance position/radius/float-colour buffers (5), line constant and per-instance end/width (9),
+geometry, an empty geometry and a point set with truncated positions (6), push/pop transform and nested clips (12),
+rotation matrix (4), blend add/alpha with a zero-alpha mark (5), image upright and rotated by pi (6), text (ink
+bounding box and colour), text at dpr 2 (canvas 200x80), and dpr 2 shapes (6).
+
+End to end (`present_e2e.mjs`): `rays-lisp web` export, served with COOP/COEP, runtime.js with the worker pool,
+5 fixed frames (dt 1/60, pointer (100, 100), 640x480), `present`, read back, against `marks_shot` at the same
+frames. Metric: largest channel difference per pixel; pass when at most 0.5% of the pixels outside text differ by
+more than 8 and none by more than 64.
+
+| Workspace | Entries | Pixels outside text differing by > 8 | Worst | Mean |
+| --- | --- | --- | --- | --- |
+| `sketches/flow_vectors` | 2 | 0 of 307,200 | 1 | 0.0000 |
+| `examples/basic` | 3 | 0 of 300,060 | 0 | 0.0000 |
+
+Both are also loaded as `index.html` (`start`, real clock, rAF) and run with marks and a screenshot.
+
+Text is not exact. `basic`'s line box: Chrome's `ui-monospace` ink spans x 13..183, y 14..26; native SDL_ttf
+(SFNSMono) x 13..190, y 16..27, 1.27 times the brightness. Text boxes are therefore compared by total brightness
+(ratio within 0.5..2) and excluded from the per-pixel metric. Not covered: image entries from an export
+(`draw/image` is refused `E_WEB_IMAGE`, so only the hand-built table reaches them; `start` has no resolver, so
+`presenter` takes `images(resource)`), blend entries (the compiler emits none; hand-built only), clip entries
+(no draw operator emits one yet), and the mark kinds beyond what the two workspaces draw (hand-built tables cover them).
+
+Mismatch found, left alone: native rotates an image about the wrong pivot when the angle is not a multiple of pi
+(`image_command` computes `tx = px - xx*px - xy*py` with `xy = -sin`, while `Render_ir` applies `yx` to y in x'),
+so a 90 degree image leaves the screen. The presenter reproduces the native matrix (marks.md keeps both signs), and
+the test uses pi, where the two agree. `lib/` was off limits for this task.
+Fixed on the way: a probe taken at a width-2 line's end showed 218, not 255: coverage `0.5 - d/px` with `px = |fwidth|`
+is the native line shader's, not a port error.

@@ -205,6 +205,16 @@
  (action
   (system "if command -v node >/dev/null 2>&1; then node web/test/reload_check.mjs %{bin:rays-lisp} ../sketches/flow_vectors/sketch.rays; else echo 'reload_check: skipped (node not found)'; fi")))
 
+; Real-Chrome check of the presenter (plan P6.4, P6.5): hand-built mark tables with pixel probes, then
+; flow_vectors and examples/basic exported, stepped in the browser and compared with the native picture.
+(rule
+ (alias qualification-web)
+ (deps web/test/present_check.mjs web/test/present_e2e.mjs web/test/chrome.mjs
+  (glob_files web/runtime/*.js) web/runtime/marks.wgsl lisp/lisp.exe marks_shot.exe
+  (source_tree ../sketches/flow_vectors) (source_tree ../examples/basic))
+ (action
+  (system "if command -v node >/dev/null 2>&1; then node web/test/present_check.mjs web/runtime && node web/test/present_e2e.mjs lisp/lisp.exe marks_shot.exe .. sketches/flow_vectors examples/basic; else echo 'present_check: skipped (node not found)'; fi")))
+
 (executable
  (name shape2_fixtures)
  (modules shape2_fixtures)
@@ -214,3 +224,12 @@
  (name web_parity)
  (modules web_parity)
  (libraries web_export flow flow_ir flow_web frame_input scene_command))
+
+; Marks_scene is private to rays_editor; this tool compiles its own copy, as lib/rays_editor/marks_scene_test does.
+(copy_files ../lib/rays_editor/marks_scene.ml)
+(copy_files ../lib/rays_editor/marks_scene.mli)
+
+(executable
+ (name marks_shot)
+ (modules marks_shot marks_scene)
+ (libraries web_export flow flow_ir frame_input rays scene_command))
