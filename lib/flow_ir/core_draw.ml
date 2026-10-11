@@ -37,6 +37,7 @@ let lower (plan : E.plan) (value : E.value) =
       let data = match n.kind with
         | "draw/merge" -> []
         | "draw/translate" | "draw/rotate" | "draw/scale" -> List.filter (fun (k, _) -> k <> "drawing") n.args
+        | "draw/image" -> List.filter (fun (k, _) -> k <> "image") n.args
         | _ -> n.args in
       let locals = List.map (fun (k, v) -> k, ctx.value source v) data in
       let need key = match List.assoc_opt key locals with
@@ -82,6 +83,25 @@ let lower (plan : E.plan) (value : E.value) =
               "color", default "color" white; "width", default "width" (E.Float 1.)]})
         | "draw/points" ->
             let positions = need "positions" in emit (Points {positions; ink = default "color" white})
+        | "draw/text" ->
+            let at = need "at" in let text = need "text" in
+            emit (Text_run {at; text; ink = default "color" white; size = default "size" (E.Int 16)})
+        | "draw/image" ->
+            let source = match List.assoc_opt "image" n.args with
+              | Some (E.Deferred (ty, id)) -> ty, id
+              | Some _ -> raise (Refused "draw_image")
+              | None -> raise (Missing (Printf.sprintf "%s needs image." n.kind)) in
+            emit (Image {source; at = default "at" (E.Vec3 (0., 0., 0.));
+              scale = default "scale" (E.Float 1.); angle = default "angle" (E.Float 0.)})
+        | "draw/rounded_rect" ->
+            let at = need "at" in let size = need "size" in
+            emit (Path {path = Rounded_rect; args = ["at", at; "size", size;
+              "radius", default "radius" (E.Int 0)] @ style ()})
+        | "draw/polygon" ->
+            let points = need "points" in emit (Path {path = Polygon; args = ["points", points] @ style ()})
+        | "draw/polyline" ->
+            let points = need "points" in
+            emit (Path {path = Polyline; args = ["points", points; "color", default "color" white]})
         | "draw/translate" -> push C.Translate "offset"
         | "draw/rotate" -> push C.Rotate "angle"
         | "draw/scale" -> push C.Scale "factor"

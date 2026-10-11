@@ -21,6 +21,14 @@ let pictures = [
   "(let* [p (map (fn [i] [i 0 0]) (array/range 4)) c (map (fn [i] [(/ i 4) 0 0]) (array/range 4))] (draw/rects p [10 10 0] :fill c))";
   "(let* [p (map (fn [i] [i 0 0]) (array/range 4))] (draw/lines p p :width 2))";
   "(let* [p (map (fn [i] [i 0 0]) (array/range 4))] (draw/points p :color \"#1e1e1e\"))";
+  "(draw/text [12 12 0] (str \"frame \" (frame/index)))";
+  "(draw/text [12 12 0] \"hi\" :color \"#abc\" :size 20)";
+  "(draw/rounded_rect [4 5 0] [60 40 0] :radius 8 :fill \"#123\")";
+  "(draw/rounded_rect [4 5 0] [60 40 0])";
+  "(draw/polygon (map (fn [i] [i (* i i) 0]) (array/range 4)) :stroke \"#fff\")";
+  "(draw/polyline (map (fn [i] [i (* i i) 0]) (array/range 4)) :color \"#f0f\")";
+  "(draw/image (image/noise) :at [4 5 0] :scale 2 :angle (* t 0.5))";
+  "(draw/image (image/noise))";
 ]
 let dump () =
   let buffer = Buffer.create 4096 in

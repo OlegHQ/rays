@@ -38,12 +38,16 @@ type source = {
    default already resolved by the lowering (Core_draw); the executor checks and encodes them. *)
 type mark = Rect | Circle | Line
 type transform = Translate | Rotate | Scale
+type path = Rounded_rect | Polygon | Polyline
 type draw =
   | Background of int
   | Point of { at : int; ink : int }
   | Mark of { mark : mark; args : (string * int) list }
   | Batch of { mark : mark; args : (string * int) list }
   | Points of { positions : int; ink : int }
+  | Path of { path : path; args : (string * int) list }
+  | Text_run of { at : int; text : int; ink : int; size : int }
+  | Image of { source : Flow.Ty.t * int; at : int; scale : int; angle : int }
   | Push of transform * int
   | Pop
 
@@ -154,6 +158,14 @@ let pp fmt p =
         out "draw/%s%s" (match mark with Rect -> "rect" | Circle -> "circle" | Line -> "line") plural;
         List.iter (fun (name,n) -> out " %s=" name; local n) args
     | Points {positions;ink} -> out "draw/points positions="; local positions; out " ink="; local ink
+    | Path {path;args} ->
+        out "draw/%s" (match path with Rounded_rect -> "rounded_rect" | Polygon -> "polygon" | Polyline -> "polyline");
+        List.iter (fun (name,n) -> out " %s=" name; local n) args
+    | Text_run {at;text;ink;size} ->
+        out "draw/text at="; local at; out " text="; local text; out " ink="; local ink; out " size="; local size
+    | Image {source=(ty,id);at;scale;angle} ->
+        out "draw/image %s#%d at=" (Flow.Ty.to_string ty) id; local at; out " scale="; local scale;
+        out " angle="; local angle
     | Push (t,n) ->
         out "push %s " (match t with Translate -> "translate" | Rotate -> "rotate" | Scale -> "scale"); local n
     | Pop -> out "pop" in
