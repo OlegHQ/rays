@@ -17,3 +17,8 @@
  (name test_marks)
  (modules test_marks)
  (libraries scene_command))
+
+(test
+ (name test_shape_batch)
+ (modules test_shape_batch)
+ (libraries scene_command))

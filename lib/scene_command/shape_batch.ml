@@ -1,5 +1,7 @@
 type gpu_token = { identity:int; count:int; stamp:int64 }
-type t = { bytes:bytes; count:int; gpu:gpu_token option }
+(* [checked] remembers that [valid] passed: a published batch is immutable, so a scene that holds the
+   same batch again (a moved transform over unchanged marks) does not scan every instance again. *)
+type t = { bytes:bytes; count:int; gpu:gpu_token option; mutable checked:bool }
 let instance_bytes = 64
 let count value = value.count
 let instances value = value.bytes
@@ -10,6 +12,7 @@ module Private = struct
     match value.gpu with
     |Some token->value.count=token.count && Bytes.length value.bytes=0
     |None->
+        value.checked ||
         Bytes.length value.bytes=value.count*instance_bytes &&
         let rec loop i = i=value.count ||
           let float word=Int32.float_of_bits(Bytes.get_int32_le value.bytes (i*instance_bytes+word*4))in
@@ -21,7 +24,7 @@ module Private = struct
           Float.is_finite(float 12) && float 12>=0. &&
           Float.is_finite(float 13) && float 13>=0. &&
           (kind=5l || (float 2>=float 0 && float 3>=float 1)) && loop(i+1)
-        in loop 0
+        in let ok = loop 0 in if ok then value.checked <- true; ok
   let gpu_token ~identity ~count ~stamp =
     if identity<=0 || count<0 || count>1_000_000 || stamp<0L then
       invalid_arg "Shape_batch.gpu_token: invalid identity, count or stamp";
@@ -29,7 +32,7 @@ module Private = struct
   let gpu_identity value = value.identity
   let gpu_count (value:gpu_token) = value.count
   let gpu_stamp value = value.stamp
-  let of_gpu (gpu:gpu_token) = {bytes=Bytes.empty; count=gpu.count; gpu=Some gpu}
+  let of_gpu (gpu:gpu_token) = {bytes=Bytes.empty; count=gpu.count; gpu=Some gpu; checked=false}
 end
 module Builder = struct
   type batch = t
@@ -71,5 +74,5 @@ module Builder = struct
   let line builder ~x0 ~y0 ~x1 ~y1 ~color ~width =
     append builder 5l x0 y0 x1 y1 color 0l width
   let publish builder = {bytes=Bytes.sub builder.bytes 0 (builder.count*instance_bytes);
-    count=builder.count; gpu=None}
+    count=builder.count; gpu=None; checked=false}
 end
