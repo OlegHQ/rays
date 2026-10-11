@@ -1,7 +1,7 @@
 module C = Core
 module V = Flow.Value
 module E = Flow.Eval
-let run ?root program ~live =
+let run ?root ?force program ~live =
   let values = Array.make (Array.length program.C.locals) Flow.Eval.No_geo in
   let builders = Array.make (Array.length program.C.locals) None in
   let calls = Array.make program.call_slots 0 in
@@ -131,7 +131,12 @@ let run ?root program ~live =
           let instance,path,iter,host=slot_key slot in
           seal value;
           values.(value)<-E.Private.state_write (state_root ()) ~instance ~path ~iter ~host (get value)
-      | Invoke _ -> V.fail "E_CORE_REGION" "Core region lowering is not available yet."
+      | Invoke {region;result;_} ->
+          let (C.Region_ref packed)=program.regions.(region) in
+          builders.(result)<-None;
+          (match (match force with Some force -> force packed | None -> Packed.force packed ~live) with
+           | Ok v -> values.(result)<-v
+           | Error (d : Flow.Diagnostic.t) -> raise (V.Fail (d.code,d.message,d.span)))
       with V.Fail (code,message,None) -> raise (V.Fail (code,message,s.source.span))) statements in
   match Frame_input.validate live with
   | Error message -> Error (Flow.Diagnostic.error ~code:"E_FRAME" message)

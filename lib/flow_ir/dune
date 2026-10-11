@@ -71,3 +71,8 @@
  (name test_core_state)
  (modules test_core_state)
  (libraries flow_ir flow))
+
+(test
+ (name test_core_regions)
+ (modules test_core_regions)
+ (libraries flow_ir flow))

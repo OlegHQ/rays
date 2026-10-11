@@ -593,7 +593,17 @@ Phase 1
   records, errors, coercion) over eight frames against the walker, with equal
   state stamps. One expectation updated: test_core_lower no longer pins the
   `state` refusal. Flow and flow_ir focused gates passed on 2026-10-11.
-- [ ] P1.9 S
+- [x] P1.9 S
+  Packed-array primitives (array/range, float, vec3, nth, count, slice, concat)
+  were already core primitives; test_core_regions now proves them against the
+  walker. A residual whose own term is a packed map, reduce, loop or array/sum
+  over arrays (or producing an array) and that Packed.compile accepts lowers to
+  a Region_ref plus Invoke, executed by Packed.force unchanged (Executor passes
+  its state, resolve, measure and the CPU placement check; a failing region
+  declines to the existing packed path). Scalar list loops stay structured
+  core. One expectation updated: test_core_lower's second refusal case (a
+  packed array/sum, now lowered) became a 2,048-node budget refusal.
+  Flow and flow_ir focused gates passed on 2026-10-11.
 - [ ] P1.10 S
 - [ ] P1.11 H
 - [ ] P1.12 H
@@ -622,7 +632,10 @@ Phase 3
   `specification/marks.md` written 2026-10-11 (commit 4f08e4f6): mark sets,
   geometry, image, text, transform/clip push-pop; caps 1,000,000 per set
   (`Shape_batch`) and 1,048,576 entries (`Render_ir`). Reviewed by P3.R.
-- [ ] P3.3 S
+- [x] P3.3 S
+  `Scene_command.Marks` added 2026-10-11 (commit 660ee85a): types, `validate`,
+  little-endian `serialize` ("RMK1"). `@lib/scene_command/runtest` and
+  `@test/runtest` passed; `scene_command` still has no dependencies.
 - [ ] P3.3b H
 - [ ] P3.4 S
 - [ ] P3.5 S

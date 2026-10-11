@@ -20,7 +20,7 @@ let lower root =
   let budget = ref 2048 and active = Hashtbl.create 8 in
   let calls = Hashtbl.create 8 and next_call = ref 0 and next_function = ref (-1) in
   let mixed_numeric = Hashtbl.create 8 in
-  let slots = ref [] and next_slot = ref 0 and plane = ref `Frame and geometry = ref false in
+  let regions = ref [] and slots = ref [] and next_slot = ref 0 and plane = ref `Frame and geometry = ref false in
   let new_identity () = let n= !next_function in decr next_function; n in
   let call_slot identity = match Hashtbl.find_opt calls identity with
     | Some n -> n | None -> let n= !next_call in incr next_call; Hashtbl.add calls identity n; n in
@@ -155,7 +155,9 @@ let lower root =
     Fun.protect ~finally:(fun () -> Hashtbl.remove active id; plane:=fst saved; geometry:=snd saved) (fun () ->
       let env = Names.of_seq (List.to_seq (List.map (fun (name,v) -> name,Known v) view.bindings)) in
       let source = source_of_view view in
-      let value = if view.previous then state_term statements cache {source with C.span=Some view.term.form.span}
+      let packed = if view.previous then None else packed_region r view in
+      let value = if Option.is_some packed then region statements (Option.get packed) view else
+        if view.previous then state_term statements cache {source with C.span=Some view.term.form.span}
           env view.term true else term statements cache source env view.term in
       Hashtbl.add cache id value;
       value)
@@ -319,6 +321,26 @@ let lower root =
         | Vec _ -> "vector" | Lit _ -> "literal" | Call _ -> "call"
         | Graph_ref _ -> "ref"
         | _ -> assert false)
+  and packed_region r (view : E.Private.residual_view) : Packed.t option =
+    (* Packed-array forms run as one region through Packed.force, unchanged; list
+       loops stay structured core. A refusal by Packed leaves the structured path. *)
+    let packed ty = match ty with Flow.Ty.Array _ -> true | _ -> false in
+    let sources = match view.term.node with
+      | W.Hof ((`Map|`Reduce),_::rest) -> Some rest
+      | Loop {clauses;_} -> Some (List.map snd clauses)
+      | Op {op="array/sum";args;_} -> Some (List.map snd args)
+      | _ -> None in
+    match sources with
+    | Some sources when packed view.term.ty || List.exists (fun (s : W.term) -> packed s.ty) sources ->
+        (try Packed.compile r view.term with _ -> None)
+    | _ -> None
+  and region statements packed (view : E.Private.residual_view) =
+    let index=List.length !regions in
+    regions:=!regions @ [C.Region_ref packed];
+    let source={(source_of_view view) with C.span=Some view.term.form.span} in
+    let result=local view.term.ty in
+    statements:=statement (number ()) source (Invoke {region=index;args=[];result}) :: !statements;
+    Computed (result,view.term.ty)
   and state_term statements cache source env (x : W.term) previous_only =
     match x.node with
     | W.State {binder;init;step;zone} ->
@@ -879,6 +901,6 @@ let lower root =
     let source = { (source_of_view view) with C.span=Some view.term.form.span } in
     let result = ensure body cache source result in
     Ok {C.constants=Array.of_list (List.rev !constants);locals=Array.of_list (List.rev !locals);
-      body=List.rev !body;results=[|result|];state_slots=Array.of_list (List.rev !slots);regions=[||];call_slots= !next_call}
+      body=List.rev !body;results=[|result|];state_slots=Array.of_list (List.rev !slots);regions=Array.of_list !regions;call_slots= !next_call}
   with Unsupported name -> Error name
     | V.Fail _ | Not_found | Invalid_argument _ | Failure _ -> Error "constant"

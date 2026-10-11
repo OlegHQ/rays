@@ -51,7 +51,7 @@ let () =
     match List.assoc "g" (ok (E.static (checked body))).results with
     | E.Residual r -> assert (Flow_ir.Core_lower.lower r = Error name)
     | _ -> assert false)
-    ["(array/sum (map (fn [x] (+ x t)) (array/range 4)))","packed_higher_order"];
+    ["(let* [a0 t " ^ String.concat " " (List.init 1100 (fun i -> Printf.sprintf "a%d (+ a%d t)" (i+1) i)) ^ "] a1100)","budget"];
   let observed=ref false in
   ignore (ok (E.Private.static_with_kernels ~observe:(fun r ->
     match (E.Private.residual_view r).term.node with
