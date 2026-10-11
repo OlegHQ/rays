@@ -185,7 +185,7 @@ export async function createPresenter(canvas, { dpr, images = () => null, clear 
         const turn = e.angle !== 0;
         if (turn) {   // Scene.image_command: rotate about the destination centre
           const px = e.x + w * 0.5, py = e.y + h * 0.5, c = Math.cos(e.angle), s = Math.sin(e.angle);
-          transforms.push(compose(transforms.at(-1), { xx: c, xy: -s, yx: s, yy: c, tx: px - c * px + s * py, ty: py - s * px - c * py }));
+          transforms.push(compose(transforms.at(-1), { xx: c, xy: -s, yx: s, yy: c, tx: px - c * px - s * py, ty: py + s * px - c * py }));
         }
         quad(t, e.x, e.y, w, h, [1, 1, 1, 1], 'linear');
         if (turn) transforms.pop();

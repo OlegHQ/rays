@@ -192,7 +192,7 @@ module Private=struct
     if angle<>0. then(
       let px=destination.x+.destination.width*.0.5 and py=destination.y+.destination.height*.0.5 and c=cos angle and s=sin angle in
       let xx=c and xy=(-.s)and yx=s and yy=c in
-      emit builder(Scene_command.Render_ir.Push_transform{xx;xy;yx;yy;tx=px-.xx*.px-.xy*.py;ty=py-.yx*.px-.yy*.py});
+      emit builder(Scene_command.Render_ir.Push_transform{xx;xy;yx;yy;tx=px-.xx*.px-.yx*.py;ty=py-.xy*.px-.yy*.py});
       emit builder command;emit builder Scene_command.Render_ir.Pop_transform)
     else emit builder command
  let commands ?(density=1) scene=

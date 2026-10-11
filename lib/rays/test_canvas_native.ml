@@ -129,8 +129,25 @@ let completed_source ()=
   require(live_handles()=baseline)"Canvas borrowed-source live-handle delta";
   print_endline "Canvas completed source: native consumer, domain/thread guards, attempt/CPU/destroy expiry, retained CPU lease, no teardown readback, zero delta"
 
+let rotated_image ()=
+  let source=Canvas.create_exn ~width:20 ~height:10
+  and canvas=Canvas.create_exn ~width:60 ~height:60 in
+  Fun.protect ~finally:(fun()->Canvas.destroy source;Canvas.destroy canvas)(fun()->
+    Canvas.render source Scene.[clear Color.red;rect ~at:(10,0) ~w:10 ~h:10 ~fill:green()];
+    let picture=Result.get_ok(Canvas.to_image source)in
+    Fun.protect ~finally:(fun()->Image.destroy picture)(fun()->
+      (* 20x10 at (10,20): centre (20,25). A quarter turn about it maps the red left half to
+         x 15..25, y 25..35 and the green right half to x 15..25, y 15..25. *)
+      Canvas.render canvas Scene.[clear Color.black;image picture ~at:(10,20) ~angle:(Float.pi /. 2.)()];
+      require(channel canvas ~x:20 ~y:30=(255,0,0,255))"rotated image: red half not below the pivot";
+      require(channel canvas ~x:20 ~y:20=(0,255,0,255))"rotated image: green half not above the pivot";
+      require(channel canvas ~x:12 ~y:25=(0,0,0,255))"rotated image left its unrotated footprint";
+      require(channel canvas ~x:28 ~y:25=(0,0,0,255))"rotated image left its unrotated footprint"));
+  print_endline "rotated image: a quarter turn pivots about the destination centre"
+
 let run () =
   completed_source();
+  rotated_image();
   camera_depth();
   let baseline=live_handles()in
   let canvas=Canvas.create_exn~width:64~height:64 in

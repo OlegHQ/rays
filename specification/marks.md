@@ -185,7 +185,7 @@ finite, every index in `0 .. vertices/2 - 1` (the `Render_ir` rules).
   `E_DRAW_RANGE`. Native lowering: destination `(x, y, w * scale, h * scale)`,
   source `(0, 0, w, h)`; if `angle <> 0`, the image is wrapped in a transform
   rotating about the destination centre `(px, py)` with `xx = cos`, `xy = -sin`,
-  `yx = sin`, `yy = cos`, `tx = px - xx*px - xy*py`, `ty = py - yx*px - yy*py`.
+  `yx = sin`, `yy = cos`, `tx = px - xx*px - yx*py`, `ty = py - xy*px - yy*py` (a point maps to `(xx x + yx y + tx, xy x + yy y + ty)`).
 - `Text`: a whole string, drawn left-aligned, unwrapped, with the automatic
   font, as one image at `(x, y)` (`Scene.text_image`). `x`, `y` are `at`
   truncated to integers; `size` is `floor(s + 0.5)`, default 16; `color` is the
