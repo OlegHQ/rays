@@ -28,6 +28,16 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
 
 ## Tests that got weaker
 
+- Restored, native verification pending 2026-10-11: `test_gpu_film` now
+  captures a standalone tracer before creating the presenting coordinator
+  and compares its complete frame with the shared-device tracer's texture
+  readback. Explicit image readback and independently sampled Canvas pixels
+  must match those same bytes. Sample counts, exact dimensions, three-slot
+  texture publication and all existing lease/teardown checks remain. The
+  standalone lease must also return to the original handle baseline before
+  window creation. Typechecking, executable builds and the dependency gate
+  pass; the forced native attempt fails at Metal device acquisition. This
+  restores the documented assertions, without claiming native parity here.
 - Restored, native verification pending 2026-10-11: Scene2 coordinate and
   dense-command tests previously bypassed drawing (the latter ignored both
   its IR and prepared draws). They now submit through the existing protected

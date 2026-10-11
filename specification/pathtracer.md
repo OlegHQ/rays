@@ -287,6 +287,12 @@ visibility. Both executables build and typecheck. Forced native runs on the
 managed runner fail at Metal device acquisition, so the numerical assertions
 and thresholds remain unverified here.
 
+`test_gpu_film`'s 2026-10-11 restoration now actually captures the standalone
+frame before window creation and compares complete shared-device texture,
+explicit image-readback and sampled Canvas bytes. Sample counts, dimensions
+and standalone lease teardown are checked as well. Its build and dependency
+checks pass; the native attempt also fails at device acquisition here.
+
 ## Performance
 
 Run the finite native throughput probe with `dune build --force @tools/bench-pathtracer`.
