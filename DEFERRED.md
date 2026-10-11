@@ -475,17 +475,3 @@ later. Numbers and commands are in `specification/web-export/results.md`.
   did not locate the lean-restructure proposal. The accessible Rays Page
   concerns the browser-compilation paper. Its content was left unchanged;
   the requested artifact's location is pending user clarification.
-
-## Known native test instability
-
-2026-10-11: `runtime_native_qualification` (`lib/runtime/native_qualification`, aliases
-`qualification`, run directly as the built exe) fails with "native repeated teardown
-physical footprint did not plateau beyond the SDL window baseline" on this machine
-(M1, current macOS). It is deterministic and not a regression: HEAD `ac8466a1` three
-runs gave growth 21088, 20960, 21024 KiB over baselines of about 9.4 MB; `99115fe8`
-gave 21153 and 21233 KiB; `4c00087b` gave 21057 KiB; `d88c46b` fails too. The
-growth is the same (about 21 MB) at every commit, so no recent change added it;
-the check (floors of footprint over 72 create/destroy cycles) is
-sensitive to the OS allocator, not to a Rays resource. Not investigated further and the
-threshold is unchanged; do not use this test as a regression signal until the
-footprint source is attributed (vmmap on the 72-cycle loop).

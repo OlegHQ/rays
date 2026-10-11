@@ -753,11 +753,24 @@ let make_device raw =
   in
   Ok ({ raw; lifetime = lifetime (); registry_id } : device)
 
+(* [Gc.finalise_last], and a closure that holds the [destroyed] flag instead of
+   the value: a child destroyed in the frame that made it then dies in the
+   minor heap. [Gc.finalise] promoted every command buffer, encoder, drawable
+   and pass descriptor and kept each for two major cycles, and since a cycle's
+   length follows the heap size the heap grew with the frame count (0.35 KiB
+   per frame, 65 MB after 96,000 frames). [on_finalize] must not capture the
+   value either, or the value is never collected. *)
+let finalize_after destroyed dependents on_finalize () =
+  if Atomic.compare_and_set destroyed false true then begin
+    on_finalize ();
+    Atomic.decr dependents
+  end
+
 let attach_finalizer ?(on_finalize = fun () -> ()) value lifetime parent =
-  Gc.finalise (fun _ -> finalize_child lifetime parent on_finalize) value
+  Gc.finalise_last (finalize_after lifetime.destroyed parent.dependents on_finalize) value
 
 let attach_lifetime_finalizer ?(on_finalize = fun () -> ()) lifetime parent =
-  Gc.finalise (fun lifetime -> finalize_child lifetime parent on_finalize) lifetime
+  Gc.finalise_last (finalize_after lifetime.destroyed parent.dependents on_finalize) lifetime
 
 let command_resource_lifetime = function
   | Command_buffer_buffer buffer -> buffer.lifetime
@@ -3619,10 +3632,11 @@ module Function = struct
             }
           in
           attach value.lifetime;
+          let retained = x.retained in
           attach_finalizer
             ~on_finalize:(fun () ->
-              Hashtbl.iter (fun _ lifetime -> detach lifetime) x.retained;
-              Hashtbl.clear x.retained)
+              Hashtbl.iter (fun _ lifetime -> detach lifetime) retained;
+              Hashtbl.clear retained)
             x x.lifetime value.lifetime;
           Ok x
 
@@ -3871,11 +3885,13 @@ module Intersection_function_table = struct
           let release values lifetime =
             Array.iter (Option.iter (fun item -> detach (lifetime item))) values
           in
+          let functions = value.functions and buffers = value.buffers
+          and visible_tables = value.visible_tables in
           attach_finalizer
             ~on_finalize:(fun () ->
-              release value.functions (fun item -> item.lifetime);
-              release value.buffers (fun item -> item.lifetime);
-              release value.visible_tables (fun item -> item.lifetime))
+              release functions (fun item -> item.lifetime);
+              release buffers (fun item -> item.lifetime);
+              release visible_tables (fun item -> item.lifetime))
             value value.lifetime pipeline.lifetime;
           Ok value)
 
@@ -4430,8 +4446,9 @@ module Indirect_command_buffer = struct
             }
           in
           attach device.lifetime;
+          let retained = value.retained in
           attach_finalizer
-            ~on_finalize:(fun () -> release_retained value.retained)
+            ~on_finalize:(fun () -> release_retained retained)
             value value.lifetime device.lifetime;
           Ok value)
 

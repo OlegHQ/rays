@@ -1115,3 +1115,78 @@ The shared set is the library's `(modules ...)` list in `lib/flow_ir/dune`. `cor
 `region_snapshot.ml` are excluded because only test stanzas link them. The literal `find` with only
 `! -name 'test_*'` gives 4,915, which includes them. Goldens (`*.expected`, `*.metal`, `goldens/*`, `snapshots/*`)
 are data and are not counted. These are line counts, not a measure of complexity.
+
+## 2026-10-11 addendum: native teardown footprint, and what a frame retained
+
+`DEFERRED.md` listed `runtime_native_qualification` as unstable ("physical footprint did not plateau", about 21 MB
+over a 9 MB "SDL window baseline", at every commit back to `d88c46b`). It was a real leak, in Rays, in three parts.
+Machine: Apple M1, macOS 27.0.1, OCaml 5.3.0, dune dev profile (the Metal bridge is built `-O0`), 1-minute load 3 to
+10 from another agent's builds. Footprint is `/usr/bin/footprint -p PID -f bytes` after `Gc.full_major`. Before =
+`49c0f65d`.
+
+Method. A scratch executable (not kept) looped one lifecycle at a time and printed the footprint: SDL only
+(`Sdl3.Init.init`, window, Metal view, destroy, quit), `Runtime.create`/`destroy`, and N rendered frames of one
+triangle in a hidden window followed by `destroy`. `heap -s`, `vmmap -summary` and `footprint` of the 72-cycle loop
+at cycles 16, 48 and 71 named what grew; `leaks --trace=ADDRESS` named the owner; `OBJC_DEBUG_MISSING_POOLS=YES` under
+`lldb` (breakpoint on `objc_autoreleaseNoPool`, `bt`) named the caller.
+
+Evidence. At cycle 71 the heap held 77 `SDL3Window`, 77 `SDL3_cocoametalview`, 77 `CAMetalLayer` (one per window ever
+closed) and 602 `AGXG13GFamilyCommandBuffer` with their 601 render-pass descriptors and encoders (one per frame of
+the 600-frame scenario run before the loop). `leaks --trace` gave one owner for a window and a command buffer alike:
+`'_main_thread' + 568 --> <@autoreleasepool content>`, the initial thread's root autorelease page. An OCaml program
+has no Cocoa run loop, so nothing ever drains that page: an object autoreleased outside a pool of the stub's own is
+retained for the life of the process.
+
+1. `lib/sdl3/sdl3_cocoa.c`, `rays_window_plain_titlebar`: `setTitlebarAppearsTransparent:` and
+   `setTitleVisibility:` ran with no pool and autoreleased the `NSWindow` about 95 times and its title-bar views (682
+   of the 746 reports on the initial thread in one lifecycle). No closed window was ever deallocated: 385 KiB each.
+   The test's "SDL window baseline" loop goes through the same function, so it measured Rays, not SDL.
+2. `lib/metal/metal_bridge.mm`: `object_of_handle` returned its object unretained, which ARC autoreleases when the
+   return-value handshake fails (always at `-O0`); 28 handwritten stubs had no pool (`-contents` in the buffer copies
+   autoreleases the buffer: it returns an inner pointer; so did the release-queue drain), nor had the generated
+   `presentDrawable:` call. Each frame left its command buffer, encoder, pass descriptor, drawable and every written
+   buffer retained: 4.0 KiB of footprint per frame, and the GPU memory of the buffers with them (the 13 to 29 MB
+   `IOAccelerator` step the loop showed after a scenario had run).
+3. `lib/metal/metal.ml`: every child handle registered a `Gc.finalise` closure that held its parent's lifetime
+   record. The frame's command buffer and its encoder were therefore promoted at every minor collection and needed two
+   major cycles to go; with the default `space_overhead` the major heap then grows with the frame count instead of
+   settling (no major collection completed between frames 8,000 and 16,000 in one run).
+
+Fixes: the three Cocoa helper functions bracket themselves with `objc_autoreleasePoolPush`/`Pop`; handle lookups
+return retained, the handwritten stubs open a pool (`Autorelease_pool` guard) and `presentDrawable:` is `pool = true`;
+child finalisers are `Gc.finalise_last` closures over the `destroyed` flag and the parent's dependent counter, not
+the records.
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| Qualification loop, floor of cycles 24-47 and of 48-71, KiB | 59,408 and 80,929 | 35,296 and 35,296 |
+| Qualification growth between the floors, KiB (three runs after) | 21,521 (and 20,048, 22,624) | 0, 16, 48 |
+| "SDL window baseline" the test subtracted, KiB | 9,280 | 0 (removed) |
+| SDL-only lifecycle, KiB per lifecycle (cycles 8 to 48) | 385 | 2.4 |
+| `Runtime.create`/`destroy`, KiB per lifecycle (cycles 8 to 80) | 412 | 0 (24,896 at 8, 24,688 at 80) |
+| Footprint after 600 / 6,000 frames and `destroy`, KiB | 37,792 / 59,520 | 28,640 / 28,848 at 24,000 (a full major every 1,000 frames) |
+| Per rendered frame, KiB | 4.02 | 0 |
+| Objects autoreleased with no pool, initial thread, one lifecycle and two frames | 746 | 0 |
+| The same, `examples/particles`, 30 frames | 2,006 | 0 |
+| OCaml heap, no forced collection: footprint after 24,000 frames and `destroy`, KiB | 40,064 | 30,416 |
+| The same after 96,000 frames and `destroy`, KiB | 65,200 | 30,096 |
+| The same during the run, at frame 4,000 and at 24,000, KiB | 37,392 and 46,464 | 36,400 and 36,912 |
+| During a 96,000-frame run, at frame 16,000 and at 96,000, KiB | not sampled | 36,592 and 36,592 |
+| Major collections completed in 24,000 frames (in 96,000) | 19 | 27 (68) |
+
+The middle step alone (parts 1 and 2 fixed, `Gc.finalise` kept) still grew 0.35 KiB per frame with no forced
+collection: 40,064 KiB after 24,000 frames, 47,952 after 48,000, 65,200 after 96,000. `Gc.Memprof` (promotion
+callback) attributed the promoted words to `Metal.Command_buffer.create_owned` (its `Hashtbl.create 16`, the
+finaliser closures and the lifetime record) and `Render_encoder.create_owned`.
+
+Frame cost is unchanged. Offscreen 64x64 target, 2,000 frames per sample, median of five samples, third of three
+alternating before/after pairs (the quietest): one draw 266.5 against 266.0 microseconds per frame, 64 draws with
+changing vertex bytes 453.2 against 453.0; 16,032 and 252,288 bytes allocated per frame in both.
+
+Tests. `runtime_native_qualification` passes unchanged in what it measures, and is stricter: the baseline
+subtraction is gone and the bound is 1,024 KiB instead of 4,096. New `runtime_autorelease`
+(`lib/runtime/native_qualification`, `@runtest-native` and `@qualification`) runs two window lifecycles with frames,
+readback, resize, cursor, text input and background, and two offscreen ones, in a child with
+`OBJC_DEBUG_MISSING_POOLS=YES`, and fails on any report from the initial thread: 773 with the Cocoa fix reverted, 454
+with the bridge fix reverted, 0 now. `examples/pxui`, `sketches/million_marks` and `examples/pathtracer` report 0
+by hand as well. `dune build @runtest-native` passes.
