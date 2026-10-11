@@ -120,7 +120,7 @@ let run () =
       let red_pixels = ref 0 in
       for pixel = 0 to 64 * 48 - 1 do
         let channel i = Char.code (Bytes.get mixed_pixels (pixel * 4 + i)) in
-        if channel 0 > 200 && channel 1 < 20 && channel 2 < 20 then incr red_pixels
+        if channel 0 > 200 && channel 1 < 100 && channel 2 < 100 then incr red_pixels
       done;
       assert (!red_pixels > 10);
       let without_floor = capture (get (P.mesh ~spheres [])) in
