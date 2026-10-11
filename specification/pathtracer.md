@@ -245,9 +245,13 @@ Current audit (2026-10-11): the formerly empty `test_world.run` now renders
 each of these behaviors, reads GPU pixels and checks sample counts and handle
 teardown. Its executable builds, but the forced native attempt fails because
 this runner has no Metal device; convergence bounds need native validation.
-The qualification `test_parity.run` still reports success without comparing
-images and needs restoration. The historical measurements above do not
-establish current coverage. World and pathtracer checks belong to the native/qualification
+The formerly vacuous qualification `test_parity.run` now renders the four
+built-in Worlds on matte/glossy probes through raster and pathtracer, checking
+mean luminance and highlight centroids after 1,024 samples. Its explicit
+20% mean-error and 8-pixel centroid bounds are provisional and need native
+qualification; typechecking, builds and the dependency gate pass, while the
+native attempt fails at device acquisition. The historical measurements above
+do not establish current coverage. World and pathtracer checks belong to the native/qualification
 aliases, rather than the window-free default `runtest`.
 
 ## Determinism and tests

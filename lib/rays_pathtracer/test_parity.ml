@@ -47,7 +47,60 @@ let brightest bytes pixels =
   List.fold_left (fun (x, y) (px, py) -> x +. float px /. n, y +. float py /. n) (0., 0.) bright
 
 let run () =
-  let failures = ref [] in
-  match !failures with
-  | [] -> print_endline "raster/path tracer parity: all presets within bounds"
-  | failed -> failwith ("parity outside bounds: " ^ String.concat ", " failed)
+  let live = let _, live = Ogpu.Impl.create_driver () in live in
+  let baseline = live () in
+  let rdk value = get (Result.map_error Rdk.Error.to_string value) in
+  let geometry = Array.map (fun center -> rdk (Rdk.Uv_sphere.run
+    ~center ~radius:0.9 ~segments:64 ~rings:32 ())) probes in
+  let objects = Array.to_list (Array.mapi (fun i geometry ->
+    geometry, P.material ~roughness:(roughness shininess.(i))
+      (P.Linear_color.rgb albedo albedo albedo)) geometry) in
+  let scene = { P.objects; spheres = []; strands = [];
+    environment = { sky = P.Linear_color.rgb 0. 0. 0.; ground = P.Linear_color.rgb 0. 0. 0.; panels = [] };
+    lights = [] } in
+  match P.create ~spp:4 ~width ~height scene with
+  | Error message when Sys.getenv_opt "RAYS_REQUIRE_RAYTRACING" = None ->
+      Printf.printf "raster/path tracer parity: skipped (%s)\n" message
+  | Error message -> failwith message
+  | Ok tracer ->
+      let failures = ref [] in
+      Fun.protect ~finally:(fun () -> P.destroy tracer) (fun () ->
+        let canvas = get (Canvas.create ~width ~height) in
+        Fun.protect ~finally:(fun () -> Canvas.destroy canvas) (fun () ->
+          let nodes = Array.to_list (Array.mapi (fun i geometry ->
+            let mesh = rdk (Rdk_rays.Rays_mesh.to_mesh geometry) in
+            Scene3.mesh ~material:(Material.create ~diffuse:(Color.gray gray)
+              ~shininess:shininess.(i) ()) mesh) geometry) in
+          let discs = Array.init 2 disc in
+          Array.iter (fun pixels -> assert (pixels <> [])) discs;
+          assert (List.length World.presets = 4);
+          List.iter (fun (name, world) ->
+            let baked = World.bake ~domains:1 ~width:128 ~height:64 world in
+            get (P.set_world tracer (Some baked)); P.reset tracer;
+            for _ = 1 to 256 do get (P.render tracer camera); get (P.flush tracer) done;
+            assert (P.samples tracer = 1024);
+            let traced = Test_pathtracer.pixels tracer in
+            Canvas.render canvas [Scene.view3d ~camera
+              (Scene3.with_world baked (Scene3.create nodes))];
+            let image = get (Canvas.to_image canvas) in
+            let raster = Fun.protect ~finally:(fun () -> Image.destroy image)
+              (fun () -> Bytes.copy (get (Image.Private.pixels image))) in
+            assert (Bytes.length traced = width * height * 4 &&
+              Bytes.length raster = Bytes.length traced);
+            Array.iteri (fun i pixels ->
+              let traced_mean = mean traced pixels and raster_mean = mean raster pixels in
+              assert (traced_mean > 0. && raster_mean > 0.);
+              let relative = Float.abs (traced_mean -. raster_mean) /. traced_mean in
+              let tx, ty = brightest traced pixels and rx, ry = brightest raster pixels in
+              let distance = Float.hypot (tx -. rx) (ty -. ry) in
+              Printf.printf "parity %s probe %d: mean path %.2f raster %.2f (%.1f%%), highlight %.2f px\n%!"
+                name i traced_mean raster_mean (relative *. 100.) distance;
+              (* Raster's SH/prefiltered approximation has a separate error
+                 allowance; these bounds need native qualification. *)
+              if relative > 0.2 || distance > 8. then
+                failures := Printf.sprintf "%s probe %d" name i :: !failures)
+              discs) World.presets));
+      assert (live () = baseline);
+      match !failures with
+      | [] -> print_endline "raster/path tracer parity: all rendered presets within bounds"
+      | failed -> failwith ("parity outside bounds: " ^ String.concat ", " (List.rev failed))

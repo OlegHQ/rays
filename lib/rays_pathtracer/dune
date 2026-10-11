@@ -17,7 +17,7 @@
 (executable
  (name test_main)
  (modules test_main test_pathtracer test_gpu_film test_parity test_world test_scene)
- (libraries rays rays_pathtracer rays_execution runtime_resources ogpu rdk unix))
+ (libraries rays rays_pathtracer rays_execution runtime_resources ogpu rdk rdk_rays unix))
 
 (rule
  (aliases qualification runtest-native test_pathtracer)

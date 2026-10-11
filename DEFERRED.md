@@ -38,7 +38,7 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   pass. Both forced native attempts fail at device acquisition because Metal
   has no system default device; numerical thresholds need native validation.
   The additional audit found `test_world.run` was a no-op and `test_parity.run`
-  reports success without rendering. Parity restoration remains open.
+  reported success without rendering; both now render, as recorded below.
 - Restored, native verification pending 2026-10-11: `test_world` now renders
   the uniform furnace, a peaked map plus sun with MIS and BSDF-only sampling,
   16-spp variance against a converged reference, exact Color/Transparent miss
@@ -48,6 +48,16 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   (also corrected in `test_pathtracer`). Typechecking and builds pass; the
   forced native attempt fails at Metal device acquisition. Convergence bounds
   need native validation and no historical numerical result is reproduced here.
+- Restored, native verification pending 2026-10-11: `test_parity` now renders
+  all four built-in Worlds through both renderers, using the same RDK probe
+  geometry and the existing `rdk_rays` bridge. Every matte/glossy probe checks
+  positive mean luminance and compares that mean and its highlight centroid;
+  the test also checks 1,024 accumulated samples, exact readback lengths and
+  handle teardown. The newly explicit bounds (20% mean error, 8-pixel centroid
+  distance) are provisional native qualification bounds, not recovered
+  historical results. Typechecking, executable builds and the dependency
+  gate pass. The forced native attempt fails at Metal device acquisition;
+  raster/pathtracer agreement is unverified here.
 - Restored 2026-10-11: `test_ui_pipeline` previously created and destroyed
   a native execution, then printed "matches Scene2" without drawing. It now
   captures the UI batch and independently constructed Scene2 geometry at 1x
