@@ -97,3 +97,18 @@
   ../../sketches/flow_particles_gpu/sketch.rays
   ../../sketches/flow_image_kernel/sketch.rays)
  (libraries flow_ir flow rays_math))
+
+; The same snapshots with kernels built through core regions.
+(rule
+ (alias runtest)
+ (deps (glob_files snapshots/*.txt))
+ (action (setenv REGION_CORE 1 (run %{exe:test_packed.exe}))))
+
+(rule
+ (alias runtest)
+ (deps (glob_files snapshots/*.txt) ../sop_catalog/flow_manifest.sexp
+  ../../examples/particles/sketch.rays
+  ../../sketches/flow_shader/sketch.rays
+  ../../sketches/flow_particles_gpu/sketch.rays
+  ../../sketches/flow_image_kernel/sketch.rays)
+ (action (setenv REGION_CORE 1 (run %{exe:test_region_snapshot.exe}))))

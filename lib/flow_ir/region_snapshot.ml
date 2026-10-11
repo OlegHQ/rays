@@ -42,7 +42,9 @@ let record result =
   let text = Buffer.contents entry in
   if not (Hashtbl.mem seen text) then (Hashtbl.add seen text (); Buffer.add_string buffer text)
 
-let start () = Buffer.clear buffer; Hashtbl.reset seen; P.Private.trace := record
+let start () =
+  if Sys.getenv_opt "REGION_CORE" = Some "1" then P.Private.core_regions := true;
+  Buffer.clear buffer; Hashtbl.reset seen; P.Private.trace := record
 
 let finish name =
   P.Private.trace := ignore;

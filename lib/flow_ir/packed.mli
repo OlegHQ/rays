@@ -61,6 +61,9 @@ val reference : ?state:Flow.Eval.state -> ?elems:(string * Flow.Eval.value) list
   t -> live:Flow.Eval.live -> (Flow.Eval.value, Flow.Diagnostic.t) result
 
 module Private : sig
+  val core_regions : bool ref
+  (** Default off: compile through [Core_region.lower] and [of_region] instead of walking terms. *)
+
   val trace : ((t, Flow.Diagnostic.t list) Stdlib.result -> unit) ref
   (** Called with every public compilation result; tests record snapshots through it. *)
 

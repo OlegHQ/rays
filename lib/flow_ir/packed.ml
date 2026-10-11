@@ -101,8 +101,14 @@ let gpu_refusals t =
     refuse "Nonfinite float32 shader constants require reference evaluation.";
   List.rev !reasons
 
+let core_regions = ref false
+
 let rec compile_impl ?(fusion = true) ?(dynamic = false)
     ?(count_source = fun _ _ -> None) residual (term : W.term) =
+  if !core_regions then
+    Result.bind (Core_region.lower ~fusion ~dynamic ~count_source residual term) (fun region ->
+      Result.map (fun program -> if fusion then fuse_maps program else program) (of_region region))
+  else
   let view = E.Private.residual_view residual in
   let refuse ?(at = term) code message =
     raise (Compile_refused (Flow.Diagnostic.error ~span:at.form.span ~code message)) in
@@ -797,6 +803,7 @@ and force_uniforms ~state ?elems ?resolve ?measure t ~live =
 
 module Private = struct
   let trace = trace
+  let core_regions = core_regions
   let ordered_add = ordered_add
   let output_reachable = output_reachable
   type view = {code : instruction array; widths : int array; output : int array;
