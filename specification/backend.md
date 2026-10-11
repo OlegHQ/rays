@@ -4,6 +4,7 @@ Rays ships one backend: the native Metal runtime on Apple Silicon. The supported
 macOS on Apple Silicon with Metal available. Backend initialization either
 creates that native stack or returns a typed startup error; applications do
 not select an alternate renderer through environment variables or public API.
+Web export is a separate compiler target emitted from a Lisp workspace (`flow_web`, `specification/web-export/plan.md`), not a fallback: the native program never selects it.
 An absent system-default Metal device maps to OGPU `No_adapter`. A failure reading the
 device's registry identifier remains `Device_lost`, with source operation
 `Metal.Device.registry_id`; other native failures and typed guard errors keep their kinds.

@@ -1,0 +1,5 @@
+(library
+ (name flow_web)
+ (public_name rays.flow_web)
+ (modules flow_web)
+ (libraries flow flow_ir param rays_math scene_command))

@@ -818,7 +818,10 @@ Phase 4
 - [ ] P4.14 H
 
 Phase 5
-- [ ] P5.1 H
+- [x] P5.1 H
+  `flow_web` added 2026-10-11: empty library over `flow`, `flow_ir`, `param`,
+  `rays_math`, `scene_command`; gate rules, `only`, `upper` and injected edges
+  added; `@test/runtest` green, API manifest unchanged.
 - [ ] P5.2 S
 - [ ] P5.3 H
 - [ ] P5.4 S

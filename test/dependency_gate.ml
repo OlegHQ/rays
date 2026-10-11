@@ -73,7 +73,7 @@ let reach graph =
 
 let gpu = ["sdl3"; "sdl3_image"; "sdl3_ttf"; "sdl3_mixer"; "metal"; "ogpu_core"; "ogpu"; "ogpu_mock"; "ogpu_metal"; "ogpu_metal_native";
            "runtime"; "runtime_input"; "runtime_resources"; "scene_execution"]
-let upper = ["param"; "flow"; "flow_ir"; "flow_gpu"; "flow_graph"; "flow_sop"; "rays"; "editor_core"; "pxui"; "pxui_shell"; "pxui_graph"; "sop"; "rdk";
+let upper = ["param"; "flow"; "flow_ir"; "flow_web"; "flow_gpu"; "flow_graph"; "flow_sop"; "rays"; "editor_core"; "pxui"; "pxui_shell"; "pxui_graph"; "sop"; "rdk";
              "sop_catalog"; "rays_editor"]
 let foundational = ["sdl3"; "sdl3_image"; "sdl3_ttf"; "sdl3_mixer"; "metal"; "ogpu_core"; "ogpu";
                     "native_layer_token"; "scene_command"; "lru"]
@@ -97,6 +97,8 @@ let rules =
        "editor_document"; "rays_editor"] @ gpu]
   @ ["flow_gpu", ["sop"; "rdk"; "rays_editor"; "pxui"; "pxui_shell"; "pxui_graph";
        "flow_sop"; "editor_document"; "sop_catalog"]]
+  @ ["flow_web", ["rays"; "sop"; "rdk"; "flow_sop"; "flow_gpu"; "rays_editor"; "pxui";
+       "pxui_shell"; "pxui_graph"; "editor_document"; "sop_catalog"] @ gpu]
   @ [ "ogpu_core", ["sdl3"; "metal"; "ogpu_metal_native"; "ogpu_metal"];
       "ogpu", ["sdl3"; "metal"; "ogpu_metal_native"; "ogpu_metal"];
       "ogpu_mock", ["sdl3"; "metal"; "ogpu_metal_native"; "ogpu_metal"];
@@ -159,7 +161,8 @@ let only =
     "scene_execution_fixtures", ["scene_execution"; "ogpu"];
     "pxui_shell", ["rays"; "editor_core"; "pxui"];
     "sop_catalog", ["rays_math"; "rdk"; "sop"];
-    "flow_gpu", ["flow"; "flow_ir"; "param"; "rays_math"; "ogpu_core"; "ogpu"; "rays_execution"; "lru"] ]
+    "flow_gpu", ["flow"; "flow_ir"; "param"; "rays_math"; "ogpu_core"; "ogpu"; "rays_execution"; "lru"];
+    "flow_web", ["flow"; "flow_ir"; "param"; "rays_math"; "scene_command"] ]
 
 (* Files outside the Metal backend that name Metal on purpose: the binding
    tooling and the Metal conformance driver. *)
@@ -325,6 +328,9 @@ let run () =
      "flow_sop", "pxui"; "flow_sop", "sop_catalog"; "flow_sop", "rays";
      "flow_sop", "editor_document"; "flow_sop", "ogpu"; "sdl3", "flow_sop";
      "flow", "flow_sop"; "ppx_rays", "flow_sop";
+     "flow_web", "rays"; "flow_web", "flow_gpu"; "flow_web", "sop"; "flow_web", "rdk";
+     "flow_web", "pxui"; "flow_web", "rays_editor"; "flow_web", "ogpu"; "flow_web", "unix";
+     "scene_command", "flow_web";
      "sop_catalog", "rays"; "sop_catalog", "runtime"; "sop_catalog", "metal";
      "rays_pathtracer", "ogpu_metal"; "rays_pathtracer", "sop"; "rays_pathtracer", "pxui";
      "rdk_rays", "sop"; "rdk_rays", "metal"; "rdk_rays", "pxui";
