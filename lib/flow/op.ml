@@ -89,9 +89,12 @@ let leaf ?opt ?(kw = []) ?choices ?check name pos =
   panel ?opt ~kw:(kw @ ["focus", Ty.Bool]) ?choices ?check name pos
 let hsv h s v =
   let h = Float.rem (Float.rem h 1. +. 1.) 1. in
-  let i = int_of_float (Float.floor (h *. 6.)) in
-  let f = h *. 6. -. float_of_int i in
-  let p = v *. (1. -. s) and q = v *. (1. -. f *. s) and t = v *. (1. -. (1. -. f) *. s) in
+  (* Separately rounded products, as in core.md: no contraction into fused multiply-add. *)
+  let h6 = Sys.opaque_identity (h *. 6.) in
+  let i = int_of_float (Float.floor h6) in
+  let f = h6 -. float_of_int i in
+  let p = v *. (1. -. s) and q = v *. (1. -. Sys.opaque_identity (f *. s))
+  and t = v *. (1. -. Sys.opaque_identity ((1. -. f) *. s)) in
   match i mod 6 with
   | 0 -> (v, t, p) | 1 -> (q, v, p) | 2 -> (p, v, t) | 3 -> (p, q, v) | 4 -> (t, p, v)
   | _ -> (v, p, q)
@@ -394,9 +397,9 @@ let all = frame @ arrays @ draw @ host @ integers @ images @ [
     | [ a; b; u ] -> let u = num u in
       if is_vec a || is_vec b then begin
         let ax, ay, az = comps a and bx, by, bz = comps b in
-        let l x y = x *. (1. -. u) +. y *. u in
+        let l x y = Sys.opaque_identity (x *. (1. -. u)) +. Sys.opaque_identity (y *. u) in
         Vec3 (fin name (l ax bx), fin name (l ay by), fin name (l az bz))
-      end else Float (fin name (num a *. (1. -. u) +. num b *. u))
+      end else Float (fin name (Sys.opaque_identity (num a *. (1. -. u)) +. Sys.opaque_identity (num b *. u)))
     | _ -> failf "E_ARITY" "%s got the wrong number of inputs." name };
   mk ~category:"Math" ~opt:[ "height", fl ] "value/polar" [ "radius", fl; "angle", fl ] (fun _ -> Ty.Vec3) { run = fun ~name ~node:_ args ->
     match List.map snd args with

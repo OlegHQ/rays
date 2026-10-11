@@ -860,6 +860,84 @@ let lower root =
             let reverse=primitive body cache source Flow.Ty.Int (Numeric Sub) ["a",last;"b",index] in
             store body cache source result reverse item);
           result
+      | "first" | "last" ->
+          let sequence=arg "list" in
+          let index=if name="first" then Known (V.Int 0)
+            else prim Flow.Ty.Int (Numeric Sub) ["a",sequence_count statements cache source sequence;"b",Known (V.Int 1)] in
+          sequence_get statements cache source sequence index
+      | "array/sum" ->
+          let zero=match ty with Flow.Ty.Vec2 -> V.Vec2 (0.,0.) | Vec3 -> V.Vec3 (0.,0.,0.)
+            | Vec4 -> V.Vec4 (0.,0.,0.,0.) | _ -> V.Float 0. in
+          let total=hold ~ty statements cache source (Known zero) in
+          iterate statements cache source (arg "array") (fun body cache _ item ->
+            update body cache source total (primitive body cache source ty (Numeric Add) ["a",total;"b",item]));
+          total
+      | "linspace" ->
+          let a=float (arg "from") in let b=float (arg "to") in let n=arg "count" in
+          let first=ensure statements cache source (Known (V.Int 0)) in
+          let last=ensure statements cache source n in
+          let count=local Flow.Ty.Int and index=local Flow.Ty.Int and item=local Flow.Ty.Int
+          and id=number () in
+          let init=ref [] in
+          let result=primitive init cache source ty Sequence_build ["count",Computed (count,Flow.Ty.Int)] in
+          let body=ref [] in
+          let single=primitive body cache source Flow.Ty.Bool (Numeric Eq) ["a",n;"b",Known (V.Int 1)] in
+          let value=branch body cache source Flow.Ty.Float single (fun _ _ -> a) (fun body cache ->
+            let p ty op args = primitive body cache source ty op args in
+            let k=p Flow.Ty.Float Float_convert ["x",Computed (item,Flow.Ty.Int)] in
+            let steps=p Flow.Ty.Float Float_convert ["x",p Flow.Ty.Int (Numeric Sub) ["a",n;"b",Known (V.Int 1)]] in
+            let span=p Flow.Ty.Float (Numeric Sub) ["a",b;"b",a] in
+            let scaled=p Flow.Ty.Float (Numeric Mul) ["a",span;"b",k] in
+            p Flow.Ty.Float (Numeric Add) ["a",a;"b",p Flow.Ty.Float (Numeric Div) ["a",scaled;"b",steps]]) in
+          store body cache source result (Computed (index,Flow.Ty.Int)) value;
+          statements:=statement id source (Counted {first;last;count;index;item;limit=4096;
+            init=List.rev !init;body=List.rev !body}) :: !statements;
+          result
+      | "pointer/down" | "key/down" ->
+          let wanted,names=if name="key/down" then arg "key","keys"
+            else Option.value ~default:(Known (V.Text "left")) (List.assoc_opt "button" args),"buttons" in
+          (match name,wanted with
+           | "pointer/down",Known (V.Text b) when not (List.mem b ["left";"right";"middle";"x1";"x2"]) ->
+               prim Flow.Ty.Bool (Fail ("E_RANGE","Pointer button is left, right, middle, x1 or x2.")) []
+           | "pointer/down",Known (V.Text _) | "key/down",_ ->
+               let input=emit statements source (Flow.Ty.Record ["buttons",Flow.Ty.List Flow.Ty.Text;
+                 "keys",Flow.Ty.List Flow.Ty.Text]) (Frame Input) in
+               let held=field statements cache source (Flow.Ty.List Flow.Ty.Text) input names in
+               let found=hold statements cache source (Known (V.Bool false)) in
+               iterate statements cache source held (fun body cache _ item ->
+                 let same=primitive body cache source Flow.Ty.Bool Equal ["a",item;"b",wanted] in
+                 update body cache source found (primitive body cache source Flow.Ty.Bool (Numeric Or) ["a",found;"b",same]));
+               found
+           | _ -> refuse name)
+      | "value/hsv" ->
+          let h=float (arg "h") in let s=float (arg "s") in let v=float (arg "v") in
+          let c ty op args = primitive statements cache source ty op args in
+          let one=Known (V.Float 1.) in
+          let wrapped=c Flow.Ty.Float Remainder ["a",c Flow.Ty.Float (Numeric Add) ["a",c Flow.Ty.Float Remainder ["a",h;"b",one];"b",one];"b",one] in
+          let scaled=c Flow.Ty.Float (Numeric Mul) ["a",wrapped;"b",Known (V.Float 6.)] in
+          let sector=c Flow.Ty.Int Int_convert ["x",c Flow.Ty.Float Floor ["x",scaled]] in
+          let f=c Flow.Ty.Float (Numeric Sub) ["a",scaled;"b",c Flow.Ty.Float Float_convert ["x",sector]] in
+          let m=c Flow.Ty.Int (Integer Mod) ["a",sector;"b",Known (V.Int 6)] in
+          let build body cache k =
+            let p ty op args = primitive body cache source ty op args in
+            let mul a b = p Flow.Ty.Float (Numeric Mul) ["a",a;"b",b] and sub a b = p Flow.Ty.Float (Numeric Sub) ["a",a;"b",b] in
+            let low () = mul v (sub one s) in
+            let falling () = mul v (sub one (mul f s)) in
+            let rising () = mul v (sub one (mul (sub one f) s)) in
+            let components=match k with
+              | 0 -> let t=rising () in let p=low () in [v;t;p]
+              | 1 -> let q=falling () in let p=low () in [q;v;p]
+              | 2 -> let p=low () in let t=rising () in [p;v;t]
+              | 3 -> let p=low () in let q=falling () in [p;q;v]
+              | 4 -> let t=rising () in let p=low () in [t;p;v]
+              | _ -> let p=low () in let q=falling () in [v;p;q] in
+            emit body source Flow.Ty.Vec3 (Vec (List.map (ensure body cache source) components)) in
+          let rec arm body cache k =
+            if k=5 then build body cache k else
+            let is=primitive body cache source Flow.Ty.Bool (Numeric Eq) ["a",m;"b",Known (V.Int k)] in
+            branch body cache source Flow.Ty.Vec3 is (fun body cache -> build body cache k)
+              (fun body cache -> arm body cache (k+1)) in
+          arm statements cache 0
       | "frame/dt" -> emit statements source ty (Frame Dt)
       | "frame/width" -> emit statements source ty (Frame Width)
       | "frame/height" -> emit statements source ty (Frame Height)

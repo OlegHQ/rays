@@ -536,9 +536,19 @@ Phase 1
   `@lib/flow_ir/runtest` passed on 2026-10-11. Scalar operations outside the
   current leaf/expansion coverage decline by name; P1.2a records that remaining
   operator work and must pass before the phase review.
-- [ ] P1.2a S
-  Scheduled after P1.9 to reuse sequence, frame and packed lowering rather than
-  building those expansions twice. It remains required by P1.R.
+- [x] P1.2a S
+  Every value-context scalar operator the closure compiler accepts now lowers:
+  added first, last, linspace, array/sum, pointer/down and key/down (membership
+  loop over the frame input's lists, with the walker's button check) and
+  value/hsv (lazy per-sector arms). test_core_operators holds a live case for
+  every such operator (1,296 executions over 16 frames) and fails when an
+  operator has none; each matches the walker bit for bit or by diagnostic code.
+  It exposed a walker defect: on Apple Silicon OCaml contracts value/hsv's
+  `h*6-i`, `1-f*s` and value/lerp's `a*(1-u)+b*u` into fused multiply-adds,
+  contradicting core.md's no-fusion rule and the packed kernels. Fixed in
+  lib/flow/op.ml with Sys.opaque_identity, as `length` already does; values
+  can differ from before in the last bit. Default runtest green. No existing
+  expectation changed.
 - [x] P1.3 S
   Direct core execution and the default-off evaluator-owned switch added.
   Native leaves reuse existing operator bodies/coercions. Executor caches
@@ -674,8 +684,15 @@ Phase 5
 - [ ] P5.5 S
 - [ ] P5.6 H
 - [ ] P5.7 S
-- [ ] P5.8 S
-- [ ] P5.9 H
+- [x] P5.8 S
+  `prims.js` (54 primitives) and `core_fixtures.exe` added 2026-10-11 (commit
+  c361391d). 9,524 native cases in 54 files, byte-identical across runs; all
+  agree under node. Native details core.md left loose (colour channel check
+  order, `%g` in the `nth` message, array length ceiling) are in the fixtures.
+- [x] P5.9 H
+  Cram test `web_prims.t` and `tools/web/test/prims.mjs` added 2026-10-11
+  (commit aacf6bd8): 9,524 cases, 54 primitives, zero mismatches.
+  `@tools/lisp/test/runtest` passed; a deliberately broken copy was detected.
 - [ ] P5.10 S
 - [ ] P5.11 H
 - [ ] P5.12 S
