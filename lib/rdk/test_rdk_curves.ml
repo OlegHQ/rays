@@ -268,12 +268,16 @@ let curves ~cylinder_curve ~positions ~triangle_geometry =
   let carve_edges = Edge_group.init ~topology:(Geometry.topology carve_source)
       ~index:carve_index ~name:"middle" (fun edge -> edge = selected_middle_edge) in
   let carve_source = Geometry.with_edge_group carve_edges carve_source |> get_ok in
+  let carve_source_bytes = geometry_bytes carve_source in
   let carved domains = Parallel.run ~domains (fun () ->
     Curve_ops.carve_curves ~grain:1 ~first:0.2 ~last:0.6 carve_source |> get_ok) in
   let carved_one = carved 1 and carved_many = carved 4 in
-  let _carved_positions = Packed.Float3.Private.view (Geometry.positions carved_one)
-  and _carved_many_positions = Packed.Float3.Private.view
-      (Geometry.positions carved_many) in
+  let carved_positions = Packed.Float3.Private.view (Geometry.positions carved_one) in
+  check (geometry_bytes carved_one = geometry_bytes carved_many
+      && near_array [|1.2;3.;3.6|] carved_positions.x
+      && Geometry.vertex_count carved_one = 3
+      && Geometry.primitive_count carved_one = 1)
+    "Curve Carve arc-length endpoints/topology/complete domain exactness";
   let carved_edge_group = Geometry.find_edge_group "middle" carved_one
       |> Option.get in
   if Edge_group.length carved_edge_group <> 2
@@ -288,8 +292,13 @@ let curves ~cylinder_curve ~positions ~triangle_geometry =
   let breakpoint_carved domains = Parallel.run ~domains (fun () ->
     Curve_ops.carve_curves ~grain:1 ~relative_arc_length:false ~first:0.2 ~last:0.8
       ~only_at_breakpoints:true carve_source |> get_ok) in
-  let _breakpoint_one = breakpoint_carved 1
-  and _breakpoint_many = breakpoint_carved 4 in
+  let breakpoint_one = breakpoint_carved 1
+  and breakpoint_many = breakpoint_carved 4 in
+  check (geometry_bytes breakpoint_one = geometry_bytes breakpoint_many
+      && (Packed.Float3.Private.view (Geometry.positions breakpoint_one)).x = [|1.;3.|]
+      && Geometry.vertex_count breakpoint_one = 2
+      && Geometry.primitive_count breakpoint_one = 1)
+    "Curve Carve breakpoint-only endpoints/topology/domain exactness";
   let breakpoint_segments domains = Parallel.run ~domains (fun () ->
     Curve_ops.carve_curves ~grain:1 ~relative_arc_length:false ~first:0. ~last:1.
       ~only_at_breakpoints:true ~cut_at_all_internal_breakpoints:true
@@ -377,14 +386,20 @@ let curves ~cylinder_curve ~positions ~triangle_geometry =
         mixed_first_u; mixed_second_u]
       ~groups:[mixed_even; carve_first] () |> get_ok
       |> Group_mesh.group_edges ~name:"mixed_edges" |> get_ok in
+  let mixed_bytes = geometry_bytes mixed in
   let mixed_carved domains = Parallel.run ~domains (fun () ->
     Curve_ops.carve_curves ~grain:1 ~primitives:carve_first
       ~relative_arc_length:false ~first:0.25 ~last:0.75 mixed |> get_ok) in
   let mixed_one = mixed_carved 1 and mixed_many = mixed_carved 4 in
-  let _mixed_view = Topology.Private.view (Geometry.topology mixed_one)
-  and _mixed_many_view = Topology.Private.view (Geometry.topology mixed_many)
-  and _mixed_result_positions = Packed.Float3.Private.view
+  let mixed_view = Topology.Private.view (Geometry.topology mixed_one)
+  and mixed_result_positions = Packed.Float3.Private.view
       (Geometry.positions mixed_one) in
+  check (geometry_bytes mixed_one = geometry_bytes mixed_many
+      && Geometry.point_count mixed_one = 14
+      && mixed_view.vertex_points = [|10;11;12;13;4;5;6;7;8;9|]
+      && mixed_view.primitive_offsets = [|0;4;7;10|]
+      && Array.sub mixed_result_positions.x 10 4 = [|0.75;1.;2.;2.25|])
+    "Curve Carve mixed topology/endpoints/complete domain exactness";
   let mixed_edges = Geometry.find_edge_group "mixed_edges" mixed_one
       |> Option.get
   and mixed_even_output = Geometry.find_group ~owner:Group.Point "mixed_even"
@@ -524,12 +539,16 @@ let curves ~cylinder_curve ~positions ~triangle_geometry =
       ~relative_arc_length:false ~first:0.25 ~last:0.75
       ~extract_points:true ~divisions:3 mixed |> get_ok) in
   let extracted_one = extracted 1 and extracted_many = extracted 4 in
-  let _extracted_topology = Topology.Private.view
+  let extracted_topology = Topology.Private.view
       (Geometry.topology extracted_one)
-  and _extracted_many_topology = Topology.Private.view
-      (Geometry.topology extracted_many)
-  and _extracted_positions = Packed.Float3.Private.view
+  and extracted_positions = Packed.Float3.Private.view
       (Geometry.positions extracted_one) in
+  check (geometry_bytes extracted_one = geometry_bytes extracted_many
+      && Geometry.point_count extracted_one = 13
+      && extracted_topology.vertex_points = [|4;5;6;7;8;9|]
+      && extracted_topology.primitive_offsets = [|0;3;6|]
+      && Array.sub extracted_positions.x 10 3 = [|0.75;1.5;2.25|])
+    "Curve Carve extraction samples/unselected topology/domain exactness";
   let extracted_edges = Geometry.find_edge_group "mixed_edges" extracted_one
       |> Option.get in
   if Edge_group.length extracted_edges <> 6
@@ -594,11 +613,13 @@ let curves ~cylinder_curve ~positions ~triangle_geometry =
     Curve_ops.carve_curves ~grain:1 ~relative_arc_length:false ~first:0.25 ~last:0.75
       ~divisions:3 carve_source |> get_ok) in
   let divided_one = divided_inside 1 and divided_many = divided_inside 4 in
-  let _divided_topology = Topology.Private.view (Geometry.topology divided_one)
-  and _divided_many_topology = Topology.Private.view
-      (Geometry.topology divided_many)
-  and _divided_positions = Packed.Float3.Private.view
+  let divided_topology = Topology.Private.view (Geometry.topology divided_one)
+  and divided_positions = Packed.Float3.Private.view
       (Geometry.positions divided_one) in
+  check (geometry_bytes divided_one = geometry_bytes divided_many
+      && divided_topology.primitive_offsets = [|0;3;5;8|]
+      && near_array [|0.75;1.;1.5;1.5;2.5;2.5;3.;3.75|] divided_positions.x)
+    "Curve Carve divided interval ordering/topology/domain exactness";
   let divided_edges = Geometry.find_edge_group "middle" divided_one
       |> Option.get
   and divided_edges_many = Geometry.find_edge_group "middle" divided_many
@@ -609,6 +630,8 @@ let curves ~cylinder_curve ~positions ~triangle_geometry =
     if Edge_group.mem edge divided_edges <> Edge_group.mem edge divided_edges_many
     then divided_edge_members_equal := false
   done;
+  check !divided_edge_members_equal
+    "Curve Carve divided edge membership differs by domain count";
   let divided_all = Curve_ops.carve_curves ~relative_arc_length:false ~first:0.25
       ~last:0.75 ~divisions:3 ~keep:Curve_ops.Inside_and_outside carve_source
       |> get_ok in
@@ -665,10 +688,19 @@ let curves ~cylinder_curve ~positions ~triangle_geometry =
   let mixed_outside = Curve_ops.carve_curves ~primitives:carve_first
       ~relative_arc_length:false ~first:0.25 ~last:0.75
       ~keep:Curve_ops.Outside mixed |> get_ok in
-  let _mixed_outside_group = Geometry.find_group ~owner:Group.Primitive
+  let mixed_outside_group = Geometry.find_group ~owner:Group.Primitive
       "carve_first" mixed_outside |> Option.get
-  and _mixed_outside_edges = Geometry.find_edge_group "mixed_edges" mixed_outside
+  and mixed_outside_edges = Geometry.find_edge_group "mixed_edges" mixed_outside
       |> Option.get in
+  check (Geometry.primitive_count mixed_outside = 4
+      && geometry_bytes carve_source = carve_source_bytes
+      && geometry_bytes mixed = mixed_bytes
+      && Group.length mixed_outside_group = 4
+      && Group.cardinality mixed_outside_group = 2
+      && Group.mem 0 mixed_outside_group && Group.mem 1 mixed_outside_group
+      && Edge_group.length mixed_outside_edges = 8
+      && Edge_group.cardinality mixed_outside_edges = 8)
+    "Curve Carve outside intervals retain ordinary/native-edge ancestry";
   let join_positions = Packed.Float3.Private.of_owned_exn
       ~x:[|0.; 1.; 2.; 3.; 4.; 10.; 11.|]
       ~y:(Array.make 7 0.) ~z:(Array.make 7 0.) in
@@ -686,11 +718,17 @@ let curves ~cylinder_curve ~positions ~triangle_geometry =
       ~topology:(Tb.freeze join_topology)
       ~attributes:[join_corner_id; join_piece] ~groups:[join_tagged] () |> get_ok
       |> Group_mesh.group_edges ~name:"join_edges" |> get_ok in
+  let join_source_bytes = geometry_bytes join_source in
   let joined domains = Parallel.run ~domains (fun () ->
     Curve_topology.join_curves ~grain:1 join_source |> get_ok) in
   let joined_one = joined 1 and joined_many = joined 4 in
-  let _joined_topology = Topology.Private.view (Geometry.topology joined_one)
-  and _joined_many_topology = Topology.Private.view (Geometry.topology joined_many) in
+  let joined_topology = Topology.Private.view (Geometry.topology joined_one) in
+  check (geometry_bytes joined_one = geometry_bytes joined_many
+      && joined_topology.vertex_points = [|0;1;2;3;4;5;6|]
+      && joined_topology.primitive_offsets = [|0;7|]
+      && Attribute.storage (Geometry.find_attribute ~owner:Attribute.Vertex
+          "join_corner" joined_one |> Option.get) = Attribute.Int [|0;1;2;4;3;6;7|])
+    "Curve Join orientation/shared endpoint/corner ancestry/domain exactness";
   (match Geometry.find_group ~owner:Group.Primitive "tagged" joined_one with
    | Some group when Group.cardinality group = 1 -> ()
    | _ -> fail "Curve Join primitive-group union policy");
@@ -719,15 +757,18 @@ let curves ~cylinder_curve ~positions ~triangle_geometry =
       ~topology:(Tb.freeze closest_topology)
       ~attributes:[closest_corner; closest_piece] () |> get_ok
       |> Group_mesh.group_edges ~name:"closest_edges" |> get_ok in
+  let closest_source_bytes = geometry_bytes closest_source in
   let globally_joined domains = Parallel.run ~domains (fun () ->
       Curve_topology.join_curves ~grain:1 ~connect_closest_ends:true closest_source
       |> get_ok) in
   let globally_joined_one = globally_joined 1
   and globally_joined_many = globally_joined 4 in
-  let _globally_joined_topology = Topology.Private.view
-      (Geometry.topology globally_joined_one)
-  and _globally_joined_many_topology = Topology.Private.view
-      (Geometry.topology globally_joined_many) in
+  let globally_joined_topology = Topology.Private.view
+      (Geometry.topology globally_joined_one) in
+  check (geometry_bytes globally_joined_one = geometry_bytes globally_joined_many
+      && globally_joined_topology.vertex_points = [|0;1;5;4;2;3;6|]
+      && globally_joined_topology.primitive_offsets = [|0;7|])
+    "Curve Join closest ends/connected seam/domain exactness";
   let closest_components = Curve_topology.join_curves ~connect_closest_ends:true
       ~only_connected:true ~tolerance:0. closest_source |> get_ok in
   if Geometry.primitive_count closest_components <> 3
@@ -758,9 +799,11 @@ let curves ~cylinder_curve ~positions ~triangle_geometry =
   let picked_join domains = Parallel.run ~domains (fun () ->
     Curve_topology.join_curves ~grain:1 ~picked_ends closest_source |> get_ok) in
   let picked_one = picked_join 1 and picked_many = picked_join 4 in
-  let _picked_topology = Topology.Private.view (Geometry.topology picked_one)
-  and _picked_many_topology = Topology.Private.view
-      (Geometry.topology picked_many) in
+  let picked_topology = Topology.Private.view (Geometry.topology picked_one) in
+  check (geometry_bytes picked_one = geometry_bytes picked_many
+      && picked_topology.vertex_points = [|2;3;5;4;0;1;7;6|]
+      && picked_topology.primitive_offsets = [|0;2;8|])
+    "Curve Join picked ends preserve unselected curves/orientation/domain exactness";
   let picked_subgroups = Curve_topology.join_curves ~picked_ends ~group_size:2
       closest_source |> get_ok in
   let picked_subgroup_topology = Topology.Private.view
@@ -922,4 +965,7 @@ let curves ~cylinder_curve ~positions ~triangle_geometry =
   (match Curve_topology.convert_line ~cancel:cancelled_curve line_source with
    | Error error when Error.code error = "cancelled" -> ()
    | _ -> fail "Convert Line ignored cancellation");
+  check (geometry_bytes join_source = join_source_bytes
+      && geometry_bytes closest_source = closest_source_bytes)
+    "Curve Join mutated source geometry during successful/refused/cancelled operations";
   ()
