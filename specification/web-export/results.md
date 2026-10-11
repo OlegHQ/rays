@@ -247,3 +247,47 @@ Public API manifests compare equal and no pixel golden is updated. The full
 `@lib/pxui/runtest` attempt fails only in pixel parity because Metal has no
 system default device. Packet equality is CPU evidence; native golden
 execution remains unverified.
+
+## 2026-10-11 — Deferred Ui_batch constant transform
+
+Machine: managed Darwin arm64 runner, OCaml 5.3.0 native executable in the
+development profile, one domain. Same unchanged 200-node editor benchmark,
+1,200 × 760 logical points and font size 13. Three process runs before and
+after; each measures 200 drag frames, one undo and 200 alternating literal
+edits with full updates. The table gives medians of the three reported
+medians and allocated bytes per frame. No profiler or concurrent build/test.
+
+```sh
+_build/default/tools/check.exe @lib/scene_command/runtest \
+  lib/pxui/test_main.exe tools/bench_rays_editor.exe
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
+  _build/default/tools/bench_rays_editor.exe 200
+```
+
+| Operation | Before seconds | After seconds | Before bytes/frame | After bytes/frame |
+| --- | ---: | ---: | ---: | ---: |
+| Drag frame | 0.001799822 | 0.001808882 | 5,929,718 | 5,902,734 |
+| Undo frame | 0.002331972 | 0.002345800 | 6,704,496 | 6,677,352 |
+| Literal edit and frame | 0.001832008 | 0.001833916 | 5,399,532 | 5,372,644 |
+| Literal edit excluding cook time | 0.001728058 | 0.001734018 | 5,399,532 | 5,372,644 |
+
+The unused setter, transform type and builder/batch fields are removed.
+Wire clipping uses screen points directly; native lowering keeps the same
+logical-screen-to-clip-space affine. Allocation falls by 26,888–27,144 bytes
+per frame (0.4–0.5%). Wall-time medians rise by 0.1–0.6% on this input; no
+speedup is claimed. This benchmark measures editor updates, not GPU lowering.
+
+The same eight fixture packets compare exactly before/after, with the
+removed identity field omitted from the descriptor dump; all instance bytes
+and remaining descriptor fields are compared. The new builder test checks
+exact logical coordinates, outside-chord rejection, visible chord intervals,
+clip and texture batches, reset and immutable published bytes. It passes
+before and after the change. Typechecking, the dependency gate and all four
+CPU interaction test cases pass. Native pixels remain unverified without
+Metal; the pixel golden test is unchanged.
+
+This intentionally removes the lower-level `Ui_batch.xform` and
+`Builder.set_xform` interface. The stable manifest covers selected high-level
+libraries and excludes `scene_command`; its generated text is unchanged by
+this removal. Its gate still reports the separately pending P1.7 Core
+signature, which has not been promoted.

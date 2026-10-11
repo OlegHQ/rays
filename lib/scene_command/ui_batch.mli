@@ -19,24 +19,20 @@
     Textured instances carry texel coordinates, normalized by the bound
     texture's size when sampled, so a texture may grow without invalidating
     earlier instances. Colors use Rays's packed [0xRRGGBBAA]. Coordinates are logical points
-    in the batch's canvas space; a batch maps them to logical screen space with
-    [xform] and clips the result to [clip]. A radius-0, non-anti-aliased rect
+    in screen space; a batch clips them to [clip]. A radius-0, non-anti-aliased rect
     covers exactly the pixels a filled or 1-point-stroked triangle rectangle
     covers under the top-left rule, at any integer density. *)
 
 type kind = Rect | Textured | Wire | Grid
 
-type xform = { scale : float; tx : float; ty : float }
-
 type clip = { x : float; y : float; width : float; height : float }
 
-(** Instances from [first] up to (excluding) [first + count] share one clip, transform, and texture
+(** Instances from [first] up to (excluding) [first + count] share one clip and texture
     resource ([0] when the batch samples no texture). *)
 type batch = {
   first : int;
   count : int;
   clip : clip option;
-  xform : xform;
   texture : int;
 }
 
@@ -61,7 +57,6 @@ module Builder : sig
   val reset : t -> unit
 
   val set_clip : t -> clip option -> unit
-  val set_xform : t -> xform -> unit
 
   val rect :
     t -> x:float -> y:float -> width:float -> height:float ->

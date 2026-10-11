@@ -576,7 +576,7 @@ an identity, so they are never retained.  `Scene` stays pure data; this is invis
 
 PXUI paints through a native-only instance layer. `Scene.Private.ui` wraps a
 renderer-neutral `Scene_command.Ui_batch` (64-byte rect, textured, Bézier
-wire-segment, and dot-grid instances grouped by clip, canvas transform, and
+wire-segment, and dot-grid instances grouped by clip and
 texture) and its bound textures. Staging keeps it as its own
 `Ui_layer`. PXUI reaches the batch builder through `Scene.Private.Ui_batch`,
 so its library depends on `rays` without a direct `scene_command` edge.
@@ -584,7 +584,7 @@ Like `view3d`, the Render_ir materializer skips it, and enclosing
 Scene transforms and clips do not apply. `Rays_execution.Private
 .lower_ui` turns each batch into one indexed draw of the `Ui` pipeline family:
 vertex pulling reads the instances, a 24-byte affine uniform maps logical
-canvas units to clip space, and the logical scissor is scaled to physical
+screen points to clip space, and the logical scissor is scaled to physical
 pixels once, with the other draws. `Ui` draws bind their texture directly,
 so the executor gives the family its own attachment class; it never shares
 an argument-buffer render pass with Scene2 draws. Instance and index bytes

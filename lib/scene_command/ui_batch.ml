@@ -1,15 +1,11 @@
 type kind = Rect | Textured | Wire | Grid
 
-type xform = { scale : float; tx : float; ty : float }
-let identity = { scale = 1.; tx = 0.; ty = 0. }
-
 type clip = { x : float; y : float; width : float; height : float }
 
 type batch = {
   first : int;
   count : int;
   clip : clip option;
-  xform : xform;
   texture : int;
 }
 
@@ -43,32 +39,27 @@ module Builder = struct
     mutable open_first : int;
     mutable open_texture : int;
     mutable clip : clip option;
-    mutable xform : xform;
   }
 
   let create ?(capacity = 256) () =
     { bytes = Bytes.create (max 1 capacity * instance_bytes); length = 0;
-      batches = []; open_first = 0; open_texture = 0; clip = None;
-      xform = identity }
+      batches = []; open_first = 0; open_texture = 0; clip = None }
 
   let close builder =
     if builder.length > builder.open_first then
       builder.batches <- { first = builder.open_first;
         count = builder.length - builder.open_first; clip = builder.clip;
-        xform = builder.xform; texture = builder.open_texture }
+        texture = builder.open_texture }
         :: builder.batches;
     builder.open_first <- builder.length;
     builder.open_texture <- 0
 
   let reset builder =
     builder.length <- 0; builder.batches <- []; builder.open_first <- 0;
-    builder.open_texture <- 0; builder.clip <- None; builder.xform <- identity
+    builder.open_texture <- 0; builder.clip <- None
 
   let set_clip builder clip =
     if clip <> builder.clip then begin close builder; builder.clip <- clip end
-
-  let set_xform builder xform =
-    if xform <> builder.xform then begin close builder; builder.xform <- xform end
 
   (* Untextured instances never split a batch; a second texture does. *)
   let use_texture builder texture =
@@ -138,14 +129,11 @@ module Builder = struct
     let visible (ax, ay) (bx, by) = match builder.clip with
       | None -> true
       | Some clip ->
-          let xform = builder.xform in
-          let pad = (width *. xform.scale) +. 2. in
-          let sx value = (value *. xform.scale) +. xform.tx
-          and sy value = (value *. xform.scale) +. xform.ty in
-          Float.min (sx ax) (sx bx) -. pad <= clip.x +. clip.width
-          && Float.max (sx ax) (sx bx) +. pad >= clip.x
-          && Float.min (sy ay) (sy by) -. pad <= clip.y +. clip.height
-          && Float.max (sy ay) (sy by) +. pad >= clip.y in
+          let pad = width +. 2. in
+          Float.min ax bx -. pad <= clip.x +. clip.width
+          && Float.max ax bx +. pad >= clip.x
+          && Float.min ay by -. pad <= clip.y +. clip.height
+          && Float.max ay by +. pad >= clip.y in
     for segment = 0 to segments - 1 do
       let t0 = float_of_int segment /. float_of_int segments
       and t1 = float_of_int (segment + 1) /. float_of_int segments in

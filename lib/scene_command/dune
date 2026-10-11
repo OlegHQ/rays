@@ -7,3 +7,8 @@
  (name test_display_list)
  (modules test_display_list)
  (libraries scene_command))
+
+(test
+ (name test_ui_batch)
+ (modules test_ui_batch)
+ (libraries scene_command))

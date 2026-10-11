@@ -144,8 +144,17 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   pixel golden case still fails with no Metal device, so the full PXUI alias
   is not green here. The 200-node editor benchmark allocates about 92 KB less
   per frame; commands and measurements are recorded in `results.md`.
-- Fields that are constant but still threaded: the `Ui_batch` transform,
-  the `Easy_camera` binding
+- Removed and verified 2026-10-11: `Ui_batch` no longer stores an identity
+  transform in its builder or batch records; the unused `xform` type and
+  `Builder.set_xform` are removed. Wire clipping uses screen coordinates,
+  and native lowering maps them directly to clip space. The new builder
+  test checks exact coordinates, rejected offscreen chords, retained
+  clipping, texture batching and immutable published data across reset.
+  The eight PXUI fixture packets match before/after, comparing complete
+  instances and all remaining batch fields. The lower-level interface
+  removal is intentional; the high-level stable manifest does not cover
+  `scene_command` and is unchanged by it. Native pixels still need Metal.
+- Fields that are constant but still threaded: the `Easy_camera` binding
   `key`, `Light.attenuation.linear`, the path tracer `scale`.
 - `lib/sop/sop_topology.ml` keeps its prefix (`Topology` would shadow `Rdk.Topology`), and
   `Leader.keymap3` keeps its suffix (`Leader.keymap` is taken).

@@ -921,10 +921,8 @@ let lower_ui submission ~density ~resource ui=
   let slots=submission.owner.ui_slots in
   let draw index (batch:Scene_command.Ui_batch.batch)=
     Result.map(fun texture->
-      let xform=batch.xform in
-      write_affine ui_affine_scratch{Scene_command.Render_ir.xx=2.*.xform.scale/.width;
-        xy=0.;yx=0.;yy=(-2.)*.xform.scale/.height;
-        tx=2.*.xform.tx/.width-.1.;ty=1.-.2.*.xform.ty/.height};
+      write_affine ui_affine_scratch{Scene_command.Render_ir.xx=2./.width;
+        xy=0.;yx=0.;yy=(-2.)/.height;tx=(-1.);ty=1.};
       let first=batch.first*Scene_command.Ui_batch.instance_bytes
       and length=batch.count*Scene_command.Ui_batch.instance_bytes in
       let slot_key=layer*65536+index in

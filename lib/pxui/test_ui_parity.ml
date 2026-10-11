@@ -111,9 +111,10 @@ let commands () =
               assert (Scene_command.Ui_batch.count batch > 0);
               let batches = Scene_command.Ui_batch.batches batch in
               Array.iter (fun (batch:Scene_command.Ui_batch.batch) ->
-                assert (batch.xform.scale = 1. && batch.xform.tx = 0. && batch.xform.ty = 0.);
                 assert (batch.first >= 0 && batch.count > 0)) batches;
-              Some (Scene_command.Ui_batch.instances batch, batches)
+              Some (Scene_command.Ui_batch.instances batch,
+                Array.map (fun (batch:Scene_command.Ui_batch.batch) ->
+                  batch.first, batch.count, batch.clip, batch.texture) batches)
           | _ -> None) staged.layers in
         assert (packets <> []);
         Option.iter (fun directory ->
@@ -124,4 +125,4 @@ let commands () =
           (Sys.getenv_opt "RAYS_UI_COMMAND_DUMP")))
       ["overlays", 300, overlays; "zones", 390, zones;
        "table", 300, (fun ui -> ignore (table ui)); "panel", 300, new_panel]) [1.; 2.];
-  print_endline "PXUI packets: four parity fixtures, identity transforms at 1x/2x"
+  print_endline "PXUI packets: four parity fixtures in logical screen points at 1x/2x"

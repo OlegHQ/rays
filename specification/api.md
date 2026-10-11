@@ -598,7 +598,7 @@ field's track captures the pointer. A field opens an inline editor (Enter
 commits valid text, Escape cancels). `WindowFocusLost` cancels capture, focus, and composition.
 Custom widgets are functions over `Ui.box`, `Ui.signal`, and `Ui.draw`;
 layout uses `Px`, `Pct`, `Rel`, `Grow`, `Fit`, and `Text` sizes, `row`/`col`
-nesting, floating `~at` boxes, and canvas `~xform` transforms.
+nesting and floating `~at` boxes in logical screen points.
 The shell's splitters request resize pointers on hover or drag, and text fields, text areas
 and picker search request the I-beam; `Sketch.set_cursor` accepts default,
 horizontal-resize, vertical-resize, and text shapes for native sketches and
