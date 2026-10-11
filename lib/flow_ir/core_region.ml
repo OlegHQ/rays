@@ -380,3 +380,30 @@ let lower ?(fusion = true) ?(dynamic = false)
       ("Packed layout is unsupported: " ^ message)]
   | Unsupported -> Error [Flow.Diagnostic.error ~span:term.form.span ~code:"E_PACKED_FORM"
       "Packed form requires reference evaluation."]
+
+(* A frame-fold template keeps its captures as uniforms: rebinding reads the next step's bindings. *)
+let rebind (t : Core.Region.t) residual =
+  let view = E.Private.residual_view residual in
+  if not t.dynamic || List.length t.stages <> 1 || t.term != view.term || view.previous
+      || E.state_dependent (E.Residual residual) then None else
+  try
+    let captured = match t.term.node with
+      | W.Hof (_, ({node=Fn {capture=Some _;_};_} as f)::_) -> Some f
+      | _ -> None in
+    let bindings = match captured,t.binding_fn with
+      | Some f,_ ->
+          (match E.Private.eval_term residual f ~live:(Frame_input.at_time 0.) with
+           | Ok (E.Fn fn) when Option.fold ~none:false ~some:(fun (_,body) -> body == t.body)
+               (E.Private.function_body fn) -> E.Private.function_bindings fn
+           | _ -> raise Unsupported)
+      | None,None -> view.bindings
+      | None,Some name -> (match List.assoc_opt name view.bindings with
+          | Some (E.Fn f) when Option.fold ~none:false ~some:(fun (_, body) -> body == t.body)
+              (E.Private.function_body f) -> E.Private.function_bindings f
+          | _ -> raise Unsupported) in
+    let uniforms = Array.map (fun (name, fields) -> captured_value bindings name fields) t.uniform_names in
+    let sources = Array.map (fun (r, term) ->
+      if r != t.residual then raise Unsupported; residual, term) t.sources in
+    let count = count_of_sources t.iteration (Array.map (fun (r, s) -> count_of r s) sources) in
+    Some {t with residual; uniforms; sources; count; stages = [residual, t.term]}
+  with Unsupported -> None

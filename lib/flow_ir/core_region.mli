@@ -13,3 +13,7 @@ val captured_value : (string * Flow.Eval.value) list -> string -> string list ->
 val count_of : Flow.Eval.residual -> Flow.Workspace.term -> int option
 val count_of_sources : Core.Region.iteration -> int option array -> int option
 val reads_names : string list -> Flow.Workspace.term -> bool
+
+val rebind : Core.Region.t -> Flow.Eval.residual -> Core.Region.t option
+(** A template region ([dynamic]) with the next step's captures, or [None] when its
+    function body, residual or fused scope changed. *)
