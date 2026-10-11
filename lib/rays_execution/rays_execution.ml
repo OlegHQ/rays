@@ -1160,7 +1160,7 @@ module Private=struct
           let registration=if count=0 then Ok None else
             Result.map Option.some(Scene_execution.Private.register_gpu_vertices
               ~key:(gpu_circles_key value)~device:value.circles_gpu.gpu_device~buffer
-              ~vertex_count:(4*count)~valid:(fun()->valid_gpu_circles value))in
+              ~vertex_count:(4*count)~valid:(fun()->valid_gpu_circles value)())in
           (match registration with
           |Error error->value.circles_source<-None;value.circles_input<-None;backend operation error
           |Ok registration->value.circles_registration<-registration;Ok(token()))

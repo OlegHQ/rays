@@ -1,21 +1,25 @@
 (* GPU vertices are borrowed, never uploaded or destroyed by the renderer.
    Registration owns only a bounded name and the producer's lifetime check. *)
 type gpu_vertices={gpu_key:string;gpu_device:Ogpu.Backend.device;
-  gpu_buffer:Ogpu.Backend.buffer;gpu_vertex_count:int;gpu_domain:Domain.id;
+  gpu_buffer:Ogpu.Backend.buffer;gpu_extra:Ogpu.Backend.buffer list;gpu_vertex_count:int;gpu_domain:Domain.id;
   gpu_valid:unit->bool;mutable gpu_active:bool}
 let gpu_vertex_capacity=128
 let gpu_vertex_registry:(string,gpu_vertices)Hashtbl.t=Hashtbl.create 16
 let gpu_vertex_key key=String.starts_with~prefix:"gpu:vertices:" key
+(* The ids that identify a source's buffers in signatures and fingerprints. *)
+let gpu_identity source=source.gpu_key,Ogpu.Backend.buffer_id source.gpu_buffer,
+  List.map Ogpu.Backend.buffer_id source.gpu_extra
 let gpu_vertices_valid value=value.gpu_active&&value.gpu_domain=Domain.self()&&value.gpu_valid()
-let register_gpu_vertices ~key ~device ~buffer ~vertex_count ~valid =
+let register_gpu_vertices ?(extra=[]) ~key ~device ~buffer ~vertex_count ~valid () =
   let operation="Scene_execution.register_gpu_vertices" in
   if not(gpu_vertex_key key)||vertex_count<=0||vertex_count>4_000_000||
-    Ogpu.Backend.buffer_size buffer<Int64.of_int(vertex_count*16)||
+    (extra=[]&&Ogpu.Backend.buffer_size buffer<Int64.of_int(vertex_count*16))||
+    List.exists(fun b->Ogpu.Backend.buffer_size b<=0L)(buffer::extra)||
     Hashtbl.mem gpu_vertex_registry key then
     Error(Ogpu.Error.make operation Invalid_argument "invalid or duplicate borrowed vertex registration")
   else if Hashtbl.length gpu_vertex_registry>=gpu_vertex_capacity then
     Error(Ogpu.Error.make operation Capacity "borrowed vertex registration capacity reached")
-  else let value={gpu_key=key;gpu_device=device;gpu_buffer=buffer;gpu_vertex_count=vertex_count;
+  else let value={gpu_key=key;gpu_device=device;gpu_buffer=buffer;gpu_extra=extra;gpu_vertex_count=vertex_count;
     gpu_domain=Domain.self();gpu_valid=valid;gpu_active=true}in
     Hashtbl.add gpu_vertex_registry key value;Ok value
 let unregister_gpu_vertices value=
@@ -64,7 +68,7 @@ type automatic_signature={signature_family:pipeline_family;
   signature_auxiliary:(int64*int64*Ogpu.Types.sampler_descriptor)option;
   signature_environment:(int64*Ogpu.Types.sampler_descriptor)option;
   signature_buffer:int64;signature_index_offset:int64;
-  signature_gpu_vertices:(string*int64)option;
+  signature_gpu_vertices:(string*int64*int64 list)option;
   signature_vertex_attributes:int64 option;
   signature_uniform_buffer:int64 option;signature_uniform_offset:int64 option;
   signature_vertex_count:int;
@@ -184,7 +188,8 @@ let resolve_gpu_vertices device (entry:sampled_draw)=
   |Some source when gpu_vertices_valid source->
       if source.gpu_device!=device then
         error"Scene_execution.render"Ogpu.Error.Cross_device"GPU vertices belong to another device"
-      else if entry.family<>Ui||Bytes.length mesh.vertices<>0||
+      else if (match entry.family,source.gpu_extra with Ui,[]|Marks,[_;_;_;_;_]->false|_->true)||
+        Bytes.length mesh.vertices<>0||
         mesh.vertex_count<>source.gpu_vertex_count||mesh.vertex_count mod 4<>0||
         mesh.index_count<>mesh.vertex_count/4*6 then
         error"Scene_execution.render"Ogpu.Error.Invalid_argument"GPU shape layout is malformed"
@@ -796,8 +801,7 @@ let automatic_signature
    signature_environment=Option.map(fun((source:sampled_texture),cached)->
      Ogpu.Backend.texture_id cached.texture,source.sampler)environment;
    signature_buffer=Ogpu.Backend.buffer_id item.buffer;
-   signature_gpu_vertices=Option.map(fun source->source.gpu_key,
-     Ogpu.Backend.buffer_id source.gpu_buffer)gpu_vertices;
+   signature_gpu_vertices=Option.map gpu_identity gpu_vertices;
    signature_vertex_attributes=Option.map(fun item->Ogpu.Backend.buffer_id item.auxiliary_buffer)attributes;
    signature_index_offset=item.index_offset;
    signature_uniform_buffer=Option.map(fun item->Ogpu.Backend.buffer_id item.uniform_buffer)uniform;
@@ -869,8 +873,7 @@ let same_automatic_slot signature slot=
         Ogpu.Backend.texture_id cached.texture,source.sampler)slot.slot_environment&&
       same_state signature.signature_state state&&same_texture&&same_auxiliary&&
       signature.signature_buffer=Ogpu.Backend.buffer_id item.buffer&&
-      signature.signature_gpu_vertices=Option.map(fun source->source.gpu_key,
-        Ogpu.Backend.buffer_id source.gpu_buffer)slot.slot_gpu_vertices&&
+      signature.signature_gpu_vertices=Option.map gpu_identity slot.slot_gpu_vertices&&
       signature.signature_vertex_attributes=
         Option.map(fun item->Ogpu.Backend.buffer_id item.auxiliary_buffer)slot.slot_vertex_attributes&&
       signature.signature_index_offset=item.index_offset&&
@@ -908,7 +911,7 @@ let automatic_candidate_fingerprint scratch=
        Option.map(fun((source:sampled_texture),cached)->
          Ogpu.Backend.texture_id cached.texture,source.sampler)slot.slot_environment,
        Ogpu.Backend.buffer_id mesh.buffer,mesh.index_offset,
-       Option.map(fun source->source.gpu_key,Ogpu.Backend.buffer_id source.gpu_buffer)slot.slot_gpu_vertices,
+       Option.map gpu_identity slot.slot_gpu_vertices,
        Option.map(fun item->Ogpu.Backend.buffer_id item.auxiliary_buffer)slot.slot_vertex_attributes,
        Option.map(fun uniform->Ogpu.Backend.buffer_id uniform.uniform_buffer,
          uniform.uniform_offset)
@@ -1357,7 +1360,9 @@ let render_sampled_resources_common ?prepared ?(after_prepare=Fun.id) ?(clear=(0
       let* buffers,textures,samplers=match slot.slot_auxiliary with
         |None->let vertices=match slot.slot_gpu_vertices with
             |None->item.buffer|Some source->source.gpu_buffer in
-            Ok((Ogpu.Backend.Vertex,0,vertices,0L)::buffers,textures,samplers)
+            let extra=match slot.slot_gpu_vertices with
+              |None->[]|Some source->List.mapi(fun i b->Ogpu.Backend.Vertex,i+1,b,0L)source.gpu_extra in
+            Ok((Ogpu.Backend.Vertex,0,vertices,0L)::(extra@buffers),textures,samplers)
         |Some(source,buffer,texture)->
             let* sampler=sampler_for value source.texture.sampler in
             Ok((Ogpu.Backend.Vertex,0,item.buffer,0L)::(Ogpu.Backend.Fragment,3,buffer.auxiliary_buffer,0L)::buffers,
