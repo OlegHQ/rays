@@ -101,20 +101,31 @@ let fmt path =
   | _, Some doc, _ -> print_string (Doc.to_text doc)
   | _, None, _ -> exit 1
 
-(* The web export: check, lower the draw graph, print the files into DIR.  A refusal prints its diagnostic. *)
-let web path dir =
+(* The web export: check, lower the draw graph, return the files. A refusal prints its diagnostic. *)
+let web_files path =
   let text, doc, passed = check_file path in
-  if not passed then exit 1;
-  let refuse d = prerr_endline (D.report ~file:path ~source:text d); exit 1 in
-  let doc = Option.get doc in
-  match Result.bind (Web_export.lower doc) (Web_export.files doc) with
-  | Error d -> refuse d
-  | Ok files ->
-      let rec mkdir d = if not (Sys.file_exists d) then (mkdir (Filename.dirname d); Sys.mkdir d 0o755) in
-      List.iter (fun (name, contents) ->
-        let file = Filename.concat dir name in
-        mkdir (Filename.dirname file);
-        Out_channel.with_open_bin file (fun oc -> output_string oc contents)) files
+  if not passed then Error ()
+  else
+    let doc = Option.get doc in
+    match Result.bind (Web_export.lower doc) (Web_export.files doc) with
+    | Error d -> prerr_endline (D.report ~file:path ~source:text d); Error ()
+    | Ok files -> Ok files
+
+let web path dir =
+  match web_files path with
+  | Error () -> exit 1
+  | Ok files -> Web_server.write dir files
+
+(* rays-lisp web --watch FILE [-o DIR] [--port N]: export on every edit and serve DIR *)
+let watch file args =
+  let rec options dir port = function
+    | [] -> dir, port
+    | "-o" :: d :: rest -> options (Some d) port rest
+    | "--port" :: p :: rest when int_of_string_opt p <> None -> options dir (int_of_string p) rest
+    | _ -> die "usage: rays-lisp web --watch FILE [-o DIR] [--port N]" in
+  let dir, port = options None 8000 args in
+  let dir = match dir with Some d -> d | None -> Filename.temp_dir "rays-web" "" in
+  Web_server.run ~port ~dir ~file ~export:(fun () -> web_files file) ()
 
 let () = match Array.to_list Sys.argv with
   | _ :: "check" :: (_ :: _ as files) -> check_all files
@@ -123,4 +134,5 @@ let () = match Array.to_list Sys.argv with
   | [ _; "dune"; d ] -> dune d
   | [ _; "fmt"; f ] -> fmt f
   | [ _; "web"; f; "-o"; dir ] -> web f dir
-  | _ -> die "usage: rays-lisp check FILE... | ml FILE | source FILE | dune DIR | fmt FILE | web FILE -o DIR"
+  | _ :: "web" :: "--watch" :: f :: rest -> watch f rest
+  | _ -> die "usage: rays-lisp check FILE... | ml FILE | source FILE | dune DIR | fmt FILE | web FILE -o DIR | web --watch FILE [-o DIR] [--port N]"

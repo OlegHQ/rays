@@ -870,7 +870,8 @@ Phases 6 and 7
   2026-10-11. `tools/web/runtime/gpu.js` (`createGpu(table, {onError, win})`, `dispatch`, `poll`, `flush`, `buffer`, `readback`, `dispose`; kernel table format in its header; `runtime.js` takes `gpu` and polls it each frame). `test_wgsl.exe --write-kernel-table DIR` writes `kernels.json`; `tools/web/test/gpu_check.mjs` + `chrome.mjs` (reusable launcher) compile and run the four goldens plus an `ops` kernel in headless Chrome 154 (`--headless=new` alone gives an Apple Metal adapter) and match the CPU regions; alias `@qualification-web`. The first real compile found no WGSL error; the goldens are unchanged. Result and tolerances in `results.md`.
 - [ ] P6.4 S
 - [ ] P6.5 S
-- [ ] P6.6 S
+- [x] P6.6 S
+  2026-10-11. `rays-lisp web --watch FILE [-o DIR] [--port N]` (`tools/lisp/web_server.ml`, `.mli`; `lisp.ml`; stdlib and `unix`): one `select` loop on 127.0.0.1 (default port 8000, 0 picks a free one and the banner `serving http://127.0.0.1:PORT/` says which), polls the SHA-256 of FILE every 0.5 s, re-exports on change (`web_files` = check, `Web_export.lower`, `Web_export.files`; the files are renamed into DIR), and on a refusal prints the diagnostic and keeps serving the last good export (a refused text is not retried until it changes). GET only (405), paths with `..` or outside DIR are 404, every response carries COOP `same-origin` and COEP `require-corp`, `/version` is the SHA-256 of the export files. Imports of FILE are not watched. Gate `tools/lisp/test/web_server.t` (client `http_get.exe`): headers on 200, 404 and 405, content types, traversal attempts, version change on edit, refusal keeps the version. `@tools/lisp/test/runtest` green.
 - [ ] P6.7 H
 - [ ] P6.8 S
 - [ ] P6.R R

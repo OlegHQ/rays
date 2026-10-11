@@ -3,6 +3,7 @@
   %{exe:../../core_census.exe}
   %{exe:../../core_fixtures.exe}
   %{exe:../../shape2_fixtures.exe}
+  %{exe:http_get.exe}
   ../../web/test/shape2.mjs
   ../../web/runtime/shape2.js
   ../../web/test/prims.mjs
@@ -23,3 +24,8 @@
 (test
  (name test_delimiter)
  (modules test_delimiter delimiter))
+
+(executable
+ (name http_get)
+ (modules http_get)
+ (libraries unix))

@@ -14,7 +14,7 @@
 
 (executable
  (name lisp)
- (modules lisp delimiter)
+ (modules lisp delimiter web_server)
  (public_name rays-lisp)
  (package rays)
- (libraries flow flow_sop editor_document sop_catalog web_export))
+ (libraries unix flow flow_sop editor_document sop_catalog web_export))
