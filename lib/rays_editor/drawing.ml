@@ -8,7 +8,7 @@ let core_drawing = ref false
 
 type prepared = {plan : E.plan; value : I.program; states : I.program; args : (string*I.program)list array;
   static:bool array; retained:((int*int)*Scene.t) option array;
-  core : (C.prepared * E.residual option * C.Buffers.t) option Lazy.t; whole : bool;
+  core : (C.prepared * E.residual option * C.Buffers.t) option Lazy.t; whole : bool; circles : bool;
   mutable kept : ((int*int)*Scene.t) option}
 let prepare ?profile ?(approx=Flow.Workspace.Paths.empty) ?(states = []) plan value =
   let ( let* ) = Result.bind in
@@ -40,7 +40,8 @@ let prepare ?profile ?(approx=Flow.Workspace.Paths.empty) ?(states = []) plan va
         core=lazy(match Flow_ir.Core_draw.lower plan root with
           |Ok(program,residual)->Some(C.prepare program,residual,C.Buffers.create())
           |Error _->None);
-        whole=static root; kept=None}
+        whole=static root; kept=None;
+        circles=Array.exists(fun(node:E.node)->node.kind="draw/circles")plan.nodes}
 
 let render_arms ~state ?image ?gpu ?(gpu_policy=Flow_ir.Gpu.Measured) ?(reference = false) prepared ~live ~size:(width, height) =
   let plan = prepared.plan in
@@ -195,7 +196,8 @@ let render_arms ~state ?image ?gpu ?(gpu_policy=Flow_ir.Gpu.Measured) ?(referenc
        | Invalid_argument message -> Error (Flow.Diagnostic.error ~code:"E_DRAW_RANGE" message)
        | V.Fail (code, message, _) -> Error (Flow.Diagnostic.error ~code message))
 
-(* The core path: the draw program runs into a mark table which Marks_scene adapts. Retention is
+(* The core path (a frame with a GPU backend and a draw/circles node keeps the arms, which hand a GPU
+   region output to the backend as a token; the mark table has no GPU attribute yet): the draw program runs into a mark table which Marks_scene adapts. Retention is
    whole-program: a fully static draw graph is kept per size; the fold states still advance. *)
 let render_core (program, root, buffers) ~state ?image prepared ~live ~size =
   let ( let* ) = Result.bind in
@@ -226,6 +228,6 @@ let render_core (program, root, buffers) ~state ?image prepared ~live ~size =
 
 let render_prepared ?state ?image ?gpu ?gpu_policy ?(reference = false) prepared ~live ~size =
   let state = Option.value ~default:(E.create_state ()) state in
-  match if !core_drawing && not reference && gpu = None then Lazy.force prepared.core else None with
+  match if !core_drawing && not reference && (gpu = None || not prepared.circles) then Lazy.force prepared.core else None with
   | Some core -> render_core core ~state ?image prepared ~live ~size
   | None -> render_arms ~state ?image ?gpu ?gpu_policy ~reference prepared ~live ~size
