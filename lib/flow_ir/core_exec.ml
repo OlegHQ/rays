@@ -440,7 +440,7 @@ let attempt ?root ?force prepared ~live =
       | exception Non_finite -> general root force prepared live)
 
 (* Any failure restores the evaluation state and reports the tree walker's own diagnostic,
-   as the closure tier's fallback does. Without a residual there is no walker to ask. *)
+   as the evaluator's own fallback does. Without a residual there is no walker to ask. *)
 let execute ?root ?force prepared ~live = match root with
   | None -> attempt ?force prepared ~live
   | Some r ->

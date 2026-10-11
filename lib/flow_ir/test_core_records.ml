@@ -15,7 +15,6 @@ let () =
       | Some ws,[] -> ws | _,ds -> failwith (String.concat "; " (List.map Flow.Diagnostic.to_string ds)) in
     let v=List.assoc "g" (ok (E.static ws)).results in
     let program=ok (I.Executor.compile v) in
-    E.Private.core_residuals:=true;
     let force time=ignore (ok (I.Executor.force program ~live:(Frame_input.at_time time))) in
     force 0.1;
     let samples=List.init 3 (fun _ ->
@@ -79,14 +78,10 @@ let dump () = String.concat "" (List.map (fun (name,r) ->
     let equal_result (a : (E.value,Flow.Diagnostic.t) result) (b : (E.value,Flow.Diagnostic.t) result) = match a,b with
       | Ok a,Ok b -> same a b | Error a,Error b -> a.code=b.code | _ -> false in
     assert (equal_result (E.force (E.Residual r) ~live) expected);
-    List.iter (fun enabled ->
-      let previous= !(E.Private.core_residuals) in
-      Fun.protect ~finally:(fun () -> E.Private.core_residuals:=previous) (fun () ->
-        E.Private.core_residuals:=enabled;
-        let actual=I.Executor.force program ~live in
-        if not (equal_result actual expected) then
-          let show = function Ok v -> E.show v | Error d -> Flow.Diagnostic.to_string d in
-          failwith (Printf.sprintf "%s at %g, core=%b: %s <> %s" name time enabled (show actual) (show expected)))) [false;true];
+    (let actual=I.Executor.force program ~live in
+     if not (equal_result actual expected) then
+       let show = function Ok v -> E.show v | Error d -> Flow.Diagnostic.to_string d in
+       failwith (Printf.sprintf "%s at %g: %s <> %s" name time (show actual) (show expected)));
     match I.Core_exec.run core ~live,expected with
     | Ok actual,Ok expected -> if not (same actual expected) then
         failwith (Printf.sprintf "%s at %.17g: %s <> %s" name time (E.show actual) (E.show expected))

@@ -20,7 +20,6 @@ let failing = [
 ]
 let differing = ref 0
 let () =
-  E.Private.core_residuals:=true;
   List.iter (fun (name,body,times) ->
     let value=snd (List.hd (List.assoc ["g";"tested"] (ok (E.static ~record:true (workspace body))).records)) in
     let r=match value with E.Residual r -> r | _ -> failwith (name ^ ": not live") in

@@ -18,11 +18,7 @@ let () =
     "right", Bool false; "key", Bool true; "time", Float 3.] in
   assert (Eval.force value ~live = Ok expected);
   let changed = {live with pointer = 99., 37.; keys = []; size = 900, 600} in
-  let interpreted live =
-    Eval.Private.compile_residuals := false;
-    let v = Eval.force value ~live in
-    Eval.Private.compile_residuals := true; v in
-  List.iter (fun live -> assert (Eval.force value ~live = interpreted live)) [live; changed; live];
+  List.iter (fun live -> assert (Eval.force value ~live = Eval.Private.force_reference value ~live)) [live; changed; live];
   assert (Eval.force value ~live:changed <> Ok expected);
   assert (List.assoc "g" (Result.get_ok (Eval.run ~live ~time:3. w)).results = Eval.Float 12.);
   assert (Result.is_error (Eval.force value ~live:{live with dt = nan}));

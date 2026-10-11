@@ -726,7 +726,8 @@ Phase 1
   threshold, so the phase is not ticked and P1.14b is added. P1.16 was prepared (an uncommitted
   working tree, kept as the newest `git stash` entry, applies on 4314b0fc's parent tree) with `@lib/flow/runtest`
   and `@lib/flow_ir/runtest` green, `--ship` not run; it resumes after P1.14b.
-- [ ] P1.16 S
+- [x] P1.16 S
+  The closure tier (`compile`, `cnode`, `fast`, `fast_of`) and both switches (`compile_residuals`, `core_residuals`) are deleted; core residuals are the only path, `Closure` stays the tier name. `--ship` and `@test/test_workspace_ir` green on 2026-10-11 (the API manifest is promoted in the next commit). `tools/bench_core.exe` keeps the walker and core rows.
 
 Phase 2
 - [ ] P2.1 H

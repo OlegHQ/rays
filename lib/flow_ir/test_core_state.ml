@@ -56,11 +56,7 @@ let () =
       let live=live frame in
       List.iter (fun v ->
         let expected=E.Private.force_reference ~state:reference v ~live in
-        let actual=
-          let old= !(E.Private.core_residuals) in
-          Fun.protect ~finally:(fun () -> E.Private.core_residuals:=old) (fun () ->
-            E.Private.core_residuals:=true;
-            E.Private.force_with_executor ~state:core ~execute v ~live) in
+        let actual=E.Private.force_with_executor ~state:core ~execute v ~live in
         if not (same actual expected) then failwith (Printf.sprintf "%s frame %d" name frame);
         if E.state_stamp core<>E.state_stamp reference then failwith (Printf.sprintf "%s frame %d: state stamp\n%s\n%s" name frame (String.concat ";" (List.map (fun v -> Flow.Value.show_with Fun.id v) (E.Private.state_values core))) (String.concat ";" (List.map (fun v -> Flow.Value.show_with Fun.id v) (E.Private.state_values reference))))) values
     done) (List.map (fun (name,body) -> name,"",body) cases @ refs);

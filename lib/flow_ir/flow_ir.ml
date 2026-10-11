@@ -362,7 +362,7 @@ let place ?(approx=W.Paths.empty) ?(gpu_cost=fun _ ~count:_ -> None) ir =
         | Kernel {body = Readback; _} when approximate -> Gpu_readback
         | Kernel {body = Packed_map _; _} ->
             (match node.count with Count.Static count -> Cost.packed ~count | _ -> Cpu_kernel)
-        | Kernel {body = Reference r; _} -> if E.Private.closure_available r then
+        | Kernel {body = Reference r; _} -> if Result.is_ok (Core_lower.lower r) then
             Cost.cheapest ~legal:[Interp;Closure] ~count:(match node.count with Count.Static n -> n | _ -> 1)
             else Interp
         | Kernel _ -> Closure
@@ -544,7 +544,7 @@ let of_evaluation ws catalog evaluation =
   finish b (Array.of_list (roots @ states))
 
 module Executor = struct
-  type program = { ir : t; value : E.value; dataflow : bool; templates : Packed.t list Atomic.t;
+  type program = { ir : t; value : E.value; templates : Packed.t list Atomic.t;
     core : (E.residual * Core_exec.prepared option) list Atomic.t; owner : unit ref;
     count_source : Packed.count_source; profile : Profile.t option; approx:W.Paths.t;
     sink:sink option;mutable gpu_kernel:(Gpu.backend*Packed.t*Gpu.kernel)option }
@@ -552,10 +552,7 @@ module Executor = struct
     let b = builder ~count_source W.Paths.empty W.Paths.empty in
     let root = value b (["@value"], []) v in
     Result.map (fun ir ->
-      let dataflow = Array.exists (function
-        | {kind = Kernel {body = Packed_map _; _}; tier = Cpu_kernel; _} -> true
-        | _ -> false) ir.nodes in
-      {ir; value = v; dataflow; templates = Atomic.make []; core = Atomic.make []; owner = ref (); count_source; profile;
+      {ir; value = v; templates = Atomic.make []; core = Atomic.make []; owner = ref (); count_source; profile;
         approx;sink;gpu_kernel=None}) (optimize (finish b [|root|]))
   let graph p = p.ir
   let force ?state ?elems ?resolve ?(reference = false) program ~live =
@@ -586,7 +583,7 @@ module Executor = struct
             Some (Packed.force ~state ?elems ?resolve ?measure p ~live)
         | _ -> None in
       let execute r live =
-        let core = try if not !(E.Private.core_residuals) then None else
+        let core = try
           let cached = Atomic.get program.core in
           let rec find = function [] -> None | (key,p)::rest -> if key == r then Some p else find rest in
           let prepared = match find cached with
@@ -612,56 +609,7 @@ module Executor = struct
           with _ -> None in
         match core with Some _ -> core | None -> execute_packed r live in
       E.Private.force_with_executor ~state ?elems ?resolve ~owner:program.owner ~execute value ~live in
-    let run () = if reference then fallback () else if !(E.Private.core_residuals) || not program.dataflow then force_with_packed program.value ~live else
-    match Frame_input.validate live with
-    | Error _ -> fallback ()
-    | Ok () ->
-        let exception Refused of Flow.Diagnostic.t in
-        let get = function Ok v -> v | Error d -> raise (Refused d) in
-        let run () =
-          let values = Array.make (Array.length program.ir.nodes) E.No_geo in
-          Array.iteri (fun i node ->
-            let args = List.map (fun e -> e.name, values.(e.node)) node.args in
-            let arg () = snd (List.hd args) in
-            let apply op = match Flow.Op.find ~extra:Operators.all op Flow.Context.value with
-              | Some op -> op.body ~live ~node:(fun _ _ -> V.fail "E_IR" "Scalar IR cannot create catalog nodes.") args
-              | None -> V.fail "E_IR" "Unknown scalar operator." in
-            values.(i) <- match node.kind with
-              | Source (Constant v) -> v
-              | Source (Frame_field "t") -> E.Float live.t
-              | Source (Frame_field name) -> apply name
-              | Source (State_previous r) -> get (E.Private.force_reference ~state ?elems ?resolve (E.Residual r) ~live)
-              | Kernel {body = Reference r; _} ->
-                  get (force_with_packed (E.Residual r) ~live)
-              | Kernel {body = Operation name; _} -> apply name
-              | Kernel {body = Packed_map program; _} ->
-                  get (if node.tier = Cpu_kernel then Packed.force ~state ?elems ?resolve ?measure program ~live
-                    else Packed.reference ~state ?elems ?resolve program ~live)
-              | Kernel {body = Readback; _} -> arg ()
-              | Kernel {body = Vector; _} ->
-                  (match List.map (fun (_, v) -> V.num v) args with
-                   | [x; y] -> E.Vec2 (x,y) | [x; y; z] -> E.Vec3 (x, y, z)
-                   | [x; y; z; w] -> E.Vec4 (x,y,z,w) | _ -> V.fail "E_IR" "Invalid vector.")
-              | Kernel {body = Field field; _} ->
-                  (match arg (), field with
-                   | E.Vec3 (x, _, _), "x" | Vec3 (_, x, _), "y" | Vec3 (_, _, x), "z" -> E.Float x
-                   | E.Vec2 (x,_), "x" | Vec2 (_,x), "y" -> E.Float x
-                   | E.Vec4 (x,_,_,_), "x" | Vec4 (_,x,_,_), "y"
-                   | Vec4 (_,_,x,_), "z" | Vec4 (_,_,_,x), "w" -> E.Float x
-                   | Record fields, name -> List.assoc name fields
-                   | _ -> V.fail "E_FIELD" "Invalid field.")
-              | Kernel {body = List_value; _} -> E.List (Array.of_list (List.map snd args))
-              | Kernel {body = Record_value fields; _} -> E.Record (List.map2 (fun name (_, v) -> name, v) fields args)
-              | Kernel {body = Struct_value (name, ty, fields); _} ->
-                  E.Struct (name, ty, List.map2 (fun name (_, v) -> name, v) fields args)
-              | Source (Input _) | Opaque _ | Sink _ -> V.fail "E_IR" "This cone needs its environment.") program.ir.nodes;
-          values.(program.ir.roots.(0)) in
-        let result = E.transaction state (fun () ->
-          try Ok (run ()) with
-          | V.Fail (code, message, span) -> Error (Flow.Diagnostic.error ?span ~code message)
-          | Refused d -> Error d
-          | Not_found | Invalid_argument _ -> Error (Flow.Diagnostic.error ~code:"E_IR" "Unsupported IR value.")) in
-        match result with Ok _ -> result | Error _ -> fallback () in
+    let run () = if reference then fallback () else force_with_packed program.value ~live in
     let started = Option.map (fun profile -> profile.Profile.clock ()) program.profile in
     let result = run () in
     Option.iter (fun profile -> if not !packed_ran then begin

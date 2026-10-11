@@ -74,11 +74,7 @@ let check ?(times=times) ~region (name,body) =
      | Error _,_ when region -> ()
      | _ -> failwith (Printf.sprintf "%s at %g (direct outcome)" name time));
     if not region || Result.is_ok expected then
-      List.iter (fun enabled ->
-        let previous= !(E.Private.core_residuals) in
-        Fun.protect ~finally:(fun () -> E.Private.core_residuals:=previous) (fun () ->
-          E.Private.core_residuals:=enabled;
-          verify (if enabled then "core" else "closure") (I.Executor.force program ~live))) [false;true]) times
+      verify "core" (I.Executor.force program ~live)) times
 (* A workspace operator that reuses a shipped expansion's name keeps its own body: core declines it. *)
 let () =
   let custom={I.Operators.noise3 with packed_extension=None;body=(fun ~live:_ ~node:_ _ -> E.Float 0.125)} in

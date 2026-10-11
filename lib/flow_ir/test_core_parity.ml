@@ -22,19 +22,13 @@ let rec same_bits (a : E.value) (b : E.value) = match a,b with
   | Fn _,Fn _ -> true | a,b -> a=b
 let same a b = match a,b with
   | Ok a,Ok b -> same_bits a b | Error a,Error b -> a=b | _ -> false
-let with_switches core closure f =
-  let old_core= !(E.Private.core_residuals) and old_closure= !(E.Private.compile_residuals) in
-  Fun.protect ~finally:(fun () -> E.Private.core_residuals:=old_core;E.Private.compile_residuals:=old_closure)
-    (fun () -> E.Private.core_residuals:=core;E.Private.compile_residuals:=closure;f ())
 let direct=ref 0
 let compare value =
   let program=ok (I.Executor.compile value) in
   List.iter (fun time ->
     let live=Frame_input.at_time time in
     let reference=E.Private.force_reference value ~live in
-    List.iter (fun (core,closure) ->
-      let actual=with_switches core closure (fun () -> I.Executor.force program ~live) in
-      assert (same actual reference)) [true,true;false,true;false,false];
+    assert (same (I.Executor.force program ~live) reference);
     match value with
     | E.Residual r -> (match I.Core_lower.lower r with
         | Ok core -> ((match I.Core_exec.run core ~live,reference with
@@ -68,8 +62,7 @@ let () =
     "(sqrt (/ (- t 2) 0))";"(exp (* t 100000.))";"(int (* t 10000000000000000000.))"];
   assert (!direct>0);
   (* Prove hook entry and rollback, rather than counting a fallback as coverage. *)
-  with_switches true true (fun () ->
-    let input=value "(+ t 1.)" and mutation=value "(state [s 0.] (+ s t))" in
+  (let input=value "(+ t 1.)" and mutation=value "(state [s 0.] (+ s t))" in
     let live=Frame_input.at_time 1. in
     let reference=E.create_state () in
     let expected=E.Private.force_reference ~state:reference input ~live in
@@ -87,4 +80,4 @@ let () =
       let actual=E.Private.force_with_executor ~state ~execute input ~live in
       assert (!calls=1);assert (same actual expected);
       assert (E.state_stamp state=E.state_stamp reference)) [0;1;2;3]);
-  Printf.printf "Core parity: fixtures, scalar expressions, direct execution (%d cases), switches, diagnostics and hook rollback passed\n" !direct
+  Printf.printf "Core parity: fixtures, scalar expressions, direct execution (%d cases), diagnostics and hook rollback passed\n" !direct

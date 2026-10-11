@@ -32,7 +32,6 @@ let dump () =
               assert (printed = Format.asprintf "%a" C.pp (Result.get_ok (Flow_ir.Core_lower.lower r)));
               Format.fprintf fmt "%s" printed
           | Error name ->
-              assert (not (E.Private.closure_available r));
               Format.fprintf fmt "refused %s\n" name)
       | List xs -> Array.iter value xs
       | Record xs -> List.iter (fun (_,v) -> value v) xs

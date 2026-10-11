@@ -78,12 +78,9 @@ let check (name,body) =
           failwith (Printf.sprintf "%s at %g: %s <> %s" name time (show actual) (show expected)) in
     verify (E.force (E.Residual r) ~live);
     verify (I.Core_exec.run core ~live);
-    List.iter (fun enabled ->
-      let previous= !(E.Private.core_residuals) in
-      Fun.protect ~finally:(fun () -> E.Private.core_residuals:=previous) (fun () ->
-        E.Private.core_residuals:=enabled;verify (I.Executor.force program ~live))) [false;true])
+    verify (I.Executor.force program ~live))
     [-3.;-2.5;-0.;0.;0.37;1.;1.9;3.;8.;4096.;4097.]
-let () = List.iter check cases;print_endline "Core lists: direct/reference/closure/executor parity passed"
+let () = List.iter check cases;print_endline "Core lists: direct/reference/executor parity passed"
 
 let () =
   let module C=I.Core in

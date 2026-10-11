@@ -221,7 +221,7 @@ module Private : sig
   (** Dispatch supported packed subterms inside an evaluator-owned frame fold.
       None retains the interpreter. The callback receives the current immutable
       bindings; the evaluator still owns cell identity and the frame transaction.
-      [compiled:false] keeps surrounding scalar terms on the reference walker.
+      [compiled:false] offers it only map, reduce and loop roots, not every forced residual.
       Reference forcing never invokes this callback. *)
 
   val function_bindings : fn -> (string * value) list
@@ -287,7 +287,7 @@ module Private : sig
   val rerun : residual -> (value, Diagnostic.t) result
   (** The tree walker over this residual's own term, in its live evaluation and
       without offering that term to the executor again: the diagnostic the
-      closure tier's fallback would report. Call after [checkpoint]'s restore. *)
+      walker reports. Call after [checkpoint]'s restore. *)
 
   val state_read : residual -> instance:int -> path:Workspace.path -> iter:int list -> host:bool ->
     init:(unit -> value) -> value
@@ -308,11 +308,8 @@ module Private : sig
   val force_reference : ?state:state -> ?elems:(string * value) list ->
     ?resolve:(value -> (value, Diagnostic.t) result) -> value -> live:live ->
     (value, Diagnostic.t) result
-  (** Force through the tree walker, including captured residuals, without changing
-      process-wide compilation settings. Suitable for probes and parity checks. *)
-
-  val closure_available : residual -> bool
-  (** Prepare the existing scalar closure once; false for unsupported terms. *)
+  (** Force through the tree walker, including captured residuals, with no executor.
+      Suitable for probes and parity checks. *)
 
   val eval_term : ?state:state -> ?elems:(string * value) list ->
     ?resolve:(value -> (value, Diagnostic.t) result) -> residual -> Workspace.term ->
@@ -326,17 +323,4 @@ module Private : sig
   (** Materialize map inputs once with the reference walker, then record only
       the selected function call. This admits indices beyond the preview cap;
       [offset] preserves call numbering when a function serves several maps. *)
-
-  val compile_residuals : bool ref
-  (** [true] (the default): a residual is forced through its compiled closure
-      when its term is in the compilable subset.  Tests switch it off to compare the
-      closure against the interpreter bit for bit. *)
-
-  val core_residuals : bool ref
-  (** Default true. Offer forced residuals to the state-owned executor before
-      the closure tier; a decline, error or exception restores state and retries
-      the existing path. Reference forcing bypasses this switch. *)
-
-  val compiled : value -> int
-  (** How many residuals inside the value have a compiled closure (after a {!force}). *)
 end
