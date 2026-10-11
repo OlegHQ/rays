@@ -55,7 +55,8 @@ let dump () =
       | M.Constant v -> "const " ^ show v
       | Buffer {id; count; width} ->
           Printf.sprintf "buffer %d count=%d width=%d [%s]" id count width
-            (String.concat " " (Array.to_list (Array.map float (Buffers.find buffers id)))) in
+            (String.concat " " (Array.to_list (Array.map float (Buffers.find buffers id))))
+      | Device _ -> failwith "no device attribute without a device host" in
     let pair (x, y) = float x ^ "," ^ float y and ink c = Printf.sprintf "%08lx" c and one = float in
     Array.iter (fun entry -> match entry with
       | M.Mark_set {count; kind} ->

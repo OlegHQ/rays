@@ -26,6 +26,7 @@ let attr (buffers : C.Buffers.t) f = function
   | Buffer b ->
       let data = Array.sub (C.Buffers.find buffers b.id) 0 (b.count * b.width) in
       Printf.sprintf {|{"buffer":%s,"count":%d,"width":%d}|} (sampled data) b.count b.width
+  | Device _ -> failwith "a device attribute has no web frame form"
 
 let entry buffers = function
   | M.Mark_set {count; kind} ->

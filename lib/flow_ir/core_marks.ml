@@ -4,11 +4,15 @@ module E = Flow.Eval
 module M = Scene_command.Marks
 
 module Buffers = struct
-  type t = { mutable next : int; table : (int, float array) Hashtbl.t }
-  let create () = { next = 1; table = Hashtbl.create 8 }
-  let clear t = t.next <- 1; Hashtbl.reset t.table
+  type t = { mutable next : int; table : (int, float array) Hashtbl.t;
+    devices : (int, int * int * int) Hashtbl.t }
+  let create () = { next = 1; table = Hashtbl.create 8; devices = Hashtbl.create 8 }
+  let clear t = t.next <- 1; Hashtbl.reset t.table; Hashtbl.reset t.devices
   let find t id = Hashtbl.find t.table id
   let add t data = let id = t.next in t.next <- id + 1; Hashtbl.replace t.table id data; id
+  let add_device t ~token ~count ~width =
+    let id = t.next in t.next <- id + 1; Hashtbl.replace t.devices id (token, count, width); id
+  let device t id = Hashtbl.find t.devices id
 end
 
 type sink = { buffers : Buffers.t; size : int * int; image : (E.value -> int) option;
@@ -42,6 +46,15 @@ let geometry sink (geometries : Scene_command.Render_ir.geometry array) =
   Array.iter (fun (g : Scene_command.Render_ir.geometry) ->
     push sink (M.Geometry {vertices = g.vertices; indices = g.indices; color = g.color})) geometries
 
+(* A region the host ran on the GPU stands in the locals as a placeholder naming its buffer id. *)
+let device_type = Flow.Ty.Named "device_array"
+let device_value sink ~token ~count ~width =
+  E.Deferred (device_type, Buffers.add_device sink.buffers ~token ~count ~width)
+let device sink = function
+  | E.Deferred (ty, id) when ty = device_type ->
+      let _, count, width = Buffers.device sink.buffers id in Some (id, count, width)
+  | _ -> None
+
 let colors_length () = V.fail "E_DRAW_LENGTH" "Colors and positions have different lengths."
 (* A packed colour array is per instance; anything else one constant. *)
 let colour_attr sink count v : int32 M.attr = match v with
@@ -56,6 +69,11 @@ let check_colors count args = List.iter (fun key -> match List.assoc_opt key arg
 (* Packed positions keep their storage; any other array is read into pairs. *)
 let points_attr sink v : int * (float * float) M.attr =
   let buffer n width data = n, M.Buffer {id = Buffers.add sink.buffers data; count = n; width} in
+  match device sink v with
+  | Some (id, count, width) ->
+      if width <> 2 && width <> 3 then V.fail "E_TYPE" "Positions are packed vec2 or vec3 arrays.";
+      count, M.Device {id; count; width}
+  | None ->
   match v with
   | E.Vec3_array xs -> buffer (Array.length xs / 3) 3 xs
   | Vec2_array xs -> buffer (Array.length xs / 2) 2 xs
@@ -79,6 +97,11 @@ let mark sink ~batch kind args (values : E.value array) =
       let n, position = n_of_positions (if batch then "positions" else "at") in
       let radius : float M.attr = if not batch then Constant (V.num (arg "radius")) else
         match arg "radius" with
+        | v when device sink v <> None ->
+            let id, count, width = Option.get (device sink v) in
+            if width <> 1 then V.fail "E_TYPE" "Radius is a number or packed float array.";
+            if count <> n then V.fail "E_DRAW_LENGTH" "Radii and positions have different lengths.";
+            Device {id; count; width}
         | E.Float_array xs ->
             if Array.length xs <> n then V.fail "E_DRAW_LENGTH" "Radii and positions have different lengths.";
             Buffer {id = Buffers.add sink.buffers xs; count = n; width = 1}
@@ -91,6 +114,11 @@ let mark sink ~batch kind args (values : E.value array) =
       let n, position = n_of_positions (if batch then "positions" else "at") in
       let size : (float * float) M.attr = if not batch then one (arg "size") else
         match arg "sizes" with
+        | v when device sink v <> None ->
+            let id, count, width = Option.get (device sink v) in
+            if width <> 3 then V.fail "E_TYPE" "Sizes are a vec3 or packed vec3 array.";
+            if count <> n then V.fail "E_DRAW_LENGTH" "Sizes and positions have different lengths.";
+            Device {id; count; width}
         | E.Vec3_array xs ->
             if Array.length xs <> 3 * n then V.fail "E_DRAW_LENGTH" "Sizes and positions have different lengths.";
             Buffer {id = Buffers.add sink.buffers xs; count = n; width = 3}

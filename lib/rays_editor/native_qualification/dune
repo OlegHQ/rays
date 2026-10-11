@@ -8,14 +8,14 @@
 (copy_files ../marks_scene.ml)
 (copy_files ../marks_scene.mli)
 
-(executable
- (name test_workspace_gpu_native)
- (modules test_workspace_gpu_native drawing workspace_gpu workspace_images workspace_resources marks_scene)
+(executables
+ (names test_workspace_gpu_native test_workspace_gpu_marks)
+ (modules test_workspace_gpu_native test_workspace_gpu_marks drawing workspace_gpu workspace_images workspace_resources marks_scene)
  (libraries rays flow flow_ir flow_sop flow_gpu rays_execution scene_command lru runtime_resources ogpu sop_catalog))
 
 (rule
  (alias runtest-native)
- (action (run %{exe:test_workspace_gpu_native.exe})))
+ (action (progn (run %{exe:test_workspace_gpu_native.exe}) (run %{exe:test_workspace_gpu_marks.exe}))))
 
 (rule
  (alias qualification)

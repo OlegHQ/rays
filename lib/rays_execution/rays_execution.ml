@@ -44,6 +44,31 @@ let close_gpu_circles value=
     Hashtbl.remove gpu_circles_registry value.circles_id;
     Gpu_circles.close value.circles_helper
   end
+(* A [Marks]-family source: the six attribute buffers of one mark set. A host attribute is
+   uploaded into a buffer the source owns; a device attribute is another producer's output,
+   bound directly and valid only while that producer's output is current. *)
+type marks_source=Host of bytes*int|Device of (unit->Ogpu.Backend.buffer option)*int
+type gpu_marks={marks_id:int;marks_gpu:gpu;marks_domain:Domain.id;mutable marks_closed:bool;
+  mutable marks_stamp:int64;mutable marks_count:int;
+  marks_owned:Ogpu.Backend.buffer option array;marks_last:bytes array;
+  mutable marks_device:((unit->Ogpu.Backend.buffer option)*Ogpu.Backend.buffer)list;
+  mutable marks_registration:Scene_execution.Private.gpu_vertices option}
+let gpu_marks_registry:(int,gpu_marks)Hashtbl.t=Hashtbl.create 16
+let valid_gpu_marks value=not value.marks_closed&&not value.marks_gpu.gpu_released&&
+  value.marks_domain=Domain.self()&&List.for_all(fun(source,input)->
+    match source()with Some current->current==input|None->false)value.marks_device
+let gpu_marks_key value=Printf.sprintf"gpu:vertices:marks:%d:%Ld"value.marks_id value.marks_stamp
+let unregister_marks value=
+  Option.iter Scene_execution.Private.unregister_gpu_vertices value.marks_registration;
+  value.marks_registration<-None
+let close_gpu_marks value=
+  if value.marks_domain<>Domain.self()then invalid_arg"GPU marks closed on another domain";
+  if not value.marks_closed then begin
+    value.marks_closed<-true;unregister_marks value;value.marks_device<-[];
+    Hashtbl.remove gpu_marks_registry value.marks_id;
+    Array.iteri(fun i->Option.iter(fun b->ignore(Ogpu.Backend.destroy_buffer b);value.marks_owned.(i)<-None))
+      value.marks_owned
+  end
 module Int_table=Lru.Make(Int)
 module Structural_key(T:sig type t end)=struct type t=T.t let equal=(=) let hash=Hashtbl.hash end
 (* texture (physical), destination, transform, clip, uv, framebuffer *)
@@ -617,15 +642,25 @@ let lower_scene2_uncached value ~lease_policy ~density ~resource:resolve ir =
         let gpu_key=match Scene_command.Shape_batch.gpu shapes with
           |None->None
           |Some token->
-            (match Hashtbl.find_opt gpu_circles_registry(Scene_command.Shape_batch.Private.gpu_identity token)with
+            let identity=Scene_command.Shape_batch.Private.gpu_identity token in
+            let runtime=match value.runtime with Window r|Offscreen(r,_)->r in
+            (match Hashtbl.find_opt gpu_marks_registry identity with
+            |Some source when valid_gpu_marks source&&
+              source.marks_stamp=Scene_command.Shape_batch.Private.gpu_stamp token&&
+              source.marks_count=Scene_command.Shape_batch.Private.gpu_count token->
+                (match Runtime.device runtime with
+                |Ok device when device==source.marks_gpu.gpu_device->Some(gpu_marks_key source,Marks)
+                |_->failure:=Some"GPU shapes belong to another device";None)
+            |Some _->failure:=Some"GPU shapes are stale or closed";None
+            |None->
+            (match Hashtbl.find_opt gpu_circles_registry identity with
             |Some source when valid_gpu_circles source&&
               source.circles_stamp=Scene_command.Shape_batch.Private.gpu_stamp token&&
               source.circles_count=Scene_command.Shape_batch.Private.gpu_count token->
-                let runtime=match value.runtime with Window r|Offscreen(r,_)->r in
                 (match Runtime.device runtime with
-                |Ok device when device==source.circles_gpu.gpu_device->Some(gpu_circles_key source)
+                |Ok device when device==source.circles_gpu.gpu_device->Some(gpu_circles_key source,Ui)
                 |_->failure:=Some"GPU shapes belong to another device";None)
-            |_->failure:=Some"GPU shapes are stale or closed";None)in
+            |_->failure:=Some"GPU shapes are stale or closed";None))in
         if !failure=None&&clip_live() && Scene_command.Shape_batch.count shapes>0 then begin
           let count=Scene_command.Shape_batch.count shapes in
           let instances=Scene_command.Shape_batch.instances shapes in
@@ -643,8 +678,10 @@ let lower_scene2_uncached value ~lease_policy ~density ~resource:resolve ir =
           write_affine ui_affine_scratch(render_transform(List.hd !transforms));
           if not(Bytes.equal slot.ui_affine ui_affine_scratch)then
             slot.ui_affine<-Bytes.copy ui_affine_scratch;
-          emit {family=Ui;blend= !blend;texture=Some ui_white_texture;auxiliary=None;vertex_attributes=None;samples=1;
-            value={Scene_execution.mesh={key=Option.value gpu_key~default:("shapes:"^string_of_int slot_key);
+          let family=match gpu_key with Some(_,Marks)->Marks|_->Ui in
+          emit {family;blend= !blend;texture=(if family=Marks then None else Some ui_white_texture);
+            auxiliary=None;vertex_attributes=None;samples=1;
+            value={Scene_execution.mesh={key=(match gpu_key with Some(key,_)->key|None->"shapes:"^string_of_int slot_key);
               vertices=(match gpu_key with None->slot.ui_vertices|Some _->Bytes.empty);
               vertex_count=4*count;indices=slot.ui_indices;
               index_count=6*count;primitive=Triangle_list};
@@ -1116,6 +1153,8 @@ let release_gpu gpu=if not gpu.gpu_released then begin
   let circles=Hashtbl.fold(fun _ value all->if value.circles_gpu==gpu then value::all else all)
     gpu_circles_registry[]in
   List.iter close_gpu_circles circles;
+  List.iter close_gpu_marks(Hashtbl.fold(fun _ value all->if value.marks_gpu==gpu then value::all else all)
+    gpu_marks_registry[]);
   gpu.gpu_released<-true;
   ignore(Ogpu.Backend.destroy_queue gpu.gpu_queue);
   release_device gpu.gpu_shared
@@ -1166,6 +1205,82 @@ module Private=struct
           |Ok registration->value.circles_registration<-registration;Ok(token()))
       end
   let close_gpu_circles=close_gpu_circles
+  type nonrec gpu_marks=gpu_marks
+  type nonrec marks_source=marks_source=Host of bytes*int|Device of (unit->Ogpu.Backend.buffer option)*int
+  let create_gpu_marks gpu=
+    let operation="Rays_execution.create_gpu_marks"in
+    if gpu.gpu_released then fail operation Destroyed"GPU lease is released"
+    else if Hashtbl.length gpu_marks_registry>=gpu_circles_capacity|| !next_gpu_circles=max_int then
+      fail operation Resource"GPU marks capacity reached"
+    else begin
+      incr next_gpu_circles;
+      let value={marks_id= !next_gpu_circles;marks_gpu=gpu;marks_domain=Domain.self();marks_closed=false;
+        marks_stamp=0L;marks_count=0;marks_owned=Array.make 6 None;marks_last=Array.make 6 Bytes.empty;
+        marks_device=[];marks_registration=None}in
+      Hashtbl.add gpu_marks_registry value.marks_id value;Ok value
+    end
+  let gpu_marks value ~kind ~count attributes=
+    let operation="Rays_execution.gpu_marks"in
+    if value.marks_closed||value.marks_gpu.gpu_released then
+      fail operation Destroyed"GPU marks or lease is closed"
+    else if value.marks_domain<>Domain.self()then
+      fail operation Invalid_argument"GPU marks used on another domain"
+    else if count<=0||count>1_000_000||Array.length attributes<>5 then
+      fail operation Invalid_argument"a mark set has one to 1,000,000 instances and five attributes"
+    else begin
+      let changed=ref(value.marks_registration=None||value.marks_count<>count)in
+      let device=ref[]in
+      let stale=ref false in
+      let upload index bytes=
+        let owned=value.marks_owned.(index)in
+        let size=Int64.of_int(max 16(Bytes.length bytes))in
+        let buffer=match owned with
+          |Some b when Ogpu.Backend.buffer_size b>=size->Ok b
+          |_->
+            let capacity=Int64.of_int(max 16(2*Bytes.length bytes))in
+            Result.map(fun b->
+              Option.iter(fun old->ignore(Ogpu.Backend.destroy_buffer old))owned;
+              value.marks_owned.(index)<-Some b;value.marks_last.(index)<-Bytes.empty;changed:=true;b)
+              (Ogpu.Backend.create_buffer value.marks_gpu.gpu_device
+                {label=Some"Marks attribute";size=capacity;usage=[Vertex;Storage;Copy_dst]})in
+        Result.bind(Result.map_error(fun e->{operation;kind=Backend;message=Ogpu.Error.to_string e})buffer)(fun b->
+          if value.marks_last.(index)==bytes||Bytes.equal value.marks_last.(index)bytes then Ok b
+          else Result.map(fun()->value.marks_last.(index)<-bytes;changed:=true;b)
+            (Result.map_error(fun e->{operation;kind=Backend;message=Ogpu.Error.to_string e})
+              (Ogpu.Backend.write_buffer b~offset:0L bytes))) in
+      let strides=Array.make 5 0 in
+      let rec bind index=if index=5 then Ok[]else begin
+        let buffer=match attributes.(index)with
+          |Host(bytes,stride)->strides.(index)<-stride;upload index bytes
+          |Device(source,stride)->strides.(index)<-stride;
+              (match source()with
+               |Some b->device:=(source,b):: !device;Ok b
+               |None->stale:=true;fail operation Resource"GPU display output is stale or closed")in
+        Result.bind buffer(fun b->Result.map(fun rest->b::rest)(bind(index+1)))end in
+      Result.bind(bind 0)(fun buffers->
+        let params=Bytes.create 32 in
+        Array.iteri(fun i word->Bytes.set_int32_le params(i*4)(Int32.of_int word))
+          [|kind;strides.(0);strides.(1);strides.(2);strides.(3);strides.(4);0;0|];
+        Result.bind(upload 5 params)(fun params_buffer->
+          let device=List.rev !device in
+          if not !changed&&valid_gpu_marks value&&List.length device=List.length value.marks_device
+             &&List.for_all2(fun(_,a)(_,b)->a==b)device value.marks_device then
+            Ok(Scene_command.Shape_batch.Private.gpu_token~identity:value.marks_id~count
+              ~stamp:value.marks_stamp)
+          else begin
+            unregister_marks value;
+            value.marks_stamp<-Int64.succ value.marks_stamp;value.marks_count<-count;
+            value.marks_device<-device;
+            match Scene_execution.Private.register_gpu_vertices ~extra:(List.tl buffers@[params_buffer])
+              ~key:(gpu_marks_key value)~device:value.marks_gpu.gpu_device~buffer:(List.hd buffers)
+              ~vertex_count:(4*count)~valid:(fun()->valid_gpu_marks value)()with
+            |Error e->value.marks_device<-[];backend operation e
+            |Ok registration->value.marks_registration<-Some registration;
+                Ok(Scene_command.Shape_batch.Private.gpu_token~identity:value.marks_id~count
+                  ~stamp:value.marks_stamp)
+          end))
+    end
+  let close_gpu_marks=close_gpu_marks
   let snapshot_count_for_test value=Snapshot_table.length value.snapshots
   type nonrec submission=submission
   type nonrec batch=batch

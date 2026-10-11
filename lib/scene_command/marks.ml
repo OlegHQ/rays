@@ -1,5 +1,5 @@
 type buffer = { id : int; count : int; width : int }
-type 'a attr = Constant of 'a | Buffer of buffer
+type 'a attr = Constant of 'a | Buffer of buffer | Device of buffer
 type kind =
   | Rect of { position : (float * float) attr; size : (float * float) attr;
               fill : int32 attr; stroke : int32 attr; stroke_width : float attr }
@@ -37,16 +37,17 @@ let check_entry i = function
       if b.count <> count then bad "entry %d: %s buffer count differs from %d" i name count;
       if not (List.mem b.width widths) then bad "entry %d: %s buffer width %d" i name b.width in
     let pair name widths nonneg = function
-      | Buffer b -> buf name widths b
+      | Buffer b | Device b -> buf name widths b
       | Constant (x, y) ->
         if not (bounded x && bounded y) then bad "entry %d: %s not finite" i name;
         if nonneg && (x < 0. || y < 0.) then bad "entry %d: %s negative" i name in
     let scalar name = function
-      | Buffer b -> buf name [1] b
+      | Buffer b | Device b -> buf name [1] b
       | Constant v ->
         if not (bounded v) then bad "entry %d: %s not finite" i name;
         if v < 0. then bad "entry %d: %s negative" i name in
-    let colour name = function Buffer b -> buf name [3] b | Constant _ -> () in
+    let colour name = function Buffer b -> buf name [3] b | Constant _ -> ()
+      | Device _ -> bad "entry %d: %s cannot be a device buffer" i name in
     (match kind with
      | Rect r ->
        pair "position" [2; 3] false r.position; pair "size" [2; 3] true r.size;
@@ -102,7 +103,8 @@ let serialize table =
   let float x = Buffer.add_int64_le b (Int64.bits_of_float x) in
   let attr const = function
     | Constant v -> byte 0; const v
-    | Buffer r -> byte 1; int r.id; int r.count; int r.width in
+    | Buffer r -> byte 1; int r.id; int r.count; int r.width
+    | Device r -> byte 2; int r.id; int r.count; int r.width in
   let pair (x, y) = float x; float y in
   i32 0x524d4b31l;
   int (Array.length table);

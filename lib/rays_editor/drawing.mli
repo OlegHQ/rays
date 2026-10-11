@@ -8,10 +8,11 @@ val prepare : ?profile:Flow_ir.Profile.t -> ?approx:Flow.Workspace.Paths.t ->
 
 val render_prepared : ?state:Flow.Eval.state ->
   ?image:(Flow.Eval.value -> (Rays.Image.t, Flow.Diagnostic.t) result) ->
-  ?gpu:(Flow_ir.Gpu.value -> radius:float -> fill:int32 -> stroke:int32 -> stroke_width:float ->
-    (Scene_command.Shape_batch.gpu_token,Flow.Diagnostic.t)result) ->
-  ?gpu_policy:Flow_ir.Gpu.policy -> prepared ->
+  ?gpu:Marks_scene.gpu -> prepared ->
   live:Frame_input.t -> size:int * int -> (Rays.Scene.t, Flow.Diagnostic.t) result
 (** Runs the core draw path ({!Flow_ir.Core_exec}) into a mark table and adapts it with
-    {!Marks_scene}; a lowering error is the diagnostic. [gpu]: a [draw/circles] over a GPU region
-    output stays the backend token (replaced by P4.9). *)
+    {!Marks_scene}; a lowering error is the diagnostic. With [gpu], a region that feeds only
+    the positions, sizes, radius, from or to of a mark set stays on the GPU when the current
+    backend ({!Workspace_gpu.with_backend}) places it there, and that mark set is drawn by the
+    [Marks] family with the region's buffer bound directly. Without [gpu], or off the backend,
+    nothing differs from the CPU path. *)

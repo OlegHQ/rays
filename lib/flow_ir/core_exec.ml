@@ -7,7 +7,52 @@ type state = {
   live : Frame_input.t; root : E.residual option;
   force : (Packed.t -> (E.value, Flow.Diagnostic.t) result) option;
   marks : Core_marks.sink option;  (* the table the draw statements of a draw program fill *)
+  device : (Packed.t -> ((int * int * int) option, Flow.Diagnostic.t) result) option;
 }
+(* A region whose every result is read only as the positions, sizes, radius, from or to of a
+   mark set may run on the GPU instead; the others are read by the frame program. *)
+let device_regions (program : C.program) =
+  let n = Array.length program.locals in
+  let eligible = Array.make n false and other = Array.make n false in
+  let use l = other.(l) <- true in
+  let expression : C.expr -> unit = function
+    | Constant _ | Frame _ | Call_index _ -> ()
+    | Local a | Field (a, _) -> use a
+    | Prim (_, args) | Fields args -> List.iter (fun (_, a) -> use a) args
+    | Vec ns | Items ns -> List.iter use ns in
+  let draw : C.draw -> unit = function
+    | Batch {args; _} -> List.iter (fun (name, a) ->
+        if List.mem name ["positions"; "from"; "to"; "sizes"; "radius"] then eligible.(a) <- true else use a) args
+    | Background a | Push (_, a) -> use a
+    | Point {at; ink} -> use at; use ink
+    | Mark {args; _} | Path {args; _} -> List.iter (fun (_, a) -> use a) args
+    | Points {positions; ink} -> use positions; use ink
+    | Text_run {at; text; ink; size} -> List.iter use [at; text; ink; size]
+    | Image {at; scale; angle; _} -> List.iter use [at; scale; angle]
+    | Pop -> () in
+  let rec statement (s : C.statement) = match s.node with
+    | Draw d -> draw d
+    | Assign (_, e) -> expression e
+    | Reset_call _ | State_peek _ -> ()
+    | If {condition; yes; no} -> use condition; List.iter statement yes; List.iter statement no
+    | Iterate {sequence; body; _} -> use sequence; List.iter statement body
+    | Counted {first; last; init; body; _} -> use first; use last; List.iter statement init; List.iter statement body
+    | Store {sequence; value; _} -> use sequence; use value
+    | State_read {init; initial; _} -> use initial; List.iter statement init
+    | State_write {value; _} -> use value
+    | Invoke {args; _} -> List.iter use args in
+  List.iter statement program.body;
+  Array.iter use program.results;
+  let ok = Array.make (Array.length program.regions) true in
+  let rec regions (s : C.statement) = match s.node with
+    | Invoke {region; result; _} -> if not eligible.(result) || other.(result) then ok.(region) <- false
+    | If {yes; no; _} -> List.iter regions yes; List.iter regions no
+    | Iterate {body; _} -> List.iter regions body
+    | Counted {init; body; _} -> List.iter regions init; List.iter regions body
+    | State_read {init; _} -> List.iter regions init
+    | _ -> () in
+  List.iter regions program.body;
+  ok
 (* A straight-line program of Float arithmetic on the frame time is one tree of unboxed
    operations. It only answers when every step is a finite Float; any other outcome
    (a non-finite step, an invalid frame) runs the general statements, which raise the
@@ -238,6 +283,7 @@ let rec builds (statements : C.statement list) = List.exists (fun (s : C.stateme
 
 let prepare ?(fused=true) (program : C.program) =
   let track = builds program.body in
+  let device_ok = device_regions program in
   let constants = Array.map C.value_of_literal program.constants in
   let expression : C.expr -> state -> E.value = function
     | C.Constant n -> let v=constants.(n) in fun _ -> v
@@ -407,12 +453,23 @@ let prepare ?(fused=true) (program : C.program) =
           st.values.(value)<-E.Private.state_write (state_root st) ~instance ~path ~iter ~host st.values.(value)
     | Invoke {region;result;_} ->
         let packed=Packed.of_region program.regions.(region) in
+        let on_device=device_ok.(region) in
         fun st ->
           if Array.length st.builders>0 then st.builders.(result)<-None;
           let packed=match packed with Ok p -> p | Error (d :: _) -> raise (V.Fail (d.code,d.message,d.span)) | Error [] -> assert false in
-          (match (match st.force with Some force -> force packed | None -> Packed.force packed ~live:st.live) with
-           | Ok v -> st.values.(result)<-v
-           | Error (d : Flow.Diagnostic.t) -> raise (V.Fail (d.code,d.message,d.span)))) in
+          let fail (d : Flow.Diagnostic.t) = raise (V.Fail (d.code,d.message,d.span)) in
+          let device=match st.device,st.marks with
+            | Some device,Some sink when on_device ->
+                (match device packed with
+                 | Ok (Some (token,count,width)) ->
+                     st.values.(result)<-Core_marks.device_value sink ~token ~count ~width; true
+                 | Ok None -> false
+                 | Error d -> fail d)
+            | _ -> false in
+          if not device then
+            (match (match st.force with Some force -> force packed | None -> Packed.force packed ~live:st.live) with
+             | Ok v -> st.values.(result)<-v
+             | Error d -> fail d)) in
   {program; body=block program.body; code=if fused then scalar_tree program constants else None;
    pool=Atomic.make None; stateless=Array.length program.state_slots=0 && Array.length program.regions=0}
 
@@ -430,7 +487,7 @@ let general root force prepared live =
         let release () = if pooled then Atomic.set prepared.pool (Some values) in
         let st = {values;
           builders=[||]; calls=Array.make program.call_slots 0;
-          live; root; force; marks=None} in
+          live; root; force; marks=None; device=None} in
         let result = try prepared.body st;
           if Array.length program.results<>1 then V.fail "E_CORE" "Expected one core result.";
           Ok st.values.(program.results.(0))
@@ -463,7 +520,7 @@ module Buffers = Core_marks.Buffers
 
 (* A draw program (Core_draw.lower) fills a mark table. A failure is the core's own
    diagnostic: there is no walker for a drawing, so nothing is rerun. *)
-let draw ?root ?force ?image prepared ~live ~size ~buffers =
+let draw ?root ?force ?device ?image prepared ~live ~size ~buffers =
   match Frame_input.validate live with
   | Error message -> Error (Flow.Diagnostic.error ~code:"E_FRAME" message)
   | Ok () ->
@@ -473,7 +530,7 @@ let draw ?root ?force ?image prepared ~live ~size ~buffers =
         | Ok resource -> resource
         | Error (d : Flow.Diagnostic.t) -> raise (V.Fail (d.code,d.message,d.span))) image) ~size buffers in
       let st = {values=Array.make (Array.length program.locals) E.No_geo;
-        builders=[||]; calls=Array.make program.call_slots 0; live; root; force; marks=Some sink} in
+        builders=[||]; calls=Array.make program.call_slots 0; live; root; force; marks=Some sink; device} in
       (try prepared.body st; Ok (Core_marks.finish sink)
        with V.Fail (code,message,span) -> Error (Flow.Diagnostic.error ?span ~code message)
          | Not_found | Invalid_argument _ | Failure _ -> Error (Flow.Diagnostic.error ~code:"E_CORE" "Invalid core program."))

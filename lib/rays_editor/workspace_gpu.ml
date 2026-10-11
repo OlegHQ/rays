@@ -7,6 +7,7 @@ module Sinks=Lru.Make(struct
   let equal=(=)
   let hash=Hashtbl.hash
 end)
+module Slots=Lru.Make(struct type t=int let equal=Int.equal let hash=Hashtbl.hash end)
 module Images=Lru.Make(struct type t=string let equal=String.equal let hash=Hashtbl.hash end)
 type image_stats={mutable created:int;mutable closed:int;mutable buffers:int;mutable textures:int}
 let close_image stats sink=
@@ -14,12 +15,13 @@ let close_image stats sink=
   stats.buffers<-stats.buffers+Flow_gpu.Image_sink.Private.buffer_creations sink;
   stats.textures<-stats.textures+Flow_gpu.Image_sink.Private.texture_creations sink;
   Flow_gpu.Image_sink.close sink
-type t={mutable owner:(X.gpu * H.t)option; sinks:P.gpu_circles Sinks.t;
+type t={mutable owner:(X.gpu * H.t)option; sinks:P.gpu_circles Sinks.t;mark_sets:P.gpu_marks Slots.t;
   images:Flow_gpu.Image_sink.t Images.t;
   image_stats:image_stats;mutable closed_host:H.Private.stats;
   mutable backend:G.backend option; mutable closed:bool; mutable policy:G.policy}
 let create ()=let image_stats={created=0;closed=0;buffers=0;textures=0}in
   {owner=None;sinks=Sinks.create ~release:(fun _->P.close_gpu_circles)64;
+  mark_sets=Slots.create ~release:(fun _->P.close_gpu_marks)64;
   images=Images.create ~release:(fun _->close_image image_stats)64;
   image_stats;closed_host=H.Private.zero;
   backend=None;closed=false;policy=G.Measured}
@@ -65,6 +67,16 @@ let circles t (value:G.value) ~radius ~fill ~stroke ~stroke_width =
       Result.bind sink(fun sink->native(P.gpu_circles sink
         ~source:(fun()->Option.bind(H.output host value)Flow_gpu.Run.buffer)
         ~count:value.count ~radius ~fill ~stroke ~stroke_width)))
+(* One [Marks]-family source per GPU mark set of a frame, numbered in drawing order. *)
+let marks t : Marks_scene.gpu=fun ~slot ~kind ~count attributes->
+  Result.bind(owner t)(fun(gpu,host)->
+    let sink=match Slots.find_opt t.mark_sets slot with Some sink->Ok sink|None->
+      Result.map(fun sink->Slots.add t.mark_sets slot sink;sink)(native(P.create_gpu_marks gpu))in
+    Result.bind sink(fun sink->
+      let source({Marks_scene.source;stride}:Marks_scene.attribute)=match source with
+        |Marks_scene.Bytes bytes->P.Host(bytes,stride)
+        |Device value->P.Device((fun()->Option.bind(H.output host value)Flow_gpu.Run.buffer),stride)in
+      native(P.gpu_marks sink~kind~count(Array.map source attributes))))
 let image_stats t=
   if not(Domain.is_main_domain())then invalid_arg "Workspace_gpu.image_stats: initial domain required";
   let host=Option.fold ~none:t.closed_host ~some:(fun(_,host)->H.Private.stats host)t.owner in
@@ -77,6 +89,7 @@ let close t=
   if not(Domain.is_main_domain())then invalid_arg "Workspace_gpu.close: initial domain required";
   if not t.closed then begin
   Sinks.clear t.sinks;
+  Slots.clear t.mark_sets;
   Images.clear t.images;
   Option.iter(fun(gpu,host)->H.close host;t.closed_host<-H.Private.stats host;X.release_gpu gpu)t.owner;
   t.owner<-None;t.closed<-true

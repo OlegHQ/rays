@@ -168,6 +168,15 @@ module Executor : sig
   (** Select a GPU producer without executing the CPU fallback. [None] leaves
       ordinary worker cooking intact; explicit readbacks return owned CPU data. *)
 
+  val region_display : ?profile:Profile.t -> ?approx:Flow.Workspace.Paths.t -> ?policy:Gpu.policy -> unit ->
+    ?state:Flow.Eval.state -> ?resolve:(Flow.Eval.value -> (Flow.Eval.value,Flow.Diagnostic.t)result) ->
+    Packed.t -> live:Frame_input.t -> (Gpu.value option,Flow.Diagnostic.t)result
+  (** [region_display ()] is the placement a draw program's region gets as a mark attribute: the
+      GPU output when the current backend takes the region (its site is in [approx], it has no
+      GPU refusal, the static or run-time count is at least 1,024 and the cost model or
+      [Qualification] says so), else [None] for the CPU. It keeps the kernels of the last 64
+      regions it saw. *)
+
   val force_display : ?state:Flow.Eval.state -> ?reference:bool -> ?policy:Gpu.policy -> program -> live:Frame_input.t ->
     (displayed,Flow.Diagnostic.t)result
 

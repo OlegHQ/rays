@@ -135,7 +135,8 @@ let canon_marks buffers (marks : M.t) =
   let attr show = function
     | M.Constant v -> "c " ^ show v
     | M.Buffer {id; count; width} -> Printf.sprintf "b%dx%d[ %s ]" count width
-        (String.concat " " (List.map f (Array.to_list (I.Core_exec.Buffers.find buffers id)))) in
+        (String.concat " " (List.map f (Array.to_list (I.Core_exec.Buffers.find buffers id))))
+    | M.Device _ -> failwith "a device attribute has no web frame form" in
   let pair (x, y) = f x ^ " " ^ f y and ink c = Printf.sprintf "i:%ld" c in
   String.concat " ; " (List.map (function
     | M.Mark_set {count; kind} ->

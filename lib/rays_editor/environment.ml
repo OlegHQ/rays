@@ -240,8 +240,7 @@ let update_with value frame ~inspector =
                    ~approx:(fst core.doc.workspace).checked.approx ~states:lowered.states lowered.plan drawing in
              (match Result.bind prepared (fun p -> Result.map (fun scene -> p, scene)
                  (Workspace_gpu.with_backend value.host.gpu(fun()->Drawing.render_prepared ~state:core.cook.state
-                   ~gpu:(Workspace_gpu.circles value.host.gpu)
-                   ~gpu_policy:(Workspace_gpu.policy value.host.gpu)
+                   ~gpu:(Workspace_gpu.marks value.host.gpu)
                    ~image:(Workspace_images.image value.host.images ~state:core.cook.state ~live:frame_input lowered.plan)
                    p ~live:frame_input ~size:(w, h)))) with
               | Ok (prepared, scene) -> (key, {size = (w, h); dynamic; scene;

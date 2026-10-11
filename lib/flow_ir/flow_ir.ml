@@ -741,6 +741,43 @@ module Executor = struct
     end) program.profile;
     result
   type displayed=Cpu of E.value | Gpu of Gpu.value
+  (* A packed region on the GPU when the backend takes it and measures it cheaper. [cached] and
+     [store] are the owner's one-kernel cache; [display] says a GPU array may leave the executor. *)
+  let display_packed ?state ?resolve ~backend ~policy ~approx ~display ~profile ~cached ~store ~readback packed ~live =
+    let cpu()=Ok None in
+    let _,site,_=Packed.site packed in
+    if not(W.Paths.mem site approx) || Packed.gpu_refusals packed <> []
+      then cpu()else
+    let cheaper count= count>=1024 && (policy=Gpu.Qualification ||
+      Option.fold ~none:false ~some:(fun seconds->Float.is_finite seconds && seconds>=0.
+        && seconds+.(if readback then Cost.estimate Gpu_readback ~count else Cost.display_sink Gpu ~count)
+          <Cost.estimate(Cost.packed ~count) ~count
+           +.(if readback then 0. else Cost.display_sink Cpu_kernel ~count))(backend.Gpu.cost packed ~count))in
+    (* Static cardinality lets unmeasured placement decline before allocating
+       producer inputs, especially the million-element exact SOP value lane. *)
+    if Option.fold ~none:false ~some:(fun count->not(cheaper count))(Packed.static_count packed)
+      then cpu()else
+    let (let*)=Result.bind in
+    let* inputs=Packed.Private.prepare ?state ?resolve packed ~live in
+    if not(cheaper inputs.count) then cpu()else
+    let* ()=if display||readback then Ok()else
+      Error(Flow.Diagnostic.error ~code:"E_APPROX_SINK"
+        "GPU arrays require a display sink or (exact x) before CPU, SOP, state, export or cache use.")in
+    let profile ?(seconds=fun _->None) tier run=
+      let start=Option.map(fun p->p.Profile.clock())profile in
+      let result=run()in
+      let elapsed=match result with Ok value->seconds value|Error _->None in
+      Option.iter(fun p->let _,path,iter=Packed.site packed in
+        Profile.record p {owner=(path,iter);sites=Packed.provenance packed;tier;
+          seconds=(match elapsed with Some value when Float.is_finite value && value>=0.->value
+            |_->max 0.(p.clock()-.Option.get start))})profile;result in
+    let* kernel=match cached()with
+      |Some(previous,p,kernel)when previous==backend && p==packed->Ok kernel
+      |_->profile Gpu_compile(fun()->Result.map(fun kernel->store(backend,packed,kernel);kernel)
+          (backend.prepare packed))in
+    let* output=profile ~seconds:(fun output->output.Gpu.gpu_seconds) Gpu(fun()->kernel.run inputs)in
+    if readback then profile Gpu_readback(fun()->Result.map(fun value->Some(Cpu value))(kernel.readback output))
+    else Ok(Some(Gpu output))
   let try_display ?state ?resolve ?(reference=false) ?policy program ~live =
     let policy=Option.value ~default:(Domain.DLS.get Gpu.current_policy) policy in
     let cpu()=Ok None in
@@ -754,40 +791,23 @@ module Executor = struct
         |_->None,false)
       |_->None,false in
     match packed with None->cpu()|Some packed->
-      let _,site,_=Packed.site packed in
-      if not(W.Paths.mem site program.approx) || Packed.gpu_refusals packed <> []
-        then cpu()else
-      let cheaper count= count>=1024 && (policy=Gpu.Qualification ||
-        Option.fold ~none:false ~some:(fun seconds->Float.is_finite seconds && seconds>=0.
-          && seconds+.(if readback then Cost.estimate Gpu_readback ~count else Cost.display_sink Gpu ~count)
-            <Cost.estimate(Cost.packed ~count) ~count
-             +.(if readback then 0. else Cost.display_sink Cpu_kernel ~count))(backend.cost packed ~count))in
-      (* Static cardinality lets unmeasured placement decline before allocating
-         producer inputs, especially the million-element exact SOP value lane. *)
-      if Option.fold ~none:false ~some:(fun count->not(cheaper count))(Packed.static_count packed)
-        then cpu()else
-      let (let*)=Result.bind in
-      let* inputs=Packed.Private.prepare ?state ?resolve packed ~live in
-      if not(cheaper inputs.count) then cpu()else
-      let* ()=match program.sink,readback with
-        |Some(Display _),_ |_,true->Ok()
-        |_->Error(Flow.Diagnostic.error ~code:"E_APPROX_SINK"
-          "GPU arrays require a display sink or (exact x) before CPU, SOP, state, export or cache use.")in
-      let profile ?(seconds=fun _->None) tier run=
-        let start=Option.map(fun p->p.Profile.clock())program.profile in
-        let result=run()in
-        let elapsed=match result with Ok value->seconds value|Error _->None in
-        Option.iter(fun p->let _,path,iter=Packed.site packed in
-          Profile.record p {owner=(path,iter);sites=Packed.provenance packed;tier;
-            seconds=(match elapsed with Some value when Float.is_finite value && value>=0.->value
-              |_->max 0.(p.clock()-.Option.get start))})program.profile;result in
-      let* kernel=match program.gpu_kernel with
-        |Some(previous,p,kernel)when previous==backend && p==packed->Ok kernel
-        |_->profile Gpu_compile(fun()->Result.map(fun kernel->program.gpu_kernel<-Some(backend,packed,kernel);kernel)
-            (backend.prepare packed))in
-      let* output=profile ~seconds:(fun output->output.Gpu.gpu_seconds) Gpu(fun()->kernel.run inputs)in
-      if readback then profile Gpu_readback(fun()->Result.map(fun value->Some(Cpu value))(kernel.readback output))
-      else Ok(Some(Gpu output))
+      display_packed ?state ?resolve ~backend ~policy ~approx:program.approx
+        ~display:(match program.sink with Some(Display _)->true|_->false) ~profile:program.profile
+        ~cached:(fun()->program.gpu_kernel) ~store:(fun k->program.gpu_kernel<-Some k)
+        ~readback packed ~live
+  (* A region of a draw program offered to the GPU as a mark attribute: a closure owns the kernels
+     of at most 64 regions. [None] leaves the region to the CPU. *)
+  let region_display ?profile ?(approx=W.Paths.empty) ?policy () =
+    let kernels=ref[] in
+    let rec take n=function []->[]|_ when n=0->[]|x::xs->x::take(n-1)xs in
+    fun ?state ?resolve packed ~live->
+      let policy=Option.value ~default:(Domain.DLS.get Gpu.current_policy) policy in
+      match Domain.DLS.get Gpu.current with None->Ok None|Some backend->
+      let find()=List.find_map(fun((_,p,_)as k)->if p==packed then Some k else None) !kernels in
+      let result=display_packed ?state ?resolve ~backend ~policy ~approx ~display:true ~profile
+        ~cached:find ~store:(fun((_,p,_)as k)->kernels:=k::take 63(List.filter(fun(_,q,_)->q!=p) !kernels))
+        ~readback:false packed ~live in
+      Result.map(Option.map(function Gpu v->v|Cpu _->assert false))result
   let force_display ?state ?(reference=false) ?policy program ~live =
     Result.bind (try_display ?state ~reference ?policy program ~live) (function
       |Some value->Ok value

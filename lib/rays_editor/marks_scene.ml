@@ -10,16 +10,70 @@ let rgba (c : Color.t) = (Int32.of_int ((c.r lsl 24) lor (c.g lsl 16) lor (c.b l
 
 (* An attribute as a function of the instance index; a buffer is looked up once. *)
 let data buffers (b : M.buffer) = Flow_ir.Core_exec.Buffers.find buffers b.id
+let no_device () = V.fail "E_GPU" "A device attribute needs a GPU host."
 let pairs buffers = function
   | M.Constant p -> fun _ -> p
   | Buffer b -> let d = data buffers b in fun i -> d.(b.width * i), d.(b.width * i + 1)
+  | Device _ -> no_device ()
 let floats buffers = function
   | M.Constant x -> fun _ -> x
   | Buffer b -> let d = data buffers b in fun i -> d.(i)
+  | Device _ -> no_device ()
 let colours buffers = function
   | M.Constant c -> fun _ -> c
   | Buffer b -> let d = data buffers b in
       fun i -> rgba (Flow_ir.Operators.drawing_color (V.Vec3 (d.(3*i), d.(3*i+1), d.(3*i+2))))
+  | Device _ -> no_device ()
+
+(* The GPU route: attributes in the layout of the [Marks] family (specification/marks.md). *)
+type source = Bytes of bytes | Device of Flow_ir.Gpu.value
+type attribute = { source : source; stride : int }
+type gpu = slot:int -> kind:int -> count:int -> attribute array ->
+  (Scene_command.Shape_batch.gpu_token, Flow.Diagnostic.t) result
+
+let float_bytes n f = let b = Bytes.create (4 * n) in
+  for i = 0 to n - 1 do Bytes.set_int32_le b (4 * i) (Int32.bits_of_float (f i)) done; b
+let word_bytes n f = let b = Bytes.create (4 * n) in
+  for i = 0 to n - 1 do Bytes.set_int32_le b (4 * i) (f i) done; b
+let host bytes stride = { source = Bytes bytes; stride }
+
+(* Floats of [width] per instance: constant pairs and scalars take stride 0. *)
+let vectors buffers ~device count (a : (float * float) M.attr) = match a with
+  | M.Constant (x, y) -> host (float_bytes 3 (function 0 -> x | 1 -> y | _ -> 0.)) 0
+  | Buffer b -> let d = data buffers b in host (float_bytes (b.width * count) (Array.get d)) b.width
+  | Device b -> { source = Device (device b.id); stride = b.width }
+let scalars buffers ~device count (a : float M.attr) = match a with
+  | M.Constant x -> host (float_bytes 1 (fun _ -> x)) 0
+  | Buffer b -> let d = data buffers b in host (float_bytes count (Array.get d)) 1
+  | Device b -> { source = Device (device b.id); stride = 1 }
+let words buffers count (a : int32 M.attr) = match a with
+  | M.Constant c -> host (word_bytes 1 (fun _ -> c)) 0
+  | Buffer _ -> let c = colours buffers a in host (word_bytes count c) 1
+  | Device _ -> no_device ()
+
+(* Rect, circle and line sets with a device attribute: position, extent, fill, stroke, width. *)
+let gpu_set buffers ~device ~gpu ~slot count (kind : M.kind) =
+  let vec = vectors buffers ~device count and one = scalars buffers ~device count
+  and word = words buffers count in
+  let kind_word, attributes = match kind with
+    | Rect {position; size; fill; stroke; _} ->
+        0, [| vec position; vec size; word fill; word stroke; host (float_bytes 1 (fun _ -> 1.)) 0 |]
+    | Circle {position; radius; fill; stroke; stroke_width} ->
+        4, [| vec position; one radius; word fill; word stroke; one stroke_width |]
+    | Line {position; end_; stroke; stroke_width} ->
+        5, [| vec position; vec end_; host (word_bytes 1 (fun _ -> 0l)) 0; word stroke; one stroke_width |]
+    | Point _ -> assert false in
+  match gpu ~slot ~kind:kind_word ~count attributes with
+  | Ok token -> Scene.Private.shapes (Scene_command.Shape_batch.Private.of_gpu token)
+  | Error (d : Flow.Diagnostic.t) -> raise (V.Fail (d.code, d.message, d.span))
+
+let has_device (kind : M.kind) =
+  let d : type a. a M.attr -> bool = function M.Device _ -> true | _ -> false in
+  match kind with
+  | Rect {position; size; _} -> d position || d size
+  | Circle {position; radius; stroke_width; _} -> d position || d radius || d stroke_width
+  | Line {position; end_; stroke_width; _} -> d position || d end_ || d stroke_width
+  | Point _ -> false
 
 let int_coordinate x =
   if not (Float.is_finite x) || x >= float max_int || x < float min_int
@@ -63,7 +117,7 @@ let points buffers count position fill =
   done;
   Ink.take batch
 
-let scene ~buffers ?image marks =
+let scene ~buffers ?image ?gpu ?(device = fun _ -> no_device ()) marks =
   let fail code message = Error (Flow.Diagnostic.error ~code message) in
   match M.validate marks with
   | Error message -> fail "E_DRAW_RANGE" message
@@ -76,10 +130,15 @@ let scene ~buffers ?image marks =
         | (wrap, outer) :: rest -> stack := rest; top := wrap (List.rev !top) :: outer
         | [] -> assert false in
       let integer x = int_coordinate x in
+      let slot = ref 0 in
       try
         Array.iter (function
           | M.Mark_set {count; kind = Point {position; fill}} ->
               Option.iter add (points buffers count position fill)
+          | Mark_set {count; kind} when has_device kind ->
+              (match gpu with
+               | None -> no_device ()
+               | Some gpu -> add (gpu_set buffers ~device ~gpu ~slot:!slot count kind); incr slot)
           | Mark_set {count; kind} -> add (shapes buffers count kind)
           | Geometry {vertices; indices; color} -> add (Scene.Private.geometry {vertices; indices; color})
           | Image {resource; x; y; scale; angle} ->

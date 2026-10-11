@@ -5,7 +5,10 @@
     [width] floats each. [id] must be positive. *)
 type buffer = { id : int; count : int; width : int }
 
-type 'a attr = Constant of 'a | Buffer of buffer
+(** [Device] is a per-frame GPU array the caller owns, laid out as a [Buffer] of the same
+    [count] and [width] (float32 elements). Only positions, extents (sizes, radii, line ends) and
+    widths may be [Device]; a colour is [Constant] or [Buffer]. *)
+type 'a attr = Constant of 'a | Buffer of buffer | Device of buffer
 
 (** Colours are packed [0xRRGGBBAA]; floats are logical points. *)
 type kind =
