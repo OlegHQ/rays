@@ -54,15 +54,18 @@
  (libraries rays rdk rdk_rays sop lisp_sop flow))
 
 (rule
- (aliases runtest test_gallery_shapes)
+ (alias test_gallery_shapes)
  (deps ../examples/sop_gallery/gallery.rays)
  (action (run %{exe:test_gallery_shapes.exe})))
 
 (rule
- (aliases runtest-native test_gallery_shapes_native)
+ (alias test_gallery_shapes_native)
  (locks %{workspace_root}/smoke_window)
  (deps ../examples/sop_gallery/gallery.rays)
  (action (run %{exe:test_gallery_shapes.exe} native)))
+
+(alias (name runtest) (deps (alias test_gallery_shapes)))
+(alias (name runtest-native) (deps (alias test_gallery_shapes_native)))
 
 (test
  (name test_workspace_images)
@@ -171,6 +174,13 @@
 (rule
  (alias test_editor_commands)
  (action (run %{exe:test_main.exe} test_editor_commands)))
+
+(rule
+ (alias test_editor_canvas_native)
+ (locks %{workspace_root}/smoke_window)
+ (action (run %{exe:test_main.exe} test_editor_canvas_native)))
+
+(alias (name runtest-native) (deps (alias test_editor_canvas_native)))
 
 (rule
  (alias test_world_command)

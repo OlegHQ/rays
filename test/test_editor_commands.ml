@@ -292,7 +292,6 @@ let run () =
     step [] 200; E3.crash_dump !current directory;
     check (contains (dump ()) "key hud: -\n") "key HUD outlived 1.5 seconds");
   canvas_preview ();
-  canvas_frame_size ();
   menu_forms ();
   image_cook ();
   new_graphs ();

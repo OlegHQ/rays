@@ -14,8 +14,13 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   On 2026-10-11, the command suite's existing canvas-size check failed with
   `E_GPU: Ogpu_metal.Device.system_default: Metal has no system default device`
   in this managed runner (report: `/private/tmp/rays-canvas-size-debug/editor.txt`).
-  Its assertion remains intact; native rendering gates still need a runner
-  with an available Metal device.
+  Its assertion remains intact under `test_editor_canvas_native` and
+  `@runtest-native`: the pane-sized image exercises GPU image display.
+  The default command suite keeps routing, small-image preview and image
+  cook checks, and now passes with dummy SDL drivers. The focused gallery
+  alias also passes independently after separating its Dune aliases.
+  Typechecking and the dependency gate pass. A direct canvas-native attempt
+  still fails without a Metal device; this rendering check remains unverified.
 - Attempted 2026-10-11: `@smoke` exposed a stale root rule for the removed
   `examples/sop_gallery/main.exe`; it now launches `lisp.exe`. Both native
   smoke examples build and reach startup, then fail with SDL's "The video
