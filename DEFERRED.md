@@ -28,6 +28,17 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
 
 ## Tests that got weaker
 
+- Restored, native verification pending 2026-10-11: native scene-execution
+  blend, geometry, mixed-texture, mip/sampler and shadow cases, and runtime
+  light/stencil cases now render all 600 frames. They formerly iterated the
+  four labels `[1;2;60;600]` without advancing through the intervening frames.
+  Existing pixel and upload-stability assertions run throughout. Runtime's
+  formerly unused 65-light uniform now must return typed `Invalid_argument`
+  without increasing uploaded bytes. After correcting a mechanical token
+  join in the edit, typechecking, builds, portable runtime/scene-execution
+  suites and the dependency gate pass. Actual native attempts cannot exercise
+  these assertions: scene execution fails at Metal device acquisition and
+  runtime lighting takes its existing startup-error skip.
 - Restored, native verification pending 2026-10-11: automatic scratch's
   mixed Scene2/Scene3 case now verifies every RGBA pixel before and after a
   scissor edit, including the exposed white border. Exact hit/miss counters
