@@ -2286,13 +2286,6 @@ polygon vertex order, rejects non-finite inputs, and returns a typed cancellatio
 error. The ordered five-cell fixture is checked directly at the RDK boundary
 in one and four domains.
 
-`Rdk.Curve_sampling` owns quadratic/cubic Bézier and Catmull–Rom sample
-generation in 2D and 3D. It returns typed errors for invalid resolution,
-insufficient distinct controls, non-finite tension, or cancellation.
-Exact ordered fixtures cover each curve kind and one-versus-four-domain
-Catmull–Rom output at the RDK boundary. A captured Geom compatibility fixture
-matched across the migration.
-
 `Rdk.Iso_surface` streams XY slabs while extracting a six-tetrahedra
 isosurface into packed RDK point positions, triangle topology, and point
 normals. It supports boxed and dense scalar fields, typed malformed-input and

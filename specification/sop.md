@@ -77,11 +77,7 @@ through the native OGPU/Metal path.
 A cook context may copy scalar facts from `Rays.Frame.t`, but
 it must not retain a canvas, renderer, texture, or backend handle.
 
-`Sop.Instances.t` is a separate packed value: it retains one prototype
-node plus a packed array of immutable transforms. It is not itself editable
-topology.
-Use
-materialized `sop/duplicate` or Copy to Points when downstream SOPs need
+Use materialized `sop/duplicate` or Copy to Points when downstream SOPs need
 per-copy topology.
 
 ## Node-owned parameter templates and inspectors

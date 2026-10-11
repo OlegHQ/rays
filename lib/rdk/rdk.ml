@@ -8,7 +8,6 @@ module Spiral = Rdk_gen.Spiral
 module Point_generate = Rdk_gen.Point_generate
 module Delaunay2 = Rdk_exact.Delaunay2
 module Voronoi2 = Rdk_exact.Voronoi2
-module Curve_sampling = Rdk_curve.Curve_sampling
 module Planar_constraints = Rdk_exact.Planar_constraints
 module Planar_cdt = Rdk_exact.Planar_cdt
 module Error = Rdk_core.Error
