@@ -829,7 +829,8 @@ Phase 5
 - [ ] P5.4 S
 - [ ] P5.5 S
 - [ ] P5.6 H
-- [ ] P5.7 S
+- [x] P5.7 S
+  2026-10-11. `Js.region : Packed.t -> string` is `function region(inputs, uniforms, outputs, start, stop)` over `Float64Array`s, returning 0 or 1 (non-finite, native `E_KERNEL`). Covers `Collect`, `Sum`, `Accumulate` (fold and scan), several outputs, `Zip`/`Product` and `skip`, so no refusal exists; sums/accumulators keep a trailing state array (`width+1`, last entry the initialized flag) and ranges must run in ascending order. Frame values are the last element of `uniforms`. `test_js.ml` has the four goldens and runs 25 programs under node against `Packed.force_all` in two ranges (within 1e-12 relative; usually bit-equal, noise/sin/cos/sum differ in the last bits, probably FMA contraction and libm vs V8) and skips with a message when node is absent. `@lib/flow_web/runtest` green.
 - [x] P5.8 S
   `prims.js` (54 primitives) and `core_fixtures.exe` added 2026-10-11 (commit
   c361391d). 9,524 native cases in 54 files, byte-identical across runs; all

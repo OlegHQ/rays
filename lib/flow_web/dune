@@ -3,7 +3,7 @@
 (library
  (name flow_web)
  (public_name rays.flow_web)
- (modules flow_web wgsl)
+ (modules flow_web wgsl js)
  (libraries flow flow_ir param rays_math scene_command))
 
 (test
@@ -11,3 +11,9 @@
  (modules test_wgsl test_program)
  (deps (glob_files goldens/*.wgsl))
  (libraries flow_web flow flow_ir))
+
+(test
+ (name test_js)
+ (modules test_js test_program)
+ (deps (glob_files goldens/*.js))
+ (libraries flow_web flow flow_ir frame_input))

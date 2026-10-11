@@ -1,0 +1,120 @@
+(* Goldens for [Js.region], and a run of every emitted region function under
+   node against native [Packed.force_all]. Regenerate goldens with
+   [test_js.exe --write-goldens] from lib/flow_web. *)
+module P = Flow_ir.Packed
+module R = Flow_ir.Core.Region
+
+let node = Sys.command "command -v node >/dev/null 2>&1" = 0
+let numbers values = String.concat "," (List.map (Printf.sprintf "%.17g") (Array.to_list values))
+
+let flatten = function
+  | Flow.Eval.Float_array a | Vec2_array a | Vec3_array a | Vec4_array a -> a
+  | Float x -> [|x|] | Vec2 (x, y) -> [|x; y|] | Vec3 (x, y, z) -> [|x; y; z|]
+  | Vec4 (x, y, z, w) -> [|x; y; z; w|]
+  | _ -> failwith "unexpected value"
+
+let close a b = a = b || Float.abs (a -. b) <= 1e-12 *. Float.max (Float.abs a) (Float.abs b)
+
+(* Runs the region in two ranges (to exercise the carried state) and returns
+   the status and one array per output line. *)
+let run_node program =
+  let live = Frame_input.at_time 1. in
+  let region = P.to_region program and view = P.Private.view program in
+  let inputs = Test_program.ok (P.Private.prepare program ~live) in
+  let count = if region.iteration = R.Product then
+      Array.fold_left ( * ) 1 (Array.mapi (fun i a -> Array.length a / view.widths.(i)) inputs.arrays) else inputs.count in
+  let valid = List.sort_uniq compare (List.filter (fun i -> i >= 0 && i < count) (Array.to_list region.skip)) in
+  let kept = count - List.length valid in
+  let collecting = match region.result with R.Collect | R.Accumulate (_, true) -> true | _ -> false in
+  let width = Array.length view.outputs.(0) in
+  let outputs = (if collecting then Array.to_list (Array.map (fun o -> kept * Array.length o) view.outputs) else [])
+    @ (if region.result = R.Collect then [] else [width + 1]) in
+  let script = Buffer.create 65536 in
+  Buffer.add_string script (Flow_web.Js.region program);
+  let array values = "Float64Array.from([" ^ numbers values ^ "])" in
+  Printf.bprintf script "const inputs = [%s];\n" (String.concat "," (List.map array (Array.to_list inputs.arrays)));
+  Printf.bprintf script "const uniforms = [%s];\n"
+    (String.concat "," (List.map array (Array.to_list inputs.uniforms @ [inputs.frame])));
+  Printf.bprintf script "const outputs = [%s];\n"
+    (String.concat "," (List.map (Printf.sprintf "new Float64Array(%d)") outputs));
+  (match region.result with
+   | R.Sum zero -> if zero then Printf.bprintf script "outputs[outputs.length - 1][%d] = 1;\n" width
+   | R.Accumulate _ -> Printf.bprintf script "outputs[outputs.length - 1][%d] = 1;\n" width
+   | R.Collect -> ());
+  Printf.bprintf script "let status = region(inputs, uniforms, outputs, 0, %d);\n" (count / 2);
+  Printf.bprintf script "if (status === 0) status = region(inputs, uniforms, outputs, %d, %d);\n" (count / 2) count;
+  Buffer.add_string script "const str = (x) => Object.is(x, -0) ? '-0' : String(x);\nconsole.log(status);\n";
+  Buffer.add_string script "for (const o of outputs) console.log(Array.from(o).map(str).join(' '));\n";
+  let file = Filename.temp_file "region" ".js" and out = Filename.temp_file "region" ".out" in
+  Out_channel.with_open_bin file (fun c -> output_string c (Buffer.contents script));
+  assert (Sys.command (Printf.sprintf "node %s > %s" (Filename.quote file) (Filename.quote out)) = 0);
+  let lines = String.split_on_char '\n' (In_channel.with_open_bin out In_channel.input_all) in
+  Sys.remove file; Sys.remove out;
+  match lines with
+  | status :: rest ->
+      int_of_string status,
+      List.filteri (fun i _ -> i < List.length outputs) rest
+      |> List.map (fun l -> String.split_on_char ' ' l |> List.filter ((<>) "") |> List.map float_of_string |> Array.of_list)
+  | [] -> assert false
+
+let compare_native name program =
+  let status, produced = run_node program in
+  assert (status = 0);
+  let live = Frame_input.at_time 1. in
+  let expected = Test_program.ok (P.force_all program ~live) |> List.map flatten in
+  let region = P.to_region program in
+  let compared = ref 0 and exact = ref 0 in
+  let check actual wanted =
+    Array.iteri (fun i w ->
+      incr compared;
+      if actual.(i) = w then incr exact;
+      if not (close actual.(i) w) then
+        failwith (Printf.sprintf "%s: element %d is %.17g, native %.17g" name i actual.(i) w)) wanted in
+  (match region.result with
+   | R.Collect | R.Accumulate (_, true) ->
+       List.iteri (fun k wanted -> assert (Array.length (List.nth produced k) >= Array.length wanted); check (List.nth produced k) wanted) expected
+   | _ -> check (List.nth produced 0) (List.hd expected));
+  Printf.printf "  %-14s %d values, %d bit-equal\n" name !compared !exact
+
+let programs =
+  let range = "(array/range 1024)" in
+  let map body = "(map (fn [x] " ^ body ^ ") " ^ range ^ ")" in
+  Test_program.fixtures 1024
+  @ ["two_outputs", Test_program.two_outputs ()]
+  @ List.map (fun (name, source) -> name, (try Test_program.compile source with Failure m -> failwith (name ^ ": " ^ m)))
+    (List.map (fun name -> "op " ^ name, map ("(" ^ name ^ " x t)")) ["/"; "mod"; "pow"; "min"; "max"]
+     @ List.map (fun name -> "op " ^ name, map ("(" ^ name ^ " (+ x t))")) ["sin"; "cos"; "sqrt"; "abs"]
+     @ ["logic", map "(if (and (> x t) (or (< x 8) (not (>= x 500)))) x (- 0 x))";
+        "cond", map "(cond (< x t) (+ x 1) (> x 5) (- x 1) :else (* x t))";
+        "vec3", map "[x t (/ x 3)]";
+        "noise octaves", map "(noise3 [(* x 0.37) (* t 1.3) (- 0.0 4.2)] :seed 5 :octaves 4)";
+        "noise neg", map "(noise3 [(* x (- 0.0 0.37)) (- t 3.0) (- 0.0 40.5)] :seed 7)";
+        "sum", "(sum [x " ^ range ^ "] (sin (+ x t)))";
+        "sum vec", "(sum [x " ^ range ^ "] [x t])";
+        "fold", "(fold [a 0.0] [x " ^ range ^ "] (- (* a 0.99) (* (+ x t) 0.0001)))";
+        "scan", "(scan [a 0.0] [x " ^ range ^ "] (- (* a 0.99) (* (+ x t) 0.0001)))";
+        "scan vec", "(scan [a [0.0 0.0]] [x " ^ range ^ "] (+ (* a 0.99) [x t]))";
+        "skip", "(for [x " ^ range ^ "] :skip [0 5 1023] (sin (+ x t)))";
+        "skip two", "(for [x " ^ range ^ "] :skip [0 700] (* x t))";
+        "product", "(for [x (array/range 32) y (array/range 32)] (+ (* x y) t))"])
+
+let () =
+  let writing = Array.to_list Sys.argv = [Sys.argv.(0); "--write-goldens"] in
+  List.iter (fun name ->
+    let program = List.assoc name programs in
+    let source = Flow_web.Js.region program in
+    let path = "goldens/" ^ name ^ ".js" in
+    if writing then Out_channel.with_open_bin path (fun channel -> output_string channel source)
+    else assert (In_channel.with_open_bin path In_channel.input_all = source);
+    assert (source = Flow_web.Js.region program))
+    ["arithmetic"; "noise"; "select"; "two_outputs"];
+  if not node then print_endline "JS regions: goldens passed; node is absent, so the native comparison was SKIPPED"
+  else begin
+    print_endline "JS regions under node against native Packed.force_all:";
+    List.iter (fun (name, program) -> compare_native name program) programs;
+    (* A non-finite value is a status, not an exception, and native refuses it too. *)
+    let overflow = Test_program.compile "(map (fn [x] (pow (+ x t) 1000000)) (array/range 1024))" in
+    assert (fst (run_node overflow) = 1);
+    assert (Result.is_error (P.force overflow ~live:(Frame_input.at_time 1.)));
+    print_endline "JS regions: goldens, node/native comparison and nonfinite status passed"
+  end
