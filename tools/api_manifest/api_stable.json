@@ -748,9 +748,12 @@
     },
     {
       "api": [
+        "type prepared",
+        "val prepare : Core.program -> prepared",
+        "val execute : ? root : Flow.Eval.residual -> ? force : ( Packed.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> prepared -> live : Frame_input.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result",
         "val run : ? root : Flow.Eval.residual -> ? force : ( Packed.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> Core.program -> live : Frame_input.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result"
       ],
-      "api_sha256": "a7edbc33c7cf6f3ca86954878f135e5f17eee7e4c9f354c033f2eb0cab5320c8",
+      "api_sha256": "652d676a0fcf12a5c84939d93a2acd02ce22299b3cc8106ccbe351cec67031a2",
       "excluded_legacy_symbols": [],
       "library": "flow_ir",
       "module": "Core_exec",
