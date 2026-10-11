@@ -5,17 +5,24 @@ deleted, not ticked.
 
 ## Tests that got weaker
 
-- 2026-10-11: the `rdk`, `sop` and `scene_execution` tests are restored (the pre-prune tests are
-  back wherever their subject survived). Outside those three libraries these files are still
-  under 85% of their size before `923dcecf` and nobody has compared them with the old version:
-  `lib/pxui/test_keyboard.ml`, `lib/rays/test_automatic_text_cache.ml`, `test_ink.ml`,
-  `test_scene_rounded_cache.ml`, `test_world.ml`, `lib/rays_execution/test_dense_scene2.ml`,
-  `lib/scene_command/test_display_list.ml`, `lib/rays_pathtracer/test_world.ml`,
-  `test/test_editor_commands.ml`, the `lib/metal/test_metal_*_safe.ml` suites and
-  `lib/runtime/resources/test_*`. The old versions of the first nine do not compile (`Frame`
-  fields, `Display_list.Builder`, `Ink.line`, `World.irradiance`, `Editor3` and the like changed
-  or went), so each is a hand port, as `test/test_rays.ml` was; the Metal and runtime suites
-  were not tried.
+- 2026-10-11: every test file was compared with its version before `923dcecf` and the tests
+  whose subject survived are back. Four things were not restored and are the owner's call:
+  - `test/sop_render_parity.ml` (23 SOP graphs cooked at one and four domains and exported as
+    PNG, bytes compared) was written with the typed SOP constructors. It is not re-authored in
+    Lisp; the cooks are compared with native RDK in `lib/sop/test_nodes.ml`.
+  - `test/test_2d_ports.ml` compared eight Lisp ports with their OCaml `main.ml`. Those programs
+    are deleted, so the ports are only compared with themselves across domain counts.
+    `examples/particles` keeps an OCaml oracle in `test/test_drawing.ml`.
+  - The path tracer's `RAYS_PATH_TRACER_EXACT_M1` digests were stale before the prune (the
+    kernel's rect-light transport changed in `4fce19a5`); the rule that set the switch is
+    removed. Today's frames hash to `f2d5db77d2304128e7b179ab29121798` (lit sphere) and
+    `d6ad096a19f992493f21101954aac616` (instanced), unrecorded.
+  - The Metal safe suites lost most of their statements to the binding prunes of 2026-09-26
+    and 2026-10-06, before this restructure. They now cover the calls that are left; nobody
+    compared them statement by statement with the versions before `0d136464`.
+- `Shape_batch.Private.copy` copies the `checked` mark, so a copy of a validated batch is never
+  scanned. The comment in `lib/scene_command/test_shape_batch.ml` says the mark belongs to the
+  batch that passed; decide which is meant.
 - `runtime_live_resize` is wall-clock based: it failed once under machine load ("a programmatic
   resize stalled the frame loop for 1016 ms") and has passed since. Rerun it once before
   reading a failure as a regression.
