@@ -20,30 +20,8 @@ type draw = { family:family; blend:blend; texture:Scene_execution.sampled_textur
   samples:int;value:Scene_execution.draw }
 type gpu={gpu_device:Ogpu.Backend.device;gpu_queue:Ogpu.Backend.queue;
   gpu_shared:bool;mutable gpu_released:bool}
-type gpu_circles={circles_id:int;circles_gpu:gpu;circles_helper:Gpu_circles.t;
-  circles_domain:Domain.id;mutable circles_closed:bool;mutable circles_stamp:int64;
-  mutable circles_count:int;mutable circles_source:(unit->Ogpu.Backend.buffer option)option;
-  mutable circles_input:Ogpu.Backend.buffer option;
-  mutable circles_style:(float*int32*int32*float)option;
-  mutable circles_registration:Scene_execution.Private.gpu_vertices option}
-let gpu_circles_capacity=64
-let gpu_circles_registry:(int,gpu_circles)Hashtbl.t=Hashtbl.create 16
-let next_gpu_circles=ref 0
-let valid_gpu_circles value=not value.circles_closed&&not value.circles_gpu.gpu_released&&
-  value.circles_domain=Domain.self()&&match value.circles_source,value.circles_input with
-  |Some source,Some input->(match source()with Some current->current==input|None->false)
-  |_->false
-let gpu_circles_key value=Printf.sprintf"gpu:vertices:shapes:%d:%Ld"
-  value.circles_id value.circles_stamp
-let close_gpu_circles value=
-  if value.circles_domain<>Domain.self()then invalid_arg"GPU circles closed on another domain";
-  if not value.circles_closed then begin
-    value.circles_closed<-true;
-    Option.iter Scene_execution.Private.unregister_gpu_vertices value.circles_registration;
-    value.circles_registration<-None;value.circles_source<-None;value.circles_input<-None;
-    Hashtbl.remove gpu_circles_registry value.circles_id;
-    Gpu_circles.close value.circles_helper
-  end
+let gpu_marks_capacity=64
+let next_gpu_marks=ref 0
 (* A [Marks]-family source: the six attribute buffers of one mark set. A host attribute is
    uploaded into a buffer the source owns; a device attribute is another producer's output,
    bound directly and valid only while that producer's output is current. *)
@@ -651,18 +629,9 @@ let lower_scene2_uncached value ~lease_policy ~density ~resource:resolve ir =
               source.marks_stamp=Scene_command.Shape_batch.Private.gpu_stamp token&&
               source.marks_count=Scene_command.Shape_batch.Private.gpu_count token->
                 (match Runtime.device runtime with
-                |Ok device when device==source.marks_gpu.gpu_device->Some(gpu_marks_key source,Marks)
+                |Ok device when device==source.marks_gpu.gpu_device->Some(gpu_marks_key source)
                 |_->failure:=Some"GPU shapes belong to another device";None)
-            |Some _->failure:=Some"GPU shapes are stale or closed";None
-            |None->
-            (match Hashtbl.find_opt gpu_circles_registry identity with
-            |Some source when valid_gpu_circles source&&
-              source.circles_stamp=Scene_command.Shape_batch.Private.gpu_stamp token&&
-              source.circles_count=Scene_command.Shape_batch.Private.gpu_count token->
-                (match Runtime.device runtime with
-                |Ok device when device==source.circles_gpu.gpu_device->Some(gpu_circles_key source,Ui)
-                |_->failure:=Some"GPU shapes belong to another device";None)
-            |_->failure:=Some"GPU shapes are stale or closed";None))in
+            |_->failure:=Some"GPU shapes are stale or closed";None)in
         if !failure=None&&clip_live() && Scene_command.Shape_batch.count shapes>0 then begin
           let count=Scene_command.Shape_batch.count shapes in
           let instances=Scene_command.Shape_batch.instances shapes in
@@ -683,10 +652,10 @@ let lower_scene2_uncached value ~lease_policy ~density ~resource:resolve ir =
           write_affine ui_affine_scratch(render_transform(List.hd !transforms));
           if not(Bytes.equal slot.ui_affine ui_affine_scratch)then
             slot.ui_affine<-Bytes.copy ui_affine_scratch;
-          let family=match gpu_key with Some(_,Marks)->Marks|_->Ui in
+          let family=if gpu_key=None then Ui else Marks in
           emit {family;blend= !blend;texture=(if family=Marks then None else Some ui_white_texture);
             auxiliary=None;vertex_attributes=None;samples=1;
-            value={Scene_execution.mesh={key=(match gpu_key with Some(key,_)->key|None->"shapes:"^string_of_int slot_key);
+            value={Scene_execution.mesh={key=(match gpu_key with Some key->key|None->"shapes:"^string_of_int slot_key);
               vertices=(match gpu_key with None->slot.ui_vertices|Some _->Bytes.empty);
               vertex_count=4*count;indices=slot.ui_indices;
               index_count=6*count;primitive=Triangle_list};
@@ -1155,9 +1124,6 @@ let gpu_device gpu=gpu.gpu_device
 let gpu_queue gpu=gpu.gpu_queue
 let gpu_shared gpu=gpu.gpu_shared
 let release_gpu gpu=if not gpu.gpu_released then begin
-  let circles=Hashtbl.fold(fun _ value all->if value.circles_gpu==gpu then value::all else all)
-    gpu_circles_registry[]in
-  List.iter close_gpu_circles circles;
   List.iter close_gpu_marks(Hashtbl.fold(fun _ value all->if value.marks_gpu==gpu then value::all else all)
     gpu_marks_registry[]);
   gpu.gpu_released<-true;
@@ -1165,61 +1131,16 @@ let release_gpu gpu=if not gpu.gpu_released then begin
   release_device gpu.gpu_shared
 end
 module Private=struct
-  module Gpu_circles=Gpu_circles
-  type nonrec gpu_circles=gpu_circles
-  let create_gpu_circles gpu=
-    let operation="Rays_execution.create_gpu_circles"in
-    if gpu.gpu_released then fail operation Destroyed"GPU lease is released"
-    else if Hashtbl.length gpu_circles_registry>=gpu_circles_capacity|| !next_gpu_circles=max_int then
-      fail operation Resource"GPU circles capacity reached"
-    else match Gpu_circles.create~device:gpu.gpu_device~queue:gpu.gpu_queue with
-    |Error error->backend operation error
-    |Ok helper->incr next_gpu_circles;
-      let value={circles_id= !next_gpu_circles;circles_gpu=gpu;circles_helper=helper;
-        circles_domain=Domain.self();circles_closed=false;circles_stamp=0L;circles_count=0;
-        circles_source=None;circles_input=None;circles_style=None;circles_registration=None}in
-      Hashtbl.add gpu_circles_registry value.circles_id value;Ok value
-  let gpu_circles value ~source ~count ~radius ~fill ~stroke ~stroke_width =
-    let operation="Rays_execution.gpu_circles"in
-    if value.circles_closed||value.circles_gpu.gpu_released then
-      fail operation Destroyed"GPU circles or lease is closed"
-    else if value.circles_domain<>Domain.self()then
-      fail operation Invalid_argument"GPU circles used on another domain"
-    else match source()with
-    |None->fail operation Resource"GPU display output is stale or closed"
-    |Some input->
-      let style=radius,fill,stroke,stroke_width in
-      let token()=Scene_command.Shape_batch.Private.gpu_token~identity:value.circles_id
-        ~count:value.circles_count~stamp:value.circles_stamp in
-      if valid_gpu_circles value&&Option.fold~none:false~some:((==)input)value.circles_input&&
-        value.circles_count=count&&value.circles_style=Some style then Ok(token())else begin
-        Option.iter Scene_execution.Private.unregister_gpu_vertices value.circles_registration;
-        value.circles_registration<-None;value.circles_source<-None;value.circles_input<-None;
-        match Gpu_circles.dispatch value.circles_helper~source:input~count~radius~fill~stroke~stroke_width with
-        |Error error->backend operation error
-        |Ok buffer->
-          value.circles_stamp<-Int64.succ value.circles_stamp;
-          value.circles_count<-count;value.circles_source<-Some source;
-          value.circles_input<-Some input;value.circles_style<-Some style;
-          let registration=if count=0 then Ok None else
-            Result.map Option.some(Scene_execution.Private.register_gpu_vertices
-              ~key:(gpu_circles_key value)~device:value.circles_gpu.gpu_device~buffer
-              ~vertex_count:(4*count)~valid:(fun()->valid_gpu_circles value)())in
-          (match registration with
-          |Error error->value.circles_source<-None;value.circles_input<-None;backend operation error
-          |Ok registration->value.circles_registration<-registration;Ok(token()))
-      end
-  let close_gpu_circles=close_gpu_circles
   type nonrec gpu_marks=gpu_marks
   type nonrec marks_source=marks_source=Host of bytes*int|Device of (unit->Ogpu.Backend.buffer option)*int
   let create_gpu_marks gpu=
     let operation="Rays_execution.create_gpu_marks"in
     if gpu.gpu_released then fail operation Destroyed"GPU lease is released"
-    else if Hashtbl.length gpu_marks_registry>=gpu_circles_capacity|| !next_gpu_circles=max_int then
+    else if Hashtbl.length gpu_marks_registry>=gpu_marks_capacity|| !next_gpu_marks=max_int then
       fail operation Resource"GPU marks capacity reached"
     else begin
-      incr next_gpu_circles;
-      let value={marks_id= !next_gpu_circles;marks_gpu=gpu;marks_domain=Domain.self();marks_closed=false;
+      incr next_gpu_marks;
+      let value={marks_id= !next_gpu_marks;marks_gpu=gpu;marks_domain=Domain.self();marks_closed=false;
         marks_stamp=0L;marks_count=0;marks_owned=Array.make 6 None;marks_last=Array.make 6 Bytes.empty;
         marks_device=[];marks_registration=None}in
       Hashtbl.add gpu_marks_registry value.marks_id value;Ok value

@@ -1,7 +1,10 @@
 module B=Ogpu.Backend
-module C=Rays_execution.Private.Gpu_circles
+module P=Rays_execution.Private
 let get=function Ok value->value|Error error->failwith(Format.asprintf"%a"Rays_execution.pp_error error)
 let native_get=function Ok value->value|Error error->failwith(Ogpu.Error.to_string error)
+let words a=let b=Bytes.create(4*Array.length a)in
+  Array.iteri(fun i v->Bytes.set_int32_le b(i*4)v)a;b
+let floats a=words(Array.map Int32.bits_of_float a)
 let ()=
   let live=snd(Ogpu.Impl.create_driver())in
   let baseline=live()in
@@ -10,40 +13,30 @@ let ()=
       logical_width=32;logical_height=24;drawable_width=32*density;drawable_height=24*density;
       title="GPU drawing parity";vsync=false;high_density=true})in
     let gpu=get(Rays_execution.acquire_gpu())in
-    let sink=get(Rays_execution.Private.create_gpu_circles gpu)in
+    let sink=get(P.create_gpu_marks gpu)in
     let positions=native_get(B.create_buffer(Rays_execution.gpu_device gpu)
-      {label=Some"GPU parity points";size=24L;usage=[Storage;Copy_dst]})in
-    Fun.protect~finally:(fun()->Rays_execution.Private.close_gpu_circles sink;
+      {label=Some"GPU parity points";size=24L;usage=[Vertex;Storage;Copy_dst]})in
+    Fun.protect~finally:(fun()->P.close_gpu_marks sink;
       ignore(B.destroy_buffer positions);Rays_execution.release_gpu gpu;
       ignore(get(Rays_execution.destroy execution)))(fun()->
-      let points=[|8.;8.;0.;20.;14.;0.|]and bytes=Bytes.create 24 in
-      Array.iteri(fun index value->Bytes.set_int32_le bytes(index*4)(Int32.bits_of_float value))points;
-      native_get(B.write_buffer positions~offset:0L bytes);
+      let points=[|8.;8.;0.;20.;14.;0.|]in
+      native_get(B.write_buffer positions~offset:0L(floats points));
       let generation=ref 1 in
+      (* A device source is current only while its producer's output is. *)
       let source stamp()=if !generation=stamp then Some positions else None in
-      let conversion=native_get(C.create~device:(Rays_execution.gpu_device gpu)
-        ~queue:(Rays_execution.gpu_queue gpu))in
-      let expected=Fun.protect~finally:(fun()->C.close conversion)(fun()->
-        let converted=native_get(C.dispatch conversion~source:positions~count:2~radius:2.5
-          ~fill:0x12345678l~stroke:0xff00ff80l~stroke_width:3.)in
-        let expected=Scene_command.Shape_batch.Builder.create()in
-        for index=0 to 1 do Scene_command.Shape_batch.Builder.circle expected
+      let marks ?(fill=0x12345678l) stamp=P.gpu_marks sink~kind:4~count:2
+        [|P.Device(source stamp,3);Host(floats[|2.5|],0);Host(words[|fill|],0);
+          Host(words[|0xff00ff80l|],0);Host(floats[|3.|],0)|]in
+      let expected fill=
+        let b=Scene_command.Shape_batch.Builder.create()in
+        for index=0 to 1 do Scene_command.Shape_batch.Builder.circle b
           ~x:points.(index*3)~y:points.(index*3+1)~radius:2.5
-          ~fill:0x12345678l~stroke:0xff00ff80l~stroke_width:3.()done;
-        let expected=Scene_command.Shape_batch.Builder.publish expected in
-        assert(native_get(B.read_buffer converted~offset:0L~length:128)=
-          Scene_command.Shape_batch.instances expected);
-        List.iter(fun(x,radius)->
-          let bad=Bytes.copy bytes in Bytes.set_int32_le bad 0(Int32.bits_of_float x);
-          native_get(B.write_buffer positions~offset:0L bad);
-          match C.dispatch conversion~source:positions~count:2~radius
-            ~fill:(-1l)~stroke:0l~stroke_width:1. with
-          |Error{Ogpu.Error.kind=Invalid_argument;_}->()
-          |_->failwith"GPU circle conversion accepted nonfinite expanded bounds")
-          [infinity,1.;3.0e38,3.0e38];
-        native_get(B.write_buffer positions~offset:0L bytes);expected)in
-      let old=get(Rays_execution.Private.gpu_circles sink~source:(source !generation)
-        ~count:2~radius:2.5~fill:0x12345678l~stroke:0xff00ff80l~stroke_width:3.)in
+          ~fill~stroke:0xff00ff80l~stroke_width:3.()done;
+        Scene_command.Shape_batch.Builder.publish b in
+      let expected_shapes=expected 0x12345678l in
+      let first=get(marks !generation)in
+      (* Nothing changed: the same token, not a new registration. *)
+      assert(get(marks !generation)=first);
       let ir blend shapes=Result.get_ok(Scene_command.Render_ir.create
         Scene_command.Render_ir.[|Set_blend blend;
           Push_clip{x=2.;y=3.;width=25.;height=17.};
@@ -51,51 +44,67 @@ let ()=
           Shapes shapes;Pop_transform;Pop_clip|])in
       let clear=0.125,0.25,0.375,1. in
       let capture ?identity ?version ir=
-        let submission=get(Rays_execution.Private.begin_submission execution)in
-        Fun.protect~finally:(fun()->Rays_execution.Private.cancel submission)(fun()->
-          let batch=get(Rays_execution.Private.lower_scene2 submission~density
+        let submission=get(P.begin_submission execution)in
+        Fun.protect~finally:(fun()->P.cancel submission)(fun()->
+          let batch=get(P.lower_scene2 submission~density
             ~resource:(fun _->None)ir)in
-          get(Rays_execution.Private.step~clear ?identity ?version submission[batch]);
+          get(P.step~clear ?identity ?version submission[batch]);
           let pixels=get(Rays_execution.capture execution)in
           assert(Bytes.length pixels=32*24*density*density*4);pixels)in
-      let shapes=Scene_command.Shape_batch.Private.of_gpu old in
+      let shapes=Scene_command.Shape_batch.Private.of_gpu first in
       List.iter(fun blend->
-        let reference=capture(ir blend expected)in
+        let reference=capture(ir blend expected_shapes)in
         if blend=Scene_command.Render_ir.Replace then
           assert(Bytes.sub reference 0 4<>
             Bytes.sub reference((10*density*32*density+6*density)*4)4);
         for _=1 to 3 do assert(capture(ir blend shapes)=reference)done)
         Scene_command.Render_ir.[Replace;Alpha;Add;Multiply;Screen;Subtract];
       let stamp=Scene_command.Shape_batch.Private.gpu_stamp in
-      let retained token=capture~identity:"gpu-circles"~version:(stamp token)
+      let retained token=capture~identity:"gpu-marks"~version:(stamp token)
         (ir Replace(Scene_command.Shape_batch.Private.of_gpu token))in
-      ignore(retained old);
-      assert(get(Rays_execution.Private.replay~clear~identity:"gpu-circles"
-        ~version:(stamp old) execution)=Some());
-      let refuse_replay token=match Rays_execution.Private.replay~clear
-        ~identity:"gpu-circles"~version:(stamp token) execution with
+      ignore(retained first);
+      assert(get(P.replay~clear~identity:"gpu-marks"~version:(stamp first) execution)=Some());
+      let refuse_replay token=match P.replay~clear
+        ~identity:"gpu-marks"~version:(stamp token) execution with
         |Error error when error.Rays_execution.kind=Backend&&error.message=
           Ogpu.Error.to_string(Ogpu.Error.make"Scene_execution.replay"Stale_handle
             "GPU vertices are stale or closed")->()
-        |_->failwith"retained GPU circle replay accepted a stale source"in
+        |_->failwith"retained GPU mark replay accepted a stale source"in
       let refuse_lower token=
-        let submission=get(Rays_execution.Private.begin_submission execution)in
-        Fun.protect~finally:(fun()->Rays_execution.Private.cancel submission)(fun()->
-          match Rays_execution.Private.lower_scene2 submission~density
+        let submission=get(P.begin_submission execution)in
+        Fun.protect~finally:(fun()->P.cancel submission)(fun()->
+          match P.lower_scene2 submission~density
             ~resource:(fun _->None)(ir Replace(Scene_command.Shape_batch.Private.of_gpu token))with
           |Error error when error.Rays_execution.kind=Resource&&
             error.message="GPU shapes are stale or closed"->()
-          |_->failwith"GPU circle lowering accepted a stale token")in
+          |_->failwith"GPU mark lowering accepted a stale token")in
+      (* The producer's output is overwritten: its source returns None, so the token is stale and a
+         new registration refuses until the source is current again. *)
       incr generation;
-      refuse_replay old;refuse_lower old;
-      let fresh=get(Rays_execution.Private.gpu_circles sink~source:(source !generation)
-        ~count:2~radius:2.5~fill:0x12345678l~stroke:0xff00ff80l~stroke_width:3.)in
-      assert(Scene_command.Shape_batch.Private.gpu_stamp old<Scene_command.Shape_batch.Private.gpu_stamp fresh);
-      let reference=capture(ir Replace expected)in
-      assert(retained fresh=reference);
+      refuse_replay first;refuse_lower first;
+      (match P.gpu_marks sink~kind:4~count:2
+         [|P.Device(source 1,3);Host(floats[|2.5|],0);Host(words[|0x12345678l|],0);
+           Host(words[|0xff00ff80l|],0);Host(floats[|3.|],0)|]with
+       |Error{Rays_execution.kind=Resource;_}->()
+       |_->failwith"a stale device source was registered");
+      let second=get(marks !generation)in
+      assert(stamp first<stamp second);
+      let reference=capture(ir Replace expected_shapes)in
+      assert(retained second=reference);
+      (* A host attribute that changes supersedes the previous token. *)
+      let third=get(marks~fill:0x87654321l !generation)in
+      assert(stamp second<stamp third);
+      refuse_replay second;refuse_lower second;
+      assert(retained third=capture(ir Replace(expected 0x87654321l)));
+      assert(retained third<>reference);
+      (* A mark set that is not a valid description is refused before it registers. *)
+      (match P.gpu_marks sink~kind:4~count:0[|P.Host(floats[|0.|],0);Host(floats[|0.|],0);Host(words[|0l|],0);
+         Host(words[|0l|],0);Host(floats[|0.|],0)|]with
+       |Error{Rays_execution.kind=Invalid_argument;_}->()
+       |_->failwith"an empty mark set was registered");
       Rays_execution.release_gpu gpu;
-      refuse_replay fresh;refuse_lower fresh;
+      refuse_replay third;refuse_lower third;
       assert(Scene_execution.Private.gpu_vertex_count_for_test()=0)))
     [1;2];
   assert(live()=baseline);
-  print_endline"GPU circles: exact native parity under transform, clip, six blends, Retina and stale output/lease guards"
+  print_endline"GPU marks: exact native parity under transform, clip, six blends, Retina and stale output/update/lease guards"

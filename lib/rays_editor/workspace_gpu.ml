@@ -2,11 +2,6 @@ module G=Flow_ir.Gpu
 module H=Flow_gpu.Host
 module X=Rays_execution
 module P=X.Private
-module Sinks=Lru.Make(struct
-  type t=int * float * int32 * int32 * float
-  let equal=(=)
-  let hash=Hashtbl.hash
-end)
 module Slots=Lru.Make(struct type t=int let equal=Int.equal let hash=Hashtbl.hash end)
 module Images=Lru.Make(struct type t=string let equal=String.equal let hash=Hashtbl.hash end)
 type image_stats={mutable created:int;mutable closed:int;mutable buffers:int;mutable textures:int}
@@ -15,12 +10,12 @@ let close_image stats sink=
   stats.buffers<-stats.buffers+Flow_gpu.Image_sink.Private.buffer_creations sink;
   stats.textures<-stats.textures+Flow_gpu.Image_sink.Private.texture_creations sink;
   Flow_gpu.Image_sink.close sink
-type t={mutable owner:(X.gpu * H.t)option; sinks:P.gpu_circles Sinks.t;mark_sets:P.gpu_marks Slots.t;
+type t={mutable owner:(X.gpu * H.t)option; mark_sets:P.gpu_marks Slots.t;
   images:Flow_gpu.Image_sink.t Images.t;
   image_stats:image_stats;mutable closed_host:H.Private.stats;
   mutable backend:G.backend option; mutable closed:bool; mutable policy:G.policy}
 let create ()=let image_stats={created=0;closed=0;buffers=0;textures=0}in
-  {owner=None;sinks=Sinks.create ~release:(fun _->P.close_gpu_circles)64;
+  {owner=None;
   mark_sets=Slots.create ~release:(fun _->P.close_gpu_marks)64;
   images=Images.create ~release:(fun _->close_image image_stats)64;
   image_stats;closed_host=H.Private.zero;
@@ -28,7 +23,6 @@ let create ()=let image_stats={created=0;closed=0;buffers=0;textures=0}in
 let qualification t=
   if t.closed || not(Domain.is_main_domain())then invalid_arg "Workspace_gpu.qualification: open initial-domain owner required";
   t.policy<-G.Qualification
-let policy t=t.policy
 let error message=Flow.Diagnostic.error ~code:"E_GPU" message
 let native result=Result.map_error(fun e->error e.X.message)result
 let owner t =
@@ -56,17 +50,6 @@ let image t ~key ~width ~height ~publish value=
             let committed=ref false in
             Fun.protect ~finally:(fun()->if not !committed then close_image t.image_stats sink)(fun()->
               Result.map(fun result->Images.add t.images key sink;committed:=true;result)(convert sink))))
-let circles t (value:G.value) ~radius ~fill ~stroke ~stroke_width =
-  Result.bind(owner t)(fun(gpu,host)->
-    match H.output host value with
-    |None->Error(error "The drawing's GPU producer was closed or superseded.")
-    |Some _->
-      let key=value.identity,radius,fill,stroke,stroke_width in
-      let sink=match Sinks.find_opt t.sinks key with Some sink->Ok sink|None->
-        Result.map(fun sink->Sinks.add t.sinks key sink;sink)(native(P.create_gpu_circles gpu))in
-      Result.bind sink(fun sink->native(P.gpu_circles sink
-        ~source:(fun()->Option.bind(H.output host value)Flow_gpu.Run.buffer)
-        ~count:value.count ~radius ~fill ~stroke ~stroke_width)))
 (* One [Marks]-family source per GPU mark set of a frame, numbered in drawing order. *)
 let marks t : Marks_scene.gpu=fun ~slot ~kind ~count attributes->
   Result.bind(owner t)(fun(gpu,host)->
@@ -88,7 +71,6 @@ let image_stats t=
 let close t=
   if not(Domain.is_main_domain())then invalid_arg "Workspace_gpu.close: initial domain required";
   if not t.closed then begin
-  Sinks.clear t.sinks;
   Slots.clear t.mark_sets;
   Images.clear t.images;
   Option.iter(fun(gpu,host)->H.close host;t.closed_host<-H.Private.stats host;X.release_gpu gpu)t.owner;

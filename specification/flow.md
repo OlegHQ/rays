@@ -1419,10 +1419,11 @@ to `Scene`. All defaults and checks live in the lowering rules and the executor;
 a graph the lowering refuses (a drawing chosen by a live value, an image that is
 not a plan node, an unknown kind) is a diagnostic, never a second implementation.
 `Drawing` keeps only retention (a fully static graph is kept per canvas size while the
-fold states still advance). One exception remains until the `Marks` pipeline family
-takes GPU attributes: a `draw/circles` over a GPU region output, uniform in radius and
-colours, resolves to the backend's circles token; any other node in that frame sends
-the whole frame down the core path instead.
+fold states still advance, and a mark set whose data did not change keeps its scene node).
+A region that feeds only the positions, sizes, radius, from or to of a mark set may stay
+on the GPU: with the editor's GPU host, `Drawing` binds its output buffer straight into
+the `Marks` pipeline family, inside transforms too ([marks.md](marks.md), "Routing").
+There is no second drawing path for it.
 
 `Rays_editor.Workspace.export` uses the same evaluator and Drawing lowering
 with a fresh fold and a fixed clock. It pins logical size, step, frame index,

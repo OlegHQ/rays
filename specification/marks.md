@@ -287,7 +287,12 @@ only if every use of its result is a `positions`, `from`, `to`, `sizes` or `radi
 set (a colour cannot be one), the region is placed `Gpu` by the current backend (site in
 `approx`, static count of at least 1,024, a measured cheaper cost or `Qualification`), and
 no other offer of the same region has run this frame (a second dispatch would overwrite the
-first's output; it runs on the CPU).
+first's output; it runs on the CPU). A host float in a device set (a CPU position, extent or
+width array) is written as binary32 and a nonfinite or over-large one is `E_DRAW_RANGE`, as
+`Shape_batch.Builder` refuses it; a device array's own non-finite values are the kernel's
+status check. A token is valid while every device buffer is the one registered and the
+source has not been updated; an updated or closed source, or a released GPU lease, makes
+lowering and retained replay refuse it (`GPU shapes are stale or closed`).
 
 A table is accepted by the validity check only when every mark set, geometry,
 image, text, transform and clip meets the rules above. Image `resource` must be

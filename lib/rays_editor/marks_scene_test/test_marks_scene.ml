@@ -128,3 +128,31 @@ let () =
   ignore (frame kept state 0);
   assert (Bytes.equal (serialize (frame kept state 3)) (serialize (frame (prepare 2_000) (E.create_state ()) 3)));
   Printf.printf "Retention: a moving translate over a static batch allocates %.0f bytes at 10,000 instances and %.0f at 100,000\n" small large
+
+(* A mark set with a device attribute is registered with the GPU host, and a nonfinite or over-large host
+   coordinate in it is refused before it is (the GPU route's counterpart of Shape_batch.Builder). *)
+let () =
+  let device = {Flow_ir.Gpu.identity = 1; count = 2; width = 1; stamp = 1L; gpu_seconds = None} in
+  let registered = ref 0 in
+  let gpu ~slot:_ ~kind:_ ~count:_ _ =
+    incr registered; Ok (Scene_command.Shape_batch.Private.gpu_token ~identity:1 ~count:2 ~stamp:1L) in
+  let scene x =
+    let evaluation = ok (E.static (checked (Printf.sprintf
+      "(draw/circles (map (fn [i] [(+ %s i) 0 0]) (array/range 2)) :radius (map (fn [i] 1.0) (array/range 2)))" x))) in
+    let program, _ = Result.get_ok (Flow_ir.Core_draw.lower evaluation.plan (List.assoc "g" evaluation.results)) in
+    let buffers = Buffers.create () in
+    let marks = ok (Flow_ir.Core_exec.draw (Flow_ir.Core_exec.prepare program) ~live:(Frame_input.at_time 0.)
+      ~size:(64, 64) ~buffers) in
+    (* The radius array stands for a GPU region's output. *)
+    let marks = Array.map (function
+      | M.Mark_set {count; kind = Circle ({radius = Buffer b; _} as c)} ->
+          M.Mark_set {count; kind = Circle {c with radius = Device b}}
+      | entry -> entry) marks in
+    Marks_scene.scene ~buffers ~gpu ~device:(fun _ -> device) marks in
+  ignore (ok (scene "1.0"));
+  assert (!registered = 1);
+  List.iter (fun bad -> match scene bad with
+    | Error d -> assert (d.code = "E_DRAW_RANGE")
+    | Ok _ -> failwith "an over-large host coordinate reached the GPU route") ["3.5e38"; "1e300"];
+  assert (!registered = 1);
+  print_endline "Marks_scene: a device mark set registers once; over-large host floats are E_DRAW_RANGE"

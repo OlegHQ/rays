@@ -1,8 +1,7 @@
 (library
  (name rays_execution)
  (public_name rays.rays_execution)
- (modules rays_execution gpu_circles)
- (private_modules gpu_circles)
+ (modules rays_execution)
  (libraries ogpu scene_command scene_execution runtime lru
   runtime_resources))
 

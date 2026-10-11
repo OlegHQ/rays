@@ -31,8 +31,14 @@ type attribute = { source : source; stride : int }
 type gpu = slot:int -> kind:int -> count:int -> attribute array ->
   (Scene_command.Shape_batch.gpu_token, Flow.Diagnostic.t) result
 
+(* A host float becomes binary32: a nonfinite or over-large one is refused, as [Shape_batch.Builder] does. *)
 let float_bytes n f = let b = Bytes.create (4 * n) in
-  for i = 0 to n - 1 do Bytes.set_int32_le b (4 * i) (Int32.bits_of_float (f i)) done; b
+  for i = 0 to n - 1 do
+    let v = f i in
+    if not (Float.is_finite v) || Float.abs v > 3.4028234663852886e38 then
+      V.fail "E_DRAW_RANGE" "A drawing coordinate must be finite and fit a 32-bit float.";
+    Bytes.set_int32_le b (4 * i) (Int32.bits_of_float v)
+  done; b
 let word_bytes n f = let b = Bytes.create (4 * n) in
   for i = 0 to n - 1 do Bytes.set_int32_le b (4 * i) (f i) done; b
 let host bytes stride = { source = Bytes bytes; stride }
