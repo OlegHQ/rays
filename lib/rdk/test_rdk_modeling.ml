@@ -142,7 +142,13 @@ let modeling ~geometry ~positions ~selected ~triangle_geometry ~weighted_triangl
   let point_cloud = Geometry.with_attribute point_ids point_cloud |> get_ok in
   let clipped_points = Plane_clip.clip ~snapping_tolerance:0.001
       ~origin:Vec3.zero ~normal:Vec3.unit_x point_cloud |> get_ok in
-  let _first_x, _, _ = Packed.Float3.get (Geometry.positions clipped_points) 0 in
+  let clipped_positions = Packed.Float3.Private.view (Geometry.positions clipped_points) in
+  check (clipped_positions.x = [|0.;1.|]
+      && Geometry.vertex_count clipped_points = 0
+      && Geometry.primitive_count clipped_points = 0
+      && Attribute.storage (Geometry.find_attribute ~owner:Attribute.Point
+          "id" clipped_points |> Option.get) = Attribute.Int [|20;30|])
+    "point-cloud clip snaps boundary points and preserves selected payload";
   let vertex_clip_positions = Packed.Float3.Private.of_owned_exn
       ~x:[|-1.; 1.; 1.|] ~y:[|0.; 0.; 1.|] ~z:[|0.; 0.; 0.|] in
   let vertex_clip_topology = Tb.create ~point_count:3 () in

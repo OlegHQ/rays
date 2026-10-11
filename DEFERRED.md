@@ -57,6 +57,13 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   Exact endpoints, topology, corner/group/edge ancestry, complete one/four-domain
   geometry bytes and unchanged sources are checked, including picked-end
   orientation and preservation of unselected curves. `@lib/rdk/runtest` passes.
+- Verified 2026-10-11: the remaining formerly unused monolith results now
+  check selected-point sort permutation/payload and unchanged input, duplicate
+  vertex/primitive ancestry and cardinality, point-cloud boundary snapping,
+  and Match Size's target positions. Sort, duplication and matching compare
+  complete one/four-domain geometry bytes. No unused named result/fixture
+  remains in the extracted monolith; `@lib/rdk/runtest` passes. The broader
+  audit of other RDK, SOP and scene-execution tests remains open.
 - Verified 2026-10-11: `test_materials` exercises the fixed 500ms carry budget
   with a live geometry input and a controlled 600ms preparation callback.
   The held-back preview preserves the original document/history; Escape

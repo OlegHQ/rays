@@ -76,10 +76,21 @@ let run () =
   let point_ids = Attribute.create_owned ~name:"point_id" ~owner:Attribute.Point
       (Attribute.Int [|0; 1; 2; 3|]) |> get_ok in
   let sortable_points = Geometry.with_attribute point_ids geometry |> get_ok in
-  let sorted_points = Ordering.sort ~grain:1 ~selection:selected ~descending:true
-      ~owner:Ordering.Points ~key:Ordering.X sortable_points |> get_ok in
-  let _sorted_positions = Packed.Float3.Private.view (Geometry.positions sorted_points)
-  and _sorted_topology = Topology.Private.view (Geometry.topology sorted_points) in
+  let sortable_bytes = geometry_bytes sortable_points in
+  let sorted domains = Parallel.run ~domains (fun () ->
+    Ordering.sort ~grain:1 ~selection:selected ~descending:true
+      ~owner:Ordering.Points ~key:Ordering.X sortable_points |> get_ok) in
+  let sorted_points = sorted 1 and sorted_many = sorted 4 in
+  let sorted_positions = Packed.Float3.Private.view (Geometry.positions sorted_points)
+  and sorted_topology = Topology.Private.view (Geometry.topology sorted_points) in
+  check (geometry_bytes sorted_points = geometry_bytes sorted_many
+      && geometry_bytes sortable_points = sortable_bytes
+      && sorted_positions.x = [|1.;1.;0.;0.|]
+      && sorted_positions.y = [|1.;0.;0.;1.|]
+      && sorted_topology.vertex_points = [|2;1;0;3|]
+      && Attribute.storage (Geometry.find_attribute ~owner:Attribute.Point
+          "point_id" sorted_points |> Option.get) = Attribute.Int [|2;1;0;3|])
+    "selected point sort positions/topology/payload/domain exactness/unchanged input";
   (match Ordering.sort ~owner:Ordering.Points
       ~key:(Ordering.Attribute_component { name = "missing"; component = 0 })
       sortable_points with
@@ -89,10 +100,30 @@ let run () =
       triangle_geometry with
    | Error error when Error.code error = "invalid_sort" -> ()
    | _ -> fail "sort accepted a mismatched selection owner");
-  let _vertex_ids = Attribute.create_owned ~name:"vertex_id"
+  let vertex_ids = Attribute.create_owned ~name:"vertex_id"
       ~owner:Attribute.Vertex (Attribute.Int [|0; 1; 2; 3; 4; 5|]) |> get_ok
-  and _primitive_ids = Attribute.create_owned ~name:"primitive_id"
+  and primitive_ids = Attribute.create_owned ~name:"primitive_id"
       ~owner:Attribute.Primitive (Attribute.Int [|10; 20|]) |> get_ok in
+  let payload_source = triangle_geometry
+      |> Geometry.with_attribute vertex_ids |> get_ok
+      |> Geometry.with_attribute primitive_ids |> get_ok in
+  let payload_bytes = geometry_bytes payload_source in
+  let duplicate_payload domains = Parallel.run ~domains (fun () ->
+    Instance_copy.duplicate ~grain:1 ~copies:2
+      ~transform:(Mat4.translation (Vec3.create 2. 0. 0.)) payload_source |> get_ok) in
+  let payload_one = duplicate_payload 1 and payload_many = duplicate_payload 4 in
+  check (geometry_bytes payload_one = geometry_bytes payload_many
+      && geometry_bytes payload_source = payload_bytes
+      && Geometry.point_count payload_one = 12
+      && Geometry.vertex_count payload_one = 18
+      && Geometry.primitive_count payload_one = 6
+      && Attribute.storage (Geometry.find_attribute ~owner:Attribute.Vertex
+          "vertex_id" payload_one |> Option.get)
+        = Attribute.Int (Array.init 18 (fun index -> index mod 6))
+      && Attribute.storage (Geometry.find_attribute ~owner:Attribute.Primitive
+          "primitive_id" payload_one |> Option.get)
+        = Attribute.Int (Array.init 6 (fun index -> 10 + ((index land 1) * 10))))
+    "duplicate vertex/primitive payload ancestry/cardinality/domain exactness";
   let duplicated = Instance_copy.duplicate ~grain:1 ~copies:2
       ~transform:(Mat4.translation (Vec3.create 2. 0. 0.)) sortable_points
       |> get_ok in

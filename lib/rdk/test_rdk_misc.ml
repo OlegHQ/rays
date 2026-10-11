@@ -317,7 +317,10 @@ let measure_merge ~box ~grid ~selected ~triangle_geometry =
   let matched domains = Parallel.run ~domains (fun () ->
       Match_size.run ~grain:1 ~fit:Match_size.Stretch ~target:match_target match_source
       |> get_ok) in
-  let _matched_one = matched 1 and _matched_many = matched 4 in
+  let matched_one = matched 1 and matched_many = matched 4 in
+  check (geometry_bytes matched_one = geometry_bytes matched_many
+      && equal_positions matched_one match_target)
+    "Match Size stretch matches target bounds/complete domain exactness";
   let axis_source = Line_geometry.points [|(1., 0., 0.); (2., 0., 0.)|] in
   let aligned = Match_size.match_axis ~grain:1 ~from:Vec3.unit_x ~into:Vec3.unit_y
       axis_source |> get_ok in
