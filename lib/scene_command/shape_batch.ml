@@ -7,7 +7,7 @@ let count value = value.count
 let instances value = value.bytes
 let gpu value = value.gpu
 module Private = struct
-  let copy value = {value with bytes=Bytes.copy value.bytes}
+  let copy value = {value with bytes=Bytes.copy value.bytes; checked=false}
   let valid value =
     match value.gpu with
     |Some token->value.count=token.count && Bytes.length value.bytes=0

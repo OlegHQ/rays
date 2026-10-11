@@ -19,7 +19,9 @@ let () =
   let per_scene = (Gc.allocated_bytes () -. before) /. 10. in
   assert (per_scene < 4096.);
   (* a tampered copy is still refused: the mark belongs to the batch that passed, not to its bytes *)
-  let bad = Shape_batch.Private.copy (Shape_batch.Builder.publish builder) in
+  let good = Shape_batch.Builder.publish builder in
+  assert (Shape_batch.Private.valid good);
+  let bad = Shape_batch.Private.copy good in
   Bytes.set_int32_le (Shape_batch.instances bad) 0 0x7fc00000l;
   assert (not (Shape_batch.Private.valid bad));
   print_endline "Shape_batch validation is remembered per published batch"
