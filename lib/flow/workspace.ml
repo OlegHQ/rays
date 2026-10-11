@@ -1063,6 +1063,11 @@ let check ?(ops = []) ?(library = false) catalog forms =
         | Some (_, iv), l :: _ -> [ value_arg x iv; value_arg x (elem l) ]
         | _ -> List.map (fun l -> value_arg x (elem l)) lists in
       let (result, rv) = call_value cx x fv call_args in
+      let ft = match fv.fn with
+        | Some (Op_fn _ | Kind_fn _) -> ft
+        | _ -> (instantiate_fn ~coerce_params:false cx
+            {key=None; aform=f_form; aterm=ft; av=fv}
+            {Ty.params=List.map (fun (a : arg) -> a.av.ty) call_args; result=rv.ty}).aterm in
       let l0 = match lists with (_, _, v) :: _ -> v | [] -> poison in
       let packed = List.exists (fun (_, _, (v : v)) -> match v.ty with Ty.Array _ -> true | _ -> false) lists in
       if packed then begin
@@ -1441,7 +1446,7 @@ let check ?(ops = []) ?(library = false) catalog forms =
 
   and validate p a = validate_parameter ~ty:a.av.ty (fun sev code msg -> add sev a.aform code msg) p a.aterm
 
-  and instantiate_fn cx (a : arg) (signature : Ty.fn_signature) =
+  and instantiate_fn ?(coerce_params=true) cx (a : arg) (signature : Ty.fn_signature) =
     if a.av.fn = None then a else
     let names = List.mapi (fun i _ -> "__flow_port_" ^ string_of_int i) signature.params in
     let inputs = List.map2 (fun name ty ->
@@ -1464,8 +1469,9 @@ let check ?(ops = []) ?(library = false) catalog forms =
     let params, zone = match closure with
       | Some c when List.length c.params = List.length signature.params ->
           List.map2 (fun (p, annotation) ty -> pat_ir p,
-            Some (Option.fold ~none:ty ~some:(Ty.coerce ty) annotation)) c.params signature.params, c.cid
-      | _ -> List.map2 (fun name ty -> Name name, Some ty) names signature.params,
+            if coerce_params then Some (Option.fold ~none:ty ~some:(Ty.coerce ty) annotation)
+            else annotation) c.params signature.params, c.cid
+      | _ -> List.map2 (fun name ty -> Name name, if coerce_params then Some ty else None) names signature.params,
           inline cx "~fn" in
     let ty = Ty.Fn (Some {signature with result = rv.ty}) in
     { a with aterm = {a.aterm with ty; node = Fn {params; body = result; zone; capture = Some a.aterm}};

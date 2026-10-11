@@ -35,6 +35,11 @@
  (libraries flow_ir flow))
 
 (test
+ (name test_core_lists)
+ (modules test_core_lists)
+ (libraries flow_ir flow))
+
+(test
  (name test_ir)
  (modules test_ir)
  (deps ../sop_catalog/flow_manifest.sexp

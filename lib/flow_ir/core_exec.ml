@@ -2,8 +2,10 @@ module C = Core
 module V = Flow.Value
 let run program ~live =
   let values = Array.make (Array.length program.C.locals) Flow.Eval.No_geo in
+  let builders = Array.make (Array.length program.C.locals) None in
   let calls = Array.make program.call_slots 0 in
   let get n = values.(n) in
+  let seal n = Option.iter (fun writable -> writable:=false) builders.(n) in
   let apply name args = match Flow.Op.find ~extra:Operators.all name Flow.Context.value with
     | Some op -> op.body ~live ~node:(fun _ _ -> V.fail "E_CORE" "Core primitives cannot create catalog nodes.") args
     | None -> V.fail "E_CORE" ("Unsupported core primitive: " ^ name) in
@@ -52,13 +54,16 @@ let run program ~live =
         | Dt -> apply "frame/dt" [] | Index -> apply "frame/index" []
         | Width -> apply "frame/width" [] | Height -> apply "frame/height" []
         | Pointer_x -> apply "pointer/x" [] | Pointer_y -> apply "pointer/y" [] | Input -> apply "frame/input" [])
-    | Prim (op,args) -> primitive op (List.map (fun (name,n) -> name,get n) args)
+    | Prim (op,args) ->
+        (match op with C.Sequence_get | Sequence_length | Sequence_build -> ()
+         | _ -> List.iter (fun (_,n) -> seal n) args);
+        primitive op (List.map (fun (name,n) -> name,get n) args)
     | Vec ns -> (match List.map (fun n -> V.num (get n)) ns with
         | [x;y] -> V.Vec2 (x,y) | [x;y;z] -> V.Vec3 (x,y,z) | [x;y;z;w] -> V.Vec4 (x,y,z,w)
         | _ -> V.fail "E_CORE" "Invalid vector width.")
-    | Fields xs -> V.Record (List.map (fun (name,n) -> name,get n) xs)
+    | Fields xs -> V.Record (List.map (fun (name,n) -> seal n;name,get n) xs)
     | Items ns ->
-        let xs=Array.of_list (List.map get ns) in
+        let xs=Array.of_list (List.map (fun n -> seal n;get n) ns) in
         if Array.length xs>4096 then V.fail "E_ITER_BOUND" "Core list exceeds 4,096 values.";
         let ty=V.elem_ty xs in V.List (Array.map (V.coerce_to ty) xs)
     | Field (n,name) -> match get n,name with
@@ -70,7 +75,11 @@ let run program ~live =
   let rec execute statements =
     List.iter (fun (s : C.statement) ->
       try match s.node with
-      | Assign (n,e) -> values.(n)<-expression e
+      | Assign (n,e) ->
+          let value=expression e in
+          builders.(n)<-(match e with Prim (Sequence_build,_) -> Some (ref true)
+            | Local old -> builders.(old) | _ -> None);
+          values.(n)<-value
       | Reset_call slot -> calls.(slot)<-0
       | If {condition;yes;no} -> execute (if V.truthy (get condition) then yes else no)
       | Iterate {sequence;index;item;limit;body} ->
@@ -82,9 +91,23 @@ let run program ~live =
             values.(item)<-(match source with V.List xs -> xs.(i) | source -> V.array_get source i);
             execute body
           done
+      | Counted {first;last;count;index;item;limit;init;body} ->
+          let first=V.int_of (get first) and last=V.int_of (get last) in
+          let length=max 0 (last-first) in
+          if length>limit then V.fail "E_ITER_BOUND" "Core iteration exceeds its bound.";
+          values.(count)<-V.Int length;
+          execute init;
+          for i=0 to length-1 do
+            values.(index)<-V.Int i;
+            values.(item)<-V.Int (first+i);
+            execute body
+          done
       | Store {sequence;index;value} ->
+          if not (Option.fold ~none:false ~some:(fun writable -> !writable) builders.(sequence)) then
+            V.fail "E_CORE_OWNERSHIP" "Core stores require an unpublished local builder.";
           let xs=V.list_arg (get sequence) and i=V.int_of (get index) in
           if i<0 || i>=Array.length xs then V.fail "E_LIST_RANGE" "Core store is outside its sequence.";
+          seal value;
           xs.(i)<-get value
       | State_read _ | State_write _ -> V.fail "E_CORE_STATE" "Core state lowering is not available yet."
       | Invoke _ -> V.fail "E_CORE_REGION" "Core region lowering is not available yet."

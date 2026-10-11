@@ -99,6 +99,13 @@ append a draw entry or invoke an intrinsic. A branch or loop assigns its result
 to explicit result locals. There are no jump offsets, bytecode opcodes or
 general run-time function calls.
 
+Counted iteration converts endpoints with the source's list-index rounding,
+computes `max(0,last-first)` with native integer subtraction, checks its bound,
+and initializes its result builder once before visiting items. The ordinal
+index and `Int(first+index)` item are separate locals. The induction uses
+integer arithmetic even above binary64's exact-integer range; it is structured
+control, not a new frame primitive.
+
 Arguments and fields evaluate in authored order, once. `let*` extends the
 environment after each binding. Sequence destructuring checks the required
 length, and record destructuring reads static keys. A dotted reference is a
@@ -144,6 +151,13 @@ per item and orders stably by that key. Packed forms of these operations have
 packed storage rather than the list cap; eligible pure numeric bodies become
 regions. The checker still enforces `E_TIME_COUNT` where a live count could
 change graph topology. A compiled bounded data loop does not relax that rule.
+
+Frame list sorting expands to a stable bottom-up merge with locally owned
+index buffers and one key evaluation per source element. Seeded record
+accumulators retain their fields as locals; all next fields are read before
+any old field is overwritten. Builders share a write permission across local
+aliases. Embedding a builder in a record/list or storing it in another builder
+seals it, and a store through any alias then fails with `E_CORE_OWNERSHIP`.
 
 `Expanded` lowers its checked macro body. `Bypass` lowers only the first
 positional input the checker selected and coerces it to the call result type;

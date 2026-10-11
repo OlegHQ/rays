@@ -40,6 +40,8 @@ and statement_node =
   | Reset_call of int
   | If of { condition : int; yes : statement list; no : statement list }
   | Iterate of { sequence : int; index : int; item : int; limit : int; body : statement list }
+  | Counted of { first : int; last : int; count : int; index : int; item : int;
+      limit : int; init : statement list; body : statement list }
   | Store of { sequence : int; index : int; value : int }
   | State_read of { slot : int; result : int; init : statement list; initial : int }
   | State_write of { slot : int; value : int }
@@ -146,6 +148,10 @@ let pp fmt p =
           out " "; nested "else" no
       | Iterate {sequence;index;item;limit;body} -> out "iterate "; local sequence;
           out " index="; local index; out " item="; local item; out " limit=%d " limit; nested "do" body
+      | Counted {first;last;count;index;item;limit;init;body} ->
+          out "counted "; local first; out ".."; local last;
+          out " count="; local count; out " index="; local index; out " item="; local item;
+          out " limit=%d " limit; nested "init" init; out " "; nested "do" body
       | Store {sequence;index;value} -> local sequence; out "["; local index; out "] <- "; local value
       | State_read {slot;result;init;initial} -> local result; out " = state[%d] " slot;
           nested "init" init; out " value="; local initial

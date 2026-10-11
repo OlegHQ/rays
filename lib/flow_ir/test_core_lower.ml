@@ -56,7 +56,12 @@ let () =
   ignore (ok (E.Private.static_with_kernels ~observe:(fun r ->
     match (E.Private.residual_view r).term.node with
     | Flow.Workspace.Loop {kind=`Fold;_} ->
-        observed:=true; assert (Flow_ir.Core_lower.lower r = Error "fold")
+        observed:=true;
+        let program=Result.get_ok (Flow_ir.Core_lower.lower r) in
+        List.iter (fun time ->
+          let live=Frame_input.at_time time in
+          assert (Flow_ir.Core_exec.run program ~live = E.Private.force_reference (E.Residual r) ~live))
+          [0.;0.37;2.]
     | _ -> ()) (checked "(fold [s 0.] [i (range 2)] (+ s (+ t i)))")));
   assert !observed;
   assert (C.literal_of_value (E.Residual (match List.assoc "g" (ok (E.static (checked "(+ t 1)"))).results with

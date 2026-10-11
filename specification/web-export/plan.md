@@ -573,12 +573,16 @@ Phase 1
   Required allocation repair after P1.7's structured loops: baseline
   0.076312s / 152,390,016 bytes; Slice C 0.058664s / 297,986,736 bytes for
   30 frames x 4,096 items. Measure prepared core execution on the same input.
-- [ ] P1.7 S
-  Slice C's native probes found that Workspace.hof checks a specialized body
-  but retains the generic function term. An unannotated record accumulator's
-  generic Assoc has no updates, so reduction silently returns its seed. Reuse
-  instantiate_fn at HOF call sites and include a generic/bound record-updater
-  parity case in this slice; do not preserve the erased generic body.
+- [x] P1.7 S
+  Lists, HOFs and structured loops lowered and executed: List_lit, range, nth,
+  count, concat, take, rest, reverse, Map, Filter, Reduce, stable Sort_by,
+  For, Fold, Scan, Sum with skip; E_ITER_BOUND stays 4,096 and empty Sum is
+  Int 0. HOF call sites reuse instantiate_fn, so a generic record updater is
+  specialized (parity case added). Direct/reference/closure/Executor parity
+  incl. 1,000-item loops, captured data, induction above 2^53. Approved
+  exception: core_lower.expected expression 5 changed from `refused sum` to its
+  core print (one hunk; every earlier program print byte-identical). Flow and
+  flow_ir focused gates passed on 2026-10-11.
 - [ ] P1.8 S
 - [ ] P1.9 S
 - [ ] P1.10 S

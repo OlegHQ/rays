@@ -55,6 +55,15 @@ let () =
     let ws = checked ("(workspace w (graph g :context value (let* [tested " ^ body ^ "] 0.0)))") in
     let evaluation = ok (E.static ~record:true ws) in
     List.assoc ["g"; "tested"] evaluation.records |> List.hd |> snd in
+  let bound=value "(state [p {:xs (array/float 2051) :scale 0.125}] (let* [f (fn [x] (+ x p.scale))] {:xs (map f p.xs) :scale (+ p.scale (frame/dt))}))" in
+  templates:=[];compiled:=0;rebound:=0;executed:=0;
+  let state=E.create_state () and reference=E.create_state () in
+  for frame=0 to 5 do
+    let live=live frame 0.125 in
+    assert (same (E.Private.force_with_executor ~state ~execute bound ~live)
+      (E.Private.force_reference ~state:reference bound ~live))
+  done;
+  assert (!compiled=1 && !rebound=5 && !executed=6);
   List.iter (fun body -> compare_frames (value body)
     [0, 0.125; 1, 0.5; 2, 1.; 2, 1.; 1024, 0.125; 1025, 0.125; 1, 0.25])
     ["(state [p {:xs (array/float 2051) :scale 0.125}] {:xs (map (fn [x] (+ x p.scale)) p.xs) :scale (+ p.scale (frame/dt))})";

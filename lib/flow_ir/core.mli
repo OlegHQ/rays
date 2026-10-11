@@ -40,6 +40,11 @@ and statement_node =
   | Reset_call of int
   | If of { condition : int; yes : statement list; no : statement list }
   | Iterate of { sequence : int; index : int; item : int; limit : int; body : statement list }
+  | Counted of { first : int; last : int; count : int; index : int; item : int;
+      limit : int; init : statement list; body : statement list }
+      (** Exact integer induction after the source's endpoint conversion.
+          Assign max(0,last-first) to count, check limit, run init once, then
+          run body with ordinal index and Int(first+index) item. *)
   | Store of { sequence : int; index : int; value : int }
   | State_read of { slot : int; result : int; init : statement list; initial : int }
   | State_write of { slot : int; value : int }

@@ -521,9 +521,17 @@ let rebind t residual =
   if not t.dynamic || List.length t.stages <> 1 || t.term != view.term || view.previous
       || E.state_dependent (E.Residual residual) then None else
   try
-    let bindings = match t.binding_fn with
-      | None -> view.bindings
-      | Some name -> (match List.assoc_opt name view.bindings with
+    let captured = match t.term.node with
+      | W.Hof (_, ({node=Fn {capture=Some _;_};_} as f)::_) -> Some f
+      | _ -> None in
+    let bindings = match captured,t.binding_fn with
+      | Some f,_ ->
+          (match E.Private.eval_term residual f ~live:(Frame_input.at_time 0.) with
+           | Ok (E.Fn fn) when Option.fold ~none:false ~some:(fun (_,body) -> body == t.body)
+               (E.Private.function_body fn) -> E.Private.function_bindings fn
+           | _ -> raise Unsupported)
+      | None,None -> view.bindings
+      | None,Some name -> (match List.assoc_opt name view.bindings with
           | Some (E.Fn f) when Option.fold ~none:false ~some:(fun (_, body) -> body == t.body)
               (E.Private.function_body f) -> E.Private.function_bindings f
           | _ -> raise Unsupported) in

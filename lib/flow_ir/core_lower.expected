@@ -219,7 +219,124 @@ core
   #2 %2 = *("a":%1 "b":%0) @["g" "@result" "~for" "@result"] owner=["g" "@result" "~for" "@result"] instance=0 iter=[2] span=61..68
   return %2
 expression 5: (sum [x (for [i (range 4)] (+ (* i t) 1))] (* x 2))
-refused sum
+core
+  $0 = 0
+  $1 = 1
+  $2 = 1
+  $3 = 1
+  $4 = 2
+  $5 = 1
+  $6 = 3
+  $7 = 1
+  $8 = 0
+  $9 = 0
+  $10 = 0
+  $11 = 4096
+  $12 = 0
+  $13 = 2
+  $14 = 0
+  $15 = 1
+  $16 = 1
+  %0 : float
+  %1 : int
+  %2 : float
+  %3 : int
+  %4 : float
+  %5 : float
+  %6 : int
+  %7 : float
+  %8 : int
+  %9 : float
+  %10 : float
+  %11 : int
+  %12 : float
+  %13 : int
+  %14 : float
+  %15 : float
+  %16 : int
+  %17 : float
+  %18 : int
+  %19 : float
+  %20 : list:float
+  %21 : int
+  %22 : int
+  %23 : int
+  %24 : int
+  %25 : int
+  %26 : int
+  %27 : int
+  %28 : float
+  %29 : int
+  %30 : bool
+  %31 : int
+  %32 : int
+  %33 : int
+  %34 : int
+  %35 : float
+  %36 : int
+  %37 : bool
+  %38 : float
+  %39 : float
+  %40 : int
+  %41 : int
+  %42 : int
+  %43 : int
+  #0 %0 = frame.t @["g" "@result" "~for" "@result"] owner=["g" "@result"] instance=0 iter=[0] span=72..73
+  #1 %1 = $0 @["g" "@result" "~for" "@result"] owner=["g" "@result"] instance=0 iter=[0] span=67..74
+  #2 %2 = *("a":%1 "b":%0) @["g" "@result" "~for" "@result"] owner=["g" "@result"] instance=0 iter=[0] span=67..74
+  #3 %3 = $1 @["g" "@result" "~for" "@result"] owner=["g" "@result"] instance=0 iter=[0] span=64..77
+  #4 %4 = +("a":%2 "b":%3) @["g" "@result" "~for" "@result"] owner=["g" "@result"] instance=0 iter=[0] span=64..77
+  #5 %5 = frame.t @["g" "@result" "~for" "@result"] owner=["g" "@result"] instance=0 iter=[1] span=72..73
+  #6 %6 = $2 @["g" "@result" "~for" "@result"] owner=["g" "@result"] instance=0 iter=[1] span=67..74
+  #7 %7 = *("a":%6 "b":%5) @["g" "@result" "~for" "@result"] owner=["g" "@result"] instance=0 iter=[1] span=67..74
+  #8 %8 = $3 @["g" "@result" "~for" "@result"] owner=["g" "@result"] instance=0 iter=[1] span=64..77
+  #9 %9 = +("a":%7 "b":%8) @["g" "@result" "~for" "@result"] owner=["g" "@result"] instance=0 iter=[1] span=64..77
+  #10 %10 = frame.t @["g" "@result" "~for" "@result"] owner=["g" "@result"] instance=0 iter=[2] span=72..73
+  #11 %11 = $4 @["g" "@result" "~for" "@result"] owner=["g" "@result"] instance=0 iter=[2] span=67..74
+  #12 %12 = *("a":%11 "b":%10) @["g" "@result" "~for" "@result"] owner=["g" "@result"] instance=0 iter=[2] span=67..74
+  #13 %13 = $5 @["g" "@result" "~for" "@result"] owner=["g" "@result"] instance=0 iter=[2] span=64..77
+  #14 %14 = +("a":%12 "b":%13) @["g" "@result" "~for" "@result"] owner=["g" "@result"] instance=0 iter=[2] span=64..77
+  #15 %15 = frame.t @["g" "@result" "~for" "@result"] owner=["g" "@result"] instance=0 iter=[3] span=72..73
+  #16 %16 = $6 @["g" "@result" "~for" "@result"] owner=["g" "@result"] instance=0 iter=[3] span=67..74
+  #17 %17 = *("a":%16 "b":%15) @["g" "@result" "~for" "@result"] owner=["g" "@result"] instance=0 iter=[3] span=67..74
+  #18 %18 = $7 @["g" "@result" "~for" "@result"] owner=["g" "@result"] instance=0 iter=[3] span=64..77
+  #19 %19 = +("a":%17 "b":%18) @["g" "@result" "~for" "@result"] owner=["g" "@result"] instance=0 iter=[3] span=64..77
+  #20 %20 = list[%4 %9 %14 %19] @["g" "@result"] owner=["g" "@result"] instance=0 iter=[] span=45..78
+  #21 %21 = $8 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[] span=37..88
+  #22 %22 = %21 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[] span=37..88
+  #23 %23 = $9 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[] span=37..88
+  #24 %24 = %23 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[] span=37..88
+  #25 %25 = $10 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[] span=37..88
+  #26 %26 = %25 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[] span=37..88
+  #27 iterate %20 index=%27 item=%28 limit=4096 do {
+    #28 %29 = $11 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[%22] span=37..88
+    #29 %30 = >=("a":%22 "b":%29) @["g" "@result"] owner=["g" "@result"] instance=0 iter=[%22] span=37..88
+    #30 if %30 then {
+      #31 %32 = fail<"E_ITER_BOUND" "Loop runs more than 4,096 iterations.">() @["g" "@result"] owner=["g" "@result"] instance=0 iter=[%22] span=37..88
+      #32 %31 = %32 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[%22] span=37..88
+    } else {
+      #33 %33 = $12 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[%22] span=37..88
+      #34 %31 = %33 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[%22] span=37..88
+    } @["g" "@result"] owner=["g" "@result"] instance=0 iter=[%22] span=37..88
+    #35 %34 = $13 @["g" "@result" "@result"] owner=["g" "@result"] instance=0 iter=[%22] span=80..87
+    #36 %35 = *("a":%28 "b":%34) @["g" "@result" "@result"] owner=["g" "@result"] instance=0 iter=[%22] span=80..87
+    #37 %36 = $14 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[%22] span=37..88
+    #38 %37 = =("a":%24 "b":%36) @["g" "@result"] owner=["g" "@result"] instance=0 iter=[%22] span=37..88
+    #39 if %37 then {
+      #40 %38 = %35 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[%22] span=37..88
+    } else {
+      #41 %39 = +("a":%26 "b":%35) @["g" "@result"] owner=["g" "@result"] instance=0 iter=[%22] span=37..88
+      #42 %38 = %39 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[%22] span=37..88
+    } @["g" "@result"] owner=["g" "@result"] instance=0 iter=[%22] span=37..88
+    #43 %26 = %38 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[%22] span=37..88
+    #44 %40 = $15 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[%22] span=37..88
+    #45 %41 = +("a":%24 "b":%40) @["g" "@result"] owner=["g" "@result"] instance=0 iter=[%22] span=37..88
+    #46 %24 = %41 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[%22] span=37..88
+    #47 %42 = $16 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[%22] span=37..88
+    #48 %43 = +("a":%22 "b":%42) @["g" "@result"] owner=["g" "@result"] instance=0 iter=[%22] span=37..88
+    #49 %22 = %43 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[%22] span=37..88
+  } @["g" "@result"] owner=["g" "@result"] instance=0 iter=[] span=37..88
+  return %26
 expression 6: (sum [i (range 5)] (sum [j (range 3)] (* (+ t i) j)))
 core
   $0 = 0

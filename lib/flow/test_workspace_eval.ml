@@ -854,6 +854,19 @@ let () =
        "(let* [r {:n (int t)} updated (fold [a r] [x (array/range 2)] (assoc a :n 1.7))] updated.n)";
        "(let* [r {:n (int t)} xs (scan [a r] [x (range 2)] (assoc a :n 1.7))] (get (nth xs 0) :n))";
        "(let* [r {:n (int t)} updated (reduce (fn [(a : {:n int}) x] (assoc a :n 1.7)) r (list 0))] updated.n)"]);
+  t "higher-order calls retain the checked specialization and original annotations" (fun () ->
+    List.iter (fun body ->
+      let v=result (static (check (value body))) "g" in
+      List.iter (fun time ->
+        let live=Frame_input.at_time time in
+        assert (Eval.force v ~live = Ok (Eval.Int 2));
+        assert (Eval.Private.force_reference v ~live = Ok (Eval.Int 2))) [-2.5;0.;0.37;2.])
+      ["(let* [r {:n (int t)} updated (reduce (fn [a x] (assoc a :n 1.7)) r (list 0))] updated.n)";
+       "(let* [r {:n (int t)} f (fn [a x] (assoc a :n 1.7)) updated (reduce f r (list 0))] updated.n)";
+       "(get (first (map (fn [a] (assoc a :n 1.7)) (list {:n (int t)}))) :n)";
+       "(get (first (filter (fn [a] (= (get (assoc a :n 1.7) :n) 2)) (list {:n 2}))) :n)";
+       "(get (first (sort-by (fn [a] (get (assoc a :n 1.7) :n)) (list {:n 2} {:n (int t)}))) :n)"];
+    is (value "(reduce (fn [a x] (+ a x)) 0 (list 0.5 0.25))") (Eval.Float 0.75));
   t "operator function values use declaration argument names" (fun () ->
     is (value "(let* [lengths (map array/count (list (array/float 2) (array/float 4)))] (+ (first lengths) (last lengths)))")
       (Eval.Int 6));

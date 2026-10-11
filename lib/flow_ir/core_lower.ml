@@ -7,7 +7,8 @@ exception Unsupported of string
 let refuse name = raise (Unsupported name)
 type lowered = Known of E.value | Computed of int * Flow.Ty.t
   | Record_fields of (string * lowered) list
-  | Record_choice of lowered * lowered * lowered | Callable of callable
+  | Record_choice of lowered * lowered * lowered
+  | Selected of lowered array * lowered | Callable of callable
 and callable =
   | Closure of { params : (W.pattern * Flow.Ty.t option) list; body : W.term;
       env : lowered Names.t; instance : int; prefix : W.path; zone : W.path; identity : int }
@@ -36,8 +37,16 @@ let lower root =
   let rec ensure statements cache source = function
     | Computed (n,_) -> n
     | Callable _ -> refuse "fn"
+    | Selected (items,index) -> ensure statements cache source
+        (select statements cache source (type_of (Selected (items,index))) items index (fun _ _ v -> v))
     | Known (V.Residual r) -> ensure statements cache source (residual statements cache r)
     | Known (V.Record fields) -> ensure statements cache source (Record_fields (List.map (fun (name,v) -> name,Known v) fields))
+    | Known (V.List items) when C.literal_of_value (V.List items)=None ->
+        if Array.length items>4096 then refuse "list_limit";
+        let result=primitive statements cache source (type_of (Known (V.List items))) C.Sequence_build
+          ["count",Known (V.Int (Array.length items))] in
+        Array.iteri (fun index item -> store statements cache source result (Known (V.Int index)) (Known item)) items;
+        ensure statements cache source result
     | Record_choice (condition,yes,no) as value ->
         let condition=ensure statements cache source condition in
         let id=number () and result=local (type_of value) in
@@ -64,6 +73,8 @@ let lower root =
     let rec all = function [] -> Some [] | (name,Known v)::xs when C.literal_of_value v <> None ->
       Option.map (fun xs -> (name,v)::xs) (all xs) | _ -> None in all args
   and field statements cache source ty value name = match resolve statements cache value with
+    | Selected (items,index) -> select statements cache source ty items index
+        (fun body cache v -> field body cache source ty v name)
     | Record_choice (condition,yes,no) as value ->
         let ty=match type_of value with Flow.Ty.Record fields ->
           Option.value ~default:ty (List.assoc_opt name fields) | _ -> ty in
@@ -89,6 +100,8 @@ let lower root =
           | _ -> ty in
         emit statements source ty (Field (n,name))
   and coerce statements cache source ty = function
+    | Selected (items,index) -> select statements cache source ty items index
+        (fun body cache v -> coerce body cache source ty v)
     | Record_choice _ as value -> map_fields statements cache source value (fun body cache fields ->
         match coerce body cache source ty (Record_fields fields) with
         | Record_fields fields -> fields | _ -> fields)
@@ -110,7 +123,11 @@ let lower root =
      owner=view.owner;instance=view.instance;prefix=view.prefix;
      iter=List.map (fun n -> C.Static_index n) view.iter;span=None}
   and type_of = function
+    | Selected (items,_) -> Array.fold_left (fun ty v ->
+        Option.value ~default:ty (Flow.Ty.join ty (type_of v))) Flow.Ty.Any items
     | Known (V.Residual r) -> (E.Private.residual_view r).term.ty
+    | Known (V.List items) -> Flow.Ty.List (Array.fold_left (fun ty v ->
+        Option.value ~default:ty (Flow.Ty.join ty (type_of (Known v)))) Flow.Ty.Any items)
     | Known v -> V.ty_of v | Computed (_,ty) -> ty | Callable _ -> Flow.Ty.Fn None
     | Record_fields fields -> Flow.Ty.Record (List.map (fun (name,v) -> name,type_of v) fields)
     | Record_choice (_,yes,no) -> Option.value ~default:Flow.Ty.Any (Flow.Ty.join (type_of yes) (type_of no))
@@ -125,7 +142,7 @@ let lower root =
     | "array/range" -> Some Array_range | "array/float" -> Some Array_float | "array/vec3" -> Some Array_vec3
     | "array/nth" -> Some Array_nth | "array/count" -> Some Array_count | "array/slice" -> Some Array_slice
     | "array/concat" -> Some Array_concat | "value/rand" -> Some Rand
-    | "nth" -> Some Sequence_get | "count" -> Some Sequence_length | _ -> None
+    | _ -> None
   and residual statements cache r =
     let id = E.Private.residual_id r in
     match Hashtbl.find_opt cache id with Some value -> value | None ->
@@ -149,6 +166,17 @@ let lower root =
     | Lit (Param.Bool_value b) -> Known (V.Bool b)
     | Text s -> Known (V.Text s) | Nil -> Known V.No_geo
     | Record fields -> Record_fields (List.map (fun (name,t) -> name,compile t) fields)
+    | List_lit items ->
+        if List.length items>4096 then refuse "list_limit";
+        let items=List.map compile items in
+        (match known_values (List.map (fun v -> "",v) items) with
+         | Some items ->
+             let values=Array.of_list (List.map snd items) in
+             let ty=V.elem_ty values in Known (V.List (Array.map (V.coerce_to ty) values))
+         | None -> emit statements source x.ty (Items (List.map (ensure statements cache source) items)))
+    | List_op (_,items) ->
+        primitive statements cache source x.ty Sequence_concat
+          (List.map (fun item -> "list",compile item) items)
     | Get (value,name) -> field statements cache source x.ty (compile value) name
     | Assoc (record,updates) ->
         let record=compile record in
@@ -258,9 +286,14 @@ let lower root =
     | Bypass inner ->
         (match W.bypass_input inner with Some input -> coerce statements cache source inner.ty (compile input)
           | None -> refuse "bypass")
-    | Loop {kind=(`For|`Sum) as kind;accs=[];clauses=[W.Name name,items];skip=[];body;_} ->
-        let items = match compile items with Known (V.List xs) when Array.length xs <= 4096 -> xs
-          | _ -> refuse (if kind=`For then "for" else "sum") in
+    | Hof (kind,fn::rest) ->
+        let fn=as_callable source (compile fn) in
+        hof statements cache source env x.ty kind fn rest
+    | Hof (_,[]) -> refuse "higher_order"
+    | Loop {kind=(`For|`Sum) as kind;accs=[];clauses=[W.Name name,items];skip=[];body;zone} ->
+        let items=compile items in
+        (match items with
+        | Known (V.List items) when Array.length items<=32 ->
         let values = Array.mapi (fun index item ->
           let source={source with C.iter=source.iter @ [Static_index index]} in
           term statements cache source (Names.add name (Known item) env) body) items in
@@ -275,15 +308,287 @@ let lower root =
         else if Array.length values=0 then Known (V.Int 0)
         else Array.fold_left (fun acc v -> primitive statements cache source x.ty (Numeric Add) ["a",acc;"b",v])
           values.(0) (Array.sub values 1 (Array.length values-1))
+        | _ -> loop statements cache source env x.ty kind [] [W.Name name,None] [] body zone (Some items))
+    | Loop {kind;accs;clauses;skip;body;zone} ->
+        loop statements cache source env x.ty kind accs (List.map (fun (p,t) -> p,Some t) clauses) skip body zone None
     | node -> refuse (match node with
         | Vec _ -> "vector" | Lit _ -> "literal" | Call _ -> "call"
-        | Graph_ref _ -> "ref" | State _ -> "state" | Loop {kind;_} ->
-            (match kind with `For -> "for" | `Sum -> "sum" | `Fold -> "fold" | `Scan -> "scan")
-        | Hof _ -> "higher_order"
-        | List_lit _ -> "list" | List_op _ -> "list_op"
+        | Graph_ref _ -> "ref" | State _ -> "state"
         | _ -> assert false)
   and resolve statements cache = function
     | Known (V.Residual r) -> residual statements cache r | v -> v
+  and sequence_count statements cache source sequence =
+    let sequence=resolve statements cache sequence in
+    match sequence with
+    | Selected (items,index) -> select statements cache source Flow.Ty.Int items index
+        (fun body cache v -> sequence_count body cache source v)
+    | Known (V.List xs) -> Known (V.Int (Array.length xs))
+    | Known ((V.Float_array _ | Vec2_array _ | Vec3_array _ | Vec4_array _) as v) -> Known (V.Int (V.array_length v))
+    | _ ->
+        let packed=match type_of sequence with Flow.Ty.Array _ -> true | _ -> false in
+        primitive statements cache source Flow.Ty.Int (if packed then Array_count else Sequence_length)
+          [(if packed then "array" else "list"),sequence]
+  and sequence_get statements cache source sequence index =
+    let sequence=resolve statements cache sequence in
+    match sequence,index with
+    | Selected (items,at),index -> select statements cache source
+        (Option.value ~default:Flow.Ty.Any (Flow.Ty.elem (type_of sequence))) items at
+        (fun body cache v -> sequence_get body cache source v index)
+    | Known (V.List items),Known index ->
+        let op=Option.get (Flow.Op.find "nth" Flow.Context.value) in
+        (try resolve statements cache (Known (op.body ~live:(Frame_input.at_time 0.)
+            ~node:(fun _ _ -> refuse "nth") ["list",V.List items;"index",index]))
+         with V.Fail (code,message,_) -> primitive statements cache source Flow.Ty.Any (Fail (code,message)) [])
+    | Known (V.List items),index when C.literal_of_value (V.List items)=None ->
+        let indices=Known (V.List (Array.init (Array.length items) (fun i -> V.Int i))) in
+        let index=sequence_get statements cache source indices index in
+        Selected (Array.map (fun v -> Known v) items,index)
+    | _ ->
+    let ty=Option.value ~default:Flow.Ty.Any (Flow.Ty.elem (type_of sequence)) in
+    let packed=match type_of sequence with Flow.Ty.Array _ -> true | _ -> false in
+    primitive statements cache source ty (if packed then Array_nth else Sequence_get)
+      [(if packed then "array" else "list"),sequence;"index",index]
+  and iterate statements cache source sequence f =
+    let sequence=resolve statements cache sequence in
+    match sequence with
+    | Known (V.List items) when C.literal_of_value (V.List items)=None ->
+        counted statements cache source (Known (V.Int 0)) (Known (V.Int (Array.length items)))
+          (fun body cache index -> f body cache index (Selected (Array.map (fun v -> Known v) items,index)))
+    | _ ->
+    let sequence_id=ensure statements cache source sequence in
+    let index=local Flow.Ty.Int in
+    let ty=Option.value ~default:Flow.Ty.Any (Flow.Ty.elem (type_of sequence)) in
+    let item=local ty and id=number () in
+    if ty=Flow.Ty.Float then Hashtbl.add mixed_numeric item ();
+    let body=ref [] in
+    f body (Hashtbl.copy cache) (Computed (index,Flow.Ty.Int)) (Computed (item,ty));
+    statements:=statement id source (Iterate {sequence=sequence_id;index;item;limit=4096;body=List.rev !body}) :: !statements
+  and select statements cache source ty items index f =
+    (* ponytail: selecting a heterogeneous lazy capture scans at most 4,096
+       arms; use typed captured buffers if profiles justify compiling this case. *)
+    let rec choose statements cache at =
+      if at=Array.length items then primitive statements cache source ty
+        (Fail ("E_LIST_RANGE","Index is outside its list.")) []
+      else
+        let matches=primitive statements cache source Flow.Ty.Bool (Numeric Eq)
+          ["a",index;"b",Known (V.Int at)] in
+        branch statements cache source ty matches
+          (fun body cache -> f body cache items.(at))
+          (fun body cache -> choose body cache (at+1)) in
+    choose statements cache 0
+  and store statements cache source sequence index value =
+    let sequence=ensure statements cache source sequence in
+    let index=ensure statements cache source index in
+    let value=ensure statements cache source value in
+    statements:=statement (number ()) source (Store {sequence;index;value}) :: !statements
+  and assign statements cache source target value =
+    let value=ensure statements cache source value in
+    statements:=statement (number ()) source (Assign (target,Local value)) :: !statements
+  and hold ?ty statements cache source value =
+    match resolve statements cache value with
+    | Record_fields fields -> Record_fields (List.map (fun (name,v) ->
+        let ty=match ty with Some (Flow.Ty.Record fields) -> List.assoc_opt name fields | _ -> None in
+        name,hold ?ty statements cache source v) fields)
+    | Known (V.Record fields) -> hold ?ty statements cache source (Record_fields (List.map (fun (n,v) -> n,Known v) fields))
+    | value ->
+        let n=ensure statements cache source value in
+        let ty=Option.value ~default:(type_of value) ty in
+        let result=emit statements source ty (Local n) in
+        (match result with Computed (n,_) when List.mem ty [Flow.Ty.Int;Float] -> Hashtbl.add mixed_numeric n () | _ -> ());
+        result
+  and update statements cache source target value =
+    match target with
+    | Computed (n,_) -> assign statements cache source n value
+    | Record_fields fields ->
+        let values=record_fields statements cache source value in
+        if List.map fst fields<>List.map fst values then refuse "accumulator_layout";
+        (* Read every next field before overwriting any accumulator field. *)
+        let values=List.map (fun (name,v) -> name,hold statements cache source v) values in
+        List.iter2 (fun (_,target) (_,value) -> update statements cache source target value) fields values
+    | _ -> refuse "accumulator"
+  and widen_like statements cache source old value =
+    let old=resolve statements cache old and value=resolve statements cache value in
+    match type_of old,type_of value with
+    | (Flow.Ty.Int|Float),(Flow.Ty.Int|Float) ->
+        let is_float=primitive statements cache source Flow.Ty.Bool Equal
+          ["a",value;"b",coerce statements cache source Flow.Ty.Float value] in
+        branch statements cache source Flow.Ty.Float is_float
+          (fun _ _ -> value)
+          (fun body cache -> coerce_like body cache source old value)
+    | _ -> coerce_like statements cache source old value
+  and increment statements cache source value =
+    let next=primitive statements cache source Flow.Ty.Int (Numeric Add) ["a",value;"b",Known (V.Int 1)] in
+    update statements cache source value next
+  and counted statements cache source first last f =
+    let first=ensure statements cache source first and last=ensure statements cache source last in
+    let count=local Flow.Ty.Int and index=local Flow.Ty.Int and item=local Flow.Ty.Int and id=number () in
+    let body=ref [] in
+    f body (Hashtbl.copy cache) (Computed (item,Flow.Ty.Int));
+    statements:=statement id source (Counted {first;last;count;index;item;limit=4096;
+      init=[];body=List.rev !body}) :: !statements
+  and slice statements cache source ty sequence first count =
+    primitive statements cache source ty Sequence_slice ["list",sequence;"first",first;"count",count]
+  and hof statements cache source env ty kind fn rest =
+    let compile=term statements cache source env in
+    match kind,rest with
+    | `Reduce,[init;items] ->
+        let accumulator=hold ~ty statements cache source (compile init) in
+        let items=compile items in
+        iterate statements cache source items (fun body cache _ item ->
+          let value=call body cache source ty None fn [accumulator;item] in
+          let value=widen_like body cache source accumulator value in
+          update body cache source accumulator value);
+        accumulator
+    | `Sort_by,[items] -> sort_by statements cache source ty fn (compile items)
+    | (`Map|`Filter),items ->
+        if (match ty with Flow.Ty.Array _ -> true | _ -> false) then refuse "packed_higher_order";
+        let items=List.map compile items in
+        let counts=List.map (sequence_count statements cache source) items in
+        let count=match counts with [] -> refuse "higher_order" | first::rest ->
+          List.fold_left (fun count next -> primitive statements cache source Flow.Ty.Int (Numeric Min)
+            ["a",count;"b",next]) first rest in
+        let result=primitive statements cache source ty Sequence_build ["count",count] in
+        let kept=hold statements cache source (Known (V.Int 0)) in
+        counted statements cache source (Known (V.Int 0)) count (fun body cache index ->
+          let args=List.map (fun sequence -> sequence_get body cache source sequence index) items in
+          let item=List.hd args in
+          let result_ty=if kind=`Map then Option.value ~default:Flow.Ty.Any (Flow.Ty.elem ty) else Flow.Ty.Bool in
+          let value=call body cache source result_ty None fn args in
+          if kind=`Map then store body cache source result index value
+          else ignore (branch body cache source Flow.Ty.Int value
+            (fun body cache -> store body cache source result kept item;
+              increment body cache source kept; Known (V.Int 0))
+            (fun _ _ -> Known (V.Int 0))));
+        if kind=`Filter then slice statements cache source ty result (Known (V.Int 0)) kept
+        else primitive statements cache source ty Sequence_concat ["list",result]
+    | _ -> refuse "higher_order"
+  and sort_by statements cache source ty fn items =
+    if (match ty with Flow.Ty.Array _ -> true | _ -> false) then refuse "packed_higher_order";
+    let number n=Known (V.Int n) in
+    let calc statements cache op a b = primitive statements cache source Flow.Ty.Int (Numeric op) ["a",a;"b",b] in
+    let count=sequence_count statements cache source items in
+    let build ty=primitive statements cache source (Flow.Ty.List ty) Sequence_build ["count",count] in
+    let keys=build Flow.Ty.Float in
+    let current=hold statements cache source (build Flow.Ty.Int) in
+    let scratch=hold statements cache source (build Flow.Ty.Int) in
+    iterate statements cache source items (fun body cache index item ->
+      let key=call body cache source Flow.Ty.Float None fn [item] in
+      let key=primitive body cache source Flow.Ty.Float Float_convert ["x",key] in
+      store body cache source keys index key;
+      store body cache source current index index);
+    let widths=Known (V.List (Array.init 12 (fun i -> V.Int (1 lsl i)))) in
+    iterate statements cache source widths (fun body cache _ width ->
+      let needed=calc body cache Lt width count in
+      ignore (branch body cache source Flow.Ty.Int needed (fun body cache ->
+        let twice=calc body cache Mul width (number 2) in
+        let rounded=calc body cache Sub (calc body cache Add count twice) (number 1) in
+        let blocks=primitive body cache source Flow.Ty.Int (Integer Div) ["a",rounded;"b",twice] in
+        counted body cache source (number 0) blocks (fun body cache block ->
+          let start=calc body cache Mul block twice in
+          let middle=calc body cache Min (calc body cache Add start width) count in
+          let finish=calc body cache Min (calc body cache Add start twice) count in
+          let left=hold body cache source start and right=hold body cache source middle in
+          counted body cache source start finish (fun body cache target ->
+            let left_available=calc body cache Lt left middle in
+            let choose_left=branch body cache source Flow.Ty.Bool left_available
+              (fun body cache ->
+                let right_available=calc body cache Lt right finish in
+                branch body cache source Flow.Ty.Bool right_available
+                  (fun body cache ->
+                    let li=sequence_get body cache source current left in
+                    let ri=sequence_get body cache source current right in
+                    let a=sequence_get body cache source keys li in
+                    let b=sequence_get body cache source keys ri in
+                    calc body cache Le a b)
+                  (fun _ _ -> Known (V.Bool true)))
+              (fun _ _ -> Known (V.Bool false)) in
+            ignore (branch body cache source Flow.Ty.Int choose_left
+              (fun body cache ->
+                let value=sequence_get body cache source current left in
+                store body cache source scratch target value;increment body cache source left;number 0)
+              (fun body cache ->
+                let value=sequence_get body cache source current right in
+                store body cache source scratch target value;increment body cache source right;number 0))));
+        let old=hold body cache source current in
+        update body cache source current scratch;
+        update body cache source scratch old;
+        number 0) (fun _ _ -> number 0)));
+    let result=primitive statements cache source ty Sequence_build ["count",count] in
+    counted statements cache source (number 0) count (fun body cache index ->
+      let at=sequence_get body cache source current index in
+      let value=sequence_get body cache source items at in
+      store body cache source result index value);
+    result
+  and loop statements cache source env ty kind accs clauses skip body zone first =
+    let zone_source={source with C.site=zone;owner=zone} in
+    let init=match accs with
+      | [pattern,value] ->
+          let acc_ty=if kind=`Scan then Option.value ~default:Flow.Ty.Any (Flow.Ty.elem ty) else ty in
+          Some (pattern,hold ~ty:acc_ty statements cache zone_source (term statements cache zone_source env value))
+      | [] -> None | _ -> refuse "accumulator" in
+    let attempted=hold statements cache zone_source (Known (V.Int 0)) in
+    let kept=hold statements cache zone_source (Known (V.Int 0)) in
+    let total=if kind=`Sum then Some (hold statements cache zone_source (Known (V.Int 0))) else None in
+    let collecting=kind=`For || kind=`Scan in
+    let output=if collecting then begin
+      if (match ty with Flow.Ty.Array _ -> true | _ -> false) then refuse "packed_collect";
+      Some (primitive statements cache zone_source ty Sequence_build ["count",Known (V.Int 4096)])
+    end else None in
+    let rec clauses_lower statements cache env = function
+      | [] ->
+          let at=ensure statements cache zone_source attempted in
+          let iteration={zone_source with C.iter=source.iter @ [Local_index at]} in
+          let over=primitive statements cache iteration Flow.Ty.Bool (Numeric Ge)
+            ["a",attempted;"b",Known (V.Int 4096)] in
+          ignore (branch statements cache iteration Flow.Ty.Int over
+            (fun body cache -> primitive body cache iteration Flow.Ty.Int
+              (Fail ("E_ITER_BOUND","Loop runs more than 4,096 iterations.")) [])
+            (fun _ _ -> Known (V.Int 0)));
+          let skipped=List.fold_left (fun skipped tuple ->
+            if List.length tuple<>List.length iteration.iter then skipped else
+            let matches=List.fold_left2 (fun matches index expected ->
+              let index=match index with C.Static_index n -> Known (V.Int n) | Local_index n -> Computed (n,Flow.Ty.Int) in
+              let eq=primitive statements cache iteration Flow.Ty.Bool (Numeric Eq)
+                ["a",index;"b",Known (V.Int expected)] in
+              primitive statements cache iteration Flow.Ty.Bool (Numeric And) ["a",matches;"b",eq])
+              (Known (V.Bool true)) iteration.iter tuple in
+            primitive statements cache iteration Flow.Ty.Bool (Numeric Or) ["a",skipped;"b",matches])
+            (Known (V.Bool false)) skip in
+          ignore (branch statements cache iteration Flow.Ty.Int skipped (fun _ _ -> Known (V.Int 0))
+            (fun statements cache ->
+              let env=match init with None -> env | Some (pattern,accumulator) -> bind statements cache iteration env pattern accumulator in
+              let value=term statements cache iteration env body in
+              let value=match init with
+                | Some (_,accumulator) ->
+                    let value=widen_like statements cache iteration accumulator value in
+                    update statements cache iteration accumulator value;accumulator
+                | None -> value in
+              (match total with
+               | Some total ->
+                   let empty=primitive statements cache iteration Flow.Ty.Bool (Numeric Eq) ["a",kept;"b",Known (V.Int 0)] in
+                   let next=branch statements cache iteration ty empty (fun _ _ -> value)
+                     (fun body cache -> primitive body cache iteration ty (Numeric Add) ["a",total;"b",value]) in
+                   update statements cache iteration total next
+               | None -> ());
+              Option.iter (fun output -> store statements cache iteration output kept value) output;
+              increment statements cache iteration kept;
+              Known (V.Int 0)));
+          increment statements cache iteration attempted
+      | (pattern,value)::rest ->
+          let items=match value with
+            | Some value -> term statements cache zone_source env value
+            | None -> Option.get first in
+          iterate statements cache zone_source items (fun body cache _ item ->
+            let env=bind body cache source env pattern item in
+            clauses_lower body cache env rest) in
+    clauses_lower statements cache env clauses;
+    match output,total,init with
+    | Some output,_,_ ->
+        let output=slice statements cache zone_source ty output (Known (V.Int 0)) kept in
+        primitive statements cache zone_source ty Sequence_concat ["list",output]
+    | _,Some total,_ -> total
+    | _,_,Some (_,accumulator) -> accumulator
+    | _ -> refuse "loop"
   and record_fields statements cache source value =
     match resolve statements cache value with
     | Record_fields fields -> fields
@@ -293,6 +598,8 @@ let lower root =
     | _ -> refuse "record"
   and map_fields statements cache source value f =
     match resolve statements cache value with
+    | Selected (items,index) -> select statements cache source (type_of value) items index
+        (fun body cache v -> map_fields body cache source v f)
     | Record_choice (condition,yes,no) -> branch statements cache source (type_of value) condition
         (fun body cache -> map_fields body cache source yes f)
         (fun body cache -> map_fields body cache source no f)
@@ -300,6 +607,18 @@ let lower root =
   and coerce_like statements cache source old value =
     let old=resolve statements cache old and value=resolve statements cache value in
     match old,value with
+    | _ when (match type_of old,type_of value with Flow.Ty.List _,List _ -> true | _ -> false) ->
+        let count=sequence_count statements cache source old in
+        let empty=primitive statements cache source Flow.Ty.Bool (Numeric Eq) ["a",count;"b",Known (V.Int 0)] in
+        branch statements cache source (type_of value) empty (fun _ _ -> value)
+          (fun body cache ->
+            let old_item=sequence_get body cache source old (Known (V.Int 0)) in
+            let count=sequence_count body cache source value in
+            let result=primitive body cache source (type_of value) Sequence_build ["count",count] in
+            iterate body cache source value (fun body cache index item ->
+              let value=coerce_like body cache source old_item item in
+              store body cache source result index value);
+            result)
     | Known old,Known value when C.literal_of_value old <> None && C.literal_of_value value <> None ->
         coerce statements cache source (V.ty_of old) (Known value)
     | _ when (match type_of old,type_of value with Flow.Ty.Record _,Record _ -> true | _ -> false) ->
@@ -309,7 +628,9 @@ let lower root =
             | Some ty -> coerce_like body cache source (field body cache source ty old name) v
             | None -> v) fields)
     | Known old,_ -> coerce statements cache source (V.ty_of old) value
-    | _ when type_of old=Flow.Ty.Float && List.mem (type_of value) [Flow.Ty.Int;Float;Bool] ->
+    | _ when (type_of old=Flow.Ty.Float || match old with
+          | Computed (n,Flow.Ty.Int) -> Hashtbl.mem mixed_numeric n | _ -> false)
+        && List.mem (type_of value) [Flow.Ty.Int;Float;Bool] ->
         let is_float=primitive statements cache source Flow.Ty.Bool Equal
           ["a",old;"b",coerce statements cache source Flow.Ty.Float old] in
         branch statements cache source Flow.Ty.Float is_float
@@ -388,6 +709,8 @@ let lower root =
                   List.mapi (fun index _ -> primitive statements cache source elem Sequence_get
                     ["list",value;"index",Known (V.Int index)]) patterns
               | _ -> refuse "pattern")
+          | Selected _ as value ->
+              List.mapi (fun index _ -> sequence_get statements cache source value (Known (V.Int index))) patterns
           | Callable _ | Record_fields _ | Record_choice _ -> refuse "pattern" in
         if List.length parts < List.length patterns then refuse "pattern";
         let rec bind_all env patterns parts = match patterns,parts with
@@ -446,6 +769,41 @@ let lower root =
     | Some op -> prim ty op args
     | None -> match name with
       | "exact" -> arg "value"
+      | "count" -> sequence_count statements cache source (arg "list")
+      | "nth" -> sequence_get statements cache source (arg "list") (arg "index")
+      | "range" ->
+          let first,last=match List.assoc_opt "end" args with
+            | Some last -> arg "count",last | None -> Known (V.Int 0),arg "count" in
+          let first=ensure statements cache source first in
+          let last=ensure statements cache source last in
+          let count=local Flow.Ty.Int and index=local Flow.Ty.Int and item=local Flow.Ty.Int
+          and id=number () in
+          let init=ref [] in
+          let result=primitive init cache source ty Sequence_build ["count",Computed (count,Flow.Ty.Int)] in
+          let body=ref [] in
+          store body cache source result (Computed (index,Flow.Ty.Int)) (Computed (item,Flow.Ty.Int));
+          statements:=statement id source (Counted {first;last;count;index;item;limit=4096;
+            init=List.rev !init;body=List.rev !body}) :: !statements;
+          result
+      | "take" | "drop" | "rest" ->
+          let sequence=arg "list" in
+          let count=sequence_count statements cache source sequence in
+          let wanted=if name="rest" then Known (V.Int 1)
+            else coerce statements cache source Flow.Ty.Int (float (arg "n")) in
+          let retained=prim Flow.Ty.Int (Numeric Max) ["a",Known (V.Int 0);"b",wanted] in
+          let retained=prim Flow.Ty.Int (Numeric Min) ["a",retained;"b",count] in
+          let first,length=if name="take" then Known (V.Int 0),retained
+            else retained,prim Flow.Ty.Int (Numeric Sub) ["a",count;"b",retained] in
+          prim ty Sequence_slice ["list",sequence;"first",first;"count",length]
+      | "reverse" ->
+          let sequence=arg "list" in
+          let count=sequence_count statements cache source sequence in
+          let result=prim ty Sequence_build ["count",count] in
+          iterate statements cache source sequence (fun body cache index item ->
+            let last=primitive body cache source Flow.Ty.Int (Numeric Sub) ["a",count;"b",Known (V.Int 1)] in
+            let reverse=primitive body cache source Flow.Ty.Int (Numeric Sub) ["a",last;"b",index] in
+            store body cache source result reverse item);
+          result
       | "frame/dt" -> emit statements source ty (Frame Dt)
       | "frame/width" -> emit statements source ty (Frame Width)
       | "frame/height" -> emit statements source ty (Frame Height)

@@ -177,7 +177,8 @@ let () =
     failwith (String.concat "\n" (List.map Diagnostic.to_string ds)) in
   let scope = Projection.of_graph catalog workspace "g" in
   let fn = Option.get (Projection.find scope ["g"; "out#0"]) in
-  assert (fn.ty = (Ty.Fn None) && (Option.get fn.zone).kind = Projection.Fn);
+  assert (fn.ty = Ty.Fn (Some {params = [Ty.Float]; result = Ty.Float})
+    && (Option.get fn.zone).kind = Projection.Fn);
   assert (List.exists (fun (rail : Projection.rail_row) -> rail.name = "x" && rail.ty = Some Ty.Float)
     (Option.get fn.zone).rail);
   let card = Option.get (Projection.find scope ["g"; "out"]) in
