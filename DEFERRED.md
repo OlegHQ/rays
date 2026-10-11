@@ -370,9 +370,13 @@ later. Numbers and commands are in `specification/web-export/results.md`.
     describes (the interpreter would stay as the test reference).
   - Region programs are not cached on the residual; only region-free programs use the
     slot, because a region's `force` closure captures per-call state.
-  - Never measured: whole-frame time over the 15 eligible workspaces, core against
-    closure. The closure tier is gone after P1.16; compare against a checkout of
-    `3c1314b3` to do it.
+  - Final micro ratio at P1.14b: 1.23 (core 146.9 ns, closure 119.7 ns).
+  - Whole-frame time over the 15 eligible workspaces, core against closure, measured
+    once before P1.16 (the bench mode was not kept): faster on 7, equal on 6, slower on
+    2. `examples/particles` is about 2.3 times slower (4.5 ms against 2.0 ms per frame):
+    its maps run about 10,000 elements times roughly 50 statements in the core
+    interpreter. `examples/drawing` is about 1.07 times slower. The closure tier is gone
+    after P1.16 (`3f1ff18c`); compare against a checkout of `3c1314b3`.
 - The corpus sweep `@test/test_workspace_ir` takes 20 to 25 minutes since P1.11, because
   every comparison now runs with the core path off and on. After P1.16 there is one
   path; check the second pass is gone and the time is back down.
