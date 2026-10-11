@@ -1,0 +1,23 @@
+(** Execution of draw statements into the mark table ([specification/marks.md]). Every
+    check of a value and every conversion is drawing.ml's, so the table encodes the same
+    picture. *)
+module Buffers : sig
+  (** The per-frame table of CPU attribute arrays that mark sets refer to by id. The
+      caller creates it, reads from it while it adapts the marks, and clears it each frame. *)
+  type t
+  val create : unit -> t
+  val clear : t -> unit
+  val find : t -> int -> float array
+  (** The data of a buffer id of the current frame; [Not_found] otherwise. *)
+end
+
+type sink
+val sink : ?image:(Flow.Eval.value -> int) -> size:int * int -> Buffers.t -> sink
+(** [size] is the canvas (for [draw/background]); [image] resolves an image node to a
+    host resource id (positive) or raises [Flow.Value.Fail]. *)
+
+val compile : Core.draw -> Flow.Eval.value array -> sink -> unit
+(** The statement, resolved once; run it on the locals. *)
+
+val finish : sink -> Scene_command.Marks.t
+(** The entries in painter order, checked by [Marks.validate] ([E_DRAW_RANGE] otherwise). *)

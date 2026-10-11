@@ -16,3 +16,13 @@ val run : ?root:Flow.Eval.residual ->
   ?force:(Packed.t -> (Flow.Eval.value, Flow.Diagnostic.t) result) -> Core.program -> live:Frame_input.t ->
   (Flow.Eval.value, Flow.Diagnostic.t) result
 (** [prepare] then [execute]. *)
+
+module Buffers = Core_marks.Buffers
+val draw : ?root:Flow.Eval.residual ->
+  ?force:(Packed.t -> (Flow.Eval.value, Flow.Diagnostic.t) result) ->
+  ?image:(Flow.Eval.value -> (int, Flow.Diagnostic.t) result) -> prepared -> live:Frame_input.t ->
+  size:int * int -> buffers:Buffers.t -> (Scene_command.Marks.t, Flow.Diagnostic.t) result
+(** Run a draw program ({!Core_draw.lower}) into one mark table in painter order. CPU attribute
+    arrays are registered in [buffers], which the caller owns, clears per frame and reads while
+    it adapts the table. [root] is the residual whose state the program reads. [image] resolves
+    an image node to a host resource id. A failure is the core's own diagnostic. *)
