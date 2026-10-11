@@ -24,6 +24,15 @@
  (deps pathtrace.metal)
  (action (run %{exe:test_main.exe} test_pathtracer)))
 
+; Two frames byte for byte on the Apple M1 GPU and driver. It reads no switch:
+; another chip prints that it does not compare. Refreshing a digest:
+; Test_pathtracer.exact_m1_digests.
+(rule
+ (aliases qualification test_pathtracer_exact_m1)
+ (locks smoke_window)
+ (deps pathtrace.metal)
+ (action (run %{exe:test_main.exe} test_pathtracer_exact_m1)))
+
 (rule
  (aliases qualification runtest-native test_world)
  (action (run %{exe:test_main.exe} test_world)))

@@ -8,7 +8,9 @@ let get = function Ok v -> v | Error e -> failwith e
 let pixels tracer = Bytes.copy (get (Rays.Image.Private.pixels (P.image tracer)))
 let live_handles = let _, live = Ogpu.Impl.create_driver () in live
 
-let run () =
+(* [frame name pixels] receives the two frames [exact_m1] below records, as
+   they are rendered. *)
+let run ?(frame = fun _ _ -> ()) () =
   let initial_handles = live_handles () in
   let sphere = get (Result.map_error Rdk.Error.to_string
     (Rdk.Uv_sphere.run ~center:(Rays.Vec3.create 0. 1. 0.) ~segments:24 ~rings:12 ~radius:1. ())) in
@@ -38,6 +40,13 @@ let run () =
       (match P.render tracer unsupported with Error _ -> ()
        | Ok () -> failwith "orthographic path-tracer camera was accepted");
       assert (P.samples tracer = 0);
+      (* A new tracer's first two frames from reset: no preview, four samples. *)
+      let cold =
+        P.reset tracer;
+        for _ = 1 to 2 do get (P.render tracer camera); get (P.flush tracer) done;
+        pixels tracer in
+      assert (P.samples tracer = 4);
+      frame "lit sphere" cold;
       let capture camera frames =
         (* Settle a camera change before resetting, so its preview cannot
            change the counted sample total in a deterministic comparison. *)
@@ -48,6 +57,8 @@ let run () =
       let run () = capture camera 2 in
       let first = run () and second = run () in
       assert (first = second && Bytes.length first = 48 * 32 * 4);
+      (* A settled camera accumulates the frame the new tracer rendered. *)
+      assert (first = cold);
       assert (P.samples tracer = 4);
       let distinct = Hashtbl.create 64 in
       for pixel = 0 to 48 * 32 - 1 do
@@ -91,6 +102,7 @@ let run () =
       get (P.render tracer camera); get (P.flush tracer);
       get (P.render tracer camera); get (P.flush tracer);
       let instanced_pixels = pixels tracer in
+      frame "instanced sphere" instanced_pixels;
       let transformed = Rdk.Transform_ops.transform matrix sphere in
       get (P.replace_mesh tracer (get (P.mesh [transformed, P.material (rgb 0.7 0.5 0.3)])));
       get (P.render tracer camera); get (P.flush tracer);
@@ -317,3 +329,53 @@ let run () =
       let final_handles = live_handles () in
       Printf.printf "handle baseline %d final %d\n%!" initial_handles final_handles;
       assert (final_handles = initial_handles)
+
+(* The two frames above, byte for byte, on one GPU and driver: the first four
+   samples of the lit sphere and the instanced sphere after the camera moves.
+   Recorded on an Apple M1 (macOS 27.0.1). The statistical checks around them
+   accept any unbiased kernel; these catch a change that was meant to leave
+   every pixel alone.
+
+   A digest is refreshed only for a change that is meant to move pixels (the
+   kernel's transport, sampling or resolve, its uniforms, this scene, or the
+   mesh and camera code feeding it) or for a new OS or driver, and never to
+   turn a red run green. Before recording:
+   - the commit before the change still prints the recorded digests on this
+     machine (after an OS or driver update it does not: say so);
+   - the new digests are the same from several processes;
+   - [@lib/rays_pathtracer/qualification] passes (furnace, World MIS against
+     BSDF-only, raster parity);
+   - the frames converged before and after differ only where the change says.
+   This run prints both digests; put the commit and the evidence in the
+   message. History: 84c5cb30.../8aaf15f3... from b4b40f57 until 4fce19a5 added
+   MIS between rect-light sampling and BSDF rays that cross a rect, which
+   brightens the light's highlight on the metal sphere; unchanged since. *)
+let exact_m1_digests =
+  [ "lit sphere", "f2d5db77d2304128e7b179ab29121798"
+  ; "instanced sphere", "d6ad096a19f992493f21101954aac616" ]
+
+let chip () =
+  let channel = Unix.open_process_in "/usr/sbin/sysctl -n machdep.cpu.brand_string" in
+  let name = In_channel.input_line channel in
+  match Unix.close_process_in channel, name with
+  | Unix.WEXITED 0, Some name -> String.trim name
+  | _ -> failwith "pathtracer exact frames: cannot read the chip name"
+
+let run_exact_m1 () =
+  match chip () with
+  | "Apple M1" ->
+      let rendered = ref [] in
+      run ~frame:(fun name pixels ->
+        let digest = Digest.to_hex (Digest.bytes pixels) in
+        Printf.printf "pathtracer exact frame: %s %s\n%!" name digest;
+        rendered := (name, digest) :: !rendered) ();
+      let rendered = List.rev !rendered in
+      if rendered <> exact_m1_digests then
+        failwith (Printf.sprintf "pathtracer exact frames: rendered [%s], recorded [%s]"
+          (String.concat "; " (List.map (fun (name, digest) -> name ^ " " ^ digest) rendered))
+          (String.concat "; " (List.map (fun (name, digest) -> name ^ " " ^ digest) exact_m1_digests)));
+      print_endline "pathtracer exact frames: both match the Apple M1 digests"
+  | other ->
+      (* Another GPU rounds differently; test_pathtracer still checks its
+         frames statistically. *)
+      Printf.printf "pathtracer exact frames: recorded on an Apple M1, this is %s; not compared\n" other

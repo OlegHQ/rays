@@ -266,7 +266,11 @@ materials, motion-blur coverage between an instance's rest and end positions,
 typed rejection of strands on devices without curve intersection, mismatched
 material and motion counts, and that all sixteen kernel specializations
 (including the curve and scene variants) compile against their declared
-interfaces. `test_scene.ml` checks that a `scene_mesh` of a flat box, an
+interfaces. Under `@qualification`, `test_pathtracer_exact_m1` runs the same
+test and compares the MD5 of two of its frames (the lit sphere's first four
+samples and the instanced sphere) with digests recorded on an Apple M1; another
+chip prints that it does not compare. The comment on `exact_m1_digests` says
+when a digest may be refreshed and what has to be shown first. `test_scene.ml` checks that a `scene_mesh` of a flat box, an
 instanced pair with per-instance materials, and a floor matches the same
 meshes composed by hand, that translating an object moves it in the image,
 that a mesh of triangles plus an analytic sphere builds and shows both, and
