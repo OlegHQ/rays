@@ -2186,10 +2186,9 @@
       "api": [
         "type prepared",
         "val prepare : ? profile : Flow_ir.Profile.t -> ? approx : Flow.Workspace.Paths.t -> ? states : Flow.Eval.value list -> Flow.Eval.plan -> Flow.Eval.value -> ( prepared , Flow.Diagnostic.t ) result",
-        "val render_prepared : ? state : Flow.Eval.state -> ? image : ( Flow.Eval.value -> ( Rays.Image.t , Flow.Diagnostic.t ) result ) -> ? gpu : ( Flow_ir.Gpu.value -> radius : float -> fill : int32 -> stroke : int32 -> stroke_width : float -> ( Scene_command.Shape_batch.gpu_token , Flow.Diagnostic.t ) result ) -> ? gpu_policy : Flow_ir.Gpu.policy -> ? reference : bool -> prepared -> live : Frame_input.t -> size : int * int -> ( Rays.Scene.t , Flow.Diagnostic.t ) result",
-        "val core_drawing : bool ref"
+        "val render_prepared : ? state : Flow.Eval.state -> ? image : ( Flow.Eval.value -> ( Rays.Image.t , Flow.Diagnostic.t ) result ) -> ? gpu : ( Flow_ir.Gpu.value -> radius : float -> fill : int32 -> stroke : int32 -> stroke_width : float -> ( Scene_command.Shape_batch.gpu_token , Flow.Diagnostic.t ) result ) -> ? gpu_policy : Flow_ir.Gpu.policy -> prepared -> live : Frame_input.t -> size : int * int -> ( Rays.Scene.t , Flow.Diagnostic.t ) result"
       ],
-      "api_sha256": "4e492ba5ad6d893347d767d9fefdf20a507c8752d4f6fd7d3f2c82b243f01557",
+      "api_sha256": "8e86e3d478cf5dbeadf516001dfc961f1264a6a782f091f692fba0b815025715",
       "excluded_legacy_symbols": [],
       "library": "rays_editor",
       "module": "Drawing",
