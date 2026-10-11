@@ -1018,9 +1018,12 @@ let run () =
     let native = Rdk.Attribute_ops.noise ~seed:0 ~owner:Rdk.Attribute.Point ~kind:Rdk.Attribute_ops.Noise_vector ~name:"P" ~operation noise_geometry |> Result.get_ok in
     check (equal_geometry native (cook 1 typed)) "attribute noise positions match native") operations;
   List.iter (fun (_kind,kind_choice) ->
-    same_cook "attribute noise initial P keeps geometry" ~typed:(sop ~inputs:[noise_input] "attribute_noise" [ks "name" "P"; ks "kind" kind_choice; ks "operation" "Set initial"])
+    let typed = sop ~inputs:[noise_input] "attribute_noise" [ks "name" "P"; ks "kind" kind_choice; ks "operation" "Set initial"] in
+    same_cook "attribute noise initial P keeps geometry" ~typed
       ~factory:Nodes.Attribute_noise.factory ["name",Parameter.Text_value "P";"kind",Choice_value kind_choice;
-        "operation",Choice_value "Set initial"] noise_input) [Rdk.Attribute_ops.Noise_float,"Float";Noise_quaternion,"Quaternion"];
+        "operation",Choice_value "Set initial"] noise_input;
+    check (equal_geometry (cook 1 typed) noise_geometry) "attribute noise set-initial on existing P changed the geometry")
+    [Rdk.Attribute_ops.Noise_float,"Float";Noise_quaternion,"Quaternion"];
   List.iter (fun roughness -> List.iter (fun blend -> List.iter (fun octaves ->
     let frequency = Vec3.create (-1.) 0. 2. in
     let typed = Lisp_sop.node ~with_:["noise_input", (noise_input)] (Printf.sprintf {|(sop/attribute_noise
@@ -1766,6 +1769,46 @@ Lisp_sop.node ~with_:["detect_source_node", (detect_source_node)] (Printf.sprint
       && Rdk.Group.mem 0 union && Rdk.Group.mem 1 union)
     "fuse rules average distinct colors and union non-first members";
   check (geometry_bytes rule_geometry = rule_bytes) "fuse rules mutated their source";
+  let native_attribute_rules = [{Rdk.Fuse_reduce.pattern="Cd";method_=Attribute_average;weight_attribute=None}]
+  and native_group_rules = [{Rdk.Fuse_reduce.group_pattern="selected*";group_method=Group_union}] in
+  let source_selection = Rdk.Geometry.find_group ~owner:Rdk.Group.Point "selected" fuse_source_geometry |> Option.get in
+  let fuse_positions = [Rdk.Fuse_reduce.First_position,"First";Least_point_position,"Least point";Greatest_point_position,"Greatest point";
+    Average_position,"Average";Minimum_position,"Minimum";Maximum_position,"Maximum";Mode_position,"Mode";Median_position,"Median";
+    Sum_position,"Sum";Sum_squares_position,"Sum squares";Root_mean_square_position,"Root mean square";
+    Weighted_average_position,"Weighted average";Weighted_sum_position,"Weighted sum";Minimum_weight_position,"Minimum weight";
+    Maximum_weight_position,"Maximum weight"] in
+  List.iter (fun use_target -> List.iter (fun (specified,targeting_choice) -> List.iter (fun (using,using_choice) ->
+    List.iter (fun (metric,metric_choice) -> List.iter (fun (position,position_choice) ->
+      let target = if use_target then Some fuse_target else None in
+      let radius_attribute,match_attribute,match_tolerance = if not specified then "radius","match",0.1 else "","",0. in
+      let typed = sop ~inputs:(fuse_source :: Option.to_list target) "fuse"
+          [ks "group" "selected"; ks "target_group" "selected"; ks "targeting" targeting_choice;
+           ks "target_attribute" "targetpoint"; ks "using" using_choice; ks "metric" metric_choice; kf "tolerance" 0.3;
+           ks "position" position_choice; ks "weight_attribute" "weight"; ks "attributes" "Average numeric";
+           ks "attribute_rules" "Cd\taverage\t"; ks "group_rules" "selected*\tunion";
+           ks "radius_attribute" radius_attribute; ks "match_attribute" match_attribute; kf "match_tolerance" match_tolerance;
+           ks "snapped_group" "snapped"; ks "snapped_destination_attribute" "destination"] in
+      same_cook "fuse targeting and reducers" ~optional_inputs:[Some fuse_source;target] ~typed ~factory:Nodes.Fuse.factory
+        ["group",Parameter.Text_value "selected";"target_group",Text_value "selected";"targeting",Choice_value targeting_choice;
+         "target_attribute",Text_value "targetpoint";"using",Choice_value using_choice;"metric",Choice_value metric_choice;
+         "tolerance",Float_value 0.3;"position",Choice_value position_choice;"weight_attribute",Text_value "weight";
+         "attributes",Choice_value "Average numeric";"attribute_rules",Text_value "Cd\taverage\t";"group_rules",Text_value "selected*\tunion";
+         "radius_attribute",Text_value radius_attribute;"match_attribute",Text_value match_attribute;"match_tolerance",Float_value match_tolerance;
+         "snapped_group",Text_value "snapped";"snapped_destination_attribute",Text_value "destination"] fuse_source;
+      let targeting = if specified then Rdk.Fuse_grid.Specified_points "targetpoint" else Rdk.Fuse_grid.Near_points in
+      let target_geometry = if use_target then fuse_target_geometry else fuse_source_geometry in
+      let target_selection = Rdk.Geometry.find_group ~owner:Rdk.Group.Point "selected" target_geometry |> Option.get in
+      let target = Option.map (fun _ -> target_geometry) target in
+      let optional name = if name = "" then None else Some name in
+      let native = Rdk.Fuse_grid.fuse ~selection:source_selection ~target_selection ~targeting ~using ~metric ~tolerance:0.3
+          ~position ~weight_attribute:"weight" ~attributes:Rdk.Fuse_reduce.Average_numeric ~attribute_rules:native_attribute_rules
+          ~group_rules:native_group_rules ?radius_attribute:(optional radius_attribute) ?match_attribute:(optional match_attribute)
+          ~match_tolerance ~snapped_group:"snapped" ~snapped_destination_attribute:"destination" ~remove_degenerate_primitives:true
+          ~remove_unused_points_from_degenerate_primitives:true ?target fuse_source_geometry |> Result.get_ok in
+      check (equal_geometry native (cook 1 typed)) "fuse targeting and reducers match native") fuse_positions)
+      [Rdk.Fuse_grid.Euclidean,"Euclidean";Componentwise,"Componentwise"])
+      [Rdk.Fuse_grid.Least_target_point,"Least target point";Closest_target_point,"Closest target point"])
+      [false,"Near points";true,"Specified points"]) [false;true];
   List.iter (fun inclusive -> List.iter (fun match_attributes -> List.iter (fun (match_condition,condition_choice) ->
     List.iter (fun modify_target -> List.iter (fun fuse_points -> List.iter (fun keep_fused_points ->
       List.iter (fun remove_degenerate_primitives -> List.iter (fun remove_unused_points_from_degenerate_primitives ->
@@ -2204,6 +2247,30 @@ Lisp_sop.node ~with_:["detect_source_node", (detect_source_node)] (Printf.sprint
   let copied = Lisp_sop.node ~with_:["copy_source", (copy_source); "copy_target", (copy_target)] {|(sop/attribute_copy (sop/ext_copy_source) (sop/ext_copy_target))|} in
   same_cook "attribute copy defaults" ~inputs:[copy_target] ~typed:copied ~factory:Nodes.Attribute_copy.factory [] copy_source;
   cache_identity ~changes:["rules",Parameter.Text_value "point\tid\tid_copy"] "attribute copy all fields" copied;
+  let copy_rules = "point\tvalue\tvalue_copy\nvertex\tvalue\tvalue_copy\nprimitive\tvalue\tvalue_copy\ndetail\tvalue\tvalue_copy\npoint\tP\t" in
+  let native_copy_rules = List.map (fun owner ->
+      {Rdk.Attribute_ops.copy_owner=owner;copy_pattern="value";copy_into=Some "value_copy"})
+      [Rdk.Attribute.Point;Vertex;Primitive;Detail]
+    @ [{Rdk.Attribute_ops.copy_owner=Rdk.Attribute.Point;copy_pattern="P";copy_into=None}] in
+  List.iter (fun (group_owner,owner_choice) -> List.iter (fun (match_choice,native_match) ->
+    List.iter (fun allow_position ->
+      if group_owner <> Rdk.Group.Vertex || match_choice <> "By attribute values" then begin
+      let typed = sop ~inputs:[copy_source; copy_target] "attribute_copy"
+          [ks "group_owner" owner_choice; ks "match_" match_choice; kb "allow_position" allow_position;
+           ks "rules" copy_rules; ks "source_group" "selected"; ks "target_group" "selected"] in
+      same_cook ("attribute copy " ^ owner_choice ^ match_choice) ~inputs:[copy_target] ~typed ~factory:Nodes.Attribute_copy.factory
+        ["group_owner",Parameter.Choice_value owner_choice;"match_",Choice_value match_choice;"allow_position",Bool_value allow_position;
+         "rules",Text_value copy_rules;"source_group",Text_value "selected";"target_group",Text_value "selected"] copy_source;
+      let source_group = Rdk.Geometry.find_group ~owner:group_owner "selected" copy_source_geometry |> Option.get
+      and target_group = Rdk.Geometry.find_group ~owner:group_owner "selected" copy_target_geometry |> Option.get in
+      let native = Rdk.Attribute_ops.copy ~group_owner ~match_:native_match ~allow_position ~rules:native_copy_rules ~source_group ~target_group
+          ~source:copy_source_geometry ~target:copy_target_geometry () |> Result.get_ok in
+      check (equal_geometry native (cook 1 typed)) "attribute copy flat controls match native"
+      end) [false;true])
+    ["Cyclic",Rdk.Attribute_ops.Cyclic;
+     "By attribute values",By_values {source_attribute="id";target_attribute="id"};
+     "To source element",To_element {target_attribute="source"}])
+    [Rdk.Group.Point,"Points";Vertex,"Vertices";Primitive,"Primitives"];
   same_cook "attribute copy group pattern precedence" ~inputs:[copy_target]
     ~typed:(Lisp_sop.node ~with_:["copy_source", (copy_source); "copy_target", (copy_target)] {|(sop/attribute_copy
    (sop/ext_copy_source)
@@ -2266,6 +2333,37 @@ Lisp_sop.node ~with_:["detect_source_node", (detect_source_node)] (Printf.sprint
   same_cook "surface transfer defaults" ~inputs:[surface_target] ~typed:surface_transfer
     ~factory:Nodes.Attribute_transfer_surface.factory [] surface_source;
   cache_identity "surface transfer all fields" surface_transfer;
+  let surface_attributes = "point\tCd\tcolor\nvertex\tcorner\tcorner_copy\nprimitive\tmaterial\tmaterial_copy" in
+  let native_surface_attributes = List.map (fun (source_owner,source_name,target_name) ->
+      {Rdk.Attribute_ops.source_owner;source_name;target_name})
+    [Rdk.Attribute.Point,"Cd","color";Vertex,"corner","corner_copy";Primitive,"material","material_copy"] in
+  List.iter (fun (target_owner,owner_choice,group_owner) -> List.iter (fun (falloff_choice,native_falloff) ->
+    List.iter (fun (distance_choice,max_distance,blend_width) ->
+      List.iter (fun (unmatched,unmatched_choice) -> List.iter (fun (source_vertex_selection,selection_choice) ->
+        let typed = sop ~inputs:[surface_source; surface_target] "attribute_transfer_surface"
+            [ks "target_owner" owner_choice; ks "attributes" surface_attributes; ks "distance_mode" distance_choice;
+             kf "max_distance" 1.; kf "blend_width" blend_width; ks "falloff" falloff_choice; kf "uniform_bias" 0.7;
+             ks "unmatched" unmatched_choice; ks "distance_attribute" "distance"; ks "source_group" "source";
+             ks "source_vertex_group" "corners"; ks "source_vertex_selection" selection_choice; ks "target_group" "target"] in
+        same_cook ("surface transfer " ^ owner_choice ^ falloff_choice ^ distance_choice) ~inputs:[surface_target]
+          ~typed ~factory:Nodes.Attribute_transfer_surface.factory ["target_owner",Parameter.Choice_value owner_choice;
+            "attributes",Text_value surface_attributes;"distance_mode",Choice_value distance_choice;"max_distance",Float_value 1.;
+            "blend_width",Float_value blend_width;"falloff",Choice_value falloff_choice;"uniform_bias",Float_value 0.7;
+            "unmatched",Choice_value unmatched_choice;"distance_attribute",Text_value "distance";
+            "source_group",Text_value "source";"source_vertex_group",Text_value "corners";
+            "source_vertex_selection",Choice_value selection_choice;"target_group",Text_value "target"] surface_source;
+        let source_primitives = Rdk.Geometry.find_group ~owner:Rdk.Group.Primitive "source" surface_geometry |> Option.get
+        and source_vertices = Rdk.Geometry.find_group ~owner:Rdk.Group.Vertex "corners" surface_geometry |> Option.get
+        and target_elements = Rdk.Geometry.find_group ~owner:group_owner "target" target_geometry |> Option.get in
+        let native = Rdk.Attribute_ops.transfer_surface ~target_owner ~attributes:native_surface_attributes ?max_distance ~blend_width
+            ~falloff:native_falloff ~unmatched ~distance_attribute:"distance" ~source_primitives ~source_vertices
+            ~source_vertex_selection ~target_elements ~source:surface_geometry ~target:target_geometry () |> Result.get_ok in
+        check (equal_geometry native (cook 1 typed)) "surface transfer flat controls match native")
+        [Rdk.Attribute_ops.All_triangle_vertices,"All triangle vertices";Any_triangle_vertex,"Any triangle vertex"])
+      [Rdk.Attribute_ops.Keep_target,"Keep target";Default_value,"Default value"])
+      ["Explicit",Some 1.,0.2;"Auto",None,0.])
+    ["Linear",Rdk.Attribute_ops.Linear;"Smoothstep",Smoothstep;"Uniform",Uniform 0.7])
+    [Rdk.Attribute.Point,"Point",Rdk.Group.Point;Vertex,"Vertex",Vertex;Primitive,"Primitive",Primitive];
   same_cook "surface transfer group patterns" ~inputs:[surface_target]
     ~typed:(Lisp_sop.node ~with_:["surface_source", (surface_source); "surface_target", (surface_target)] {|(sop/attribute_transfer_surface
    (sop/ext_surface_source)
@@ -4177,21 +4275,34 @@ vertex	corner	x")|});
   same_cook "snap to grid defaults" ~typed:snapped ~factory:Nodes.Snap_to_grid.factory [] snap_input;
   cache_identity ~changes:["attribute_rules", Parameter.Text_value "value\tmaximum\t";
       "group_rules", Text_value "selected\tunion"] "snap to grid all fields" snapped;
-  List.iter (fun (_rounding, choice) ->
+  let snap_geometry = cook 1 snap_input in
+  let snap_selection = Rdk.Geometry.find_group ~owner:Rdk.Group.Point "selected" snap_geometry |> Option.get in
+  List.iter (fun (rounding, choice) ->
     List.iter (fun limit_distance ->
-      same_cook ("snap to grid " ^ choice ^ " limited " ^ string_of_bool limit_distance)
-        ~typed:(sop ~inputs:[snap_input] "snap_to_grid"
+      let typed = sop ~inputs:[snap_input] "snap_to_grid"
           [ks "group" "selected"; ks "rounding" choice; kb "limit_distance" limit_distance; kf "max_distance" 0.25;
-           kv "spacing" (Vec3.create 1. 2. 3.); kv "offset" (Vec3.create 0.25 0.5 0.75); ks "snapped_group" "snapped"])
+           kv "spacing" (Vec3.create 1. 2. 3.); kv "offset" (Vec3.create 0.25 0.5 0.75); ks "snapped_group" "snapped"] in
+      check (equal_geometry (cook 1 typed)
+          (Rdk.Fuse_grid.snap_to_grid ~selection:snap_selection ~spacing:(Vec3.create 1. 2. 3.)
+             ~offset:(Vec3.create 0.25 0.5 0.75) ~rounding ?max_distance:(if limit_distance then Some 0.25 else None)
+             ~snapped_group:"snapped" snap_geometry |> Rdk.Error.unguard |> get))
+        "snap to grid rounding and distance limit match native";
+      same_cook ("snap to grid " ^ choice ^ " limited " ^ string_of_bool limit_distance)
+        ~typed
         ~factory:Nodes.Snap_to_grid.factory ["group", Parameter.Text_value "selected";
           "rounding", Choice_value choice; "limit_distance", Bool_value limit_distance;
           "max_distance", Float_value 0.25; "spacing_y", Float_value 2.; "spacing_z", Float_value 3.;
           "offset_x", Float_value 0.25; "offset_y", Float_value 0.5; "offset_z", Float_value 0.75;
           "snapped_group", Text_value "snapped"] snap_input) [false; true])
     [Rdk.Fuse_grid.Grid_nearest, "Nearest"; Grid_down, "Down"; Grid_up, "Up"];
-  List.iter (fun (_position, choice) ->
+  List.iter (fun (position, choice) ->
+    let typed = sop ~inputs:[snap_input] "snap_to_grid" [kb "fuse_points" true; ks "position" choice; ks "weight_attribute" "w"] in
+    check (equal_geometry (cook 1 typed)
+        (Rdk.Fuse_grid.snap_to_grid ~fuse_points:true ~position ~weight_attribute:"w" snap_geometry
+         |> Rdk.Error.unguard |> get))
+      ("snap to grid position " ^ choice ^ " matches native");
     same_cook ("snap to grid position " ^ choice)
-      ~typed:(sop ~inputs:[snap_input] "snap_to_grid" [kb "fuse_points" true; ks "position" choice; ks "weight_attribute" "w"])
+      ~typed
       ~factory:Nodes.Snap_to_grid.factory ["fuse_points", Parameter.Bool_value true;
         "position", Choice_value choice; "weight_attribute", Text_value "w"] snap_input)
     [Rdk.Fuse_reduce.First_position, "First"; Least_point_position, "Least point";
@@ -4201,7 +4312,6 @@ vertex	corner	x")|});
      Root_mean_square_position, "Root mean square"; Weighted_average_position, "Weighted average";
      Weighted_sum_position, "Weighted sum"; Minimum_weight_position, "Minimum weight";
      Maximum_weight_position, "Maximum weight"];
-  let snap_geometry = cook 1 snap_input in
   List.iter (fun (token, method_) ->
     let attribute_rules = "value\t" ^ token ^ "\tw" in
     let typed = Lisp_sop.node ~with_:["snap_input", (snap_input)] (Printf.sprintf {|(sop/snap_to_grid (sop/ext_snap_input) :fuse_points true :attribute_rules %S)|} (attribute_rules)) in
@@ -4259,22 +4369,27 @@ vertex	corner	x")|});
   let cleaned = Lisp_sop.node ~with_:["clean_input", (clean_input)] {|(sop/clean (sop/ext_clean_input))|} in
   same_cook "clean Lisp defaults" ~typed:cleaned ~factory:Nodes.Clean.factory [] clean_input;
   cache_identity "clean all fields" cleaned;
-  List.iter (fun (_, epsilon_choice) ->
-    List.iter (fun (_, consolidate_choice) ->
-      List.iter (fun (_, overlap_choice) ->
-        same_cook ("clean " ^ epsilon_choice ^ " " ^ consolidate_choice ^ " " ^ overlap_choice)
-          ~typed:(sop ~inputs:[clean_input] "clean"
+  let clean_geometry = cook 1 clean_input in
+  List.iter (fun (epsilon, epsilon_choice) ->
+    List.iter (fun (consolidate_distance, consolidate_choice) ->
+      List.iter (fun (overlaps, overlap_choice) ->
+        let typed = sop ~inputs:[clean_input] "clean"
             [ks "epsilon_mode" epsilon_choice; ks "consolidate_mode" consolidate_choice; ks "overlaps" overlap_choice;
              kf "epsilon" 0.; kf "consolidate_distance" 0.01; kb "reverse_winding" true; kb "remove_nan_points" false;
-             kb "remove_unused_points" false; kb "delete_unused_groups" false])
+             kb "remove_unused_points" false; kb "delete_unused_groups" false] in
+        check (equal_geometry (cook 1 typed)
+            (Rdk.Clean.run ?epsilon ?consolidate_distance ?overlaps ~reverse_winding:true clean_geometry |> Rdk.Error.unguard |> get))
+          "clean epsilon, consolidation and overlap modes match native";
+        same_cook ("clean " ^ epsilon_choice ^ " " ^ consolidate_choice ^ " " ^ overlap_choice)
+          ~typed
           ~factory:Nodes.Clean.factory ["epsilon_mode", Parameter.Choice_value epsilon_choice;
             "consolidate_mode", Choice_value consolidate_choice; "overlaps", Choice_value overlap_choice;
             "epsilon", Float_value 0.; "consolidate_distance", Float_value 0.01;
             "reverse_winding", Bool_value true; "remove_nan_points", Bool_value false;
             "remove_unused_points", Bool_value false; "delete_unused_groups", Bool_value false] clean_input)
-        [(), "Keep first"; (), "Delete pairs"; (), "Auto"])
-      [(), "Explicit"; (), "Auto"])
-    [(), "Explicit"; (), "Auto"];
+        [Some Rdk.Clean.Keep_first_overlap, "Keep first"; Some Rdk.Clean.Delete_overlap_pairs, "Delete pairs"; None, "Auto"])
+      [Some 0.01, "Explicit"; None, "Auto"])
+    [Some 0., "Explicit"; None, "Auto"];
   let clean_attributes = List.fold_left (fun input owner ->
       sop ~inputs:[input] "set_float" [ks "owner" owner; ks "name" "unused"; kf "value" 2.]) clean_input
       ["Point"; "Vertex"; "Primitive"; "Detail"] in
@@ -4360,22 +4475,36 @@ vertex	corner	x")|});
   let platonic = Lisp_sop.node {|(sop/platonic)|} in
   same_generator "platonic Lisp defaults" ~typed:platonic ~factory:Nodes.Platonic.factory [];
   cache_identity "platonic all fields" platonic;
-  List.iter (fun (_kind, choice) ->
-    List.iter (fun (_normals, normal_choice) ->
+  List.iter (fun (kind, choice) ->
+    List.iter (fun (normals, normal_choice) ->
+      let typed = sop "platonic" [ks "kind" choice; ks "normals" normal_choice; kf "radius" 2.] in
       same_generator ("platonic " ^ choice ^ " " ^ normal_choice)
-        ~typed:(sop "platonic" [ks "kind" choice; ks "normals" normal_choice; kf "radius" 2.]) ~factory:Nodes.Platonic.factory
-        ["kind", Parameter.Choice_value choice; "normals", Choice_value normal_choice; "radius", Float_value 2.])
+        ~typed ~factory:Nodes.Platonic.factory
+        ["kind", Parameter.Choice_value choice; "normals", Choice_value normal_choice; "radius", Float_value 2.];
+      check (equal_geometry (cook 1 typed)
+          (Rdk.Parametric_generators.platonic ~kind ~normals ~orientation:Rdk.Parametric_generators.Platonic_y
+             ~radius:2. () |> Result.get_ok))
+        "platonic kind and normals match native")
       [Rdk.Parametric_generators.Platonic_no_normals, "None"; Platonic_point_normals, "Point";
         Platonic_vertex_normals, "Vertex"])
     [Rdk.Parametric_generators.Platonic_tetrahedron, "Tetrahedron"; Platonic_cube, "Cube";
       Platonic_octahedron, "Octahedron"; Platonic_icosahedron, "Icosahedron";
       Platonic_dodecahedron, "Dodecahedron"; Platonic_soccer_ball, "Soccer ball"];
   List.iter (fun choice ->
-    List.iter (fun (_rotation_order, order_choice) ->
-      same_generator ("platonic " ^ choice ^ " " ^ order_choice)
-        ~typed:(sop "platonic" [ks "orientation" choice; kv "axis" (Vec3.create 1. 2. 3.);
+    List.iter (fun (rotation_order, order_choice) ->
+      let typed = sop "platonic" [ks "orientation" choice; kv "axis" (Vec3.create 1. 2. 3.);
           kv "center" (Vec3.create 2. 3. 4.); kv "rotation" (Vec3.create 0.1 0.2 0.3);
-          ks "rotation_order" order_choice; ks "face_groups" "faces"]) ~factory:Nodes.Platonic.factory
+          ks "rotation_order" order_choice; ks "face_groups" "faces"] in
+      let orientation = match choice with
+        | "X axis" -> Rdk.Parametric_generators.Platonic_x | "Y axis" -> Platonic_y | "Z axis" -> Platonic_z
+        | _ -> Platonic_axis (Vec3.create 1. 2. 3.) in
+      check (equal_geometry (cook 1 typed)
+          (Rdk.Parametric_generators.platonic ~kind:Rdk.Parametric_generators.Platonic_dodecahedron
+             ~normals:Rdk.Parametric_generators.Platonic_vertex_normals ~orientation ~center:(Vec3.create 2. 3. 4.)
+             ~rotation:(Vec3.create 0.1 0.2 0.3) ~rotation_order ~face_groups:"faces" ~radius:1. () |> Result.get_ok))
+        "platonic orientation and rotation order match native";
+      same_generator ("platonic " ^ choice ^ " " ^ order_choice)
+        ~typed ~factory:Nodes.Platonic.factory
         ["orientation", Parameter.Choice_value choice; "axis_x", Float_value 1.; "axis_y", Float_value 2.;
           "axis_z", Float_value 3.; "center_x", Float_value 2.; "center_y", Float_value 3.; "center_z", Float_value 4.;
           "rotation_x", Float_value 0.1; "rotation_y", Float_value 0.2; "rotation_z", Float_value 0.3;
@@ -4636,11 +4765,21 @@ vertex	corner	x")|});
   let enumeration_input = Lisp_sop.node ~with_:["grouped_colors", (grouped_colors)] {|(-> (sop/set_int (sop/ext_grouped_colors) :name "piece" :value 1)
      (sop/set_int :owner "Vertex" :name "piece" :value 2)
      (sop/set_int :owner "Primitive" :name "piece" :value 3))|} in
+  let enumeration_geometry = cook 1 enumeration_input in
   List.iter (fun choice ->
-    List.iter (fun (_mode, mode_choice) ->
-      same_cook ("enumerate " ^ choice ^ " " ^ mode_choice) ~typed:(sop ~inputs:[enumeration_input] "enumerate"
+    List.iter (fun (mode, mode_choice) ->
+      let typed = sop ~inputs:[enumeration_input] "enumerate"
           [ks "owner" choice; ks "name" "number"; ks "group" "selection"; ki "start" 5; ki "step" (-2);
-           ks "storage" "Text"; ks "prefix" "part_"; ks "piece_attribute" "piece"; ks "mode" mode_choice])
+           ks "storage" "Text"; ks "prefix" "part_"; ks "piece_attribute" "piece"; ks "mode" mode_choice] in
+      let owner,group_owner = match choice with
+        | "Point" -> Rdk.Attribute.Point,Rdk.Group.Point | "Vertex" -> Rdk.Attribute.Vertex,Rdk.Group.Vertex
+        | _ -> Rdk.Attribute.Primitive,Rdk.Group.Primitive in
+      let selection = Rdk.Geometry.find_group ~owner:group_owner "selection" enumeration_geometry |> Option.get in
+      check (equal_geometry (cook 1 typed)
+          (Rdk.Attribute_ops.enumerate ~selection ~start:5 ~step:(-2) ~storage:(Rdk.Attribute_ops.Text {prefix="part_"})
+             ~piece_attribute:"piece" ~mode ~owner ~name:"number" enumeration_geometry |> Result.get_ok))
+        "enumerate owner and mode match native";
+      same_cook ("enumerate " ^ choice ^ " " ^ mode_choice) ~typed
         ~factory:Nodes.Enumerate.factory ["owner", Parameter.Choice_value choice;
           "name", Text_value "number"; "group", Text_value "selection";
           "start", Int_value 5; "step", Int_value (-2); "storage", Choice_value "Text";
@@ -4971,9 +5110,13 @@ Lisp_sop.node ~with_:["normal_input", (normal_input)] (Printf.sprintf {|(sop/tra
     ~factory:Nodes.Match_size.factory [] normal_input;
   cache_identity "match size all fields" matched;
   let fit_target = Lisp_sop.node {|(sop/box :size [3.0 4.0 5.0])|} in
-  List.iter (fun (_fit, choice) ->
+  List.iter (fun (fit, choice) ->
+    let typed = sop ~inputs:[normal_input; fit_target] "match_size" [ks "fit" choice] in
+    check (equal_geometry (cook 1 typed)
+        (Rdk.Match_size.run ~fit ~target:(cook 1 fit_target) (cook 1 normal_input) |> Rdk.Error.unguard |> get))
+      ("match size " ^ choice ^ " matches native");
     same_cook ~optional_inputs:[Some normal_input; Some fit_target] ("match size " ^ choice)
-      ~typed:(sop ~inputs:[normal_input; fit_target] "match_size" [ks "fit" choice])
+      ~typed
       ~factory:Nodes.Match_size.factory ["fit", Parameter.Choice_value choice]
       normal_input)
     [Rdk.Match_size.Translate_only, "Translate only"; Stretch, "Stretch"; Contain, "Contain";
@@ -6510,15 +6653,23 @@ Lisp_sop.node ~with_:["normal_input", (normal_input)] (Printf.sprintf {|(sop/tra
       numbers_attribute="sourcenums";weights_attribute="sourceweights"};
     "Primitive weights",Rdk.Attribute_ops.Primitive_weights {
       numbers_attribute="sourcenums";weights_attribute="sourceweights"}] in
-  let interpolation_driver_rules driver_name =
+  let interpolation_driver_owners driver_name =
     let supported owner = match driver_name with
       | "Primitive UVW" | "Vertex weights" -> true
       | "Point weights" -> owner = Rdk.Attribute.Point || owner = Rdk.Attribute.Detail
       | _ -> owner = Rdk.Attribute.Primitive || owner = Rdk.Attribute.Detail in
-    String.concat "\n" (List.filter_map (fun (owner,token) ->
-      if supported owner then Some (token ^ "\tweight\t" ^ token ^ "_weight") else None) interpolation_owners) in
-  List.iter (fun (_target_owner,owner_name) ->
-    List.iter (fun (driver_name,_native_driver) ->
+    List.filter (fun (owner,_) -> supported owner) interpolation_owners in
+  let interpolation_driver_rules driver_name =
+    String.concat "\n" (List.map (fun (_,token) -> token ^ "\tweight\t" ^ token ^ "_weight")
+      (interpolation_driver_owners driver_name)) in
+  let interpolation_driver_attributes driver_name =
+    List.map (fun (owner,token) -> {Rdk.Attribute_ops.interpolate_owner=owner;
+        interpolate_source="weight";interpolate_target=token ^ "_weight"})
+      (interpolation_driver_owners driver_name) in
+  let interpolation_native result = match result with
+    | Ok geometry -> geometry | Error error -> fail (Rdk.Error.to_string error) in
+  List.iter (fun (target_owner,owner_name) ->
+    List.iter (fun (driver_name,native_driver) ->
       let interpolation_rules = interpolation_driver_rules driver_name in
       List.iter (fun pre_scale -> List.iter (fun normalize_weights ->
         List.iter (fun threshold -> List.iter (fun blend ->
@@ -6533,16 +6684,28 @@ Lisp_sop.node ~with_:["normal_input", (normal_input)] (Printf.sprintf {|(sop/tra
               "pre_scale",Float_value pre_scale;"normalize_weights",Bool_value normalize_weights;
               "threshold",Float_value threshold;"blend",Float_value blend;
               "unmatched",Choice_value (if unmatched = Rdk.Attribute_ops.Keep_target then "Keep target" else "Default value")] in
+            let native = Rdk.Attribute_ops.interpolate ~target_owner ~driver:native_driver
+              ~pre_scale ~normalize_weights ~threshold ~blend ~unmatched
+              ~attributes:(interpolation_driver_attributes driver_name) ~source:interpolation_source_geometry
+              ~target:interpolation_target_geometry () |> interpolation_native in
+            check (equal_geometry native (cook 1 typed)) "Attribute Interpolate native numeric parity";
             same_node "Attribute Interpolate numeric modes" ~typed
               ~catalog:(from_factory Nodes.Attribute_interpolate.factory values
                 [interpolation_source;interpolation_target]))
             [Rdk.Attribute_ops.Keep_target;Default_value]) [0.25;1.])
           [1e-6;0.5]) [false;true]) [-1.;0.;1.5]) interpolation_drivers)
     interpolation_owners;
-  List.iter (fun (_target_owner,owner_name) -> List.iter (fun computed_owner ->
+  List.iter (fun (target_owner,owner_name) -> List.iter (fun computed_owner ->
     let typed = sop ~inputs:[interpolation_source; interpolation_target] "attribute_interpolate"
       [ks "target_owner" (String.capitalize_ascii owner_name); ks "attributes" interpolation_rules;
        kb "compute_weights" true; ks "computed_owner" (if computed_owner = Rdk.Attribute.Point then "Point" else "Vertex")] in
+    let computed = {Rdk.Attribute_ops.computed_owner;
+      computed_numbers_attribute="computednums";computed_weights_attribute="computedweights"} in
+    let native = Rdk.Attribute_ops.interpolate ~target_owner ~attributes:(interpolation_driver_attributes "Primitive UVW")
+      ~driver:(Rdk.Attribute_ops.Primitive_uvw {primitive_attribute="sourceprim";uvw_attribute="sourceuvw"})
+      ~compute_weights:computed ~source:interpolation_source_geometry ~target:interpolation_target_geometry ()
+      |> interpolation_native in
+    check (equal_geometry native (cook 1 typed)) "Attribute Interpolate computed-array native parity";
     same_node "Attribute Interpolate computed arrays" ~typed
       ~catalog:(from_factory Nodes.Attribute_interpolate.factory [
         "target_owner",Choice_value (String.capitalize_ascii owner_name);
@@ -6558,12 +6721,17 @@ Lisp_sop.node ~with_:["normal_input", (normal_input)] (Printf.sprintf {|(sop/tra
     let selected = Rdk.Group.init ~owner ~name:"selected" count (fun i -> i mod 2 = 0) in
     let target_geometry = Rdk.Geometry.with_group selected interpolation_target_geometry |> Result.get_ok in
     let target = Lisp_sop.snapshot (target_geometry) in
-    List.iter (fun (driver_name,_native_driver) ->
+    List.iter (fun (driver_name,native_driver) ->
       let interpolation_rules = interpolation_driver_rules driver_name in
       List.iter (fun (group,group_pattern) ->
         let typed = sop ~inputs:[interpolation_source; target] "attribute_interpolate"
           [ks "target_owner" (String.capitalize_ascii token); ks "driver" driver_name; kf "threshold" 0.1;
            ks "attributes" interpolation_rules; ks "group" group; ks "group_pattern" group_pattern] in
+        let native = Rdk.Attribute_ops.interpolate ~target_owner ~driver:native_driver
+          ~selection:selected ~threshold:0.1 ~normalize_weights:true
+          ~attributes:(interpolation_driver_attributes driver_name) ~source:interpolation_source_geometry
+          ~target:target_geometry () |> interpolation_native in
+        check (equal_geometry native (cook 1 typed)) "Attribute Interpolate selected native parity";
         same_node "Attribute Interpolate exact and patterned selections" ~typed
           ~catalog:(from_factory Nodes.Attribute_interpolate.factory [
             "target_owner",Choice_value (String.capitalize_ascii token);
@@ -6626,6 +6794,14 @@ Lisp_sop.node ~with_:["normal_input", (normal_input)] (Printf.sprintf {|(sop/tra
    (sop/ext_in1249)
    (sop/ext_interpolation_target)
    :attributes %S)|} (interpolation_escaped_rules)) in
+  let interpolation_escaped_native = Rdk.Attribute_ops.interpolate ~target_owner:Rdk.Attribute.Point
+    ~driver:(Rdk.Attribute_ops.Primitive_uvw {primitive_attribute="sourceprim";uvw_attribute="sourceuvw"})
+    ~attributes:[{Rdk.Attribute_ops.interpolate_owner=Rdk.Attribute.Point;
+      interpolate_source="weight\tvalue";interpolate_target="out"}]
+    ~source:interpolation_escaped_geometry ~target:interpolation_target_geometry ()
+    |> interpolation_native in
+  check (equal_geometry interpolation_escaped_native (cook 1 interpolation_escaped))
+    "Attribute Interpolate escaped rule table native parity";
   same_node "Attribute Interpolate escaped rule tables" ~typed:interpolation_escaped
     ~catalog:(from_factory Nodes.Attribute_interpolate.factory ["attributes",Text_value interpolation_escaped_rules]
       [interpolation_escaped_source;interpolation_target]);
