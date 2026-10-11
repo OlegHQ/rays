@@ -46,13 +46,23 @@ let run () =
             (Some ((1, 1, 2, 1), 1)));
         expect_error "offscreen execution accepted a native cursor"
           (Rays_execution.set_cursor execution `Horizontal_resize);
+        let clear_to execution colour=
+          let submission=get(Rays_execution.Private.begin_submission execution)in
+          get(Rays_execution.Private.step~clear:colour submission[])in
+        clear_to execution(1.,0.,0.,1.);
         let first=get(Rays_execution.capture execution)in
         require(Bytes.length first=3*2*4)"offscreen initial extent";
         pixel first 0(Bytes.of_string"\255\000\000\255")
           "offscreen initial clear pixel";
-        let first_into=Bytes.create(Bytes.length first)in
-        require(first_into=first)"offscreen caller-owned capture changed pixels";
-        let resized=get(Rays_execution.capture execution)in
+        require(get(Rays_execution.capture execution)=first)
+          "offscreen capture changed pixels";
+        let resized=
+          let bigger=get(Rays_execution.create_offscreen
+            {configuration with logical_width=5;logical_height=4;
+              drawable_width=5;drawable_height=4})in
+          clear_to bigger(0.,0.,1.,1.);
+          let pixels=get(Rays_execution.capture bigger)in
+          ignore(get(Rays_execution.destroy bigger));pixels in
         require(Bytes.length resized=5*4*4)"offscreen resized extent";
         pixel resized((5*4-1)*4)(Bytes.of_string"\000\000\255\255")
           "offscreen resized clear pixel";

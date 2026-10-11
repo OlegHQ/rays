@@ -722,6 +722,11 @@ let scene2_resource_stamps resolve commands=
       Some(Canvas_stamp(id,canvas,Runtime_resources.Canvas.generation canvas)))
     (List.sort_uniq Int.compare!ids)in
   not!missing,stamps
+(* A plan holding a GPU shape token is lowered again every time: the token's
+   source can go stale, and only lowering checks that. *)
+let has_gpu_shapes commands=Array.exists(function
+  |Scene_command.Render_ir.Shapes shapes->Scene_command.Shape_batch.gpu shapes<>None
+  |_->false)commands
 let lower_scene2_with_policy value ~lease_policy ~density ~resource:resolve ir =
   if value.dead then lower_scene2_uncached value~lease_policy~density~resource:resolve ir else
   let commands=Scene_command.Render_ir.Private.commands_readonly ir in
@@ -769,7 +774,7 @@ let lower_scene2_with_policy value ~lease_policy ~density ~resource:resolve ir =
       |Ok draws as result->
         if List.exists(fun draw->match draw.texture with
           |Some texture->sampled_texture_bytes texture>snapshot_cache_entry_byte_capacity
-          |None->false)draws then result else
+          |None->false)draws||has_gpu_shapes commands then result else
         let plan={plan_ir_id=ir_id;
           plan_command_count=command_count;
           plan_source_bytes=scene2_plan_source_bytes commands;plan_density=density;
