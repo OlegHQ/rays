@@ -794,15 +794,12 @@
       "api": [
         "exception Unsupported",
         "val lower : ? fusion : bool -> ? dynamic : bool -> ? count_source : Core.Region.count_source -> Flow.Eval.residual -> Flow.Workspace.term -> ( Core.Region.t , Flow.Diagnostic.t list ) result",
+        "val rebind : Core.Region.t -> Flow.Eval.residual -> Core.Region.t option",
         "val width_of : Flow.Ty.t -> int",
         "val components : Flow.Eval.value -> float array",
-        "val captured_value : ( string * Flow.Eval.value ) list -> string -> string list -> Flow.Eval.value",
-        "val count_of : Flow.Eval.residual -> Flow.Workspace.term -> int option",
-        "val count_of_sources : Core.Region.iteration -> int option array -> int option",
-        "val reads_names : string list -> Flow.Workspace.term -> bool",
-        "val rebind : Core.Region.t -> Flow.Eval.residual -> Core.Region.t option"
+        "val count_of : Flow.Eval.residual -> Flow.Workspace.term -> int option"
       ],
-      "api_sha256": "cbabdcf70e18c4aea98c6edef4181e2cdb8386fbe7715255d18d20b9874fff6e",
+      "api_sha256": "00d72071c11ac438710de3f211cabf4c8801c85a902929621f196ce55e66a286",
       "excluded_legacy_symbols": [],
       "library": "flow_ir",
       "module": "Core_region",
@@ -911,7 +908,6 @@
         "val force : ? state : Flow.Eval.state -> ? elems : ( string * Flow.Eval.value ) list -> ? resolve : ( Flow.Eval.value -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> ? measure : ( ( unit -> float ) * ( t -> seconds : float -> reference : bool -> unit ) ) -> t -> live : Flow.Eval.live -> ( Flow.Eval.value , Flow.Diagnostic.t ) result",
         "val reference : ? state : Flow.Eval.state -> ? elems : ( string * Flow.Eval.value ) list -> ? resolve : ( Flow.Eval.value -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> t -> live : Flow.Eval.live -> ( Flow.Eval.value , Flow.Diagnostic.t ) result",
         "module Private : sig",
-        "val core_regions : bool ref",
         "val trace : ( ( t , Flow.Diagnostic.t list ) Stdlib.result -> unit ) ref",
         "val ordered_add : t -> bool",
         "val output_reachable : t -> bool array",
@@ -921,7 +917,7 @@
         "val prepare : ? state : Flow.Eval.state -> ? resolve : ( Flow.Eval.value -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> ? measure : ( ( unit -> float ) * ( t -> seconds : float -> reference : bool -> unit ) ) -> t -> live : Flow.Eval.live -> ( inputs , Flow.Diagnostic.t ) result",
         "end"
       ],
-      "api_sha256": "136ceda9f5628797fa724ed880bbed443e4bf3d04ce9f6411cb70d394d975b44",
+      "api_sha256": "ded05a4f4d6c0018fdeddb8bdc86a9103e2b7953f770b8348d0ea4620262fc94",
       "excluded_legacy_symbols": [],
       "library": "flow_ir",
       "module": "Packed",
