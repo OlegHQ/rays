@@ -182,14 +182,14 @@ let ()=
     assert(Result.get_ok(Rays.Image.Private.pixels image)=oracle);
     let prepared=ok(Rays_editor.Drawing.prepare evaluated.plan(List.assoc "picture" evaluated.results))in
     let commands=ref None in
-    List.iter(fun(reference,domains)->Rays.Parallel.run ~domains(fun()->
-      let scene=ok(Rays_editor.Drawing.render_prepared ~reference ~image:(Editor.Private.image owner)
+    List.iter(fun domains->Rays.Parallel.run ~domains(fun()->
+      let scene=ok(Rays_editor.Drawing.render_prepared ~image:(Editor.Private.image owner)
         prepared ~live:(Frame_input.at_time 0.) ~size:(32,32))in
       let actual=Rays.Scene.Private.commands scene in
       assert(Array.exists(function Scene_command.Render_ir.Image _->true|_->false)actual);
       (match !commands with None->commands:=Some actual|Some expected->assert(actual=expected));
       assert(Result.get_ok(Rays.Image.Private.pixels image)=oracle);
-      ())) [false,1;false,1;false,1;false,8;true,1;true,8];
+      ())) [1;1;1;8];
     assert(Editor.Private.image_stats owner=(1,0)));
   assert(Editor.Private.image_stats owner=(1,1));
   let doc=load "(workspace images (graph a :context image (image/load \"sdl3_image_fixtures/sample.png\")) \

@@ -13,7 +13,7 @@ type configuration = { logical_width:int; logical_height:int;
 let default_configuration = { logical_width=640; logical_height=480;
   drawable_width=640; drawable_height=480; title="Rays";vsync=true; high_density=true }
 type family = Scene_execution.pipeline_family = Scene2 | Scene2_textured | Scene3 | Scene3_points | Scene3_textured | Scene3_shadow |
-  Scene3_stencil | Scene3_textured_stencil | Scene3_shadow_stencil | Scene3_world | Ui
+  Scene3_stencil | Scene3_textured_stencil | Scene3_shadow_stencil | Scene3_world | Ui | Marks
 type blend = Ogpu.Pipeline.blend = Replace | Alpha | Add | Multiply | Screen | Subtract
 type draw = { family:family; blend:blend; texture:Scene_execution.sampled_texture option;
   auxiliary:Scene_execution.auxiliary_resource option;vertex_attributes:(string*bytes)option;
@@ -1160,7 +1160,7 @@ module Private=struct
           let registration=if count=0 then Ok None else
             Result.map Option.some(Scene_execution.Private.register_gpu_vertices
               ~key:(gpu_circles_key value)~device:value.circles_gpu.gpu_device~buffer
-              ~vertex_count:(4*count)~valid:(fun()->valid_gpu_circles value))in
+              ~vertex_count:(4*count)~valid:(fun()->valid_gpu_circles value)())in
           (match registration with
           |Error error->value.circles_source<-None;value.circles_input<-None;backend operation error
           |Ok registration->value.circles_registration<-registration;Ok(token()))

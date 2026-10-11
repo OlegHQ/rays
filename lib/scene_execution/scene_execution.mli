@@ -28,7 +28,7 @@ type state = {
 }
 type draw = { mesh : mesh; state : state }
 type pipeline_family = Scene2 | Scene2_textured | Scene3 | Scene3_points | Scene3_textured | Scene3_shadow |
-  Scene3_stencil | Scene3_textured_stencil | Scene3_shadow_stencil | Scene3_world | Ui
+  Scene3_stencil | Scene3_textured_stencil | Scene3_shadow_stencil | Scene3_world | Ui | Marks
 (** Exact number of family/blend variants required for each supported sample
     count. Cache owners use this value so adding a family cannot silently
     evict a still-live pipeline during renderer construction. *)
@@ -146,11 +146,13 @@ module Private : sig
   type gpu_vertices
 
   (** Borrow a producer-owned 64-byte UI instance stream under a reserved
-      [gpu:vertices:] mesh key. [vertex_count] is four per instance. The
+      [gpu:vertices:] mesh key. [vertex_count] is four per instance. A source with [extra]
+      buffers (a Marks mark set: [buffer] at binding 0, [extra] at 1, 2, ...; exactly five
+      for [Marks], none for [Ui]) is not size-checked against the 64-byte layout. The
       producer must close registrations before destroying/reusing buffers;
       [valid] also guards every retained replay. At most 128 are live. *)
-  val register_gpu_vertices : key:string -> device:Ogpu.Backend.device ->
-    buffer:Ogpu.Backend.buffer -> vertex_count:int -> valid:(unit -> bool) ->
+  val register_gpu_vertices : ?extra:Ogpu.Backend.buffer list -> key:string -> device:Ogpu.Backend.device ->
+    buffer:Ogpu.Backend.buffer -> vertex_count:int -> valid:(unit -> bool) -> unit ->
     (gpu_vertices,Ogpu.Error.t) result
   val unregister_gpu_vertices : gpu_vertices -> unit
   val gpu_vertex_count_for_test : unit -> int

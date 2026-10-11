@@ -1,21 +1,25 @@
 (* GPU vertices are borrowed, never uploaded or destroyed by the renderer.
    Registration owns only a bounded name and the producer's lifetime check. *)
 type gpu_vertices={gpu_key:string;gpu_device:Ogpu.Backend.device;
-  gpu_buffer:Ogpu.Backend.buffer;gpu_vertex_count:int;gpu_domain:Domain.id;
+  gpu_buffer:Ogpu.Backend.buffer;gpu_extra:Ogpu.Backend.buffer list;gpu_vertex_count:int;gpu_domain:Domain.id;
   gpu_valid:unit->bool;mutable gpu_active:bool}
 let gpu_vertex_capacity=128
 let gpu_vertex_registry:(string,gpu_vertices)Hashtbl.t=Hashtbl.create 16
 let gpu_vertex_key key=String.starts_with~prefix:"gpu:vertices:" key
+(* The ids that identify a source's buffers in signatures and fingerprints. *)
+let gpu_identity source=source.gpu_key,Ogpu.Backend.buffer_id source.gpu_buffer,
+  List.map Ogpu.Backend.buffer_id source.gpu_extra
 let gpu_vertices_valid value=value.gpu_active&&value.gpu_domain=Domain.self()&&value.gpu_valid()
-let register_gpu_vertices ~key ~device ~buffer ~vertex_count ~valid =
+let register_gpu_vertices ?(extra=[]) ~key ~device ~buffer ~vertex_count ~valid () =
   let operation="Scene_execution.register_gpu_vertices" in
   if not(gpu_vertex_key key)||vertex_count<=0||vertex_count>4_000_000||
-    Ogpu.Backend.buffer_size buffer<Int64.of_int(vertex_count*16)||
+    (extra=[]&&Ogpu.Backend.buffer_size buffer<Int64.of_int(vertex_count*16))||
+    List.exists(fun b->Ogpu.Backend.buffer_size b<=0L)(buffer::extra)||
     Hashtbl.mem gpu_vertex_registry key then
     Error(Ogpu.Error.make operation Invalid_argument "invalid or duplicate borrowed vertex registration")
   else if Hashtbl.length gpu_vertex_registry>=gpu_vertex_capacity then
     Error(Ogpu.Error.make operation Capacity "borrowed vertex registration capacity reached")
-  else let value={gpu_key=key;gpu_device=device;gpu_buffer=buffer;gpu_vertex_count=vertex_count;
+  else let value={gpu_key=key;gpu_device=device;gpu_buffer=buffer;gpu_extra=extra;gpu_vertex_count=vertex_count;
     gpu_domain=Domain.self();gpu_valid=valid;gpu_active=true}in
     Hashtbl.add gpu_vertex_registry key value;Ok value
 let unregister_gpu_vertices value=
@@ -24,7 +28,7 @@ let unregister_gpu_vertices value=
 type mesh={key:string;vertices:bytes;vertex_count:int;indices:bytes;index_count:int;primitive:Ogpu.Render_pass.primitive}
 type state={viewport:int*int*int*int;scissor:int*int*int*int;cull:Ogpu.Render_pass.cull;depth_compare:Ogpu.Render_pass.comparison;depth_write:bool;depth_load:Ogpu.Render_pass.load;depth_clear:float;transform_uniforms:bytes option;stencil_state:Ogpu.Render_pass.stencil_state option;stencil_load:Ogpu.Render_pass.load;stencil_clear:int}
 type draw={mesh:mesh;state:state}
-type pipeline_family=Scene2|Scene2_textured|Scene3|Scene3_points|Scene3_textured|Scene3_shadow|Scene3_stencil|Scene3_textured_stencil|Scene3_shadow_stencil|Scene3_world|Ui
+type pipeline_family=Scene2|Scene2_textured|Scene3|Scene3_points|Scene3_textured|Scene3_shadow|Scene3_stencil|Scene3_textured_stencil|Scene3_shadow_stencil|Scene3_world|Ui|Marks
 type texture_level={width:int;height:int;bytes:bytes}
 type sampled_texture={key:string;levels:texture_level array;sampler:Ogpu.Types.sampler_descriptor;
   gpu:Ogpu.Backend.texture option}
@@ -64,7 +68,7 @@ type automatic_signature={signature_family:pipeline_family;
   signature_auxiliary:(int64*int64*Ogpu.Types.sampler_descriptor)option;
   signature_environment:(int64*Ogpu.Types.sampler_descriptor)option;
   signature_buffer:int64;signature_index_offset:int64;
-  signature_gpu_vertices:(string*int64)option;
+  signature_gpu_vertices:(string*int64*int64 list)option;
   signature_vertex_attributes:int64 option;
   signature_uniform_buffer:int64 option;signature_uniform_offset:int64 option;
   signature_vertex_count:int;
@@ -184,7 +188,8 @@ let resolve_gpu_vertices device (entry:sampled_draw)=
   |Some source when gpu_vertices_valid source->
       if source.gpu_device!=device then
         error"Scene_execution.render"Ogpu.Error.Cross_device"GPU vertices belong to another device"
-      else if entry.family<>Ui||Bytes.length mesh.vertices<>0||
+      else if (match entry.family,source.gpu_extra with Ui,[]|Marks,[_;_;_;_;_]->false|_->true)||
+        Bytes.length mesh.vertices<>0||
         mesh.vertex_count<>source.gpu_vertex_count||mesh.vertex_count mod 4<>0||
         mesh.index_count<>mesh.vertex_count/4*6 then
         error"Scene_execution.render"Ogpu.Error.Invalid_argument"GPU shape layout is malformed"
@@ -198,7 +203,7 @@ let valid_vertex_attributes(entry:sampled_draw)=
   match entry.vertex_attributes with
   |None->not packed
   |Some(key,bytes)->
-      entry.family<>Scene2&&entry.family<>Scene2_textured&&entry.family<>Ui&&
+      entry.family<>Scene2&&entry.family<>Scene2_textured&&entry.family<>Ui&&entry.family<>Marks&&
       packed&&key<>""&&entry.draw.mesh.vertex_count>=0&&
       entry.draw.mesh.vertex_count<=Sys.max_string_length/24&&
       Bytes.length entry.draw.mesh.vertices=entry.draw.mesh.vertex_count*24&&
@@ -261,14 +266,14 @@ let shadow_resource ~key (source:shadow_snapshot) =
     Ok{texture={key="shadow:"^key;levels=[|{width=source.width;height=source.height;bytes=pixels}|];sampler;gpu=None};parameters}
 let texture_descriptor configuration:Ogpu.Types.texture_descriptor={label=Some"scene-execution-target";width=configuration.Ogpu.Surface.physical_width;height=configuration.physical_height;depth=1;mip_levels=1;sample_count=1;format=Rgba8_unorm;usage=[Texture_binding;Render_attachment;Texture_copy_src]}
 let blends=[Ogpu.Pipeline.Replace;Alpha;Add;Multiply;Screen;Subtract]
-let families=[Scene2;Scene2_textured;Scene3;Scene3_points;Scene3_textured;Scene3_shadow;Scene3_stencil;Scene3_textured_stencil;Scene3_shadow_stencil;Scene3_world;Ui]
+let families=[Scene2;Scene2_textured;Scene3;Scene3_points;Scene3_textured;Scene3_shadow;Scene3_stencil;Scene3_textured_stencil;Scene3_shadow_stencil;Scene3_world;Ui;Marks]
 let blend_count=List.length blends
 let pipeline_variants_per_sample=List.length families*blend_count
 let pipeline_slot family blend samples=
   let family=match family with
     |Scene2->0|Scene2_textured->1|Scene3->2|Scene3_points->3
     |Scene3_textured->4|Scene3_shadow->5|Scene3_stencil->6
-    |Scene3_textured_stencil->7|Scene3_shadow_stencil->8|Ui->9|Scene3_world->10 in
+    |Scene3_textured_stencil->7|Scene3_shadow_stencil->8|Ui->9|Scene3_world->10|Marks->11 in
   let blend=match blend with
     |Ogpu.Pipeline.Replace->0|Alpha->1|Add->2|Multiply->3|Screen->4|Subtract->5 in
   let samples=match samples with 1->0|4->1|9->2|16->3|_-> -1 in
@@ -796,8 +801,7 @@ let automatic_signature
    signature_environment=Option.map(fun((source:sampled_texture),cached)->
      Ogpu.Backend.texture_id cached.texture,source.sampler)environment;
    signature_buffer=Ogpu.Backend.buffer_id item.buffer;
-   signature_gpu_vertices=Option.map(fun source->source.gpu_key,
-     Ogpu.Backend.buffer_id source.gpu_buffer)gpu_vertices;
+   signature_gpu_vertices=Option.map gpu_identity gpu_vertices;
    signature_vertex_attributes=Option.map(fun item->Ogpu.Backend.buffer_id item.auxiliary_buffer)attributes;
    signature_index_offset=item.index_offset;
    signature_uniform_buffer=Option.map(fun item->Ogpu.Backend.buffer_id item.uniform_buffer)uniform;
@@ -869,8 +873,7 @@ let same_automatic_slot signature slot=
         Ogpu.Backend.texture_id cached.texture,source.sampler)slot.slot_environment&&
       same_state signature.signature_state state&&same_texture&&same_auxiliary&&
       signature.signature_buffer=Ogpu.Backend.buffer_id item.buffer&&
-      signature.signature_gpu_vertices=Option.map(fun source->source.gpu_key,
-        Ogpu.Backend.buffer_id source.gpu_buffer)slot.slot_gpu_vertices&&
+      signature.signature_gpu_vertices=Option.map gpu_identity slot.slot_gpu_vertices&&
       signature.signature_vertex_attributes=
         Option.map(fun item->Ogpu.Backend.buffer_id item.auxiliary_buffer)slot.slot_vertex_attributes&&
       signature.signature_index_offset=item.index_offset&&
@@ -908,7 +911,7 @@ let automatic_candidate_fingerprint scratch=
        Option.map(fun((source:sampled_texture),cached)->
          Ogpu.Backend.texture_id cached.texture,source.sampler)slot.slot_environment,
        Ogpu.Backend.buffer_id mesh.buffer,mesh.index_offset,
-       Option.map(fun source->source.gpu_key,Ogpu.Backend.buffer_id source.gpu_buffer)slot.slot_gpu_vertices,
+       Option.map gpu_identity slot.slot_gpu_vertices,
        Option.map(fun item->Ogpu.Backend.buffer_id item.auxiliary_buffer)slot.slot_vertex_attributes,
        Option.map(fun uniform->Ogpu.Backend.buffer_id uniform.uniform_buffer,
          uniform.uniform_offset)
@@ -917,18 +920,18 @@ let automatic_candidate_fingerprint scratch=
   !fingerprint
 (* Attachments and encoder state for one render pass over [target]. *)
 let render_target value family samples (state:state) load clear=
-  let keys=(if samples=1 then[]else[Scene_attachment_pool.Color,samples])@(match family with Scene2|Scene2_textured|Ui->[]|Scene3|Scene3_points|Scene3_textured|Scene3_shadow|Scene3_world->[Depth,samples]|Scene3_stencil|Scene3_textured_stencil|Scene3_shadow_stencil->[Depth,samples;Stencil,samples])in
+  let keys=(if samples=1 then[]else[Scene_attachment_pool.Color,samples])@(match family with Scene2|Scene2_textured|Ui|Marks->[]|Scene3|Scene3_points|Scene3_textured|Scene3_shadow|Scene3_world->[Depth,samples]|Scene3_stencil|Scene3_textured_stencil|Scene3_shadow_stencil->[Depth,samples;Stencil,samples])in
   match Scene_attachment_pool.acquire_many value.attachments keys with Error _ as e->e|Ok pooled->
   let attachments=ref pooled in
   let take()=match!attachments with texture::rest->attachments:=rest;texture|[]->assert false in
   let color=if samples=1 then value.target else take()in
   let resolve=if samples=1 then None else Some value.target in
-  let depth=match family with Scene2|Scene2_textured|Ui->None|_->
+  let depth=match family with Scene2|Scene2_textured|Ui|Marks->None|_->
     Some{Ogpu.Backend.depth_texture=take();depth_load=state.depth_load;depth_store=Store;depth_clear=state.depth_clear}in
   let stencil=match family with Scene3_stencil|Scene3_textured_stencil|Scene3_shadow_stencil->
     Some{Ogpu.Backend.stencil_texture=take();stencil_load=state.stencil_load;stencil_store=Store;stencil_clear=state.stencil_clear}|_->None in
   Ok({Ogpu.Backend.colors=[{texture=color;resolve;load;store=(if samples=1 then Store else Resolve);clear}];depth;stencil},pooled)
-let has_depth=function Scene2|Scene2_textured|Ui->false|_->true
+let has_depth=function Scene2|Scene2_textured|Ui|Marks->false|_->true
 let sampler_for value descriptor=
   match Hashtbl.find_opt value.samplers descriptor with
   |Some sampler->Ok sampler
@@ -1216,7 +1219,7 @@ let render_sampled_resources_common ?prepared ?(after_prepare=Fun.id) ?(clear=(0
   let modes=Array.of_list(List.map(fun(entry:sampled_draw)->
     let family=entry.family and draw=entry.draw in
     let scene2=family=Scene2||family=Scene2_textured in
-    let affine=family=Ui&&Option.fold~none:false~some:(fun bytes->
+    let affine=(family=Ui||family=Marks)&&Option.fold~none:false~some:(fun bytes->
       Bytes.length bytes=24||Bytes.length bytes=48)draw.state.transform_uniforms in
     let scene3_transform=not scene2&&Option.fold~none:false~some:(fun bytes->
       Bytes.length bytes>=5456&&(Bytes.length bytes-5456)mod 192=0)
@@ -1317,8 +1320,8 @@ let render_sampled_resources_common ?prepared ?(after_prepare=Fun.id) ?(clear=(0
     and slot_mesh slot=match slot.slot_mesh with Some mesh->mesh|None->assert false in
     let attachment_class=function
       |Scene2|Scene2_textured->0
-      (* Ui draws bind directly; argument-buffer passes cannot mix them. *)
-      |Ui->3
+      (* Ui and Marks draws bind directly; argument-buffer passes cannot mix them. *)
+      |Ui|Marks->3
       |Scene3|Scene3_points|Scene3_textured|Scene3_shadow|Scene3_world->1
       |Scene3_stencil|Scene3_textured_stencil|Scene3_shadow_stencil->2 in
     let same_pass_state class_ (a:state) (b:state)=
@@ -1357,7 +1360,9 @@ let render_sampled_resources_common ?prepared ?(after_prepare=Fun.id) ?(clear=(0
       let* buffers,textures,samplers=match slot.slot_auxiliary with
         |None->let vertices=match slot.slot_gpu_vertices with
             |None->item.buffer|Some source->source.gpu_buffer in
-            Ok((Ogpu.Backend.Vertex,0,vertices,0L)::buffers,textures,samplers)
+            let extra=match slot.slot_gpu_vertices with
+              |None->[]|Some source->List.mapi(fun i b->Ogpu.Backend.Vertex,i+1,b,0L)source.gpu_extra in
+            Ok((Ogpu.Backend.Vertex,0,vertices,0L)::(extra@buffers),textures,samplers)
         |Some(source,buffer,texture)->
             let* sampler=sampler_for value source.texture.sampler in
             Ok((Ogpu.Backend.Vertex,0,item.buffer,0L)::(Ogpu.Backend.Fragment,3,buffer.auxiliary_buffer,0L)::buffers,
@@ -1374,21 +1379,21 @@ let render_sampled_resources_common ?prepared ?(after_prepare=Fun.id) ?(clear=(0
             Ok((Ogpu.Backend.Fragment,8,sun)::(Ogpu.Backend.Fragment,9,cached.texture)::textures,
                (Ogpu.Backend.Fragment,10,sampler)::samplers)
         |_->Ok(textures,samplers)in
-      let buffers=if scene2||family=Ui then buffers else
+      let buffers=if scene2||family=Ui||family=Marks then buffers else
         (Ogpu.Backend.Vertex,11,
           (match slot.slot_vertex_attributes with
             |Some attributes->attributes.auxiliary_buffer|None->item.buffer),0L)::buffers in
       let buffers=match slot.slot_uniform,item.uniform_offset with
         |Some uniform,_->
             let binding stage=stage,6,uniform.uniform_buffer,uniform.uniform_offset in
-            binding Ogpu.Backend.Vertex::(if family=Scene2||family=Scene2_textured||family=Ui then buffers
+            binding Ogpu.Backend.Vertex::(if family=Scene2||family=Scene2_textured||family=Ui||family=Marks then buffers
               else (Ogpu.Backend.Vertex,7,uniform.uniform_buffer,
                 (match (slot_state slot).transform_uniforms with
                   |Some bytes when Bytes.length bytes>5456->Int64.add uniform.uniform_offset 5456L
                   |_->uniform.uniform_offset))::
                 binding Ogpu.Backend.Fragment::buffers)
         |None,Some offset->(Ogpu.Backend.Vertex,6,item.buffer,offset)::
-            (if family=Scene2||family=Scene2_textured||family=Ui then [] else
+            (if family=Scene2||family=Scene2_textured||family=Ui||family=Marks then [] else
               [Ogpu.Backend.Vertex,7,item.buffer,offset])@
             (Ogpu.Backend.Fragment,6,item.buffer,offset)::buffers
         |None,None->buffers in

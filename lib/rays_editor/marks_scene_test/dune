@@ -5,4 +5,4 @@
 (test
  (name test_marks_scene)
  (modules test_marks_scene marks_scene)
- (libraries rays rays_editor flow flow_ir scene_command))
+ (libraries rays rays_editor editor_document flow flow_ir scene_command))

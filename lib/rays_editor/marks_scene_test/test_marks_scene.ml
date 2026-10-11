@@ -1,5 +1,5 @@
-(* Marks_scene against the scene Drawing builds today: the serialized command stream of
-   the same draw graph, evaluated both ways, is byte for byte the same. *)
+(* Marks_scene against the scenes the per-kind drawing arms built (P3.13 removed them): the SHA-256
+   of each draw graph's serialized command stream is the checked-in digest those arms produced. *)
 open Rays
 module E = Flow.Eval
 module M = Scene_command.Marks
@@ -41,11 +41,34 @@ let pictures = [
 ]
 let size = 200, 100
 let live = {(Frame_input.at_time 0.25) with size}
-let old_scene body =
-  Rays_editor.Drawing.core_drawing := false;
-  let evaluation = ok (E.static (checked body)) in
-  let prepared = ok (Rays_editor.Drawing.prepare ~states:evaluation.states evaluation.plan (List.assoc "g" evaluation.results)) in
-  ok (Rays_editor.Drawing.render_prepared prepared ~live ~size)
+let digests = [
+  "f4ff989c22afb8f52ab260b54d17bb7891e07ab75f29b2de12f487f832f3d92a";
+  "38167b07c39a01579645ef0d43fd6ec8c1b524edc07e49436d9754eecbb11d2c";
+  "66494d0f3ffb1159cdf6fb629fbd8105e690fa96d3f4956f4edf8b52e7eba59f";
+  "c3ffa1398d4a79818e0afa089e1131a048b20881dbf0858482fa7f0c28bfcffd";
+  "23a418fc491c5d3a95aa3029d2113bf002423a4a78e65dfc8a71c79818b8c89b";
+  "3b93ccef6bb7daa17148022b6a0fdac1b409ce7c2ad6a370c4797151e146a5d1";
+  "ad94fa12ef2f1c84f45eca8b1b932f87465f51fe25c48b8aaa6bb34d8a9e5cc3";
+  "1113c42cc2148b7eff360ec11fbdf7cd1735930475d0ccef8429d6a75d0118a5";
+  "68ecc6c3903328f5dad628fb39ab2fdcbbd03b55ce2caac17cfd4f3b52693483";
+  "71f685a283353a1f6081e6fa92ec9ad61674563f3ef8cf8d9e8309814bbef0f6";
+  "14a723a3cffd08ceec72997d010416750af9e001bf15283d13d495d083f2faa2";
+  "c0bcc14d631dc745aa86c73d3fff98fce242b956f3e8924e187d20d0267dcff6";
+  "d175863740935e5233b0a46f97e47a31a8233830684c736b444fe95c1b666401";
+  "5f1de8f73c12b33352bb627731d0c3cd347c07c818278f41d81fefd93bdbba37";
+  "34a94c9916d7321808a516723e5d5b0d51ddaedbf6671ee96293b6e58b9fcd4a";
+  "e560c7f427e139fcaf098f3993ff6ba3b3ac536391b2b8e504f56da2d52b4654";
+  "53eee607276c67a0280cb9fcbb59e5ebc81e0f6502a82077c0c2bdc7d7323c8b";
+  "be5ae462a1a643c5d900d9d932f21ea4369cd8b32e693d4a8dec9f9049a6b53f";
+  "6b3831072362e57f0f8b90919a3f922911b46d54d87b1eaed1d45b82d3033a33";
+  "27bae8d4612c790aac0527df20a81bc4f0f3d21d22f51e0e03834b948f5f89a9";
+  "447a8178eb85cb3be6245c4d0ba5e559ef876fb7495596970eaa09f8b9b5fadb";
+  "5de2d001b43fb50d2243d6b231c156f71c35b3bfe2f673e6dc357293d6c1748a";
+  "db2db290db2f7d80a744b3625af71f1706e44b1d4d565f3d6373693427a6dbb8";
+  "b967bc0170e57ab1d5239e87988c193dc731db361c815ff8edfd089fe9526c53";
+  "382cc67de39df737faadf6e1e2d9927794967f6bfbe995cc1ec36e7d6401f90f";
+  "bc9a96cc00caf757afb46c0b94ab6e514f8676ad396541d50171b303b82e9c73";
+]
 let new_scene body =
   let evaluation = ok (E.static (checked body)) in
   let program, root = Result.get_ok (Flow_ir.Core_draw.lower evaluation.plan (List.assoc "g" evaluation.results)) in
@@ -53,9 +76,10 @@ let new_scene body =
   let marks = ok (Flow_ir.Core_exec.draw ?root (Flow_ir.Core_exec.prepare program) ~live ~size ~buffers) in
   ok (Marks_scene.scene ~buffers marks)
 let () =
+  assert (List.length digests = List.length pictures);
   List.iteri (fun i body ->
-    let old_ir = serialize (old_scene body) and new_ir = serialize (new_scene body) in
-    if not (Bytes.equal old_ir new_ir) then failwith (Printf.sprintf "picture %d differs: %s" i body))
+    let digest = Editor_document.Contexts.sha256 (Bytes.to_string (serialize (new_scene body))) in
+    if digest <> List.nth digests i then failwith (Printf.sprintf "picture %d differs: %s" i body))
     pictures;
   (* Hand-built marks against the Scene API. *)
   let none = Buffers.create () in
@@ -77,5 +101,5 @@ let () =
   assert (Result.is_error (Marks_scene.scene ~buffers:none [|M.Pop_transform|]));
   (match Marks_scene.scene ~buffers:none [|M.Image {resource = 1; x = 0; y = 0; scale = 1.; angle = 0.}|] with
    | Error d -> assert (d.code = "E_IMAGE") | Ok _ -> assert false);
-  Printf.printf "Marks_scene: %d draw graphs serialize byte for byte as Drawing's scene; hand-built marks match\n"
+  Printf.printf "Marks_scene: %d draw graphs serialize to the digests of the removed arms; hand-built marks match\n"
     (List.length pictures)

@@ -1,9 +1,10 @@
 # Marks: the run-time drawing contract
 
-Status: specification for `Scene_command.Marks` (web-export plan P3.2). Nothing
-here is implemented yet. Defaults and error codes were taken from
-`lib/rays_editor/drawing.ml`, `lib/rays/scene.ml` and `lib/scene_command` at the
-time of writing; this file, not `drawing.ml`, is the contract once P3.9 lands.
+Status: implemented. `Scene_command.Marks` (`marks.mli`) is this contract as pure
+data; `Flow_ir.Core_draw` lowers a draw graph, `Flow_ir.Core_exec.draw` produces the
+table, and `Marks_scene` adapts it to `Scene`. Defaults and error codes were taken
+from the per-kind arms of `lib/rays_editor/drawing.ml` (removed in P3.13); the
+`test/draw_snapshots` digests of the 15 eligible workspaces pin them.
 
 A draw graph, run once per frame by the core executor
 ([core.md](core.md), "Drawing statements and intrinsics"), produces one **mark
@@ -39,20 +40,30 @@ builds today; the web consumer is the fixed runtime.
 Marks.t = entry array, painter order, first entry drawn first
 
 entry =
-  | Mark_set of { kind; count; attributes }
+  | Mark_set of { count : int; kind : kind }   (* the kind carries its attributes *)
   | Geometry of { vertices : float array; indices : int array; color : int32 }
   | Image of { resource : int; x : int; y : int; scale : float; angle : float }
   | Text of { x : int; y : int; size : int; color : int32; text : string }
   | Push_transform of { xx; xy; yx; yy; tx; ty : float }  | Pop_transform
   | Push_clip of { x; y; width; height : float }          | Pop_clip
 
-attribute = Constant of floats-or-colour | Buffer of { id : int; count : int; width : int }
+kind = Rect of { position; size; fill; stroke; stroke_width }
+     | Circle of { position; radius; fill; stroke; stroke_width }
+     | Line of { position; end_; stroke; stroke_width }
+     | Point of { position; fill : int32 }            (* fill is a constant only *)
+
+attribute = Constant of value | Buffer of { id : int; count : int; width : int }
+value     = (float * float) for position, size, end_; float for radius, stroke_width;
+            int32 (0xRRGGBBAA) for fill, stroke
 ```
 
 A **buffer reference** is an abstract positive integer `id`, an element `count`
 and a `width` in floats per element. The id names a per-frame table the caller
 owns (a CPU array, or later a GPU region output); the contract never holds the
-data. `count` is an element count, not a float count.
+data. Natively the table is `Flow_ir.Core_exec.Buffers` (`create`, `clear`, `find`):
+the executor registers each CPU attribute array in it under a fresh positive id,
+the caller clears it once per frame and `Marks_scene` reads it while adapting.
+A colour buffer in that table is a packed vec3 array of 0..1 floats, as above. `count` is an element count, not a float count.
 
 ### Mark sets
 
@@ -154,6 +165,10 @@ finite, every index in `0 .. vertices/2 - 1` (the `Render_ir` rules).
 
 - `Image`: `resource` is an abstract positive integer naming an entry of the
   host resource table; an absent resolver is `E_IMAGE`, never a dropped entry.
+  Natively `Drawing` numbers the images a frame resolves 1, 2, 3, ... in the order
+  the executor resolves them (the core's `image` callback returns the next id) and
+  keeps the images in an array, so `Marks_scene` maps `resource` to entry `resource - 1`.
+  Ids are meaningful for one frame only.
   `x`, `y` are `at` truncated to integers (default `(0, 0)`). `scale` is finite
   and `> 0` (default 1) and `angle` is finite radians (default 0); otherwise
   `E_DRAW_RANGE`. Native lowering: destination `(x, y, w * scale, h * scale)`,
@@ -168,8 +183,10 @@ finite, every index in `0 .. vertices/2 - 1` (the `Render_ir` rules).
 
 ### View transforms and clips
 
-`Push_transform` carries the six affine coefficients `Render_ir.transform` uses;
-entries until the matching `Pop_transform` are in the pushed local coordinates.
+`Push_transform` carries the six affine coefficients `Render_ir.transform` uses
+(natively a `Scene.Affine` node, built by `Scene.Private.transform`, which keeps the six
+coefficients verbatim: a rotation is not re-derived from an angle, so the stored signs
+below survive; `Scene.Affine` lowers to `Render_ir.Push_transform`/`Pop_transform`); entries until the matching `Pop_transform` are in the pushed local coordinates.
 A transform is **never baked into per-instance attributes**. A statement writes:
 
 | Statement | Coefficients |
@@ -238,6 +255,12 @@ per entry: byte tag, then
   6 push clip:  float x y width height           7 pop clip
 ```
 
+`Marks_scene.scene ~buffers ?image marks` adapts a table: it runs `validate` first
+(a rejection is `E_DRAW_RANGE`), builds one `Shape_batch` per rect, circle or line set
+(a colour-buffer element goes through `drawing_color`, so a nonfinite channel is
+`E_NONFINITE`), and one `Ink` batch per point set. A `Push_clip` rectangle truncates to
+integers there. `Pop_transform` and `Pop_clip` close the innermost open push.
+
 A table is accepted by the validity check only when every mark set, geometry,
 image, text, transform and clip meets the rules above. Image `resource` must be
 `> 0`, text `size` is an unvalidated integer (see below), and buffer ids are not
@@ -264,3 +287,35 @@ An implementer must keep these exactly or parity with the P3.1 snapshots breaks:
 - Text `size <= 0` is not validated in `drawing.ml`; the font layer decides.
 - `draw/points` has no count cap in `drawing.ml`; the 1,000,000 cap on point
   sets is new here.
+
+## The `Marks` pipeline family (GPU layout)
+
+`Scene_execution.Marks` is a pipeline family beside `Ui` (the `Ui` shader and its 64-byte
+instance are untouched). One draw is one mark set of rect, circle or line: `count`
+instances, four vertices (a quad, indices `0 1 2 0 2 3` plus `4 i` per instance) and six
+vertex buffers at bindings 0 to 5, then the affine at 6 (24 bytes, as for `Ui`). The
+vertex stage reads instance `vid / 4`. No texture, sampler, depth or argument buffer;
+blending is the draw's blend as for `Ui`. Instance `i` of an attribute is element
+`i * stride` of its buffer; **stride 0 is a constant** (element 0 for every instance), so
+a constant and a buffer take the same code. A later WGSL port mirrors this table.
+
+| Binding | Attribute | Element | Rect | Circle | Line |
+| --- | --- | --- | --- | --- | --- |
+| 0 | position | float x, y (z, if the stride is 3, ignored) | top-left | centre | from |
+| 1 | extent | float | width, height | radius | end x, y |
+| 2 | fill | uint `0xRRGGBBAA` (mode 0) or float r, g, b in 0..1 (mode 1, alpha 255) | fill | fill | unused |
+| 3 | stroke | as fill | outline; word 0 = none | outline; word 0 = none | the line's colour |
+| 4 | width | float | stroke width | stroke width | line width |
+| 5 | params | 8 uint (below) | | | |
+
+`params` = `kind` (0 rect, 4 circle, 5 line, the `Shape_batch` kind words), then the strides in
+floats or words for position, extent, fill, stroke and width (one 32-bit element each, so a
+vec3 position has stride 3 and a float radius array stride 1), then fill mode and stroke mode.
+A float colour channel `c` becomes `floor(clamp(c, 0, 1) * 255 + 0.5)`, the same 8-bit value
+`Marks_scene` writes, then is unpacked as for `Ui`. A rect or circle with stroke word 0 has
+border width 0; otherwise the border is the width attribute. Geometry is computed in binary32
+on the GPU (`x + width`, `x - r`), so pixel parity with `Shape_batch` is exact when the inputs are
+binary32 values and may differ by one ulp of the sum otherwise; a CPU writer that wants exact
+parity pre-adds in binary64 and uploads the corners (use stride 0 or a second layout for that
+only if a test shows a difference). A buffer shorter than `count * stride` elements is the
+caller's error; the shader does not check.
