@@ -614,3 +614,40 @@ the two-output region `Flow_ir.optimize` builds from the mark set. Median of thr
 
 Fused is faster: the shared `i`, `t` registers are computed once and the output pass is one loop. No `DEFERRED.md`
 entry.
+
+## 2026-10-11 — P6.3 first real compile of the WGSL kernels (Chrome, Metal WebGPU)
+
+Command: `dune build @qualification-web` (rule in `tools/dune`; runs `test_wgsl.exe --write-kernel-table` then
+`node tools/web/test/gpu_check.mjs`; exit 3 = WebGPU unavailable, a missing node or Chrome is a printed skip).
+Browser: Google Chrome 154.0.8037.98 (user agent `HeadlessChrome/154.0.0.0`), macOS on Apple M1. Adapter:
+`vendor apple`, `architecture metal-3`, not a fallback adapter, `maxStorageBuffersPerShaderStage` 8,
+`maxComputeWorkgroupsPerDimension` 65535. Flags: `--headless=new` only. Probed `--headless=new`, plus
+`--enable-unsafe-webgpu`, plus `--use-angle=metal`: all three give the same adapter, so nothing more is passed.
+(Non-headless with an off-screen window was not needed.)
+
+Every kernel in the table compiles (`getCompilationInfo` has no messages, `createComputePipelineAsync` resolves):
+no WGSL printer bug was found, goldens unchanged. Each kernel runs on 1,000 elements of
+`sin(0.37 i) * 40 + (i mod 17)` rounded to f32 (negative and positive, not a multiple of 64) with `t = 1.5`, and is
+compared with the CPU region on the same input (the matching `goldens/*.js`; for `ops` the `Js.region` text in the
+table).
+
+| Kernel | Covers | Tolerance | Worst abs error | Result |
+| --- | --- | --- | ---: | --- |
+| arithmetic | +, *, uniform, bitcast constants | 1e-5 * max(1, abs cpu) | 3.8e-6 | pass |
+| select | comparison, select | 1e-5 relative | 1.2e-7 | pass |
+| two_outputs | two output buffers of width 1 and 2 | 1e-5 relative | 1.9e-6 | pass |
+| noise | 3-octave `noise3`, seed 31, table upload | 1e-4 absolute | 2.6e-7 | pass |
+| ops (not a golden) | mod, pow, guarded `/`, sqrt, min, max, sin, cos, and, or, not, <, <=, >, >=, = | 1e-5 relative | 2.3e-5 on values of order 100 | pass |
+
+Tolerances: the GPU rounds each operation to f32 and the CPU region runs f64 on the same f32 inputs, so 1e-5
+relative is far above the few-ulp (6e-8) expectation; noise gets 1e-4 absolute because its f32 coordinates (up to
+about 80 after octave scaling) are off by about 8e-6 and the gradient slope is at most about 3. Observed errors are
+one to two orders below both. `sin`/`cos` are the WebGPU implementation's (the spec allows a loose error); they
+agreed to 2e-5 absolute at values near 100 here, which is Metal's, so another browser or GPU may differ more.
+
+Host behavior checked in the same run: a finite f32 input that overflows (3e38 * 2) is not reported in the
+dispatching frame and arrives as one `E_KERNEL` after `flush` (the next-frame status word); an infinite input is
+rejected on upload with `E_KERNEL`; growing the count replaces the output buffer (the old one destroyed). A
+corrupted kernel (`var<unifor>`) fails the load with `WGSL error in kernel ...: 3:27 unresolved address space`,
+so the harness does detect compile errors. Three consecutive runs agreed. Not yet covered: pixels (P6.8), a second
+browser, workgroup counts above the dispatch limit, the 128 MiB storage binding limit.

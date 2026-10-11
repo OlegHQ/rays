@@ -1,7 +1,48 @@
 (* Goldens for the WGSL printer. Regenerate with [test_wgsl.exe --write-goldens]
-   from lib/flow_web. No WGSL compiler runs here; see the plan ledger (P5.3). *)
+   from lib/flow_web. [test_wgsl.exe --write-kernel-table DIR] writes DIR/kernels.json, the kernel table
+   tools/web/runtime/gpu.js loads (format: its header); tools/web/test/gpu_check.mjs compiles the goldens for
+   real in Chrome (plan P6.3, alias qualification-web). *)
+let json_string s =
+  let b = Buffer.create (String.length s + 2) in
+  Buffer.add_char b '"';
+  String.iter (function
+    | '"' -> Buffer.add_string b "\\\"" | '\\' -> Buffer.add_string b "\\\\"
+    | '\n' -> Buffer.add_string b "\\n"
+    | c when Char.code c < 32 || Char.code c > 126 -> Printf.bprintf b "\\u%04x" (Char.code c)
+    | c -> Buffer.add_char b c) s;
+  Buffer.add_char b '"'; Buffer.contents b
+let json_list f items = "[" ^ String.concat "," (List.map f items) ^ "]"
+let json_ints a = json_list string_of_int (Array.to_list a)
+let kind_name = function
+  | Flow_web.Wgsl.Uniform_buffer -> "uniform" | Storage_read -> "read" | Storage_read_write -> "read_write"
+(* The noise tables are the ones the Metal host uploads (lib/flow_gpu/run.ml): 512 entries per seed. *)
+let table_json (w : Flow_web.Wgsl.wgsl) =
+  json_list (fun seed -> json_ints (Rays_math.Noise.Private.permutation (Rays_math.Noise.create seed)))
+    (Array.to_list w.table_seeds)
+let kernel_json ?(cpu = "") name (w : Flow_web.Wgsl.wgsl) =
+  Printf.sprintf
+    "{\"id\":%s,\"cpu\":%s,\"entry\":%s,\"source\":%s,\"interface\":%s,\"uniform_layout\":%s,\"uniform_bytes\":%d,\"table_seeds\":%s,\"tables\":%s,\"input_widths\":%s,\"output_widths\":%s}"
+    (json_string name) (json_string cpu) (json_string w.entry) (json_string w.source)
+    (json_list (fun (b : Flow_web.Wgsl.binding) -> Printf.sprintf "{\"group\":%d,\"binding\":%d,\"kind\":%s}" b.group b.binding (json_string (kind_name b.kind))) w.interface)
+    (json_list (fun (n, o, width) -> Printf.sprintf "[%s,%d,%d]" (json_string n) o width) w.uniform_layout)
+    w.uniform_bytes (json_ints w.table_seeds) (table_json w) (json_ints w.input_widths) (json_ints w.output_widths)
+
 let () =
   let writing = Array.to_list Sys.argv = [Sys.argv.(0); "--write-goldens"] in
+  let programs = Test_program.fixtures 1024 @ ["two_outputs", Test_program.two_outputs ()] in
+  (match Array.to_list Sys.argv with
+   | [_; "--write-kernel-table"; dir] ->
+       (* "ops" is not a golden: it only gives the browser check the operators the four fixtures never reach
+          (mod, pow, division and sqrt guards, comparisons, and/or/not, min/max, sin/cos); "cpu" is its region. *)
+       let ops = Test_program.compile "(map (fn [x] (+ (+ (+ (mod x 7.) (pow (abs (- x 40.)) 0.5)) (/ x (- x 3.)))
+         (+ (+ (sqrt x) (min x t)) (+ (max (sin x) (cos t)) (+ (if (and (> x 3.) (not (>= x 90.))) 1. 0.) (if (or (<= x 2.) (= x 5.)) 2. 0.))))))
+         (array/range 1024))" in
+       let kernels = List.map (fun (name, program) -> kernel_json name (Test_program.ok (Flow_web.Wgsl.kernel program))) programs
+         @ [kernel_json ~cpu:(Flow_web.Js.region ops) "ops" (Test_program.ok (Flow_web.Wgsl.kernel ops))] in
+       Out_channel.with_open_bin (Filename.concat dir "kernels.json") (fun c ->
+         output_string c ("{\"kernels\":[" ^ String.concat ",\n" kernels ^ "]}\n"));
+       exit 0
+   | _ -> ());
   List.iter (fun (name, program) ->
     let wgsl = Test_program.ok (Flow_web.Wgsl.kernel program) in
     let path = "goldens/" ^ name ^ ".wgsl" in
@@ -12,7 +53,7 @@ let () =
       = (match name with "noise" -> [0;1;2;3;4] | "two_outputs" -> [0;1;2;3;4] | _ -> [0;1;2;3]));
     assert (wgsl.uniform_bytes mod 16 = 0);
     assert (Digest.string wgsl.source = Digest.string (Test_program.ok (Flow_web.Wgsl.kernel program)).source))
-    (Test_program.fixtures 1024 @ ["two_outputs", Test_program.two_outputs ()]);
+    programs;
   List.iter (fun source ->
     let program = Test_program.compile source in
     match Flow_ir.Packed.gpu_refusals program, Flow_web.Wgsl.kernel program with

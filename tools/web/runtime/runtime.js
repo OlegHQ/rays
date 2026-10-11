@@ -100,15 +100,15 @@ export const frameValue = f => new Map([['t', f.t], ['dt', f.dt], ['index', BigI
   ['buttons', f.buttons], ['keys', f.keys], ['events', f.events]]);
 
 // ---- the runtime object ----
-// opts: now() seconds; fixedDt (finite > 0) selects the fixed clock; pool (workers.js); size [w,h].
+// opts: now() seconds; fixedDt (finite > 0) selects the fixed clock; pool (workers.js); gpu (gpu.js); size [w,h].
 // Clock as sketch.ml:211-212: the count increments first (frames start at 1); fixed: dt, t = count*dt;
 // real time: dt = min(delta, 0.1) (time.ml:19), t = seconds since start. frame and tick are both the count.
-export function createRuntime(program, { now = () => performance.now() / 1000, fixedDt, pool = null, size = [1, 1] } = {}) {
+export function createRuntime(program, { now = () => performance.now() / 1000, fixedDt, pool = null, gpu = null, size = [1, 1] } = {}) {
   if (fixedDt !== undefined && !(Number.isFinite(fixedDt) && fixedDt > 0)) throw new RangeError('fixedDt must be finite and positive');
   const origin = now(), compiled = new Map();
   let last = origin, count = 0;
   const rt = {
-    program, pool, input: new Input(size), slots: [], frameValue,
+    program, pool, gpu, input: new Input(size), slots: [], frameValue,
     // A region as a function, compiled once per source text; calls run on the calling thread.
     region(id) {
       const source = program.regions[id];
@@ -122,6 +122,7 @@ export function createRuntime(program, { now = () => performance.now() / 1000, f
     async stepFrame(override) {
       const t = now(), delta = Math.min(t - last, 0.1);
       last = t; count++;
+      rt.gpu?.poll();   // gpu.js: status words of last frame's dispatches
       const dt = fixedDt ?? delta;
       const input = { ...rt.input.snapshot(), t: fixedDt !== undefined ? count * dt : t - origin, dt, frame: count, tick: count, ...override };
       return rt.program.frame(input, rt);

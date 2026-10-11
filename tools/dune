@@ -188,3 +188,12 @@
  (name bench_scene3_packing)
  (modules bench_scene3_packing)
  (libraries rays unix))
+
+; Real-browser check of the WGSL kernels (plan P6.3). Needs Google Chrome; not part of runtest.
+; Exit 3 means WebGPU is unavailable in that Chrome; a missing node or Chrome is a printed skip.
+(rule
+ (alias qualification-web)
+ (deps web/test/gpu_check.mjs web/test/chrome.mjs web/runtime/gpu.js ../lib/flow_web/test_wgsl.exe
+  (glob_files ../lib/flow_web/goldens/*.js))
+ (action
+  (system "if command -v node >/dev/null 2>&1; then mkdir -p kt && ../lib/flow_web/test_wgsl.exe --write-kernel-table kt && node web/test/gpu_check.mjs kt/kernels.json web/runtime/gpu.js ../lib/flow_web/goldens; else echo 'gpu_check: skipped (node not found)'; fi")))

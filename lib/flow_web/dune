@@ -10,7 +10,7 @@
  (name test_wgsl)
  (modules test_wgsl test_program)
  (deps (glob_files goldens/*.wgsl))
- (libraries flow_web flow flow_ir))
+ (libraries flow_web flow flow_ir rays_math))
 
 (test
  (name test_js)
