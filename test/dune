@@ -36,7 +36,7 @@
 
 (executable
  (name test_main)
- (modules test_main test_support test_text sop_params_fixture test_rays test_sop_ui test_custom_sop test_pxui_graph test_rays_editor test_editor_document test_editor_input test_editor_commands ws_fixture test_editor_cook test_editor_transactions test_editor_consistency test_scene_tree test_scene_sync test_sop_catalog test_packed_pieces test_workspace_cook test_workspace_live test_workspace_doc test_projection test_probe test_viewport_pick test_text_pane test_workspace_shell test_workspace_source test_bloom_studio dependency_gate)
+ (modules test_main test_support test_text sop_params_fixture test_rays test_sop_ui test_custom_sop test_pxui_graph test_rays_editor test_editor_document test_editor_input test_editor_commands ws_fixture test_editor_cook test_editor_transactions test_editor_consistency test_scene_tree test_scene_sync test_sop_catalog test_packed_pieces test_terminal_boolean_normals test_workspace_cook test_workspace_live test_workspace_doc test_projection test_probe test_viewport_pick test_text_pane test_workspace_shell test_workspace_source test_bloom_studio dependency_gate)
  (libraries rays pxui pxui_shell runtime_input sop rdk rdk_rays pxui_graph
   sop_catalog scene_command rays_editor editor_document flow_graph unix str rays.sdl3 lisp_sop)
  (preprocess (pps rays.ppx))
@@ -218,6 +218,10 @@
  (action (run %{exe:test_main.exe} test_packed_pieces)))
 
 (rule
+ (alias test_terminal_boolean_normals)
+ (action (run %{exe:test_main.exe} test_terminal_boolean_normals)))
+
+(rule
  (alias test_workspace_live)
  (deps (glob_files ../specification/workspace/cases/*.lisp))
  (action (run %{exe:test_main.exe} test_workspace_live)))
@@ -319,6 +323,7 @@
   (alias test_scene_sync)
   (alias test_sop_catalog)
   (alias test_packed_pieces)
+  (alias test_terminal_boolean_normals)
   (alias test_workspace_live)
   (alias test_workspace_shell)
   (alias test_workspace_doc)
@@ -390,3 +395,17 @@
      (diff draw_snapshots/sketches_flow_shader.txt core_sketches_flow_shader.txt)
      (with-stdout-to core_sketches_flow_vectors.txt (run %{exe:test_draw_snapshot.exe} sketches_flow_vectors))
      (diff draw_snapshots/sketches_flow_vectors.txt core_sketches_flow_vectors.txt))))))
+
+(executable
+ (name test_drawing)
+ (modules test_drawing)
+ (libraries rays flow flow_graph editor_document rays_editor sop_catalog scene_command frame_input editor_core unix))
+
+(rule
+ (alias runtest)
+ (action (run %{exe:test_drawing.exe} %{dep:../examples/particles/sketch.rays})))
+
+(rule
+ (alias runtest-native)
+ (locks %{workspace_root}/smoke_window)
+ (action (run %{exe:test_drawing.exe} %{dep:../examples/particles/sketch.rays} /tmp/rays-drawing-export)))

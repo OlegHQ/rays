@@ -16,6 +16,7 @@ let tests = [
   "test_sop_catalog", (fun () -> Test_sop_catalog.run ());
   "test_sop_catalog_exhaustive", (fun () -> Test_sop_catalog.run ~exhaustive:true ());
   "test_packed_pieces", Test_packed_pieces.run;
+  "test_terminal_boolean_normals", Test_terminal_boolean_normals.run;
   "test_workspace_live", Test_workspace_live.run;
   "test_text_pane", Test_text_pane.run;
   "test_editor_consistency", Test_editor_consistency.run;

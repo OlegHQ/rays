@@ -249,8 +249,8 @@ let carry_tests () =
         (ui/split-at "horizontal" 0.62 (ui/graph) (ui/inspector))))))|} in
   let with_editor source = String.sub source 0 (String.length source - 1) ^ editor ^ ")" in
   let slow_prepare = Atomic.make false in
-  let make ?(source = carry_source) () =
-    E3.create ~await:true ~workspace:(workspace (with_editor source))
+  let make ?(source = carry_source) ?carry_budget () =
+    E3.create ~await:true ?carry_budget ~workspace:(workspace (with_editor source))
       ~prepare:(fun _ output ->
         (* A controlled over-budget input, not a wait for cook completion:
            ~await:true still synchronizes every update below. *)
@@ -491,6 +491,26 @@ let carry_tests () =
     ("one entry added the node and its material: " ^ text_of !e);
   step ~keys:[ Input.Meta ] [ ch 'z' ];
   check (E3.workspace !e == !ws) "undone as one";
+  (* over the budget: the target is lit, the strip says what a release writes and why there is no
+     picture, and the document shown stays as it was; the release still writes it *)
+  E3.close !e;
+  e := make ~carry_budget:0. ();
+  for _ = 1 to 12 do step [] done;
+  ws := E3.workspace !e;
+  jump "shards";
+  drag_to (tile [ "shards"; "m" ]);
+  check (has (line ()) "Would write :material (ref cobalt) on shards/m" && has (line ()) "no preview"
+         && has (line ()) "applying takes")
+    ("a slow put says what it would write and why it is not shown: " ^ line ());
+  check (E3.workspace !e == !ws && has (text_of !e) "(ref spare)" && not (has (text_of !e) "(ref cobalt)"))
+    "a held-back put shows no picture: the document shown is the original";
+  check (E3.carrying !e <> None && E3.undo_label !e = history) "the carry goes on, nothing is written";
+  let at = tile [ "shards"; "m" ] in
+  step ~mouse:at [ Event.MouseReleased (Input.LeftButton, at) ]; step []; step [];
+  check (E3.carrying !e = None && E3.undo_label !e = Some "Put" && has (text_of !e) ":material (ref cobalt)")
+    "the release writes it, as one Put entry";
+  step ~keys:[ Input.Meta ] [ ch 'z' ];
+  check (E3.workspace !e == !ws) "and one undo gives it back";
   (* Enter before a letter keeps the carry and says so, ahead of the prompt *)
   jump "cobalt";
   step [ ch 'y' ]; step [];

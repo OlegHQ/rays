@@ -233,6 +233,33 @@ let run () =
       ~frame:(Test_editor_input.frame (500., 400.) [ char key_char ] 1) Idle in
     List.exists (fun (c : _ Command.t) -> c.action = L.List_command expected) actions in
   check (list_step 'j' Pxui_shell.Tree.Down && list_step 'k' Pxui_shell.Tree.Up) "j and k do not walk the list";
+  (* focus is a panel; commands are scoped by its kind: every viewport is one scope, and the
+     list and lisp panels are graph-pane projections *)
+  let module P = Pxui_shell.Layout in
+  check (List.for_all (fun panel -> L.scope panel = P.Graph) [P.Graph; P.List; P.Lisp]
+      && L.scope (P.View "v1.2") = P.View "" && L.scope (P.View "main") = L.scope (P.View "v0")
+      && L.scope P.Inspector = P.Inspector && L.scope P.Outline = P.Outline)
+    "panel kinds do not map to the scopes commands use";
+  check (host_ids (L.scope P.Lisp) Canvas = host_ids P.Graph Canvas
+      && host_ids (L.scope (P.View "v3")) Canvas = host_ids (P.View "") Canvas
+      && host_ids (L.scope P.Outline) Canvas <> host_ids P.Graph Canvas)
+    "a lisp or second viewport panel routed to the wrong scope";
+  let table = List.map (fun (command : _ Command.t) ->
+    {command with scope = Some Pxui_shell.Layout.Graph}) Scope.bindings in
+  List.iter (fun (pressed, modifiers, expected) ->
+    let input = Test_editor_input.frame ~keys:[] (500.,400.)
+      (List.map key modifiers @ [key pressed]) 1 in
+    let route focus = let _, actions, _ = Editor_core.Router.step table ~focus
+      ~text_focus:false ~frame:input Idle in List.map (fun (c : _ Command.t) -> c.action) actions in
+    check (route Pxui_shell.Layout.Graph = [expected]) "a graph pane key routed the wrong action";
+    check (route (Pxui_shell.Layout.View "") = [] && route Pxui_shell.Layout.Inspector = [])
+      "a graph pane key escaped graph scope")
+    Scope.[Input.ArrowLeft, [], Walk Left; Input.ArrowDown, [], Walk Down;
+      Input.ArrowUp, [], Walk Up; Input.ArrowRight, [], Walk Right;
+      Input.KeyChar 'x', [], Delete; Input.Delete, [], Delete; Input.Backspace, [], Delete;
+      Input.KeyChar 'b', [], Bypass; Input.KeyChar 'r', [], Wrap_repeat;
+      Input.KeyChar 'r', [Input.Shift], Wrap_iterate; Input.KeyChar 'c', [], Collapse;
+      Input.KeyChar 'm', [], Make_macro; Input.Home, [], Frame_all];
   let workspace = Ws_fixture.box () in
   let module E3 = Rays_editor.Editor in
   let directory = Filename.temp_dir "rays-guide" "" in
