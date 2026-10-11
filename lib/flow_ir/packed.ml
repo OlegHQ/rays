@@ -5,13 +5,13 @@ module Ty = Flow.Ty
 
 type binary = Flow.Packed_ops.binary = Add | Sub | Mul | Div | Mod | Pow | Min | Max | Lt | Le | Gt | Ge | Eq | And | Or
 type unary = Flow.Packed_ops.unary = Sin | Cos | Sqrt | Abs | Not
-type instruction = Const of float | Input of int * int * int
+type instruction = Core.Region.instruction = Const of float | Input of int * int * int
   | Uniform of int * int | Frame of string | Accumulator of int
   | Binary of binary * int * int | Unary of unary * int | Noise3 of int * int * int * int * int
   | Select of int * int * int
 type expression = { registers : int array; constant : E.value option }
-type iteration = Zip | Product
-type result = Collect | Sum of bool | Accumulate of W.term * bool
+type iteration = Core.Region.iteration = Zip | Product
+type result = Core.Region.result = Collect | Sum of bool | Accumulate of W.term * bool
 type origin = W.path * int list
 type count_source = E.residual -> W.term -> origin option
 type t = { residual : E.residual; term : W.term; sources : (E.residual * W.term) array;
@@ -22,6 +22,42 @@ type t = { residual : E.residual; term : W.term; sources : (E.residual * W.term)
   body : W.term; binding_fn : string option; uniform_names : (string * string list) array;
   count_source : count_source; origin : origin option;
   sites : (int * W.path * int list) list }
+let dependent_of code =
+  let dependent = Array.make (Array.length code) false in
+  Array.iteri (fun id -> function
+    | Accumulator _ -> dependent.(id) <- true
+    | Binary (_, a, b) -> dependent.(id) <- dependent.(a) || dependent.(b)
+    | Unary (_, a) -> dependent.(id) <- dependent.(a)
+    | Noise3 (a, b, c, _, _) | Select (a, b, c) -> dependent.(id) <- dependent.(a) || dependent.(b) || dependent.(c)
+    | _ -> ()) code;
+  dependent
+
+let of_region (r : Core.Region.t) =
+  let invalid message = Error [Flow.Diagnostic.error ~span:r.term.form.span ~code:"E_PACKED_LAYOUT" message] in
+  let ok slot id = id >= 0 && id < slot in
+  let operands_ok = ref true in
+  Array.iteri (fun slot -> function
+    | Binary (_, a, b) -> if not (ok slot a && ok slot b) then operands_ok := false
+    | Unary (_, a) -> if not (ok slot a) then operands_ok := false
+    | Noise3 (a, b, c, _, _) | Select (a, b, c) -> if not (ok slot a && ok slot b && ok slot c) then operands_ok := false
+    | _ -> ()) r.code;
+  if not !operands_ok then invalid "Region instruction reads a register defined later."
+  else if Array.length r.code > Flow.Packed_ops.register_limit then
+    invalid (Printf.sprintf "Region exceeds %d registers." Flow.Packed_ops.register_limit)
+  else if not (Array.for_all (ok (Array.length r.code)) r.output) then invalid "Region output names a missing register."
+  else Ok {residual = r.residual; term = r.term; sources = r.sources; widths = r.widths;
+    uniforms = r.uniforms; code = r.code; dependent = dependent_of r.code; output = r.output;
+    count = r.count; iteration = r.iteration; result = r.result; skip = r.skip; stages = r.stages;
+    fusion = r.fusion; dynamic = r.dynamic; body = r.body; binding_fn = r.binding_fn;
+    uniform_names = r.uniform_names; count_source = r.count_source; origin = r.origin; sites = r.sites}
+
+let to_region t : Core.Region.t =
+  {residual = t.residual; term = t.term; sources = t.sources; widths = t.widths;
+   uniforms = t.uniforms; uniform_names = t.uniform_names; code = t.code; output = t.output;
+   count = t.count; origin = t.origin; iteration = t.iteration; result = t.result; skip = t.skip;
+   stages = t.stages; fusion = t.fusion; dynamic = t.dynamic; count_source = t.count_source;
+   body = t.body; binding_fn = t.binding_fn; sites = t.sites}
+
 exception Unsupported
 exception Compile_refused of Flow.Diagnostic.t
 

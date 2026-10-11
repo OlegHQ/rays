@@ -338,7 +338,7 @@ let lower root =
         | Vec _ -> "vector" | Lit _ -> "literal" | Call _ -> "call"
         | Graph_ref _ -> "ref"
         | _ -> assert false)
-  and packed_region r (view : E.Private.residual_view) : Packed.t option =
+  and packed_region r (view : E.Private.residual_view) : C.Region.t option =
     (* Packed-array forms run as one region through Packed.force, unchanged; list
        loops stay structured core. A refusal by Packed leaves the structured path. *)
     let packed ty = match ty with Flow.Ty.Array _ -> true | _ -> false in
@@ -349,11 +349,11 @@ let lower root =
       | _ -> None in
     match sources with
     | Some sources when packed view.term.ty || List.exists (fun (s : W.term) -> packed s.ty) sources ->
-        (try Packed.compile r view.term with _ -> None)
+        (try Option.map Packed.to_region (Packed.compile r view.term) with _ -> None)
     | _ -> None
   and region statements packed (view : E.Private.residual_view) =
     let index=List.length !regions in
-    regions:=!regions @ [C.Region_ref packed];
+    regions:=!regions @ [packed];
     let source={(source_of_view view) with C.span=Some view.term.form.span} in
     let result=local view.term.ty in
     statements:=statement (number ()) source (Invoke {region=index;args=[];result}) :: !statements;

@@ -400,9 +400,10 @@ let prepare ?(fused=true) (program : C.program) =
           seal st value;
           st.values.(value)<-E.Private.state_write (state_root st) ~instance ~path ~iter ~host st.values.(value)
     | Invoke {region;result;_} ->
-        let (C.Region_ref packed)=program.regions.(region) in
+        let packed=Packed.of_region program.regions.(region) in
         fun st ->
           if Array.length st.builders>0 then st.builders.(result)<-None;
+          let packed=match packed with Ok p -> p | Error (d :: _) -> raise (V.Fail (d.code,d.message,d.span)) | Error [] -> assert false in
           (match (match st.force with Some force -> force packed | None -> Packed.force packed ~live:st.live) with
            | Ok v -> st.values.(result)<-v
            | Error (d : Flow.Diagnostic.t) -> raise (V.Fail (d.code,d.message,d.span)))) in

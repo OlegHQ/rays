@@ -3,7 +3,7 @@
 type t
 type binary = Flow.Packed_ops.binary = Add | Sub | Mul | Div | Mod | Pow | Min | Max | Lt | Le | Gt | Ge | Eq | And | Or
 type unary = Flow.Packed_ops.unary = Sin | Cos | Sqrt | Abs | Not
-type instruction = Const of float | Input of int * int * int
+type instruction = Core.Region.instruction = Const of float | Input of int * int * int
   | Uniform of int * int | Frame of string | Accumulator of int
   | Binary of binary * int * int | Unary of unary * int
   | Noise3 of int * int * int * int * int | Select of int * int * int
@@ -27,6 +27,11 @@ val rebind : t -> Flow.Eval.residual -> t option
 (** A frame-fold template keeps captures as uniforms and reuses its register
     code with the next step's immutable bindings. A changed function body or a
     fused lexical scope requires a fresh specialization. *)
+
+val of_region : Core.Region.t -> (t, Flow.Diagnostic.t list) Stdlib.result
+(** The register program of a region; refuses a region whose registers are not defined in order. *)
+
+val to_region : t -> Core.Region.t
 
 val static_count : t -> int option
 val count_origin : t -> origin option

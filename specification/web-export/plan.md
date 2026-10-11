@@ -732,7 +732,8 @@ Phase 1
 Phase 2
 - [x] P2.1 H
   Done 2026-10-11. `Packed.Private.trace` records every public compilation result; `lib/flow_ir/snapshots/` holds the register programs (`code`, `widths`, `output`, `uniform_widths`, `collecting`, `gpu_refusals`, refusals with spans) of `test_packed` (deduplicated), the `test_program` fixtures and the kernels of `examples/particles`, `sketches/flow_shader`, `flow_image_kernel`; `test_program.ml` moved to `lib/flow_ir` and is linked into `lib/flow_gpu` by `copy_files`. `sketches/flow_particles_gpu` is recorded as skipped: it holds a `sop` graph that `flow_ir` tests cannot check. Two generation runs were byte-identical. `@lib/flow_ir/runtest` and `@lib/flow_gpu/runtest` pass.
-- [ ] P2.2 S
+- [x] P2.2 S
+  Done 2026-10-11. `Core.Region` (instruction, iteration, result, origin, `t`) replaces `Region_ref of Packed.t`; `Core` no longer depends on `Packed`. A region is a register program (instruction n defines register n) plus sources, widths, captured uniforms, count, origin, skip, stages and the compile options, reusing `Flow.Packed_ops.binary`/`unary`. `Core.pp` prints it in full. Because `Packed` now depends on `Core`, `Packed.of_region` and `Packed.to_region` (lossless, `of_region` checks register order and the 64-register limit) land here; `Core_lower`/`Core_exec` convert at the boundary. test_core prints a region and round-trips it. `@lib/flow_ir/runtest`, `@lib/flow_gpu/runtest` pass; snapshots untouched.
 - [ ] P2.3 S
 - [ ] P2.4 S
 - [ ] P2.5 S
