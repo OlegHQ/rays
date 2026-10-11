@@ -6,10 +6,7 @@ deleted, not ticked.
 ## Tests that got weaker
 
 - 2026-10-11: every test file was compared with its version before `923dcecf` and the tests
-  whose subject survived are back. Three things were not restored and are the owner's call:
-  - `test/test_2d_ports.ml` compared eight Lisp ports with their OCaml `main.ml`. Those programs
-    are deleted, so the ports are only compared with themselves across domain counts.
-    `examples/particles` keeps an OCaml oracle in `test/test_drawing.ml`.
+  whose subject survived are back. Two things were not restored and are the owner's call:
   - The path tracer's `RAYS_PATH_TRACER_EXACT_M1` digests were stale before the prune (the
     kernel's rect-light transport changed in `4fce19a5`); the rule that set the switch is
     removed. Today's frames hash to `f2d5db77d2304128e7b179ab29121798` (lit sphere) and

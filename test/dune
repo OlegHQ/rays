@@ -344,7 +344,11 @@
  (modules test_image_sop)
  (libraries sop rdk flow_graph flow_sop editor_document sop_catalog))
 
-(executable (name test_2d_ports) (modules test_2d_ports)
+; The eight *_oracle modules are the OCaml programs these examples were before they became
+; Lisp workspaces, kept only as the independent side of this comparison.
+(executable (name test_2d_ports)
+ (modules test_2d_ports basic_oracle generative_oracle noise_oracle recursive_rectangles_oracle
+  drawing_oracle audio_oracle file_dialog_oracle pxui_oracle)
  (libraries rays pxui rays_editor flow editor_document scene_command unix))
 
 (rule (alias test_2d_ports) (deps (source_tree ../examples))
