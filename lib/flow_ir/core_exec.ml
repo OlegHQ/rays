@@ -3,7 +3,7 @@ module V = Flow.Value
 module E = Flow.Eval
 
 type state = {
-  values : E.value array; builders : bool ref option array; calls : int array;
+  values : E.value array; mutable builders : bool ref option array;  (* allocated by the first builder, so a call that builds nothing pays nothing *) calls : int array;
   live : Frame_input.t; root : E.residual option;
   force : (Packed.t -> (E.value, Flow.Diagnostic.t) result) option;
 }
@@ -16,15 +16,21 @@ type tree = Const of float | Time | Add of tree * tree | Sub of tree * tree | Mu
 exception Non_finite
 (* Postfix code on a flat float stack: no boxed intermediate floats. *)
 type op = Push of float | Push_time | Add_op | Sub_op | Mul_op | Sin_op | Cos_op | Sqrt_op
+  | Add_k of float | Sub_k of float | Mul_k of float | Add_t | Sub_t | Mul_t  (* right operand inline *)
 let rec flatten tree rest = match tree with
   | Const c -> Push c :: rest | Time -> Push_time :: rest
-  | Add (a,b) -> flatten a (flatten b (Add_op :: rest))
-  | Sub (a,b) -> flatten a (flatten b (Sub_op :: rest))
-  | Mul (a,b) -> flatten a (flatten b (Mul_op :: rest))
+  | Add (a,b) -> binary a b Add_op (fun c -> Add_k c) Add_t rest
+  | Sub (a,b) -> binary a b Sub_op (fun c -> Sub_k c) Sub_t rest
+  | Mul (a,b) -> binary a b Mul_op (fun c -> Mul_k c) Mul_t rest
   | Sin a -> flatten a (Sin_op :: rest) | Cos a -> flatten a (Cos_op :: rest)
   | Sqrt a -> flatten a (Sqrt_op :: rest)
-let code_value code t =
-  let stack=Array.create_float (Array.length code) and top=ref 0 in
+and binary a b op konst time rest = match b with
+  | Const c -> flatten a (konst c :: rest) | Time -> flatten a (time :: rest)
+  | _ -> flatten a (flatten b (op :: rest))
+let depth code = snd (List.fold_left (fun (d,m) op -> let d = match op with
+  | Push _ | Push_time -> d+1 | Add_op | Sub_op | Mul_op -> d-1 | _ -> d in d, max m d) (0,0) code)
+let code_value (code,size) t =
+  let stack=Array.create_float size and top=ref 0 in
   for i=0 to Array.length code-1 do
     (match Array.unsafe_get code i with
      | Push c -> Array.unsafe_set stack !top c; incr top
@@ -39,12 +45,25 @@ let code_value code t =
      | Sub_op -> decr top; let r=Array.unsafe_get stack (!top-1) -. Array.unsafe_get stack !top in
          if not (Float.is_finite r) then raise Non_finite; Array.unsafe_set stack (!top-1) r
      | Mul_op -> decr top; let r=Array.unsafe_get stack (!top-1) *. Array.unsafe_get stack !top in
+         if not (Float.is_finite r) then raise Non_finite; Array.unsafe_set stack (!top-1) r
+     | Add_k c -> let r=Array.unsafe_get stack (!top-1) +. c in
+         if not (Float.is_finite r) then raise Non_finite; Array.unsafe_set stack (!top-1) r
+     | Sub_k c -> let r=Array.unsafe_get stack (!top-1) -. c in
+         if not (Float.is_finite r) then raise Non_finite; Array.unsafe_set stack (!top-1) r
+     | Mul_k c -> let r=Array.unsafe_get stack (!top-1) *. c in
+         if not (Float.is_finite r) then raise Non_finite; Array.unsafe_set stack (!top-1) r
+     | Add_t -> let r=Array.unsafe_get stack (!top-1) +. t in
+         if not (Float.is_finite r) then raise Non_finite; Array.unsafe_set stack (!top-1) r
+     | Sub_t -> let r=Array.unsafe_get stack (!top-1) -. t in
+         if not (Float.is_finite r) then raise Non_finite; Array.unsafe_set stack (!top-1) r
+     | Mul_t -> let r=Array.unsafe_get stack (!top-1) *. t in
          if not (Float.is_finite r) then raise Non_finite; Array.unsafe_set stack (!top-1) r)
   done;
   Array.unsafe_get stack 0
 
-type prepared = { program : C.program; body : state -> unit; code : op array option;
-  track : bool;  (* some local is a list/array builder, so ownership is tracked *)
+type prepared = { program : C.program; body : state -> unit;
+  code : (op array * int) option;
+  pool : E.value array option Atomic.t;  (* the locals of a large program, reused across calls: a fresh one is allocated on the major heap *)
   stateless : bool  (* no state slot and no region: a failure leaves the evaluation state untouched *) }
 
 let yes = V.Bool true and no = V.Bool false
@@ -61,12 +80,17 @@ let generic_named name args =
   let op = lazy (operator name) in
   fun st -> apply_op (Lazy.force op) st (List.map (fun (n,i) -> n,st.values.(i)) args)
 
-let primitive ~track op args =
+(* A local of a plain scalar type never holds a list builder, so it needs no ownership bookkeeping. *)
+let plain : Flow.Ty.t -> bool = function Float | Int | Bool | Vec2 | Vec3 | Vec4 | Text -> true | _ -> false
+
+let primitive ~track ~locals op args =
   let get st = List.map (fun (name,n) -> name,st.values.(n)) args in
   let first = match args with (_,n)::_ -> n | [] -> -1 in
   let seal_args = match op with C.Sequence_get | Sequence_length | Sequence_build -> false | _ -> true in
-  let sealing st = List.iter (fun (_,n) -> seal st n) args in
+  let sealed = List.filter (fun (_,n) -> not (plain locals.(n))) args in
+  let sealing st = List.iter (fun (_,n) -> seal st n) sealed in
   let a () = List.assoc "a" args and b () = List.assoc "b" args in
+  let a_ key = List.assoc key args in
   let name = C.primitive_name op in
   let generic () =
     let op = lazy (operator name) in
@@ -80,6 +104,13 @@ let primitive ~track op args =
     | Fail (code,message) -> fun _ -> V.fail code message
     | Remainder -> let a=a () and b=b () in
         fun st -> V.Float (V.fin "remainder" (Float.rem (V.num st.values.(a)) (V.num st.values.(b))))
+    | Array_count when List.map fst args=["array"] -> fun st -> V.Int (V.array_length st.values.(first))
+    | Array_nth when List.map fst args=["array";"index"] ->
+        (* A whole index inside native storage, as the operator checks; anything else is its own body. *)
+        let array=a_ "array" and index=a_ "index" and slow=generic () in
+        fun st -> (match st.values.(index) with
+          | V.Int i when i>=0 && i<=Sys.max_floatarray_length -> V.array_get st.values.(array) i
+          | _ -> slow st)
     | Sequence_get -> generic_named "nth" args | Sequence_length -> generic_named "count" args
     | Sequence_build ->
         let count = List.assoc "count" args and width = List.assoc_opt "width" args in
@@ -167,7 +198,7 @@ let primitive ~track op args =
          | None -> generic ())
     | _ -> generic ()
   in
-  if track && seal_args then fun st -> sealing st; body st else body
+  if track && seal_args && sealed<>[] then fun st -> sealing st; body st else body
 
 (* Each local is a tree and whether it is a Float: Int constants only meet a Float operand,
    where the operators convert them exactly as the general path does. *)
@@ -192,7 +223,7 @@ let scalar_tree (program : C.program) constants =
             | _ -> raise Exit)
       | _ -> raise Exit) program.body;
     (match locals.(program.results.(0)) with
-     | Some (t,true) -> let code=Array.of_list (flatten t []) in if Array.length code<=64 then Some code else None
+     | Some (t,true) -> let code=flatten t [] in if List.length code<=64 then Some (Array.of_list code, depth code) else None
      | _ -> None)
   with Exit -> None
 
@@ -218,10 +249,13 @@ let prepare ?(fused=true) (program : C.program) =
           | Input -> Some "frame/input" | Time | Tick -> None in
         (match field,live with
          | C.Time,_ -> fun st -> V.Float st.live.t
+         | Dt,_ -> fun st -> V.Float st.live.dt | Index,_ -> fun st -> V.Int st.live.frame
+         | Width,_ -> fun st -> V.Int (fst st.live.size) | Height,_ -> fun st -> V.Int (snd st.live.size)
+         | Pointer_x,_ -> fun st -> V.Float (fst st.live.pointer) | Pointer_y,_ -> fun st -> V.Float (snd st.live.pointer)
          | Tick,_ -> fun st -> V.Int st.live.tick
          | _,Some name -> let op = lazy (operator name) in fun st -> apply_op (Lazy.force op) st []
          | _ -> assert false)
-    | Prim (op,args) -> primitive ~track op args
+    | Prim (op,args) -> primitive ~track ~locals:program.locals op args
     | Vec ns -> fun st ->
         (match List.map (fun n -> V.num st.values.(n)) ns with
         | [x;y] -> V.Vec2 (x,y) | [x;y;z] -> V.Vec3 (x,y,z) | [x;y;z;w] -> V.Vec4 (x,y,z,w)
@@ -231,57 +265,103 @@ let prepare ?(fused=true) (program : C.program) =
         let xs=Array.of_list (List.map (fun n -> seal st n;st.values.(n)) ns) in
         if Array.length xs>4096 then V.fail "E_ITER_BOUND" "Core list exceeds 4,096 values.";
         let ty=V.elem_ty xs in V.List (Array.map (V.coerce_to ty) xs)
-    | Field (n,name) -> fun st -> match st.values.(n),name with
+    | Field (n,name) ->
+        let slow st = match st.values.(n),name with
         | V.Vec2 (x,_),"x" | Vec2 (_,x),"y"
         | Vec3 (x,_,_),"x" | Vec3 (_,x,_),"y" | Vec3 (_,_,x),"z"
         | Vec4 (x,_,_,_),"x" | Vec4 (_,x,_,_),"y" | Vec4 (_,_,x,_),"z" | Vec4 (_,_,_,x),"w" -> V.Float x
-        | Record xs,name -> (match List.assoc_opt name xs with Some v -> v | None -> V.fail "E_FIELD" "Missing core field.")
+        | Record xs,name -> (match List.find_opt (fun (n,_) -> String.equal n name) xs with Some (_,v) -> v | None -> V.fail "E_FIELD" "Missing core field.")
         | _ -> V.fail "E_FIELD" "Invalid core field." in
-  let slot_key st n =
-    let s=program.state_slots.(n) in
-    s.source.instance,s.prefix @ s.zone,
-    List.map (function C.Static_index i -> i | Local_index l -> V.int_of st.values.(l)) s.source.iter,
-    s.plane=`Host in
+        (match name with
+         | "x" -> fun st -> (match st.values.(n) with V.Vec2 (x,_) | Vec3 (x,_,_) | Vec4 (x,_,_,_) -> V.Float x | _ -> slow st)
+         | "y" -> fun st -> (match st.values.(n) with V.Vec2 (_,x) | Vec3 (_,x,_) | Vec4 (_,x,_,_) -> V.Float x | _ -> slow st)
+         | _ -> slow) in
+  let slot_keys = Array.map (fun (s : C.state_slot) ->
+    let path=s.prefix @ s.zone and host=s.plane=`Host in
+    if List.for_all (function C.Static_index _ -> true | Local_index _ -> false) s.source.iter then
+      let iter=List.map (function C.Static_index i -> i | Local_index _ -> assert false) s.source.iter in
+      fun _ -> s.source.instance,path,iter,host
+    else fun st -> s.source.instance,path,
+      List.map (function C.Static_index i -> i | Local_index l -> V.int_of st.values.(l)) s.source.iter,host)
+    program.state_slots in
+  let slot_key st n = slot_keys.(n) st in
   let state_root st = match st.root with Some r -> r
     | None -> V.fail "E_CORE_STATE" "Core state needs its residual's state." in
+  let writes = Array.make (Array.length program.locals) 0 in
+  let bump n = writes.(n)<-writes.(n)+1 in
+  let rec count statements = List.iter (fun (s : C.statement) -> match s.node with
+    | Assign (n,_) | State_write {value=n;_} | Invoke {result=n;_} -> bump n
+    | Reset_call _ | Store _ -> ()
+    | If {yes;no;_} -> count yes; count no
+    | Iterate {index;item;body;_} -> bump index; bump item; count body
+    | Counted {count=c;index;item;init;body;_} -> bump c; bump index; bump item; count init; count body
+    | State_read {result;init;_} -> bump result; count init
+    | State_peek {found;value;_} -> bump found; bump value) statements in
+  count program.body;
+  let hoisted (s : C.statement) = match s.node with
+    | Assign (n,(Constant _ | Frame (Time|Dt|Index|Tick|Width|Height|Pointer_x|Pointer_y))) -> writes.(n)=1
+    | _ -> false in
+  let in_loop = ref false in
+  (* Constants and frame facts a loop body sets once are set when the loop starts, not per iteration. *)
+  let rec invariant statements = List.concat_map (fun (s : C.statement) -> match s.node with
+    | Assign (n,e) when hoisted s -> [n, expression e]
+    | If {yes;no;_} -> invariant yes @ invariant no
+    | _ -> []) statements in
   let rec block statements =
-    let run = Array.of_list (List.map statement statements) in
-    fun st -> for i=0 to Array.length run-1 do run.(i) st done
+    let statements = if !in_loop then List.filter (fun s -> not (hoisted s)) statements else statements in
+    let run = Array.of_list (List.map statement statements)
+    and spans = Array.of_list (List.map (fun (s : C.statement) -> s.source.span) statements) in
+    (* The innermost block that sees an unlocated failure gives it its statement's span. *)
+    fun st -> let i=ref 0 in
+      try while !i<Array.length run do run.(!i) st; incr i done
+      with V.Fail (code,message,None) -> raise (V.Fail (code,message,spans.(!i)))
+  and loop_body body =
+    let inner = !in_loop in in_loop := true;
+    let run = block body in in_loop := inner;
+    let setup = Array.of_list (invariant body) in
+    (fun st -> Array.iter (fun (n,value) -> st.values.(n)<-value st) setup), run
+  and plain_block statements =
+    let inner = !in_loop in in_loop := false;
+    let run = block statements in in_loop := inner; run
   and statement (s : C.statement) =
-    let guard (f : state -> unit) st =
-      try f st with V.Fail (code,message,None) -> raise (V.Fail (code,message,s.source.span)) in
-    guard (match s.node with
+    (match s.node with
     | Assign (n,e) ->
         let value=expression e in
         let ownership = match e with Prim (Sequence_build,_) -> `Fresh | Local old -> `Alias old | _ -> `None in
-        if not track then fun st -> st.values.(n)<-value st else
+        if not track || plain program.locals.(n) then fun st -> st.values.(n)<-value st else
         fun st ->
           let v=value st in
-          st.builders.(n)<-(match ownership with `Fresh -> Some (ref true) | `Alias old -> st.builders.(old) | `None -> None);
+          (match ownership with
+           | `Fresh -> if Array.length st.builders=0 then st.builders<-Array.make (Array.length program.locals) None;
+               st.builders.(n)<-Some (ref true)
+           | `Alias old -> if Array.length st.builders>0 then st.builders.(n)<-st.builders.(old)
+           | `None -> if Array.length st.builders>0 then st.builders.(n)<-None);
           st.values.(n)<-v
     | Reset_call slot -> fun st -> st.calls.(slot)<-0
     | If {condition;yes;no} ->
         let yes=block yes and no=block no in
         fun st -> (if V.truthy st.values.(condition) then yes else no) st
     | Iterate {sequence;index;item;limit;body} ->
-        let body=block body in
+        let setup,body=loop_body body in
         fun st ->
           let source=st.values.(sequence) in
           let count=match source with V.List xs -> Array.length xs | source -> V.array_length source in
           if count>limit then V.fail "E_ITER_BOUND" "Core iteration exceeds its bound.";
+          setup st;
           for i=0 to count-1 do
             st.values.(index)<-V.Int i;
             st.values.(item)<-(match source with V.List xs -> xs.(i) | source -> V.array_get source i);
             body st
           done
     | Counted {first;last;count;index;item;limit;init;body} ->
-        let init=block init and body=block body in
+        let init=plain_block init and setup,body=loop_body body in
         fun st ->
           let first=V.int_of st.values.(first) and last=V.int_of st.values.(last) in
           let length=max 0 (last-first) in
           if length>limit then V.fail "E_ITER_BOUND" "Core iteration exceeds its bound.";
           st.values.(count)<-V.Int length;
           init st;
+          setup st;
           for i=0 to length-1 do
             st.values.(index)<-V.Int i;
             st.values.(item)<-V.Int (first+i);
@@ -302,7 +382,7 @@ let prepare ?(fused=true) (program : C.program) =
                seal st value;
                xs.(i)<-st.values.(value))
     | State_read {slot;result;init;initial} ->
-        let init=block init in
+        let init=plain_block init in
         fun st ->
           let instance,path,iter,host=slot_key st slot in
           if Array.length st.builders>0 then st.builders.(result)<-None;
@@ -326,8 +406,8 @@ let prepare ?(fused=true) (program : C.program) =
           (match (match st.force with Some force -> force packed | None -> Packed.force packed ~live:st.live) with
            | Ok v -> st.values.(result)<-v
            | Error (d : Flow.Diagnostic.t) -> raise (V.Fail (d.code,d.message,d.span)))) in
-  {program; body=block program.body; track; code=if fused then scalar_tree program constants else None;
-   stateless=Array.length program.state_slots=0 && Array.length program.regions=0}
+  {program; body=block program.body; code=if fused then scalar_tree program constants else None;
+   pool=Atomic.make None; stateless=Array.length program.state_slots=0 && Array.length program.regions=0}
 
 let has_regions prepared = Array.length prepared.program.regions>0
 
@@ -336,14 +416,20 @@ let general root force prepared live =
   match Frame_input.validate live with
     | Error message -> Error (Flow.Diagnostic.error ~code:"E_FRAME" message)
     | Ok () ->
-        let st = {values=Array.make (Array.length program.locals) E.No_geo;
-          builders=if prepared.track then Array.make (Array.length program.locals) None else [||]; calls=Array.make program.call_slots 0;
+        let n=Array.length program.locals in
+        let pooled=n>256 in
+        let values=match (if pooled then Atomic.exchange prepared.pool None else None) with
+          | Some values -> values | None -> Array.make n E.No_geo in
+        let release () = if pooled then Atomic.set prepared.pool (Some values) in
+        let st = {values;
+          builders=[||]; calls=Array.make program.call_slots 0;
           live; root; force} in
-        try prepared.body st;
+        let result = try prepared.body st;
           if Array.length program.results<>1 then V.fail "E_CORE" "Expected one core result.";
           Ok st.values.(program.results.(0))
         with V.Fail (code,message,span) -> Error (Flow.Diagnostic.error ?span ~code message)
-          | Not_found | Invalid_argument _ | Failure _ -> Error (Flow.Diagnostic.error ~code:"E_CORE" "Invalid core program.")
+          | Not_found | Invalid_argument _ | Failure _ -> Error (Flow.Diagnostic.error ~code:"E_CORE" "Invalid core program.") in
+        release (); result
 
 let attempt ?root ?force prepared ~live =
   (* The postfix code reads only the time and every step is finite-checked, so frame facts it

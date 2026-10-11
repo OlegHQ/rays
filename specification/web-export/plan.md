@@ -675,15 +675,17 @@ Phase 1
   the cost table names no expression, so this one was chosen. Medians of three runs:
   tree walker 940.2 ns/eval, closure 132.6 ns/eval, core 391.8 ns/eval (core/closure 2.95).
   That exceeds 1.1, so P1.14 is required. Command and rows in results.md, 2026-10-11.
-- [ ] P1.14 S
-  note: not met after two attempts; core/closure 2.92 to 1.39 (core 378.1 to 166.7 ns, closure
+- [x] P1.14 S
+  The 1.1 micro-bench gate was not met (final ratio 1.26 at review; 1.23 after P1.14b, results.md); the project owner waived it on 2026-10-11.
+  note (history): not met after two attempts; core/closure 2.92 to 1.39 (core 378.1 to 166.7 ns, closure
   119.5 ns; results.md, 2026-10-11). Kept: executor fast paths and a postfix scalar tier in
   `Core_exec.prepare` (`~fused:false` is the reference; test_core_parity compares both with the
   walker); parity, flow, flow_ir and default tests pass. Remaining hot spot: the hook round trip
   (about 40 ns: snapshot, handlers, cached-program lookup), which needs the evaluator to hold the
   prepared program on the residual. Ratio is at most 1.5, so P1.15 proceeds.
-- [ ] P1.14a S
-  note: not met after two attempts; core/closure 1.39 to 1.25 (core 166.7 to 148.0 ns, closure 118.1 ns,
+- [x] P1.14a S
+  The 1.1 micro-bench gate was not met (ratio 1.26, results.md); the project owner waived it on 2026-10-11.
+  note (history): not met after two attempts; core/closure 1.39 to 1.25 (core 166.7 to 148.0 ns, closure 118.1 ns,
   three-run medians, load average 4.5; results.md, 2026-10-11). Kept: `residual.core` slot (owner-checked,
   filled by `Executor` on first offer, called by `force_res` with no snapshot and no handler; `Core_exec.execute`
   now catches every exception and the postfix path no longer validates frame facts it does not read).
@@ -703,7 +705,8 @@ Phase 1
   `Private.closure_available`/`compiled`; `closure_available` is used by `flow_ir.ml` line 365
   and `test_core_lower.ml` line 35; `compile_residuals` by `fast_of` and the tests
   `test_frame.ml`, `test_workspace_eval.ml`, `test_core_parity.ml` and `tools/bench_core.ml`.
-- [ ] P1.14b S
+- [x] P1.14b S
+  Postfix superinstructions and depth-sized stack (ratio 1.23, min 1.21) plus whole-frame repairs in `Core_exec` (results.md). The 1.1 gate was not met (ratio 1.26 at review); the project owner waived it on 2026-10-11.
 - [ ] P1.R R
   Review on 2026-10-11 (commit after 06149f40). Green: `--ship` (all, runtest, smoke, diff check;
   807 s, the only failure was the API manifest for the P1.14a `.mli` change, promoted in its own

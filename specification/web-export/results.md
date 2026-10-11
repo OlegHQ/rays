@@ -535,3 +535,33 @@ without the owner check broke `test_frame_kernel`'s own hook, which shows the sl
 (2) the postfix scalar path skips `Frame_input.validate` (it reads only `t`; an invalid frame ends in the walker's
 result anyway), is lifted out of the closure allocating `general`, and uses unchecked stack accesses (1.31 to 1.25).
 What remains, about 30 ns, is the postfix interpreter (nine dispatches and `sin`) against the closure tier's tree.
+
+## 2026-10-11 — P1.14b postfix superinstructions and whole-frame cost (regression found)
+
+Commands: `_build/default/tools/check.exe tools/bench_core.exe`; micro rows with
+`_build/default/tools/bench_core.exe` (seven runs); whole frames with
+`_build/default/tools/bench_core.exe frames .` (`frames ROOT [WORKSPACE-SUFFIX]`). Machine: Apple M1,
+OCaml 5.3.0, dune dev profile, one domain, load average 2.0 to 4.3 from other virtual machines (not quiet).
+
+**Micro (a).** Postfix code gained operand-inline instructions (`Add_k`/`Sub_k`/`Mul_k` with a constant right
+operand, `Add_t`/`Sub_t`/`Mul_t` with the time) and sizes its stack to the program's depth: the example has six
+dispatches instead of eight. Seven runs, same expression and method as P1.13:
+
+| Row | ns/eval median | bytes/eval |
+| --- | ---: | ---: |
+| tree walker | 888.4 | 5,280 |
+| closure tier | 119.7 | 1,824 |
+| core | 146.9 | 1,912 |
+| core/closure | 1.23 (min 1.21, max 1.25) | |
+
+The 1.1 gate is not met; the 1.25 review threshold is met (from 1.26).
+
+**Whole frames.** A throwaway whole-frame comparison (walker, closure, core; 15 eligible workspaces, forcing every value
+and rendering each draw graph at fixed steps) found core faster on seven workspaces (up to 9x), equal on six, and slower
+on `examples/particles` (about 2.3x, 4.5 ms against 2.0 ms per frame) and `examples/drawing` (about 1.07x). Before the
+repairs below they were 5.0x and 2.0x. Causes found by profiling: per-call arrays sized by the program's locals on the
+major heap, a handler per statement, sealing on scalar locals, loop-invariant constants re-assigned per iteration,
+generic dispatch for `array/nth`, `array/count` and `frame/*`. Repaired in `Core_exec` (pooled locals for programs over
+256 locals, lazily allocated builders, one handler per block, invariants set at loop entry, direct operators). What
+remains in particles is the interpreter itself (10,000 elements times about 50 statements per map). The owner waived
+further performance work; the comparison tool was not kept.
