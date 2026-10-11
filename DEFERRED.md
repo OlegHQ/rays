@@ -198,7 +198,8 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   with a finite-value error, including after a valid edit, and leave the original
   node's parameters and key unchanged. The focused gate
   `_build/default/tools/check.exe @lib/sop/test_nodes` passes with 464,386 floating
-  field instances (three non-finite cases each). Lisp's reader remains finite-only.
+  field instances (three non-finite cases each). Explicit non-finite Lisp
+  literals remain refused at this parameter boundary.
 - The gallery's own `--check-all` cook is gone; `test/test_workspace_ir` sweeps the gallery
   instead.
 
@@ -318,7 +319,21 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
 
 ## Lisp gaps
 
-- No literal for a non-finite number.
+- Fixed and verified 2026-10-11: explicit float literals `NaN`, `Infinity`,
+  `-Infinity` now read, evaluate, print and round-trip with comments intact.
+  `1e999` remains refused; lowercase `nan` and `inf` remain names. Checked
+  graph edits and actual pane typing cover all three values, replacement by
+  a finite value, unchanged scrubbing, and rejection by catalog fields (a
+  scalar spelling of a vector parameter included). Floating parameter,
+  integer conversion and packed-array boundaries keep their finite checks.
+  The isolated Flow/graph gates and pane gesture test pass; the API change is
+  only `Syntax.number_value` and the number field's opt-in `nonfinite` flag.
+  Editor benchmark: 200 nodes, one domain, dev profile, 1,200 × 760, three
+  medians before/after, `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy
+  _build/default/tools/bench_rays_editor.exe 200`. Drag 1.806021 → 1.806974 ms,
+  undo 2.344131 → 2.336025 ms, scrub 1.842022 → 1.837015 ms, scrub excluding
+  cook 1.741886 → 1.739025 ms. Bytes/frame remain 5,902,734 / 5,372,644 /
+  5,372,644 for drag/scrub/scrub excluding cook; undo 6,677,352 → 6,677,208.
 - No kind that builds a polygon from explicit points (`poly_fill` returns a closed curve
   unchanged); the gallery star uses `sop/sweep :caps true` instead.
 - Fixed and verified 2026-10-11: `Lisp_sop.node ~with_` accepts

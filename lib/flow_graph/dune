@@ -9,3 +9,8 @@
  (name test_domain)
  (modules test_domain)
  (libraries flow_graph))
+
+(test
+ (name test_nonfinite)
+ (modules test_nonfinite)
+ (libraries flow_graph param))

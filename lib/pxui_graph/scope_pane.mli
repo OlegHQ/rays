@@ -151,11 +151,13 @@ val scope_point : t -> scope:path -> float * float -> (float * float) option
 
 val num_field :
   Pxui.Ui.t -> at:float * float -> w:float -> h:float -> ?size:int ->
-  ?kind:Editor_core.Number.kind -> ?range:float * float -> string -> string -> string option
+  ?kind:Editor_core.Number.kind -> ?range:float * float -> ?nonfinite:bool -> string -> string -> string option
 (** The pane's number field ({!Pxui.Ui.value_field} driven by {!Editor_core.Number}, as the
     inspector's [Pxui_shell.Kit.number]): dragged sideways it scrubs by the step of its [kind] and soft
     [range], Option-click types, a click writes nothing.  [kind] is the parameter's type; without one the
-    literal's spelling decides.  [Some text] the frame the number changed.  Hosts use it for the same
+    literal's spelling decides. [nonfinite] admits explicit non-finite literals only when
+    there is no range or integer type; it defaults to [false].
+    [Some text] the frame the number changed.  Hosts use it for the same
     number shown elsewhere (an input's default in the inspector). *)
 
 val bindings : ('scope, command) Editor_core.Command.t list

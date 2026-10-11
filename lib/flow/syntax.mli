@@ -31,7 +31,11 @@ and node =
 
 val number : string -> bool
 (** Whether a word is a number literal: [-?digits(.digits)?] with an optional
-    exponent ([1e-14], [2.5E+6]). *)
+    exponent ([1e-14], [2.5E+6]), or [NaN], [Infinity], [-Infinity]. *)
+
+val number_value : string -> float option
+(** Decode a finite numeric value or an explicit non-finite literal. Numeric
+    overflow and other non-finite spellings are refused. *)
 
 val separator : char -> bool
 (** Whether a byte ends a word. *)

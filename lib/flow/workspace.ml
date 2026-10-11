@@ -500,8 +500,8 @@ let check ?(ops = []) ?(library = false) catalog forms =
   and plain cx (x : S.t) : term * v =
     match x.node with
     | S.Num s ->
-        (match float_of_string_opt s with
-         | Some f when Float.is_finite f ->
+        (match S.number_value s with
+         | Some f ->
              (match (if String.contains s '.' then None else int_of_string_opt s) with
               | Some n -> (tm x Ty.Int (Lit (Param.Int_value n)), leaf Ty.Int)
               | None -> (tm x Ty.Float (Lit (Param.Float_value f)), leaf Ty.Float))

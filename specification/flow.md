@@ -671,7 +671,10 @@ what those files leave to the reader, the printer and the checker's argument han
   `{` `}` for records (keys and values alternate).
 - Number: `-?digits(.digits)?` with an optional exponent (`1e-14`, `2.5E+6`). A number with
   neither `.` nor exponent is an integer. The tree keeps the spelling, so `2.0` stays a
-  float.
+  float. `NaN`, `Infinity` and `-Infinity` are explicit float literals; overflow
+  in an ordinary numeric spelling (`1e999`) remains an `E_TYPE` error. Lowercase
+  `nan` and `inf` remain names. Value cards edit these literals directly; ranged
+  parameter fields reject them with `E_NONFINITE`.
 - String: `"…"` with the escapes `\"`, `\\`, `\n`, `\t`, `\r`; any other escape is
   `E_UNEXPECTED`.
 - Keyword: `:` followed by a name. Metadata: `^:` followed by a name, on the next form.
@@ -691,8 +694,9 @@ and after root forms; a comment written after a quote prefix is moved before it.
 
 `Flow.Lisp.float` is the one spelling of a float in workspace text, and every writer uses
 it: the shortest digits that read back as the same value, always with a `.` and never an
-exponent (`1e-14` is written `0.00000000000001`). A non-finite value prints `0.0`; a writer
-for which that matters rejects the value first.
+exponent (`1e-14` is written `0.00000000000001`). Non-finite values print as
+`NaN`, `Infinity` or `-Infinity`, preserving their class when read back. Finite
+parameter, integer conversion and packed-array boundaries still reject them.
 
 ### 11.3 Threading and nested nodes
 

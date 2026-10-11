@@ -329,7 +329,7 @@ let () =
     if Lisp.float x <> text then failwith (Printf.sprintf "float %h printed %s, want %s" x (Lisp.float x) text))
     [ 1., "1.0"; -0.5, "-0.5"; 1e-14, "0.00000000000001"; 2e6, "2000000.0"; 6.1e-17, "0.000000000000000061";
       1234567.89, "1234567.89"; 0.1, "0.1"; -3.3e-7, "-0.00000033"; 1e21, "1000000000000000000000.0";
-      Float.nan, "0.0"; Float.infinity, "0.0" ];
+      Float.nan, "NaN"; Float.infinity, "Infinity"; Float.neg_infinity, "-Infinity" ];
   List.iter (fun x ->
     let text = Lisp.float x in
     assert (Syntax.number text && float_of_string text = x);

@@ -558,6 +558,35 @@ let scope_gestures () =
     "a scrub is not one history entry";
   let cell = scrub (field [ "g"; "b" ] "translate" ~inset:110.) 2 in
   check (List.mem "1234567.99" (written cell)) ("a scrub of 1234567.89 lost its digits: " ^ String.concat " " (written cell));
+  (* Explicit non-finite values are editable on value cards, while ranged
+     catalog fields keep their finite-value boundary. *)
+  let source = Flow.Syntax.parse
+    "(workspace literals (graph g :context value (let* [x 0.5] x)))" |> Result.get_ok in
+  let checked source = match Flow.Workspace.check scope_catalog source with
+    | Some w, [] -> w | _ -> fail "literal workspace did not check" in
+  let value_field source =
+    let view = settled (fst (scope_view (checked source) "g")) in
+    let x, y, w, _ = center_of view ["g"; "x"] in
+    view, (int_of_float (x +. w -. 40.), int_of_float (y +. 12.)) in
+  let edit (view, point) text =
+    let view, _ = scope_step view
+      (frame ~mouse:point ~keys:[Input.Alt] ~events:(mouse_move point :: click point) ()) in
+    let view, changes = type_text view text in
+    ignore (scope_step view (frame ~events:[Event.KeyPressed Input.Escape] ()));
+    List.filter_map (function Scope.Syntax_edit (E.Set_arg _ as op) -> Some op | _ -> None) changes in
+  List.iter (fun text ->
+    let ops = edit (value_field source) text in
+    check (written ops = [text]) ("value card refused " ^ text);
+    let edited, workspace = E.apply_checked scope_catalog source (List.hd ops) |> Result.get_ok in
+    let actual = List.assoc "g" (Flow.Eval.run ~time:0. workspace |> Result.get_ok).results in
+    check (match actual with Flow.Eval.Float f -> Flow.Lisp.float f = text | _ -> false)
+      ("value card did not evaluate " ^ text);
+    check (scrub (value_field edited) 10 = []) ("scrubbing " ^ text ^ " changed its value");
+    check (written (edit (value_field edited) "7.5") = ["7.5"])
+      ("value card could not replace " ^ text)) ["NaN"; "Infinity"; "-Infinity"];
+  let rejected = written (edit (field ["g"; "a"] "radius" ~inset:60.) "NaN") in
+  check (rejected = [])
+    ("a ranged radius field accepted NaN: " ^ String.concat "," rejected);
   (* the selection commands and their requests *)
   let view = settled (Scope.select [ heart ] (fst (scope_view w "flower"))) in
   let only command = snd (Scope.run_command view command) in

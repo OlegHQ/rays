@@ -15,12 +15,16 @@ let contains (x, y, w, h) (px, py) = px >= x && px < x +. w && py >= y && py < y
 
 (* the number field of a row, the kit's ([Editor_core.Number], as [Pxui_shell.Kit.number]): the kind
    is the row's type, and only a literal with no typed row behind it is read by its spelling *)
-let num_field ui ~at ~w ~h ?size ?kind ?range label text =
+let num_field ui ~at ~w ~h ?size ?kind ?range ?(nonfinite = false) label text =
   let module N = Editor_core.Number in
+  let nonfinite = nonfinite && kind <> Some N.Int && range = None in
   let kind = match kind with
     | Some kind -> kind
-    | None -> if String.exists (fun c -> c = '.' || c = 'e') text then N.Float else N.Int in
-  let valid s = match float_of_string_opt s with Some f -> Float.is_finite f | None -> false in
+    | None -> if String.exists (fun c -> c = '.' || c = 'e') text
+        || List.mem text ["NaN"; "Infinity"; "-Infinity"] then N.Float else N.Int in
+  let valid s = match Flow.Syntax.number_value s with
+    | Some f -> Float.is_finite f || nonfinite
+    | None -> false in
   let text', _ = Ui.value_field ui ~at ~w ~h ?size ?fraction:(Option.bind range (fun r -> N.fraction r text))
       ~scrub:(N.scrub kind ?range) ~valid label text in
   if text' <> text && valid text' then Some text' else None
@@ -219,9 +223,10 @@ let update t ui (frame : Frame.t) =
       let row_fields (n : P.node) (r : P.row) ~name ~ry ~size =
         let at = value_x p.w *. z and vw = field_w *. z and h = field_h *. z in
         let ay = (ry +. 4.) *. z in
+        let nonfinite = match r.key with E.Kw _ -> false | _ -> true in
         match r.chip, r.expr with
         | P.Const, Some ({ node = S.Num text; _ }) ->
-            (match num_field ui ~at:(at, ay) ~w:vw ~h ~size ?kind:(kind_of r) ?range:(range_of r) ("f" ^ name) text with
+            (match num_field ui ~at:(at, ay) ~w:vw ~h ~size ?kind:(kind_of r) ?range:(range_of r) ~nonfinite ("f" ^ name) text with
              | Some text' -> [ Syntax_edit (E.Set_arg { node = n.path; key = r.key; sub = [];
                  value = S.make (S.Num text') }) ]
              | None -> [])
@@ -233,7 +238,7 @@ let update t ui (frame : Frame.t) =
             let cw = (vec_w *. z -. float (k - 1) *. gap) /. float k in
             List.concat (List.mapi (fun c (e : S.t) -> match e.node with
               | S.Num text ->
-                  (match num_field ui ~at:(at +. float c *. (cw +. gap), ay) ~w:cw ~h ~size ?kind:(kind_of r)
+                  (match num_field ui ~at:(at +. float c *. (cw +. gap), ay) ~w:cw ~h ~size ?kind:(kind_of r) ~nonfinite
                            (Printf.sprintf "f%s.%d" name c) text with
                    | Some text' -> [ Syntax_edit (E.Set_arg { node = n.path; key = r.key; sub = [ c ];
                        value = S.make (S.Num text') }) ]

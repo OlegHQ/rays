@@ -333,7 +333,10 @@ let validate_range report (parameter : parameter) field value =
           (Printf.sprintf ":%s %g is outside the slider range %d–%d. Allowed, but check it"
             parameter.name number range.soft_min range.soft_max)
   | (_, Param.Floating_view range, _), Some number ->
-      if Option.fold ~none:false ~some:(fun n -> number < n) range.hard_min
+      if not (Float.is_finite number) then
+        report Diagnostic.Error "E_NONFINITE"
+          (Printf.sprintf ":%s must be finite" parameter.name)
+      else if Option.fold ~none:false ~some:(fun n -> number < n) range.hard_min
            || Option.fold ~none:false ~some:(fun n -> number > n) range.hard_max then
         report Diagnostic.Error "E_HARD_RANGE"
           (Printf.sprintf ":%s is outside its hard range" parameter.name)

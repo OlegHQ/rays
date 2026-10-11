@@ -12,7 +12,17 @@ type token = { kind : kind; span : Diagnostic.span }
 
 let depth_limit = 256
 
+let nonfinite = function
+  | "NaN" -> Some nan | "Infinity" -> Some infinity
+  | "-Infinity" -> Some neg_infinity | _ -> None
+
+let number_value text = match nonfinite text with
+  | Some _ as value -> value
+  | None -> Option.bind (float_of_string_opt text) (fun value ->
+      if Float.is_finite value then Some value else None)
+
 let number text =
+  Option.is_some (nonfinite text) ||
   let n = String.length text in
   let digit c = c >= '0' && c <= '9' in
   let i = ref (if n > 0 && text.[0] = '-' then 1 else 0) in

@@ -22,7 +22,8 @@ let vis s =
 let sp n = String.make (max n 0) ' '
 
 let float x =
-  if not (Float.is_finite x) then "0.0"
+  if Float.is_nan x then "NaN"
+  else if not (Float.is_finite x) then (if x > 0. then "Infinity" else "-Infinity")
   else
     let text = List.find (fun t -> float_of_string t = x)
       (List.map (fun p -> Printf.sprintf "%.*g" p x) [ 15; 16; 17 ]) in
@@ -43,6 +44,7 @@ let float x =
            else String.sub digits 0 shifted ^ "." ^ String.sub digits shifted (n - shifted))
 
 let number raw =
+  if List.mem raw ["NaN"; "Infinity"; "-Infinity"] then raw else
   let v = float_of_string raw in
   if String.exists (fun c -> c = 'e' || c = 'E') raw then raw
   else if Float.is_integer v then (if String.contains raw '.' then float v else raw)
@@ -319,7 +321,7 @@ let patch_atoms (text, spans) values =
   List.iter (fun (id, span) -> Hashtbl.replace by_id id span) spans;
   let edits = List.map (fun (value : Syntax.t) ->
     let atom = match value.node with
-      | Num n -> Syntax.number n && Option.fold ~none:false ~some:Float.is_finite (float_of_string_opt n)
+      | Num n -> Syntax.number n && Option.is_some (Syntax.number_value n)
       | Str _ | Sym ("true" | "false") -> true | _ -> false in
     match atom, value.meta, Hashtbl.find_opt by_id value.id with
     | true, [], Some span when value.id <> 0 -> Some (span, flat value)
