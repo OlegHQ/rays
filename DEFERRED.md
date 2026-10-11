@@ -32,7 +32,14 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   it also checks output cardinalities and unchanged source geometry/transforms.
   `_build/default/lib/rdk/test_main.exe test_instances` and
   `_build/default/tools/check.exe @lib/rdk/test_mesh` pass. No grain option was restored.
-- The zero-budget carry case in `test_materials` is gone; an over-budget carry is untested.
+- Verified 2026-10-11: `test_materials` exercises the fixed 500ms carry budget
+  with a live geometry input and a controlled 600ms preparation callback.
+  The held-back preview preserves the original document/history; Escape
+  cancels, release commits one `Put`, and one undo restores physical document
+  identity. Updates synchronize through `~await:true` and counted frames;
+  no zero-budget option, clock polling or new public hook was added.
+  Build with `_build/default/tools/check.exe test/test_materials.exe`; run
+  `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy _build/default/test/test_materials.exe`.
 - Verified 2026-10-11: the existing SOP declaration and cache sweeps now check every
   floating field through `Node.apply_parameters`: NaN and both infinities must fail
   with a finite-value error, including after a valid edit, and leave the original

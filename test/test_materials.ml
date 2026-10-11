@@ -248,9 +248,14 @@ let carry_tests () =
       (ui/split-at "horizontal" 0.45 (ui/viewport (ref scene))
         (ui/split-at "horizontal" 0.62 (ui/graph) (ui/inspector))))))|} in
   let with_editor source = String.sub source 0 (String.length source - 1) ^ editor ^ ")" in
+  let slow_prepare = Atomic.make false in
   let make ?(source = carry_source) () =
     E3.create ~await:true ~workspace:(workspace (with_editor source))
-      ~prepare:(fun _ output -> Rdk_rays.Rays_mesh.to_mesh (Result.get_ok (Sop.Payload.geometry output.Session.payload))
+      ~prepare:(fun _ output ->
+        (* A controlled over-budget input, not a wait for cook completion:
+           ~await:true still synchronizes every update below. *)
+        if Atomic.get slow_prepare then Unix.sleepf 0.6;
+        Rdk_rays.Rays_mesh.to_mesh (Result.get_ok (Sop.Payload.geometry output.Session.payload))
         |> Result.map_error Rdk.Error.to_string)
       ~scene3:(fun _ mesh -> Scene3.create [ Scene3.mesh mesh ]) ()
     |> function Ok e -> e | Error m -> fail m in
@@ -497,7 +502,45 @@ let carry_tests () =
   step [ key Input.Escape ]; step [];
   Printf.printf "carry preview: apply %.1f ms, restore %.1f ms (budget 500 ms)\n" !apply !restore;
   check (!apply < 500. && !restore < 500.) "a preview applies and restores inside the 500 ms budget";
-  E3.close !e
+  E3.close !e;
+  (* A real cook over the fixed 500ms preview budget keeps the original
+     document visible, but release can still commit the prepared edit. *)
+  (* Keep a live geometry input so a probe-only cache hit cannot replace the
+     measured slow cook with a cheap request that reuses a prepared piece. *)
+  e := make ~source:{|(workspace expensive_carry
+    (graph cobalt :context material (material/standard :name "cobalt blue" :color "#2670f5"))
+    (graph spare :context material (material/standard :name "spare" :color "#ff0000"))
+    (graph shards :context sop
+      (let* [m (sop/material (sop/transform (sop/box) :translate [(* 0.01 t) 0 0])
+                 :material (ref spare))] m))
+    (graph scene :context scene
+      (let* [obj (scene/geometry (ref shards) :name "shards")] (scene/merge obj))))|} ();
+  Fun.protect ~finally:(fun () -> E3.close !e) (fun () ->
+    for _ = 1 to 12 do step [] done;
+    jump "shards";
+    let original = E3.workspace !e and history = E3.undo_label !e in
+    let target = tile ["shards"; "m"] in
+    Atomic.set slow_prepare true;
+    drag_to target;
+    check (has (line ()) "a cook takes") ("an expensive carry is held back: " ^ line ());
+    check (E3.workspace !e == original && E3.undo_label !e = history)
+      "a held-back carry leaves the original document and history unchanged";
+    Atomic.set slow_prepare false;
+    step ~buttons:[Input.LeftButton] ~mouse:target [key Input.Escape];
+    step ~mouse:target [Event.MouseReleased (Input.LeftButton, target)]; step [];
+    check (E3.carrying !e = None && E3.workspace !e == original
+      && E3.undo_label !e = history) "Escape drops an expensive carry without an edit";
+    Atomic.set slow_prepare true;
+    drag_to target;
+    check (has (line ()) "a cook takes") "the next expensive preview is also held back";
+    Atomic.set slow_prepare false;
+    step ~mouse:target [Event.MouseReleased (Input.LeftButton, target)]; step []; step [];
+    check (E3.carrying !e = None && E3.undo_label !e = Some "Put"
+      && has (text_of !e) ":material (ref cobalt)")
+      "releasing an expensive carry commits exactly one Put";
+    step ~keys:[Input.Meta] [ch 'z'];
+    check (E3.workspace !e == original && E3.undo_label !e = history)
+      "one undo restores the held-back carry's original document")
 
 (* ---- carry onto a viewport panel: a scene graph re-points it, a camera is its root's :camera ---- *)
 let viewport_source = {|(workspace views
