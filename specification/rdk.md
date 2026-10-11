@@ -79,7 +79,15 @@ changes. Point/primitive Sort, Triangulate, Reverse, Delete with
 optional compaction, direct point compaction, Merge, Fuse, and Mirror use this
 boundary or its exact equivalent. Duplicate and Copy to Points validate their
 copy-major topology and replicate edge ordinals directly, avoiding a large
-target reverse index. Subdivide derives its child-edge ordinals directly from
+target reverse index. Copy to Points filters target selections by membership
+and retains increasing target-point order, including for explicitly ordered
+groups. Piece matching keeps that target order and skips unmatched IDs.
+Target attribute and group rules use the last matching pattern, including a
+`Nothing` rule that preserves the source payload. Arithmetic acts on the
+chosen output owner; a missing numeric source starts from the target value
+(negated for subtraction), while a missing group copies target membership
+for addition/multiplication and remains empty for subtraction.
+Subdivide derives its child-edge ordinals directly from
 the deterministic quad/triangle refinement plan, so propagated and resulting
 crease groups do not retain a full target reverse index;
 Clip maps only fragments whose endpoint provenance lies on that source edge;

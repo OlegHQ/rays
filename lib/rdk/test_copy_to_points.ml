@@ -207,23 +207,34 @@ let run () =
       restricted_targets |> get_ok in
   let target_outer = Group.ordered ~owner:Group.Point ~name:"target_outer"
       ~length:3 [|2;0|] |> get_ok in
+  let restricted_source_bytes = geometry_bytes restricted_source
+  and restricted_targets_bytes = geometry_bytes restricted_targets in
   let restricted domains = Parallel.run ~domains (fun () ->
     Instance_copy.copy_to_points ~grain:1 ~source_primitives:source_second
       ~target_points:target_outer ~source:restricted_source
       ~targets:restricted_targets () |> get_ok) in
   let restricted_one = restricted 1 and restricted_many = restricted 4 in
-  let _restricted_positions = Packed.Float3.Private.view
+  let restricted_positions = Packed.Float3.Private.view
       (Geometry.positions restricted_one)
-  and _restricted_topology = Topology.Private.view
-      (Geometry.topology restricted_one)
-  and _restricted_many_topology = Topology.Private.view
-      (Geometry.topology restricted_many) in
-  let _restricted_group = Geometry.find_group ~owner:Group.Primitive
+  and restricted_topology = Topology.Private.view
+      (Geometry.topology restricted_one) in
+  let restricted_group = Geometry.find_group ~owner:Group.Primitive
       "source_second" restricted_one |> Option.get
-  and _restricted_edges = Geometry.find_edge_group "source_edges" restricted_one
-      |> Option.get
-  and _restricted_edges_many = Geometry.find_edge_group "source_edges"
-      restricted_many |> Option.get in
+  and restricted_edges = Geometry.find_edge_group "source_edges" restricted_one
+      |> Option.get in
+  check (geometry_bytes restricted_one = geometry_bytes restricted_many
+      && geometry_bytes restricted_source = restricted_source_bytes
+      && geometry_bytes restricted_targets = restricted_targets_bytes
+      && restricted_positions.x = [|10.;12.;20.;24.|]
+      && restricted_positions.y = [|0.;0.;20.;20.|]
+      && restricted_positions.z = Array.make 4 0.
+      && restricted_topology.vertex_points = [|0;1;2;3|]
+      && restricted_topology.primitive_offsets = [|0;2;4|]
+      && Group.length restricted_group = 2
+      && Group.cardinality restricted_group = 2
+      && Edge_group.length restricted_edges = 2
+      && Edge_group.cardinality restricted_edges = 2)
+    "copy-to-points target point order/restrictions/topology/groups/domain exactness";
   let empty_targets = Group.init ~owner:Group.Point ~name:"none" 3
       (fun _ -> false) in
   let restricted_empty = Instance_copy.copy_to_points ~source_primitives:source_second
@@ -252,19 +263,28 @@ let run () =
       copy_target_owner = Copy_target_primitives;
       copy_target_operation = Copy_target_copy;
     }] in
+  let piece_targets_bytes = geometry_bytes piece_targets in
   let piece_copy domains = Parallel.run ~domains (fun () ->
     Instance_copy.copy_to_points ~grain:1 ~piece_attribute:"piece_id"
       ~target_attributes:piece_rules ~source:restricted_source
       ~targets:piece_targets () |> get_ok) in
   let piece_one = piece_copy 1 and piece_many = piece_copy 4 in
-  let _piece_positions = Packed.Float3.Private.view
+  let piece_positions = Packed.Float3.Private.view
       (Geometry.positions piece_one)
-  and _piece_topology = Topology.Private.view (Geometry.topology piece_one)
-  and _piece_many_topology = Topology.Private.view (Geometry.topology piece_many) in
-  let _piece_profile = float_array_values ~owner:Attribute.Primitive
-      ~name:"piece_profile" piece_one
-  and _piece_profile_many = float_array_values ~owner:Attribute.Primitive
-      ~name:"piece_profile" piece_many in
+  and piece_topology = Topology.Private.view (Geometry.topology piece_one) in
+  let piece_profile = float_array_values ~owner:Attribute.Primitive
+      ~name:"piece_profile" piece_one in
+  check (geometry_bytes piece_one = geometry_bytes piece_many
+      && geometry_bytes restricted_source = restricted_source_bytes
+      && geometry_bytes piece_targets = piece_targets_bytes
+      && piece_positions.x = [|10.;12.;0.;2.;10.;12.|]
+      && piece_positions.y = [|0.;0.;10.;10.;30.;30.|]
+      && piece_positions.z = Array.make 6 0.
+      && piece_topology.vertex_points = [|0;1;2;3;4;5|]
+      && piece_topology.primitive_offsets = [|0;2;4;6|]
+      && piece_profile.offsets = [|0;2;3;5|]
+      && piece_profile.values = [|0.;1.;2.;6.;7.|])
+    "copy-to-points piece matching/target order/ragged payload/domain exactness";
   let point_piece_source = Line_geometry.polyline [|(0.,0.,0.); (1.,0.,0.)|]
       |> get_ok
       |> Geometry.with_attribute (Attribute.create_owned ~name:"point_piece"
@@ -412,14 +432,65 @@ let run () =
       copy_target_owner = Copy_target_points;
       copy_target_operation = Copy_target_subtract };
   ] in
+  let transfer_source_bytes = geometry_bytes transfer_source
+  and transfer_targets_bytes = geometry_bytes transfer_targets in
   let transferred domains = Parallel.run ~domains (fun () ->
     Instance_copy.copy_to_points ~grain:1 ~target_attributes:transfer_rules
       ~source:transfer_source ~targets:transfer_targets () |> get_ok) in
   let transferred_one = transferred 1 and transferred_many = transferred 4 in
-  let _transferred_profile = float_array_values ~owner:Attribute.Point
-      ~name:"profile" transferred_one
-  and _transferred_profile_many = float_array_values ~owner:Attribute.Point
-      ~name:"profile" transferred_many in
+  let transferred_profile = float_array_values ~owner:Attribute.Point
+      ~name:"profile" transferred_one in
+  check (geometry_bytes transferred_one = geometry_bytes transferred_many
+      && geometry_bytes transfer_source = transfer_source_bytes
+      && geometry_bytes transfer_targets = transfer_targets_bytes
+      && Geometry.point_count transferred_one = 4
+      && Geometry.vertex_count transferred_one = 4
+      && Geometry.primitive_count transferred_one = 2
+      && transferred_profile.offsets = [|0;2;4;6;8|]
+      && transferred_profile.values = [|11.;22.;31.;42.;13.;24.;33.;44.|])
+    "copy-to-points target arithmetic/ragged payload/domain exactness";
+  List.iter (fun (owner, name, storage) ->
+    let expected = Attribute.create_owned ~owner ~name storage |> get_ok in
+    match Geometry.find_attribute ~owner name transferred_one with
+    | Some actual -> check (equal_attribute expected actual)
+        ("copy-to-points target attribute " ^ name)
+    | None -> fail ("copy-to-points missing target attribute " ^ name))
+    Attribute.[
+      Point, "weight", Float [|13.;23.;14.;24.|];
+      Vertex, "corner", Int [|101;102;201;202|];
+      Primitive, "density", Float [|-3.;-5.|];
+      Primitive, "label", Text [|"first";"second"|];
+      Point, "gain", Float [|-2.;-2.;-3.;-3.|];
+      Point, "disabled", Int [|7;8;7;8|]];
+  check (Geometry.find_attribute ~owner:Attribute.Primitive "weight"
+        transferred_one = None
+      && Geometry.find_attribute ~owner:Attribute.Primitive "disabled"
+        transferred_one = None)
+    "copy-to-points last matching rule wins, including Nothing";
+  let multiplied domains = Parallel.run ~domains (fun () ->
+    Instance_copy.copy_to_points ~grain:1
+      ~target_attributes:[List.hd transfer_rules]
+      ~source:transfer_source ~targets:transfer_targets () |> get_ok) in
+  let multiplied_one = multiplied 1 and multiplied_many = multiplied 4 in
+  let expected = Attribute.create_owned ~owner:Attribute.Primitive
+      ~name:"weight" (Attribute.Float [|3.;4.|]) |> get_ok in
+  check (geometry_bytes multiplied_one = geometry_bytes multiplied_many
+      && equal_attribute expected (Geometry.find_attribute
+          ~owner:Attribute.Primitive "weight" multiplied_one |> Option.get))
+    "copy-to-points multiply initializes a missing owner from the target";
+  List.iter (fun (owner, name, length, members) ->
+    match Geometry.find_group ~owner name transferred_one with
+    | Some group -> check (Group.length group = length
+        && Group.cardinality group = Array.length members
+        && Array.for_all (fun index -> Group.mem index group) members)
+        ("copy-to-points target group " ^ name)
+    | None -> fail ("copy-to-points missing target group " ^ name))
+    Group.[Point, "union_mask", 4, [|0;2;3|];
+      Vertex, "intersect_mask", 4, [|2|];
+      Primitive, "subtract_mask", 2, [|0|];
+      Primitive, "copy_mask", 2, [|1|];
+      Point, "missing_multiply", 4, [|2;3|];
+      Point, "missing_subtract", 4, [||]];
   let incompatible_source = Geometry.with_attribute
       (Attribute.create_owned ~name:"corner" ~owner:Attribute.Point
         (Attribute.Text [|"a";"b"|]) |> get_ok) transfer_source |> get_ok in
@@ -474,4 +545,9 @@ let run () =
   (match Instance_copy.copy_to_points ~source:prototype ~targets:invalid_trans_target () with
    | Error error when Error.code error = "invalid_attribute" -> ()
    | _ -> fail "copy-to-points accepted a non-finite target translation");
+  List.iter (fun (one, four) ->
+    check (geometry_bytes one = geometry_bytes four)
+      "copy-to-points complete transform payload differs by domain count")
+    [copied_one, copied_many; aligned_one, aligned_many;
+      stacked_one, stacked_many; matrix_one, matrix_many];
   print_endline "RDK Copy to Points tests passed"

@@ -37,6 +37,13 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   it also checks output cardinalities and unchanged source geometry/transforms.
   `_build/default/lib/rdk/test_main.exe test_instances` and
   `_build/default/tools/check.exe @lib/rdk/test_mesh` pass. No grain option was restored.
+- Verified 2026-10-11: the extracted `test_copy_to_points` now asserts the
+  restriction, piece-matching and target-rule results that the old monolith
+  only computed. It checks exact positions/topology, edge and ordinary groups,
+  ragged payloads, owner-specific arithmetic, last-rule precedence (including
+  `Nothing`), unchanged inputs and complete geometry bytes at one/four domains.
+  `_build/default/lib/rdk/test_main.exe test_copy_to_points` and
+  `@lib/rdk/runtest` pass. Target selections retain point-index order.
 - Verified 2026-10-11: `test_materials` exercises the fixed 500ms carry budget
   with a live geometry input and a controlled 600ms preparation callback.
   The held-back preview preserves the original document/history; Escape
