@@ -7,6 +7,26 @@ let residual ?(inputs="") body =
     | Some ws,[] -> ws | _,ds -> failwith (String.concat "; " (List.map Flow.Diagnostic.to_string ds)) in
   match snd (List.hd (List.assoc ["g";"tested"] (ok (E.static ~record:true ws)).records)) with
   | E.Residual r -> r | _ -> failwith ("Expected a residual: " ^ body)
+let () =
+  if Array.length Sys.argv=2 && Sys.argv.(1)="--bench-records" then begin
+    (* The Slice C record fold (lib/flow/test_workspace_eval.ml), prepared and forced through Executor's core path. *)
+    let source="(workspace w (graph g :context value (let* [a (fold [a {:n 0.}] [x (array/range 4096)] (assoc a :n (+ a.n t)))] a.n)))" in
+    let ws=match Flow.Workspace.check {Flow.Check.version=1;kinds=[]} (ok (Flow.Syntax.parse source)) with
+      | Some ws,[] -> ws | _,ds -> failwith (String.concat "; " (List.map Flow.Diagnostic.to_string ds)) in
+    let v=List.assoc "g" (ok (E.static ws)).results in
+    let program=ok (I.Executor.compile v) in
+    E.Private.core_residuals:=true;
+    let force time=ignore (ok (I.Executor.force program ~live:(Frame_input.at_time time))) in
+    force 0.1;
+    let samples=List.init 3 (fun _ ->
+      Gc.full_major ();
+      let bytes=Gc.allocated_bytes () and start=Unix.gettimeofday () in
+      for i=1 to 30 do force (float i /. 100.) done;
+      Unix.gettimeofday () -. start,Gc.allocated_bytes () -. bytes) in
+    let seconds,bytes=List.nth (List.sort (fun (a,_) (b,_) -> Float.compare a b) samples) 1 in
+    Printf.printf "Core record fold: %.6fs, %.0f allocated bytes; 30 frames x 4096 items; domains=1; median of 3\n" seconds bytes;
+    exit 0
+  end
 let bits x y = Int64.bits_of_float x=Int64.bits_of_float y
 let rec same (a : E.value) (b : E.value) = match a,b with
   | Float a,Float b -> bits a b

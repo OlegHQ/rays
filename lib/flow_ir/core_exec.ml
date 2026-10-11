@@ -1,148 +1,228 @@
 module C = Core
 module V = Flow.Value
 module E = Flow.Eval
-let run ?root ?force program ~live =
-  let values = Array.make (Array.length program.C.locals) Flow.Eval.No_geo in
-  let builders = Array.make (Array.length program.C.locals) None in
-  let calls = Array.make program.call_slots 0 in
-  let get n = values.(n) in
-  let seal n = Option.iter (fun writable -> writable:=false) builders.(n) in
-  let apply name args = match Flow.Op.find ~extra:Operators.all name Flow.Context.value with
-    | Some op -> op.body ~live ~node:(fun _ _ -> V.fail "E_CORE" "Core primitives cannot create catalog nodes.") args
-    | None -> V.fail "E_CORE" ("Unsupported core primitive: " ^ name) in
-  let primitive op args =
-    let first () = snd (List.hd args) in
-    match op with
-    | C.Coerce ty -> V.coerce_to ty (first ())
-    | Truthy -> V.Bool (V.truthy (first ()))
-    | Show -> V.Text (V.show_with Fun.id (first ()))
-    | Text_concat -> V.Text (String.concat "" (List.map (function _,V.Text s -> s
-        | _ -> V.fail "E_TYPE" "Expected text.") args))
-    | Fail (code,message) -> V.fail code message
-    | Remainder -> V.Float (V.fin "remainder" (Float.rem (V.num (List.assoc "a" args)) (V.num (List.assoc "b" args))))
-    | Sequence_get -> apply "nth" args | Sequence_length -> apply "count" args
+
+type state = {
+  values : E.value array; builders : bool ref option array; calls : int array;
+  live : Frame_input.t; root : E.residual option;
+  force : (Packed.t -> (E.value, Flow.Diagnostic.t) result) option;
+}
+type prepared = { program : C.program; body : state -> unit }
+
+let yes = V.Bool true and no = V.Bool false
+let seal st n = Option.iter (fun writable -> writable:=false) st.builders.(n)
+
+(* Resolved once per prepared program, not per executed statement. *)
+let operator name = match Flow.Op.find ~extra:Operators.all name Flow.Context.value with
+  | Some op -> op
+  | None -> V.fail "E_CORE" ("Unsupported core primitive: " ^ name)
+let apply_op op st args =
+  op.Flow.Op.body ~live:st.live ~node:(fun _ _ -> V.fail "E_CORE" "Core primitives cannot create catalog nodes.") args
+
+let generic_named name args =
+  let op = lazy (operator name) in
+  fun st -> apply_op (Lazy.force op) st (List.map (fun (n,i) -> n,st.values.(i)) args)
+
+let primitive op args =
+  let get st = List.map (fun (name,n) -> name,st.values.(n)) args in
+  let first = match args with (_,n)::_ -> n | [] -> -1 in
+  let seal_args = match op with C.Sequence_get | Sequence_length | Sequence_build -> false | _ -> true in
+  let sealing st = if seal_args then List.iter (fun (_,n) -> seal st n) args in
+  let a () = List.assoc "a" args and b () = List.assoc "b" args in
+  let name = C.primitive_name op in
+  let generic () =
+    let op = lazy (operator name) in
+    fun st -> apply_op (Lazy.force op) st (get st) in
+  let body : state -> E.value = match op with
+    | C.Coerce ty -> fun st -> V.coerce_to ty st.values.(first)
+    | Truthy -> fun st -> V.Bool (V.truthy st.values.(first))
+    | Show -> fun st -> V.Text (V.show_with Fun.id st.values.(first))
+    | Text_concat -> fun st -> V.Text (String.concat "" (List.map (function _,V.Text s -> s
+        | _ -> V.fail "E_TYPE" "Expected text.") (get st)))
+    | Fail (code,message) -> fun _ -> V.fail code message
+    | Remainder -> let a=a () and b=b () in
+        fun st -> V.Float (V.fin "remainder" (Float.rem (V.num st.values.(a)) (V.num st.values.(b))))
+    | Sequence_get -> generic_named "nth" args | Sequence_length -> generic_named "count" args
     | Sequence_build ->
-        let count=V.int_of (List.assoc "count" args) in
-        if count<0 || count>4096 then V.fail "E_ITER_BOUND" "Core list length exceeds its bound.";
-        V.List (Array.make count V.No_geo)
+        let count = List.assoc "count" args in
+        fun st ->
+          let count=V.int_of st.values.(count) in
+          if count<0 || count>4096 then V.fail "E_ITER_BOUND" "Core list length exceeds its bound.";
+          V.List (Array.make count V.No_geo)
     | Sequence_slice ->
-        let xs=V.list_arg (List.assoc "list" args) in
-        let first=V.int_of (List.assoc "first" args) and count=V.int_of (List.assoc "count" args) in
-        if first<0 || count<0 || first>Array.length xs || count>Array.length xs-first then
-          V.fail "E_LIST_RANGE" "A list slice must be within its source.";
-        V.List (Array.sub xs first count)
+        let list = List.assoc "list" args and first = List.assoc "first" args and count = List.assoc "count" args in
+        fun st ->
+          let xs=V.list_arg st.values.(list) in
+          let first=V.int_of st.values.(first) and count=V.int_of st.values.(count) in
+          if first<0 || count<0 || first>Array.length xs || count>Array.length xs-first then
+            V.fail "E_LIST_RANGE" "A list slice must be within its source.";
+          V.List (Array.sub xs first count)
     | Sequence_concat ->
-        let arrays=List.map (fun (_,v) -> V.list_arg v) args in
-        let count=List.fold_left (fun n xs -> if Array.length xs>4096-n then
-          V.fail "E_ITER_BOUND" "Core concatenation exceeds 4,096 values."; n+Array.length xs) 0 arrays in
-        let xs=Array.make count V.No_geo and at=ref 0 in
-        List.iter (fun part -> Array.blit part 0 xs !at (Array.length part);at:= !at+Array.length part) arrays;
-        let ty=V.elem_ty xs in V.List (Array.map (V.coerce_to ty) xs)
+        fun st ->
+          let arrays=List.map (fun (_,n) -> V.list_arg st.values.(n)) args in
+          let count=List.fold_left (fun n xs -> if Array.length xs>4096-n then
+            V.fail "E_ITER_BOUND" "Core concatenation exceeds 4,096 values."; n+Array.length xs) 0 arrays in
+          let xs=Array.make count V.No_geo and at=ref 0 in
+          List.iter (fun part -> Array.blit part 0 xs !at (Array.length part);at:= !at+Array.length part) arrays;
+          let ty=V.elem_ty xs in V.List (Array.map (V.coerce_to ty) xs)
     | Color_parse ->
-        let c=Operators.drawing_color (first ()) in
-        V.Record ["r",Int c.r;"g",Int c.g;"b",Int c.b;"a",Int c.a]
+        fun st ->
+          let c=Operators.drawing_color st.values.(first) in
+          V.Record ["r",Int c.r;"g",Int c.g;"b",Int c.b;"a",Int c.a]
     | Color_byte mode ->
-        let f=V.fin "color" (V.num (first ())) in
-        let f=match mode with C.Clamped -> max 0. (min 1. f) | Unclamped -> f in
-        V.Int (max 0 (min 255 (int_of_float (f *. 255. +. 0.5))))
-    | _ -> apply (C.primitive_name op) args in
-  let expression = function
-    | C.Constant n -> C.value_of_literal program.constants.(n)
-    | Local n -> get n
-    | Call_index slot -> let n=calls.(slot) in calls.(slot)<-n+1; V.Int n
+        fun st ->
+          let f=V.fin "color" (V.num st.values.(first)) in
+          let f=match mode with C.Clamped -> max 0. (min 1. f) | Unclamped -> f in
+          V.Int (max 0 (min 255 (int_of_float (f *. 255. +. 0.5))))
+    | Numeric (Lt|Le|Gt|Ge|Eq|And|Or as compare) when List.map fst args=["a";"b"] ->
+        (* The operators' own bodies, without building an argument list per call. *)
+        let a=a () and b=b () in
+        let test : E.value -> E.value -> bool = match compare with
+          | Lt -> fun x y -> V.num x < V.num y | Le -> fun x y -> V.num x <= V.num y
+          | Gt -> fun x y -> V.num x > V.num y | Ge -> fun x y -> V.num x >= V.num y
+          | Eq -> fun x y -> V.num x = V.num y
+          | And -> fun x y -> V.truthy x && V.truthy y | _ -> fun x y -> V.truthy x || V.truthy y in
+        fun st -> if test st.values.(a) st.values.(b) then yes else no
+    | Equal when List.map fst args=["a";"b"] ->
+        let a=a () and b=b () in
+        fun st -> (try if st.values.(a) = st.values.(b) then yes else no
+          with Invalid_argument _ -> V.fail "E_TYPE" "Functions cannot be compared.")
+    | Numeric _ when List.map fst args=["a";"b"] ->
+        (match Flow.Op.arith name with
+         | Some arithmetic -> let a=a () and b=b () in fun st -> arithmetic.apply st.values.(a) st.values.(b)
+         | None -> generic ())
+    | _ -> generic ()
+  in
+  fun st -> sealing st; body st
+
+let prepare (program : C.program) =
+  let constants = Array.map C.value_of_literal program.constants in
+  let expression : C.expr -> state -> E.value = function
+    | C.Constant n -> let v=constants.(n) in fun _ -> v
+    | Local n -> fun st -> st.values.(n)
+    | Call_index slot -> fun st -> let n=st.calls.(slot) in st.calls.(slot)<-n+1; V.Int n
     | Frame field ->
-        (match field with C.Time -> V.Float live.t | Tick -> V.Int live.tick
-        | Dt -> apply "frame/dt" [] | Index -> apply "frame/index" []
-        | Width -> apply "frame/width" [] | Height -> apply "frame/height" []
-        | Pointer_x -> apply "pointer/x" [] | Pointer_y -> apply "pointer/y" [] | Input -> apply "frame/input" [])
-    | Prim (op,args) ->
-        (match op with C.Sequence_get | Sequence_length | Sequence_build -> ()
-         | _ -> List.iter (fun (_,n) -> seal n) args);
-        primitive op (List.map (fun (name,n) -> name,get n) args)
-    | Vec ns -> (match List.map (fun n -> V.num (get n)) ns with
+        let live = match field with
+          | C.Dt -> Some "frame/dt" | Index -> Some "frame/index" | Width -> Some "frame/width"
+          | Height -> Some "frame/height" | Pointer_x -> Some "pointer/x" | Pointer_y -> Some "pointer/y"
+          | Input -> Some "frame/input" | Time | Tick -> None in
+        (match field,live with
+         | C.Time,_ -> fun st -> V.Float st.live.t
+         | Tick,_ -> fun st -> V.Int st.live.tick
+         | _,Some name -> let op = lazy (operator name) in fun st -> apply_op (Lazy.force op) st []
+         | _ -> assert false)
+    | Prim (op,args) -> primitive op args
+    | Vec ns -> fun st ->
+        (match List.map (fun n -> V.num st.values.(n)) ns with
         | [x;y] -> V.Vec2 (x,y) | [x;y;z] -> V.Vec3 (x,y,z) | [x;y;z;w] -> V.Vec4 (x,y,z,w)
         | _ -> V.fail "E_CORE" "Invalid vector width.")
-    | Fields xs -> V.Record (List.map (fun (name,n) -> seal n;name,get n) xs)
-    | Items ns ->
-        let xs=Array.of_list (List.map (fun n -> seal n;get n) ns) in
+    | Fields xs -> fun st -> V.Record (List.map (fun (name,n) -> seal st n;name,st.values.(n)) xs)
+    | Items ns -> fun st ->
+        let xs=Array.of_list (List.map (fun n -> seal st n;st.values.(n)) ns) in
         if Array.length xs>4096 then V.fail "E_ITER_BOUND" "Core list exceeds 4,096 values.";
         let ty=V.elem_ty xs in V.List (Array.map (V.coerce_to ty) xs)
-    | Field (n,name) -> match get n,name with
+    | Field (n,name) -> fun st -> match st.values.(n),name with
         | V.Vec2 (x,_),"x" | Vec2 (_,x),"y"
         | Vec3 (x,_,_),"x" | Vec3 (_,x,_),"y" | Vec3 (_,_,x),"z"
         | Vec4 (x,_,_,_),"x" | Vec4 (_,x,_,_),"y" | Vec4 (_,_,x,_),"z" | Vec4 (_,_,_,x),"w" -> V.Float x
         | Record xs,name -> (match List.assoc_opt name xs with Some v -> v | None -> V.fail "E_FIELD" "Missing core field.")
         | _ -> V.fail "E_FIELD" "Invalid core field." in
-  let state_root () = match root with Some r -> r
-    | None -> V.fail "E_CORE_STATE" "Core state needs its residual's state." in
-  let slot_key n =
-    let s=program.C.state_slots.(n) in
+  let slot_key st n =
+    let s=program.state_slots.(n) in
     s.source.instance,s.prefix @ s.zone,
-    List.map (function C.Static_index i -> i | Local_index l -> V.int_of (get l)) s.source.iter,
+    List.map (function C.Static_index i -> i | Local_index l -> V.int_of st.values.(l)) s.source.iter,
     s.plane=`Host in
-  let rec execute statements =
-    List.iter (fun (s : C.statement) ->
-      try match s.node with
-      | Assign (n,e) ->
-          let value=expression e in
-          builders.(n)<-(match e with Prim (Sequence_build,_) -> Some (ref true)
-            | Local old -> builders.(old) | _ -> None);
-          values.(n)<-value
-      | Reset_call slot -> calls.(slot)<-0
-      | If {condition;yes;no} -> execute (if V.truthy (get condition) then yes else no)
-      | Iterate {sequence;index;item;limit;body} ->
-          let source=get sequence in
+  let state_root st = match st.root with Some r -> r
+    | None -> V.fail "E_CORE_STATE" "Core state needs its residual's state." in
+  let rec block statements =
+    let run = Array.of_list (List.map statement statements) in
+    fun st -> for i=0 to Array.length run-1 do run.(i) st done
+  and statement (s : C.statement) =
+    let guard (f : state -> unit) st =
+      try f st with V.Fail (code,message,None) -> raise (V.Fail (code,message,s.source.span)) in
+    guard (match s.node with
+    | Assign (n,e) ->
+        let value=expression e in
+        let ownership = match e with Prim (Sequence_build,_) -> `Fresh | Local old -> `Alias old | _ -> `None in
+        fun st ->
+          let v=value st in
+          st.builders.(n)<-(match ownership with `Fresh -> Some (ref true) | `Alias old -> st.builders.(old) | `None -> None);
+          st.values.(n)<-v
+    | Reset_call slot -> fun st -> st.calls.(slot)<-0
+    | If {condition;yes;no} ->
+        let yes=block yes and no=block no in
+        fun st -> (if V.truthy st.values.(condition) then yes else no) st
+    | Iterate {sequence;index;item;limit;body} ->
+        let body=block body in
+        fun st ->
+          let source=st.values.(sequence) in
           let count=match source with V.List xs -> Array.length xs | source -> V.array_length source in
           if count>limit then V.fail "E_ITER_BOUND" "Core iteration exceeds its bound.";
           for i=0 to count-1 do
-            values.(index)<-V.Int i;
-            values.(item)<-(match source with V.List xs -> xs.(i) | source -> V.array_get source i);
-            execute body
+            st.values.(index)<-V.Int i;
+            st.values.(item)<-(match source with V.List xs -> xs.(i) | source -> V.array_get source i);
+            body st
           done
-      | Counted {first;last;count;index;item;limit;init;body} ->
-          let first=V.int_of (get first) and last=V.int_of (get last) in
+    | Counted {first;last;count;index;item;limit;init;body} ->
+        let init=block init and body=block body in
+        fun st ->
+          let first=V.int_of st.values.(first) and last=V.int_of st.values.(last) in
           let length=max 0 (last-first) in
           if length>limit then V.fail "E_ITER_BOUND" "Core iteration exceeds its bound.";
-          values.(count)<-V.Int length;
-          execute init;
+          st.values.(count)<-V.Int length;
+          init st;
           for i=0 to length-1 do
-            values.(index)<-V.Int i;
-            values.(item)<-V.Int (first+i);
-            execute body
+            st.values.(index)<-V.Int i;
+            st.values.(item)<-V.Int (first+i);
+            body st
           done
-      | Store {sequence;index;value} ->
-          if not (Option.fold ~none:false ~some:(fun writable -> !writable) builders.(sequence)) then
+    | Store {sequence;index;value} ->
+        fun st ->
+          if not (Option.fold ~none:false ~some:(fun writable -> !writable) st.builders.(sequence)) then
             V.fail "E_CORE_OWNERSHIP" "Core stores require an unpublished local builder.";
-          let xs=V.list_arg (get sequence) and i=V.int_of (get index) in
+          let xs=V.list_arg st.values.(sequence) and i=V.int_of st.values.(index) in
           if i<0 || i>=Array.length xs then V.fail "E_LIST_RANGE" "Core store is outside its sequence.";
-          seal value;
-          xs.(i)<-get value
-      | State_read {slot;result;init;initial} ->
-          let instance,path,iter,host=slot_key slot in
-          builders.(result)<-None;
-          values.(result)<-E.Private.state_read (state_root ()) ~instance ~path ~iter ~host
-            ~init:(fun () -> execute init; get initial)
-      | State_peek {slot;found;value} ->
-          let instance,path,iter,host=slot_key slot in
-          let pending=E.Private.state_peek (state_root ()) ~instance ~path ~iter ~host in
-          values.(found)<-V.Bool (Option.is_some pending);
-          values.(value)<-Option.value ~default:V.No_geo pending
-      | State_write {slot;value} ->
-          let instance,path,iter,host=slot_key slot in
-          seal value;
-          values.(value)<-E.Private.state_write (state_root ()) ~instance ~path ~iter ~host (get value)
-      | Invoke {region;result;_} ->
-          let (C.Region_ref packed)=program.regions.(region) in
-          builders.(result)<-None;
-          (match (match force with Some force -> force packed | None -> Packed.force packed ~live) with
-           | Ok v -> values.(result)<-v
-           | Error (d : Flow.Diagnostic.t) -> raise (V.Fail (d.code,d.message,d.span)))
-      with V.Fail (code,message,None) -> raise (V.Fail (code,message,s.source.span))) statements in
+          seal st value;
+          xs.(i)<-st.values.(value)
+    | State_read {slot;result;init;initial} ->
+        let init=block init in
+        fun st ->
+          let instance,path,iter,host=slot_key st slot in
+          st.builders.(result)<-None;
+          st.values.(result)<-E.Private.state_read (state_root st) ~instance ~path ~iter ~host
+            ~init:(fun () -> init st; st.values.(initial))
+    | State_peek {slot;found;value} ->
+        fun st ->
+          let instance,path,iter,host=slot_key st slot in
+          let pending=E.Private.state_peek (state_root st) ~instance ~path ~iter ~host in
+          st.values.(found)<-V.Bool (Option.is_some pending);
+          st.values.(value)<-Option.value ~default:V.No_geo pending
+    | State_write {slot;value} ->
+        fun st ->
+          let instance,path,iter,host=slot_key st slot in
+          seal st value;
+          st.values.(value)<-E.Private.state_write (state_root st) ~instance ~path ~iter ~host st.values.(value)
+    | Invoke {region;result;_} ->
+        let (C.Region_ref packed)=program.regions.(region) in
+        fun st ->
+          st.builders.(result)<-None;
+          (match (match st.force with Some force -> force packed | None -> Packed.force packed ~live:st.live) with
+           | Ok v -> st.values.(result)<-v
+           | Error (d : Flow.Diagnostic.t) -> raise (V.Fail (d.code,d.message,d.span)))) in
+  {program; body=block program.body}
+
+let execute ?root ?force prepared ~live =
+  let program=prepared.program in
   match Frame_input.validate live with
   | Error message -> Error (Flow.Diagnostic.error ~code:"E_FRAME" message)
   | Ok () ->
-      try execute program.body;
+      let st = {values=Array.make (Array.length program.locals) E.No_geo;
+        builders=Array.make (Array.length program.locals) None; calls=Array.make program.call_slots 0;
+        live; root; force} in
+      try prepared.body st;
         if Array.length program.results<>1 then V.fail "E_CORE" "Expected one core result.";
-        Ok (get program.results.(0))
+        Ok st.values.(program.results.(0))
       with V.Fail (code,message,span) -> Error (Flow.Diagnostic.error ?span ~code message)
         | Not_found | Invalid_argument _ | Failure _ -> Error (Flow.Diagnostic.error ~code:"E_CORE" "Invalid core program.")
+
+let run ?root ?force program ~live = execute ?root ?force (prepare program) ~live

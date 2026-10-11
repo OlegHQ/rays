@@ -545,7 +545,7 @@ let of_evaluation ws catalog evaluation =
 
 module Executor = struct
   type program = { ir : t; value : E.value; dataflow : bool; templates : Packed.t list Atomic.t;
-    core : (E.residual * Core.program option) list Atomic.t;
+    core : (E.residual * Core_exec.prepared option) list Atomic.t;
     count_source : Packed.count_source; profile : Profile.t option; approx:W.Paths.t;
     sink:sink option;mutable gpu_kernel:(Gpu.backend*Packed.t*Gpu.kernel)option }
   let compile ?profile ?(approx=W.Paths.empty) ?sink ?(count_source = fun _ _ -> None) v =
@@ -591,13 +591,13 @@ module Executor = struct
           let prepared = match List.find_opt (fun (key,_) -> key == r) cached with
             | Some (_,p) -> p
             | None ->
-                let prepared = Result.to_option (Core_lower.lower r) in
+                let prepared = Option.map Core_exec.prepare (Result.to_option (Core_lower.lower r)) in
                 (* ponytail: linear lookup bounded to 64 immutable residuals;
                    use an identity map if profiling finds lookup significant. *)
                 let rec take n = function [] -> [] | _ when n=0 -> [] | x::xs -> x::take (n-1) xs in
                 ignore (Atomic.compare_and_set program.core cached ((r,prepared)::take 63 cached));
                 prepared in
-          Option.bind prepared (fun p -> match Core_exec.run ~root:r ~force:(fun packed ->
+          Option.bind prepared (fun p -> match Core_exec.execute ~root:r ~force:(fun packed ->
             if Option.fold ~none:false ~some:(fun count -> Cost.packed ~count <> Cpu_kernel) (Packed.static_count packed) then
               Error (Flow.Diagnostic.error ~code:"E_CORE_REGION" "Region is not placed on the CPU.")
             else Packed.force ~state ?elems ?resolve ?measure packed ~live) p ~live with

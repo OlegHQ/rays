@@ -362,3 +362,35 @@ typechecking, dependency checks and scene-tree light routing pass. Native
 pixel behavior remains unverified without Metal. The public `linear`
 record field is intentionally removed, with its own reviewed API promotion
 separate from pending P1.7 changes.
+
+## 2026-10-11 — P1.6a prepared core record fold
+
+Machine: managed Darwin arm64 runner, OCaml 5.3.0 native executable in the
+development profile, one domain. Same input as the Slice C rows above: a
+record accumulator over 4,096 packed items, 30 changing frames, one warmup,
+median of three samples, `Gc.allocated_bytes`. The fold is prepared once
+(`Executor.compile`, then a lowered and prepared `Core_exec.prepared` cached
+per residual) and forced through `Executor.force` with `core_residuals` on.
+
+Build with `dune build lib/flow_ir/test_core_records.exe`. Run from
+`_build/default/lib/flow_ir`:
+
+```sh
+./test_core_records.exe --bench-records
+```
+
+| Path | Wall seconds | Allocated bytes |
+| --- | ---: | ---: |
+| P1.5 native baseline (walker) | 0.076312 | 152,390,016 |
+| Slice C native equality/coercion fixes (walker) | 0.058664 | 297,986,736 |
+| Core, per-call operator lookup and argument lists | 0.125018 | 411,017,136 |
+| Core, statements prepared once, comparison and equality inline | 0.052119 | 84,631,776 |
+
+The accumulator already lowers to field locals (no record is built per
+iteration); the cost was the executor re-resolving operators and building an
+argument list for every statement. Preparation resolves operators and shares
+constants once per residual; comparisons, `and`/`or` and `equal?` run the
+operators' own bodies on locals and return shared booleans. Against the P1.5
+baseline the core path is 0.68 times the time and 0.56 times the bytes (limits
+1.1 and 1.05). Values and diagnostics are unchanged: the Flow and Flow IR
+focused gates pass. This is one input on one machine, not a general claim.

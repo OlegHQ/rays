@@ -579,10 +579,14 @@ Phase 1
   are unchanged; focused Flow/IR gates passed on 2026-10-11. A native record
   fold improved in wall time but increased allocations; results.md records
   the reproducible measurement, and P1.6a must pass before P1.R.
-- [ ] P1.6a S
-  Required allocation repair after P1.7's structured loops: baseline
-  0.076312s / 152,390,016 bytes; Slice C 0.058664s / 297,986,736 bytes for
-  30 frames x 4,096 items. Measure prepared core execution on the same input.
+- [x] P1.6a S
+  The record accumulator already lowered to field locals; the regression was
+  executor overhead. Core_exec now has prepare/execute (operators and
+  constants resolved once, cached per residual by Executor) with inline
+  comparison, and/or and equal?. Prepared core fold: 0.052119s and 84,631,776
+  bytes against the P1.5 baseline 0.076312s and 152,390,016 (limits 1.1x and
+  1.05x); recorded in results.md. Flow and flow_ir focused gates passed on
+  2026-10-11; no expectation changed.
 - [x] P1.7 S
   Lists, HOFs and structured loops lowered and executed: List_lit, range, nth,
   count, concat, take, rest, reverse, Map, Filter, Reduce, stable Sort_by,

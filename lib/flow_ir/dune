@@ -32,7 +32,7 @@
  (name test_core_records)
  (modules test_core_records)
  (deps core_records.expected)
- (libraries flow_ir flow))
+ (libraries flow_ir flow unix))
 
 (test
  (name test_core_lists)
