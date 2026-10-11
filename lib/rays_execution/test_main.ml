@@ -3,6 +3,7 @@ let tests = [
   "test_scene2_coordinates", Test_scene2_coordinates.run;
   "test_dense_scene2", Test_dense_scene2.run;
   "test_ui_pipeline", Test_ui_pipeline.run;
+  "test_marks_native", Test_marks_native.run;
 ]
 
 let () =
