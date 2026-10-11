@@ -479,3 +479,36 @@ Total: 2,009 lowered, 0 refused (P1.12 counted 1,963 lowered and 46 refused: the
 same 2,009 residuals, all lowered now). No intended refusals remain for the 15
 workspaces. Still declined by name, outside the corpus: packed `sort-by`, packed
 `for`/`scan` collects, a `ref` with overrides, `color/hsla`.
+
+## 2026-10-11 — P1.14 core executor speed-up (target not met)
+
+Command: `_build/default/tools/check.exe tools/bench_core.exe`, then
+`_build/default/tools/bench_core.exe` three times. Machine, input and method as in the
+P1.13 entry (Apple M1, OCaml 5.3.0, one domain, 200,000 evaluations per sample, median of three
+samples, then the median of three runs; load average about 3 from other processes). Before = the
+tree at P1.12a (`941a9cee`), measured again at the start of this task.
+
+| Row | Before ns/eval | Before bytes/eval | After ns/eval | After bytes/eval |
+| --- | ---: | ---: | ---: | ---: |
+| tree walker | 913.5 | 5,336 | 887.2 | 5,240 |
+| closure tier | 129.9 | 1,880 | 119.5 | 1,784 |
+| core | 378.1 | 3,208 | 166.7 | 2,096 |
+| core/closure | 2.92 | | 1.39 | |
+
+The gate (at most 1.1) is not met. What changed, in order of effect (ratio after each, same bench):
+
+1. Executor hot path: builders, ownership sealing and the evaluation-state checkpoint are skipped for
+   programs with no list builder, state slot or region; Float `+ - *`, `sin` and `cos` on two Floats skip the
+   generic operator dispatch (anything else, and any non-finite result, runs the operator's own body);
+   `Frame_input.validate` no longer allocates; the hook builds its region callback only for programs
+   with regions. 2.92 to 1.95.
+2. A straight-line program of Float arithmetic on the frame time (`+ - * sin cos sqrt`, at most 64
+   steps) compiles once to postfix code on a flat float stack (`Core_exec.prepare`). A non-finite step
+   falls back to the general statements, so diagnostics are unchanged. 1.95 to 1.39.
+
+Remaining hot spot: the executor round trip, about 40 ns over the closure tier. The core program itself
+is about 33 ns (of which `sin` is about 12); the rest is the hook (state snapshot, `r.live`, two
+exception handlers, the cached-program lookup and optional-argument boxing), where the closure tier
+calls one cached closure. Closing it needs the evaluator to hold the prepared program on the
+residual instead of asking the executor each time. That is a change to `lib/flow/eval.ml` and
+its hook contract, not to the core program, so it is left for a later task.

@@ -32,7 +32,8 @@ let validate v =
     | Text_editing {start; length; _} -> start >= 0 && length >= 0
     | Resized (w, h) -> w >= 0 && h >= 0
     | _ -> true in
-  if not (List.for_all Float.is_finite [v.t; v.dt; x; y]) || not (List.for_all event v.events) then
+  if not (Float.is_finite v.t && Float.is_finite v.dt && Float.is_finite x && Float.is_finite y)
+     || not (List.for_all event v.events) then
     Error "Frame facts must be finite; event dimensions and text ranges must be non-negative."
   else if v.dt < 0. || v.frame < 0 || v.tick < 0 || w < 0 || h < 0 then
     Error "Frame step, index and dimensions must be non-negative."

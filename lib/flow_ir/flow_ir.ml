@@ -588,8 +588,9 @@ module Executor = struct
       let execute r live =
         let core = try if not !(E.Private.core_residuals) then None else
           let cached = Atomic.get program.core in
-          let prepared = match List.find_opt (fun (key,_) -> key == r) cached with
-            | Some (_,p) -> p
+          let rec find = function [] -> None | (key,p)::rest -> if key == r then Some p else find rest in
+          let prepared = match find cached with
+            | Some p -> p
             | None ->
                 let prepared = Option.map Core_exec.prepare (Result.to_option (Core_lower.lower r)) in
                 (* ponytail: linear lookup bounded to 64 immutable residuals;
@@ -597,10 +598,13 @@ module Executor = struct
                 let rec take n = function [] -> [] | _ when n=0 -> [] | x::xs -> x::take (n-1) xs in
                 ignore (Atomic.compare_and_set program.core cached ((r,prepared)::take 63 cached));
                 prepared in
-          Option.map (fun p -> Core_exec.execute ~root:r ~force:(fun packed ->
-            if Option.fold ~none:false ~some:(fun count -> Cost.packed ~count <> Cpu_kernel) (Packed.static_count packed) then
-              Error (Flow.Diagnostic.error ~code:"E_CORE_REGION" "Region is not placed on the CPU.")
-            else Packed.force ~state ?elems ?resolve ?measure packed ~live) p ~live) prepared
+          match prepared with
+          | None -> None
+          | Some p when not (Core_exec.has_regions p) -> Some (Core_exec.execute ~root:r p ~live)
+          | Some p -> Some (Core_exec.execute ~root:r ~force:(fun packed ->
+              if Option.fold ~none:false ~some:(fun count -> Cost.packed ~count <> Cpu_kernel) (Packed.static_count packed) then
+                Error (Flow.Diagnostic.error ~code:"E_CORE_REGION" "Region is not placed on the CPU.")
+              else Packed.force ~state ?elems ?resolve ?measure packed ~live) p ~live)
           with _ -> None in
         match core with Some _ -> core | None -> execute_packed r live in
       E.Private.force_with_executor ~state ?elems ?resolve ~execute value ~live in

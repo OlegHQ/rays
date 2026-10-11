@@ -674,6 +674,12 @@ Phase 1
   tree walker 940.2 ns/eval, closure 132.6 ns/eval, core 391.8 ns/eval (core/closure 2.95).
   That exceeds 1.1, so P1.14 is required. Command and rows in results.md, 2026-10-11.
 - [ ] P1.14 S
+  note: not met after two attempts; core/closure 2.92 to 1.39 (core 378.1 to 166.7 ns, closure
+  119.5 ns; results.md, 2026-10-11). Kept: executor fast paths and a postfix scalar tier in
+  `Core_exec.prepare` (`~fused:false` is the reference; test_core_parity compares both with the
+  walker); parity, flow, flow_ir and default tests pass. Remaining hot spot: the hook round trip
+  (about 40 ns: snapshot, handlers, cached-program lookup), which needs the evaluator to hold the
+  prepared program on the residual. Ratio is at most 1.5, so P1.15 proceeds.
 - [ ] P1.15 S
 - [ ] P1.R R
 - [ ] P1.16 S

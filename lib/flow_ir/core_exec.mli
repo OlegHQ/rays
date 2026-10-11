@@ -6,7 +6,9 @@
 type prepared
 (** A program with its statements, constants and operators resolved once. *)
 
-val prepare : Core.program -> prepared
+val prepare : ?fused:bool -> Core.program -> prepared
+(* [~fused:false] runs every program through the general statements: the reference for the scalar tree fast path. *)
+val has_regions : prepared -> bool  (* the program invokes a region, so [execute] needs a [force] *)
 val execute : ?root:Flow.Eval.residual ->
   ?force:(Packed.t -> (Flow.Eval.value, Flow.Diagnostic.t) result) -> prepared -> live:Frame_input.t ->
   (Flow.Eval.value, Flow.Diagnostic.t) result

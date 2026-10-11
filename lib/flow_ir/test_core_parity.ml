@@ -37,9 +37,13 @@ let compare value =
       assert (same actual reference)) [true,true;false,true;false,false];
     match value with
     | E.Residual r -> (match I.Core_lower.lower r with
-        | Ok core -> (match I.Core_exec.run core ~live,reference with
+        | Ok core -> ((match I.Core_exec.run core ~live,reference with
             | Ok actual,Ok expected -> incr direct;assert (same_bits actual expected)
-            | Error _,Error _ -> () | _ -> assert false)
+            | Error _,Error _ -> () | _ -> assert false);
+            (* The scalar tree fast path against the general statements. *)
+            let fused=I.Core_exec.execute (I.Core_exec.prepare core) ~live
+            and general=I.Core_exec.execute (I.Core_exec.prepare ~fused:false core) ~live in
+            assert (same fused general))
         | Error _ -> ())
     | _ -> ()) [0.;0.37;1.9;6.28;100.25; -3.]
 let () =
@@ -58,6 +62,8 @@ let () =
     "(sum [i (range 5)] (sum [j (range 3)] (* (+ t i) j)))";
     "(let* [a t a1 (+ a a) a2 (+ a1 a1) a3 (+ a2 a2)] (* a3 0.5))";
     "(let* [c (value/lerp [1 2 3] [t 0 1] 0.25)] c.z)";
+    "(+ (* (sin t) 0.5) (* t t))";"(- (sqrt t) (cos (* t 3)))";"(* t 2)";"(+ (* 3 4) t)";"(* 2 (- t 1.5))";
+    "(let* [a (* t 100000000000.) b (* a a) c (* b b) d (* c c) e (* d d) f (* e e)] (- f (sin t)))";
     "(sum [i (range 0)] t)";"(/ t 0)";
     "(sqrt (/ (- t 2) 0))";"(exp (* t 100000.))";"(int (* t 10000000000000000000.))"];
   assert (!direct>0);
