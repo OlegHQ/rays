@@ -853,7 +853,8 @@ Phase 5
   2026-10-11. `tools/lisp/test/web.t`: exports `sketches/flow_vectors`, lists the files, a second run is byte-identical, a particles export keeps its arrays in `data.bin`, a draw graph reaching a `sop` graph is refused at the `(ref geometry)` span (`E_WEB_GRAPH`, nothing written), and so is a draw image. `@tools/lisp/test/runtest` green.
 - [x] P5.12 S
   2026-10-11. `tools/web_parity.exe [--keep] DIR...` (library `web_export`, so it exports exactly as `rays-lisp web`) runs the core executor natively and the exported `program.js` under `node` (`tools/web/test/frames.mjs`: `createRuntime(program, {fixedDt: 1/60, now, size: [640, 480], data})`, `await rt.stepFrame({pointer: [100, 100]})`, no pool, so regions run `rt.region(k)` on the main thread) for 120 frames, dumps each frame's mark table as JSON on both sides and compares: structure exactly, floats within 1e-6, colours, counts, indices and text exactly; a buffer of more than 4,096 numbers by length, first and last 256 and sum. A refusal prints `refused CODE at LINE:COL`; node absent prints a skip. A deliberately changed native value is reported. `_build/default/tools/web_parity.exe sketches/flow_vectors examples/basic` passes.
-- [ ] P5.13 H
+- [x] P5.13 H
+  2026-10-11. All 15 eligible workspaces under `tools/web_parity.exe`: 10 pass (120 frames each), 5 are refused with a span and a code (`examples/drawing` `E_WEB_LOWER` budget; `flow_contours`, `flow_image`, `flow_image_kernel`, `flow_shader` `E_WEB_IMAGE`), 0 fail. Table in `results.md`.
 - [ ] P5.R R
 
 Phases 6 and 7

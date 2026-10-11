@@ -651,3 +651,42 @@ rejected on upload with `E_KERNEL`; growing the count replaces the output buffer
 corrupted kernel (`var<unifor>`) fails the load with `WGSL error in kernel ...: 3:27 unresolved address space`,
 so the harness does detect compile errors. Three consecutive runs agreed. Not yet covered: pixels (P6.8), a second
 browser, workgroup counts above the dispatch limit, the 128 MiB storage binding limit.
+
+## P5.13: frame parity of the web export under node (2026-10-11)
+
+Command, from the repository root after `dune build tools/web_parity.exe`:
+
+    _build/default/tools/web_parity.exe examples/audio examples/basic examples/drawing examples/file_dialog \
+      examples/generative examples/noise examples/particles examples/pxui examples/recursive_rectangles \
+      sketches/flow_contours sketches/flow_image sketches/flow_image_kernel sketches/flow_particles_gpu \
+      sketches/flow_shader sketches/flow_vectors
+
+Machine: Apple M1, node v24.19.0, 24 s wall. Each workspace is exported as `rays-lisp web` does, run natively
+(`Core_exec.draw`) and under node (`program.js`, `runtime.js` from the export) for 120 fixed-step frames
+(dt 1/60, 640x480, pointer (100, 100), no buttons or keys), CPU regions on the main thread. Marks are compared per
+frame: structure, colours, counts, indices and text exactly, floats within 1e-6; a buffer of more than 4,096
+numbers by length, first and last 256 numbers and sum.
+
+| Workspace | Result | Notes |
+| --- | --- | --- |
+| examples/audio | pass | 1,200 mark entries over 120 frames |
+| examples/basic | pass | state, frame facts, `str`, text marks |
+| examples/drawing | refused `E_WEB_LOWER` at 105:3 | the draw graph exceeds the core lowering's 2,048-node residual budget (`Core_draw.lower` returns `budget`); native draws it through the old arms. A larger budget or splitting the residual is a lowering task |
+| examples/file_dialog | pass | the draw graph only; the host effects live in a `host` graph that is not exported |
+| examples/generative | pass | 4.3 MB of marks |
+| examples/noise | pass | |
+| examples/particles | pass | 10,000 particles in state, element-by-element loops through prims.js |
+| examples/pxui | pass | |
+| examples/recursive_rectangles | pass | |
+| sketches/flow_contours | refused `E_WEB_IMAGE` at 77:3 | a `draw/image` of an image graph; the web has no host image resolver, and an image graph is a GPU pixel kernel |
+| sketches/flow_image | refused `E_WEB_IMAGE` at 5:3 | same |
+| sketches/flow_image_kernel | refused `E_WEB_IMAGE` at 7:3 | same |
+| sketches/flow_particles_gpu | pass | one collecting region of 1,000,000 elements (`data.bin` 7.6 MB), run on the CPU |
+| sketches/flow_shader | refused `E_WEB_IMAGE` at 67:3 | same |
+| sketches/flow_vectors | pass | scalar program, no arrays |
+
+Ten pass, five are refused with a span, none fails. The image refusals point at the draw graph (the lowered
+`draw/image` statement carries no span of its own). No refusal is for a host effect: `host/quit`, `host/dialog`,
+`host/play`, `host/save_png` and `audio/synth` live in `host` graphs, outside the exported draw graph.
+Before this task three bugs were fixed on the way: the printer refused every `not`, the kernel-table JSON writer
+escaped UTF-8 bytes one by one, and `prims.js` `sequence_build` ignored the packed width.
