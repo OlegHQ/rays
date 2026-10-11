@@ -111,7 +111,15 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   and the dependency gate passes. The 2,001-node frame benchmark is recorded
   in `specification/web-export/results.md`; its visible frame allocates 0.19%
   more, while the tiny pane retains its original allocation count.
-- Large file still not split: `lib/rays_editor/environment.ml` (about 940 lines).
+- Split and verified 2026-10-11: the 941-line environment now has private
+  view composition, model and source-file modules with explicit interfaces.
+  The 399-line `environment.ml` retains frame coordination, presentation,
+  crash reports and shutdown in their original order. Every implementation
+  body is unchanged and the public API manifest is identical. Window-free
+  editor logic, workspace shell/source, scene synchronization, text-pane and
+  dependency gates pass, including recovery-file ownership and failed-write
+  retry. The 200-node edit-frame benchmark retains every allocation count;
+  measurements are in `specification/web-export/results.md`.
 - Verified 2026-10-11: `_out/` is absent from this worktree; there is no stale
   output directory left to delete. The ignore rule remains for future PNG saves.
 

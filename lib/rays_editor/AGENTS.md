@@ -9,7 +9,10 @@
 | Module | Owns |
 |---|---|
 | `Rays_editor` (`rays_editor.mli`) | The public API: `Editor`, `Workspace` (a `.rays` file as a program), `Settings`, `Source`, `Renderer`, and the unstable test hooks `Private` and `Reduce` |
-| `Environment` | `Core` plus the 3D viewport: orbits, composition, World bakes, autosave, source polling, `run` |
+| `Environment_view` | Scene composition for visible, floating and hidden viewports and canvases, World bakes and hidden-scene cache |
+| `Environment_model` | `Core` plus viewport state, creation, camera focus and prepared-object composition |
+| `Environment_source` | Source opening, polling and saving; autosave and recovery ownership |
+| `Environment` | Frame coordination, presentation, crash reports, resource shutdown and `run` |
 | `Viewport`, `Renderer` | Camera objects and follow-viewport, guides and handles, raster / wireframe / traced slots |
 | `Core_model` | Every type: the model `t`, `frame_result`, `change`, `carry` |
 | `Core_shell` … `Core_host` | The model's functions, one module per concern, each `include`s the one before, so `Core` is the whole |
@@ -25,6 +28,10 @@ The chain order is `Core_model`, `Core_shell`, `Core_inspect`, `Core_panes`, `Co
 `Core_list`, `Core_setup`, `Core_status`, `Core_actions`, `Core_text`, `Core_panels`, `Core_menu`,
 `Core_carry`, `Core_reduce`, `Core_host`, `Core`. A function goes in the first module that has what
 it needs; a new module joins the chain and `private_modules` in `dune`.
+
+The private environment chain is `Environment_view`, `Environment_model`,
+`Environment_source`, `Environment`. It uses the same include pattern; all
+frame effects and resource shutdown stay in the final coordinator.
 
 ## What must stay true
 

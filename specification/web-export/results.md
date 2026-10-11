@@ -105,3 +105,42 @@ local reduces that increase to 13,224 bytes (0.19%) in the visible frame and
 zero in the tiny frame. The timing differences are small; this is an
 organizational change, with no claimed rendering speedup or native pixel
 comparison.
+
+## 2026-10-11 — Deferred private editor environment split
+
+Machine: managed Darwin arm64 runner, OCaml 5.3.0 native executable in the
+development profile, one domain. Input: the existing 200-node switch/point
+workspace benchmark, 1,200 × 760 logical points, default editor font. The
+benchmark enters the object graph and measures 200 drag frames, one undo
+frame and 200 alternating literal edits with their full editor updates. It
+reports each row's median wall time and allocated bytes per frame. Rows
+below are medians of three separate process runs before and after; no
+profiler was attached. The executable and inputs are unchanged.
+
+```sh
+_build/default/tools/check.exe tools/bench_rays_editor.exe
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
+  _build/default/tools/bench_rays_editor.exe 200
+```
+
+| Operation | Before seconds | After seconds | Before bytes/frame | After bytes/frame |
+| --- | ---: | ---: | ---: | ---: |
+| Drag frame | 0.001830816 | 0.001840830 | 6,021,502 | 6,021,502 |
+| Undo frame | 0.002362967 | 0.002382994 | 6,796,312 | 6,796,312 |
+| Literal edit and frame | 0.001848936 | 0.001870871 | 5,491,403 | 5,491,403 |
+| Literal edit excluding cook time | 0.001747847 | 0.001773119 | 5,491,403 | 5,491,403 |
+
+View composition, state and source-file handling move into private modules,
+with frame coordination and resource lifetime in `Environment`. All moved
+bodies match the original byte for byte and public API manifests compare
+equal. Window-free workspace shell/source, editor logic, scene synchronization,
+text-pane and dependency checks pass. The source tests verify recovery
+ownership, flush-on-close, preservation of unsaved edits, failed-write retry,
+corrupt recovery refusal and reload behavior using writable temporary paths.
+Some unrelated shell fixtures attempt recovery writes under the runner's
+read-only home directory and report the existing autosave refusal.
+
+Allocation is unchanged in every measured operation. Timing varies by
+0.5–1.5% on this input; no speedup or native pixel comparison is claimed. An
+initial after series overlapped test compilation and was discarded for the
+timing comparison; the recorded series ran with no concurrent build or test.
