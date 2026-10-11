@@ -744,7 +744,8 @@ Phase 2
   Done 2026-10-11. `Core_fuse.fuse` (new module) ports `fuse_maps` to regions with the same rules: Collect + Zip children of equal static count or origin, a shared-instruction table (`Marshal` key, so equal instructions share a register), the 64-register limit declining to the unfused region, count/origin recorded even without a fusable child. With `core_regions` on, `compile_impl` is `Core_region.lower` then `Core_fuse.fuse` then `of_region`; the old `fuse_maps` serves the switch-off path until P2.10. P2.1 snapshots identical with the switch on (dune reruns both snapshot tests with it); all of `@lib/flow_ir/runtest` and `@lib/flow_gpu/runtest` pass with the default flipped.
 - [x] P2.7 H
   Done 2026-10-11 with `core_regions` temporarily defaulted on (not committed): `@lib/flow_ir/runtest`, `@lib/flow_gpu/runtest` (three Metal goldens) and `@runtest-native` all passed (exit 0, including `runtime_live_resize`); `git status` shows `lib/flow_gpu/goldens` and the P2.1 snapshots untouched.
-- [ ] P2.8 H
+- [x] P2.8 H
+  Done 2026-10-11. `tools/bench_core.exe kernels` (map 1,024 and 1,000,000, fused pair, sum loop; switch off and on; 1 and 8 domains) and `bench_gpu.exe` recorded in results.md. Force times are the same program, so unchanged within noise; compile with the switch on regresses by up to 50 percent (under a microsecond, once per kernel), recorded in DEFERRED.md per the owner decision that speed gates never block.
 - [ ] P2.9 S
 - [ ] P2.R R
 - [ ] P2.10 S
