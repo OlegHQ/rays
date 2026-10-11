@@ -4,7 +4,7 @@ module V = Flow.Value
 module I = Flow_ir.Executor
 module C = Flow_ir.Core_exec
 
-let core_drawing = ref false
+let core_drawing = ref true
 
 type prepared = {plan : E.plan; value : I.program; states : I.program; args : (string*I.program)list array;
   static:bool array; retained:((int*int)*Scene.t) option array;

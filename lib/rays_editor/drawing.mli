@@ -16,4 +16,4 @@ val render_prepared : ?state:Flow.Eval.state ->
 
 val core_drawing : bool ref
 (** Private switch (tests and benches): [render_prepared] runs the core draw path and
-    {!Marks_scene} instead of its per-kind arms. Off by default. *)
+    {!Marks_scene} instead of its per-kind arms. On by default. *)

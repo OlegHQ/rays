@@ -42,6 +42,7 @@ let pictures = [
 let size = 200, 100
 let live = {(Frame_input.at_time 0.25) with size}
 let old_scene body =
+  Rays_editor.Drawing.core_drawing := false;
   let evaluation = ok (E.static (checked body)) in
   let prepared = ok (Rays_editor.Drawing.prepare ~states:evaluation.states evaluation.plan (List.assoc "g" evaluation.results)) in
   ok (Rays_editor.Drawing.render_prepared prepared ~live ~size)

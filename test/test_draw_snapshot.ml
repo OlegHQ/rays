@@ -68,11 +68,12 @@ let lines (directory, name) =
       | Error code -> Printf.sprintf "frame %d error %s\n" index code)) frames
   |> String.concat ""
 
-(* Usage: test_draw_snapshot.exe [--core] examples_audio  (prints that workspace's snapshot) *)
+(* Usage: test_draw_snapshot.exe [--core|--arms] examples_audio  (prints that workspace's snapshot) *)
 let () =
   let args = List.tl (Array.to_list Sys.argv) in
   let args = match args with
     | "--core" :: rest -> Rays_editor.Drawing.core_drawing := true; rest
+    | "--arms" :: rest -> Rays_editor.Drawing.core_drawing := false; rest
     | _ -> args in
   match args with
   | [] -> failwith "usage: test_draw_snapshot.exe <directory>_<name> ..."
