@@ -740,7 +740,8 @@ Phase 2
   Done 2026-10-11. `Packed.Private.core_regions` (default off) routes `compile_impl` through `Core_region.lower` and `of_region` (the old `fuse_maps` still fuses the result until P2.6). Both snapshot tests also run in dune with the switch on (`REGION_CORE=1`) and match the P2.1 files byte for byte. With the default temporarily flipped, all of `@lib/flow_ir/runtest` (template counts of `test_frame_kernel` included) and `@lib/flow_gpu/runtest` (Metal goldens) passed. (`of_region` itself arrived in P2.2, which `Core`/`Packed` needed to stop depending on each other.)
 - [x] P2.5 S
   Done 2026-10-11. The live-or-dynamic `Uniform` rule and `captured_value` were already part of `Core_region.lower` (P2.3: a template is `lower ~dynamic:true`). `rebind` now works on a region (`Core_region.rebind`); `Packed.rebind` delegates to it through `to_region`/`of_region`, and the term-based copy is deleted (it is not a term walker). `test_frame_kernel` template counts (2 compiled, 10 rebound, 12 executed; 1/5/6) are unchanged with the switch on and off; all of `@lib/flow_ir/runtest` passes with the default flipped.
-- [ ] P2.6 S
+- [x] P2.6 S
+  Done 2026-10-11. `Core_fuse.fuse` (new module) ports `fuse_maps` to regions with the same rules: Collect + Zip children of equal static count or origin, a shared-instruction table (`Marshal` key, so equal instructions share a register), the 64-register limit declining to the unfused region, count/origin recorded even without a fusable child. With `core_regions` on, `compile_impl` is `Core_region.lower` then `Core_fuse.fuse` then `of_region`; the old `fuse_maps` serves the switch-off path until P2.10. P2.1 snapshots identical with the switch on (dune reruns both snapshot tests with it); all of `@lib/flow_ir/runtest` and `@lib/flow_gpu/runtest` pass with the default flipped.
 - [ ] P2.7 H
 - [ ] P2.8 H
 - [ ] P2.9 S

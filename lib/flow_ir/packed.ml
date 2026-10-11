@@ -107,7 +107,7 @@ let rec compile_impl ?(fusion = true) ?(dynamic = false)
     ?(count_source = fun _ _ -> None) residual (term : W.term) =
   if !core_regions then
     Result.bind (Core_region.lower ~fusion ~dynamic ~count_source residual term) (fun region ->
-      Result.map (fun program -> if fusion then fuse_maps program else program) (of_region region))
+      of_region (if fusion then Core_fuse.fuse region else region))
   else
   let view = E.Private.residual_view residual in
   let refuse ?(at = term) code message =
