@@ -249,6 +249,13 @@ module Private : sig
   val residual_definition : residual -> string -> Workspace.graph option
   (** Read the immutable declaration in this residual's workspace. *)
 
+  val residual_graph : residual -> string -> Workspace.graph option
+  (** A graph declaration of the residual's workspace, for inlining a [ref]. *)
+
+  val graph_instance : residual -> string -> int option
+  (** The cached default instance of a graph, where a live [(ref name)] without
+      overrides runs; [None] runs in the referencing instance. *)
+
   type residual_view = {
     term : Workspace.term;
     bindings : (string * value) list;

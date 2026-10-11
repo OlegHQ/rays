@@ -1235,6 +1235,8 @@ module Private = struct
     | Closure cl -> Some (cl.at.inst, cl.at.prefix, cl.zone) | Named _ -> None
   let function_name = function Named n -> Some n.name | Closure _ -> None
   let residual_definition r name = Hashtbl.find_opt r.rc.st.defs name
+  let residual_graph r name = Hashtbl.find_opt r.rc.st.graphs name
+  let graph_instance r name = Option.map (fun cell -> cell.cinst) (Hashtbl.find_opt r.rc.st.cache (name ^ "|"))
   type residual_view = {
     term : W.term;
     bindings : (string * value) list;

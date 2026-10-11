@@ -21,6 +21,24 @@ let primitives = [
   "nth","(array/nth (array/range 8) (+ 2 (int t)))";
   "slice","(array/slice (array/range 10) (int t) 4)";
   "concat","(array/concat (array/range (+ 2 (int t))) (array/float 2))";
+  "noise3","(noise3 [t (* t 0.5) 1.25] :seed 7 :octaves 3)";
+  (* Packed higher-order forms a region refuses are built element by element, past the list cap. *)
+  "packed-map-int","(map (fn [x] [(int x) (* x t) 0]) (array/range (+ 5000 (int t))))";
+  "packed-map-zip","(map (fn [p v] (+ p (* v t))) (array/vec3 3 [1 2 3]) (array/vec3 3 [0.5 0.25 0.125]))";
+  "packed-map-float","(map (fn [x] (floor (* x t))) (array/range 40))";
+  "packed-map-empty","(map (fn [x] [x x x]) (array/range (int (* t 0.))))";
+  "packed-filter","(filter (fn [x] (> (int x) (int (* t 10.)))) (array/range (+ 5000 (int t))))";
+  "packed-filter-vec","(filter (fn [p] (> p.x t)) (map (fn [x] [x (* x 2.) 0]) (array/range 20)))";
+]
+(* Dense parameter sweeps: every colour sector and stop boundary, many roundings. *)
+let sweeps = [
+  "hsl-sectors","(color/hsl (* t 60.) 0.75 0.5)",List.init 161 (fun i -> float_of_int (i-40) *. 0.25);
+  "hsl","(color/hsl (* t 37.31) (abs (sin (* t 1.7))) (abs (cos (* t 0.9))))",
+    List.init 40000 (fun i -> float_of_int i *. 0.0137 -. 100.);
+  "gradient","(color/gradient (list \"#101426\" \"#244a72\" \"#3ca6a6\" \"#f2d16b\" \"#f26444\") t)",
+    List.init 2501 (fun i -> float_of_int (i-500) *. 0.001);
+  "gradient-two","(color/gradient (list \"#000000\" \"#ffffff\") t)",List.init 2501 (fun i -> float_of_int i *. 0.0004);
+  "gradient-one","(color/gradient (list \"#336699\") t)",[0.;0.5];
 ]
 let regions = [
   "map","(map (fn [x] (+ (* x t) 1.)) (array/range 2048))";
@@ -32,10 +50,10 @@ let regions = [
   "nonfinite","(map (fn [x] (/ x (- t t))) (array/range 4))";
 ]
 let times = [-3.;-0.;0.;0.37;1.;1.9;3.]
-let check ~region (name,body) =
+let check ?(times=times) ~region (name,body) =
   let tested=if region then body else "(if (> t -1000.) " ^ body ^ " " ^ body ^ ")" in
   let source="(workspace w (graph g :context value (let* [tested " ^ tested ^ "] 0.)))" in
-  let ws=match Flow.Workspace.check {Flow.Check.version=1;kinds=[]} (ok (Flow.Syntax.parse source)) with
+  let ws=match Flow.Workspace.check ~ops:I.Operators.all {Flow.Check.version=1;kinds=[]} (ok (Flow.Syntax.parse source)) with
     | Some ws,[] -> ws | _,ds -> failwith (name ^ ": " ^ String.concat "; " (List.map Flow.Diagnostic.to_string ds)) in
   let value=snd (List.hd (List.assoc ["g";"tested"] (ok (E.static ~record:true ws)).records)) in
   let r=match value with E.Residual r -> r | _ -> failwith (name ^ ": expected residual") in
@@ -63,5 +81,6 @@ let check ~region (name,body) =
           verify (if enabled then "core" else "closure") (I.Executor.force program ~live))) [false;true]) times
 let () =
   List.iter (check ~region:false) primitives;
+  List.iter (fun (name,body,times) -> check ~times ~region:false (name,body)) sweeps;
   List.iter (check ~region:true) regions;
   print_endline "Core regions: packed-array primitives and Region_ref forms match the walker"

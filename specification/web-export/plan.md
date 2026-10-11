@@ -313,6 +313,7 @@ slice is the tree walker: results are bit-identical, as the closure tier's are.
 | P1.10 | S | P1.9 | `core_exec.ml` | The error rule: any failure inside the executor reruns the tree walker and returns its diagnostic, as `eval.ml:428-432` does. Parity cases for a division by zero, an out-of-range `nth`, a non-finite result | `@lib/flow_ir/runtest` |
 | P1.11 | H | P1.10 | `tools/workspace_parity.ml`, `.mli` | In `Workspace_parity.check`, add a pass that repeats the existing IR-against-reference comparison with `core_residuals` set, restoring it afterwards. `test/test_workspace_ir.ml` then covers every workspace with no change | `_build/default/tools/check.exe @test/test_workspace_ir` |
 | P1.12 | H | P1.11 | `tools/workspace_parity.ml`, `test/test_workspace_ir.ml` | Coverage report under an environment variable `RAYS_CORE_COVERAGE`: per workspace, residuals lowered against residuals that returned `Error`, with the form names. Paste the table for the 15 eligible workspaces into `results.md` | Zero `Error` for all 15, or the review adds slice tasks |
+| P1.12a | S | P1.12 | `core_lower.ml`, `core_exec.ml`, `lib/flow` value/eval accessors, tests, `results.md` | Repair: lower the 46 residuals P1.12 found refused (`packed_higher_order`, `noise3`, `ref`, `color/hsl`). A packed `map` or `filter` a region refuses is built element by element (`sequence/build` with a width, no list cap); `noise3` is its primitive; `color/hsl` and `color/gradient` expand per `core.md`; a `ref` without overrides inlines the graph in its cached instance. Parity cases beside the existing ones | Zero refused for the 15 workspaces; `@lib/flow/runtest`, `@lib/flow_ir/runtest`, `@test/test_workspace_ir` |
 | P1.13 | H | P1.11 | `tools/bench_core.ml`, `tools/dune`, `results.md` | A new bench printing three rows for one scalar residual (the expression of the `Closure` row in `flow_ir.ml:133-160`): tree walker, closure tier, core. Add it to `bench-build`. Record the rows | Rows printed; entry present |
 | P1.14 | S | P1.13 | `core_exec.ml` | Only if the core row is more than 1.1 times the closure row: compile a core program once into OCaml closures instead of interpreting it, keeping the interpreter as the test reference. Re-record | Core at most 1.1 times closure; P1.4 and P1.11 pass |
 | P1.15 | S | P1.14 | `lib/flow/eval.ml` | Flip `core_residuals` to default `true` | All default tests, and `@test/test_workspace_ir` |
@@ -650,6 +651,23 @@ Phase 1
   recursive_rectangles (`packed_higher_order` 17, `color/hsl` 1),
   sketches/flow_particles_gpu (`noise3` 4, `packed_higher_order` 1). A lowering
   slice task must close these.
+- [x] P1.12a S
+  Coverage is now 2,009 lowered and 0 refused across the 15 workspaces (table in
+  results.md). A packed map/filter that Packed refuses (dynamic `int`/`floor`,
+  state, array captures) lowers to a counted loop over `Array_nth` storing into a
+  packed builder: `Sequence_build` with a width allocates `Float_array`..`Vec4_array`
+  (no 4,096 cap), `Store` writes through the new `Value.array_put` that
+  `array_init` now shares, and filter ends in `Array_slice`; sort-by over arrays and
+  packed `for`/`scan` collects still decline by name (none in the corpus). `noise3`
+  maps to its primitive; `color/hsl` and `color/gradient` (constant opaque stops) are
+  compiler expansions checked bit for bit over dense sweeps; a `ref` without overrides
+  inlines the graph body in its cached default instance through the new
+  `Eval.Private.residual_graph` and `graph_instance` (overrides still decline).
+  No walker behaviour changed. Parity cases in test_core_regions and test_core_state
+  (a comparison stored in a host record changes `state_stamp` through Marshal sharing
+  only, so that case stores an integer flag). `@lib/flow/runtest`,
+  `@lib/flow_ir/runtest` and `@test/test_workspace_ir` (EXIT=0, about 25 minutes)
+  passed on 2026-10-11; the API manifest is promoted in the next commit.
 - [x] P1.13 H
   `tools/bench_core.ml` (in `bench-build`) times one scalar residual, `(+ (* (sin t) 0.5) (* t t))`;
   the cost table names no expression, so this one was chosen. Medians of three runs:

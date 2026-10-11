@@ -1,8 +1,8 @@
 module E = Flow.Eval
 module I = Flow_ir
 let ok = function Ok x -> x | Error d -> failwith (Flow.Diagnostic.to_string d)
-let check body =
-  let forms = ok (Flow.Syntax.parse ("(workspace w (graph g :context value " ^ body ^ "))")) in
+let check ?(extra="") body =
+  let forms = ok (Flow.Syntax.parse ("(workspace w " ^ extra ^ " (graph g :context value " ^ body ^ "))")) in
   match Flow.Workspace.check {Flow.Check.version=1;kinds=[]} forms with
   | Some ws,[] -> ws | _,ds -> failwith (String.concat "; " (List.map Flow.Diagnostic.to_string ds))
 let bits x y = Int64.bits_of_float x = Int64.bits_of_float y
@@ -29,13 +29,19 @@ let cases = [
   "error","(state [s 0.] (if (> t 0.6) (/ t 0) (+ s 1.)))";
   "coerced","(state [s 0.] (if (> t 0.6) 2 (+ s t)))";
 ]
+(* A [ref] re-runs the referenced graph in its own instance: the state it reads is shared. *)
+let refs = [
+  "ref","(graph counter :context value (state [s 0.] (+ s t)))","(let* [a (ref counter)] (+ a (* a 2.)))";
+  "ref-record","(graph model :context host (state [m {:n 0 :flag 0}] (assoc m :n (+ m.n 1) :flag (if (> t 0.6) 1 0))))",
+    "(+ (get (ref model) :n) (get (ref model) :flag))";
+]
 let live frame =
   {(Frame_input.at_time (float_of_int frame *. 0.25)) with frame; tick=frame;
    events=if frame mod 2=1 then [Key_pressed "a"; Key_pressed "b"] else []}
 let () =
   let used=ref 0 and refused=ref [] and failed=ref [] in
-  List.iter (fun (name,body) ->
-    let evaluation=ok (E.static (check ("(let* [v " ^ body ^ "] 0.)"))) in
+  List.iter (fun (name,extra,body) ->
+    let evaluation=ok (E.static (check ~extra ("(let* [v " ^ body ^ "] 0.)"))) in
     let values=List.map snd evaluation.results @ evaluation.states in
     let reference=E.create_state () and core=E.create_state () in
     let execute r live = match I.Core_lower.lower r with
@@ -56,8 +62,8 @@ let () =
             E.Private.core_residuals:=true;
             E.Private.force_with_executor ~state:core ~execute v ~live) in
         if not (same actual expected) then failwith (Printf.sprintf "%s frame %d" name frame);
-        assert (E.state_stamp core=E.state_stamp reference)) values
-    done) cases;
+        if E.state_stamp core<>E.state_stamp reference then failwith (Printf.sprintf "%s frame %d: state stamp\n%s\n%s" name frame (String.concat ";" (List.map (fun v -> Flow.Value.show_with Fun.id v) (E.Private.state_values core))) (String.concat ";" (List.map (fun v -> Flow.Value.show_with Fun.id v) (E.Private.state_values reference))))) values
+    done) (List.map (fun (name,body) -> name,"",body) cases @ refs);
   if !refused<>[] || !failed<>[] then failwith (String.concat "; " (!refused @ !failed));
   assert (!used>0);
   Printf.printf "Core state: slots, pending writes, keys, errors and rollback match the walker (%d executions)\n" !used

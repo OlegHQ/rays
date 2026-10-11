@@ -190,7 +190,7 @@ unlisted calls in `prims.js`.
 | `<`, `<=`, `>`, `>=`, `=`, `and`, `or`, `not` | 8 | Numeric comparisons and numeric boolean truth. These are not generic string/array comparisons, nor JavaScript truthiness. |
 | `int/mul`, `int/div`, `int/mod`, `int/and`, `int/xor` | 5 | Signed integer operations, including native integer overflow, division and remainder; zero integer divisor is `E_RANGE`. No 32-bit JavaScript bitwise truncation. |
 | `equal?`, `show`, `text/concat` | 3 | Typed structural equality, source value display, and ordered text concatenation. `show` has display formatting, distinct from workspace source-number printing. |
-| `sequence/length`, `sequence/get`, `sequence/build`, `sequence/slice`, `sequence/concat` | 5 | Element count, checked list element access, fresh bounded-list storage, checked copying slice, and ordered concatenation with the 4,096-element cap. Element layouts and nested record field order are explicit. |
+| `sequence/length`, `sequence/get`, `sequence/build`, `sequence/slice`, `sequence/concat` | 5 | Element count, checked list element access, fresh bounded-list storage, checked copying slice, and ordered concatenation with the 4,096-element cap. Element layouts and nested record field order are explicit. Given an element width of 1 to 4, `sequence/build` allocates packed storage with no list cap, filled by the same ordered stores (the walker's `array_init` checks per element); that is how a packed `map` or `filter` whose body a region refuses is built, so the inventory stays at 54. |
 | `array/range`, `array/float`, `array/vec3`, `array/nth`, `array/count`, `array/slice`, `array/concat` | 7 | The existing packed-array construction, indexing, length and copying operations. Count is in elements, not components; all products and offsets are checked before allocation or access. An array is not converted to a list. |
 | `value/rand`, `noise3`, `color/parse`, `color/byte` | 4 | The deterministic keyed hash, seeded Perlin/fBm sample, source drawing-color decoding, and channel conversion. Static noise permutations become data; dynamic-seed caches are bounded to 16 entries. Color conversion preserves native byte quantization. |
 | `coerce`, `truthy`, `fail` | 3 | Explicit checked source-value coercion, condition truth conversion, and a diagnostic with a code, message and source span. Coercion preserves record order and list element joins. |
@@ -799,7 +799,7 @@ operation. A user function/macro row is not a new runtime primitive.
 | `pointer/y` | intrinsic | Snapshot logical pointer y, as Float. |
 | `pow` | primitive | `pow` |
 | `range` | compiler rule | Checked bounded count, `sequence/build`, integer induction locals; start inclusive, end exclusive. |
-| `ref` | compiler rule | Checked graph specialization/sharing, input `coerce`; refuse a reached native-only context. |
+| `ref` | compiler rule | Checked graph specialization/sharing, input `coerce`; refuse a reached native-only context. Native lowering inlines the body of a `ref` without overrides in the graph's cached default instance (state keys are the graph's own, so every reference shares them); a `ref` with overrides is refused by name. |
 | `rest` | compiler rule | `sequence/length`, `sequence/slice`, with an empty-list identity. |
 | `reverse` | compiler rule | Ordered loop, `sequence/build`, `sequence/get` at length minus one minus index. |
 | `rim` | compiler rule | Expand image-body macro: `pow`, `mod`, `abs`, `max`, arithmetic. |

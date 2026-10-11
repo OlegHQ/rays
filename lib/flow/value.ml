@@ -202,27 +202,26 @@ let array_get xs index =
   | Vec3_array xs -> let i = index * 3 in Vec3 (xs.(i), xs.(i + 1), xs.(i + 2))
   | Vec4_array xs -> let i = index * 4 in Vec4 (xs.(i), xs.(i + 1), xs.(i + 2), xs.(i + 3))
   | _ -> assert false
+let array_put data width index v =
+  let at = width * index in
+  match width, v with
+  | 1, v -> data.(at) <- fin "array" (num v)
+  | 2, Vec2 (x,y) -> data.(at) <- fin "array" x; data.(at + 1) <- fin "array" y
+  | 3, Vec3 (x,y,z) -> data.(at) <- fin "array" x;
+      data.(at + 1) <- fin "array" y; data.(at + 2) <- fin "array" z
+  | 4, Vec4 (x,y,z,w) -> data.(at) <- fin "array" x;
+      data.(at + 1) <- fin "array" y; data.(at + 2) <- fin "array" z;
+      data.(at + 3) <- fin "array" w
+  | _, (Int _ | Float _ | Bool _) -> let x = fin "array" (num v) in
+      for j = 0 to width - 1 do data.(at + j) <- x done
+  | _ -> fail "E_ARRAY_TYPE" "Packed array element has the wrong vector width."
 let array_init ty count f =
   let width = match ty with Ty.Vec2 -> 2 | Vec3 -> 3 | Vec4 -> 4 | Float | Any -> 1
     | _ -> fail "E_ARRAY_TYPE" "Packed arrays contain float, vec2, vec3 or vec4 values." in
   if count < 0 || count > Sys.max_floatarray_length / width then
     fail "E_ARRAY_RANGE" "Array length is outside native storage bounds.";
   let data = Array.make (count * width) 0. in
-  for i = 0 to count - 1 do
-    let v = f i in
-    let at = width * i in
-    match width, v with
-    | 1, v -> data.(at) <- fin "array" (num v)
-    | 2, Vec2 (x,y) -> data.(at) <- fin "array" x; data.(at + 1) <- fin "array" y
-    | 3, Vec3 (x,y,z) -> data.(at) <- fin "array" x;
-        data.(at + 1) <- fin "array" y; data.(at + 2) <- fin "array" z
-    | 4, Vec4 (x,y,z,w) -> data.(at) <- fin "array" x;
-        data.(at + 1) <- fin "array" y; data.(at + 2) <- fin "array" z;
-        data.(at + 3) <- fin "array" w
-    | _, (Int _ | Float _ | Bool _) -> let x = fin "array" (num v) in
-        for j = 0 to width - 1 do data.(at + j) <- x done
-    | _ -> fail "E_ARRAY_TYPE" "Packed array element has the wrong vector width."
-  done;
+  for i = 0 to count - 1 do array_put data width i (f i) done;
   match width with 2 -> Vec2_array data | 3 -> Vec3_array data | 4 -> Vec4_array data | _ -> Float_array data
 let rec validate = function
   | Float f -> ignore (fin "input" f)

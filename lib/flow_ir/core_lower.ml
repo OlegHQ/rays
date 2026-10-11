@@ -142,7 +142,7 @@ let lower root =
     | "int/and" -> Some (Integer And) | "int/xor" -> Some (Integer Xor)
     | "array/range" -> Some Array_range | "array/float" -> Some Array_float | "array/vec3" -> Some Array_vec3
     | "array/nth" -> Some Array_nth | "array/count" -> Some Array_count | "array/slice" -> Some Array_slice
-    | "array/concat" -> Some Array_concat | "value/rand" -> Some Rand
+    | "array/concat" -> Some Array_concat | "value/rand" -> Some Rand | "noise3" -> Some Noise3
     | _ -> None
   and residual statements cache r =
     let id = E.Private.residual_id r in
@@ -296,6 +296,19 @@ let lower root =
         let fn=as_callable source (compile fn) in
         hof statements cache source env x.ty kind fn rest
     | Hof (_,[]) -> refuse "higher_order"
+    | Graph_ref {graph;inputs=[]} ->
+        (* The referenced graph's body in its own default instance, as the live walker re-runs it. *)
+        let g=match E.Private.residual_graph root graph with Some g -> g | None -> refuse "ref" in
+        let zone=[graph] in
+        let source={source with C.instance=Option.value ~default:source.instance (E.Private.graph_instance root graph);
+          prefix=[];site=zone;owner=zone;iter=[]} in
+        let saved= !plane in
+        plane:=if g.context=Flow.Context.host then `Host else `Frame;
+        let env=List.fold_left (fun env (name,ty,default) -> match default with
+          | Some t -> Names.add name (coerce statements cache source ty (term statements cache source env t)) env
+          | None -> refuse "ref") Names.empty g.inputs in
+        let value=term statements cache source env g.body in
+        plane:=saved; value
     | Loop {kind=(`For|`Sum) as kind;accs=[];clauses=[W.Name name,items];skip=[];body;zone} ->
         let items=compile items in
         (match items with
@@ -475,12 +488,12 @@ let lower root =
   and increment statements cache source value =
     let next=primitive statements cache source Flow.Ty.Int (Numeric Add) ["a",value;"b",Known (V.Int 1)] in
     update statements cache source value next
-  and counted statements cache source first last f =
+  and counted ?(limit=4096) statements cache source first last f =
     let first=ensure statements cache source first and last=ensure statements cache source last in
     let count=local Flow.Ty.Int and index=local Flow.Ty.Int and item=local Flow.Ty.Int and id=number () in
     let body=ref [] in
     f body (Hashtbl.copy cache) (Computed (item,Flow.Ty.Int));
-    statements:=statement id source (Counted {first;last;count;index;item;limit=4096;
+    statements:=statement id source (Counted {first;last;count;index;item;limit;
       init=[];body=List.rev !body}) :: !statements
   and slice statements cache source ty sequence first count =
     primitive statements cache source ty Sequence_slice ["list",sequence;"first",first;"count",count]
@@ -497,15 +510,19 @@ let lower root =
         accumulator
     | `Sort_by,[items] -> sort_by statements cache source ty fn (compile items)
     | (`Map|`Filter),items ->
-        if (match ty with Flow.Ty.Array _ -> true | _ -> false) then refuse "packed_higher_order";
+        (* A packed result is packed storage built element by element. *)
+        let width=match ty with
+          | Flow.Ty.Array (Float|Any) -> 1 | Array Vec2 -> 2 | Array Vec3 -> 3 | Array Vec4 -> 4
+          | Array _ -> refuse "packed_higher_order" | _ -> 0 in
         let items=List.map compile items in
         let counts=List.map (sequence_count statements cache source) items in
         let count=match counts with [] -> refuse "higher_order" | first::rest ->
           List.fold_left (fun count next -> primitive statements cache source Flow.Ty.Int (Numeric Min)
             ["a",count;"b",next]) first rest in
-        let result=primitive statements cache source ty Sequence_build ["count",count] in
+        let result=primitive statements cache source ty Sequence_build
+          (("count",count) :: if width>0 then ["width",Known (V.Int width)] else []) in
         let kept=hold statements cache source (Known (V.Int 0)) in
-        counted statements cache source (Known (V.Int 0)) count (fun body cache index ->
+        counted ~limit:(if width>0 then Sys.max_floatarray_length else 4096) statements cache source (Known (V.Int 0)) count (fun body cache index ->
           let args=List.map (fun sequence -> sequence_get body cache source sequence index) items in
           let item=List.hd args in
           let result_ty=if kind=`Map then Option.value ~default:Flow.Ty.Any (Flow.Ty.elem ty) else Flow.Ty.Bool in
@@ -515,7 +532,10 @@ let lower root =
             (fun body cache -> store body cache source result kept item;
               increment body cache source kept; Known (V.Int 0))
             (fun _ _ -> Known (V.Int 0))));
-        if kind=`Filter then slice statements cache source ty result (Known (V.Int 0)) kept
+        if kind=`Filter && width>0 then primitive statements cache source ty Array_slice
+          ["array",result;"first",Known (V.Int 0);"count",kept]
+        else if kind=`Filter then slice statements cache source ty result (Known (V.Int 0)) kept
+        else if width>0 then result
         else primitive statements cache source ty Sequence_concat ["list",result]
     | _ -> refuse "higher_order"
   and sort_by statements cache source ty fn items =
@@ -964,6 +984,72 @@ let lower root =
           let sine=prim Flow.Ty.Float (Math Sin) ["x",a] in
           let x=calc Mul r cosine in let z=calc Mul r sine in
           vec [x;Option.value ~default:(Known (V.Float 0.)) (List.assoc_opt "height" args);z]
+      | "color/hsl" ->
+          let h=float (arg "h") in let s=float (arg "s") in let l=float (arg "l") in
+          let f x = Known (V.Float x) in
+          let c ty op args = primitive statements cache source ty op args in
+          let calc2 op a b = c Flow.Ty.Float (Numeric op) ["a",a;"b",b] in
+          let unit v = calc2 Max (f 0.) (calc2 Min (f 1.) v) in
+          let remainder = c Flow.Ty.Float Remainder ["a",h;"b",f 360.] in
+          let wrapped=branch statements cache source Flow.Ty.Float (c Flow.Ty.Bool (Numeric Lt) ["a",remainder;"b",f 0.])
+            (fun body cache -> primitive body cache source Flow.Ty.Float (Numeric Add) ["a",remainder;"b",f 360.])
+            (fun _ _ -> remainder) in
+          let hue=calc2 Div wrapped (f 60.) in
+          let sat=unit s in let light=unit l in
+          let abs v = c Flow.Ty.Float (Math Abs) ["x",v] in
+          let chroma=calc2 Mul (calc2 Sub (f 1.) (abs (calc2 Sub (calc2 Mul (f 2.) light) (f 1.)))) sat in
+          let x=calc2 Mul chroma (calc2 Sub (f 1.) (abs (calc2 Sub (c Flow.Ty.Float Remainder ["a",hue;"b",f 2.]) (f 1.)))) in
+          let rgb body cache r g b = emit body source Flow.Ty.Vec3 (Vec (List.map (ensure body cache source) [r;g;b])) in
+          let zero=f 0. in
+          let arm limit yes no = branch statements cache source Flow.Ty.Vec3 (c Flow.Ty.Bool (Numeric Lt) ["a",hue;"b",f limit]) yes no in
+          let triple=
+            arm 1. (fun b k -> rgb b k chroma x zero) (fun _ _ ->
+            arm 2. (fun b k -> rgb b k x chroma zero) (fun _ _ ->
+            arm 3. (fun b k -> rgb b k zero chroma x) (fun _ _ ->
+            arm 4. (fun b k -> rgb b k zero x chroma) (fun _ _ ->
+            arm 5. (fun b k -> rgb b k x zero chroma) (fun b k -> rgb b k chroma zero x))))) in
+          let m=calc2 Sub light (calc2 Div chroma (f 2.)) in
+          let channel name =
+            let byte=c Flow.Ty.Int (Color_byte Clamped) ["x",calc2 Add (field statements cache source Flow.Ty.Float triple name) m] in
+            calc2 Div (c Flow.Ty.Float Float_convert ["x",byte]) (f 255.) in
+          let r=channel "x" in let g=channel "y" in let b=channel "z" in
+          vec [r;g;b]
+      | "color/gradient" ->
+          (* Constant opaque stops only; anything else keeps the walker's diagnostics. *)
+          let colors=match arg "stops" with
+            | Known (V.List xs) when Array.length xs>0 ->
+                (try Array.map Operators.drawing_color xs with V.Fail _ -> refuse name)
+            | _ -> refuse name in
+          if Array.exists (fun (c : Rays_math.Color.t) -> c.a<>255) colors then refuse name;
+          let n=Array.length colors in
+          let channels (color : Rays_math.Color.t) = let r,g,b,_=Rays_math.Color.to_floats color in V.Vec3 (r,g,b) in
+          if n=1 then Known (channels colors.(0)) else begin
+            let f x = Known (V.Float x) in
+            let c ty op args = primitive statements cache source ty op args in
+            let calc2 op a b = c Flow.Ty.Float (Numeric op) ["a",a;"b",b] in
+            let unit v = calc2 Max (f 0.) (calc2 Min (f 1.) v) in
+            let position=calc2 Mul (unit (float (arg "x"))) (f (float_of_int (n-1))) in
+            let left=c Flow.Ty.Int (Numeric Min) ["a",Known (V.Int (n-2));"b",c Flow.Ty.Int Int_convert ["x",position]] in
+            let pct=unit (calc2 Sub position (c Flow.Ty.Float Float_convert ["x",left])) in
+            let inverse=calc2 Sub (f 1.) pct in
+            let pick body cache k =
+              let blend (c1 : Rays_math.Color.t) (c2 : Rays_math.Color.t) pick_channel =
+                let p ty op args = primitive body cache source ty op args in
+                let m op a b = p Flow.Ty.Float (Numeric op) ["a",a;"b",b] in
+                let a=m Mul (f (float_of_int (pick_channel c1))) inverse in
+                let b=m Mul (f (float_of_int (pick_channel c2))) pct in
+                let byte=p Flow.Ty.Int Int_convert ["x",m Add (m Add a b) (f 0.5)] in
+                m Div (p Flow.Ty.Float Float_convert ["x",byte]) (f 255.) in
+              let c1=colors.(k) and c2=colors.(k+1) in
+              let r=blend c1 c2 (fun c -> c.r) in let g=blend c1 c2 (fun c -> c.g) in let b=blend c1 c2 (fun c -> c.b) in
+              emit body source Flow.Ty.Vec3 (Vec (List.map (ensure body cache source) [r;g;b])) in
+            let rec arms body cache k =
+              if k=n-2 then pick body cache k else
+              let here=primitive body cache source Flow.Ty.Bool (Numeric Eq) ["a",left;"b",Known (V.Int k)] in
+              branch body cache source Flow.Ty.Vec3 here (fun body cache -> pick body cache k)
+                (fun body cache -> arms body cache (k+1)) in
+            arms statements cache 0
+          end
       | "length" ->
           let components=List.map (field statements cache source Flow.Ty.Float (arg "vector")) ["x";"y";"z"] in
           let squares=List.map (fun v -> calc Mul v v) components in

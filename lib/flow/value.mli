@@ -34,5 +34,6 @@ val arith : string -> (float -> float -> float) -> ('f, 'r) t -> ('f, 'r) t -> (
 val list_arg : ('f, 'r) t -> ('f, 'r) t array
 val array_length : ('f, 'r) t -> int
 val array_get : ('f, 'r) t -> int -> ('f, 'r) t
+val array_put : float array -> int -> int -> ('f, 'r) t -> unit
 val array_init : Ty.t -> int -> (int -> ('f, 'r) t) -> ('f, 'r) t
 val validate : ('f, 'r) t -> unit

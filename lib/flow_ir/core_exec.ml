@@ -44,11 +44,21 @@ let primitive op args =
         fun st -> V.Float (V.fin "remainder" (Float.rem (V.num st.values.(a)) (V.num st.values.(b))))
     | Sequence_get -> generic_named "nth" args | Sequence_length -> generic_named "count" args
     | Sequence_build ->
-        let count = List.assoc "count" args in
+        let count = List.assoc "count" args and width = List.assoc_opt "width" args in
+        (* With a width the builder is packed storage, which has no list cap. *)
         fun st ->
           let count=V.int_of st.values.(count) in
-          if count<0 || count>4096 then V.fail "E_ITER_BOUND" "Core list length exceeds its bound.";
-          V.List (Array.make count V.No_geo)
+          (match width with
+           | None ->
+               if count<0 || count>4096 then V.fail "E_ITER_BOUND" "Core list length exceeds its bound.";
+               V.List (Array.make count V.No_geo)
+           | Some width ->
+               let width=V.int_of st.values.(width) in
+               if count<0 || count>Sys.max_floatarray_length/width then
+                 V.fail "E_ARRAY_RANGE" "Array length is outside native storage bounds.";
+               let data=Array.make (count*width) 0. in
+               (match width with 2 -> V.Vec2_array data | 3 -> Vec3_array data | 4 -> Vec4_array data
+                | _ -> Float_array data))
     | Sequence_slice ->
         let list = List.assoc "list" args and first = List.assoc "first" args and count = List.assoc "count" args in
         fun st ->
@@ -180,10 +190,16 @@ let prepare (program : C.program) =
         fun st ->
           if not (Option.fold ~none:false ~some:(fun writable -> !writable) st.builders.(sequence)) then
             V.fail "E_CORE_OWNERSHIP" "Core stores require an unpublished local builder.";
-          let xs=V.list_arg st.values.(sequence) and i=V.int_of st.values.(index) in
-          if i<0 || i>=Array.length xs then V.fail "E_LIST_RANGE" "Core store is outside its sequence.";
-          seal st value;
-          xs.(i)<-st.values.(value)
+          let i=V.int_of st.values.(index) in
+          (match st.values.(sequence) with
+           | V.Float_array data | Vec2_array data | Vec3_array data | Vec4_array data as packed ->
+               if i<0 || i>=V.array_length packed then V.fail "E_LIST_RANGE" "Core store is outside its sequence.";
+               V.array_put data (Array.length data/V.array_length packed) i st.values.(value)
+           | _ ->
+               let xs=V.list_arg st.values.(sequence) in
+               if i<0 || i>=Array.length xs then V.fail "E_LIST_RANGE" "Core store is outside its sequence.";
+               seal st value;
+               xs.(i)<-st.values.(value))
     | State_read {slot;result;init;initial} ->
         let init=block init in
         fun st ->

@@ -450,3 +450,32 @@ this representative scalar expression was chosen. Allocation is
 Core/closure ratio 2.95 (walker/closure 7.1). The plan's threshold is 1.1, so
 P1.14 (compile core programs to closures) is required; this entry does not
 change the core executor.
+
+## 2026-10-11 — P1.12a core residual coverage after the repair
+
+Command: `RAYS_CORE_COVERAGE=1 _build/default/tools/check.exe @test/test_workspace_ir`
+(`EXIT=0`), as for P1.12. Machine: Apple M1, OCaml 5.3.0, domains 1 and 8. Same
+inputs and counting rule as the P1.12 entry.
+
+| Workspace | Lowered | Refused |
+| --- | ---: | ---: |
+| examples/audio | 27 | 0 |
+| examples/basic | 6 | 0 |
+| examples/drawing | 1,825 | 0 |
+| examples/file_dialog | 30 | 0 |
+| examples/generative | 14 | 0 |
+| examples/noise | 14 | 0 |
+| examples/particles | 10 | 0 |
+| examples/pxui | 7 | 0 |
+| examples/recursive_rectangles | 33 | 0 |
+| sketches/flow_contours | 5 | 0 |
+| sketches/flow_image | 0 | 0 |
+| sketches/flow_image_kernel | 1 | 0 |
+| sketches/flow_particles_gpu | 10 | 0 |
+| sketches/flow_shader | 24 | 0 |
+| sketches/flow_vectors | 3 | 0 |
+
+Total: 2,009 lowered, 0 refused (P1.12 counted 1,963 lowered and 46 refused: the
+same 2,009 residuals, all lowered now). No intended refusals remain for the 15
+workspaces. Still declined by name, outside the corpus: packed `sort-by`, packed
+`for`/`scan` collects, a `ref` with overrides, `color/hsla`.
