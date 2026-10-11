@@ -139,6 +139,11 @@
  (libraries flow flow_ir frame_input unix))
 
 (executable
+ (name bench_marks)
+ (modules bench_marks)
+ (libraries flow rays_editor frame_input unix))
+
+(executable
  (name boolean_stress)
  (modules boolean_stress)
  (libraries rays rdk unix))
@@ -160,6 +165,7 @@
   bench_circle_from_edges.exe
   bench_convex_hull.exe
   bench_core.exe
+  bench_marks.exe
   bench_delaunay2.exe
   bench_extract_centroid.exe
   bench_extract_point_curve.exe
