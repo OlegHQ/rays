@@ -941,3 +941,58 @@ Findings:
   Recorded in `DEFERRED.md` (presenter cache of CPU attribute buffers by array identity).
 - Kernel compile is 2.3 ms (10,000) and 14.8 ms (1,000,000): the kernel text is the same apart from the count, and the cause of the
   difference was not investigated; either is far below load time (250 to 310 ms).
+
+## P7.2 native numbers
+
+Machine: Apple M1 (8 cores), macOS 27.0.1, OCaml 5.3.0, dune default profile. Date 2026-10-11. Load average is the
+1-minute value from `uptime` when the 300-frame run started. Other agents shared the machine (load 1.6 to 5.0).
+
+Workspaces: `sketches/million_marks/sketch.rays` (not edited) and scratch copies in
+`/private/tmp/claude-501/-Users-snowbear-WORK-GIT-rays/961730dd-cb7d-4b51-bb31-2fda1a4140a6/scratchpad/p72/`, each
+checked with `_build/default/tools/lisp/lisp.exe check`:
+- 10,000 marks: `count 1000000` changed to `count 10000`.
+- static: the drift term `(* 0.1 (sin (+ t (* x 6.0))))` replaced by `0.0`, so no mark reads `t`.
+- panning: static, and the translate x `view.x` replaced by `(* 100.0 (sin t))`, so the transform changes each frame
+  and the marks do not.
+- animated: as checked in (marks drift with `t`).
+
+Each variant is compiled to an executable with the link line dune uses for `sketches/million_marks/main.exe`
+(captured from `dune rules`), so it runs the same workspace code path. There is no `rays-lisp run` subcommand and no
+harness takes a `.rays` file, so the method is:
+- Wall frame time: `(median wall at 300 frames - median wall at 1 frame) / 299`, 3 runs each, wall from perl
+  `Time::HiRes`. The 1-frame run cancels startup and the first frame.
+- CPU per frame: the same subtraction on `user + sys` from `/usr/bin/time -p`, one run each. This leaves out GPU
+  execution and waiting on the display.
+- Bytes per frame: `(allocated_words at 300 - allocated_words at 1) * 8 / 299` from the `OCAMLRUNPARAM=v=0x400`
+  summary at exit (OCaml heap only, not Metal memory). Run-1 values; the three runs agree within 0.1 percent.
+
+Commands (`P=/private/tmp/claude-501/-Users-snowbear-WORK-GIT-rays/961730dd-cb7d-4b51-bb31-2fda1a4140a6/scratchpad`):
+`RAYS_MAX_FRAMES=300 OCAMLRUNPARAM=v=0x400 $P/p72/bin/<case>.exe` and the same with `RAYS_MAX_FRAMES=1`, where
+`<case>` is `static_10k`, `static_1m`, `panning_10k`, `panning_1m`, `animated_10k` or `animated_1m`. Each executable is
+built with `bash $P/build_variant.sh <case>`. Timing is `$P/measure.sh <cases>` (wall) and `$P/cpu.sh <cases>`
+(CPU, `/usr/bin/time -p`).
+
+| Marks | Case | Frame ms (wall, median of 3) | CPU ms per frame | Bytes per frame | Load (1 min) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 10,000 | static | 16.66 | 3.7 | 302,297 | 1.56 |
+| 10,000 | panning | 16.73 | 6.4 | 1,883,692 | 2.14 |
+| 10,000 | animated | 16.68 | 4.1 | 360,968 | 3.45 |
+| 1,000,000 | static | 33.85 | 4.3 | 301,993 | 2.51 |
+| 1,000,000 | panning | 49.56 | 51.6 | 233,420,712 | 5.03 |
+| 1,000,000 | animated | 33.40 | 5.4 | 357,910 | 2.82 |
+
+Vsync caveat: every wall value is a whole multiple of the 60 Hz interval (16.7 ms): 1x for the 10,000 rows, 2x for
+1M static and animated (33.4 ms), 3x for 1M panning (50 ms). The wall column is therefore the display cap, an upper
+bound quantized to 16.7 ms steps, not the cost. The CPU column is the better estimate of per-frame work, and it
+excludes GPU execution.
+
+Findings:
+- 10,000 marks: about 3.7 to 6.4 ms of CPU per frame; the 16.7 ms wall time is the display cap.
+- 1,000,000 animated and static: about 4 to 5 ms of CPU per frame and about 0.3 MB allocated per frame, independent of
+  the count. The marks are computed on the GPU or kept out of the OCaml heap, so per-frame CPU does not scale with 1M.
+- 1,000,000 panning is the expensive case: about 52 ms of CPU and 233 MB allocated per frame, against 1.9 MB at 10,000.
+  Only the transform changes, yet the mark set is rebuilt each frame, so per-frame work scales with the count. This
+  contradicts the P4.10 intent (a transform change must not redo CPU work on an unchanged batch). Not investigated or
+  fixed in this entry; it is a candidate for a follow-up task.
+- The 1-frame runs of static and panning at 1M take about 22 s and allocate about 79 GB (`allocated_words` near 9.9e9),
+  against 0.4 s for animated at 1M. The subtraction removes this first-frame cost, but it is unexplained and worth a look.
