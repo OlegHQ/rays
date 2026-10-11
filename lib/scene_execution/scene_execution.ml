@@ -1302,6 +1302,14 @@ let render_sampled_resources_common ?prepared ?(after_prepare=Fun.id) ?(clear=(0
           value.automatic_candidate<-None;
           value.icb_stats.icb_hits<-Int64.succ value.icb_stats.icb_hits;
           clear_prepared_scratch scratch;
+          (* A prepared key claims the identical automatic plan, so its replay works. *)
+          (match prepared_key with
+           |Some(identity,version)->
+               value.automatic_submission<-None;
+               value.prepared_submission<-Some{submission_identity=identity;
+                 submission_version=version;submission_draw_count=List.length draws;
+                 submission_plan=plan}
+           |None->());
           finish(Result.map(fun()->true)(encode_frame value frame~clear plan.replay_batches))
       |_->
     value.icb_stats.icb_misses<-Int64.succ value.icb_stats.icb_misses;
