@@ -407,6 +407,21 @@ later. Numbers and commands are in `specification/web-export/results.md`.
   load 4 to 17): 34 ms per frame static and 39 ms panning against 30 ms for the animated GPU kernel
   case; 10,000 marks cost about 2 ms. Fix: cache the uploaded buffer by array identity in
   `present.js` (and a f64 `data.bin` is still 24 MB at 1M).
+- A static packed `map` is evaluated by the tree walker at startup, not by a kernel (found in P7.2,
+  `results.md`, `million_marks` with the drift term removed, 1,000,000 marks, M1): first frame about 22 s and
+  79 GB allocated (`allocated_words` 9.9e9, about 22 microseconds and 79 KB per element), against 0.4 s when the
+  map reads `t`. Root cause: `Flow.Eval.hof` (`lib/flow/eval.ml`, `Map` arm, `array_init e n (fun k ->
+  concrete c (item k))`) runs the function through `ev`/`apply_op`/`call_fn` for every element whenever the
+  static stage can finish it; only a `Needs_t` makes a residual that `Flow_ir.residual` (`lib/flow_ir/flow_ir.ml`)
+  turns into a `Packed_map` kernel (GPU or block CPU tier). `sample` of the process shows `Eval.ev`,
+  `Op.find`/`Hashtbl.find_opt` (the `"value/" ^ name` lookups), `List.mem` and `caml_compare` in the walker, nothing
+  in a kernel. Fix I would make: in `hof`, when `st.time = None`, the output is `Ty.Array` and the element count is
+  at least a threshold (say 4,096, the GPU's 1,024 minimum or `Packed` block size), raise the same exception that
+  `Needs_t` raises so the map becomes a `Static`-rate residual, which `hoist`, `Core_exec.static_invokes` and
+  `Flow_ir.compile_marks` already run once and keep. Not done: it changes which graphs finish in the static stage
+  (a consumer that needs the concrete array, such as an `exact`, a host graph output or `array/length`
+  feeding a graph parameter, would then fail with `E_EVAL` unless it is also deferred), so it needs a corpus pass
+  (`@test/test_workspace_ir`, 20 to 25 minutes) and a rule for those consumers.
 
 ## Lisp gaps
 
