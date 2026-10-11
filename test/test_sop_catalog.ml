@@ -669,6 +669,12 @@ let run ?(exhaustive = false) () =
     | Parameter.Choice_view options, Parameter.Choice_value value ->
         Array.to_list options |> List.find_opt (fun option -> option <> value)
         |> Option.map (fun option -> Parameter.Choice_value option)
+    | Parameter.Choice_view options, Parameter.Int_value value ->
+        (* An index choice (sop/switch :input) names its options by position. *)
+        List.find_opt (fun candidate -> candidate <> value
+            && candidate >= 0 && candidate < Array.length options)
+          [value + 1; value - 1; 0]
+        |> Option.map (fun value -> Parameter.Int_value value)
     | _ -> None in
   let perturbed_fields = ref 0 and rejected_fields = ref 0 in
   List.iter (fun factory ->
