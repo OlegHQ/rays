@@ -28,6 +28,18 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
 
 ## Tests that got weaker
 
+- Restored, native verification pending 2026-10-11: `test_gpu_draw` now
+  dispatches its nonfinite/overflow circle cases and requires typed refusal.
+  It renders the CPU-built and GPU-resident circles through the normal
+  command walker at 1x/2x with an affine, clip and all six blends, comparing
+  complete images across repeated frames and checking visible geometry.
+  Valid retained replay, stale generation lowering/replay, updated tokens
+  and lease-release lowering/replay are exercised, with a final handle
+  baseline check. Retained versions follow the actual token stamp. These
+  behaviors formerly appeared only in its success message. Typechecking,
+  executable builds, portable scene-execution tests and the dependency gate
+  pass. The native attempt fails at Metal device acquisition; pixel, GPU
+  status and stale replay assertions remain unverified here.
 - Restored, native verification pending 2026-10-11: native scene-execution
   blend, geometry, mixed-texture, mip/sampler and shadow cases, and runtime
   light/stencil cases now render all 600 frames. They formerly iterated the

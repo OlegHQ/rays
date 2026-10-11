@@ -809,6 +809,14 @@ circle pixels at 1x/2x, all six blend modes and stale replay remain qualificatio
 inferred from mock output. Host resources pin a bounded table
 for a workspace lifetime and close before the runtime and SDL lifecycle ends.
 
+The 2026-10-11 audit restored `test_gpu_draw`'s actual invalid-input dispatch,
+transformed/clipped full-image comparisons at both densities and all six
+blends, and retained replay/lowering refusals after generation or lease
+invalidation. Retained versions use the token stamp, and teardown checks the
+handle baseline. Builds, typechecking and portable boundary/dependency tests
+pass; this runner's native attempt fails at Metal device acquisition, so
+these native assertions remain unverified.
+
 Loaded/rendered Flow image nodes resolve through `Flow_sop.Lower.with_images` on
 the initial domain. Value-lane reconstruction installs immutable CPU Image payload
 nodes before submitting a graph to a worker; resource decoding and Canvas rendering
