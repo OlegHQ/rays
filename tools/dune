@@ -18,6 +18,11 @@
  (action (run %{exe:core_census.exe} --self-check)))
 
 (executable
+ (name core_fixtures)
+ (modules core_fixtures)
+ (libraries flow flow_ir frame_input))
+
+(executable
  (name bench_gpu)
  (modules bench_gpu)
  (libraries ogpu rays_execution rays_math unix))
