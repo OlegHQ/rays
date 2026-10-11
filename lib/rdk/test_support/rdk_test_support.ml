@@ -149,3 +149,29 @@ module Tb = struct
         Topology.polygons_owned ~point_count:t.point_count ~vertex_points:(Array.concat polygons)
           ~primitive_offsets:(Array.of_list (List.rev offsets)) |> Result.get_ok
 end
+
+let equal_positions left right =
+  let left = Packed.Float3.Private.view (Geometry.positions left)
+  and right = Packed.Float3.Private.view (Geometry.positions right) in
+  left.x = right.x && left.y = right.y && left.z = right.z
+
+let near_array expected actual =
+  Array.length expected = Array.length actual
+  && Array.for_all2 (fun expected actual -> abs_float (expected -. actual) <= 1e-12)
+       expected actual
+
+let float_array_values ~owner ~name geometry =
+  match Geometry.find_attribute ~owner name geometry with
+  | Some attribute ->
+      (match Attribute.Private.storage attribute with
+       | Attribute.Float_array values -> Packed.Float_array.Private.view values
+       | _ -> fail ("unexpected non-float-array storage for " ^ name))
+  | None -> fail ("missing float-array attribute " ^ name)
+
+
+
+(* One attribute by exact name: [promote_pattern] with a literal pattern. *)
+let promote ?cancel ?grain ?into ?method_ ?delete_source ?piece_attribute ?index_attribute
+    ~source ~destination ~name geometry =
+  Attribute_ops.promote_pattern ?cancel ?grain ?into_pattern:into ?method_ ?delete_source
+    ?piece_attribute ?index_pattern:index_attribute ~source ~destination ~pattern:name geometry

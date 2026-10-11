@@ -1,5 +1,7 @@
 let tests = [
   "core", "test_rdk", Test_rdk.run;
+  "rdk_parts", "test_rdk_sources", Test_rdk_sources.run;
+  "rdk_parts", "test_copy_to_points", Test_copy_to_points.run;
   "spatial", "test_surface_index", Test_surface_index.run;
   "mesh", "test_extract_centroid", Test_extract_centroid.run;
   "curve", "test_extract_point_curve", Test_extract_point_curve.run;

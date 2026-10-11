@@ -71,8 +71,14 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
 - `lib/rays` is still 30 modules: the editor is built on `Sketch`/`Frame`/`Scene`, and
   `examples/pathtracer` plus sketches `cube_cage`, `shattered_cube` and `voxel_wall` are
   still OCaml.
-- Large files not split, or only partly: `lib/rdk/test_rdk.ml` (3,914 lines, one `run ()`),
-  `lib/pxui_graph/scope_pane.ml` (2,682 lines after the wires moved out),
+- Split and verified 2026-10-11: `lib/rdk/test_rdk.ml` is a 160-line fixture
+  coordinator. Its pattern/line/kernel, attribute, modeling, UV, curve,
+  measurement/merge/blur and Copy to Points checks live in seven subject
+  modules (the largest is 925 lines). Every extracted body is byte-identical
+  to the original, with the same call order and shared geometry values;
+  `@lib/rdk/runtest` passes, including the existing one/four-domain cases.
+- Large files still not split: `lib/pxui_graph/scope_pane.ml`
+  (2,682 lines after the wires moved out),
   `lib/rays_editor/environment.ml` (about 940 lines).
 - Verified 2026-10-11: `_out/` is absent from this worktree; there is no stale
   output directory left to delete. The ignore rule remains for future PNG saves.
