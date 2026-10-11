@@ -28,6 +28,12 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
 
 ## Tests that got weaker
 
+- Fixed and verified 2026-10-11: the portable GPU-vertex ownership test now
+  requires successful submission from both prepared versions and an actual
+  `Some (true, 1)` retained replay. It formerly discarded those results,
+  allowing a missed replay to pass alongside the stale-handle checks.
+  `@lib/scene_execution/runtest` passes on the existing recording mock;
+  no raster or native pixel result is implied.
 - Restored, native verification pending 2026-10-11: offscreen and retained
   eviction tests now draw against black and compare the complete image to
   an independent white pixel expectation. The former white clear made a

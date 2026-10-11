@@ -83,13 +83,13 @@ let ()=
       auxiliary=None;vertex_attributes=None;samples=1;draw={mesh;state}}in
     let render()=Scene_execution.render_prepared_sampled_resources
       ~identity:"gpu-vertex-plan"~version:1L renderer[entry]in
-    ignore(get(render()));
+    assert(get(render()));
     assert(!vertex_bindings<>[]&&List.for_all((=) !producer)!vertex_bindings);
     let uploaded=Scene_execution.upload_bytes renderer in
     assert(uploaded>0L&& !mesh_uploads=48);
-    ignore(get(render()));assert(Scene_execution.upload_bytes renderer=uploaded);
-    ignore(get(Scene_execution.replay_prepared_sampled_resources
-      ~identity:"gpu-vertex-plan"~version:1L renderer));
+    assert(get(render()));assert(Scene_execution.upload_bytes renderer=uploaded);
+    assert(get(Scene_execution.replay_prepared_sampled_resources
+      ~identity:"gpu-vertex-plan"~version:1L renderer)=Some(true,1));
     alive:=false;
     expect Stale_handle(Scene_execution.replay_prepared_sampled_resources
       ~identity:"gpu-vertex-plan"~version:1L renderer);
@@ -99,7 +99,7 @@ let ()=
       ~key:next_key~device~buffer~vertex_count:8~valid:(fun()-> !alive))in
     Fun.protect~finally:(fun()->Scene_execution.Private.unregister_gpu_vertices next_source)(fun()->
       let next={entry with draw={entry.draw with mesh={mesh with key=next_key}}}in
-      ignore(get(Scene_execution.render_prepared_sampled_resources
+      assert(get(Scene_execution.render_prepared_sampled_resources
         ~identity:"gpu-vertex-plan"~version:2L renderer[next]));
       assert(Scene_execution.upload_bytes renderer=uploaded&& !mesh_uploads=48));
     alive:=false;
