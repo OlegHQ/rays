@@ -148,7 +148,7 @@ let only =
   [ "param", []; "native_layer_token", []; "lru", [];
     "frame_input", [];
     "flow", ["param"; "frame_input"];
-    "flow_ir", ["flow"; "param"; "rays_math"];
+    "flow_ir", ["flow"; "param"; "rays_math"; "scene_command"];
     "flow_graph", ["flow"; "param"];
     "ogpu_core", ["native_layer_token"];
     "ogpu", ["ogpu_core"];
@@ -332,6 +332,7 @@ let run () =
      "scene_execution_fixtures", "rays";
      (* "depends only on": an edge the reach rules would let through *)
      "pxui_shell", "editor_document"; "pxui_shell", "scene_command"; "ogpu_core", "lru";
+     "flow_ir", "lru"; "scene_command", "flow_ir";
      "ogpu", "native_layer_token"; "ogpu_mock", "lru"; "param", "unix"; "flow", "unix";
      "ogpu_metal_native", "native_layer_token"; "ogpu_metal", "lru"; "metal", "lru";
      "sop_catalog", "flow"];

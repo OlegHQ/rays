@@ -62,7 +62,7 @@ task plan are `specification/web-export/plan.md`.
 | `sop` | Immutable SOP graphs over `rdk` operations |
 | `sop_catalog` | Inspectable SOP node factories registered by PPX |
 | `flow` | UI-free workspace language over `param` and `frame_input`: reader, printer, macros, checker, evaluator, frame folds, packed arrays and typed deferred nodes |
-| `flow_ir` | Typed dataflow IR over `flow` evaluations with sharing, hoisting, pruning, fusion and precision passes, and the block-at-a-time CPU kernel tier over `Parallel`; `flow` never depends on it |
+| `flow_ir` | Typed dataflow IR over `flow` evaluations with sharing, hoisting, pruning, fusion and precision passes, and the block-at-a-time CPU kernel tier over `Parallel`; uses the `scene_command` marks contract as pure data; `flow` never depends on it |
 | `flow_gpu` | Metal emitter from `flow_ir` packed programs, a pipeline cache of 64 and owned runners; depends on `flow`, `flow_ir`, `ogpu`, `rays_execution`, `lru`; never reaches geometry or UI |
 | `flow_graph` | Domain-neutral graph projection, checked text gestures, exposure and probes over `flow` and `param` |
 | `flow_sop` | Typed SOP/value overlay, drives, exposure and environment-owned value lane |
@@ -105,8 +105,8 @@ exception.
 - `rdk` never reaches `sop`; `sop` never reaches UI
   libraries; `pxui` never reaches `sop`; `param` depends on nothing;
   `pxui_graph` never reaches `sop` or `rdk`;
-  `flow_graph` depends only on `flow` and `param`; `flow_ir` depends only on `flow`, `param` and
-  `rays_math` and never reaches `rays`, `pxui*`, `sop`, `rdk` or `rays_editor`;
+  `flow_graph` depends only on `flow` and `param`; `flow_ir` depends only on `flow`, `param`,
+  `rays_math` and `scene_command` and never reaches `rays`, `pxui*`, `sop`, `rdk` or `rays_editor`;
   `flow_gpu` depends only on `flow`, `flow_ir`, `param`, `rays_math`,
   `ogpu_core`, `ogpu`, `rays_execution` and `lru` and never reaches
   `sop`, `rdk`, `flow_sop` or any UI library;

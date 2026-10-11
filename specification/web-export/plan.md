@@ -663,7 +663,9 @@ Phase 3
   `Scene_command.Marks` added 2026-10-11 (commit 660ee85a): types, `validate`,
   little-endian `serialize` ("RMK1"). `@lib/scene_command/runtest` and
   `@test/runtest` passed; `scene_command` still has no dependencies.
-- [ ] P3.3b H
+- [x] P3.3b H
+  `flow_ir` may depend on `scene_command` (dependency-free marks contract) 2026-10-11: added to
+  `lib/flow_ir/dune`, the gate's `only` table, AGENTS.md and backend.md. `@test/runtest` passed.
 - [ ] P3.4 S
 - [ ] P3.5 S
 - [ ] P3.6 S

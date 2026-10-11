@@ -14,7 +14,8 @@ device's registry identifier remains `Device_lost`, with source operation
 contexts and coercions have no geometry, editor, UI, renderer or GPU
 dependencies; the dependency gate rejects those transitive edges.
 `flow_ir` consumes specialized Flow plans and residual captures. It depends
-only on `flow`, `param` and `rays_math`; its dataflow passes and packed/scalar
+only on `flow`, `param`, `rays_math` and the dependency-free `scene_command` (the marks
+contract as pure data, P3.3b); its dataflow passes and packed/scalar
 executor cannot reach geometry, presentation, editor or GPU libraries.
 `flow` never depends on `flow_ir` and retains an independently callable
 reference tree walker. `flow_gpu` sits above the numeric IR and the public OGPU API:
