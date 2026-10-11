@@ -847,7 +847,8 @@ Phase 5
 - [ ] P5.R R
 
 Phases 6 and 7
-- [ ] P6.1 S
+- [x] P6.1 S
+  2026-10-11. `tools/web/runtime/runtime.js`: `translate(domEvent, rect)` (pure, logical points relative to the canvas rect), `Input` (pointer, held keys/buttons, per-frame ordered events; held keys sorted as native `KeySet`, constructors in declaration order then characters), `createRuntime(program, {now, fixedDt, pool, size})` with `rt.slots`, `rt.region(id)`, `rt.load(program)` (resets slots) and `rt.stepFrame(override)` (clock as `sketch.ml:211`: count from 1, fixed `t = count*dt`, real `dt = min(delta, 0.1)`), `frameValue` (the Lisp `frame/input` Map) and `start(canvas, program)`. Events are `Flow.Op.event_fields` Maps. Ambiguities (wheel scale and sign, unmapped keys, text/drop/pinch/trackpad events, key names under shift) are listed in the runtime header and the task report. `tools/web/test/runtime.mjs` runs under `tools/lisp/test/web_runtime.t`; `@tools/lisp/test/runtest` green.
 - [ ] P6.2 S
 - [ ] P6.3 S
 - [ ] P6.4 S

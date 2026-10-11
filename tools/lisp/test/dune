@@ -4,6 +4,8 @@
   %{exe:../../core_fixtures.exe}
   ../../web/test/prims.mjs
   ../../web/runtime/prims.js
+  ../../web/test/runtime.mjs
+  ../../web/runtime/runtime.js
   ../../../specification/core.md
   (glob_files_rec ../../../examples/*.rays)
   (glob_files_rec ../../../sketches/*.rays)
