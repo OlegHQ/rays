@@ -25,6 +25,10 @@ val all : t list
 val find : ?extra:t list -> string -> Context.t -> t option
 (** Exact head, then bare value head, then a head qualified by the given context. *)
 
+val finder : t list -> string -> Context.t -> t option
+(** [finder extra] is [find ~extra] with the extras indexed once, for a caller that looks up many
+    names against the same list: [find] scans the list at each of its three tries. *)
+
 val of_context : ?extra:t list -> Context.t -> t list
 (** Context-specific operators followed by the value operators, in declaration order. *)
 

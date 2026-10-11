@@ -188,8 +188,19 @@ val show : value -> string
 module Private : sig
   val static_with_kernels :
     ?record:bool -> ?inputs:(string * (string * value) list) list ->
-    ?observe:(residual -> unit) -> Workspace.t -> (t, Diagnostic.t) result
-  (** Ordinary static evaluation with an observational callback before each
+    ?observe:(residual -> unit) -> ?bulk:(residual -> value option) ->
+    Workspace.t -> (t, Diagnostic.t) result
+  (** [bulk] may shorten a static packed [map] of more than 4,096 elements. The
+      walker evaluates the first 4,096 elements as usual, so their records, call
+      indices and failures are the ordinary ones; [bulk] is then offered the
+      map as a residual (the checked term and its captures) and may return the
+      whole packed array. It is used only when its element kind and length are
+      the map's and its first 4,096 elements equal the walked ones bit for bit;
+      in every other case the walker evaluates the rest, so the result never
+      depends on the callback. A record inside the function is then kept for
+      the first 4,096 elements only. Cleared like [observe].
+
+      Ordinary static evaluation with an observational callback before each
       actual entry into map, reduce, loop or array/sum, including static and
       empty forms and unsupported signatures. Handles carry the exact checked
       term, lexical captures, instance and iteration tuple; they have distinct

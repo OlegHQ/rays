@@ -200,7 +200,7 @@ let settings_of = function
 
 (* The window the settings graph asks for; defaults without one. *)
 let window (workspace : Workspace_doc.t) =
-  let* evaluated = E.static ~inputs:workspace.inputs workspace.checked in
+  let* evaluated = Flow_ir.static ~inputs:workspace.inputs workspace.checked in
   let* () = check_context_time workspace evaluated.plan in
   let* value = result workspace evaluated.plan Flow.Context.settings in
   match value with

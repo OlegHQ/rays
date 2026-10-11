@@ -110,3 +110,8 @@
   ../../sketches/flow_image_kernel/sketch.rays)
  (libraries flow_ir flow rays_math))
 
+
+(test
+ (name test_static_map)
+ (modules test_static_map)
+ (libraries flow_ir flow))

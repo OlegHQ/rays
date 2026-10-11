@@ -509,6 +509,18 @@ let find ?(extra = []) name ctx =
   | None -> (match lookup extra ("value/" ^ name) with
       | Some _ as o -> o
       | None -> lookup extra (Context.name ctx ^ "/" ^ name))
+(* [find ~extra] for many names: the extras are indexed once (the first of a name wins, as in the
+   list), where [find] scans the list for each of its three tries. Read-only once made. *)
+let finder extra =
+  let index = Hashtbl.create (2 * List.length extra + 1) in
+  List.iter (fun op -> if not (Hashtbl.mem index op.name) then Hashtbl.add index op.name op) extra;
+  let lookup name = match Hashtbl.find_opt index name with
+    | Some _ as op -> op | None -> Hashtbl.find_opt table name in
+  fun name ctx -> match lookup name with
+    | Some _ as o -> o
+    | None -> (match lookup ("value/" ^ name) with
+        | Some _ as o -> o
+        | None -> lookup (Context.name ctx ^ "/" ^ name))
 let of_context ?(extra = []) ctx =
   let all = all @ extra in
   (if ctx = Context.value then [] else List.filter (fun o -> o.ctx = ctx) all)
