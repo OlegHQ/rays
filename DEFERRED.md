@@ -28,6 +28,19 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
 
 ## Tests that got weaker
 
+- Restored, native verification pending 2026-10-11: offscreen and retained
+  eviction tests now draw against black and compare the complete image to
+  an independent white pixel expectation. The former white clear made a
+  missing white draw indistinguishable; dense eviction also used its first
+  frame as its oracle. The offscreen test now checks real retained replay,
+  stable uploads after warm-up and wrong-version refusal. Both eviction
+  tests require replay refusal after crossing resource capacity; preparation,
+  replay and automatic draws keep the same clear, so clear mismatch cannot
+  masquerade as eviction. Renderers are released on assertion failure.
+  `test_retained_eviction` no longer prints success after both cases skip.
+  Executable builds, portable scene-execution tests and the dependency gate
+  pass. Direct native attempts explicitly skip all three cases for no Metal
+  device; pixels, upload stability and eviction behavior remain unverified.
 - Restored, native verification pending 2026-10-11: `test_gpu_draw` now
   dispatches its nonfinite/overflow circle cases and requires typed refusal.
   It renders the CPU-built and GPU-resident circles through the normal
