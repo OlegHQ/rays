@@ -326,7 +326,8 @@ let rec force_all ?state ?elems ?resolve ?measure t ~live =
       execute false 0 length;
       for j = 0 to length - 1 do
         (match t.result with Accumulate _ -> execute true j (j + 1) | _ -> ());
-        Array.iteri (fun k registers ->
+        for k = 0 to Array.length t.outputs - 1 do
+        let registers = t.outputs.(k) in
         let output = outputs.(k) and width = widths.(k) in
         for component = 0 to width - 1 do
           let x = scratch.(registers.(component) * block_size + j) in
@@ -338,7 +339,8 @@ let rec force_all ?state ?elems ?resolve ?measure t ~live =
                if not (Float.is_finite total) then raise Nonfinite;
                accumulator.(component) <- total);
           if collecting then output.((output_start+j) * width + component) <- x
-        done) t.outputs;
+        done
+        done;
         (match t.result with Sum _ -> initialized := true | _ -> ())
       done
       done end in

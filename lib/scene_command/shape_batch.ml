@@ -1,3 +1,8 @@
+(* Word accessors are top-level and inline: a local closure returning a float boxes it, which is
+   an allocation per field per instance on a batch of a million. *)
+let[@inline] word_float bytes at = Int32.float_of_bits (Bytes.get_int32_le bytes at)
+let[@inline] set_float bytes at value = Bytes.set_int32_le bytes at (Int32.bits_of_float value)
+let[@inline] finite_coordinate value = Float.is_finite value && abs_float value <= 3.4028234663852886e38
 type gpu_token = { identity:int; count:int; stamp:int64 }
 (* [checked] remembers that [valid] passed: a published batch is immutable, so a scene that holds the
    same batch again (a moved transform over unchanged marks) does not scan every instance again. *)
@@ -15,15 +20,15 @@ module Private = struct
         value.checked ||
         Bytes.length value.bytes=value.count*instance_bytes &&
         let rec loop i = i=value.count ||
-          let float word=Int32.float_of_bits(Bytes.get_int32_le value.bytes (i*instance_bytes+word*4))in
+          let base=i*instance_bytes in
           let kind=Bytes.get_int32_le value.bytes (i*instance_bytes+40)in
           (kind=0l || kind=4l || kind=5l) &&
-          Float.is_finite(float 0) && Float.is_finite(float 1) &&
-          Float.is_finite(float 2) && Float.is_finite(float 3) &&
-          Float.is_finite(float 11) && float 11>=0. &&
-          Float.is_finite(float 12) && float 12>=0. &&
-          Float.is_finite(float 13) && float 13>=0. &&
-          (kind=5l || (float 2>=float 0 && float 3>=float 1)) && loop(i+1)
+          Float.is_finite(word_float value.bytes (base+4*0)) && Float.is_finite(word_float value.bytes (base+4*1)) &&
+          Float.is_finite(word_float value.bytes (base+4*2)) && Float.is_finite(word_float value.bytes (base+4*3)) &&
+          Float.is_finite(word_float value.bytes (base+4*11)) && word_float value.bytes (base+4*11)>=0. &&
+          Float.is_finite(word_float value.bytes (base+4*12)) && word_float value.bytes (base+4*12)>=0. &&
+          Float.is_finite(word_float value.bytes (base+4*13)) && word_float value.bytes (base+4*13)>=0. &&
+          (kind=5l || (word_float value.bytes (base+8)>=word_float value.bytes base && word_float value.bytes (base+12)>=word_float value.bytes (base+4))) && loop(i+1)
         in let ok = loop 0 in if ok then value.checked <- true; ok
   let gpu_token ~identity ~count ~stamp =
     if identity<=0 || count<0 || count>1_000_000 || stamp<0L then
@@ -41,8 +46,8 @@ module Builder = struct
     if capacity<0 || capacity>1_000_000 then invalid_arg "Shape_batch capacity";
     {bytes=Bytes.create (max 1 capacity * instance_bytes); count=0}
   let append builder kind x0 y0 x1 y1 fill stroke stroke_width =
-    let finite value = Float.is_finite value && abs_float value <= 3.4028234663852886e38 in
-    if not (finite x0 && finite y0 && finite x1 && finite y1 && finite stroke_width)
+    if not (finite_coordinate x0 && finite_coordinate y0 && finite_coordinate x1 && finite_coordinate y1
+                && finite_coordinate stroke_width)
        || stroke_width<0. then invalid_arg "Shape_batch: invalid coordinates";
     if builder.count>=1_000_000 then invalid_arg "Shape_batch: instance limit";
     let offset=builder.count*instance_bytes in
@@ -51,12 +56,12 @@ module Builder = struct
       Bytes.blit builder.bytes 0 grown 0 offset; builder.bytes<-grown
     end;
     Bytes.fill builder.bytes offset instance_bytes '\000';
-    let float word value = Bytes.set_int32_le builder.bytes (offset+4*word) (Int32.bits_of_float value) in
-    float 0 x0; float 1 y0; float 2 x1; float 3 y1;
+    let bytes = builder.bytes in
+    set_float bytes offset x0; set_float bytes (offset+4) y0; set_float bytes (offset+8) x1; set_float bytes (offset+12) y1;
     Bytes.set_int32_le builder.bytes (offset+32) fill;
     Bytes.set_int32_le builder.bytes (offset+36) stroke;
     Bytes.set_int32_le builder.bytes (offset+40) kind;
-    float 12 stroke_width; float 13 1.;
+    set_float bytes (offset+48) stroke_width; set_float bytes (offset+52) 1.;
     builder.count<-builder.count+1
   let style fill stroke = match fill,stroke with None,None -> -1l,0l
     | _ -> Option.value ~default:0l fill,Option.value ~default:0l stroke
