@@ -215,6 +215,8 @@
         "type residual_view = { term : Workspace.term ; bindings : ( string * value ) list ; site : Workspace.path ; owner : Workspace.path ; iter : int list ; instance : int ; prefix : Workspace.path ; previous : bool ; host : bool ; geometry : bool ; }",
         "val residual_view : residual -> residual_view",
         "val residual_id : residual -> int",
+        "val checkpoint : residual -> ( unit -> unit )",
+        "val rerun : residual -> ( value , Diagnostic.t ) result",
         "val state_read : residual -> instance : int -> path : Workspace.path -> iter : int list -> host : bool -> init : ( unit -> value ) -> value",
         "val state_peek : residual -> instance : int -> path : Workspace.path -> iter : int list -> host : bool -> value option",
         "val state_write : residual -> instance : int -> path : Workspace.path -> iter : int list -> host : bool -> value -> value",
@@ -228,7 +230,7 @@
         "val compiled : value -> int",
         "end"
       ],
-      "api_sha256": "c9be8ae0c886ac5bc0519b3ea76826203db685872d866716281acb9de4d80bc3",
+      "api_sha256": "ab014aaa3a0fc235421f2432793727be5e977755452840573b19f8b98733b39a",
       "excluded_legacy_symbols": [],
       "library": "flow",
       "module": "Eval",
