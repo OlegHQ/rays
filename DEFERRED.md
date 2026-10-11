@@ -351,6 +351,36 @@ without a device; each failure below was a test or product defect, not a flake.
   checks the actual gallery's warning codes and this resolution without
   changing the example or its declared ranges.
 
+## Deferred optimization (web export)
+
+Benchmark gates in `specification/web-export/plan.md` were waived by the owner on
+2026-10-11: correctness gates block, speed thresholds are recorded here and looked at
+later. Numbers and commands are in `specification/web-export/results.md`.
+
+- Core frame programs against the deleted closure tier (P1.14, P1.14a, P1.14b). Plan gate
+  was core at most 1.1 times closure on one scalar residual (`tools/bench_core.exe`,
+  expression `(+ (* (sin t) 0.5) (* t t))`, one domain, M1, background load about 4).
+  Reached 1.26: core about 151 ns and 1,960 bytes, closure about 120 ns and 1,784 bytes
+  per evaluation (walker about 890 ns). History: 2.92, then 1.39 after executor fast
+  paths and a postfix scalar tier, then 1.26 after keeping the prepared program on the
+  residual.
+  - Remaining cost is the postfix interpreter itself, about 30 ns: nine dispatches plus
+    `sin`. Not tried: superinstructions for constant and time operands, removing the
+    per-call stack allocation, compiling a core program to OCaml closures as P1.14's card
+    describes (the interpreter would stay as the test reference).
+  - Region programs are not cached on the residual; only region-free programs use the
+    slot, because a region's `force` closure captures per-call state.
+  - Never measured: whole-frame time over the 15 eligible workspaces, core against
+    closure. The closure tier is gone after P1.16; compare against a checkout of
+    `3c1314b3` to do it.
+- The corpus sweep `@test/test_workspace_ir` takes 20 to 25 minutes since P1.11, because
+  every comparison now runs with the core path off and on. After P1.16 there is one
+  path; check the second pass is gone and the time is back down.
+- Packed `map`/`filter` forms that `Packed.compile` refuses (dynamic `int`/`floor`, state,
+  array captures; 40 residuals in the corpus) run as a counted frame-level loop over
+  `Array_nth`, single-threaded, not as a region. Correct, not fast; widening
+  `Packed.compile` would move them to parallel blocks or the GPU.
+
 ## Lisp gaps
 
 - Fixed and verified 2026-10-11: explicit float literals `NaN`, `Infinity`,
