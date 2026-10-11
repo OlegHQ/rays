@@ -156,3 +156,73 @@ let () =
     | Ok _ -> failwith "an over-large host coordinate reached the GPU route") ["3.5e38"; "1e300"];
   assert (!registered = 1);
   print_endline "Marks_scene: a device mark set registers once; over-large host floats are E_DRAW_RANGE"
+
+(* A set with constant colours is written by the builder from the arrays; one with a colour array
+   goes mark by mark. Both give the same batch and the same refusal: here every colour array
+   holds the constant's colour, so the mark-by-mark path is the oracle. *)
+let () =
+  let result body =
+    let evaluation = ok (E.static (checked body)) in
+    let program, root = Result.get_ok (Flow_ir.Core_draw.lower evaluation.plan (List.assoc "g" evaluation.results)) in
+    let buffers = Buffers.create () in
+    match Flow_ir.Core_exec.draw ?root (Flow_ir.Core_exec.prepare program) ~live ~size ~buffers with
+    | Error d -> Error (d.code, d.message)
+    | Ok marks -> (match Marks_scene.scene ~buffers marks with
+        | Ok scene -> Ok (serialize scene) | Error d -> Error (d.code, d.message)) in
+  let n = 9 in
+  let range = Printf.sprintf "(array/range %d)" n in
+  let colours = Printf.sprintf "(map (fn [i] [1 0.5 0.25]) %s)" range and colour = "\"#ff8040\"" in
+  let p3 = Printf.sprintf "(map (fn [i] [(* i 7.3) (- 3.1 (* i 0.7)) 5]) %s)" range in
+  let q3 = Printf.sprintf "(map (fn [i] [(+ 2.2 (* i 1.9)) (* (* i i) 0.3) 0]) %s)" range in
+  let floats bad = Printf.sprintf "(map (fn [i] (if (= i 6) %s (+ 0.4 (* i 0.3)))) %s)" bad range in
+  let sizes bad = Printf.sprintf "(map (fn [i] [(if (= i 4) %s (+ 1.1 i)) 2.3 0]) %s)" bad range in
+  let far bad = Printf.sprintf "(map (fn [i] [(if (= i 2) %s (* i 7.3)) 1.7 0]) %s)" bad range in
+  (* [make fill] is one drawing with its colours spelled [fill]: the constant, then the array. *)
+  let cases = [
+    "circles, constant radius", (fun c -> Printf.sprintf "(draw/circles %s :radius 2.5 :fill %s)" p3 c);
+    "circles, radius array", (fun c -> Printf.sprintf "(draw/circles %s :radius %s :fill %s)" p3 (floats "1.6") c);
+    "circles, stroke", (fun c -> Printf.sprintf "(draw/circles %s :radius %s :stroke %s)" p3 (floats "1.6") c);
+    "circles, a negative radius", (fun c -> Printf.sprintf "(draw/circles %s :radius %s :fill %s)" p3 (floats "-0.5") c);
+    "circles, a coordinate past binary32", (fun c -> Printf.sprintf "(draw/circles %s :radius 1 :fill %s)" (far "1e300") c);
+    "rects, constant size", (fun c -> Printf.sprintf "(draw/rects %s [4.5 3.25 0] :fill %s)" p3 c);
+    "rects, size array", (fun c -> Printf.sprintf "(draw/rects %s %s :stroke %s)" p3 (sizes "0.75") c);
+    "rects, a negative size", (fun c -> Printf.sprintf "(draw/rects %s %s :fill %s)" p3 (sizes "-1") c);
+    "rects, a corner past binary32", (fun c -> Printf.sprintf "(draw/rects %s [1 1 0] :fill %s)" (far "3.5e38") c);
+    "lines", (fun c -> Printf.sprintf "(draw/lines %s %s :color %s :width 1.5)" p3 q3 c);
+    "lines, an end past binary32", (fun c -> Printf.sprintf "(draw/lines %s %s :color %s)" p3 (far "-1e300") c);
+  ] in
+  let refused = ref 0 in
+  List.iter (fun (name, make) ->
+    let whole = result (make colour) and each = result (make colours) in
+    (match whole, each with
+     | Ok a, Ok b -> if not (Bytes.equal a b) then failwith (name ^ ": the whole-set builder wrote other bytes")
+     | Error a, Error b ->
+         incr refused;
+         if a <> b then failwith (Printf.sprintf "%s: refused with %s %s, mark by mark with %s %s" name (fst a) (snd a) (fst b) (snd b));
+         (* the builder's own refusal, so the set did reach it *)
+         if fst a <> "E_DRAW_RANGE" || not (String.starts_with ~prefix:"Shape_batch" (snd a)) then
+           failwith (Printf.sprintf "%s: refused with %s %s" name (fst a) (snd a))
+     | Ok _, Error (code, _) -> failwith (name ^ ": accepted a set that mark by mark is " ^ code)
+     | Error (code, _), Ok _ -> failwith (name ^ ": refused (" ^ code ^ ") a set that mark by mark is drawn"))) cases;
+  assert (!refused = 5);
+  Printf.printf "Marks_scene: %d constant-colour sets equal their mark-by-mark batches, %d of them refusals\n"
+    (List.length cases) !refused
+
+(* A static set of circles costs its 64-byte instances once: the builder reads the arrays (no
+   tuple or boxed float per mark) and the batch takes the builder's storage (no second copy).
+   Before, a mark cost about 330 bytes here. *)
+let () =
+  let n = 100_000 in
+  let source = Printf.sprintf "(draw/circles (map (fn [i] [(* i 0.001) (* i 0.002) 0]) (array/range %d)) :radius 0.6 :fill \"#76baca\")" n in
+  let evaluation = ok (Flow_ir.static (checked source)) in
+  let program, root = Result.get_ok (Flow_ir.Core_draw.lower evaluation.plan (List.assoc "g" evaluation.results)) in
+  let buffers = Buffers.create () in
+  let marks = ok (Flow_ir.Core_exec.draw ?root (Flow_ir.Core_exec.prepare program) ~live ~size ~buffers) in
+  let before = Gc.allocated_bytes () in
+  let scene = ok (Marks_scene.scene ~buffers marks) in
+  let per_mark = (Gc.allocated_bytes () -. before) /. float n in
+  (match Rays.Scene.Private.commands scene with
+   | [| Scene_command.Render_ir.Shapes batch |] -> assert (Scene_command.Shape_batch.count batch = n)
+   | _ -> failwith "a circle set is one Shapes command");
+  if per_mark > 72. then failwith (Printf.sprintf "a static circle set allocates %.0f bytes a mark, over its 64-byte instance" per_mark);
+  Printf.printf "Marks_scene: a static set of %d circles allocates %.1f bytes a mark\n" n per_mark

@@ -100,9 +100,29 @@ let int_coordinate x =
   if not (Float.is_finite x) || x >= float max_int || x < float min_int
   then V.fail "E_DRAW_RANGE" "A drawing coordinate must fit an integer." else int_of_float x
 
+(* An attribute as the builder's packed floats: a constant is its one element with stride 0. *)
+let packed2 buffers : (float * float) M.attr -> B.floats = function
+  | M.Constant (x, y) -> [|x; y|], 0
+  | Buffer b -> data buffers b, b.width
+  | Device _ -> no_device ()
+let packed1 buffers : float M.attr -> B.floats = function
+  | M.Constant x -> [|x|], 0
+  | Buffer b -> data buffers b, 1
+  | Device _ -> no_device ()
+
+(* A set with constant colours is written by the builder from the arrays themselves, with no
+   allocation per mark; a per-instance colour goes mark by mark through [drawing_color]. *)
 let shapes buffers count (kind : M.kind) =
   let b = B.create ~capacity:count () in
   (match kind with
+   | Rect {position; size; fill = Constant fill; stroke = Constant stroke; _} ->
+       B.rects b ~count ~position:(packed2 buffers position) ~size:(packed2 buffers size) ~fill ~stroke
+   | Circle {position; radius; fill = Constant fill; stroke = Constant stroke; stroke_width} ->
+       B.circles b ~count ~position:(packed2 buffers position) ~radius:(packed1 buffers radius)
+         ~fill ~stroke ~stroke_width:(packed1 buffers stroke_width)
+   | Line {position; end_; stroke = Constant color; stroke_width} ->
+       B.lines b ~count ~from:(packed2 buffers position) ~to_:(packed2 buffers end_) ~color
+         ~width:(packed1 buffers stroke_width)
    | Rect {position; size; fill; stroke; _} ->
        let position = pairs buffers position and size = pairs buffers size
        and fill = colours buffers fill and stroke = colours buffers stroke in
