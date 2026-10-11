@@ -754,11 +754,12 @@
     {
       "api": [
         "type prepared",
-        "val prepare : Core.program -> prepared",
+        "val prepare : ? fused : bool -> Core.program -> prepared",
+        "val has_regions : prepared -> bool",
         "val execute : ? root : Flow.Eval.residual -> ? force : ( Packed.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> prepared -> live : Frame_input.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result",
         "val run : ? root : Flow.Eval.residual -> ? force : ( Packed.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> Core.program -> live : Frame_input.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result"
       ],
-      "api_sha256": "652d676a0fcf12a5c84939d93a2acd02ce22299b3cc8106ccbe351cec67031a2",
+      "api_sha256": "50c8bf8b0eb44d8ba88111db41f9858742be6d99a04cdb89aa44061edcd0e058",
       "excluded_legacy_symbols": [],
       "library": "flow_ir",
       "module": "Core_exec",
