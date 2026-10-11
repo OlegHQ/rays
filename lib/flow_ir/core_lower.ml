@@ -27,7 +27,7 @@ type draw_context = {
 let lower_with ~draw (root : E.residual Lazy.t) =
   let constants = ref [] and locals = ref [] and next_constant = ref 0
   and next_local = ref 0 and next_statement = ref 0 in
-  let budget = ref 2048 and active = Hashtbl.create 8 in
+  let budget = ref (if draw = None then 2048 else 32768) and active = Hashtbl.create 8 in
   let calls = Hashtbl.create 8 and next_call = ref 0 and next_function = ref (-1) in
   let mixed_numeric = Hashtbl.create 8 in
   let regions = ref [] and slots = ref [] and next_slot = ref 0 and plane = ref `Frame and geometry = ref false in

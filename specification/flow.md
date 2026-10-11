@@ -1389,6 +1389,18 @@ array operators use typed defaults. A static Canvas retains one picture per
 visible pane, invalidated by a new plan or pane size, so unchanged packed
 point arrays are not rebuilt each frame.
 
+`Drawing` has no per-kind code. A draw graph lowers once to a core program
+(`Flow_ir.Core_draw`, [core.md](core.md)), runs each frame into one mark table
+(`Scene_command.Marks`, [marks.md](marks.md)), and `Marks_scene` adapts the table
+to `Scene`. All defaults and checks live in the lowering rules and the executor;
+a graph the lowering refuses (a drawing chosen by a live value, an image that is
+not a plan node, an unknown kind) is a diagnostic, never a second implementation.
+`Drawing` keeps only retention (a fully static graph is kept per canvas size while the
+fold states still advance). One exception remains until the `Marks` pipeline family
+takes GPU attributes: a `draw/circles` over a GPU region output, uniform in radius and
+colours, resolves to the backend's circles token; any other node in that frame sends
+the whole frame down the core path instead.
+
 `Rays_editor.Workspace.export` uses the same evaluator and Drawing lowering
 with a fresh fold and a fixed clock. It pins logical size, step, frame index,
 pointer, held keys/buttons and events; `examples/particles/sketch.rays` is

@@ -195,7 +195,13 @@ core
   %0 : array:vec3
   %1 : vec3
   %2 : float
-  region[0] instructions=6 outputs=[2 4 5]
+  region[0] zip collect count=4 widths=[1] output=[2 4 5] uniforms=0 skip=[] stages=1
+    r0 = input[0].0/1
+    r1 = 10.0
+    r2 = *(r0 r1)
+    r3 = frame.t
+    r4 = *(r0 r3)
+    r5 = 0.0
   #0 %0 = region[0]() @["g" "p"] owner=["g" "p"] instance=0 iter=[] span=45..96
   #1 %1 = $0 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
   #2 %2 = $1 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
@@ -209,7 +215,13 @@ core
   %0 : array:vec3
   %1 : array:float
   %2 : text
-  region[0] instructions=6 outputs=[2 4 5]
+  region[0] zip collect count=4 widths=[1] output=[2 4 5] uniforms=0 skip=[] stages=1
+    r0 = input[0].0/1
+    r1 = 10.0
+    r2 = *(r0 r1)
+    r3 = frame.t
+    r4 = *(r0 r3)
+    r5 = 0.0
   #0 %0 = region[0]() @["g" "p"] owner=["g" "p"] instance=0 iter=[] span=45..96
   #1 %1 = $0 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
   #2 %2 = $1 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]

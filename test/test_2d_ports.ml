@@ -53,25 +53,24 @@ let save_roundtrip name workspace =
       assert(read file=source);
       assert(Editor_document.Workspace_doc.to_text(Editor.workspace !editor)=source)));
   Printf.printf "port %s: Command-S atomically saves the unchanged source and comments\n%!"name
-let modes=["lisp-a",false,1;"lisp-b",false,1;"cpu-1",false,1;"cpu-8",false,8;
-  "reference-1",true,1;"reference-8",true,8]
-let pictures ?(synthetic=true) ?(first=0) name workspace reference domains = Parallel.run ~domains(fun()->
+let modes=["lisp-a",1;"lisp-b",1;"cpu-1",1;"cpu-8",8]
+let pictures ?(synthetic=true) ?(first=0) name workspace domains = Parallel.run ~domains(fun()->
   let evaluated=ok(E.static ~inputs:workspace.Editor_document.Workspace_doc.inputs workspace.checked)in
   let prepared=ok(Rays_editor.Drawing.prepare ~states:evaluated.states evaluated.plan
     (List.assoc "picture" evaluated.results))in
   let state=E.create_state()in
   Array.init 4(fun count->let frame=frame ~synthetic name (first+count) in
     let live=Rays_editor.Live_frame.of_frame frame in
-    ok(Rays_editor.Drawing.render_prepared ~state ~reference prepared ~live ~size:frame.size)))
+    ok(Rays_editor.Drawing.render_prepared ~state prepared ~live ~size:frame.size)))
 let serialize scene=Scene.Private.commands scene |> Scene_command.Render_ir.create |> Result.get_ok
   |> Scene_command.Render_ir.serialize
 let mode_parity ()=List.iter(fun name->
   let workspace=load name in
-  let expected=Array.map serialize(pictures name workspace false 1)in
-  List.iter(fun(_,reference,domains)->
-    let actual=Array.map serialize(pictures name workspace reference domains)in
+  let expected=Array.map serialize(pictures name workspace 1)in
+  List.iter(fun(_,domains)->
+    let actual=Array.map serialize(pictures name workspace domains)in
     assert(actual=expected))modes;
-  Printf.printf "port %s: source roundtrip, four synthetic frames, six-mode command parity\n%!"name)names
+  Printf.printf "port %s: source roundtrip, four synthetic frames, four-mode command parity\n%!"name)names
 
 let pure ()=
   mode_parity();
@@ -85,7 +84,7 @@ let moving_circles ()=match Rays_editor.Workspace.load {|(workspace moving
 let native_modes directory name workspace =
   let width,height=dimensions name in
   let config={Sketch.default_config with width;height;clock=Sketch.Fixed(1./.60.);fps=None}in
-  let all=List.map(fun(mode,reference,domains)->mode,pictures ~synthetic:false ~first:1 name workspace reference domains)modes in
+  let all=List.map(fun(mode,domains)->mode,pictures ~synthetic:false ~first:1 name workspace domains)modes in
   (* A native export counts frames from one, like Workspace.export. *)
   List.iter(fun(mode,scenes)->
     let directory=directory^"/"^name^"/"^mode in
@@ -97,20 +96,20 @@ let native_modes directory name workspace =
   for count=0 to 3 do
     let path mode=Printf.sprintf "%s/%s/%s/frame-%06d.png" directory name mode count in
     let expected=read(path"lisp-a")in
-    List.iter(fun(mode,_,_)->if read(path mode)<>expected then
+    List.iter(fun(mode,_)->if read(path mode)<>expected then
       failwith(Printf.sprintf "%s frame %d: %s differs from lisp-a" name count mode))modes
   done
 let native directory=
   native_modes directory "moving_circles" (moving_circles());
   List.iter(fun name->
     native_modes directory name (load name);
-    Printf.printf "port %s: six PNG modes byte-identical\n%!"name)names
+    Printf.printf "port %s: four PNG modes byte-identical\n%!"name)names
 let ()=if Array.length Sys.argv>1 then native Sys.argv.(1)else begin
   pure();
   let workspace=moving_circles()in
-  let expected=Array.map serialize(pictures "moving_circles" workspace false 1)in
-  List.iter(fun(_,reference,domains)->
-    assert(Array.map serialize(pictures "moving_circles" workspace reference domains)=expected))modes;
+  let expected=Array.map serialize(pictures "moving_circles" workspace 1)in
+  List.iter(fun(_,domains)->
+    assert(Array.map serialize(pictures "moving_circles" workspace domains)=expected))modes;
   assert(expected.(0)<>expected.(3));
-  print_endline "10000 moving circles: four synthetic frames, six-mode command parity"
+  print_endline "10000 moving circles: four synthetic frames, four-mode command parity"
 end

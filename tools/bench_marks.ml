@@ -1,5 +1,5 @@
-(* Drawing.render_prepared for draw/circles and draw/rects, static and animated, with the core
-   drawing path off and on. Wall time and allocated bytes per frame (median of the frames run). *)
+(* Drawing.render_prepared for draw/circles and draw/rects, static and animated, through the core
+   path. Wall time and allocated bytes per frame (median of the frames run). *)
 module E = Flow.Eval
 
 let ok = function Ok x -> x | Error d -> failwith (Flow.Diagnostic.to_string d)
@@ -22,8 +22,7 @@ let picture kind n animated =
 
 let median a = let a = Array.copy a in Array.sort Float.compare a; a.(Array.length a / 2)
 
-let measure kind n animated core =
-  Rays_editor.Drawing.core_drawing := core;
+let measure kind n animated =
   let source = Printf.sprintf "(workspace w (graph g :context draw %s))" (picture kind n animated) in
   let evaluation = ok (E.static (check source)) in
   let prepared = ok (Rays_editor.Drawing.prepare ~states:evaluation.states evaluation.plan
@@ -41,9 +40,8 @@ let measure kind n animated core =
   median (Array.map fst samples), median (Array.map snd samples)
 
 let () =
-  Printf.printf "%-8s %-9s %9s | %12s %14s | %12s %14s | %s\n" "kind" "mode" "n" "off ms" "off bytes" "on ms" "on bytes" "on/off time";
+  Printf.printf "%-8s %-9s %9s | %12s %14s\n" "kind" "mode" "n" "ms" "bytes";
   List.iter (fun kind -> List.iter (fun animated -> List.iter (fun n ->
-    let off_t, off_b = measure kind n animated false and on_t, on_b = measure kind n animated true in
-    Printf.printf "%-8s %-9s %9d | %12.3f %14.0f | %12.3f %14.0f | %.2f\n%!" kind
-      (if animated then "animated" else "static") n (off_t *. 1e3) off_b (on_t *. 1e3) on_b (on_t /. off_t))
+    let t, b = measure kind n animated in
+    Printf.printf "%-8s %-9s %9d | %12.3f %14.0f\n%!" kind (if animated then "animated" else "static") n (t *. 1e3) b)
     [10_000; 100_000; 1_000_000]) [false; true]) ["circles"; "rects"]

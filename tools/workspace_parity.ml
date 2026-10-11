@@ -286,7 +286,7 @@ let check ?directory ?(commands = false) ~factories ~name (workspace : Editor_do
               render (Printf.sprintf "%s-texture-%d" id index) (picture ~texture:(texture source |> ok) output)) textures) cooked;
           List.iter (fun (graph, value) -> if Flow.Value.ty_of value = Flow.Ty.drawing then begin
             let prepared = Rays_editor.Drawing.prepare ~states:evaluated.states evaluated.plan value |> ok in
-            let scene = Rays_editor.Drawing.render_prepared ~state ~reference ~image:(fun value -> Ok (image value)) prepared ~live ~size:(800,600) |> ok in
+            let scene = Rays_editor.Drawing.render_prepared ~state ~image:(fun value -> Ok (image value)) prepared ~live ~size:(800,600) |> ok in
             render (Printf.sprintf "%s-draw-t%g" graph time) scene
           end) evaluated.results
         end); results)) modes in
