@@ -36,15 +36,27 @@ let mean bytes pixels =
   List.fold_left (fun sum p -> sum +. luminance bytes p) 0. pixels
   /. float_of_int (List.length pixels)
 
-(* Where the highlight sits: the centroid of the pixels within 10% of the
-   probe's brightest, robust to several equally bright reflections. *)
-let brightest bytes pixels =
+(* The highlight is the probe's half-maximum region: the pixels at least
+   halfway from the mean to the brightest. A narrower band is a handful of
+   pixels on a mirror-like probe, and noise then picks one of several equally
+   bright reflections. *)
+let highlight bytes pixels =
   let peak = List.fold_left (fun peak p -> Float.max peak (luminance bytes p)) 0. pixels in
   let low = mean bytes pixels in
-  let bright = List.filter (fun p -> luminance bytes p >= peak -. (0.1 *. (peak -. low)))
-      pixels in
+  List.filter (fun p -> luminance bytes p >= peak -. (0.5 *. (peak -. low))) pixels
+
+let centroid bright =
   let n = float_of_int (List.length bright) in
   List.fold_left (fun (x, y) (px, py) -> x +. float px /. n, y +. float py /. n) (0., 0.) bright
+
+(* Mean distance from each highlight pixel to the other image's nearest one,
+   the larger direction: it sees one displaced reflection among several, which
+   a centroid of symmetric reflections does not. *)
+let spread a b =
+  let one a b = List.fold_left (fun sum (x, y) -> sum +. List.fold_left (fun best (u, v) ->
+    Float.min best (Float.hypot (float (x - u)) (float (y - v)))) infinity b) 0. a
+    /. float_of_int (List.length a) in
+  Float.max (one a b) (one b a)
 
 let run () =
   let live = let _, live = Ogpu.Impl.create_driver () in live in
@@ -91,17 +103,17 @@ let run () =
               let traced_mean = mean traced pixels and raster_mean = mean raster pixels in
               assert (traced_mean > 0. && raster_mean > 0.);
               let relative = Float.abs (traced_mean -. raster_mean) /. traced_mean in
-              let tx, ty = brightest traced pixels and rx, ry = brightest raster pixels in
+              let traced_light = highlight traced pixels and raster_light = highlight raster pixels in
+              let tx, ty = centroid traced_light and rx, ry = centroid raster_light in
               let distance = Float.hypot (tx -. rx) (ty -. ry) in
-              Printf.printf "parity %s probe %d: mean path %.2f raster %.2f (%.1f%%), highlight %.2f px\n%!"
-                name i traced_mean raster_mean (relative *. 100.) distance;
+              let spread = spread traced_light raster_light in
+              Printf.printf "parity %s probe %d: mean path %.2f raster %.2f (%.1f%%), highlight %.2f px, spread %.2f px\n%!"
+                name i traced_mean raster_mean (relative *. 100.) distance spread;
               (* Raster's SH/prefiltered approximation has a separate error
                  allowance. Measured natively (M1, 2026-10-11): mean error
-                 0.0-2.9%; highlight distance 0.3-4.3 px for seven probes and
-                 12.75 px for the mirror-like neon corridor probe, whose
-                 10%-of-peak highlight is 4-10 pixels among several strips.
-                 The highlight bound is the probe disc radius (about 16 px). *)
-              if relative > 0.2 || distance > 16. then
+                 0.0-2.9%, highlight centroid distance 0.2-4.8 px, spread
+                 0.03-2.4 px (the probe disc radius is about 16 px). *)
+              if relative > 0.2 || distance > 8. || spread > 4. then
                 failures := Printf.sprintf "%s probe %d" name i :: !failures)
               discs) World.presets));
       assert (live () = baseline);
