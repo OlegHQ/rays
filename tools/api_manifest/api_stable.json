@@ -1602,8 +1602,6 @@
     },
     {
       "api": [
-        "type interaction = Orbit | Pan | Dolly",
-        "type binding = { button : Input.mouse_button ; key : Input.key option ; interaction : interaction ; }",
         "type t",
         "val create : ? target : Vec3.t -> ? distance : float -> ? azimuth : float -> ? elevation : float -> ? fov_y : float -> ? inertia : bool -> unit -> t",
         "val update : t -> Frame.t -> t",
@@ -1625,7 +1623,7 @@
         "val reset : t -> t",
         "val fly : speed : float -> t -> Frame.t -> t * float"
       ],
-      "api_sha256": "1b7861652032f51fdbfa85ef239b925f1bb01b8ef86de87c7ff1fae83aa1acfa",
+      "api_sha256": "fcf059ee97b161f83846cc519be76f67d752903d70646881532f5034c53352d9",
       "excluded_legacy_symbols": [],
       "library": "rays",
       "module": "Easy_camera",
