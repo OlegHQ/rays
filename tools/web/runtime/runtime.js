@@ -228,6 +228,7 @@ export function watch(rt, { fetch = globalThis.fetch?.bind(globalThis), load = u
         fetch(url('data.bin', text)).then(r => r.arrayBuffer()), fetch(url('kernels.json', text)).then(r => r.json())]);
       await rt.gpu?.update(table);
       rt.data = data;
+      if (rt.presenter) rt.presenter.constants = data;   // present.js keeps the constants of the old data.bin no longer
       rt.load(program);
       rt.reloads = (rt.reloads ?? 0) + 1;
       rt.resume?.();
@@ -265,6 +266,7 @@ export async function start(canvas, program, { fixedDt, pool, data = null, win =
     win.requestAnimationFrame(loop);
   };
   rt.presenter = presenter;
+  presenter.constants = rt.data;   // attribute arrays that are views of data.bin are uploaded once (present.js)
   rt.halt = () => { stopped = true; };   // the rAF loop ends after its current frame; the page and device stay (tests step frames by hand)
   rt.stop = () => { stopped = true; rt.pool?.close(); gpu.dispose(); presenter.dispose(); };
   rt.resume = () => { if (failed && !stopped) { failed = false; win.requestAnimationFrame(loop); } };   // a reload revives a failed frame loop
