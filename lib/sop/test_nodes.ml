@@ -7257,6 +7257,21 @@ weight")|});
   check (Rdk.Geometry.point_count prism = 36
       && sizes = List.init 18 (fun _ -> 4) @ [18; 18])
     "a swept closed curve is not an 18-sided prism with two 18-point caps";
+  (* :filled makes the same points one 18-sided polygon primitive, which poly_extrude solidifies *)
+  let star_points = String.concat " " (List.map (fun (x, y, z) -> Printf.sprintf "[%s %s %s]"
+      (Lisp_sop.float x) (Lisp_sop.float y) (Lisp_sop.float z)) (Array.to_list star)) in
+  let filled = cook 1 (Lisp_sop.node (Printf.sprintf "(sop/curve (list %s) :filled true)" star_points)) in
+  let view = Rdk.Topology.Private.view (Rdk.Geometry.topology filled) in
+  check (Rdk.Geometry.point_count filled = 18 && view.primitive_offsets = [|0; 18|]
+      && Rdk.Topology.primitive_kind (Rdk.Geometry.topology filled) 0 = Rdk.Topology.Polygon)
+    "sop/curve :filled is not one 18-point polygon";
+  let solid = cook 1 (Lisp_sop.node (Printf.sprintf
+    "(sop/poly_extrude (sop/curve (list %s) :filled true) :distance 0.65)" star_points)) in
+  let star_area = 18. *. 0.5 *. 0.45 *. sin (Float.pi /. 9.) in
+  check (Rdk.Geometry.primitive_count solid = 20
+      && abs_float (abs_float (Result.get_ok (Rdk.Analysis.signed_volume solid))
+                    -. star_area *. 0.65) < 1e-9)
+    "a filled curve extruded is not the 20-face star prism";
   check (!nonfinite_fields >= 130) "nonfinite declaration coverage fell below the removed cases";
   Printf.printf "SOP node declaration tests passed; %d floating field instances reject NaN and both infinities atomically\n"
     !nonfinite_fields

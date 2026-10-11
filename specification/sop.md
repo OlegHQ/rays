@@ -700,8 +700,10 @@ The first coherent set includes:
 - graph: null, merge, lazy switch, bounded session cache, graph/DOT inspection,
   and cooked geometry inspection;
 - Lisp lowering of `sop/curve` and `sop/merge` (`lib/flow_sop`): `(sop/curve points :closed true)`
-  joins the last point to the first; a solid from explicit points is that closed curve
-  swept along a short curve with `sop/sweep :caps true` (`examples/sop_gallery`). `(sop/merge ... :source_attribute "src"
+  joins the last point to the first; `:filled true` makes the same points one polygon
+  primitive (a surface, so `sop/poly_extrude` and `sop/poly_fill` apply), and a closed curve
+  can still be swept with `sop/sweep :caps true`. The gallery star is a filled curve extruded
+  with `sop/poly_extrude`. `(sop/merge ... :source_attribute "src"
   :source_base 10)` writes the primitive integer attribute `src`, valued `source_base` plus the
   input index, beside the lowering's own provenance tag. Both tags share one
   geometry merge; existing tags retain their values and the original exact

@@ -313,7 +313,11 @@ let of_checked ~factories ?(reference = false) ?(compiled_ids = Instance_path.Ma
                   | None -> []
                   | Some (E.Bool closed) -> [Curve.closed_parameter, Param.Bool_value closed]
                   | Some _ -> fail "E_LOWER" "sop/curve :closed must be a constant bool" in
-                let changes = closed @ (match List.assoc_opt "points" args with
+                let filled = match List.assoc_opt "filled" args with
+                  | None -> []
+                  | Some (E.Bool filled) -> [Curve.filled_parameter, Param.Bool_value filled]
+                  | Some _ -> fail "E_LOWER" "sop/curve :filled must be a constant bool" in
+                let changes = closed @ filled @ (match List.assoc_opt "points" args with
                   | Some points when E.is_live points ->
                       dynamic := [ points, (fun v -> encode [ "points", v ]) ]; []
                   | _ -> encode args) in

@@ -461,7 +461,7 @@ let all = frame @ arrays @ draw @ host @ integers @ images @ [
     | [ n; l ] -> let xs = list_arg l in
       let n = min (max 0 (int_of n)) (Array.length xs) in List (Array.sub xs n (Array.length xs - n))
     | _ -> failf "E_ARITY" "%s got the wrong number of inputs." name };
-  mk ~ctx:Context.sop ~kw:[ "closed", Ty.Bool ] "sop/curve" [ "points", Ty.List Ty.Vec3 ] (fun _ -> Ty.geometry) { run = fun ~name ~node args -> node name args };
+  mk ~ctx:Context.sop ~kw:[ "closed", Ty.Bool; "filled", Ty.Bool ] "sop/curve" [ "points", Ty.List Ty.Vec3 ] (fun _ -> Ty.geometry) { run = fun ~name ~node args -> node name args };
   structure ~ctx:Context.sop ~kw:[ "key", Ty.Text ] "sop/point_list" [ "geometry", Ty.geometry ] (fun _ -> Ty.List Ty.Vec3);
   structure ~ctx:Context.sop ~kw:[ "key", Ty.Text ] "sop/piece_list" [ "geometry", Ty.geometry ] (fun _ -> Ty.List Ty.geometry);
   structure ~splice:true ~ctx:Context.scene ~rest:("scene", Ty.scene) "scene/merge" [] (fun _ -> Ty.scene);

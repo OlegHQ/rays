@@ -9,6 +9,9 @@ val parameter : string
 val closed_parameter : string
 (** ["closed"]. *)
 
+val filled_parameter : string
+(** ["filled"]: the closed curve is one polygon surface, not a polyline. *)
+
 val encode : (float * float * float) array -> string
 (** Lossless (hexadecimal floats), deterministic. *)
 

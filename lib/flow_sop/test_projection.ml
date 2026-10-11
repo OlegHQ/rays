@@ -63,7 +63,7 @@ let snapshot = [
   "tree", [ "tree", (9, 1, 184) ];
   "tunnel", [ "rings", (4, 1, 61) ];
   "variations", [ "garden", (6, 0, 70); "scene", (1, 0, 9); "editor", (8, 0, 23) ];
-  "wave", [ "wave", (7, 2, 45) ];
+  "wave", [ "wave", (7, 2, 46) ];
 ]
 
 let snapshots () =
