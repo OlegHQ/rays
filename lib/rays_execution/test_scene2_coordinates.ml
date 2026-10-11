@@ -101,6 +101,27 @@ let run () =
           Push_clip {x=12.;y=12.;width=8.;height=8.}; Geometry square_geometry; Pop_clip|] in
         expect_square clipped ~width:drawable_width ~height:drawable_height
           ~x:(12 * scale) ~y:(12 * scale) ~size:(8 * scale) "logical clip";
+        (* The square at (8,8) lies outside this tall clip: a clip used as a
+           viewport would remap it into the panel and leave fill there. *)
+        let tall = { Scene_command.Render_ir.x = 40.; y = 0.; width = 24.; height = 32. } in
+        let outside = render Scene_command.Render_ir.[|
+          Push_clip tall; Geometry square_geometry; Pop_clip|] in
+        let leaked = ref 0 in
+        for y = 0 to drawable_height - 1 do
+          for x = 0 to drawable_width - 1 do
+            if rgba outside ~width:drawable_width x y <> (0, 0, 0, 255) then incr leaked
+          done
+        done;
+        require (!leaked = 0)
+          (Printf.sprintf "%dx clip used as viewport leaked out-of-clip fill" scale);
+        let inside = render Scene_command.Render_ir.[|
+          Push_clip tall;
+          Geometry { vertices = [| 44.; 8.; 60.; 8.; 60.; 24.; 44.; 24. |];
+            indices = [| 0; 1; 2; 0; 2; 3 |]; color = white };
+          Pop_clip|] in
+        expect_square inside ~width:drawable_width ~height:drawable_height
+          ~x:(44 * scale) ~y:(8 * scale) ~size:(16 * scale)
+          (Printf.sprintf "%dx clipped square" scale);
         let circle = render [|Scene_command.Render_ir.Geometry circle_geometry|] in
         expect_square circle ~width:drawable_width ~height:drawable_height
           ~x:(24 * scale) ~y:(8 * scale) ~size:(16 * scale) "logical circle bounds";
