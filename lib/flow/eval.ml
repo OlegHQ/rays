@@ -103,7 +103,8 @@ and fn =
 
 (* Captures contain the term's lexically free names, including nested bodies. *)
 and residual = { rid : int; rterm : W.term; renv : value Smap.t; rc : ctx;
-  previous : bool; mutable fast : fast }
+  previous : bool; mutable fast : fast;
+  mutable live : st option  (* the evaluation that last offered this residual to the executor *) }
 
 and state = { mutable source : string; mutable frame : int option;
   mutable before : value Smap.t; mutable next : value Smap.t; mutable host : state option }
@@ -426,6 +427,7 @@ and force_res c r =
       let v = match c.st.time,c.st.execute with
         | Some live,Some execute when !core_residuals && c.st.compiled_residuals ->
             let saved = Option.map fork_state c.st.state in
+            r.live <- Some c.st;
             let result = try execute r live with _ -> None in
             (match result with Some (Ok v) -> v | _ ->
               Option.iter (fun saved -> restore_state (Option.get c.st.state) saved) saved;
@@ -445,7 +447,7 @@ and ev c env (x : W.term) : value =
       (match st.observe_kernel, x.node with
        | Some observe, (W.Hof ((`Map | `Reduce), _) | W.Loop _ | W.Op {op = ("array/sum" | "image/map"); _}) ->
            observe {rid = Atomic.fetch_and_add bulk_ids (-1); rterm = x;
-             renv = capture x env; rc = c; previous = false; fast = Untried}
+             renv = capture x env; rc = c; previous = false; fast = Untried; live = None}
        | _ -> ());
       let saved = st.nodes and saved_n = st.nnodes and saved_authored = st.authored in
       (match ev_raw c env x with
@@ -454,7 +456,7 @@ and ev c env (x : W.term) : value =
            (* ponytail: nodes made by the abandoned attempt are dropped, its records are kept *)
            st.nodes <- saved; st.nnodes <- saved_n; st.authored <- saved_authored;
            st.rids <- st.rids + 1;
-           let r = Residual { rid = st.rids; rterm = x; renv = capture x env; rc = c; previous = false; fast = Untried } in
+           let r = Residual { rid = st.rids; rterm = x; renv = capture x env; rc = c; previous = false; fast = Untried; live = None} in
            (match x.node with W.State _ -> st.states <- r :: st.states | _ -> ());
            (* the record is the residual: a probe forces it at the time it shows *)
            (match x.path with Some p -> note c p r | None -> ()); r
@@ -463,7 +465,7 @@ and ev c env (x : W.term) : value =
       let evaluate () = match st.execute, x.node with
         | Some execute, (W.Hof ((`Map | `Reduce), _) | W.Loop _ | W.Op {op = "array/sum"; _}) ->
             st.rids <- st.rids + 1;
-            let r = {rid = st.rids; rterm = x; renv = capture x env; rc = c; previous = false; fast = Untried} in
+            let r = {rid = st.rids; rterm = x; renv = capture x env; rc = c; previous = false; fast = Untried; live = None} in
             (match execute r live with
              | Some (Ok v) -> v
              | Some (Error d) -> raise (Fail (d.code, d.message, d.span))
@@ -589,7 +591,7 @@ and ev_raw c env (x : W.term) : value =
       let previous = match st.time with
         | None ->
             st.rids <- st.rids + 1;
-            Residual {rid = st.rids; rterm = x; renv = capture x env; rc = c; previous = true; fast = Failed}
+            Residual {rid = st.rids; rterm = x; renv = capture x env; rc = c; previous = true; fast = Failed; live = None}
         | Some _ -> state_previous c env zone init in
       let env = bind_pat c ~mk:(Some (fun n -> zone @ [":" ^ n])) ~whole:true binder previous env in
       (match st.time with
@@ -785,7 +787,7 @@ and hof c env term kind f rest =
    | `Map, Closure cl when c.st.record && c.rec_ && (match out with Ty.Array _ -> true | _ -> false) ->
        c.st.rids <- c.st.rids + 1;
        let call = Residual {rid = c.st.rids; rterm = term; renv = capture term env; rc = c;
-         previous = false; fast = Untried} in
+         previous = false; fast = Untried; live = None} in
        note c (cl.zone @ ["~calls"]) (Record ["offset", Int !(cl.calls); "call", call])
    | _ -> ());
   let lists_of ts = List.mapi (fun i t ->
@@ -953,7 +955,7 @@ and geometry_loop c cz env op fs p body zone =
     if points then begin
       c.st.rids <- c.st.rids + 1;
       let term = { W.path = None; ty = Ty.Vec3; node = W.Ref_binding (ekey, []); form = body.W.form } in
-      Residual { rid = c.st.rids; rterm = term; renv = Smap.empty; rc = ci; previous = false; fast = Untried }, Text ekey
+      Residual { rid = c.st.rids; rterm = term; renv = Smap.empty; rc = ci; previous = false; fast = Untried; live = None}, Text ekey
     end else
       (match mk_node (sub ci "element") "zone/element" [] with
        | Deferred ((Ty.Named "geometry"), id) as g -> g, Int id
@@ -1218,7 +1220,7 @@ module Private = struct
     Residual {rid = Atomic.fetch_and_add bulk_ids (-1); rterm = term;
       renv = List.fold_left (fun env (name, value) -> Smap.add name value env)
         (Smap.singleton function_name (Fn fn)) inputs;
-      rc = {at with data = true; rec_ = false}; previous = false; fast = Untried})
+      rc = {at with data = true; rec_ = false}; previous = false; fast = Untried; live = None})
   let free_names term = Names.elements (free_names term)
   let free_name_walks () = Atomic.get free_walks
   let force_with_executor ?state ?elems ?resolve ?compiled ~execute v ~live =
@@ -1249,7 +1251,8 @@ module Private = struct
     site = site r.rc; owner = r.rc.base; iter = r.rc.iter; instance = r.rc.inst;
     prefix = r.rc.prefix; previous = r.previous; host = r.rc.host; geometry = r.rc.geometry}
   let residual_id r = r.rid
-  let state_ctx r ~instance ~path ~iter ~host = {r.rc with inst = instance; prefix = path; iter; host}
+  let live_ctx r = match r.live with Some st -> {r.rc with st} | None -> r.rc
+  let state_ctx r ~instance ~path ~iter ~host = {(live_ctx r) with inst = instance; prefix = path; iter; host}
   let state_read r ~instance ~path ~iter ~host ~init =
     let c = state_ctx r ~instance ~path ~iter ~host in
     let state,frame = state_plane c in

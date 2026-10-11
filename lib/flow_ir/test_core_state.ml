@@ -33,13 +33,18 @@ let live frame =
   {(Frame_input.at_time (float_of_int frame *. 0.25)) with frame; tick=frame;
    events=if frame mod 2=1 then [Key_pressed "a"; Key_pressed "b"] else []}
 let () =
-  let used=ref 0 and refused=ref [] in
+  let used=ref 0 and refused=ref [] and failed=ref [] in
   List.iter (fun (name,body) ->
     let evaluation=ok (E.static (check ("(let* [v " ^ body ^ "] 0.)"))) in
     let values=List.map snd evaluation.results @ evaluation.states in
     let reference=E.create_state () and core=E.create_state () in
     let execute r live = match I.Core_lower.lower r with
-      | Ok program -> incr used; Some (I.Core_exec.run ~root:r program ~live)
+      | Ok program ->
+          let result=I.Core_exec.run ~root:r program ~live in
+          (match result with
+           | Ok _ -> incr used
+           | Error d -> if name<>"error" then failed := (name ^ ": " ^ d.code ^ " " ^ d.message) :: !failed);
+          Some result
       | Error n -> refused := (name ^ ": " ^ n) :: !refused; None in
     for frame=0 to 7 do
       let live=live frame in
@@ -53,6 +58,6 @@ let () =
         if not (same actual expected) then failwith (Printf.sprintf "%s frame %d" name frame);
         assert (E.state_stamp core=E.state_stamp reference)) values
     done) cases;
-  if !refused<>[] then failwith (String.concat "; " !refused);
+  if !refused<>[] || !failed<>[] then failwith (String.concat "; " (!refused @ !failed));
   assert (!used>0);
   Printf.printf "Core state: slots, pending writes, keys, errors and rollback match the walker (%d executions)\n" !used
