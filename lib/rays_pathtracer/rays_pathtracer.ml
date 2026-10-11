@@ -1429,6 +1429,12 @@ let install_gpu t gpu =
     gpu.owns_prototype <- true
   end;
   let old = t.gpu in
+  (* An intersection table keeps its bound buffer alive: point every table at
+     the new geometry before the old sphere buffer is destroyed. *)
+  let target = Option.value gpu.sphere_buffer ~default:gpu.positions in
+  Hashtbl.iter
+    (fun _ (_, table) -> Option.iter (fun table -> ignore (B.table_set_buffer table ~index:0 target)) table)
+    t.pipelines;
   retire t (fun () -> destroy_gpu old);
   t.gpu <- gpu;
   edited t

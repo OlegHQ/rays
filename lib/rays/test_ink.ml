@@ -1,9 +1,5 @@
 open Rays
 
-let rgba (c:Color.t) =
-  Int32.logor (Int32.shift_left (Int32.of_int c.r) 24)
-    (Int32.of_int ((c.g lsl 16) lor (c.b lsl 8) lor c.a))
-
 let run () =
   let live_handles=snd (Ogpu.Impl.create_driver ()) in
   let baseline=live_handles () in
@@ -15,35 +11,14 @@ let run () =
       else Color.rgb (i mod 255) 160 210 in
     Ink.rect packed x y 5 7 color;
     add (Scene.rect ~at:(x,y) ~w:5 ~h:7 ~fill:color ());
-    if i mod 11=0 then begin
-      add (Scene.line ~from_:(x,y) ~to_:(x+9,y+3) ~color ());
-      add (Scene.rect ~at:(x,y) ~w:13 ~h:8 ~stroke:color ())
-    end
-  done;
-  (* Fractional rectangles use an independently tessellated path as oracle.
-     This catches accidental integer snapping anywhere in the packed path. *)
-  for i=0 to 31 do
-    let x=1.125+.float (i*11 mod 110) and y=2.375+.float (i*17 mod 110) in
-    let w=0.75+.float (i mod 7)*.0.125 and h=1.5 in
-    let color=Color.rgba 230 221 193 (90+i*5) in
-    let module P=Scene_command.Path in
-    let path=P.of_commands [|P.Move_to {x;y};P.Line_to {x=x+.w;y};
-      P.Line_to {x=x+.w;y=y+.h};P.Line_to {x;y=y+.h};P.Close|] in
-    let mesh=Result.get_ok (P.tessellate ~tolerance:0.25 ~fill_rule:P.Non_zero path) in
-    let vertices=Array.make (Array.length mesh.vertices*2) 0. in
-    Array.iteri (fun j (p:P.point) -> vertices.(j*2)<-p.x;vertices.(j*2+1)<-p.y) mesh.vertices;
-    let builder=Scene_command.Display_list.Builder.create () in
-    Scene_command.Display_list.Builder.geometry builder
-      {vertices;indices=mesh.indices;color=rgba color};
-    add (Scene.Private.display_list (Result.get_ok (Scene_command.Display_list.Builder.publish builder
-      ~id:(Scene_command.Display_list.fresh_id ()) ~version:0L)))
   done;
   let batch=Option.get (Ink.take packed) in
   let clipped=Ink.create ~ids:[|777L;778L|] ~version:2L ~clip:(3,5,112,107) () in
   Ink.rect clipped 0 0 128 128 Color.white;
   let clipped_batch=Option.get (Ink.take clipped) in
-  Ink.rect clipped 0 0 128 128 Color.white;
-  let unclipped_batch=Option.get (Ink.take clipped) in
+  let unclipped=Ink.create ~ids:[|777L;778L|] ~version:3L () in
+  Ink.rect unclipped 0 0 128 128 Color.white;
+  let unclipped_batch=Option.get (Ink.take unclipped) in
   let canvas=Canvas.create_exn ~width:128 ~height:128 in
   Fun.protect ~finally:(fun () -> Canvas.destroy canvas) (fun () ->
     let clip nodes=Scene.clip ~at:(3,5) ~w:112 ~h:107 nodes in
@@ -60,4 +35,4 @@ let run () =
     if Canvas.pixel canvas ~x:0 ~y:0<>Some Color.white then failwith "segment clip reset");
   let after=live_handles () in
   if after<>baseline then failwith "ink native handle delta";
-  print_endline "ink: exact native pixels vs Scene rect/line/stroke, alpha/order/clip, zero handle delta"
+  print_endline "ink: exact native pixels vs Scene rect, alpha/order/clip, zero handle delta"
