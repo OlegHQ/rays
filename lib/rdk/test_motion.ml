@@ -109,8 +109,12 @@ let test_group_and_initializers () =
   let wind = float3 "wind" source and copied = float3 "copied" copied in
   check (wind.x == copied.x && wind.y == copied.y && wind.z == copied.z)
     "unscaled attribute initialization did not share its packed plane";
-  ignore (Motion.point_velocity ~dt:Float.nan
-      ~initialization:(Motion.Set_value Vec3.zero) source |> get_rdk)
+  let zeroed = Motion.point_velocity ~dt:Float.nan
+      ~initialization:(Motion.Set_value Vec3.zero) source |> get_rdk in
+  let v = float3 "v" zeroed in
+  check_array [|0.;0.|] v.x "Set Value ignores dt: x";
+  check_array [|0.;0.|] v.y "Set Value ignores dt: y";
+  check_array [|0.;0.|] v.z "Set Value ignores dt: z"
 
 let test_matching () =
   let previous = points [|(10.,0.,0.); (20.,0.,0.)|]

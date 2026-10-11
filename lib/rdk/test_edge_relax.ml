@@ -133,6 +133,8 @@ let run () =
   check (Geometry.point_count one = 100_000
       && Geometry.primitive_count one = 50_000)
     "Edge Relax scale cardinality";
+  check (array_close (edge_lengths one) (edge_lengths large_reference))
+    "Edge Relax scale result reaches reference lengths";
   let connected_source = Line_geometry.polyline
       [|0.,0.,0.;1.,0.4,0.;3.,-0.2,0.;6.,0.5,0.|] |> get_rdk
   and connected_reference = Line_geometry.polyline
@@ -140,6 +142,16 @@ let run () =
   let run_connected domains = Parallel.run ~domains (fun () ->
       Edge_relax.relax ~grain:1 ~iterations:96 ~reference:connected_reference
         connected_source |> get_rdk) in
-  check (equal_geometry (run_connected 1) (run_connected 4))
+  let connected_one = run_connected 1 in
+  check (equal_geometry connected_one (run_connected 4))
     "connected Edge Relax differs across domain counts";
+  let error geometry =
+    let reference_lengths = edge_lengths connected_reference
+    and lengths = edge_lengths geometry in
+    let total = ref 0. in
+    Array.iteri (fun i length ->
+      total := !total +. abs_float (length -. reference_lengths.(i))) lengths;
+    !total in
+  check (error connected_one < 0.1 *. error connected_source)
+    "connected Edge Relax did not move toward the reference lengths";
   print_endline "edge relax tests passed"

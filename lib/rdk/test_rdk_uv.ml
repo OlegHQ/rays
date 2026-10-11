@@ -18,8 +18,30 @@ let render_uv ~geometry ~positions ~selected ~shared_box ~topology ~triangle_geo
     fail "mesh bridge copied packed render buffers";
   let roundtrip = Rdk_rays.Rays_mesh.of_mesh mesh |> get_ok in
   if not (equal_positions triangle_geometry roundtrip) then fail "mesh bridge positions";
+  (* Point Cd runs from [low] at the lowest Y to [high] at the highest. *)
+  let low = 1., 0., 0., 1. and high = 0., 0., 1., 1. in
+  let color_planes geometry =
+    Geometry.find_attribute ~owner:Attribute.Point "Cd" geometry
+    |> Option.get |> Attribute.get (Attribute.color ~owner:Attribute.Point)
+    |> Option.get |> Packed.Float4.Private.view in
+  let colored domains = Parallel.run ~domains (fun () ->
+    Color_by_height.run ~grain:1 ~low ~high triangle_geometry |> get_ok) in
+  let one = color_planes (colored 1) and many = color_planes (colored 4) in
+  if one.x <> many.x || one.y <> many.y || one.z <> many.z
+     || one.w <> many.w then fail "color_by_height domain mismatch";
+  let bottom = Array.fold_left Float.min infinity source_positions.y
+  and top = Array.fold_left Float.max neg_infinity source_positions.y in
+  if not (top > bottom) then fail "color_by_height fixture has no Y extent";
+  Array.iteri (fun point y ->
+    let t = (y -. bottom) /. (top -. bottom) in
+    if abs_float (one.x.(point) -. (1. -. t)) > 1e-12 || one.y.(point) <> 0.
+       || abs_float (one.z.(point) -. t) > 1e-12 || one.w.(point) <> 1. then
+      fail "color_by_height is not the normalized Y ramp") source_positions.y;
   let cancelled_color = Cancel.create () in
   Cancel.cancel cancelled_color;
+  (match Color_by_height.run ~cancel:cancelled_color ~low ~high triangle_geometry with
+   | Error error when Error.code error = "cancelled" -> ()
+   | _ -> fail "color_by_height cancellation");
   let vertex_colors =
     let values = Packed.Float4.of_owned
         ~x:[|1.; 0.; 0.; 0.; 1.; 1.|]

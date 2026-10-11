@@ -275,4 +275,10 @@ let run () =
     "shared Edge Divide differed between one and four domains";
   check (equal_geometry unique_one unique_four)
     "unique Edge Divide differed between one and four domains";
+  (* 161x121 points, 160*121 + 161*120 edges, two new points per shared edge *)
+  check (Geometry.point_count shared_one
+         = 161 * 121 + 2 * (160 * 121 + 161 * 120))
+    "shared Edge Divide scale point cardinality";
+  check (Geometry.point_count unique_one > Geometry.point_count shared_one)
+    "unique Edge Divide duplicates interior edge points";
   print_endline "edge divide tests passed"

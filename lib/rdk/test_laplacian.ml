@@ -25,6 +25,14 @@ let float3 name geometry =
        | _ -> fail (name ^ " is not a float3 field"))
   | None -> fail (name ^ " is missing")
 
+let float4_field name geometry =
+  match Geometry.find_attribute ~owner:Attribute.Point name geometry with
+  | Some attribute ->
+      (match Attribute.Private.storage attribute with
+       | Attribute.Float4 values -> Packed.Float4.Private.view values
+       | _ -> fail (name ^ " is not a float4 field"))
+  | None -> fail (name ^ " is missing")
+
 let grid ?(size = 2.) () =
   Plane_generators.grid ~connectivity:Plane_generators.Grid_quads ~columns:2 ~rows:2 ~size () |> get
 
@@ -129,19 +137,37 @@ let test_position_scale_and_storage () =
       |> with_attribute "tuple" (Attribute.Float4 float4) in
   let integer = Laplacian.run ~weighting:Laplacian.Laplacian_uniform
       ~source:"integer" base |> get in
-  ignore (scalar "integer_laplacian" integer);
-  let pair = Laplacian.run ~source:"pair" base |> get in
+  let integer = scalar "integer_laplacian" integer in
+  (* ids are linear on the row-major lattice: interior mean-minus-value is 0,
+     corner 0 has neighbors 1 and 3 so its mean is 2. *)
+  check (integer.(4) = 0. && integer.(0) = 2.)
+    "uniform Laplacian of integer ids has wrong values";
+  (* The pair's first component is the point id, so it matches the integer case. *)
+  let pair = Laplacian.run ~weighting:Laplacian.Laplacian_uniform ~source:"pair" base |> get in
   (match Geometry.find_attribute ~owner:Attribute.Point "pair_laplacian" pair with
    | Some attribute ->
-       (match Attribute.Private.storage attribute with Attribute.Float2 _ -> ()
+       (match Attribute.Private.storage attribute with
+        | Attribute.Float2 values ->
+            check ((Packed.Float2.Private.view values).x = integer)
+              "float2 Laplacian component differs from the scalar Laplacian"
         | _ -> fail "float2 Laplacian changed width")
    | None -> fail "float2 Laplacian is missing");
   let tuple = Laplacian.run ~source:"tuple" base |> get in
   (match Geometry.find_attribute ~owner:Attribute.Point "tuple_laplacian" tuple with
    | Some attribute ->
-       (match Attribute.Private.storage attribute with Attribute.Float4 _ -> ()
+       (match Attribute.Private.storage attribute with
+        | Attribute.Float4 values ->
+            let view = Packed.Float4.Private.view values in
+            check (List.for_all (Array.for_all (fun value -> abs_float value <= 1e-12))
+                [view.x; view.y; view.z; view.w])
+              "Laplacian of a constant float4 is not zero"
         | _ -> fail "float4 Laplacian changed width")
-   | None -> fail "float4 Laplacian is missing")
+   | None -> fail "float4 Laplacian is missing");
+  (* a constant tuple has a zero Laplacian *)
+  let constant = float4_field "tuple_laplacian" tuple in
+  Array.iter (fun values -> Array.iter (fun v ->
+      check (near ~epsilon:1e-9 v 0.) "constant float4 Laplacian is not zero")
+      values) [|constant.x; constant.y; constant.z; constant.w|]
 
 let test_selection_and_exact_domains () =
   let source = grid () in

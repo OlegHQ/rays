@@ -390,8 +390,11 @@ let check_validation_and_parallel () =
            (Attribute.Float [|1.;1.;Float.nan;Float.nan|]) in
   let first_curve = Group.init ~owner:Group.Primitive ~name:"first_curve" 2
       (fun primitive -> primitive = 0) in
-  ignore (Sweep_modeling.sweep ~backbones:first_curve ~backbone:partly_invalid
-      ~cross_section:(profile ()) () |> get_ok);
+  let partial = Sweep_modeling.sweep ~backbones:first_curve
+      ~backbone:partly_invalid ~cross_section:(profile ()) () |> get_ok in
+  check (Geometry.point_count partial = 8
+      && Geometry.primitive_count partial = 4)
+    "Sweep restricted to a valid curve ignored the invalid unselected one";
   expect_invalid (Sweep_modeling.sweep ~cross_section_prefix:""
     ~backbone:(backbone ()
       |> with_attribute Attribute.Point "id" (Attribute.Int [|5;6|]))

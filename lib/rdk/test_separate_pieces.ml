@@ -192,9 +192,10 @@ let test_validation_and_cancellation () =
       unrepresentable_gap) "unrepresentable positive gap";
   let single_extreme = make_curves [|(max_float,0.,0.)|] [||]
       |> with_attribute Attribute.Point "piece" (Attribute.Int [|0|]) in
-  ignore (Separate_pieces.run ~owner:Attribute.Point
+  check ((position_view (Separate_pieces.run ~owner:Attribute.Point
       ~mode:Separate_pieces.Separate_pieces_separate ~piece_attribute:"piece"
-      single_extreme |> get_ok);
+      single_extreme |> get_ok)).x = [|max_float|])
+    "Separate Pieces moved a single extreme piece";
   let bad_translation = valid
       |> with_attribute Attribute.Primitive "piece_translation"
            (Attribute.Float [|1.|]) in

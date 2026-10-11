@@ -175,8 +175,16 @@ let check_validation () =
   let invalid_v = with_float "v" [|0.; Float.nan|] line in
   expect_invalid (Sweep_circle.run ~v_attribute:"v" ~radius:0.1 invalid_v);
   let extreme_seams = with_int "seam" [|min_int; max_int|] line in
-  ignore (Sweep_circle.run ~seam_offset:min_int ~seam_attribute:"seam"
-      ~radius:0.1 extreme_seams |> get_ok);
+  (* min_int and max_int are 0 and 3 modulo four sides, each wrapped on its own. *)
+  let extreme = Sweep_circle.run ~sides:4 ~seam_offset:min_int ~seam_attribute:"seam"
+      ~radius:0.1 extreme_seams |> get_ok
+  and wrapped = Sweep_circle.run ~sides:4 ~seam_attribute:"seam" ~radius:0.1
+      (with_int "seam" [|0; 3|] line) |> get_ok in
+  check (Packed.Float3.Private.view (Geometry.positions extreme)
+         = Packed.Float3.Private.view (Geometry.positions wrapped)
+      && Topology.Private.view (Geometry.topology extreme)
+         = Topology.Private.view (Geometry.topology wrapped))
+    "extreme seam values did not wrap to their ring offsets";
   let overflowing = with_float "scale" [|2.; 2.|] line in
   expect_invalid (Sweep_circle.run ~scale_attribute:"scale" ~radius:max_float
       overflowing);
@@ -396,8 +404,15 @@ let check_variable_validation () =
   expect_invalid (Sweep_circle.run ~primitives:selection
       ~divisions_attribute:"bad_div" ~radius:0.1 bad_div);
   let ignored_div = with_int "ignored_div" [|4;6;2;5;5|] source in
-  ignore (Sweep_circle.run ~primitives:selection
-      ~divisions_attribute:"ignored_div" ~radius:0.1 ignored_div |> get_ok);
+  let ignored = Sweep_circle.run ~primitives:selection
+      ~divisions_attribute:"ignored_div" ~radius:0.1 ignored_div |> get_ok
+  and valid = Sweep_circle.run ~primitives:selection
+      ~divisions_attribute:"div" ~radius:0.1 source |> get_ok in
+  check (Packed.Float3.Private.view (Geometry.positions ignored)
+         = Packed.Float3.Private.view (Geometry.positions valid)
+      && Topology.Private.view (Geometry.topology ignored)
+         = Topology.Private.view (Geometry.topology valid))
+    "divisions outside the selection affected PolyWire output";
   let bad_seg = with_int "bad_seg" [|0;1;1;1;1|] source in
   expect_invalid (Sweep_circle.run ~primitives:selection
       ~segments_attribute:"bad_seg" ~radius:0.1 bad_seg);

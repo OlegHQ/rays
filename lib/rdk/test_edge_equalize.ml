@@ -228,6 +228,10 @@ let run () =
       && Geometry.vertex_count one = 100_000
       && Geometry.primitive_count one = 50_000)
     "Edge Equalize scale cardinality";
+  let large_lengths = all_edge_lengths one in
+  check (Array.for_all (fun length ->
+      abs_float (length -. large_lengths.(0)) < 1e-5) large_lengths)
+    "Edge Equalize scale result has equal lengths";
   let connected = many_chains 5_000 in
   let run_connected domains = Parallel.run ~domains (fun () ->
       Edge_ops.equalize ~grain:127 ~iterations:96 connected |> get_rdk) in
@@ -237,4 +241,8 @@ let run () =
   check (Geometry.point_count connected_one = 15_000
       && Geometry.primitive_count connected_one = 5_000)
     "connected Edge Equalize scale cardinality";
+  let connected_lengths = all_edge_lengths connected_one in
+  check (Array.for_all (fun length ->
+      abs_float (length -. connected_lengths.(0)) < 1e-3) connected_lengths)
+    "connected Edge Equalize scale result has equal lengths";
   print_endline "edge equalize tests passed"

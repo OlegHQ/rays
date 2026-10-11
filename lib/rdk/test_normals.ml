@@ -254,27 +254,25 @@ let test_parallel_and_errors () =
 
 let test_checked_boundary () =
   let geometry = source () in
-  let direct = Normal_ops.run geometry |> get_rdk
-  and compatibility = Normal_ops.run geometry |> get_rdk in
-  check (equal_normals Attribute.Point direct compatibility)
-    "direct normal boundary changed point normals";
-  (match Normal_ops.run ~grain:0 geometry,
-         Normal_ops.run ~grain:0 geometry with
-   | Error direct, Error compatibility ->
+  let direct = Normal_ops.run geometry |> get_rdk |> normal Attribute.Point in
+  let sqrt5 = sqrt 5. in
+  check_vec direct 0 (2. /. sqrt5, 0., 1. /. sqrt5) "boundary point 0 normal";
+  check_vec direct 1 (0., 0., 1.) "boundary point 1 normal";
+  check_vec direct 2 (2. /. sqrt5, 0., 1. /. sqrt5) "boundary point 2 normal";
+  check_vec direct 3 (1., 0., 0.) "boundary point 3 normal";
+  (match Normal_ops.run ~grain:0 geometry with
+   | Error direct ->
        check (Error.operation direct = "normals"
            && Error.code direct = "invalid_topology"
-           && Error.message direct = "Rdk.Normal_ops.normals: grain must be positive"
-           && Error.to_string direct = Error.to_string compatibility)
+           && Error.message direct = "Rdk.Normal_ops.normals: grain must be positive")
          "direct normal boundary changed the typed validation error"
    | _ -> fail "normal boundaries accepted zero grain");
   let cancel = Cancel.create () in
   Cancel.cancel cancel;
-  (match Normal_ops.run ~cancel geometry,
-         Normal_ops.run ~cancel geometry with
-   | Error direct, Error compatibility ->
+  (match Normal_ops.run ~cancel geometry with
+   | Error direct ->
        check (Error.operation direct = "normals"
-           && Error.code direct = "cancelled"
-           && Error.to_string direct = Error.to_string compatibility)
+           && Error.code direct = "cancelled")
          "direct normal boundary changed the typed cancellation error"
    | _ -> fail "normal boundaries ignored cancellation")
 

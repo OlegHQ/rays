@@ -28,6 +28,26 @@ let expect_code code = function
 
 let positions geometry = Packed.Float3.Private.view (Geometry.positions geometry)
 
+(* [Analysis.bounds] was pruned from the library; the tests keep an independent
+   bounding box of the points under its old name. *)
+module Analysis = struct
+  include Analysis
+  type bounds = { min : Rays_math.Vec3.t; max : Rays_math.Vec3.t;
+                  center : Rays_math.Vec3.t; size : Rays_math.Vec3.t }
+  let bounds geometry =
+    let p = positions geometry in
+    if Array.length p.x = 0 then None else
+    let lo a = Array.fold_left Float.min infinity a
+    and hi a = Array.fold_left Float.max neg_infinity a in
+    let open Rays_math in
+    let min = Vec3.create (lo p.x) (lo p.y) (lo p.z)
+    and max = Vec3.create (hi p.x) (hi p.y) (hi p.z) in
+    Some { min; max;
+      center = Vec3.create ((min.x +. max.x) /. 2.) ((min.y +. max.y) /. 2.)
+          ((min.z +. max.z) /. 2.);
+      size = Vec3.create (max.x -. min.x) (max.y -. min.y) (max.z -. min.z) }
+end
+
 let same_float_array left right =
   Array.length left = Array.length right
   && let same = ref true in
@@ -135,19 +155,22 @@ let equal_geometry left right =
        (Geometry.edge_groups left) (Geometry.edge_groups right)
 
 (* Polygon topologies for these fixtures: the builder offers polylines only. *)
+(* Primitives in the order added, polygons and polylines mixed. *)
 module Tb = struct
-  type t = { point_count : int; mutable polygons : int array list; builder : Topology.Builder.t }
-  let create ~point_count () =
-    { point_count; polygons = []; builder = Topology.Builder.create ~point_count () }
-  let add_triangle t a b c = t.polygons <- [| a; b; c |] :: t.polygons
-  let add_polygon t points = t.polygons <- points :: t.polygons
-  let add_open_polyline t points = Topology.Builder.add_open_polyline t.builder points
-  let freeze t = match List.rev t.polygons with
-    | [] -> Topology.Builder.freeze t.builder
-    | polygons ->
-        let offsets = List.fold_left (fun acc p -> (List.hd acc + Array.length p) :: acc) [ 0 ] polygons in
-        Topology.polygons_owned ~point_count:t.point_count ~vertex_points:(Array.concat polygons)
-          ~primitive_offsets:(Array.of_list (List.rev offsets)) |> Result.get_ok
+  type t = { point_count : int; mutable primitives : (Topology.primitive_kind * int array) list }
+  let create ~point_count () = { point_count; primitives = [] }
+  let add kind t points = t.primitives <- (kind, points) :: t.primitives
+  let add_triangle t a b c = add Topology.Polygon t [| a; b; c |]
+  let add_polygon t points = add Topology.Polygon t points
+  let add_open_polyline t points = add Topology.Open_polyline t points
+  let add_closed_polyline t points = add Topology.Closed_polyline t points
+  let freeze t =
+    let primitives = List.rev t.primitives in
+    let offsets = List.fold_left (fun acc (_, p) -> (List.hd acc + Array.length p) :: acc) [ 0 ] primitives in
+    Topology.create_owned ~point_count:t.point_count
+      ~vertex_points:(Array.concat (List.map snd primitives))
+      ~primitive_offsets:(Array.of_list (List.rev offsets))
+      ~primitive_kinds:(Array.of_list (List.map fst primitives)) |> Result.get_ok
 end
 
 let equal_positions left right =

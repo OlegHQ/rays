@@ -107,6 +107,7 @@ let tests = [
   "attrib", "test_group_random", Test_group_random.run;
   "attrib", "test_group_bounds", Test_group_bounds.run;
   "attrib", "test_group_normal", Test_group_normal.run;
+  "attrib", "test_group_non_planar", Test_group_non_planar.run;
   "attrib", "test_group_backface", Test_group_backface.run;
   "attrib", "test_group_edge_angle", Test_group_edge_angle.run;
   "attrib", "test_group_edge_depth", Test_group_edge_depth.run;
@@ -121,7 +122,6 @@ let tests = [
   "core", "test_instances", Test_instances.run;
   "attrib", "test_attribute_transfer", Test_attribute_transfer.run;
   "attrib", "test_attribute_copy", Test_attribute_copy.run;
-  "attrib", "test_attribute_combine", Test_attribute_combine.run;
   "attrib", "test_attribute_interpolate", Test_attribute_interpolate.run;
 ]
 

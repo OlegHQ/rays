@@ -49,6 +49,36 @@ let run () =
   let mask_hash = Digest.to_hex (Digest.string (Buffer.contents masks)) in
   check (mask_hash = "4efce5e9c56d8d5fb9ead44e339bded7")
     ("all-mask full geometry golden changed: " ^ mask_hash);
+  (* The plane z = 0 through one cell, spelled out: points, order and normals. *)
+  let plane domains = Parallel.run ~domains (fun () ->
+    Iso_surface.extract_dense ~resolution:(1, 1, 1) ~min:minimum ~max:maximum ~iso:0.
+      ~field:(Iso_surface.Field.custom (fun xyz -> xyz.(2))) () |> get |> snapshot) in
+  let one = plane 1 in
+  check (one = plane 4) "isosurface changed across one/four domains";
+  let points, indices, normals = one in
+  let p x y = x, y, 0. in
+  let expected = [|p 0. 0.; p 1. 1.; p 1. 0.;
+    p 0. 0.; p 0. 1.; p 1. 1.;
+    p (-1.) 0.; p 0. 1.; p 0. 0.;
+    p (-1.) 0.; p (-1.) 1.; p 0. 1.;
+    p (-1.) 0.; p 0. 0.; p (-1.) (-1.);
+    p (-1.) (-1.); p 0. 0.; p 0. (-1.);
+    p 0. (-1.); p 0. 0.; p 1. 0.;
+    p 0. (-1.); p 1. 0.; p 1. (-1.)|] in
+  check (points = expected
+    && indices = Array.init 24 Fun.id
+    && normals = Array.make 24 (0., 0., -1.))
+    "single-cell isosurface ordered baseline changed";
+  List.iter (fun domains -> Parallel.run ~domains (fun () ->
+    let min = Vec3.create (-1.) (-1.) (-3.) and max = Vec3.create 1. 1. 3. in
+    let dense = Iso_surface.extract_dense ~resolution:(1,1,3) ~min ~max ~iso:0.
+        ~field:(Iso_surface.Field.custom (fun xyz -> xyz.(2))) () |> get |> snapshot in
+    let samples = [| -3.;-3.;-3.;-3.; -1.;-1.;-1.;-1.;
+                     1.;1.;1.;1.; 3.;3.;3.;3. |] in
+    let sampled = Iso_surface.extract_sampled ~resolution:(1,1,3) ~min ~max ~iso:0.
+        ~samples () |> get |> snapshot in
+    check (dense = one && sampled = one)
+      "empty/crossing/empty slabs changed the independent ordered plane golden")) [1;8];
   List.iter (fun (resolution, min, max, center, radius) ->
     let rx, ry, rz = resolution in
     let field x y z =

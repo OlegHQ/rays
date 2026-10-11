@@ -242,4 +242,8 @@ let run () =
       && Geometry.vertex_count one = 30_000
       && Geometry.primitive_count one = 10_000)
     "Edge Flip scale cardinality";
+  let large_vertices = vertex_points one in
+  check (large_vertices = Array.init 30_000 (fun vertex ->
+      (vertex / 6 * 4) + [|1;2;3; 1;3;0|].(vertex mod 6)))
+    "Edge Flip scale result flips every pair";
   print_endline "edge flip tests passed"

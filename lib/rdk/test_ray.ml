@@ -303,12 +303,17 @@ let check_imports () =
       ~point_pattern:"temperature" ~vertex_pattern:"corner"
       ~primitive_pattern:"material marked" ~detail_pattern:"revision"
       ~match_groups:true ~source ~collision () |> get_ok in
-  check ((point_float output "temperature").(0) >= 0.
-      && (point_float output "corner").(0) >= 10.) "Ray imported numeric fields";
+  (* The hit (0.5, 0, 0.25) lies in the second triangle, points 0, 3, 1 and
+     vertices 3, 4, 5, at barycentric weights 0.375, 0.5625, 0.0625. *)
+  check (near (point_float output "temperature").(0) ((3. *. 0.5625) +. 0.0625)
+      && near (point_float output "corner").(0)
+           ((13. *. 0.375) +. (14. *. 0.5625) +. (15. *. 0.0625)))
+    "Ray did not interpolate imported numeric fields at the hit";
   (match Geometry.find_attribute ~owner:Attribute.Point "material" output with
    | Some attribute ->
        (match Attribute.Private.storage attribute with
-        | Attribute.Text values -> check (String.length values.(0) = 2)
+        | Attribute.Text values -> check
+            (values.(0) = "m1")
             "Ray primitive text import"
         | _ -> fail "Ray material output storage")
    | None -> fail "Ray material output missing");

@@ -1823,6 +1823,8 @@ let test_detail_attribute_overrides () =
       (label ^ " dropped the controlling detail attribute");
     let output = without_details [name] output
     and expected = expected input |> get_rdk in
+    check (not (equal_geometry (overridden input |> get_rdk) expected))
+      (label ^ " explicit option is not distinguishable from the override");
     check (equal_geometry output expected)
       (label ^ " did not override the explicit Subdivide option") in
   let quads = Plane_generators.grid ~connectivity:Plane_generators.Grid_quads
@@ -1861,7 +1863,9 @@ let test_detail_attribute_overrides () =
     check_override ~name:"osd_vtxboundaryinterpolation"
       ~storage:(Attribute.Int [|value|]) ~input:quads
       ~overridden:(fun geometry -> Subdivide.subdivide
-        ~boundary_interpolation:Subdivide.Subdivide_boundary_edge_and_corner geometry)
+        ~boundary_interpolation:(if expected = Subdivide.Subdivide_boundary_edge_and_corner
+          then Subdivide.Subdivide_boundary_edge_only
+          else Subdivide.Subdivide_boundary_edge_and_corner) geometry)
       ~expected:(fun geometry ->
         Subdivide.subdivide ~boundary_interpolation:expected geometry) label)
     [ 0, Subdivide.Subdivide_boundary_none, "None boundary override";
@@ -1878,7 +1882,9 @@ let test_detail_attribute_overrides () =
     check_override ~name:"osd_fvarlinearinterpolation"
       ~storage:(Attribute.Int [|value|]) ~input:fvar_input
       ~overridden:(fun geometry -> Subdivide.subdivide
-        ~face_varying_interpolation:Subdivide.Subdivide_fvar_all geometry)
+        ~face_varying_interpolation:(if expected = Subdivide.Subdivide_fvar_all
+          then Subdivide.Subdivide_fvar_none
+          else Subdivide.Subdivide_fvar_all) geometry)
       ~expected:(fun geometry ->
         Subdivide.subdivide ~face_varying_interpolation:expected geometry) label)
     [ 0, Subdivide.Subdivide_fvar_none, "FVar None override";
@@ -1891,7 +1897,9 @@ let test_detail_attribute_overrides () =
     check_override ~name:"osd_trianglesubdiv"
       ~storage:(Attribute.Int [|value|]) ~input:triangles
       ~overridden:(fun geometry -> Subdivide.subdivide
-        ~triangle_policy:Subdivide.Subdivide_triangles_smooth geometry)
+        ~triangle_policy:(if expected = Subdivide.Subdivide_triangles_smooth
+          then Subdivide.Subdivide_triangles_catmull_clark
+          else Subdivide.Subdivide_triangles_smooth) geometry)
       ~expected:(fun geometry ->
         Subdivide.subdivide ~triangle_policy:expected geometry) label)
     [ 0, Subdivide.Subdivide_triangles_catmull_clark,
@@ -1902,7 +1910,9 @@ let test_detail_attribute_overrides () =
     check_override ~name:"osd_creasingmethod"
       ~storage:(Attribute.Int [|value|]) ~input:creased
       ~overridden:(fun geometry -> Subdivide.subdivide
-        ~creasing_method:Subdivide.Subdivide_creasing_chaikin geometry)
+        ~creasing_method:(if expected = Subdivide.Subdivide_creasing_chaikin
+          then Subdivide.Subdivide_creasing_uniform
+          else Subdivide.Subdivide_creasing_chaikin) geometry)
       ~expected:(fun geometry ->
         Subdivide.subdivide ~creasing_method:expected geometry) label)
     [ 0, Subdivide.Subdivide_creasing_uniform, "Uniform creasing override";

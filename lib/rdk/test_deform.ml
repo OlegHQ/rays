@@ -71,8 +71,27 @@ let run () =
     fail "Normals produced non-finite values";
 
   let peaked = Deform.peak ~distance:0.75 normal_quad |> get_ok in
-  ignore (Deform.noise_displace ~amplitude:0.2
-      ~frequency:0.5 ~seed:17 normal_quad |> get_ok);
+  let noisy = Deform.noise_displace ~amplitude:0.2
+      ~frequency:0.5 ~seed:17 normal_quad |> get_ok in
+  if Geometry.point_count noisy <> 4
+      || Topology.data_id (Geometry.topology noisy)
+         <> Topology.data_id quad_topology
+      || equal_positions noisy normal_quad then
+    fail "Noise Displace kept topology but did not move the points";
+  (* The default height mode moves Y only and invalidates the point normals. *)
+  if (positions noisy).x <> (positions normal_quad).x
+      || (positions noisy).z <> (positions normal_quad).z
+      || Geometry.find_attribute ~owner:Attribute.Point "N" noisy <> None then
+    fail "Height noise moved X/Z or kept stale normals";
+  (let p = positions noisy and q = positions normal_quad in
+   Array.iteri (fun i _ ->
+     if not (Float.is_finite p.x.(i) && Float.is_finite p.y.(i)
+         && Float.is_finite p.z.(i)) then
+       fail "Noise Displace produced non-finite positions";
+     if Float.abs (p.x.(i) -. q.x.(i)) > 0.2 +. 1e-9
+         || Float.abs (p.y.(i) -. q.y.(i)) > 0.2 +. 1e-9
+         || Float.abs (p.z.(i) -. q.z.(i)) > 0.2 +. 1e-9 then
+       fail "Noise Displace exceeded its amplitude") p.x);
   (match Deform.noise_displace ~amplitude:nan ~frequency:0.5
       ~seed:17 normal_quad with
    | Error error when Error.code error = "invalid_parameter" -> ()
@@ -93,8 +112,17 @@ let run () =
   let height domains grain = Parallel.run ~domains (fun () ->
     Deform.noise_displace ~grain ~amplitude:0.8 ~frequency:0.16 ~seed:0 source |> get_ok) in
   let height_one = height 1 257 and height_eight = height 8 257 in
-  check (geometry_bytes height_one = geometry_bytes height_eight)
-    "Height noise differs across domains";
+  let samples = Array.make count 0. in
+  Rays_math.Noise.Private.sample2_into noise ~first:0 ~last:count ~frequency:0.16
+    ~x:p.x ~y:p.z ~output:samples;
+  let height_expected = Kernel.edit_point_ranges (fun ~first ~last ~x:_ ~y ~z:_ ->
+    for i = first to last - 1 do
+      y.(i) <- p.y.(i) +. 0.8 *. ((samples.(i) *. 2.) -. 1.)
+    done) source |> Geometry.without_attribute ~owner:Attribute.Point "N" in
+  check (geometry_bytes height_one = geometry_bytes height_expected
+    && geometry_bytes height_one = geometry_bytes height_eight
+    && geometry_bytes height_one = geometry_bytes (height 1 max_int))
+    "Height noise differs from the scalar formula or across domains/grains";
   let height_positions = positions height_one in
   check (height_positions.x == p.x && height_positions.z == p.z && height_positions.y != p.y)
     "Height noise must borrow immutable X/Z and own Y";

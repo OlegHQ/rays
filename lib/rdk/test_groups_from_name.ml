@@ -5,6 +5,18 @@ open Rdk_test_support
 let point_cloud count =
   Line_geometry.points (Array.init count (fun point -> float_of_int point, 0., 0.))
 
+let mesh () =
+  let positions = Packed.Float3.Builder.create 4 in
+  Array.iteri (fun point (x, y, z) ->
+    Packed.Float3.Builder.set positions point x y z)
+    [|(0., 0., 0.); (1., 0., 0.); (1., 1., 0.); (0., 1., 0.)|];
+  let topology = Rdk_test_support.Tb.create ~point_count:4 () in
+  Rdk_test_support.Tb.add_polygon topology [|0; 1; 2|];
+  Rdk_test_support.Tb.add_polygon topology [|0; 2; 3|];
+  Geometry.create ~positions:(Packed.Float3.Builder.freeze positions)
+    ~topology:(Rdk_test_support.Tb.freeze topology) ()
+  |> Result.get_ok
+
 let with_text owner name values geometry =
   let attribute = Attribute.create_owned ~owner ~name (Attribute.Text values)
       |> Result.get_ok in
@@ -63,6 +75,16 @@ let test_point_names_and_policies () =
     "Groups from Name validates after prefixing";
   check (Geometry.find_group ~owner:Group.Point "piece_" prefixed = None)
     "Groups from Name ignores empty values before prefixing"
+
+let test_primitive_names () =
+  let source = mesh () |> with_text Attribute.Primitive "material"
+      [|"metal"; "wood"|] in
+  let output = Group_ops.groups_from_name ~owner:Attribute.Primitive
+      ~attribute:"material" source |> get_ok in
+  expect_members [0] (group Group.Primitive "metal" output)
+    "Groups from Name primitive first value";
+  expect_members [1] (group Group.Primitive "wood" output)
+    "Groups from Name primitive second value"
 
 let test_conflicts_and_empty_output () =
   let existing = Group.ordered ~owner:Group.Point ~name:"red" ~length:6
@@ -141,6 +163,59 @@ let text_values owner name geometry =
        | _ -> fail ("non-text attribute " ^ name))
   | None -> fail ("missing attribute " ^ name)
 
+let test_name_from_groups () =
+  let alpha = Group.init ~grain:1 ~owner:Group.Point ~name:"alpha" 6
+      (fun point -> point = 0 || point = 1)
+  and beta = Group.init ~grain:1 ~owner:Group.Point ~name:"beta" 6
+      (fun point -> point = 1 || point = 2) in
+  let source = point_cloud 6 |> with_group alpha |> with_group beta in
+  let last = Group_ops.name_from_groups ~default:"none" ~owner:Attribute.Point source
+      |> get_ok in
+  check (text_values Attribute.Point "name" last
+      = [|"alpha"; "beta"; "beta"; "none"; "none"; "none"|])
+    "Name from Groups stable last-group overlap";
+  let first = Group_ops.name_from_groups ~overlap:Group_ops.First_group
+      ~owner:Attribute.Point source |> get_ok in
+  check (text_values Attribute.Point "name" first
+      = [|"alpha"; "alpha"; "beta"; ""; ""; ""|])
+    "Name from Groups stable first-group overlap";
+  expect_invalid (fun () -> Group_ops.name_from_groups ~overlap:Group_ops.Error_on_overlap
+      ~owner:Attribute.Point source)
+    "Name from Groups overlap error";
+  let existing = source |> with_text Attribute.Point "piece"
+      [|"old0"; "old1"; "old2"; "old3"; "old4"; "old5"|] in
+  let filtered = Group_ops.name_from_groups ~attribute:"piece" ~pattern:"alpha"
+      ~delete_groups:true ~owner:Attribute.Point existing |> get_ok in
+  check (text_values Attribute.Point "piece" filtered
+      = [|"alpha"; "alpha"; "old2"; "old3"; "old4"; "old5"|])
+    "Name from Groups preserves existing values outside selected groups";
+  check (Geometry.find_group ~owner:Group.Point "alpha" filtered = None
+      && Geometry.find_group ~owner:Group.Point "beta" filtered <> None)
+    "Name from Groups deletes only pattern-selected source groups";
+  let primitive_source = mesh ()
+      |> with_group (Group.init ~grain:1 ~owner:Group.Primitive ~name:"face_a" 2
+        (fun primitive -> primitive = 0)) in
+  let primitive = Group_ops.name_from_groups ~owner:Attribute.Primitive
+      primitive_source |> get_ok in
+  check (text_values Attribute.Primitive "name" primitive = [|"face_a"; ""|])
+    "Name from Groups primitive ownership";
+  let vertex_source = mesh ()
+      |> with_group (Group.init ~grain:1 ~owner:Group.Vertex ~name:"corner" 6
+        (fun vertex -> vertex mod 2 = 0)) in
+  let vertex = Group_ops.name_from_groups ~owner:Attribute.Vertex vertex_source
+      |> get_ok in
+  check (text_values Attribute.Vertex "name" vertex
+      = [|"corner"; ""; "corner"; ""; "corner"; ""|])
+    "Name from Groups vertex ownership";
+  expect_invalid (fun () -> Group_ops.name_from_groups ~owner:Attribute.Detail source)
+    "Name from Groups rejects detail ownership";
+  let cancelled = Cancel.create () in
+  Cancel.cancel cancelled;
+  (match Group_ops.name_from_groups ~cancel:cancelled ~owner:Attribute.Point source with
+   | Error error -> check (Error.code error = "cancelled")
+       "Name from Groups cancellation code"
+   | Ok _ -> fail "cancelled Name from Groups published geometry")
+
 let test_scale_and_parallel_exactness () =
   let count = 200_003 and distinct = 32 in
   let values = Array.init count (fun element ->
@@ -175,50 +250,44 @@ let test_scale_and_parallel_exactness () =
 let test_checked_boundaries () =
   let source = point_cloud 3 |> with_text Attribute.Point "name"
       [|"red"; "blue"; "red"|] in
-  let direct = Group_ops.groups_from_name ~owner:Attribute.Point
-      ~attribute:"name" source |> get_ok
-  and compatibility = Group_ops.groups_from_name ~owner:Attribute.Point
+  let grouped = Group_ops.groups_from_name ~owner:Attribute.Point
       ~attribute:"name" source |> get_ok in
-  check (List.for_all2 same_group (Geometry.groups direct)
-      (Geometry.groups compatibility))
-    "Groups from Name checked boundary changed ordered groups";
-  let compare_errors operation direct compatibility =
-    match direct, compatibility with
-    | Error direct, Error compatibility ->
-        check (Error.operation direct = operation
-            && Error.to_string direct = Error.to_string compatibility)
-          (operation ^ " checked boundary changed the typed error")
-    | _ -> fail (operation ^ " checked boundary accepted invalid input") in
-  compare_errors "groups_from_name"
-    (Group_ops.groups_from_name ~grain:0 ~owner:Attribute.Point
-       ~attribute:"name" source)
+  check (List.map Group.name (Geometry.groups grouped) = ["red"; "blue"])
+    "Groups from Name checked boundary group names";
+  expect_members [0; 2] (group Group.Point "red" grouped)
+    "Groups from Name checked boundary red members";
+  expect_members [1] (group Group.Point "blue" grouped)
+    "Groups from Name checked boundary blue members";
+  let named = Group_ops.name_from_groups ~owner:Attribute.Point grouped
+      |> get_ok in
+  check (text_values Attribute.Point "name" named = [|"red"; "blue"; "red"|])
+    "Name from Groups checked boundary text payload";
+  let expect_error operation expected_code result =
+    match result with
+    | Error error ->
+        check (Error.operation error = operation
+            && Error.code error = expected_code)
+          (operation ^ " checked boundary typed error")
+    | Ok _ -> fail (operation ^ " checked boundary accepted invalid input") in
+  expect_error "groups_from_name" "invalid_group"
     (Group_ops.groups_from_name ~grain:0 ~owner:Attribute.Point
        ~attribute:"name" source);
-  let direct = Group_ops.name_from_groups ~owner:Attribute.Point direct
-      |> get_ok
-  and compatibility = Group_ops.name_from_groups ~owner:Attribute.Point compatibility
-      |> get_ok in
-  check (text_values Attribute.Point "name" direct
-      = text_values Attribute.Point "name" compatibility)
-    "Name from Groups checked boundary changed text payload";
-  compare_errors "name_from_groups"
-    (Group_ops.name_from_groups ~grain:0 ~owner:Attribute.Point direct)
-    (Group_ops.name_from_groups ~grain:0 ~owner:Attribute.Point compatibility);
+  expect_error "name_from_groups" "invalid_group"
+    (Group_ops.name_from_groups ~grain:0 ~owner:Attribute.Point grouped);
   let cancel = Cancel.create () in
   Cancel.cancel cancel;
-  compare_errors "groups_from_name"
-    (Group_ops.groups_from_name ~cancel ~owner:Attribute.Point
-       ~attribute:"name" source)
+  expect_error "groups_from_name" "cancelled"
     (Group_ops.groups_from_name ~cancel ~owner:Attribute.Point
        ~attribute:"name" source);
-  compare_errors "name_from_groups"
-    (Group_ops.name_from_groups ~cancel ~owner:Attribute.Point direct)
-    (Group_ops.name_from_groups ~cancel ~owner:Attribute.Point compatibility)
+  expect_error "name_from_groups" "cancelled"
+    (Group_ops.name_from_groups ~cancel ~owner:Attribute.Point grouped)
 
 let run () =
   test_point_names_and_policies ();
+  test_primitive_names ();
   test_conflicts_and_empty_output ();
   test_bounds_and_failures ();
+  test_name_from_groups ();
   test_scale_and_parallel_exactness ();
   test_checked_boundaries ();
   print_endline "groups from name tests passed"

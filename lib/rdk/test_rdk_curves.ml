@@ -926,13 +926,15 @@ let curves ~cylinder_curve ~positions ~triangle_geometry =
       Line_geometry.polyline [|(-.max_float,0.,0.); (-.max_float,1.,0.)|] |> get_ok;
       Line_geometry.polyline [|(max_float,0.,0.); (max_float,1.,0.)|] |> get_ok;
     ] |> get_ok |> Curve_topology.join_curves |> get_ok in
-  if Geometry.vertex_count extreme_join <> 4 then
+  if Geometry.vertex_count extreme_join <> 4
+     || Geometry.primitive_count extreme_join <> 1 then
     fail "Curve Join mishandled overflowing finite endpoint distance";
   let extreme_global = Mesh_merge.run [
       Line_geometry.polyline [|(-.max_float,0.,0.); (-.max_float,1.,0.)|] |> get_ok;
       Line_geometry.polyline [|(max_float,0.,0.); (max_float,1.,0.)|] |> get_ok;
     ] |> get_ok |> Curve_topology.join_curves ~connect_closest_ends:true |> get_ok in
-  if Geometry.vertex_count extreme_global <> 4 then
+  if Geometry.vertex_count extreme_global <> 4
+     || Geometry.primitive_count extreme_global <> 1 then
     fail "global closest Curve Join mishandled overflowing finite distance";
   let invalid_join_positions = Packed.Float3.Private.of_owned_exn
       ~x:[|0.;1.;Float.nan;3.|] ~y:(Array.make 4 0.) ~z:(Array.make 4 0.) in
