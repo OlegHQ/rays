@@ -849,7 +849,8 @@ Phase 5
 Phases 6 and 7
 - [x] P6.1 S
   2026-10-11. `tools/web/runtime/runtime.js`: `translate(domEvent, rect)` (pure, logical points relative to the canvas rect), `Input` (pointer, held keys/buttons, per-frame ordered events; held keys sorted as native `KeySet`, constructors in declaration order then characters), `createRuntime(program, {now, fixedDt, pool, size})` with `rt.slots`, `rt.region(id)`, `rt.load(program)` (resets slots) and `rt.stepFrame(override)` (clock as `sketch.ml:211`: count from 1, fixed `t = count*dt`, real `dt = min(delta, 0.1)`), `frameValue` (the Lisp `frame/input` Map) and `start(canvas, program)`. Events are `Flow.Op.event_fields` Maps. Ambiguities (wheel scale and sign, unmapped keys, text/drop/pinch/trackpad events, key names under shift) are listed in the runtime header and the task report. `tools/web/test/runtime.mjs` runs under `tools/lisp/test/web_runtime.t`; `@tools/lisp/test/runtest` green.
-- [ ] P6.2 S
+- [x] P6.2 S
+  2026-10-11. `tools/web/runtime/workers.js`: `checkIsolation` (one plain message, no fallback), `createPool({size, spawn})` over one adapter (`spawnWorker`: browser `Worker` from a Blob, or `node:worker_threads` with `eval`), `pool.load(id, source)`, `pool.alloc(n)` (shared `Float64Array`), `pool.collect(id, inputs, uniforms, outputs, count)` (async; chunks of 16 blocks x 1,024 as `packed.ml:208-209`, one chunk or fewer runs in the caller as `parallel.ml:123-137` does, calls served in order) and `pool.region(id)` for the ordered Sum/Accumulate path on the main thread. `tools/web/test/workers.mjs` (cram `web_runtime.t`): the four goldens, byte-equal to one call at 1 and 8 workers for 100,003, 3 x 16,384 and 1,000 elements, plus non-finite status, concurrent calls and the isolation message. Because workers are asynchronous, a frame that uses `collect` must be `async`. `@tools/lisp/test/runtest` green.
 - [ ] P6.3 S
 - [ ] P6.4 S
 - [ ] P6.5 S

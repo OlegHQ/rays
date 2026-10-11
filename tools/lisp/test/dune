@@ -5,7 +5,10 @@
   ../../web/test/prims.mjs
   ../../web/runtime/prims.js
   ../../web/test/runtime.mjs
+  ../../web/test/workers.mjs
   ../../web/runtime/runtime.js
+  ../../web/runtime/workers.js
+  (glob_files ../../../lib/flow_web/goldens/*.js)
   ../../../specification/core.md
   (glob_files_rec ../../../examples/*.rays)
   (glob_files_rec ../../../sketches/*.rays)

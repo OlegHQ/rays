@@ -13,6 +13,8 @@
 // lib/rays/input_state.ml and lib/rays_editor/live_frame.ml. Values use prims.js's representation
 // (Int = BigInt, Record = Map, Vec3 = Float64Array).
 
+import { checkIsolation, createPool } from './workers.js';
+
 // ---- event records: op.ml:104-107 event_fields, defaults at op.ml:131-134 ----
 const ZERO = { text: () => '', int: () => 0n, float: () => 0, vec3: () => new Float64Array(3), list: () => [] };
 export const EVENT_FIELDS = [['kind', 'text'], ['key', 'text'], ['button', 'text'], ['position', 'vec3'],
@@ -130,8 +132,9 @@ export function createRuntime(program, { now = () => performance.now() / 1000, f
 
 // ---- the DOM wiring: the only place that touches the page ----
 export async function start(canvas, program, { fixedDt, pool, win = globalThis } = {}) {
+  if (!checkIsolation(win)) return null;
   const rect = () => canvas.getBoundingClientRect();
-  const rt = createRuntime(program, { fixedDt, pool: pool ?? null, size: [Math.round(rect().width), Math.round(rect().height)] });
+  const rt = createRuntime(program, { fixedDt, pool: pool ?? await createPool(), size: [Math.round(rect().width), Math.round(rect().height)] });
   const push = e => rt.input.push(e, rect());
   for (const type of ['pointermove', 'pointerdown', 'pointerup', 'pointercancel']) canvas.addEventListener(type, e => {
     if (type === 'pointerdown') canvas.setPointerCapture?.(e.pointerId);
