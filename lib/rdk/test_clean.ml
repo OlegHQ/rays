@@ -95,10 +95,27 @@ let run () =
       ~owner:Attribute.Primitive (Attribute.Int [|10;20;30;40;50|]) |> get_ok in
   let overlap_source = Geometry.with_attribute primitive_id overlap_source |> get_ok
       |> Group_mesh.group_edges ~name:"source_edges" |> get_rdk in
-  let keep_first = Clean.run ~remove_degenerate:false
-      ~overlaps:Clean.Keep_first_overlap overlap_source |> get_rdk
-  and _delete_pairs = Clean.run ~remove_degenerate:false
-      ~overlaps:Clean.Delete_overlap_pairs overlap_source |> get_rdk in
+  let overlap_bytes = geometry_bytes overlap_source in
+  let overlap_at domains policy = Parallel.run ~domains (fun () -> Clean.run ~grain:1
+      ~remove_degenerate:false ~overlaps:policy overlap_source |> get_rdk) in
+  let keep_first = overlap_at 1 Clean.Keep_first_overlap
+  and delete_pairs = overlap_at 1 Clean.Delete_overlap_pairs in
+  List.iter (fun (policy, one, expected_ids, expected_vertices) ->
+    let many = overlap_at 4 policy in
+    check (geometry_bytes one = geometry_bytes many)
+      "Clean overlap policy differs across domains";
+    let ids = match Geometry.find_attribute ~owner:Attribute.Primitive "primitive_id" one
+        |> Option.get |> Attribute.Private.storage with
+      | Attribute.Int values -> values
+      | _ -> fail "Clean changed primitive ID storage" in
+    let topology = Topology.Private.view (Geometry.topology one) in
+    check (ids = expected_ids && topology.vertex_points = expected_vertices
+        && topology.primitive_offsets = Array.init (Array.length ids + 1) (fun i -> i * 3))
+      "Clean overlap policy lost primitive/corner ancestry") [
+    Clean.Keep_first_overlap, keep_first, [|10;40;50|], [|0;1;2;0;2;3;0;1;2|];
+    Clean.Delete_overlap_pairs, delete_pairs, [|40;50|], [|0;2;3;0;1;2|]
+  ];
+  check (geometry_bytes overlap_source = overlap_bytes) "Clean overlap repair mutated its source";
   check (Geometry.find_edge_group "source_edges" keep_first <> None)
     "Clean overlap repair lost native edge provenance";
 

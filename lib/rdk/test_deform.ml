@@ -92,7 +92,9 @@ let run () =
   let noise = Rays_math.Noise.create 0 in
   let height domains grain = Parallel.run ~domains (fun () ->
     Deform.noise_displace ~grain ~amplitude:0.8 ~frequency:0.16 ~seed:0 source |> get_ok) in
-  let height_one = height 1 257 and _height_eight = height 8 257 in
+  let height_one = height 1 257 and height_eight = height 8 257 in
+  check (geometry_bytes height_one = geometry_bytes height_eight)
+    "Height noise differs across domains";
   let height_positions = positions height_one in
   check (height_positions.x == p.x && height_positions.z == p.z && height_positions.y != p.y)
     "Height noise must borrow immutable X/Z and own Y";

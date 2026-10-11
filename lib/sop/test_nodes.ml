@@ -1733,7 +1733,39 @@ Lisp_sop.node ~with_:["detect_source_node", (detect_source_node)] (Printf.sprint
     check (Rdk.Geometry.primitive_count result = (if remove_degenerate_primitives then 0 else 1)
       && Rdk.Geometry.point_count result = (if remove_degenerate_primitives && remove_unused_points_from_degenerate_primitives then 0 else 1))
       "fuse cleanup changes degenerate cardinality") [false;true]) [false;true];
-  let _attribute_rules = "Cd\taverage\t" and _group_rules = "selected*\tunion" in
+  let attribute_rules = "Cd\taverage\t" and group_rules = "selected*\tunion" in
+  let colors = Rdk.Packed.Float3.Private.of_owned_exn
+    ~x:[|0.;2.;6.;10.|] ~y:[|0.;4.;8.;12.|] ~z:[|0.;6.;10.;14.|] in
+  let rule_geometry = Rdk.Geometry.with_attribute
+      (Rdk.Attribute.create_owned ~owner:Point ~name:"Cd" (Float3 colors) |> get)
+      fuse_source_geometry |> get in
+  let rule_geometry = Rdk.Geometry.with_group
+      (Rdk.Group.init ~owner:Point ~name:"selected_union" 4 (fun point -> point mod 2 = 1))
+      rule_geometry |> get in
+  let rule_bytes = geometry_bytes rule_geometry in
+  let rule_source = Lisp_sop.snapshot rule_geometry in
+  let rule_node = sop ~inputs:[rule_source] "fuse"
+    [kf "tolerance" 0.3;ks "attribute_rules" attribute_rules;ks "group_rules" group_rules] in
+  same_cook "fuse average/union rules" ~optional_inputs:[Some rule_source;None]
+    ~typed:rule_node ~factory:Nodes.Fuse.factory
+    ["tolerance",Parameter.Float_value 0.3;"attribute_rules",Text_value attribute_rules;
+     "group_rules",Text_value group_rules] rule_source;
+  let native = Rdk.Fuse_grid.fuse ~tolerance:0.3
+    ~attribute_rules:[{Rdk.Fuse_reduce.pattern="Cd";method_=Attribute_average;weight_attribute=None}]
+    ~group_rules:[{Rdk.Fuse_reduce.group_pattern="selected*";group_method=Group_union}]
+    rule_geometry |> Result.get_ok in
+  let one = cook 1 rule_node and many = cook 4 rule_node in
+  check (geometry_bytes one = geometry_bytes native && geometry_bytes one = geometry_bytes many)
+    "fuse average/union rules preserve native bytes across domains";
+  let colors = Rdk.Geometry.find_attribute ~owner:Point "Cd" one |> Option.get
+    |> Rdk.Attribute.get (Rdk.Attribute.key ~owner:Point ~name:"Cd" Rdk.Attribute.float3)
+    |> Option.get |> Rdk.Packed.Float3.Private.view in
+  let union = Rdk.Geometry.find_group ~owner:Point "selected_union" one |> Option.get in
+  check (colors.x = [|1.;8.|] && colors.y = [|2.;10.|] && colors.z = [|3.;12.|]
+      && Rdk.Group.length union = 2 && Rdk.Group.cardinality union = 2
+      && Rdk.Group.mem 0 union && Rdk.Group.mem 1 union)
+    "fuse rules average distinct colors and union non-first members";
+  check (geometry_bytes rule_geometry = rule_bytes) "fuse rules mutated their source";
   List.iter (fun inclusive -> List.iter (fun match_attributes -> List.iter (fun (match_condition,condition_choice) ->
     List.iter (fun modify_target -> List.iter (fun fuse_points -> List.iter (fun keep_fused_points ->
       List.iter (fun remove_degenerate_primitives -> List.iter (fun remove_unused_points_from_degenerate_primitives ->

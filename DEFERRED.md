@@ -74,6 +74,19 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   complete one/four-domain geometry bytes. No unused named result/fixture
   remains in the extracted monolith; `@lib/rdk/runtest` passes. The broader
   audit of other RDK, SOP and scene-execution tests remains open.
+- Verified 2026-10-11: `test_attribute_generate` now compares complete
+  one/four-domain bytes for uniform, direction/sphere/ramp/discrete,
+  expanded-selection/Cauchy/text, quaternion noise and automatic remapping
+  results, and checks unchanged sources. `test_deform` uses its formerly
+  unused eight-domain height-noise result. `test_clean` checks both overlap
+  policies' exact primitive/corner ancestry and one/four-domain bytes, with
+  unchanged input. The unused SOP fuse average/union fixtures now exercise
+  distinct colors and selected non-first cluster members, with explicit
+  expected values and complete native/Lisp/factory/domain comparisons.
+  `@lib/rdk/runtest` and `@lib/sop/test_nodes` pass. A lexical AST scan now
+  finds no unreferenced named local binding (including underscore-prefixed
+  names) in the RDK or SOP test files; that scan does not prove full behavioral
+  coverage, and native scene-execution tests remain unverified.
 - Verified 2026-10-11: `test_materials` exercises the fixed 500ms carry budget
   with a live geometry input and a controlled 600ms preparation callback.
   The held-back preview preserves the original document/history; Escape

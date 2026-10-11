@@ -548,6 +548,7 @@ let run () =
       values_geometry);
 
   let large = Plane_generators.grid ~columns:500 ~rows:200 ~size:10. () |> get_ok in
+  let large_bytes = geometry_bytes large in
   let generated domains = Parallel.run ~domains (fun () ->
     Attribute_ops.randomize ~grain:2_048 ~seed:(Rand.seed 77)
       ~owner:Attribute.Point ~name:"sample"
@@ -556,6 +557,8 @@ let run () =
         max = Attribute_ops.Vec4 (2., 1., 4., 3.);
       }) large |> get_ok) in
   let one = generated 1 and many = generated 4 in
+  check (geometry_bytes one = geometry_bytes many)
+    "Uniform attribute randomization differs across domains";
   let advanced domains = Parallel.run ~domains (fun () ->
     let geometry = Attribute_ops.randomize ~grain:2_048 ~seed:(Rand.seed 81)
         ~owner:Attribute.Point ~name:"random_direction"
@@ -587,7 +590,9 @@ let run () =
         Attribute_ops.Vec3 (Vec3.create 4. 5. 6.), 4.;
         Attribute_ops.Vec3 (Vec3.create 7. 8. 9.), 2.;
       ]) geometry |> get_ok) in
-  let _advanced_one = advanced 1 and _advanced_many = advanced 4 in
+  let advanced_one = advanced 1 and advanced_many = advanced 4 in
+  check (geometry_bytes advanced_one = geometry_bytes advanced_many)
+    "Direction/sphere/ramp/discrete randomization differs across domains";
   let expanded_group = Group.init ~grain:2_048 ~owner:Group.Point
       ~name:"expanded_parallel" (Geometry.point_count large)
       (fun point -> point mod 5 = 0) in
@@ -618,8 +623,11 @@ let run () =
       ~owner:Attribute.Primitive ~name:"text_parallel"
       (Attribute_ops.Random_custom_discrete_text ["a", 1.; "b", 2.])
       geometry |> get_ok) in
-  let _extended_one = extended 1 and _extended_many = extended 4 in
+  let extended_one = extended 1 and extended_many = extended 4 in
+  check (geometry_bytes extended_one = geometry_bytes extended_many)
+    "Expanded selections/Cauchy/text randomization differs across domains";
   let noise_input = Line_geometry.points (Array.make 4_097 (0., 0., 0.)) in
+  let noise_bytes = geometry_bytes noise_input in
   let noisy domains = Parallel.run ~domains (fun () ->
     Attribute_ops.noise ~grain:512 ~seed:73 ~owner:Attribute.Point
       ~name:"orient" ~kind:Attribute_ops.Noise_quaternion
@@ -627,11 +635,19 @@ let run () =
       ~range:Attribute_ops.Noise_zero_centered
       ~frequency:(Vec3.create 0.071 0.071 0.071)
       ~octaves:3 ~lacunarity:2. ~roughness:0.55 noise_input |> get_ok) in
-  let _noise_one = noisy 1 and _noise_many = noisy 4 in
+  let noise_one = noisy 1 and noise_many = noisy 4 in
+  check (geometry_bytes noise_one = geometry_bytes noise_many)
+    "Quaternion attribute noise differs across domains";
   let remapped domains geometry = Parallel.run ~domains (fun () ->
     Attribute_ops.remap ~grain:2_048 ~owner:Attribute.Point ~name:"sample"
       ~into:"mapped" ~input:Attribute_ops.Remap_auto
       ~output_min:(Attribute_ops.Vec4 (0., 0., 0., 0.))
       ~output_max:(Attribute_ops.Vec4 (1., 1., 1., 1.)) geometry |> get_ok) in
-  let _one = remapped 1 one and _many = remapped 4 many in
+  let sample_bytes = geometry_bytes one in
+  let remapped_one = remapped 1 one and remapped_many = remapped 4 many in
+  check (geometry_bytes remapped_one = geometry_bytes remapped_many)
+    "Automatic attribute remapping differs across domains";
+  check (geometry_bytes one = sample_bytes && geometry_bytes many = sample_bytes
+      && geometry_bytes large = large_bytes && geometry_bytes noise_input = noise_bytes)
+    "Attribute generation/noise/remapping mutated its source";
   print_endline "attribute generate tests passed"
