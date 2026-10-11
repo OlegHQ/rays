@@ -14,6 +14,10 @@ and callable =
       env : lowered Names.t; instance : int; prefix : W.path; zone : W.path; identity : int }
   | Named of { name : string; identity : int }
 
+(* The expansions by name (noise3, color/hsl, color/gradient) are for the shipped operators only:
+   a workspace operator that reuses the name keeps its own body and declines. *)
+let shipped (o : Flow.Op.t) = List.memq o Operators.all || not (List.exists (fun (s : Flow.Op.t) -> s.name=o.name) Operators.all)
+
 let lower root =
   let constants = ref [] and locals = ref [] and next_constant = ref 0
   and next_local = ref 0 and next_statement = ref 0 in
@@ -214,7 +218,7 @@ let lower root =
         List.fold_left (fun v name -> field statements cache source x.ty v name) start fields
     | Op {op;args;_} ->
         let o = match Flow.Op.find ~extra:(E.Private.residual_ops root) op Flow.Context.value with
-          | Some o when o.ctx=Flow.Context.value && o.shape=Flow.Op.Scalar -> o | _ -> refuse op in
+          | Some o when o.ctx=Flow.Context.value && o.shape=Flow.Op.Scalar && shipped o -> o | _ -> refuse op in
         let args = List.map (fun (n,t) -> n,compile t) args in
         (match known_values args with
         | Some values when not o.live ->
@@ -820,7 +824,7 @@ let lower root =
         | Some _ -> definition statements cache source n.name specialized values
         | None ->
             let o=match Flow.Op.find ~extra:(E.Private.residual_ops root) n.name Flow.Context.value with
-              | Some o when o.ctx=Flow.Context.value && o.shape=Flow.Op.Scalar -> o | _ -> refuse n.name in
+              | Some o when o.ctx=Flow.Context.value && o.shape=Flow.Op.Scalar && shipped o -> o | _ -> refuse n.name in
             let names=Array.of_list (List.map fst (o.signature.pos @ o.signature.opt)) in
             let args=List.mapi (fun i v -> (if i<Array.length names then names.(i) else
                 match o.signature.rest with Some (n,_) -> n | None -> refuse n.name),v) values in

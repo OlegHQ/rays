@@ -79,6 +79,15 @@ let check ?(times=times) ~region (name,body) =
         Fun.protect ~finally:(fun () -> E.Private.core_residuals:=previous) (fun () ->
           E.Private.core_residuals:=enabled;
           verify (if enabled then "core" else "closure") (I.Executor.force program ~live))) [false;true]) times
+(* A workspace operator that reuses a shipped expansion's name keeps its own body: core declines it. *)
+let () =
+  let custom={I.Operators.noise3 with packed_extension=None;body=(fun ~live:_ ~node:_ _ -> E.Float 0.125)} in
+  let source="(workspace w (graph g :context value (let* [tested (noise3 [t 0 0])] 0.)))" in
+  let ws=match Flow.Workspace.check ~ops:[custom] {Flow.Check.version=1;kinds=[]} (ok (Flow.Syntax.parse source)) with
+    | Some ws,[] -> ws | _,ds -> failwith (String.concat "; " (List.map Flow.Diagnostic.to_string ds)) in
+  match snd (List.hd (List.assoc ["g";"tested"] (ok (E.static ~record:true ws)).records)) with
+  | E.Residual r -> assert (I.Core_lower.lower r = Error "noise3")
+  | _ -> failwith "expected residual"
 let () =
   List.iter (check ~region:false) primitives;
   List.iter (fun (name,body,times) -> check ~times ~region:false (name,body)) sweeps;
