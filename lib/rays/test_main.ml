@@ -2,6 +2,7 @@ let tests = [
   "test_scene_rounded_cache", Test_scene_rounded_cache.run;
   "test_automatic_text_cache", Test_automatic_text_cache.run;
   "test_scene3_float32", Test_scene3_float32.run;
+  "test_scene3_float32_native", Test_scene3_float32.run_native;
   "test_scene_display_list", Test_scene_display_list.run;
   "test_ink", Test_ink.run;
   "test_canvas_native", Test_canvas_native.run;

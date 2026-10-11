@@ -66,5 +66,54 @@ let native source second_source first second=
       let combined=get(Runtime.read_pixels runtime ~bytes_per_row:512)in
       if combined<>changed then failwith "coalescing lost the float32 attribute stream")
 
+let pair ()=
+  let colors=[|Color.rgb 255 0 0;Color.rgb 0 255 0;Color.rgb 0 0 255|]in
+  let vertices,normals,indices,_=make colors in
+  let source=mesh(vertices,normals,indices,colors)
+  and changed=mesh(vertices,normals,indices,Array.make 3(Color.rgb 255 255 0))in
+  source,changed,stage source,stage changed
+
 let run ()=
+  let source,_,first,second=pair()in
+  let packed=first.draw.mesh.vertices and attrs=attributes first in
+  assert(Bytes.length packed=72&&Bytes.length attrs=36);
+  let original=Mesh.Private.view source in
+  Array.iteri(fun i(position:Vec3.t)->
+    let normal=(Option.get original.normals).(i)in
+    List.iteri(fun word expected->
+      assert(Bytes.get_int32_le packed(i*24+word*4)=Int32.bits_of_float expected))
+      [position.x;position.y;position.z;normal.x;normal.y;normal.z];
+    assert(Bytes.get_int32_le first.draw.mesh.indices(i*4)=Int32.of_int i);
+    let color=(Option.get original.colors).(i)in
+    assert(Bytes.get_int32_le attrs(i*12)=
+      Int32.of_int((color.r lsl 24)lor(color.g lsl 16)lor(color.b lsl 8)lor color.a));
+    assert(float attrs(i*12+4)=0.&&float attrs(i*12+8)=0.))original.vertices;
+  assert(first.draw.mesh.vertices==second.draw.mesh.vertices);
+  assert(first.draw.mesh.indices==second.draw.mesh.indices);
+  assert(attrs!=attributes second&&attrs<>attributes second);
+  Array.iteri(fun i _->assert(Bytes.get_int32_le(attributes second)(i*12)=0xffff00ffl))
+    original.vertices;
+  assert(float(Option.get first.draw.state.transform_uniforms)(82*4)=1.);
+  let repeated=stage source in
+  assert(repeated.draw.mesh.vertices==packed&&attributes repeated==attrs);
+  assert(repeated.draw.mesh.indices==first.draw.mesh.indices);
+  assert(Scene3.Private.depth_clear Scene3.empty=1.&&Scene3.Private.stencil_clear Scene3.empty=0);
+  List.iter(fun samples->
+    let scene=Scene3.create~samples[Scene3.mesh source]in
+    assert(Scene3.Private.depth_clear scene=1.&&Scene3.Private.stencil_clear scene=0);
+    let staged=Result.get_ok(Scene.Private.stage_native~width:128~height:128[Scene.view3d~camera scene])in
+    Array.iter(fun(entry:Scene_execution.scene3_entry)->
+      assert(entry.samples=samples&&entry.draw.state.depth_clear=1.&&entry.draw.state.stencil_clear=0))
+      (List.hd staged.scene3).entries)[1;4;9;16];
+  let vertices,normals,indices,colors=make(Array.make 3 Color.white)in
+  vertices.x.(0)<-1e100;
+  let oversized=mesh(vertices,normals,indices,colors)in
+  (match Scene.Private.stage_native~width:128~height:128
+      [Scene.view3d~camera(Scene3.create[Scene3.mesh oversized])]with
+   |Error error->assert(error="native View3d lowering failed: mesh")
+   |Ok _->failwith"non-finite float32 narrowing was accepted");
   print_endline "Scene3 float32: 36-byte split mirror, immutable component reuse, color invalidation, finite narrowing"
+
+let run_native ()=
+  let source,changed,first,second=pair()in
+  native source changed first second

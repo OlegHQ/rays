@@ -174,3 +174,32 @@ with the release callback called exactly once. Both tests and the dependency
 gate pass. Preparation time rises about 3.6% on this input; allocation is
 unchanged. This measures validation alone and makes no GPU timing or pixel
 claim.
+
+## 2026-10-11 — Deferred Scene3 constant clear fields
+
+Machine: managed Darwin arm64 runner, OCaml 5.3.0 native executable in the
+development profile, initial domain only. The unchanged cold-packing benchmark
+stages 100,000 points with normals and indices, at 800 × 600 logical points.
+Seven cold samples, no explicit warmup; median wall time and allocated bytes
+are reported. No profiler was attached and no concurrent build/test ran during
+either measurement. Each sample constructs its mesh and scene before timing.
+
+```sh
+_build/default/tools/check.exe tools/bench_scene3_packing.exe
+_build/default/tools/bench_scene3_packing.exe 100000 7
+```
+
+| Scene3 representation | Median seconds | Bytes per cold pack |
+| --- | ---: | ---: |
+| Stored constant clear fields | 0.003663063 | 13,617,576 |
+| Literal private accessors | 0.003749847 | 13,617,576 |
+
+The output remains 3,600,000 vertex/attribute bytes and 400,000 index bytes.
+The measurement excludes scene construction, so it does not measure the
+smaller Scene3 record's allocation. Staging allocation is unchanged; the
+2.4% timing difference does not establish a speedup. Public API manifests
+compare equal. `@lib/rays/runtest` passes, including restored float32 packing
+assertions in a test that previously only printed success. Its independent
+f64 pixel oracle is now registered under `@runtest-native`, but the actual
+attempt fails with "Metal has no system default device". Native pixel parity
+and upload behavior remain unverified here.

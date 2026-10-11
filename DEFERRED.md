@@ -28,6 +28,15 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
 
 ## Tests that got weaker
 
+- Fixed and verified 2026-10-11: `test_scene3_float32.run` formerly only
+  printed a success message. It now checks the split float32 ABI, exact
+  position/normal/index/color/UV words, geometry reuse across recoloring,
+  attribute invalidation, repeated staging, fixed clears at all four sample
+  counts and rejection of finite f64 values that overflow f32.
+  `@lib/rays/runtest` passes. The existing independent f64 pixel comparison,
+  recoloring upload check and coalescing comparison are now registered as
+  `@lib/rays/test_scene3_float32_native`; its actual attempt fails because
+  Metal has no system default device. No native pixel result is claimed.
 - Many `rdk`, `sop` and `scene_execution` tests were cut statement by statement when their
   subject was pruned. The survivors pass, but nobody has read what each one still covers.
   `test_scene_execution_metal`, `test_automatic_scratch` and `test_offscreen_metal` were cut
@@ -113,8 +122,12 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   `Edit_graph.factory_slots`), `Workspace.load ?ops`, `Ty.register ?color ?default`,
   `Shape_batch.Builder.circle ?stroke_width`, the 12 in `rays_editor/native_qualification`,
   and `Editor.create ?lights ?presets`.
+- Removed and verified 2026-10-11: `Scene3.t` no longer stores constant
+  `depth_clear` and `stencil_clear` fields. Its existing private accessors
+  return 1 and 0; lowering and the public interface are unchanged. CPU
+  staging tests cover the fixed values at every admitted sample count.
 - Fields that are constant but still threaded: `Paint.scale/tx/ty` and the `Ui_batch`
-  transform in `pxui`, `Scene3.depth_clear` and `stencil_clear`, the `Easy_camera` binding
+  transform in `pxui`, the `Easy_camera` binding
   `key`, `Light.attenuation.linear`, the path tracer `scale`.
 - `lib/sop/sop_topology.ml` keeps its prefix (`Topology` would shadow `Rdk.Topology`), and
   `Leader.keymap3` keeps its suffix (`Leader.keymap` is taken).

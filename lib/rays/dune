@@ -20,6 +20,10 @@
  (action (run %{exe:test_main.exe} test_scene3_float32)))
 
 (rule
+ (aliases runtest-native test_scene3_float32_native)
+ (action (run %{exe:test_main.exe} test_scene3_float32_native)))
+
+(rule
  (aliases runtest test_scene_rounded_cache)
  (action (run %{exe:test_main.exe} test_scene_rounded_cache)))
 

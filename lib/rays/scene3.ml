@@ -41,8 +41,6 @@ type t = {
   shadow : Shadow3.t option;
   ambient : Color.t;
   separate_specular : bool;
-  depth_clear : float;
-  stencil_clear : int;
   samples : int;
   world : World.baked option;
 }
@@ -57,8 +55,6 @@ let empty = {
   shadow = None;
   ambient = Color.black;
   separate_specular = false;
-  depth_clear = 1.;
-  stencil_clear = 0;
   samples = 1;
   world = None;
 }
@@ -74,8 +70,6 @@ let create ?(lights = []) ?shadow ?(ambient = Color.rgb 32 32 32)
     shadow;
     ambient;
     separate_specular;
-    depth_clear = 1.;
-    stencil_clear = 0;
     samples;
     world = None;
   }
@@ -219,8 +213,8 @@ module Private = struct
   let shadow scene = scene.shadow
   let ambient scene = scene.ambient
   let separate_specular scene = scene.separate_specular
-  let depth_clear scene = scene.depth_clear
-  let stencil_clear scene = scene.stencil_clear
+  let depth_clear _ = 1.
+  let stencil_clear _ = 0
   let samples scene = scene.samples
   let world scene = scene.world
 end
