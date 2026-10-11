@@ -28,5 +28,21 @@ module Builder : sig
     ?fill:int32 -> ?stroke:int32 -> unit -> unit
   val line : t -> x0:float -> y0:float -> x1:float -> y1:float ->
     color:int32 -> width:float -> unit
+
+  (* Whole sets from packed arrays: [count] instances appended in index order, with the bytes,
+     checks and failure of [circle], [rect] and [line] called once an instance with both colours
+     given, and no allocation per instance. [floats] is the values and how many floats an
+     instance takes; 0 repeats element 0 for every instance (a constant: two floats for a
+     position, extent or end, one otherwise), and a third float an instance (a packed vec3) is
+     ignored. An array shorter than its stride asks is [Invalid_argument]. *)
+  type floats = float array * int
+  val circles : t -> count:int -> position:floats -> radius:floats ->
+    fill:int32 -> stroke:int32 -> stroke_width:floats -> unit
+  val rects : t -> count:int -> position:floats -> size:floats ->
+    fill:int32 -> stroke:int32 -> unit
+  val lines : t -> count:int -> from:floats -> to_:floats -> color:int32 -> width:floats -> unit
+
+  (* A builder filled to its capacity gives the batch its storage, otherwise a copy; later
+     appends never change a published batch. *)
   val publish : t -> batch
 end

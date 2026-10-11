@@ -45,7 +45,7 @@ module Builder = struct
   let create ?(capacity=256) () =
     if capacity<0 || capacity>1_000_000 then invalid_arg "Shape_batch capacity";
     {bytes=Bytes.create (max 1 capacity * instance_bytes); count=0}
-  let append builder kind x0 y0 x1 y1 fill stroke stroke_width =
+  let[@inline] append builder kind x0 y0 x1 y1 fill stroke stroke_width =
     if not (finite_coordinate x0 && finite_coordinate y0 && finite_coordinate x1 && finite_coordinate y1
                 && finite_coordinate stroke_width)
        || stroke_width<0. then invalid_arg "Shape_batch: invalid coordinates";
@@ -78,6 +78,35 @@ module Builder = struct
       (if stroke=0l then 0. else 1.)
   let line builder ~x0 ~y0 ~x1 ~y1 ~color ~width =
     append builder 5l x0 y0 x1 y1 color 0l width
-  let publish builder = {bytes=Bytes.sub builder.bytes 0 (builder.count*instance_bytes);
-    count=builder.count; gpu=None; checked=false}
+  (* Whole sets from packed arrays. A float handed to [circle] from another library is boxed (the
+     dev profile compiles opaque, so nothing inlines across it), about 200 bytes an instance; these
+     read the arrays here and [append] inline. The instances, their order, the checks and the
+     failure are those of [circle], [rect] and [line] called once an instance with both colours. *)
+  type floats = float array * int
+  let circles builder ~count ~position:((p,ps):floats) ~radius:((r,rs):floats) ~fill ~stroke
+      ~stroke_width:((w,ws):floats) =
+    for i=0 to count-1 do
+      let x=p.(ps*i) and y=p.(ps*i+1) and radius=r.(rs*i) and stroke_width=w.(ws*i) in
+      if not (Float.is_finite radius) || radius<0. then invalid_arg "Shape_batch radius";
+      append builder 4l (x-.radius) (y-.radius) (x+.radius) (y+.radius) fill stroke
+        (if stroke=0l then 0. else stroke_width)
+    done
+  let rects builder ~count ~position:((p,ps):floats) ~size:((s,ss):floats) ~fill ~stroke =
+    for i=0 to count-1 do
+      let x=p.(ps*i) and y=p.(ps*i+1) and width=s.(ss*i) and height=s.(ss*i+1) in
+      if not (Float.is_finite width && Float.is_finite height) || width<0. || height<0.
+      then invalid_arg "Shape_batch extent";
+      append builder 0l x y (x+.width) (y+.height) fill stroke (if stroke=0l then 0. else 1.)
+    done
+  let lines builder ~count ~from:((a,as_):floats) ~to_:((b,bs):floats) ~color ~width:((w,ws):floats) =
+    for i=0 to count-1 do
+      append builder 5l a.(as_*i) a.(as_*i+1) b.(bs*i) b.(bs*i+1) color 0l w.(ws*i)
+    done
+  (* A full builder gives its storage to the batch instead of a copy: [append] only writes past
+     [count], and past the end of a full buffer it moves to a new one first, so the published bytes
+     are never written again. *)
+  let publish builder =
+    let length=builder.count*instance_bytes in
+    {bytes=(if length=Bytes.length builder.bytes then builder.bytes else Bytes.sub builder.bytes 0 length);
+     count=builder.count; gpu=None; checked=false}
 end
