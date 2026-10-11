@@ -198,6 +198,13 @@
  (action
   (system "if command -v node >/dev/null 2>&1; then mkdir -p kt && ../lib/flow_web/test_wgsl.exe --write-kernel-table kt && node web/test/gpu_check.mjs kt/kernels.json web/runtime/gpu.js ../lib/flow_web/goldens; else echo 'gpu_check: skipped (node not found)'; fi")))
 
+; End-to-end reload (plan P6.7): the watch server and a page in headless Chrome. Not part of runtest.
+(rule
+ (alias qualification-web)
+ (deps web/test/reload_check.mjs web/test/chrome.mjs %{bin:rays-lisp} ../sketches/flow_vectors/sketch.rays)
+ (action
+  (system "if command -v node >/dev/null 2>&1; then node web/test/reload_check.mjs %{bin:rays-lisp} ../sketches/flow_vectors/sketch.rays; else echo 'reload_check: skipped (node not found)'; fi")))
+
 (executable
  (name shape2_fixtures)
  (modules shape2_fixtures)

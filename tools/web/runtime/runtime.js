@@ -19,6 +19,7 @@
 import { checkIsolation, createPool } from './workers.js';
 import * as prims from './prims.js';
 import * as shapes from './shape2.js';
+import { createPresenter } from './present.js';
 
 // ---- event records: op.ml:104-107 event_fields, defaults at op.ml:131-134 ----
 const ZERO = { text: () => '', int: () => 0n, float: () => 0, vec3: () => new Float64Array(3), list: () => [] };
@@ -112,8 +113,13 @@ export function createRuntime(program, { now = () => performance.now() / 1000, f
   if (fixedDt !== undefined && !(Number.isFinite(fixedDt) && fixedDt > 0)) throw new RangeError('fixedDt must be finite and positive');
   const origin = now(), compiled = new Map();
   let last = origin, count = 0;
-  const regionOf = k => program.regions[k] ?? prims.fail('E_CORE', 'Unknown region.');
-  const load = () => { if (rt.pool) program.regions.forEach((r, k) => rt.pool.load(k, r.source)); };
+  const regionOf = k => rt.program.regions[k] ?? prims.fail('E_CORE', 'Unknown region.');
+  const held = new Map();   // region id -> the source the pool holds, so a reload sends only the changed ones
+  const load = () => {
+    const live = new Set(rt.program.regions.map(r => r.source));
+    for (const source of compiled.keys()) if (!live.has(source)) compiled.delete(source);
+    if (rt.pool) rt.program.regions.forEach((r, k) => { if (held.get(k) !== r.source) { rt.pool.load(k, r.source); held.set(k, r.source); } });
+  };
   const FACTS = { t: input => input.t, 'frame/dt': input => input.dt, 'frame/index': input => input.frame,
     'frame/width': input => input.size[0], 'frame/height': input => input.size[1] };
   const rt = {
@@ -143,8 +149,9 @@ export function createRuntime(program, { now = () => performance.now() / 1000, f
     },
     // The host image resolver (plan image nodes): none on the web, as a native frame without one.
     image: () => prims.fail('E_IMAGE', 'Drawing images need an environment-owned image resolver.'),
-    // Reload (P6.7): a new program, fresh slots, the canvas and the counters kept.
-    load(next) { rt.program = next; rt.slots = []; compiled.clear(); load(); },
+    // Reload (P6.7): a new program, fresh slots, the canvas and the counters kept. Regions are compiled once per
+    // source text, so one whose text is unchanged is not compiled again.
+    load(next) { rt.program = next; rt.slots = []; load(); },
     // Run one frame. `override` replaces fields of the live snapshot (Frame_input.t fields, `events` as
     // eventRecord Maps); the live events are drained either way. Resolves to program.frame's result. A frame that
     // throws leaves no pending state write behind, as native `Eval.transaction` rolls them back.
@@ -168,9 +175,45 @@ export function createRuntime(program, { now = () => performance.now() / 1000, f
   return rt;
 }
 
+// ---- reload (plan P6.6/P6.7): `rays-lisp web --watch` serves /version, the digest of the export ----
+// Polls it; when it changes, imports program.js again (cache-busting query), refetches data.bin and kernels.json,
+// hands the kernel table to gpu.update (which recompiles only the kernels whose text changed) and swaps the program
+// with rt.load (fresh state slots, the canvas and counters kept). Not served by the watch server (/version is
+// missing or the fetch fails): stops polling, silently. `poll()` runs one check and resolves true after a reload.
+export function watch(rt, { fetch = globalThis.fetch?.bind(globalThis), load = url => import(url), base = new URL('..', import.meta.url), interval = 500 } = {}) {
+  let version = null, timer = null, busy = false;
+  const url = (name, v) => new URL(v === undefined ? name : `${name}?v=${v}`, base).href;
+  const stop = () => { clearInterval(timer); timer = null; };
+  async function poll() {
+    if (busy || !fetch) return false;
+    busy = true;
+    try {
+      let text;
+      try { const r = await fetch(url('version'), { cache: 'no-store' }); if (!r.ok) return stop(); text = (await r.text()).trim(); }
+      catch { return stop(); }
+      if (version === null) { version = text; return false; }
+      if (text === version) return false;
+      version = text;   // a failed reload is retried at the next change, not every interval
+      const [program, data, table] = await Promise.all([load(url('program.js', text)),
+        fetch(url('data.bin', text)).then(r => r.arrayBuffer()), fetch(url('kernels.json', text)).then(r => r.json())]);
+      await rt.gpu?.update(table);
+      rt.data = data;
+      rt.load(program);
+      rt.reloads = (rt.reloads ?? 0) + 1;
+      rt.resume?.();
+      return true;
+    } catch (error) { console.error(error); return false; }
+    finally { busy = false; }
+  }
+  if (interval) { poll(); timer = setInterval(poll, interval); }   // the first poll takes the baseline version
+  return { poll, stop, version: () => version };
+}
+
 // ---- the DOM wiring: the only place that touches the page ----
 export async function start(canvas, program, { fixedDt, pool, data = null, win = globalThis } = {}) {
   if (!checkIsolation(win)) return null;
+  const presenter = await createPresenter(canvas, { win });
+  if (!presenter) return null;
   const rect = () => canvas.getBoundingClientRect();
   const rt = createRuntime(program, { fixedDt, data, pool: pool ?? await createPool(), size: [Math.round(rect().width), Math.round(rect().height)] });
   const push = e => rt.input.push(e, rect());
@@ -181,13 +224,16 @@ export async function start(canvas, program, { fixedDt, pool, data = null, win =
   canvas.addEventListener('wheel', e => { e.preventDefault(); push(e); }, { passive: false });
   for (const type of ['keydown', 'keyup', 'blur']) win.addEventListener(type, push);
   new win.ResizeObserver(() => push({ type: 'resize' })).observe(canvas);
-  let stopped = false;
+  let stopped = false, failed = false;
   const loop = async () => {
     if (stopped) return;
-    try { await rt.stepFrame(); } catch (error) { console.error(error); return; }
+    try { await rt.stepFrame(); presenter.present(rt.marks, rt.input.size); } catch (error) { console.error(error); failed = true; return; }
     win.requestAnimationFrame(loop);
   };
-  rt.stop = () => { stopped = true; rt.pool?.close(); };
+  rt.stop = () => { stopped = true; rt.pool?.close(); presenter.dispose(); };
+  rt.resume = () => { if (failed && !stopped) { failed = false; win.requestAnimationFrame(loop); } };   // a reload revives a failed frame loop
   win.requestAnimationFrame(loop);
+  win.__rays = rt;   // for tests and the console
+  watch(rt);
   return rt;
 }

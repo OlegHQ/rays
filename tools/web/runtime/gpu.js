@@ -46,7 +46,8 @@ export async function createGpu(table, { onError = e => console.error(e), win = 
 
   // Compile every kernel now, so a WGSL error is a load-time error naming the kernel.
   const kernels = new Map();
-  await Promise.all(table.kernels.map(async k => {
+  const keyOf = k => JSON.stringify([k.source, k.entry, k.interface, k.table_seeds]);   // what a pipeline is built from
+  const build = async k => {
     const module = device.createShaderModule({ code: k.source, label: k.id });
     const errors = (await module.getCompilationInfo()).messages.filter(m => m.type === 'error');
     if (errors.length) throw new Error(`WGSL error in kernel ${k.id}: ${errors.map(m => `${m.lineNum}:${m.linePos} ${m.message}`).join('; ')}`);
@@ -59,8 +60,9 @@ export async function createGpu(table, { onError = e => console.error(e), win = 
       tableBuffer = device.createBuffer({ size: k.table_seeds.length * 512 * 4, usage: U.STORAGE | U.COPY_DST });
       device.queue.writeBuffer(tableBuffer, 0, Int32Array.from(k.tables.flat()));
     }
-    kernels.set(k.id, { ...k, layout, pipeline, tableBuffer });
-  }));
+    return { ...k, key: keyOf(k), layout, pipeline, tableBuffer };
+  };
+  for (const k of await Promise.all(table.kernels.map(build))) kernels.set(k.id, k);
 
   const owned = new Map();   // id -> {buffer, capacity, used}
   const own = (id, bytes, usage) => {
@@ -80,6 +82,18 @@ export async function createGpu(table, { onError = e => console.error(e), win = 
 
   const gpu = {
     device, kernels,
+    // Reload (plan P6.7): a new kernel table. A kernel whose WGSL, entry, bindings and noise seeds are unchanged
+    // keeps its pipeline; only the others are compiled; a table the new one no longer uses is released.
+    async update(next) {
+      const built = await Promise.all(next.kernels.map(k => {
+        const old = kernels.get(k.id);
+        return old && old.key === keyOf(k) ? { ...old, ...k } : build(k);
+      }));
+      const keep = new Set(built.map(k => k.tableBuffer));
+      for (const k of kernels.values()) if (!keep.has(k.tableBuffer)) k.tableBuffer?.destroy();
+      kernels.clear();
+      for (const k of built) kernels.set(k.id, k);
+    },
     dispatch(kernelId, { count, inputs = [], uniforms = {}, id = kernelId }) {
       const k = kernels.get(kernelId);
       if (!k) fail(`Unknown GPU kernel ${kernelId}.`);

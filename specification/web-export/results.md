@@ -690,3 +690,27 @@ Ten pass, five are refused with a span, none fails. The image refusals point at 
 `host/play`, `host/save_png` and `audio/synth` live in `host` graphs, outside the exported draw graph.
 Before this task three bugs were fixed on the way: the printer refused every `not`, the kernel-table JSON writer
 escaped UTF-8 bytes one by one, and `prims.js` `sequence_build` ignored the packed width.
+
+## P6.7: reload of a served export in headless Chrome (2026-10-11)
+
+Command, from the repository root after `dune build tools/lisp/lisp.exe`:
+
+    node tools/web/test/reload_check.mjs _build/default/tools/lisp/lisp.exe sketches/flow_vectors/sketch.rays
+
+(or `dune build @qualification-web`, which also runs the WebGPU kernel check). Machine: Apple M1, Google Chrome
+154.0.8037.98 with `--headless=new`, node v24.19.0. The script copies the sketch to a temporary file, starts
+`rays-lisp web --watch FILE -o DIR --port 0`, opens `http://127.0.0.1:PORT/`, waits for a cross-origin-isolated
+page with a running runtime (`window.__rays`), sets `window.__marker`, changes the circle radius `24` to `31` in
+the file, and waits for `__rays.reloads === 1`.
+
+Result: ok. The page swapped its program (`__rays.program.frame` now holds `31n` and no `24n`) with no navigation
+(`window.__marker` survived, one navigation entry), marks kept being produced, and 1.5 s later there was still
+exactly one reload. Reload protocol: the runtime polls `/version` every 0.5 s; the first answer is the baseline;
+a different answer re-imports `program.js?v=VERSION`, refetches `data.bin?v=` and `kernels.json?v=`, calls
+`gpu.update` (only kernels whose WGSL, entry, bindings or noise seeds changed are compiled) and `rt.load` (fresh
+state slots, region sources compiled once per text, workers sent only changed sources, canvas kept); a 404 or a
+fetch error on `/version` stops polling silently. The node test `tools/web/test/runtime.mjs` covers the same
+protocol with a fake server (version change swaps the program and resets slots, an unchanged region is not
+compiled again, `gpu.update` compiles only changed kernels, a 404 or fetch error stops silently).
+Fixed on the way: `createRuntime` read the original program for `region(k)` and the worker load after `rt.load`,
+so a reload kept running the old regions.
