@@ -23,6 +23,10 @@ val render : t -> unit
 module Private : sig
   val shapes : Scene_command.Shape_batch.t -> node
   (* Packed primitives share the enclosing Scene transform, clip and blend. *)
+  val geometry : Scene_command.Render_ir.geometry -> node
+  (* Indexed path geometry as the shared tessellation produced it. *)
+  val transform : Scene_command.Render_ir.transform -> t -> node
+  (* An exact affine view transform: the six coefficients are the command's own. *)
   module Ui_batch = Scene_command.Ui_batch
   val layer_break : node
 
