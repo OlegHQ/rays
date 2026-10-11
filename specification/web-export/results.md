@@ -203,3 +203,47 @@ assertions in a test that previously only printed success. Its independent
 f64 pixel oracle is now registered under `@runtest-native`, but the actual
 attempt fails with "Metal has no system default device". Native pixel parity
 and upload behavior remain unverified here.
+
+## 2026-10-11 — Deferred PXUI identity transforms
+
+Machine: managed Darwin arm64 runner, OCaml 5.3.0 native executable in the
+development profile, one domain. Input: the unchanged 200-node editor
+benchmark at 1,200 × 760 logical points, default font size 13. Each process
+measures 200 drag frames, one undo and 200 alternating literal edits with
+full editor updates. The rows below are medians of three separate process
+runs before and after. No profiler or concurrent build/test during timing.
+
+```sh
+_build/default/tools/check.exe lib/pxui/test_main.exe tools/bench_rays_editor.exe
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
+  _build/default/tools/bench_rays_editor.exe 200
+```
+
+| Operation | Before seconds | After seconds | Before bytes/frame | After bytes/frame |
+| --- | ---: | ---: | ---: | ---: |
+| Drag frame | 0.001834869 | 0.001796961 | 6,021,502 | 5,929,718 |
+| Undo frame | 0.002377033 | 0.002339125 | 6,796,312 | 6,704,496 |
+| Literal edit and frame | 0.001862049 | 0.001842976 | 5,491,372 | 5,399,532 |
+| Literal edit excluding cook time | 0.001758099 | 0.001734018 | 5,491,372 | 5,399,532 |
+
+Removing constant layout/paint transforms and the repeated identity setter
+reduces measured frame allocation by 91,784–91,840 bytes (1.4–1.7%). The
+wall-time medians are 1.0–2.1% lower on this input; no general speedup is
+claimed. The builder still supports transforms for its direct consumers.
+
+The existing panel, overlays, zones and million-row table fixtures are
+staged through the real painter at 1x and 2x. Complete packed instance bytes
+and batch descriptors compare byte for byte before/after in all eight cases.
+To reproduce a packet dump, set `RAYS_UI_COMMAND_DUMP` to an existing directory
+and run the command below with the same font before and after a change:
+
+```sh
+SDL_VIDEODRIVER=dummy RAYS_UI_FONT=assets/fonts/DepartureMono-Regular.otf \
+  _build/default/lib/pxui/test_main.exe test_ui_commands
+```
+
+The interaction, ordered-input, keyboard, table and command tests all pass.
+Public API manifests compare equal and no pixel golden is updated. The full
+`@lib/pxui/runtest` attempt fails only in pixel parity because Metal has no
+system default device. Packet equality is CPU evidence; native golden
+execution remains unverified.

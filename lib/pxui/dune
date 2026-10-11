@@ -25,6 +25,12 @@
    (run %{exe:test_main.exe} test_ui)))))
 
 (rule
+ (aliases runtest test_ui_commands)
+ (action (setenv SDL_VIDEODRIVER dummy
+  (setenv RAYS_UI_FONT %{dep:../../assets/fonts/DepartureMono-Regular.otf}
+   (run %{exe:test_main.exe} test_ui_commands)))))
+
+(rule
  (aliases runtest test_input)
  (action (setenv SDL_VIDEODRIVER dummy
   (run %{exe:test_main.exe} test_input))))

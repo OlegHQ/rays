@@ -126,8 +126,19 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   `depth_clear` and `stencil_clear` fields. Its existing private accessors
   return 1 and 0; lowering and the public interface are unchanged. CPU
   staging tests cover the fixed values at every admitted sample count.
-- Fields that are constant but still threaded: `Paint.scale/tx/ty` and the `Ui_batch`
-  transform in `pxui`, the `Easy_camera` binding
+- Removed and verified 2026-10-11: PXUI's private `Paint.scale/tx/ty` and
+  per-box `l_scale/l_tx/l_ty` arrays were always the root's identity values.
+  Layout, hits, text, clips and input regions now use logical screen points
+  directly, and painting no longer allocates/reapplies an identity `Ui_batch`
+  transform per primitive. The four existing parity fixtures' complete
+  instance bytes and batch descriptors match before/after at 1x and 2x.
+  `test_ui`, `test_input`, `test_keyboard`, `test_table` and the new
+  `test_ui_commands` pass; public API manifests compare equal. The existing
+  pixel golden case still fails with no Metal device, so the full PXUI alias
+  is not green here. The 200-node editor benchmark allocates about 92 KB less
+  per frame; commands and measurements are recorded in `results.md`.
+- Fields that are constant but still threaded: the `Ui_batch` transform,
+  the `Easy_camera` binding
   `key`, `Light.attenuation.linear`, the path tracer `scale`.
 - `lib/sop/sop_topology.ml` keeps its prefix (`Topology` would shadow `Rdk.Topology`), and
   `Leader.keymap3` keeps its suffix (`Leader.keymap` is taken).

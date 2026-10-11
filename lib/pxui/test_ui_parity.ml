@@ -89,3 +89,39 @@ let run () =
   check "zones" "kit_zones_2x.png" (render ~height:390 zones);
   check "table" "kit_table_2x.png" (render (fun ui -> ignore (table ui)));
   check "kit panel" "kit_panel_2x.png" (render new_panel)
+
+(* Inspect the real painter's packets without creating a GPU device. An
+   optional dump lets a refactor compare complete packets before/after. *)
+let commands () =
+  List.iter (fun density ->
+    List.iter (fun (name, height, build) ->
+      let ui = Pxui.Ui.create () in
+      Fun.protect ~finally:(fun () -> Pxui.Ui.destroy ui) (fun () ->
+        for count = 0 to 1 do
+          Pxui.Ui.frame ui {
+            Frame.width; height; size = width, height;
+            pixel_scale = density, density; time = float count /. 60.;
+            dt = 1. /. 60.; fps = 60.; count; mouse = (-100., -100.);
+            mouse_delta = (0., 0.); keys = []; mouse_buttons = [];
+            events = [Event.MouseMoved (-100., -100.)] } build
+        done;
+        let staged = Result.get_ok (Scene.Private.stage_native ~width ~height (Pxui.Ui.scene ui)) in
+        let packets = List.filter_map (function
+          | Scene.Private.Ui_layer (batch, _) ->
+              assert (Scene_command.Ui_batch.count batch > 0);
+              let batches = Scene_command.Ui_batch.batches batch in
+              Array.iter (fun (batch:Scene_command.Ui_batch.batch) ->
+                assert (batch.xform.scale = 1. && batch.xform.tx = 0. && batch.xform.ty = 0.);
+                assert (batch.first >= 0 && batch.count > 0)) batches;
+              Some (Scene_command.Ui_batch.instances batch, batches)
+          | _ -> None) staged.layers in
+        assert (packets <> []);
+        Option.iter (fun directory ->
+          let path = Filename.concat directory (Printf.sprintf "%s-%gx.packet" name density) in
+          let output = open_out_bin path in
+          Fun.protect ~finally:(fun () -> close_out output)
+            (fun () -> Marshal.to_channel output packets []))
+          (Sys.getenv_opt "RAYS_UI_COMMAND_DUMP")))
+      ["overlays", 300, overlays; "zones", 390, zones;
+       "table", 300, (fun ui -> ignore (table ui)); "panel", 300, new_panel]) [1.; 2.];
+  print_endline "PXUI packets: four parity fixtures, identity transforms at 1x/2x"

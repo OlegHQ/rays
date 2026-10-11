@@ -142,9 +142,6 @@ let carry_dead_zone = 4.
 type paint = {
   owner : ui;
   builder : Batch.Builder.t;
-  mutable scale : float;
-  mutable tx : float;
-  mutable ty : float;
   mutable clip_rect : rect;
 }
 
@@ -194,12 +191,10 @@ and ui = {
   mutable b_hit : (rect -> rect) option array;
   mutable b_painters : painter list array;
   mutable b_overlays : painter list array;
-  (* layout results, in each box's own space *)
+  (* layout results, in logical screen points *)
   mutable l_x : float array; mutable l_y : float array;
   mutable l_w : float array; mutable l_h : float array;
   mutable l_content : float array; mutable l_gutter : float array;
-  mutable l_scale : float array; mutable l_tx : float array;
-  mutable l_ty : float array;
   (* build state *)
   mutable parents : int list;
   mutable overlays : int list;  (* popup boxes this frame, newest first *)
@@ -540,8 +535,6 @@ let create ?(font_size = Theme.font_size) () =
     l_x = Array.make capacity 0.; l_y = Array.make capacity 0.;
     l_w = Array.make capacity 0.; l_h = Array.make capacity 0.;
     l_content = Array.make capacity 0.; l_gutter = Array.make capacity 0.;
-    l_scale = Array.make capacity 1.; l_tx = Array.make capacity 0.;
-    l_ty = Array.make capacity 0.;
     parents = []; overlays = []; foreground = []; seeds = []; building = false; frame_number = 0; density = 1;
     kit_row_height = 24; closed_section = -1; kit_window = false;
     pointer = (Float.nan, Float.nan); hot = 0; hover_rest = None; active = None;
@@ -1070,10 +1063,7 @@ let ensure_box_capacity ui size =
     ui.l_x <- grow ui.l_x size 0.; ui.l_y <- grow ui.l_y size 0.;
     ui.l_w <- grow ui.l_w size 0.; ui.l_h <- grow ui.l_h size 0.;
     ui.l_content <- grow ui.l_content size 0.;
-    ui.l_gutter <- grow ui.l_gutter size 0.;
-    ui.l_scale <- grow ui.l_scale size 1.;
-    ui.l_tx <- grow ui.l_tx size 0.;
-    ui.l_ty <- grow ui.l_ty size 0.
+    ui.l_gutter <- grow ui.l_gutter size 0.
   end
 
 let require_building ui =
@@ -1445,7 +1435,6 @@ let apply_scroll ?(consume = false) ui time index =
 (* Top-down: relative sizes, grow shares, scrolling, scroll gutters, and positions. *)
 let arrange ui time =
   ui.l_x.(0) <- 0.; ui.l_y.(0) <- 0.;
-  ui.l_scale.(0) <- 1.; ui.l_tx.(0) <- 0.; ui.l_ty.(0) <- 0.;
   for index = 0 to ui.count - 1 do
     let padding = ui.b_padding.(index) and row = ui.b_row.(index) in
     let scrolls = ui.b_flags.(index) land scroll <> 0 in
@@ -1457,8 +1446,6 @@ let arrange ui time =
       apply_scroll ui time index;
       ui.scroll_y.(slot) <- Float.max 0. (Float.min max_scroll ui.scroll_y.(slot))
     end;
-    let child_scale = ui.l_scale.(index) and child_tx = ui.l_tx.(index)
-    and child_ty = ui.l_ty.(index) in
     let inner_w = ui.l_w.(index) -. (2. *. padding) -. gutter
     and inner_h = ui.l_h.(index) -. (2. *. padding) in
     let relative kind inner current = match kind with
@@ -1469,8 +1456,6 @@ let arrange ui time =
     let next = ref ui.b_first.(index) in
     while !next >= 0 do
       let child = !next in
-      ui.l_scale.(child) <- child_scale;
-      ui.l_tx.(child) <- child_tx; ui.l_ty.(child) <- child_ty;
       ui.l_w.(child) <- relative ui.b_w.(child) inner_w ui.l_w.(child);
       ui.l_h.(child) <- Float.min ui.b_max_h.(child)
         (relative ui.b_h.(child) inner_h ui.l_h.(child));
@@ -1517,10 +1502,7 @@ let arrange ui time =
   done
 
 let screen ui index =
-  let scale = ui.l_scale.(index) in
-  (ui.l_x.(index) *. scale) +. ui.l_tx.(index),
-  (ui.l_y.(index) *. scale) +. ui.l_ty.(index),
-  ui.l_w.(index) *. scale, ui.l_h.(index) *. scale
+  ui.l_x.(index), ui.l_y.(index), ui.l_w.(index), ui.l_h.(index)
 
 let intersect (ax, ay, aw, ah) (bx, by, bw, bh) =
   let x = Float.max ax bx and y = Float.max ay by in
@@ -1540,8 +1522,6 @@ module Paint = struct
   type t = paint
 
   let prepare paint =
-    Batch.Builder.set_xform paint.builder
-      { Batch.scale = paint.scale; tx = paint.tx; ty = paint.ty };
     let x, y, w, h = paint.clip_rect in
     Batch.Builder.set_clip paint.builder
       (Some { Batch.x; y; width = w; height = h })
@@ -1623,12 +1603,12 @@ module Paint = struct
           prepare paint;
           let id = font_id ui.atlas font in
           let color = packed (Option.value color ~default:ui.theme.foreground) in
-          let density = float ui.density and scale = paint.scale in
+          let density = float ui.density in
           (* Snap the run's origin to a physical pixel so each glyph texel
              lands on exactly one backing pixel, as whole-string text does. *)
           let snap value = Float.round (value *. density) /. density in
-          let screen_x = snap ((x *. scale) +. paint.tx)
-          and screen_y = snap ((y *. scale) +. paint.ty
+          let screen_x = snap x
+          and screen_y = snap (y
                                +. ascent_shift ~size:(Option.value size ~default:ui.font_size) ~density:ui.density) in
           (* the pen runs in fractional physical pixels (0.88 points of tracking is 1.76 at 2x);
              each glyph is placed on a whole pixel *)
@@ -1642,9 +1622,7 @@ module Paint = struct
                   and gw = float glyph.gw /. density
                   and gh = float glyph.gh /. density in
                   Batch.Builder.textured paint.builder ~texture:1
-                    ~x:((gx -. paint.tx) /. scale)
-                    ~y:((screen_y -. paint.ty) /. scale)
-                    ~width:(gw /. scale) ~height:(gh /. scale)
+                    ~x:gx ~y:screen_y ~width:gw ~height:gh
                     ~u0:(float glyph.gx) ~v0:(float glyph.gy)
                     ~u1:(float (add glyph.gx glyph.gw))
                     ~v1:(float (add glyph.gy glyph.gh)) ~color
@@ -1726,11 +1704,10 @@ module Paint = struct
     cap paint ~at ~color:paint.owner.theme.accent (Printf.sprintf "%d / %d" first second)
 
   let input_region paint ?(cursor=0.) ~x ~y ~w ~h ~focused () =
-    let sx = (x *. paint.scale) +. paint.tx and sy = (y *. paint.scale) +. paint.ty in
     paint.owner.regions <- Scene.text_input_region
-        ~at:(int_of_float sx, int_of_float sy)
-        ~w:(int_of_float (w *. paint.scale)) ~h:(int_of_float (h *. paint.scale))
-        ~focused ~cursor:(max 0 (int_of_float (Float.round (cursor *. paint.scale)))) ()
+        ~at:(int_of_float x, int_of_float y)
+        ~w:(int_of_float w) ~h:(int_of_float h)
+        ~focused ~cursor:(max 0 (int_of_float (Float.round cursor))) ()
         :: paint.owner.regions
 end
 
@@ -1757,15 +1734,14 @@ let paint_all ui (frame : Frame.t) =
   Batch.Builder.reset builder;
   ui.regions <- [];
   ui.hit_count <- 0; ui.chain_key <- 0;
-  let paint = { owner = ui; builder; scale = 1.; tx = 0.; ty = 0.;
+  let paint = { owner = ui; builder;
     clip_rect = (0., 0., float frame.width, float frame.height) } in
   let layers = ref [] and key = ref 0 in
   let flush () = layers := (!key, Batch.Builder.publish builder) :: !layers;
     Batch.Builder.reset builder in
   let run painters index clip_rect =
     if painters <> [] then begin
-      paint.scale <- ui.l_scale.(index); paint.tx <- ui.l_tx.(index);
-      paint.ty <- ui.l_ty.(index); paint.clip_rect <- clip_rect;
+      paint.clip_rect <- clip_rect;
       let local = ui.l_x.(index), ui.l_y.(index), ui.l_w.(index), ui.l_h.(index) in
       (* [draw] prepends; paint oldest first without reversing a copy. *)
       let rec in_order = function
@@ -1783,12 +1759,7 @@ let paint_all ui (frame : Frame.t) =
     ui.rx.(slot) <- x; ui.ry.(slot) <- y; ui.rw.(slot) <- w; ui.rh.(slot) <- h;
     let hit = match ui.b_hit.(index) with
       | None -> screen_rect
-      | Some f ->
-          let hx, hy, hw, hh = f (ui.l_x.(index), ui.l_y.(index),
-            ui.l_w.(index), ui.l_h.(index)) in
-          let scale = ui.l_scale.(index) in
-          (hx *. scale) +. ui.l_tx.(index), (hy *. scale) +. ui.l_ty.(index),
-          hw *. scale, hh *. scale in
+      | Some f -> f screen_rect in
     let clipped_hit = intersect hit clip_rect in
     let _, _, hw, hh = clipped_hit in
     let visible = match ui.b_hit.(index) with
@@ -1803,7 +1774,7 @@ let paint_all ui (frame : Frame.t) =
     if shown || ((w <= 0. || h <= 0.) && ui.b_flags.(index) land clip = 0) then begin
       if shown then run ui.b_painters.(index) index clip_rect;
       let child_clip = if ui.b_flags.(index) land clip <> 0 then
-          let padding = ui.b_padding.(index) *. ui.l_scale.(index) in
+          let padding = ui.b_padding.(index) in
           intersect clip_rect (x +. padding, y +. padding,
             Float.max 0. (w -. (2. *. padding)), Float.max 0. (h -. (2. *. padding)))
         else clip_rect in
@@ -1812,8 +1783,7 @@ let paint_all ui (frame : Frame.t) =
       if shown then run ui.b_overlays.(index) index clip_rect;
       if shown && ui.keyboard_focus && ui.focus = ui.b_key.(index)
          && ui.b_flags.(index) land focus_mark = 0 then begin
-        paint.scale <- ui.l_scale.(index); paint.tx <- ui.l_tx.(index);
-        paint.ty <- ui.l_ty.(index); paint.clip_rect <- clip_rect;
+        paint.clip_rect <- clip_rect;
         Paint.frame paint ~x:ui.l_x.(index) ~y:ui.l_y.(index)
           ~w:(Float.max 0. ui.l_w.(index)) ~h:(Float.max 0. ui.l_h.(index)) ui.theme.accent
       end
@@ -2686,7 +2656,7 @@ let edit_text_event ?(multiline = false) ui edit ~accept ~modifiers event =
 let paint_text_edit paint ?size ?(right = false) ?(inset = 2.) ?(caret = true) ~control:(cx, cy, cw, ch) ~y ~composition edit =
   let ui = paint.owner in
   let theme = ui.theme in
-  let width text = Paint.text_width paint ?size text /. paint.scale in
+  let width text = Paint.text_width paint ?size text in
   let before = String.sub edit.text 0 edit.caret in
   let visible = float (max 1 (cw - 4)) in
   let scroll = Float.max 0. (Float.min ui.edit_scroll_x
@@ -2705,9 +2675,7 @@ let paint_text_edit paint ?size ?(right = false) ?(inset = 2.) ?(caret = true) ~
     ~h:(float ch) ~focused:true ~cursor:(caret_x -. float cx) ();
   let previous_clip = paint.clip_rect in
   paint.clip_rect <- intersect previous_clip
-    ((float cx *. paint.scale) +. paint.tx,
-     (float cy *. paint.scale) +. paint.ty,
-     float cw *. paint.scale, float ch *. paint.scale);
+    (float cx, float cy, float cw, float ch);
   if edit.caret <> edit.anchor then begin
     let start, stop = text_selection edit in
     Paint.fill paint
@@ -2846,8 +2814,7 @@ let value_field ui ~at ~w ~h ?size ?display ?fraction ?slide ?scrub ?(left = fal
     let (x, y, w, h) as bounds = ints rect in
     let previous_clip = paint.clip_rect in
     paint.clip_rect <- intersect previous_clip
-      ((float x *. paint.scale) +. paint.tx, (float y *. paint.scale) +. paint.ty,
-       float w *. paint.scale, float h *. paint.scale);
+      (float x, float y, float w, float h);
     if invalid || editing || not bare then
       underline paint bounds (if invalid then Theme.invalid
         else if editing then ui.theme.accent
@@ -3516,12 +3483,11 @@ let text_area_submit ui ~at ~w ~h ?(wrap = false) ?(errors = []) ?(messages = []
         kit_text paint ~color:(Theme.muted theme) (rx + rw - dw - side) (label_y ui ry rh) c.detail)) rows_boxes)
     popup;
   draw ui body (fun paint (bx, by, bw, bh) ->
-    let width text = Paint.text_width paint text /. paint.scale in
+    let width text = Paint.text_width paint text in
     Paint.fill paint ~x:bx ~y:by ~w:bw ~h:bh theme.input;
     let previous = paint.clip_rect in
     let clip x w = paint.clip_rect <- intersect previous
-      ((x *. paint.scale) +. paint.tx, (by *. paint.scale) +. paint.ty,
-       w *. paint.scale, bh *. paint.scale) in
+      (x, by, w, bh) in
     let text_x = bx +. gutter -. horizontal in
     Paint.fill paint ~x:(bx +. gutter) ~y:by ~w:1. ~h:bh (Theme.faint_border theme);
     let small = Paint.label_size paint in
