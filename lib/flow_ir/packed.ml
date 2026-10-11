@@ -101,7 +101,7 @@ let gpu_refusals t =
     refuse "Nonfinite float32 shader constants require reference evaluation.";
   List.rev !reasons
 
-let core_regions = ref false
+let core_regions = ref true
 
 let rec compile_impl ?(fusion = true) ?(dynamic = false)
     ?(count_source = fun _ _ -> None) residual (term : W.term) =

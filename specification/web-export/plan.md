@@ -746,7 +746,8 @@ Phase 2
   Done 2026-10-11 with `core_regions` temporarily defaulted on (not committed): `@lib/flow_ir/runtest`, `@lib/flow_gpu/runtest` (three Metal goldens) and `@runtest-native` all passed (exit 0, including `runtime_live_resize`); `git status` shows `lib/flow_gpu/goldens` and the P2.1 snapshots untouched.
 - [x] P2.8 H
   Done 2026-10-11. `tools/bench_core.exe kernels` (map 1,024 and 1,000,000, fused pair, sum loop; switch off and on; 1 and 8 domains) and `bench_gpu.exe` recorded in results.md. Force times are the same program, so unchanged within noise; compile with the switch on regresses by up to 50 percent (under a microsecond, once per kernel), recorded in DEFERRED.md per the owner decision that speed gates never block.
-- [ ] P2.9 S
+- [x] P2.9 S
+  Done 2026-10-11. `Packed.Private.core_regions` now defaults to true; the dune reruns of the snapshot tests use `REGION_CORE=0` to keep the term-walking path covered until P2.10. Gates on the flipped tree: `@all`, `@runtest` (SDL dummy, includes `@test/test_workspace_ir`, 42 standard files, 13 fixtures, cooked payloads equal), `@runtest-native` and `@smoke` all exit 0, snapshots and Metal goldens untouched. The only `@runtest` failure was the API manifest for the `Core.Region`/`Core_region`/`Packed` interfaces of P2.2 to P2.6, promoted in the next commit.
 - [ ] P2.R R
 - [ ] P2.10 S
 
