@@ -5,6 +5,10 @@ module N = Flow_sop.Network
 module S = Sop.Session
 let ok = function Ok x -> x | Error d -> failwith (Flow.Diagnostic.to_string d)
 let string_ok = function Ok x -> x | Error d -> failwith d
+let with_core_residuals value f =
+  let previous = !(E.Private.core_residuals) in
+  Fun.protect ~finally:(fun () -> E.Private.core_residuals := previous)
+    (fun () -> E.Private.core_residuals := value; f ())
 let rec functions = function
   | E.Fn f -> E.Record ["body", E.Text (Option.fold ~none:"named" ~some:(fun (params, (body : Flow.Workspace.term)) ->
         Marshal.to_string (params, Flow.Lisp.flat body.form) [Marshal.No_sharing])
@@ -174,7 +178,7 @@ let check ?directory ?(commands = false) ~factories ~name (workspace : Editor_do
     Option.iter (fun (gpu, runtime) -> Fun.protect ~finally:(fun () -> Rays_execution.release_gpu gpu)
       (fun () -> ignore (Runtime.destroy runtime))) mirror)
     (fun () -> Option.iter Rays.Canvas.destroy pixels)) (fun () ->
-  List.iter (fun domains -> Rays.Parallel.run ~domains (fun () ->
+  List.iter (fun (core, domains) -> with_core_residuals core (fun () -> Rays.Parallel.run ~domains (fun () ->
     let ir_state = E.create_state () and ref_state = E.create_state () in
     let modes = [false, compiled, ir_state; true, reference, ref_state] |> List.map (fun (reference, (lowered : L.t), state) ->
       let lanes = List.map (fun (g : L.graph) -> g, Flow_sop.Value_lane.create ~state ()) lowered.graphs in
@@ -270,7 +274,7 @@ let check ?directory ?(commands = false) ~factories ~name (workspace : Editor_do
         end); results)) modes in
       (match results with [a;b] -> if not (List.for_all2 equal a b) then failwith (name ^ ": IR/reference value mismatch") | _ -> assert false);
       if E.state_stamp ir_state <> E.state_stamp ref_state then failwith (name ^ ": fold state mismatch"))
-      [0.;0.125;1.25;7.]))) [1;8]);
+      [0.;0.125;1.25;7.])))) (List.concat_map (fun core -> List.map (fun domains -> core, domains) [1;8]) [false; true]));
   Printf.printf "%s: %d nodes, %d instances, %d values, four times, domains 1/8%s\n%!" name
     (Array.length evaluated.plan.nodes) (Array.length evaluated.plan.instances) (List.length prepared)
     (if directory <> None then ", cooked payloads and native geometry/image/texture/drawing pixels equal"

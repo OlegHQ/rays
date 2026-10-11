@@ -632,7 +632,14 @@ Phase 1
   (commit 60acf38a), and test_core_state fails on unexpected core errors.
   Flow and flow_ir focused gates and default runtest passed on 2026-10-11
   (API manifest promoted separately).
-- [ ] P1.11 H
+- [x] P1.11 H
+  `Workspace_parity.check` now runs its IR-against-reference comparison (both
+  domain settings) once with `core_residuals` off and once on, restored by
+  `with_core_residuals`. `test/test_workspace_ir` passes unchanged: 42 standard
+  files, 1 custom-catalog executable, 13 fixtures, cooked payloads equal, with
+  the core pass included. The gate ran about 20 minutes wall on the M1 host
+  (the comparison now runs twice); no timing claim is made. `workspace_parity.mli`
+  unchanged, so no API manifest change.
 - [ ] P1.12 H
 - [ ] P1.13 H
 - [ ] P1.14 S
