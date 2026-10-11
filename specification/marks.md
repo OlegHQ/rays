@@ -153,7 +153,9 @@ existing pure `Scene_command.Shape2` helper and stores its output unchanged:
 packed colour. A helper that returns a fill and a stroke geometry gives two
 entries in that order, **fill then stroke**. No target tessellates, approximates a
 path with marks, or merges, splits or reorders these entries (translucent pixels
-would change). An empty geometry (no vertices) is a valid entry and is kept.
+would change). An empty geometry (no vertices) is a valid entry and is kept. The web runtime's `shape2.js` is
+the one port of `Shape2`: it is geometry for this contract, not a core primitive, and a node test pins it to the
+native output.
 
 | Statement | Helper and arguments | Entries |
 | --- | --- | --- |

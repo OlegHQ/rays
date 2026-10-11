@@ -681,7 +681,9 @@ coordinate, tessellation and stroke behavior. Their lowering must reuse pure
 geometry) and carry it through the drawing contract; replacing a path with
 overlapping analytic primitives would change translucent pixels. P3.2 must
 include the geometry entry needed by P3.6 and its native serialization oracle.
-No target reimplements tessellation or rasterizes these paths on a CPU.
+The web runtime's `shape2.js` is the single port of `Shape2` (geometry for the mark contract, not a listed
+primitive; the P6.R review keeps it, and a node test pins it to the native output); no other target tessellates
+or rasterizes these paths on a CPU.
 
 `E_DRAW_LENGTH` guards all per-instance attribute cardinalities; missing
 inputs are `E_DRAW_INPUT`, unknown draw kinds are `E_DRAW_KIND`, invalid

@@ -867,3 +867,32 @@ PNGs are kept beside the native ones in the temporary directory only when the ch
 Exit codes of `web_shot.exe`: 0 pass or skipped (a missing node or Chrome prints why), 1 mismatch, 2 usage, 3 WebGPU
 unavailable (checked with `WEB_SHOT_CHROME_FLAGS="--headless=new --disable-gpu --disable-features=WebGPU"`, which gives
 "WebGPU is present but no GPU adapter is available" and exit 3), 4 a tool or the page failed.
+
+## 2026-10-11: all 15 eligible workspaces in the browser (P6.R)
+
+Command: `node tools/web/test/open_all.mjs _build/default/tools/lisp/lisp.exe . <the 15 directories>` (also in
+`@qualification-web`). Machine: Apple M1, Chrome 154 `--headless=new`, node 24. Each workspace is exported as
+`rays-lisp web` does, served with COOP/COEP, and its `index.html` is opened (`start`: one device, worker pool,
+presenter, rAF loop with the real clock). Pass: at least 5 frames within 20 s, still advancing 0.5 s later (about 30
+more frames), no failed frame (`__rays.error`), no presenter error, a non-empty mark table.
+
+| Workspace | Result | Frames after about 0.5 s | Mark entries | Region work |
+| --- | --- | --- | --- | --- |
+| examples/audio | opened | 10 then 40 | 10 | none |
+| examples/basic | opened | 9 then 39 | 3 | none |
+| examples/drawing | opened | 8 then 38 | 292 | none |
+| examples/file_dialog | opened | 8 then 38 | 4 | none |
+| examples/generative | opened | 9 then 39 | 10 | none |
+| examples/noise | opened | 10 then 40 | 2 | none |
+| examples/particles | opened | 11 then 41 | 2 | none |
+| examples/pxui | opened | 10 then 40 | 3 | none |
+| examples/recursive_rectangles | opened | 7 then 37 | 8 | none |
+| sketches/flow_contours | refused `E_WEB_IMAGE` at 77:3 | | | |
+| sketches/flow_image | refused `E_WEB_IMAGE` at 5:3 | | | |
+| sketches/flow_image_kernel | refused `E_WEB_IMAGE` at 7:3 | | | |
+| sketches/flow_particles_gpu | opened | 8 then 38 | 2 | 38 GPU dispatches, 0 CPU invokes |
+| sketches/flow_shader | refused `E_WEB_IMAGE` at 67:3 | | | |
+| sketches/flow_vectors | opened | 10 then 40 | 2 | none |
+
+11 open, 4 are refused with a code and a span, none fails. Unlike `web_parity.exe` (node: marks against the native
+executor), this checks the real page: workers, one WebGPU device, presenter, `start`'s loop.
