@@ -119,4 +119,8 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
 
 ## Docs
 
-- The proposal artifact has not been updated with the outcome.
+- The proposal artifact has not been updated with the outcome. No path or
+  link identifies it, and the 2026-10-11 local and connected Pages searches
+  did not locate the lean-restructure proposal. The accessible Rays Page
+  concerns the browser-compilation paper. Its content was left unchanged;
+  the requested artifact's location is pending user clarification.
