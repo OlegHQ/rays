@@ -6,6 +6,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir flow_field
  (rule
@@ -14,6 +15,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir flow_image
  (rule
@@ -22,6 +24,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir flow_image_kernel
  (rule
@@ -30,6 +33,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir flow_kernel
  (rule
@@ -38,6 +42,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir flow_particles_gpu
  (rule
@@ -46,6 +51,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir flow_shader
  (rule
@@ -54,6 +60,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir flow_terrain
  (rule
@@ -62,6 +69,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir flow_vectors
  (rule
@@ -70,6 +78,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir shattered_studio
  (rule
@@ -78,6 +87,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir ws_bloom
  (rule
@@ -86,6 +96,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir ws_facade
  (rule
@@ -94,6 +105,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir ws_garland
  (rule
@@ -102,6 +114,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir ws_kit
  (rule
@@ -110,6 +123,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir ws_layout
  (rule
@@ -118,6 +132,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir ws_morph
  (rule
@@ -126,6 +141,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir ws_orrery
  (rule
@@ -134,6 +150,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir ws_rosette
  (rule
@@ -142,6 +159,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir ws_shared
  (rule
@@ -150,6 +168,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir ws_shared_other
  (rule
@@ -158,6 +177,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir ws_spreadsheet
  (rule
@@ -166,6 +186,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir ws_sunflower
  (rule
@@ -174,6 +195,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir ws_tiles
  (rule
@@ -182,6 +204,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir ws_tree
  (rule
@@ -190,6 +213,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir ws_tunnel
  (rule
@@ -198,6 +222,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir ws_variations
  (rule
@@ -206,6 +231,7 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 (subdir ws_wave
  (rule
@@ -214,4 +240,5 @@
   (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
  (executable (name main) (modules main) (libraries rays_editor))
  (rule (alias smoke-all)
+  (locks %{workspace_root}/smoke_window)
   (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))

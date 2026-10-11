@@ -11,6 +11,7 @@
     (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
    (executable (name main) (modules main) (libraries rays_editor))
    (rule (alias smoke-all)
+    (locks %{workspace_root}/smoke_window)
     (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
   (subdir two
    (rule
@@ -19,6 +20,7 @@
     (action (chdir %{workspace_root} (with-stdout-to %{target} (run %{bin:rays-lisp} ml %{dep:sketch.rays})))))
    (executable (name main) (modules main) (libraries rays_editor))
    (rule (alias smoke-all)
+    (locks %{workspace_root}/smoke_window)
     (action (setenv RAYS_MAX_FRAMES 120 (run ./main.exe)))))
 
 A directory with its own dune file is hand-written (a sketch with its own main.ml uses

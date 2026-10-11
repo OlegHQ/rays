@@ -20,10 +20,19 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   `examples/sop_gallery/main.exe`; it now launches `lisp.exe`. Both native
   smoke examples build and reach startup, then fail with SDL's "The video
   driver did not add any displays" in this runner. The smoke gate is not
-  green; `@smoke-all` remains unverified. `examples/particles` and
+  green. `examples/particles` and
   `examples/procedural_modeling` generate `lisp.exe` like the other examples
-  (built, not launched). Generated Lisp sketches also lack the root smoke
-  window lock; their scheduling still needs repair and native verification.
+  (built, not launched individually).
+- Repaired and verified scheduling 2026-10-11: all 27 generated Lisp sketches
+  now use the root `smoke_window` lock, matching the examples and the four
+  hand-written native programs. Nine redundant root launches are removed;
+  `@smoke-all` runs each of the 42 applications once. The CLI output test,
+  checked-in include regeneration and `@all` pass. An independent Dune
+  scheduler check (`/private/tmp/rays-smoke-lock-proof`, `-j 8`) serializes
+  the root and generated lock paths; its separate-lock control fails with
+  `Unix.EEXIST` on the shared probe directory. The actual `@smoke-all` attempt
+  reaches all 42 applications; every one fails at SDL startup with no
+  displays. Native execution remains unverified, and the gate is not green.
 - `@qualification` has not been run. The path tracer, runtime and OGPU changes from the
   optional-parameter removal are covered only by the build and the window-free tests.
 - `lib/pxui/fixtures/kit_panel_2x.png` was regenerated after six widgets were deleted and

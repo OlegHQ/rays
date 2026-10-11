@@ -3,21 +3,14 @@
 ; windows sequential in either target.
 
 (rule
- (alias smoke-all)
- (locks smoke_window)
- (action
-  (setenv RAYS_MAX_FRAMES 30
-   (run %{exe:examples/audio/lisp.exe}))))
-
-(rule
- (aliases smoke smoke-all)
+ (alias smoke)
  (locks smoke_window)
  (action
   (setenv RAYS_MAX_FRAMES 30
    (run %{exe:examples/basic/lisp.exe}))))
 
 (rule
- (aliases smoke smoke-all)
+ (alias smoke)
  (locks smoke_window)
  (action
   (setenv RAYS_MAX_FRAMES 30
@@ -28,42 +21,7 @@
  (locks smoke_window)
  (action
   (setenv RAYS_MAX_FRAMES 30
-   (run %{exe:examples/drawing/lisp.exe}))))
-
-(rule
- (alias smoke-all)
- (locks smoke_window)
- (action
-  (setenv RAYS_MAX_FRAMES 30
-   (run %{exe:examples/generative/lisp.exe}))))
-
-(rule
- (alias smoke-all)
- (locks smoke_window)
- (action
-  (setenv RAYS_MAX_FRAMES 30
-   (run %{exe:examples/noise/lisp.exe}))))
-
-(rule
- (alias smoke-all)
- (locks smoke_window)
- (action
-  (setenv RAYS_MAX_FRAMES 30
    (run %{exe:examples/pathtracer/main.exe}))))
-
-(rule
- (alias smoke-all)
- (locks smoke_window)
- (action
-  (setenv RAYS_MAX_FRAMES 30
-   (run %{exe:examples/pxui/lisp.exe}))))
-
-(rule
- (alias smoke-all)
- (locks smoke_window)
- (action
-  (setenv RAYS_MAX_FRAMES 30
-   (run %{exe:examples/recursive_rectangles/lisp.exe}))))
 
 (rule
  (alias smoke-all)
@@ -85,13 +43,6 @@
  (action
   (setenv RAYS_MAX_FRAMES 30
    (run %{exe:sketches/shattered_cube/main.exe}))))
-
-(rule
- (alias smoke-all)
- (locks smoke_window)
- (action
-  (setenv RAYS_MAX_FRAMES 30
-   (run %{exe:examples/file_dialog/lisp.exe}))))
 
 ; tools/codemod builds with --profile codemod: the dev warnings plus unused
 ; modules (60). Warnings stay fatal: dune never replays a cached success.
