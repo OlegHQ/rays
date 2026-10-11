@@ -131,6 +131,20 @@ later. Numbers and commands are in `specification/web-export/results.md`.
   frame, and `Run.dispatch` only skips an upload when the array is physically the same. Keeping the value of a
   source the static stage could have finished (no frame fact, state, element or host source) per `Packed.t`
   would remove it; a source bound in a `let*` is already a shared constant.
+- A static set of 1,000,000 marks starts with 288 MB allocated and 375 MB of peak RSS, against 93 and 206 for the
+  animated variant (`results.md`, P7.2 addendum of 2026-10-12; the asked 250 and 260 are not reached). What is left
+  is the 64-byte `Shape_batch` instance, held once by the scene and once on the GPU (128 MB), the 24 MB static
+  array and one evaluation. The step that removes the instances: draw a large static set with the `Marks` family
+  from host buffers. It does not keep the pixels as the family is (the shader adds a circle's radius and a rect's
+  size in binary32; 85 to 1,676 of 630,000 pixels differ by one step, `marks.md`, "Routing"), so it needs three
+  things. A layout of the family that takes the two corners, added in binary64 by `Marks_scene` exactly as
+  `Shape_batch.Builder` adds them (16 bytes an instance; lines already pass their ends through unchanged). A rule
+  for the scenes a static drawing keeps (`Drawing.prepared.kept`, the picture `Environment` reuses while nothing is
+  dynamic): their token is only valid while its GPU source lives (64 sources, least recently used closed first), so
+  either such a drawing runs every frame or the source is pinned for as long as the scene is kept. And every
+  refusal must stay `Shape_batch.Builder`'s, which a fallback to the CPU batch on any failure gives. Smaller, in
+  the same start: `Packed.force_all` allocates its register scratch once a chunk of 16 blocks (24 MB at 1,000,000,
+  about 20 MB of the peak); one array a domain would do.
 - A static attribute array of the web export is still a constant of `data.bin` in binary64: 24 MB for the
   1,000,000 static marks of P7.3 (the presenter now uploads it once, `results.md`, 2026-10-11 addendum). Shipping
   it as binary32 was tried on paper and not done, for two reasons found in the code. The node parity

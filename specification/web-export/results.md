@@ -1053,6 +1053,122 @@ Not reached: under 150 MB needs the three evaluations to become one (a cache acr
 without the intermediate copies. Both are design changes, not allocation fixes. Test: `lib/flow_ir/test_static_map`
 bounds the marginal allocation of a static map at 64 bytes an element on one domain (155 before, 43 after).
 
+### Addendum 2026-10-12: one evaluation a start, one copy of a static batch
+
+Before = `07dc39f7`, after = this branch. Variants and method as above (`static`, `panning`, `animated` at 1,000,000 and
+10,000 marks, built with dune's link line for `sketches/million_marks/main.exe`), plus `examples/basic` and
+`examples/particles` (`lisp.exe` as dune builds it). Both sets of executables were kept and run alternately, one before, one
+after, per round, in one session: Apple M1, dune dev profile, 1-minute load 2.2 to 9.5 from other agents (each run's
+load is in the logs; 3.7 to 9.5 during the 1-frame set, 2.2 to 6.3 during the 300-frame sets). One frame: `OCAMLRUNPARAM=v=0x400 RAYS_MAX_FRAMES=1 /usr/bin/time -l APP`, wall from
+perl `Time::HiRes`, one unlogged warm-up, median of 5. Scripts and logs are in
+`/private/tmp/claude-501/-Users-snowbear-WORK-GIT-rays/961730dd-cb7d-4b51-bb31-2fda1a4140a6/scratchpad/sm/` (`build.sh`,
+`measure.sh`, `summary.pl`, `steady.pl`, `bench.sh`, `runs/one.txt`, `runs/many.txt`, `runs/long.txt`).
+
+| Case | Wall s, 1 frame | CPU s (user + sys) | Allocated MB | Peak RSS MB | Peak footprint MB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1,000,000 static | 0.812 to 0.608 | 1.48 to 0.77 | 1,032.1 to 288.1 | 565.4 to 375.5 | 496.6 to 306.4 |
+| 1,000,000 panning | 0.814 to 0.620 | 1.50 to 0.77 | 1,032.1 to 288.2 | 564.5 to 376.8 | 495.8 to 307.9 |
+| 1,000,000 animated | 0.413 to 0.388 | 0.32 to 0.30 | 213.8 to 93.0 | 257.9 to 206.1 | 202.1 to 150.3 |
+| 10,000 static | 0.392 to 0.330 | 0.35 to 0.27 | 356.1 to 144.6 | 147.5 to 145.3 | 78.6 to 76.5 |
+| 10,000 panning | 0.396 to 0.329 | 0.35 to 0.27 | 356.2 to 144.7 | 146.9 to 145.4 | 78.0 to 76.7 |
+| 10,000 animated | 0.297 to 0.293 | 0.23 to 0.24 | 42.6 to 40.6 | 142.0 to 142.6 | 73.4 to 73.9 |
+| `examples/basic` | 0.291 to 0.295 | 0.23 to 0.23 | 36.5 to 36.4 | 140.5 to 140.7 | 68.3 to 68.6 |
+| `examples/particles` | 0.345 to 0.314 | 0.29 to 0.27 | 169.7 to 99.7 | 159.2 to 159.0 | 89.1 to 89.0 |
+
+Noise. Allocation is exact (the five runs agree to 0.01 percent). Wall spreads 0.01 to 0.02 s over five runs and CPU is
+reported in steps of 0.01 s. Peak RSS and footprint spread about 1.3 MB between runs of one executable, and the same
+executable's median moved by as much between sets (10,000 animated before: 142.0, 141.9 and 140.6 MB in three sets). The
+three rows where the after median is the higher one are inside that: repeated with 10 runs each, 10,000 animated is
+0.296 to 0.297 s, 0.23 to 0.23 s CPU, RSS 141.9 (140.9 to 142.2) to 142.2 (141.0 to 142.7), and `examples/basic` is
+0.296 to 0.297 s, RSS 140.5 (140.1 to 140.8) to 140.7 (139.7 to 141.0); a third set of 7 gave 10,000 animated RSS 140.6
+to 140.7 and footprint 73.2 to 73.4. The OCaml heap of that case is not larger (`top_heap_words` 1.50 to 1.53 M before,
+1.41 to 1.52 M after).
+
+Frames, P7.2 method (`(300 frames - 1 frame) / 299`, medians; 7 runs at 300 frames for the 1M rows and the 10,000 rows):
+
+| Case | CPU ms per frame, before | after | Bytes per frame, before | after | Wall ms per frame |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1,000,000 static | 4.35 (4.31 to 4.52) | 4.41 (4.28 to 4.45) | 298,827 | 298,815 | 33.49 to 33.55 |
+| 1,000,000 panning | 4.48 (4.31 to 4.75) | 4.62 (4.52 to 4.75) | 317,874 | 317,793 | 33.49 to 33.46 |
+| 1,000,000 animated | 5.65 (5.28 to 5.95) | 5.55 (5.35 to 5.65) | 355,904 | 355,951 | 33.50 to 33.51 |
+| 10,000 static | 4.05 (3.95 to 4.35) | 3.98 (3.88 to 4.11) | 302,645 | 299,127 | 16.73 to 16.70 |
+| 10,000 panning | 4.21 (4.08 to 4.41) | 4.21 (3.98 to 4.41) | 314,121 | 314,111 | 16.74 to 16.71 |
+| 10,000 animated | 5.12 (4.55 to 5.25) | 5.18 (5.02 to 5.25) | 358,961 | 358,985 | 16.71 to 16.75 |
+
+Wall is the display cap, as before. The subtraction carries the noise of its 1-frame term (CPU in 0.01 s steps, so
+0.03 ms a frame a step, and the before start does 0.7 s more work), which is all of the 1M panning difference: the
+300-frame totals are 2.84 s of CPU before and 2.15 after, and between 300 and 600 frames (3 runs of 600, startup cancelled
+exactly) a frame costs 4.53 ms before and 4.47 after for panning, 4.30 and 4.20 for static, with 307,094 and 307,370, 288,050
+and 288,098 bytes. Bytes per frame move in steps of about 3,550 between runs of one executable (a megabyte that falls in
+frame 1 or later), so the columns are equal within one step; the 1M animated runs span 355,857 to 355,974 on both sides.
+
+Benches, same alternation (`tools/bench_marks.exe` 7 runs, `bench_marks_gpu.exe` 3 runs, medians, load 2.2 to 5.8):
+
+| `bench_marks` row | ms before | ms after | Bytes before | Bytes after |
+| --- | ---: | ---: | ---: | ---: |
+| circles static 100,000 and 1,000,000 | 0.000, 0.001 | 0.000, 0.001 | 1,136 | 1,136 |
+| rects static 100,000 and 1,000,000 | 0.001, 0.001 | 0.001, 0.001 | 1,136 | 1,136 |
+| circles animated 100,000 | 12.375 | 11.745 | 51,331,680 | 38,531,648 |
+| rects animated 100,000 | 12.380 | 12.000 | 50,531,632 | 40,931,512 |
+| circles animated 1,000,000 | 118.524 | 112.317 | 513,428,264 | 385,427,856 |
+| rects animated 1,000,000 | 119.241 | 113.292 | 505,427,968 | 409,428,400 |
+| translate moving 100,000 | 0.004 (0.003 to 0.006) | 0.005 (0.004 to 0.006) | 6,792 | 6,792 |
+| translate moving 1,000,000 | 0.006 (0.005 to 0.015) | 0.007 (0.005 to 0.016) | 6,792 | 6,792 |
+
+The translate rows time one frame with a microsecond clock, so a median moves by a whole microsecond. The same frame in a
+loop of 20,000 (a scratch copy of the row linked against each library set, median of 9 samples, 3 runs): 1.424, 1.426,
+1.433 microseconds before and 1.435, 1.431, 1.419 after at 100,000; 1.436, 1.423, 1.429 and 1.432, 1.433, 1.422 at
+1,000,000; 6,696 bytes in all. `bench_marks_gpu.exe`: every row allocates the same bytes before and after (8,026,488 for
+circles uniform at 1,000,000, 24,059,056 for moving both), and the times are within 3 percent either way (circles at
+1,000,000: uniform 4.611 to 4.655, per-instance 4.689 to 4.647, moving both 13.824 to 13.842; rects: 4.621 to 4.599,
+4.721 to 4.630, 14.056 to 13.940).
+
+Where it went (`Gc.Memprof`, initial domain, `static` 1M, one frame; before 1,044 MB, after 291 MB):
+
+| Part | Before MB | After MB |
+| --- | ---: | ---: |
+| Static evaluation (4,096 walked elements about 85, the 24 MB output, `array/range` 8) | 421 (three: 142, 140, 139) | 144 (one) |
+| Kernel register scratch on the initial domain (one array a chunk) | 65 | 21 |
+| `Marks_scene`: the batch (64 MB; sampled) | 62 | 66 |
+| `Marks_scene`: `publish` copy, tuples and boxed floats per mark | 260 | 0 |
+| Lowering: batch copy 68, index table 24 and its closures 58, index copy 24 | 174 | 24 |
+| Upload: joined indices and uniforms | 24 | 0 |
+| Catalog digest, editor, pipelines | 38 | 36 |
+
+1. One evaluation a start. `Workspace.run` built the document three times: for the window (`Contexts.window`), for the
+   camera (`declared_camera`) and in the editor. It builds it once, reads the window from that document's plan
+   (`Contexts.document_window`, equal to `Contexts.window` on the 43 checked-in files that open) and the camera from its
+   scene, and hands it to the editor (`?opened`, private). A hand-over, not a cache: the reference is dropped when the
+   editor takes it, and an edit, a save and a reload lower their text as before. This is the whole gain of the 10,000
+   rows and of `examples/particles`.
+2. `Shape_batch.Builder.publish` gives a full builder's storage to the batch (an append past a full buffer already moved
+   to a new one, so a published batch stays immutable), and `circles`, `rects`, `lines` write a whole set from the
+   attribute arrays. The dev profile compiles opaque, so every float handed to `circle` from `Marks_scene` was boxed;
+   `Marks_scene` uses the whole-set writers for a set with constant colours.
+3. Lowering draws from the batch's own bytes (it copied them), writes the index table with a plain loop and shares it
+   with a batch that needs all of it, and the first upload writes indices and uniforms apart.
+
+Not reached: 250 MB and 260 MB of peak RSS. What a static 1M start still allocates is one evaluation (the walker's 4,096
+elements are the contract), the 64-byte instances once and the indices once; its peak RSS over the animated variant
+(375 against 206) is the batch on the CPU and again on the GPU (128 MB against 12 MB of device positions), the 24 MB
+static array, and about 30 MB of garbage not yet swept. Getting under that means no 64-byte instances, and the two routes
+that avoid them do not keep the pixels. As a GPU region the positions would be binary32 results, not the walker's. As
+host buffers of the `Marks` family they are the walker's values, but the shader adds the radius in binary32: with the
+sketch's static positions as a host buffer beside a GPU radius, 85 of 630,000 pixels differ from the `Shape_batch`
+picture at 2,000 marks, 643 at 20,000, 1,676 at 200,000 and 466 at 1,000,000, each by one step of one channel
+(`marks.md`, "Routing"). `DEFERRED.md` has the step that would do it exactly.
+
+Tests: `test/test_workspace_start` (`@runtest-native`: a 1M static start is 1 evaluation, was 3, and under 400 bytes a
+mark on the initial domain, 280 against about 1,040; a file that differs from the built text reloads and the host
+graph names a picture after the file's static value, 2 evaluations), `test/test_workspace_doc` (window of the opened
+document on every checked-in file), `lib/scene_command/test_shape_batch` (a full builder publishes in under 1 KB and
+the batch survives later appends; whole-set writers equal one call an instance over strides 0, 2 and 3, with the same
+refusal at the same instance, and allocate under 4 KB for 50,000 circles), `lib/rays_editor/marks_scene_test` (eleven
+constant-colour sets equal their mark-by-mark batches, five of them refusals; 64.0 bytes a mark for 100,000 static
+circles, about 330 before), `lib/rays_execution/test_shapes_lowering` (`@runtest-native`: 24.5 bytes an instance on the
+first frame of a 100,000-instance batch, about 170 before, 0.3 after). Region, draw, JS, WGSL and Metal snapshots and
+the parity goldens are unchanged.
+
 ## P7.4 evaluation
 
 Date 2026-10-11. Every number below is copied from the section named in its table, or counted by the commands
