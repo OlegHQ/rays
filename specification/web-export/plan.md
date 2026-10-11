@@ -774,11 +774,18 @@ Phase 3
 - [x] P3.3b H
   `flow_ir` may depend on `scene_command` (dependency-free marks contract) 2026-10-11: added to
   `lib/flow_ir/dune`, the gate's `only` table, AGENTS.md and backend.md. `@test/runtest` passed.
-- [ ] P3.4 S
-- [ ] P3.5 S
-- [ ] P3.6 S
-- [ ] P3.7 S
-- [ ] P3.8 S
+- [x] P3.4 S
+  Done 2026-10-11 on branch `worktree-agent-a30ec1f3dd78d1287` (commit b42c19e6); focused gates green.
+- [x] P3.5 S
+  Done 2026-10-11 on branch `worktree-agent-a30ec1f3dd78d1287` (commit 9caa36e2); focused gates green.
+- [x] P3.6 S
+  Done 2026-10-11 on branch `worktree-agent-a30ec1f3dd78d1287` (commit a15b7deb); focused gates green.
+- [x] P3.7 S
+  Done 2026-10-11 on branch `worktree-agent-a30ec1f3dd78d1287` (commit dae1acd7); focused gates green.
+- [x] P3.8 S
+  26 draw graphs serialize byte for byte the same through `Drawing` and core/marks/`Marks_scene`;
+  text and image are checked at the marks level only. Adds `Scene.Affine` (six coefficients kept verbatim).
+  Done 2026-10-11 on branch `worktree-agent-a30ec1f3dd78d1287` (commit 99ae9860); focused gates green.
 - [ ] P3.9 S
 - [ ] P3.10 S
 - [ ] P3.11 H
