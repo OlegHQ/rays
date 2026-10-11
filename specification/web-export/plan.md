@@ -317,6 +317,7 @@ slice is the tree walker: results are bit-identical, as the closure tier's are.
 | P1.13 | H | P1.11 | `tools/bench_core.ml`, `tools/dune`, `results.md` | A new bench printing three rows for one scalar residual (the expression of the `Closure` row in `flow_ir.ml:133-160`): tree walker, closure tier, core. Add it to `bench-build`. Record the rows | Rows printed; entry present |
 | P1.14 | S | P1.13 | `core_exec.ml` | Only if the core row is more than 1.1 times the closure row: compile a core program once into OCaml closures instead of interpreting it, keeping the interpreter as the test reference. Re-record | Core at most 1.1 times closure; P1.4 and P1.11 pass |
 | P1.14a | S | P1.14 | `lib/flow/eval.ml`, `.mli`, `core_exec.ml`, `flow_ir.ml` | Repair: the evaluator keeps the executor's prepared program on the residual (an owner-checked slot filled by the hook on first offer), so a repeat force skips the cached-program lookup, the state snapshot, the second handler and optional-argument boxing; no `flow_ir` dependency, no global hook; the error rule is unchanged | Core at most 1.1 times closure on `tools/bench_core.exe`; `@lib/flow/runtest`, `@lib/flow_ir/runtest` |
+| P1.14b | S | P1.14a | `core_exec.ml` | Repair: close the last 0.15 of the scalar ratio inside the postfix tier (superinstructions for constant or time operands, fewer dispatches, no per-call stack allocation); the hook cost is already gone | Core at most 1.25 times closure on `tools/bench_core.exe` (review threshold), ideally 1.1; `@lib/flow_ir/runtest` |
 | P1.15 | S | P1.14 | `lib/flow/eval.ml` | Flip `core_residuals` to default `true` | All default tests, and `@test/test_workspace_ir` |
 | P1.R | R | P1.15, P1.2a, P1.6a | | Run `--ship` and `@runtest-native`. Confirm P1.12 shows full coverage. Re-list the callers of `fast_of`, `closure_available` and `compile_residuals` for P1.16 | All green |
 | P1.16 | S | P1.R | `lib/flow/eval.ml`, `.mli`, callers | Delete `compile`, `cnode`, `fast`, `fast_of` and both switches. Keep the `Closure` tier name in `Flow_ir.tier`, now meaning a core frame program, so placement tests are unchanged. Promote the API manifest in a second commit | `--ship` |
@@ -702,7 +703,26 @@ Phase 1
   `Private.closure_available`/`compiled`; `closure_available` is used by `flow_ir.ml` line 365
   and `test_core_lower.ml` line 35; `compile_residuals` by `fast_of` and the tests
   `test_frame.ml`, `test_workspace_eval.ml`, `test_core_parity.ml` and `tools/bench_core.ml`.
+- [ ] P1.14b S
 - [ ] P1.R R
+  Review on 2026-10-11 (commit after 06149f40). Green: `--ship` (all, runtest, smoke, diff check;
+  807 s, the only failure was the API manifest for the P1.14a `.mli` change, promoted in its own
+  commit, then 2 s cached rerun EXIT=0) and `@runtest-native` (one run failed
+  `runtime_live_resize` "a programmatic resize stalled the frame loop for 1033 ms" at load average
+  5; `lib/runtime` is untouched since `723a7ff9` apart from a test, and the test passed on three
+  reruns: a wall-clock flake, not Phase 1). Coverage re-run on the final tree: 15 eligible
+  workspaces, zero refusals (same counts as the P1.12a table, 2,009 lowered). Callers for P1.16:
+  `eval.ml` (`fast`/`fast_of`/`compile`/`cnode`/`cnode_of_value`, the `fast` field of every
+  residual literal, `classic ()`, `compile_residuals`, `core_residuals`, `Private.compiled`,
+  `Private.closure_available`, `Private.compile_residuals/core_residuals`); `flow_ir.ml` placement
+  (`closure_available`, now `Core_lower.lower`), the `core_residuals` tests in `Executor.force`
+  and the legacy IR interpreter branch (dead once the switch goes); tests `lib/flow/test_frame.ml`,
+  `test_workspace_eval.ml`, `lib/flow_ir/test_core_{parity,lists,regions,state,errors,records,lower}.ml`;
+  `tools/workspace_parity.ml`, `tools/bench_core.ml`. Decision for P1.14: core/closure is 1.25 to
+  1.27 over five runs (median 1.26; load average 6, so not quiet), above the 1.25 acceptance
+  threshold, so the phase is not ticked and P1.14b is added. P1.16 was prepared (an uncommitted
+  working tree, kept as `git stash` "p1.16-prepared") and compiles with `--ship`-level tests green
+  in `@lib/flow` and `@lib/flow_ir`; it resumes after P1.14b.
 - [ ] P1.16 S
 
 Phase 2
