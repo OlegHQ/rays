@@ -748,9 +748,9 @@
     },
     {
       "api": [
-        "val run : ? root : Flow.Eval.residual -> Core.program -> live : Frame_input.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result"
+        "val run : ? root : Flow.Eval.residual -> ? force : ( Packed.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> Core.program -> live : Frame_input.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result"
       ],
-      "api_sha256": "37b9139481d6aa89e547aa64f906b455eefa224c919a211e1acadfc05de557b7",
+      "api_sha256": "a7edbc33c7cf6f3ca86954878f135e5f17eee7e4c9f354c033f2eb0cab5320c8",
       "excluded_legacy_symbols": [],
       "library": "flow_ir",
       "module": "Core_exec",
