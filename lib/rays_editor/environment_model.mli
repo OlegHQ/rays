@@ -63,6 +63,7 @@ val create :
   ?max_entries:int ->
   ?max_payload_bytes:int ->
   ?await:bool ->
+  ?carry_budget:float ->
   workspace:Editor_document.Workspace_doc.t ->
   ?source:Source_file.t ->
   prepare:(Editor_document.Settings.t ->

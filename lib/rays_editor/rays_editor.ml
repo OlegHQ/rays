@@ -78,10 +78,10 @@ module Editor = struct
     {value with extra = {value.extra with Viewport.renderer_request = Some mode}}
 
   let create ?name ?presets ?factories ?settings ?lights ?camera
-      ?background ?seed ?grain ?domains ?max_entries ?max_payload_bytes ?await ~workspace ?source ~prepare ~scene3
+      ?background ?seed ?grain ?domains ?max_entries ?max_payload_bytes ?await ?carry_budget ~workspace ?source ~prepare ~scene3
       ?overlay ?status () =
     create ?name ?presets ?factories ?settings ?lights ?camera
-      ?background ?seed ?grain ?domains ?max_entries ?max_payload_bytes ?await ~workspace ?source ~prepare
+      ?background ?seed ?grain ?domains ?max_entries ?max_payload_bytes ?await ?carry_budget ~workspace ?source ~prepare
       ~draw:scene3 ?overlay ?status ()
 
   let run ?inputs ?name ?factories ?lights ?camera

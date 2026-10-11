@@ -390,6 +390,7 @@ module Editor : sig
     ?max_entries:int ->
     ?max_payload_bytes:int ->
     ?await:bool ->
+    ?carry_budget:float ->
     workspace:Workspace_doc.t ->
     ?source:Source.t ->
     prepare:(Settings.t -> Sop.Session.output -> ('prepared, string) result) ->
@@ -404,7 +405,9 @@ module Editor : sig
       [Sop_catalog.Editor.factories] to extend).
       [await] (default: [RAYS_MAX_FRAMES] is set) makes each
       [update] block on the cook it submits, so a fixed-step run or a test sees the
-      settled result of every frame instead of racing the worker.
+      settled result of every frame instead of racing the worker. [carry_budget] (default 0.5)
+      is the seconds a carry's preview may take, to apply or to cook, before it is only described
+      (the target is lit, the strip says what a release writes, no picture).
       [prepare] runs on the cook worker domain with submission settings.
       It must only do pure CPU work on immutable/disjointly owned data;
       SDL, Metal, textures, fonts, audio, UI and runtime caches stay on the

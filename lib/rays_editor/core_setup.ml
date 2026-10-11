@@ -46,7 +46,7 @@ let create ?settings ?(keymap = Leader.keymap)
     ?(name = "sketch") ?presets ?(state_key = name) ?(factories = [])
     ?(seed = 0L) ?(grain = 16_384)
     ?domains ?(max_entries = 512)
-    ?(max_payload_bytes = 256 * 1024 * 1024) ?await
+    ?(max_payload_bytes = 256 * 1024 * 1024) ?await ?(carry_budget = 0.5)
     ~workspace ~prepare () =
   let factories = if factories = [] then Sop_catalog.Editor.factories else factories in
   let settings = Option.value settings ~default:workspace.Workspace_doc.settings in
@@ -91,7 +91,7 @@ let create ?settings ?(keymap = Leader.keymap)
         graph_at = None; graph_pane = None; graph_panes = [];
         list_at = None; text_at = None; outline_at = None; locals = [];
         started = { on = None; views = []; tabs = [] };
-        framing = None; carry = None; carry_budget = 0.5; traces = []; view_tools = None; gates = []; selected_box = None;
+        framing = None; carry = None; carry_budget; traces = []; view_tools = None; gates = []; selected_box = None;
         file = (fst doc.Document.workspace).checked.name ^ ".rays" } in
       Cook.set_volatile cook (Flow_sop.Lower.is_volatile (snd doc.workspace));
       (* the panels open as their start keywords say; the first graph pane (the focused leaf, else

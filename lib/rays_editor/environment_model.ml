@@ -65,7 +65,7 @@ let seed_lights lights scene =
 let create ?inputs ?name ?presets ?factories
     ?settings ?(lights = [])
     ?(camera = V.default_camera ()) ?(background = Color.hex_exn "#f4f5f0")
-    ?seed ?grain ?domains ?max_entries ?max_payload_bytes ?await ~workspace ?source ~prepare ~draw
+    ?seed ?grain ?domains ?max_entries ?max_payload_bytes ?await ?carry_budget ~workspace ?source ~prepare ~draw
     ?(overlay = fun _ _ _ -> Scene.empty) ?(status = fun _ -> None) () =
   let workspace = match inputs with None -> workspace
     | Some inputs -> {workspace with Workspace_doc.inputs} in
@@ -96,7 +96,7 @@ let create ?inputs ?name ?presets ?factories
       ~seed_scene:(fun factories scene ->
         V.seed_scene camera factories (seed_lights lights scene))
       ~name ~state_key ?presets ?factories ?seed ?grain ?domains
-      ?max_entries ?max_payload_bytes ?await ~workspace ~prepare ())
+      ?max_entries ?max_payload_bytes ?await ?carry_budget ~workspace ~prepare ())
 
 let document value = Core.document value.core
 let prepared value = Core.prepared value.core
