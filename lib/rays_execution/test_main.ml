@@ -5,6 +5,7 @@ let tests = [
   "test_ui_pipeline", Test_ui_pipeline.run;
   "test_marks_native", Test_marks_native.run;
   "test_batch_merge", Test_batch_merge.run;
+  "test_shapes_lowering", Test_shapes_lowering.run;
 ]
 
 let () =

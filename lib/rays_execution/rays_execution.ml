@@ -194,8 +194,8 @@ let sampled_texture_bytes (texture:Scene_execution.sampled_texture)=
 (* The last bytes one UI batch position lowered to. Unchanged content reuses
    them, so the executor's mesh cache hits by physical identity instead of
    hashing every instance each frame. *)
-(* [ui_source] is the batch the vertices were copied from: a published batch is immutable, so the
-   same one again is unchanged without comparing its bytes. *)
+(* [ui_source] is the batch the vertices were last compared with: a published batch is immutable, so
+   the same one again is unchanged without comparing its bytes, and [ui_vertices] may be its bytes. *)
 type ui_slot={mutable ui_vertices:bytes;mutable ui_indices:bytes;
   mutable ui_affine:bytes;mutable ui_source:bytes}
 let ui_slot_capacity=256
@@ -517,15 +517,20 @@ let ui_index_bytes count=
   if Bytes.length!ui_indices<needed then begin
     let capacity=max needed(2*Bytes.length!ui_indices)in
     let bytes=Bytes.create capacity in
+    (* corners 0 1 2 0 2 3 of each quad, written without a closure or a list per quad *)
     for quad=0 to capacity/24-1 do
-      let base=quad*4 in
-      List.iteri(fun slot corner->
-        Bytes.set_int32_le bytes((quad*6+slot)*4)(Int32.of_int(base+corner)))
-        [0;1;2;0;2;3]
+      let base=quad*4 and at=quad*24 in
+      Bytes.set_int32_le bytes at(Int32.of_int base);
+      Bytes.set_int32_le bytes(at+4)(Int32.of_int(base+1));
+      Bytes.set_int32_le bytes(at+8)(Int32.of_int(base+2));
+      Bytes.set_int32_le bytes(at+12)(Int32.of_int base);
+      Bytes.set_int32_le bytes(at+16)(Int32.of_int(base+2));
+      Bytes.set_int32_le bytes(at+20)(Int32.of_int(base+3))
     done;
     ui_indices:=bytes
   end;
-  Bytes.sub!ui_indices 0 needed
+  (* The table is never written after it is made, so a batch that needs all of it shares it. *)
+  if Bytes.length!ui_indices=needed then !ui_indices else Bytes.sub!ui_indices 0 needed
 let same_bytes_range source offset target=
   let length=Bytes.length target in
   let rec loop index=index>=length||
@@ -642,9 +647,10 @@ let lower_scene2_uncached value ~lease_policy ~density ~resource:resolve ir =
                 let slot={ui_vertices=Bytes.empty;ui_indices=Bytes.empty;ui_affine=Bytes.empty;ui_source=Bytes.empty}in
                 Int_table.add value.ui_slots slot_key slot;slot in
           if slot.ui_source!=instances then begin
+            (* changed content takes the batch's own bytes (immutable once published), not a copy *)
             if Bytes.length slot.ui_vertices<>Bytes.length instances ||
                not(Bytes.equal slot.ui_vertices instances)then
-              slot.ui_vertices<-Bytes.copy instances;
+              slot.ui_vertices<-instances;
             slot.ui_source<-instances
           end;
           if Bytes.length slot.ui_indices<>count*24 then

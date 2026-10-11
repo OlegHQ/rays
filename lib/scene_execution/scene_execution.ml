@@ -387,7 +387,12 @@ let prepare value ~reserved ~uniforms ?(vertex_stable=false) ~nonindexed ~canoni
   |None->
   let descriptor:Ogpu.Types.buffer_descriptor={label=Some("scene-mesh-"^mesh.key);size=Int64.of_int total;usage=[Vertex;Index;Storage;Copy_dst]}in
   match Ogpu.Backend.create_buffer value.device descriptor with Error _ as e->e|Ok buffer->
-    let offset=Int64.of_int(Bytes.length vertices)in let packed=Bytes.concat Bytes.empty[indices;uniform_bytes]in match Ogpu.Backend.write_buffer buffer~offset:0L vertices with Error e->ignore(Ogpu.Backend.destroy_buffer buffer);Error e|Ok()->match Ogpu.Backend.write_buffer buffer~offset packed with Error e->ignore(Ogpu.Backend.destroy_buffer buffer);Error e|Ok()->let item={key;payload_hash;trusted_source=source_for_trust mesh total;buffer;index_offset=offset;uniform_offset;uniform_copy;vertex_count;index_count;primitive=mesh.primitive;bytes=total}in
+    let offset=Int64.of_int(Bytes.length vertices)in
+    (* Indices and uniforms are written apart: joining them first copied every index. *)
+    let write offset bytes=match Ogpu.Backend.write_buffer buffer~offset bytes with
+      |Error e->ignore(Ogpu.Backend.destroy_buffer buffer);Error e|Ok()->Ok()in
+    match write 0L vertices with Error e->Error e|Ok()->match write offset indices with Error e->Error e|Ok()->
+    match if Bytes.length uniform_bytes=0 then Ok()else write(Int64.add offset(Int64.of_int(Bytes.length indices)))uniform_bytes with Error e->Error e|Ok()->let item={key;payload_hash;trusted_source=source_for_trust mesh total;buffer;index_offset=offset;uniform_offset;uniform_copy;vertex_count;index_count;primitive=mesh.primitive;bytes=total}in
     String_table.add value.cache~bytes:total key item;value.uploaded<-Int64.add value.uploaded(Int64.of_int total);Ok item in
   match String_table.find value.cache key with
   |exception Not_found->upload None
