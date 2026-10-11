@@ -28,6 +28,13 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
 
 ## Tests that got weaker
 
+- Restored 2026-10-11: `test_ui_pipeline` previously created and destroyed
+  a native execution, then printed "matches Scene2" without drawing. It now
+  captures the UI batch and independently constructed Scene2 geometry at 1x
+  and 2x, verifies nonempty pixels and exact image lengths, and compares every
+  channel except the original rectangle-corner allowance. Submissions are
+  canceled on failure as well as consumed on success. The executable builds;
+  this runner takes the existing no-Metal skip, so native parity is unverified.
 - Fixed and verified 2026-10-11: `test_scene3_float32.run` formerly only
   printed a success message. It now checks the split float32 ABI, exact
   position/normal/index/color/UV words, geometry reuse across recoloring,

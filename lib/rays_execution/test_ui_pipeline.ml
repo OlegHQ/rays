@@ -35,15 +35,28 @@ let new_batch () =
 
 let capture execution lower =
   let submission = get (Rays_execution.Private.begin_submission execution) in
-  let batch = get (lower submission) in
-  ignore (get (Rays_execution.Private.step ~clear:(1., 1., 1., 1.)
-    submission [ batch ]));
-  get (Rays_execution.capture execution)
+  Fun.protect ~finally:(fun () -> Rays_execution.Private.cancel submission) (fun () ->
+    let batch = get (lower submission) in
+    ignore (get (Rays_execution.Private.step ~clear:(1., 1., 1., 1.)
+      submission [ batch ]));
+    get (Rays_execution.capture execution))
 
-(* The old stroke is four butt-capped segments without joins: it leaves each
-   outer corner square of the 1-point band empty and blends each inner corner
-   square twice (three times at 1x). The instance pipeline paints every band
-   pixel exactly once. Those corner squares are the only permitted change. *)
+let old_scene () =
+  let rect (x, y, w, h) fill stroke =
+    Scene_command.Shape2.polygon
+      [x, y; x + w, y; x + w, y + h; x, y + h] ~fill ~stroke
+    |> Array.to_list in
+  let geometries = List.concat_map (fun bounds -> rect bounds (Some fill) (Some stroke)) shapes
+    @ rect (5, 24, 17, 3) (Some accent) None
+    @ [Scene_command.Shape2.line ~from_:(22, 22) ~to_:(22, 29) ~width:2 ~color:marker;
+       Scene_command.Shape2.line ~from_:(52, 5) ~to_:(52, 30) ~width:1 ~color:stroke;
+       Scene_command.Shape2.line ~from_:(49, 18) ~to_:(60, 18) ~width:1 ~color:stroke] in
+  Result.get_ok (Scene_command.Render_ir.create
+    (Array.of_list (List.map (fun geometry -> Scene_command.Render_ir.Geometry geometry) geometries)))
+
+(* Retain the original comparison's allowance for the rectangle corner
+   squares, where the older segment stroke overlapped or left a gap.
+   Compare every channel everywhere else, including the marker lines. *)
 let band_corner density (x, y) =
   let px = (float x +. 0.5) /. float density
   and py = (float y +. 0.5) /. float density in
@@ -62,6 +75,7 @@ let first_difference density width left right =
   !found
 
 let run () =
+  let scene = old_scene () and ui = new_batch () in
   List.iter (fun density ->
     let configuration = { Rays_execution.
       logical_width = 64; logical_height = 40;
@@ -72,5 +86,22 @@ let run () =
     | Ok execution ->
         Fun.protect ~finally:(fun () ->
           ignore (Rays_execution.destroy execution)) (fun () ->
+          let old = capture execution (fun submission ->
+            Rays_execution.Private.lower_scene2 submission ~density
+              ~resource:(fun _ -> None) scene)
+          and current = capture execution (fun submission ->
+            Rays_execution.Private.lower_ui submission ~density
+              ~resource:(fun _ -> None) ui) in
+          let width = configuration.drawable_width in
+          let length = width * configuration.drawable_height * 4 in
+          assert (Bytes.length old = length && Bytes.length current = length);
+          let painted = ref 0 in
+          Bytes.iteri (fun index channel ->
+            if index mod 4 <> 3 && channel <> '\255' then incr painted) current;
+          assert (!painted > 100);
+          (match first_difference density width old current with
+           | None -> ()
+           | Some (x, y) -> failwith (Printf.sprintf
+               "UI pipeline differs from Scene2 at %dx pixel (%d,%d)" density x y));
           Printf.printf "UI pipeline matches Scene2 at %dx\n%!" density))
     [ 1; 2 ]
