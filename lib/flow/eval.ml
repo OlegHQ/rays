@@ -283,7 +283,7 @@ type cenv = { base : value Smap.t; over : cnode Smap.t; budget : int ref }
 
 let compile_budget = 2048
 let compile_residuals = ref true
-let core_residuals = ref false
+let core_residuals = ref true
 
 let add_values a b = Value.arith "sum" ( +. ) a b
 

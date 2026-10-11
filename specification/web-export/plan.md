@@ -680,7 +680,20 @@ Phase 1
   walker); parity, flow, flow_ir and default tests pass. Remaining hot spot: the hook round trip
   (about 40 ns: snapshot, handlers, cached-program lookup), which needs the evaluator to hold the
   prepared program on the residual. Ratio is at most 1.5, so P1.15 proceeds.
-- [ ] P1.15 S
+- [x] P1.15 S
+  `Eval.Private.core_residuals` now defaults to true. Default tests
+  (`SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy _build/default/tools/check.exe`, EXIT=0,
+  which includes the workspace IR sweep) pass on 2026-10-11; tests that compare the switch
+  on and off still set both values explicitly, and no expectation changed. Flipping it also
+  sends every dataflow program through the executor hook (`Executor.force` takes the
+  `force_with_packed` path whenever the switch is on). It exposed one defect of P1.12a,
+  fixed in the preceding commit: a workspace operator reusing the name `noise3`,
+  `color/hsl` or `color/gradient` ran the shipped body; core now declines it. For P1.16:
+  the callers of `fast_of` are `eval.ml` `classic ()` (the hook's fallthrough, gated on
+  `c.st.compiled_residuals`), the `compile` function's `Residual` case and
+  `Private.closure_available`/`compiled`; `closure_available` is used by `flow_ir.ml` line 365
+  and `test_core_lower.ml` line 35; `compile_residuals` by `fast_of` and the tests
+  `test_frame.ml`, `test_workspace_eval.ml`, `test_core_parity.ml` and `tools/bench_core.ml`.
 - [ ] P1.R R
 - [ ] P1.16 S
 
