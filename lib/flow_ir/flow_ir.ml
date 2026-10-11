@@ -343,6 +343,52 @@ let fuse ir =
   {ir with groups = Array.of_list (Array.fold_right (fun g acc ->
     if g = [] then acc else Array.of_list g :: acc) groups [])}
 
+(* Attribute fusion: the region attributes of one mark set that agree on count (or origin),
+   rate, scope and precision, and feed nothing else, become one region node with an output
+   each (at the lowest member's index, so the order stays topological). Declining, for
+   register limit or disagreement, leaves the members separate. *)
+let fuse_attributes ir =
+  validate ir;
+  let uses = Array.make (Array.length ir.nodes) 0 in
+  Array.iter (fun i -> uses.(i) <- uses.(i) + 1) ir.roots;
+  Array.iter (fun node -> List.iter (fun e -> uses.(e.node) <- uses.(e.node) + 1) node.args) ir.nodes;
+  let nodes = Array.copy ir.nodes in
+  Array.iteri (fun m node -> match node.kind with
+    | Marks marks ->
+        let candidates = attribute_edges ir node |> List.filter_map (fun (a, i) ->
+          match nodes.(i).kind with
+          | Kernel {body = Packed_map p; elementwise = true; _} when uses.(i) = 1 -> Some (i, a, Packed.to_region p)
+          | _ -> None) |> List.sort (fun (i, _, _) (j, _, _) -> compare i j) in
+        let compatible i j = let a = nodes.(i) and b = nodes.(j) in
+          same_count a.count b.count && a.rate = b.rate && a.scope = b.scope && a.precision = b.precision in
+        let groups = List.fold_left (fun groups ((i, _, _) as member) ->
+          let rec join = function
+            | [] -> [[member]]
+            | (((head, _, _) :: _) as group) :: rest when compatible head i
+                && Option.is_some (Core_fuse.merge (List.map (fun (_, _, r) -> r) (group @ [member]))) ->
+                (group @ [member]) :: rest
+            | group :: rest -> group :: join rest in
+          join groups) [] candidates in
+        let args = ref node.args and attributes = ref marks.attributes in
+        List.iter (function
+          | [] | [_] -> ()
+          | ((head, _, _) :: _) as members ->
+              let merged = Option.get (Core_fuse.merge (List.map (fun (_, _, r) -> r) members)) in
+              (match Packed.of_region merged with
+               | Error _ -> ()
+               | Ok packed ->
+                   let first = nodes.(head) in
+                   nodes.(head) <- {first with ty = Ty.Any;
+                     kind = Kernel {body = Packed_map packed; elementwise = true; requires_exact = true};
+                     provenance = List.sort_uniq compare (List.concat_map (fun (i, _, _) -> nodes.(i).provenance) members)};
+                   List.iteri (fun output (_, (a : attribute), _) ->
+                     args := List.map (fun e -> if e.name = a.edge then {e with node = head} else e) !args;
+                     attributes := List.map (fun (b : attribute) ->
+                       if b.edge = a.edge then {b with output} else b) !attributes) members)) groups;
+        nodes.(m) <- {node with args = !args; kind = Marks {marks with attributes = !attributes}}
+    | _ -> ()) ir.nodes;
+  {ir with nodes; groups = singleton_groups nodes}
+
 let place ?(approx=W.Paths.empty) ?(gpu_cost=fun _ ~count:_ -> None) ir =
   validate ir;
   let nodes = Array.copy ir.nodes in
@@ -381,7 +427,7 @@ let place ?(approx=W.Paths.empty) ?(gpu_cost=fun _ ~count:_ -> None) ir =
     Ok {ir with nodes}
   with Refused d -> Error d
 
-let optimize ir = Result.map fuse (place (prune (share (hoist ir))))
+let optimize ir = Result.map fuse (place (prune (fuse_attributes (share (hoist ir)))))
 
 module Residuals = Hashtbl.Make (struct
   type t = E.residual

@@ -1,4 +1,4 @@
-(* Scalar rows by default; `kernels` times packed kernels (the core-region switch is gone: compare against commit 035c1506^).
+(* Scalar rows by default; `kernels` times packed kernels, `attributes` fused against separate mark attributes (the core-region switch is gone: compare against commit 035c1506^).
    One scalar residual evaluated by the tree walker and the core executor. Median of three samples per row, one domain. *)
 module E = Flow.Eval
 module I = Flow_ir
@@ -86,4 +86,32 @@ let kernels () =
         Printf.printf "%-22s %-6d %12.2f %12.3f\n%!" label domains
           (compile *. 1e6) (force *. 1e3)) [1; 8]) cases
 
-let () = if Array.length Sys.argv > 1 && Sys.argv.(1) = "kernels" then kernels () else scalar ()
+(* Attribute fusion: one two-output region against the two kernels it replaces. *)
+let attributes () =
+  let n = 1_000_000 in
+  let ws = match Flow.Workspace.check catalog (ok (Flow.Syntax.parse (Printf.sprintf
+    "(workspace w (graph g :context draw (let* [p (map (fn [i] [(* i t) (sin (+ i t)) 0]) (array/range %d))
+      c (map (fn [i] [(sin t) (/ i %d) (cos (* i t))]) (array/range %d))] (draw/circles p :fill c))))" n n n))) with
+    | Some ws, [] -> ws | _ -> failwith "graph does not check" in
+  let evaluated = ok (E.static ~record:true ws) in
+  let record name = match List.assoc ["g"; name] evaluated.records |> List.hd |> snd with
+    | E.Residual r -> r | _ -> failwith "attribute did not defer" in
+  let compile r = Option.get (I.Packed.compile r (E.Private.residual_view r).term) in
+  let separate = [compile (record "p"); compile (record "c")] in
+  let graph = ok (I.optimize (I.of_evaluation ws catalog evaluated)) in
+  let set = Array.to_list graph.nodes |> List.find (fun (n : I.node) -> match n.kind with I.Marks _ -> true | _ -> false) in
+  let fused = match I.attribute_edges graph set with
+    | [(_, i); (_, j)] when i = j -> (match graph.nodes.(i).kind with
+        | I.Kernel {body = I.Packed_map p; _} -> p | _ -> failwith "no region")
+    | _ -> failwith "attributes were not fused" in
+  Printf.printf "Attribute fusion at %d; median of 3 samples, milliseconds per frame\n" n;
+  List.iter (fun domains ->
+    let time f = Rays_math.Parallel.run ~domains (fun () -> time_median ~repeat:5 f) *. 1e3 in
+    let sep = time (fun () -> List.iter (fun p -> ignore (ok (I.Packed.force p ~live))) separate)
+    and fus = time (fun () -> ignore (ok (I.Packed.force_all fused ~live))) in
+    Printf.printf "domains %d  separate %.3f  fused %.3f  (%.2fx)\n%!" domains sep fus (sep /. fus)) [1; 8]
+
+let () = match Sys.argv with
+  | [|_; "kernels"|] -> kernels ()
+  | [|_; "attributes"|] -> attributes ()
+  | _ -> scalar ()

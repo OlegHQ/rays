@@ -122,6 +122,11 @@ val attribute_edges : t -> node -> (attribute * int) list
 
 val share : t -> t
 val hoist : t -> t
+val fuse_attributes : t -> t
+(** Fuse the region attributes of each mark set that agree on count or origin, rate, scope
+    and precision into one region node with an output each ([attribute.output]). Declines
+    at the register limit; never fails. *)
+
 val fuse : t -> t
 val prune : t -> t
 val place : ?approx:Flow.Workspace.Paths.t ->

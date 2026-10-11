@@ -598,3 +598,19 @@ pair -3); the absolute cost is under a microsecond and runs once per kernel, not
 `DEFERRED.md`; not optimized. `bench_gpu.exe` (Metal emission is unchanged by the switch): noise kernel, 1,024 /
 65,536 / 1,000,000 elements, total seconds with readback 0.000188 / 0.002917 / 0.037077, display (no readback)
 0.000153 / 0.001235 / 0.017531; pipeline compile 0.008152 s once.
+
+## P4.7 attribute fusion (2026-10-11)
+
+Command: `_build/default/tools/bench_core.exe attributes`. Apple M1, OCaml 5.3.0, dune dev profile, load average 4.9 8.7 10.6
+(other agents running; one run, no noise chasing). Input: a `draw/circles` graph with a position map
+`[(* i t) (sin (+ i t)) 0]` and a fill map `[(sin t) (/ i n) (cos (* i t))]` over `(array/range 1000000)`, both
+frame-rate, both vec3. "Separate" is two `Packed.force` calls of the two kernels; "fused" is one `Packed.force_all` of
+the two-output region `Flow_ir.optimize` builds from the mark set. Median of three samples, milliseconds per frame.
+
+| Case | domains | separate ms | fused ms | speedup |
+| --- | ---: | ---: | ---: | ---: |
+| circles position + fill, 1,000,000 | 1 | 92.710 | 72.554 | 1.28x |
+| circles position + fill, 1,000,000 | 8 | 62.769 | 41.577 | 1.51x |
+
+Fused is faster: the shared `i`, `t` registers are computed once and the output pass is one loop. No `DEFERRED.md`
+entry.

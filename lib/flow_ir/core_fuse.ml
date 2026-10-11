@@ -5,6 +5,47 @@ module E = Flow.Eval
 module W = Flow.Workspace
 open Core.Region
 
+(* An accumulating register program: instructions equal up to registers share one
+   register, and exceeding the register limit raises [Core_region.Unsupported]. *)
+type builder = {
+  emit : instruction -> int; append_source : (E.residual * W.term) -> int -> int;
+  append_uniforms : E.value array -> int;
+  append_code : Core.Region.t -> (int -> int -> int -> int) -> int -> int array array;
+  finish : unit -> (E.residual * W.term) array * int array * E.value array * instruction array }
+let builder () =
+  let sources = ref [] and widths = ref [] and nsources = ref 0 in
+  let uniforms = ref [] and nuniforms = ref 0 and code = ref [] and ncode = ref 0 in
+  let shared = Hashtbl.create 64 in
+  let emit instruction =
+    let key = Marshal.to_string instruction [Marshal.No_sharing] in
+    match Hashtbl.find_opt shared key with
+    | Some id -> id
+    | None ->
+        if !ncode >= Flow.Packed_ops.register_limit then raise Core_region.Unsupported;
+        let id = !ncode in incr ncode; code := instruction :: !code;
+        Hashtbl.add shared key id; id in
+  let append_source source width =
+    let i = !nsources in incr nsources; sources := source :: !sources; widths := width :: !widths; i in
+  let append_uniforms values =
+    let offset = !nuniforms in
+    Array.iter (fun v -> incr nuniforms; uniforms := v :: !uniforms) values; offset in
+  let append_code p input uniform =
+    let registers = Array.make (Array.length p.code) 0 in
+    Array.iteri (fun i instruction ->
+      let at n = registers.(n) in
+      registers.(i) <- match instruction with
+        | Input (source, width, component) -> input source width component
+        | Uniform (n, component) -> emit (Uniform (uniform + n, component))
+        | Binary (op, a, b) -> emit (Binary (op, at a, at b))
+        | Unary (op, a) -> emit (Unary (op, at a))
+        | Noise3 (a, b, c, seed, octaves) -> emit (Noise3 (at a, at b, at c, seed, octaves))
+        | Select (a, b, c) -> emit (Select (at a, at b, at c))
+        | instruction -> emit instruction) p.code;
+    Array.map (Array.map (Array.get registers)) p.outputs in
+  let finish () = Array.of_list (List.rev !sources), Array.of_list (List.rev !widths),
+    Array.of_list (List.rev !uniforms), Array.of_list (List.rev !code) in
+  {emit; append_source; append_uniforms; append_code; finish}
+
 let rec source_region ~dynamic ~count_source ((residual : E.residual), (term : W.term)) = match term.node with
   | W.Ref_binding (name, []) ->
       (match List.assoc_opt name (E.Private.residual_view residual).bindings with
@@ -30,51 +71,47 @@ and fuse (t : Core.Region.t) : Core.Region.t =
     | _ -> false in
   if not (Array.exists can_fuse children) then t else
   try
-    let sources = ref [] and widths = ref [] and nsources = ref 0 in
-    let uniforms = ref [] and nuniforms = ref 0 and code = ref [] and ncode = ref 0 in
+    let b = builder () in
     let stages = ref t.stages and sites = ref t.sites in
-    let shared = Hashtbl.create 64 in
-    let emit instruction =
-      let key = Marshal.to_string instruction [Marshal.No_sharing] in
-      match Hashtbl.find_opt shared key with
-      | Some id -> id
-      | None ->
-          if !ncode >= Flow.Packed_ops.register_limit then raise Core_region.Unsupported;
-          let id = !ncode in incr ncode; code := instruction :: !code;
-          Hashtbl.add shared key id; id in
-    let append_source source width =
-      let i = !nsources in incr nsources; sources := source :: !sources; widths := width :: !widths; i in
-    let append_uniforms values =
-      let offset = !nuniforms in
-      Array.iter (fun v -> incr nuniforms; uniforms := v :: !uniforms) values; offset in
-    let append_code p input uniform =
-      let registers = Array.make (Array.length p.code) 0 in
-      Array.iteri (fun i instruction ->
-        let at n = registers.(n) in
-        registers.(i) <- match instruction with
-          | Input (source, width, component) -> input source width component
-          | Uniform (n, component) -> emit (Uniform (uniform + n, component))
-          | Binary (op, a, b) -> emit (Binary (op, at a, at b))
-          | Unary (op, a) -> emit (Unary (op, at a))
-          | Noise3 (a, b, c, seed, octaves) -> emit (Noise3 (at a, at b, at c, seed, octaves))
-          | Select (a, b, c) -> emit (Select (at a, at b, at c))
-          | instruction -> emit instruction) p.code;
-      Array.map (Array.map (Array.get registers)) p.outputs in
     let inputs = Array.mapi (fun i child ->
       if can_fuse child then begin
         let p = Option.get child in
-        let inputs = Array.mapi (fun i source -> append_source source p.widths.(i)) p.sources in
-        let uniform = append_uniforms p.uniforms in
+        let inputs = Array.mapi (fun i source -> b.append_source source p.widths.(i)) p.sources in
+        let uniform = b.append_uniforms p.uniforms in
         stages := !stages @ p.stages;
         sites := p.sites @ !sites;
-        (append_code p (fun i width component -> emit (Input (inputs.(i), width, component))) uniform).(0)
+        (b.append_code p (fun i width component -> b.emit (Input (inputs.(i), width, component))) uniform).(0)
       end else begin
-        let source = append_source t.sources.(i) t.widths.(i) in
-        Array.init t.widths.(i) (fun component -> emit (Input (source, t.widths.(i), component)))
+        let source = b.append_source t.sources.(i) t.widths.(i) in
+        Array.init t.widths.(i) (fun component -> b.emit (Input (source, t.widths.(i), component)))
       end) children in
-    let uniform = append_uniforms t.uniforms in
-    let outputs = append_code t (fun i _ component -> inputs.(i).(component)) uniform in
-    {t with sources = Array.of_list (List.rev !sources); widths = Array.of_list (List.rev !widths);
-      uniforms = Array.of_list (List.rev !uniforms); code = Array.of_list (List.rev !code);
-      outputs; iteration = Zip; stages = !stages; sites = !sites}
+    let uniform = b.append_uniforms t.uniforms in
+    let outputs = b.append_code t (fun i _ component -> inputs.(i).(component)) uniform in
+    let sources, widths, uniforms, code = b.finish () in
+    {t with sources; widths; uniforms; code; outputs; iteration = Zip; stages = !stages; sites = !sites}
   with Core_region.Unsupported -> t
+
+
+(* Sibling regions of one mark set: Collect + Zip regions of equal static count or origin
+   become one region with every output, sharing equal instructions. [None] when they do not
+   agree or the register limit declines; the regions then stay separate. *)
+let merge (regions : Core.Region.t list) : Core.Region.t option = match regions with
+  | [] -> None
+  | first :: _ ->
+      let one (r : Core.Region.t) = r.result = Collect && r.iteration = Zip && r.skip = [||]
+        && Array.length r.outputs = 1 && r.dynamic = first.dynamic in
+      let same_count (r : Core.Region.t) = (Option.is_some first.count && r.count = first.count)
+        || (Option.is_some first.origin && r.origin = first.origin) in
+      if not (List.for_all (fun r -> one r && same_count r) regions) then None else
+      try
+        let b = builder () in
+        let outputs = List.map (fun (r : Core.Region.t) ->
+          let inputs = Array.mapi (fun i source -> b.append_source source r.widths.(i)) r.sources in
+          let uniform = b.append_uniforms r.uniforms in
+          (b.append_code r (fun i width component -> b.emit (Input (inputs.(i), width, component))) uniform).(0))
+          regions in
+        let sources, widths, uniforms, code = b.finish () in
+        Some {first with sources; widths; uniforms; code; outputs = Array.of_list outputs;
+          stages = List.concat_map (fun (r : Core.Region.t) -> r.stages) regions;
+          sites = List.concat_map (fun (r : Core.Region.t) -> r.sites) regions}
+      with Core_region.Unsupported -> None

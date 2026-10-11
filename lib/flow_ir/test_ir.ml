@@ -683,3 +683,64 @@ let () =
        assert (List.length (attribute_edges optimized n) = 3)
    | _ -> failwith "expected one mark set");
   assert (Array.exists (fun n -> n.kind = Sink (Display "draw/circle")) optimized.nodes)
+
+(* P4.7 and P4.8 helpers: a circles draw graph whose attributes are packed maps. *)
+let circles_graph ?(count = 2048) ~positions ~fills () =
+  let ws = check (Printf.sprintf "(workspace w (graph g :context draw
+    (let* [p (map (fn [i] %s) (array/range %d)) c (map (fn [i] %s) (array/range %d))]
+      (draw/circles p :fill c))))" positions count fills count) in
+  let evaluated = ok (E.static ~record:true ws) in
+  let record name = List.assoc ["g"; name] evaluated.records |> List.hd |> snd in
+  ws, evaluated, record "p", record "c"
+let marks_node (g : t) = Array.to_list g.nodes |> List.find (fun n -> match n.kind with Marks _ -> true | _ -> false)
+let catalog0 = Flow.Check.{version = 1; kinds = []}
+let packed_of (g : t) i = match g.nodes.(i).kind with
+  | Kernel {body = Packed_map p; _} -> p | _ -> failwith "not a region"
+
+let () =
+  let moving = "[(* i t) (sin (+ i t)) 0]" and colour = "[(sin t) (/ i 2048) (cos (* i t))]" in
+  let ws, evaluated, p, c = circles_graph ~positions:moving ~fills:colour () in
+  let graph = ok (optimize (of_evaluation ws catalog0 evaluated)) in
+  let set = marks_node graph in
+  let edges = attribute_edges graph set in
+  (match edges with
+   | [(a, i); (b, j)] ->
+       assert (i = j && a.output = 0 && b.output = 1 && a.role = Position && b.role = Fill);
+       let fused = packed_of graph i in
+       assert (Packed.Private.((view fused).outputs |> Array.length) = 2);
+       assert (graph.nodes.(i).rate = Frame && set.tier = Interp);
+       (* The fused result is the separate kernels' result byte for byte, at 1 and 8 domains. *)
+       List.iter (fun time -> List.iter (fun domains ->
+         let live = Frame_input.at_time time in
+         Rays_math.Parallel.run ~domains (fun () ->
+           match ok (Packed.force_all fused ~live) with
+           | [fp; fc] ->
+               assert (same_result (Ok fp) (Executor.force (ok (Executor.compile p)) ~live));
+               assert (same_result (Ok fc) (Executor.force (ok (Executor.compile c)) ~live))
+           | _ -> assert false)) [1; 8]) [0.; 0.5; 3.25]
+   | _ -> failwith "expected the two attributes to share one fused node");
+  (* Different counts do not fuse. *)
+  let ws = check "(workspace w (graph g :context draw
+    (let* [p (map (fn [i] [i 0 0]) (array/range 2048)) c (map (fn [i] [i 0 0]) (array/range 2049))]
+      (draw/circles p :fill c))))" in
+  let graph = ok (optimize (of_evaluation ws catalog0 (ok (E.static ~record:true ws)))) in
+  (match attribute_edges graph (marks_node graph) with
+   | [(_, i); (_, j)] -> assert (i <> j)
+   | _ -> assert false);
+  (* A static region and a frame-rate region do not fuse: the static one must not rerun. *)
+  let ws, evaluated, _, _ = circles_graph ~positions:"[i 0 0]" ~fills:colour () in
+  let graph = ok (optimize (of_evaluation ws catalog0 evaluated)) in
+  (match attribute_edges graph (marks_node graph) with
+   | [(_, i); (_, j)] -> assert (i <> j && graph.nodes.(i).rate = Static && graph.nodes.(j).rate = Frame)
+   | _ -> assert false);
+  (* The register limit declines and never fails. *)
+  let sum salt = List.fold_left (fun acc k -> Printf.sprintf "(+ %s (sin (* i %d.%d)))" acc (k + 1) salt)
+    "(sin t)" (List.init 11 Fun.id) in
+  let ws, evaluated, _, _ = circles_graph ~positions:("[" ^ sum 1 ^ " 0 0]") ~fills:("[" ^ sum 7 ^ " 0 0]") () in
+  let graph = ok (optimize (of_evaluation ws catalog0 evaluated)) in
+  (match attribute_edges graph (marks_node graph) with
+   | [(a, i); (b, j)] ->
+       assert (i <> j && a.output = 0 && b.output = 0);
+       assert (Array.length Packed.Private.((view (packed_of graph i)).code) < Flow.Packed_ops.register_limit)
+   | _ -> assert false);
+  print_endline "Attribute fusion: one region with several outputs, byte-equal at 1 and 8 domains; declines on count, rate and the register limit"
