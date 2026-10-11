@@ -24,6 +24,15 @@ the binding. The end-to-end workflow is the `metal-workflow` skill.
   only for a measured, formerly pool-free unit call without NSString/NSError
   temporaries. Fixed tuple structs use `Tuple` with a `Record` schema, and
   bounded machine-int indices use `Scalar Nsuint_int`.
+- OCaml has no run loop, so nothing drains an autorelease pool a stub did not
+  open: an object autoreleased outside one stays retained for the life of the
+  process. Every handwritten stub that messages Objective-C opens a pool
+  (`@autoreleasepool`, or the `Autorelease_pool` guard after `CAMLparam`), and
+  handle lookups (`object_of_handle` and its wrappers) return retained so a
+  `pool = false` call autoreleases nothing. A call whose Metal method makes its
+  own temporaries (`presentDrawable:` does) is `pool = true`.
+  `lib/runtime/native_qualification/runtime_autorelease` (`@runtest-native`)
+  fails on any object the initial thread autoreleases with no pool in place.
 - The installed SDK is the oracle: generated stubs compile with `-Werror`, so
   an unknown selector, wrong type or unguarded availability fails the build.
   Never use `objc_msgSend`, stringly typed selectors or an unsafe catch-all.
