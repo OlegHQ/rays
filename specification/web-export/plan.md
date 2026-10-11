@@ -822,7 +822,8 @@ Phase 5
   `flow_web` added 2026-10-11: empty library over `flow`, `flow_ir`, `param`,
   `rays_math`, `scene_command`; gate rules, `only`, `upper` and injected edges
   added; `@test/runtest` green, API manifest unchanged.
-- [ ] P5.2 S
+- [x] P5.2 S
+  2026-10-11. `Wgsl.kernel : Packed.t -> (wgsl, Diagnostic.t) result` mirrors `Emit.kernel` over `Private.view` with the same `gpu_refusals` (`E_GPU_FORM`), binding numbering and uniform layout; `flow_web` defines its own `binding`/`kind` (no `flow_gpu`/`ogpu`). f32 storage arrays, `bitcast<f32>` constants and uniforms, exponent-bits finite test, `atomic<u32>` status, `@workgroup_size(64)`; uniforms are a `var<uniform>` `array<vec4<u32>, n>` (`uniform_bytes` rounded to 16) so they do not use a storage-buffer slot. Comparisons yield `select(0.0, 1.0, ..)`; `pow` goes through a `wpow` helper because WGSL `pow(0, y<=0)` is undefined. `@lib/flow_web/check` green.
 - [ ] P5.3 H
 - [ ] P5.4 S
 - [ ] P5.5 S
