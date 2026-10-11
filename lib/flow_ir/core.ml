@@ -42,6 +42,8 @@ type draw =
   | Background of int
   | Point of { at : int; ink : int }
   | Mark of { mark : mark; args : (string * int) list }
+  | Batch of { mark : mark; args : (string * int) list }
+  | Points of { positions : int; ink : int }
   | Push of transform * int
   | Pop
 
@@ -144,12 +146,14 @@ let pp fmt p =
     | Fields xs -> out "record{"; separated (fun (name,n) -> out "%S:" name; local n) xs; out "}"
     | Items ns -> out "list["; separated local ns; out "]"
     | Field (n,name) -> local n; out ".%S" name in
-  let draw = function
+  let draw d = match d with
     | Background c -> out "draw/background "; local c
     | Point {at;ink} -> out "draw/point at="; local at; out " ink="; local ink
-    | Mark {mark;args} ->
-        out "draw/%s" (match mark with Rect -> "rect" | Circle -> "circle" | Line -> "line");
+    | Mark {mark;args} | Batch {mark;args} ->
+        let plural = match d with Batch _ -> "s" | _ -> "" in
+        out "draw/%s%s" (match mark with Rect -> "rect" | Circle -> "circle" | Line -> "line") plural;
         List.iter (fun (name,n) -> out " %s=" name; local n) args
+    | Points {positions;ink} -> out "draw/points positions="; local positions; out " ink="; local ink
     | Push (t,n) ->
         out "push %s " (match t with Translate -> "translate" | Rotate -> "rotate" | Scale -> "scale"); local n
     | Pop -> out "pop" in

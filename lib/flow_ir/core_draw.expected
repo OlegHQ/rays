@@ -188,3 +188,87 @@ core
   #4 pop @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
   return 
 root false
+picture 10: (let* [p (map (fn [i] [(* i 10) (* i t) 0]) (array/range 4))] (draw/circles p))
+core
+  $0 = vec[1.0 1.0 1.0]
+  $1 = 1.0
+  %0 : array:vec3
+  %1 : vec3
+  %2 : float
+  region[0] instructions=6 outputs=[2 4 5]
+  #0 %0 = region[0]() @["g" "p"] owner=["g" "p"] instance=0 iter=[] span=45..96
+  #1 %1 = $0 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
+  #2 %2 = $1 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
+  #3 draw/circles positions=%0 radius=%2 fill=%1 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
+  return 
+root true
+picture 11: (let* [p (map (fn [i] [(* i 10) (* i t) 0]) (array/range 4)) r (map (fn [i] (* i 0.5)) (array/range 4))] (draw/circles p :radius r :stroke "#fff"))
+core
+  $0 = array1[0.0 0.5 1.0 1.5]
+  $1 = "#fff"
+  %0 : array:vec3
+  %1 : array:float
+  %2 : text
+  region[0] instructions=6 outputs=[2 4 5]
+  #0 %0 = region[0]() @["g" "p"] owner=["g" "p"] instance=0 iter=[] span=45..96
+  #1 %1 = $0 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
+  #2 %2 = $1 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
+  #3 draw/circles positions=%0 radius=%1 stroke=%2 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
+  return 
+root true
+picture 12: (let* [p (map (fn [i] [i 0 0]) (array/range 4))] (draw/rects p [10 10 0] :fill "#f00"))
+core
+  $0 = array3[0.0 0.0 0.0 1.0 0.0 0.0 2.0 0.0 0.0 3.0 0.0 0.0]
+  $1 = vec[10.0 10.0 0.0]
+  $2 = "#f00"
+  %0 : array:vec3
+  %1 : vec3
+  %2 : text
+  #0 %0 = $0 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
+  #1 %1 = $1 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
+  #2 %2 = $2 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
+  #3 draw/rects positions=%0 sizes=%1 fill=%2 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
+  return 
+root false
+picture 13: (let* [p (map (fn [i] [i 0 0]) (array/range 4)) c (map (fn [i] [(/ i 4) 0 0]) (array/range 4))] (draw/rects p [10 10 0] :fill c))
+core
+  $0 = array3[0.0 0.0 0.0 1.0 0.0 0.0 2.0 0.0 0.0 3.0 0.0 0.0]
+  $1 = vec[10.0 10.0 0.0]
+  $2 = array3[0.0 0.0 0.0 0.25 0.0 0.0 0.5 0.0 0.0 0.75 0.0 0.0]
+  %0 : array:vec3
+  %1 : vec3
+  %2 : array:vec3
+  #0 %0 = $0 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
+  #1 %1 = $1 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
+  #2 %2 = $2 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
+  #3 draw/rects positions=%0 sizes=%1 fill=%2 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
+  return 
+root false
+picture 14: (let* [p (map (fn [i] [i 0 0]) (array/range 4))] (draw/lines p p :width 2))
+core
+  $0 = array3[0.0 0.0 0.0 1.0 0.0 0.0 2.0 0.0 0.0 3.0 0.0 0.0]
+  $1 = array3[0.0 0.0 0.0 1.0 0.0 0.0 2.0 0.0 0.0 3.0 0.0 0.0]
+  $2 = 2
+  $3 = vec[1.0 1.0 1.0]
+  %0 : array:vec3
+  %1 : array:vec3
+  %2 : int
+  %3 : vec3
+  #0 %0 = $0 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
+  #1 %1 = $1 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
+  #2 %2 = $2 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
+  #3 %3 = $3 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
+  #4 draw/lines from=%0 to=%1 color=%3 width=%2 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
+  return 
+root false
+picture 15: (let* [p (map (fn [i] [i 0 0]) (array/range 4))] (draw/points p :color "#1e1e1e"))
+core
+  $0 = array3[0.0 0.0 0.0 1.0 0.0 0.0 2.0 0.0 0.0 3.0 0.0 0.0]
+  $1 = "#1e1e1e"
+  %0 : array:vec3
+  %1 : text
+  #0 %0 = $0 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
+  #1 %1 = $1 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
+  #2 draw/points positions=%0 ink=%1 @["g" "@result"] owner=["g" "@result"] instance=0 iter=[]
+  return 
+root false

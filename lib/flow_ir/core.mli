@@ -43,6 +43,9 @@ type draw =
   | Point of { at : int; ink : int }
   | Mark of { mark : mark; args : (string * int) list }
       (** One mark; the arguments are the operator's own input names. *)
+  | Batch of { mark : mark; args : (string * int) list }
+      (** A mark set; the count is that of [positions] (of [from] for lines). *)
+  | Points of { positions : int; ink : int }
   | Push of transform * int  (** open a view transform on its offset, angle or factor *)
   | Pop
 

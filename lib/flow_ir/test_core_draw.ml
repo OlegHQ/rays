@@ -15,6 +15,12 @@ let pictures = [
   "(draw/point [3 4 0] :color \"#abc\")";
   "(draw/translate [1.9 -2.5 0] (draw/merge (draw/point [0 0 0]) (draw/rotate (* t 2) (draw/scale 2 (draw/point [1 1 0])))))";
   "(draw/scale [2 3 0] (draw/background \"#000\"))";
+  "(let* [p (map (fn [i] [(* i 10) (* i t) 0]) (array/range 4))] (draw/circles p))";
+  "(let* [p (map (fn [i] [(* i 10) (* i t) 0]) (array/range 4)) r (map (fn [i] (* i 0.5)) (array/range 4))] (draw/circles p :radius r :stroke \"#fff\"))";
+  "(let* [p (map (fn [i] [i 0 0]) (array/range 4))] (draw/rects p [10 10 0] :fill \"#f00\"))";
+  "(let* [p (map (fn [i] [i 0 0]) (array/range 4)) c (map (fn [i] [(/ i 4) 0 0]) (array/range 4))] (draw/rects p [10 10 0] :fill c))";
+  "(let* [p (map (fn [i] [i 0 0]) (array/range 4))] (draw/lines p p :width 2))";
+  "(let* [p (map (fn [i] [i 0 0]) (array/range 4))] (draw/points p :color \"#1e1e1e\"))";
 ]
 let dump () =
   let buffer = Buffer.create 4096 in

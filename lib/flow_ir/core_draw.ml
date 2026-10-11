@@ -69,6 +69,19 @@ let lower (plan : E.plan) (value : E.value) =
             let from = need "from" in let dest = need "to" in
             emit (Mark {mark = Line; args = ["from", from; "to", dest;
               "color", default "color" white; "width", default "width" (E.Float 1.)]})
+        | "draw/circles" ->
+            let positions = need "positions" in
+            emit (Batch {mark = Circle; args = ["positions", positions;
+              "radius", default "radius" (E.Float 1.)] @ style ()})
+        | "draw/rects" ->
+            let positions = need "positions" in let sizes = need "sizes" in
+            emit (Batch {mark = Rect; args = ["positions", positions; "sizes", sizes] @ style ()})
+        | "draw/lines" ->
+            let from = need "from" in let dest = need "to" in
+            emit (Batch {mark = Line; args = ["from", from; "to", dest;
+              "color", default "color" white; "width", default "width" (E.Float 1.)]})
+        | "draw/points" ->
+            let positions = need "positions" in emit (Points {positions; ink = default "color" white})
         | "draw/translate" -> push C.Translate "offset"
         | "draw/rotate" -> push C.Rotate "angle"
         | "draw/scale" -> push C.Scale "factor"
