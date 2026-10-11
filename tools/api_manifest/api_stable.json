@@ -2381,7 +2381,7 @@
         "val with_images : ? state : Flow.Eval.state -> ? live : Frame_input.t -> ? plan : Flow.Eval.plan -> 'prepared t -> ( image : ( Flow.Eval.value -> ( Rays.Image.t , Flow.Diagnostic.t ) result ) -> texture : ( Flow.Eval.value -> ( Rays.Texture.t , Flow.Diagnostic.t ) result ) -> 'a ) -> 'a",
         "val host_stats : 'prepared t -> bool * int * int * int",
         "end",
-        "val create : ? name : string -> ? presets : string -> ? factories : Sop.Edit_graph.factory list -> ? settings : Settings.t -> ? lights : Rays.Light.t list -> ? camera : Rays.Easy_camera.t -> ? background : Rays.Color.t -> ? seed : int64 -> ? grain : int -> ? domains : int -> ? max_entries : int -> ? max_payload_bytes : int -> ? await : bool -> workspace : Workspace_doc.t -> ? source : Source.t -> prepare : ( Settings.t -> Sop.Session.output -> ( 'prepared , string ) result ) -> scene3 : ( Sop.Graph.t -> 'prepared -> Rays.Scene3.t ) -> ? overlay : ( Sop.Graph.t -> 'prepared option -> Rays.Frame.t -> Rays.Scene.t ) -> ? status : ( 'prepared option -> string option ) -> unit -> ( 'prepared t , string ) result",
+        "val create : ? name : string -> ? presets : string -> ? factories : Sop.Edit_graph.factory list -> ? settings : Settings.t -> ? lights : Rays.Light.t list -> ? camera : Rays.Easy_camera.t -> ? background : Rays.Color.t -> ? seed : int64 -> ? grain : int -> ? domains : int -> ? max_entries : int -> ? max_payload_bytes : int -> ? await : bool -> ? carry_budget : float -> workspace : Workspace_doc.t -> ? source : Source.t -> prepare : ( Settings.t -> Sop.Session.output -> ( 'prepared , string ) result ) -> scene3 : ( Sop.Graph.t -> 'prepared -> Rays.Scene3.t ) -> ? overlay : ( Sop.Graph.t -> 'prepared option -> Rays.Frame.t -> Rays.Scene.t ) -> ? status : ( 'prepared option -> string option ) -> unit -> ( 'prepared t , string ) result",
         "val update : 'prepared t -> Rays.Frame.t -> 'prepared t",
         "val update_with : 'prepared t -> Rays.Frame.t -> inspector : ( Pxui.Ui.t -> 'a ) -> 'prepared t * 'a option",
         "val after_present : 'prepared t -> Rays.Frame.t -> 'prepared t",
@@ -2447,7 +2447,7 @@
         "val main : ? imports : ( string * string ) list -> path : string -> digest : string -> catalog : string -> string -> unit",
         "end"
       ],
-      "api_sha256": "84f7e7124454ed5c4c91bcd95d224c0acc0fc0efc847b821cafa5a1fa5e6cb02",
+      "api_sha256": "ebce2bb018eed0e4989a6b02ab09dde26b09776af8b24b31cc137781fcfef420",
       "excluded_legacy_symbols": [],
       "library": "rays_editor",
       "module": "Rays_editor",
