@@ -144,3 +144,33 @@ Allocation is unchanged in every measured operation. Timing varies by
 0.5–1.5% on this input; no speedup or native pixel comparison is claimed. An
 initial after series overlapped test compilation and was discarded for the
 timing comparison; the recorded series ran with no concurrent build or test.
+
+## 2026-10-11 — Deferred scene index-length validation
+
+Machine: managed Darwin arm64 runner, OCaml 5.3.0 native executable in the
+development profile, one domain. Input: 4,096 valid prepared Scene3 entries
+per call, 2,000 calls per sample. One warmup, then median wall time and
+`Gc.allocated_bytes` of three samples. No profiler was attached. The same
+benchmark runs before and after adding the bounded index-length predicate.
+
+```sh
+_build/default/tools/check.exe lib/scene_execution/test_main.exe
+_build/default/lib/scene_execution/test_main.exe bench_prepared_scene3
+```
+
+| Path | Wall seconds | Allocated bytes |
+| --- | ---: | ---: |
+| Unbounded index-length multiplication | 0.162403 | 66,048,096 |
+| Bounded shared index-length validation | 0.168314 | 66,048,096 |
+
+The new regression fails on the original code: an index count of
+`1 lsl (Sys.int_size - 2)` is accepted with an empty index buffer because
+multiplication by four wraps. The fix bounds the count before multiplication
+and shares that predicate between preparation, render preflight, upload and
+coalescing. Prepared validation now covers all family/sample combinations,
+typed refusals and array/byte ownership. The existing mock GPU-vertex test
+also checks malformed index buffers are refused before uploading anything,
+with the release callback called exactly once. Both tests and the dependency
+gate pass. Preparation time rises about 3.6% on this input; allocation is
+unchanged. This measures validation alone and makes no GPU timing or pixel
+claim.

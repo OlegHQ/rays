@@ -32,6 +32,16 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   subject was pruned. The survivors pass, but nobody has read what each one still covers.
   `test_scene_execution_metal`, `test_automatic_scratch` and `test_offscreen_metal` were cut
   twice.
+- Fixed and verified 2026-10-11: prepared Scene3 validation now rejects index
+  counts whose byte lengths overflow, using the same bounded predicate as
+  render preflight, mesh upload and coalescing. The regression failed before
+  the fix. Tests now cover all eight Scene3 families at all four admitted
+  sample counts, family/resource refusals, packed attribute guards, malformed
+  meshes/extents/clears and copied entry arrays with borrowed byte resources.
+  The mock render test checks refusal before any upload and exactly one
+  release callback. `@lib/scene_execution/runtest` and the dependency gate
+  pass. This validates preparation and command boundaries; the three native
+  suites named above still require actual Metal execution.
 - Verified 2026-10-11: `test_instances` compares complete geometry bytes at one and four
   domains below, at and above the default 16,384-point grain and across several chunks;
   it also checks output cardinalities and unchanged source geometry/transforms.

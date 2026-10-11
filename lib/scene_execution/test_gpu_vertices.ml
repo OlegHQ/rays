@@ -108,6 +108,17 @@ let ()=
     expect Stale_handle(render());
     alive:=true;
     expect Stale_handle(Domain.join(Domain.spawn(fun()->render())));
+    let uploaded=Scene_execution.upload_bytes renderer in
+    List.iter(fun candidate->
+      let releases=ref 0 in
+      expect Invalid_argument(Scene_execution.render_sampled_resources
+        ~after_prepare:(fun()->incr releases) renderer
+        [{entry with draw={entry.draw with mesh=candidate}}]);
+      assert(!releases=1&&Scene_execution.upload_bytes renderer=uploaded))[
+      {mesh with indices=Bytes.make 47 '\000'};
+      {mesh with key="cpu:index-overflow";vertices=Bytes.make 128 '\000';
+        index_count=1 lsl(Sys.int_size-2);indices=Bytes.empty}
+    ];
     let bounded=ref[]in
     Fun.protect~finally:(fun()->List.iter Scene_execution.Private.unregister_gpu_vertices !bounded)(fun()->
       for index=1 to 127 do bounded:=get(Scene_execution.Private.register_gpu_vertices

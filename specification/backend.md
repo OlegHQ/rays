@@ -458,6 +458,11 @@ and GPU mesh even when color or UV planes change. Attributes use the existing
 bounded auxiliary buffer cache and binding 11. The raw prepared-draw interface
 still accepts its legacy 68-byte layout; uniform word 82 selects the layout.
 Both shader paths use the same material, transforms and lighting.
+Index buffers contain exactly four bytes per declared index. Validation bounds
+the count before multiplying, so an overflowing count cannot alias an empty
+or short buffer. Preparation and render preflight refuse malformed lengths
+with `Invalid_argument`; render refusal precedes uploads and invokes the
+post-preparation release callback once.
 Mesh packing is cached by immutable components and render mode, with at most
 16 entries and 256 MiB of packed payload. The catalog Box SOP
 defaults to quad faces, matching its inspector parameter default.

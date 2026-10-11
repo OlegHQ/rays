@@ -203,6 +203,9 @@ let valid_vertex_attributes(entry:sampled_draw)=
       entry.draw.mesh.vertex_count<=Sys.max_string_length/24&&
       Bytes.length entry.draw.mesh.vertices=entry.draw.mesh.vertex_count*24&&
       Bytes.length bytes=entry.draw.mesh.vertex_count*12
+let valid_index_length(mesh:mesh)=mesh.index_count>=0&&
+  mesh.index_count<=Sys.max_string_length/4&&
+  Bytes.length mesh.indices=mesh.index_count*4
 let prepare_scene3 ~clear ~clear_depth ~clear_stencil entries =
   let finite=Float.is_finite in
   let r,g,b,a=clear in
@@ -223,7 +226,7 @@ let prepare_scene3 ~clear ~clear_depth ~clear_stencil entries =
      |Ogpu.Render_pass.Line_list->entry.draw.mesh.index_count mod 2=0
      |Triangle_list->entry.draw.mesh.index_count mod 3=0
      |Point_list|Triangle_strip->true)&&
-    Bytes.length entry.draw.mesh.indices=entry.draw.mesh.index_count*4&&
+    valid_index_length entry.draw.mesh&&
     valid_vertex_attributes entry&&
     valid_extent entry.draw.state.viewport&&valid_extent entry.draw.state.scissor&&
     finite entry.draw.state.depth_clear in
@@ -325,7 +328,7 @@ let prepare value ~reserved ~uniforms ?(vertex_stable=false) ~nonindexed ~canoni
   let upload existing=
   let vertex_stride=if mesh.vertex_count=0 then 0 else Bytes.length mesh.vertices/mesh.vertex_count in
   let index_at index=Int32.to_int(Bytes.get_int32_le mesh.indices(index*4))in
-  let valid_indices=ref(Bytes.length mesh.indices=mesh.index_count*4)in
+  let valid_indices=ref(valid_index_length mesh)in
   if nonindexed&&vertex_stride>0&& !valid_indices then for index=0 to mesh.index_count-1 do let source=index_at index in if source<0||source>=mesh.vertex_count then valid_indices:=false done;
   let vertices,indices,vertex_count,index_count=
     if not nonindexed then mesh.vertices,mesh.indices,mesh.vertex_count,mesh.index_count
@@ -670,7 +673,7 @@ let combine_meshes meshes =
     | [] -> Ok (vertex_bytes, vertex_count, index_count, List.rev identities)
     | (mesh : mesh) :: rest ->
         if mesh.vertex_count <= 0 || Bytes.length mesh.vertices mod mesh.vertex_count <> 0 ||
-           Bytes.length mesh.indices <> mesh.index_count * 4 || not (valid_indices mesh) then
+           not(valid_index_length mesh) || not (valid_indices mesh) then
           error operation Ogpu.Error.Invalid_argument "packed mesh cardinality is inconsistent"
         else if vertex_bytes > Sys.max_string_length - Bytes.length mesh.vertices ||
                 vertex_count > Int32.to_int Int32.max_int - mesh.vertex_count ||
@@ -1182,7 +1185,7 @@ let render_sampled_resources_common ?prepared ?(after_prepare=Fun.id) ?(clear=(0
      skip it instead of failing the whole frame. *)
   let draws=List.filter(fun(entry:sampled_draw)->
     entry.draw.mesh.vertex_count>0&&entry.draw.mesh.index_count>0)draws in
-  let valid_mesh(mesh:mesh)=mesh.key<>""&&mesh.vertex_count>0&&mesh.index_count>0&&Bytes.length mesh.vertices+Bytes.length mesh.indices>0 in
+  let valid_mesh(mesh:mesh)=mesh.key<>""&&mesh.vertex_count>0&&mesh.index_count>0&&valid_index_length mesh&&Bytes.length mesh.vertices+Bytes.length mesh.indices>0 in
   let supported=List.for_all(fun(entry:sampled_draw)->
     Option.is_some(find_pipeline value entry.family entry.blend entry.samples))draws in
   let valid=List.for_all(fun(entry:sampled_draw)->List.mem entry.samples[1;4;9;16]&&
