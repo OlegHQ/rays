@@ -41,6 +41,14 @@ the single truth: the scene, the networks and the shell tree are its lowering. S
 level, probes, panel-local state (`locals`, capacity 64), drafts and the viewport are view state:
 never in the document, never in history.
 
+**Start.** `Workspace.run` evaluates the workspace once: it builds the document
+(`Contexts.of_workspace`), reads the window (`Contexts.document_window`) and the camera from it
+and hands it to the editor (`Environment.run ?opened`, down to `Core.create`). `?opened` is only
+ever that caller's document of the same workspace and factories, it is taken once, and nothing
+reads it afterwards: an edit, a save and a reload lower the new text themselves. Do not add a
+second evaluation to a start (`test/test_workspace_start` counts them) and do not turn the
+hand-over into a cache.
+
 **One frame.** `Core.update` is `carry_step`, then `update_frame`. Inside `Ui.frame` code only
 builds boxes and returns values: every request of a pane is a field of `frame_result` (`changes`,
 `scope_changes`, `tree_intents`, `text_intents`, `bar_action`, `view_pick`, `drops`, …). `reduce`

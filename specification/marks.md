@@ -276,6 +276,14 @@ per entry: byte tag, then
 `E_NONFINITE`), and one `Ink` batch per point set. A `Push_clip` rectangle truncates to
 integers there. `Pop_transform` and `Pop_clip` close the innermost open push.
 
+A rect, circle or line set whose colours are constants is written whole by
+`Shape_batch.Builder.rects`, `circles` or `lines` from the attribute arrays themselves (a
+constant is one element read with stride 0): the instances, their order and the refusal are
+those of one builder call per mark, with nothing allocated per mark, and the batch takes the
+builder's storage instead of a copy of it. A set with a colour buffer goes mark by mark. The
+64 bytes an instance are then held once on the CPU (the scene's batch, which lowering draws
+from without copying) and once on the GPU.
+
 **Routing (P4.9).** A mark set with at least one `Device` attribute becomes one draw of the
 `Marks` family: `gpu ~slot ~kind ~count attributes` (the `slot` numbers the frame's GPU sets from
 0) registers a `Rays_execution.Private.gpu_marks` source which binds each device attribute's
@@ -288,7 +296,17 @@ frame. The set rides in the scene
 as a `Shape_batch` GPU token, so transform, clip, blend and painter order are the ordinary
 ones. A rect's stroke width is the constant 1, as `Shape_batch.rect`'s; a line's fill is unused.
 Every other mark set, including every set when there is no GPU host, stays a `Shape_batch`
-(and `Ink` for points): the draw snapshots hash the CPU scene and do not change. A mark set is
+(and `Ink` for points): the draw snapshots hash the CPU scene and do not change. That includes a
+static set of any size. It could ride the `Marks` family with every attribute a host buffer
+(16 bytes of corners an instance instead of 64 twice), but not with the same pixels: the
+shader forms a circle's and a rect's corners in binary32 from binary32 inputs, where
+`Shape_batch` narrows the binary64 sum, so a position that is not a binary32 value moves a
+corner by one ulp. Measured 2026-10-11 with the static positions of `sketches/million_marks`
+as a host buffer beside a GPU radius, against the `Shape_batch` picture at 900 by 700: 85
+pixels differ at 2,000 marks, 643 at 20,000, 1,676 at 200,000 and 466 at 1,000,000, each by
+one step of one channel. The route needs the corners added on the host and a layout that takes
+them (see the end of this file), and a rule for the scene a static drawing keeps, whose token
+would only be valid while its GPU source lives. A mark set is
 never split: CPU and device attributes of one set share one draw. A region runs on the GPU
 only if every use of its result is a `positions`, `from`, `to`, `sizes`, `radius`, `fill`,
 `stroke` or `color` of a mark set, the region is placed `Gpu` by the current backend (site in
