@@ -212,9 +212,12 @@
         "val function_origin : fn -> ( int * Workspace.path * Workspace.path ) option",
         "val function_name : fn -> string option",
         "val residual_definition : residual -> string -> Workspace.graph option",
-        "type residual_view = { term : Workspace.term ; bindings : ( string * value ) list ; site : Workspace.path ; owner : Workspace.path ; iter : int list ; instance : int ; prefix : Workspace.path ; previous : bool ; }",
+        "type residual_view = { term : Workspace.term ; bindings : ( string * value ) list ; site : Workspace.path ; owner : Workspace.path ; iter : int list ; instance : int ; prefix : Workspace.path ; previous : bool ; host : bool ; geometry : bool ; }",
         "val residual_view : residual -> residual_view",
         "val residual_id : residual -> int",
+        "val state_read : residual -> instance : int -> path : Workspace.path -> iter : int list -> host : bool -> init : ( unit -> value ) -> value",
+        "val state_peek : residual -> instance : int -> path : Workspace.path -> iter : int list -> host : bool -> value option",
+        "val state_write : residual -> instance : int -> path : Workspace.path -> iter : int list -> host : bool -> value -> value",
         "val residual_ops : residual -> Op.t list",
         "val force_reference : ? state : state -> ? elems : ( string * value ) list -> ? resolve : ( value -> ( value , Diagnostic.t ) result ) -> value -> live : live -> ( value , Diagnostic.t ) result",
         "val closure_available : residual -> bool",
@@ -225,7 +228,7 @@
         "val compiled : value -> int",
         "end"
       ],
-      "api_sha256": "74e5e7cf4521a66ed5a19309e5de3063b50c79ef93db995c7876e0a159a793d4",
+      "api_sha256": "c9be8ae0c886ac5bc0519b3ea76826203db685872d866716281acb9de4d80bc3",
       "excluded_legacy_symbols": [],
       "library": "flow",
       "module": "Eval",
@@ -728,7 +731,7 @@
         "type expr = | Constant of int | Local of int | Frame of frame_field | Call_index of int | Prim of primitive * ( string * int ) list | Vec of int list | Fields of ( string * int ) list | Items of int list | Field of int * string",
         "type iteration = Static_index of int | Local_index of int",
         "type source = { site : Flow.Workspace.path ; owner : Flow.Workspace.path ; instance : int ; prefix : Flow.Workspace.path ; iter : iteration list ; span : Flow.Diagnostic.span option ; }",
-        "type statement = { id : int ; source : source ; node : statement_node } and statement_node = | Assign of int * expr | Reset_call of int | If of { condition : int ; yes : statement list ; no : statement list } | Iterate of { sequence : int ; index : int ; item : int ; limit : int ; body : statement list } | Store of { sequence : int ; index : int ; value : int } | State_read of { slot : int ; result : int ; init : statement list ; initial : int } | State_write of { slot : int ; value : int } | Invoke of { region : int ; args : int list ; result : int }",
+        "type statement = { id : int ; source : source ; node : statement_node } and statement_node = | Assign of int * expr | Reset_call of int | If of { condition : int ; yes : statement list ; no : statement list } | Iterate of { sequence : int ; index : int ; item : int ; limit : int ; body : statement list } | Counted of { first : int ; last : int ; count : int ; index : int ; item : int ; limit : int ; init : statement list ; body : statement list } | Store of { sequence : int ; index : int ; value : int } | State_read of { slot : int ; result : int ; init : statement list ; initial : int } | State_peek of { slot : int ; found : int ; value : int } | State_write of { slot : int ; value : int } | Invoke of { region : int ; args : int list ; result : int }",
         "type state_slot = { source : source ; prefix : Flow.Workspace.path ; zone : Flow.Workspace.path ; plane : [ `Frame | `Host ] ; ty : Flow.Ty.t ; }",
         "type region = Region_ref of Packed.t",
         "type program = { constants : literal array ; locals : Flow.Ty.t array ; body : statement list ; results : int array ; state_slots : state_slot array ; regions : region array ; call_slots : int ; }",
@@ -737,7 +740,7 @@
         "val value_of_literal : literal -> Flow.Eval.value",
         "val pp : Format.formatter -> program -> unit"
       ],
-      "api_sha256": "7c7f08c0fa314dda176cb701158eb19426dad51f5bf4085986991592b6ad178b",
+      "api_sha256": "fff6cbf63bee14cf8131c0d4627b3d6351e07fa472abc53a81c3b4df18cf325b",
       "excluded_legacy_symbols": [],
       "library": "flow_ir",
       "module": "Core",
@@ -745,9 +748,9 @@
     },
     {
       "api": [
-        "val run : Core.program -> live : Frame_input.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result"
+        "val run : ? root : Flow.Eval.residual -> Core.program -> live : Frame_input.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result"
       ],
-      "api_sha256": "39db5d6cb64224464df110db313d034f8191bf9e6341f264bb10b6bd0dfd817b",
+      "api_sha256": "37b9139481d6aa89e547aa64f906b455eefa224c919a211e1acadfc05de557b7",
       "excluded_legacy_symbols": [],
       "library": "flow_ir",
       "module": "Core_exec",
