@@ -1,7 +1,7 @@
 {
   "generator": "tools/api_manifest/api_manifest.exe",
   "kind": "stable_high_level",
-  "module_count": 180,
+  "module_count": 182,
   "modules": [
     {
       "api": [
@@ -733,7 +733,11 @@
         "type expr = | Constant of int | Local of int | Frame of frame_field | Call_index of int | Prim of primitive * ( string * int ) list | Vec of int list | Fields of ( string * int ) list | Items of int list | Field of int * string",
         "type iteration = Static_index of int | Local_index of int",
         "type source = { site : Flow.Workspace.path ; owner : Flow.Workspace.path ; instance : int ; prefix : Flow.Workspace.path ; iter : iteration list ; span : Flow.Diagnostic.span option ; }",
-        "type statement = { id : int ; source : source ; node : statement_node } and statement_node = | Assign of int * expr | Reset_call of int | If of { condition : int ; yes : statement list ; no : statement list } | Iterate of { sequence : int ; index : int ; item : int ; limit : int ; body : statement list } | Counted of { first : int ; last : int ; count : int ; index : int ; item : int ; limit : int ; init : statement list ; body : statement list } | Store of { sequence : int ; index : int ; value : int } | State_read of { slot : int ; result : int ; init : statement list ; initial : int } | State_peek of { slot : int ; found : int ; value : int } | State_write of { slot : int ; value : int } | Invoke of { region : int ; args : int list ; result : int }",
+        "type mark = Rect | Circle | Line",
+        "type transform = Translate | Rotate | Scale",
+        "type path = Rounded_rect | Polygon | Polyline",
+        "type draw = | Background of int | Point of { at : int ; ink : int } | Mark of { mark : mark ; args : ( string * int ) list } | Batch of { mark : mark ; args : ( string * int ) list } | Points of { positions : int ; ink : int } | Path of { path : path ; args : ( string * int ) list } | Text_run of { at : int ; text : int ; ink : int ; size : int } | Image of { source : Flow.Ty.t * int ; at : int ; scale : int ; angle : int } | Push of transform * int | Pop",
+        "type statement = { id : int ; source : source ; node : statement_node } and statement_node = | Draw of draw | Assign of int * expr | Reset_call of int | If of { condition : int ; yes : statement list ; no : statement list } | Iterate of { sequence : int ; index : int ; item : int ; limit : int ; body : statement list } | Counted of { first : int ; last : int ; count : int ; index : int ; item : int ; limit : int ; init : statement list ; body : statement list } | Store of { sequence : int ; index : int ; value : int } | State_read of { slot : int ; result : int ; init : statement list ; initial : int } | State_peek of { slot : int ; found : int ; value : int } | State_write of { slot : int ; value : int } | Invoke of { region : int ; args : int list ; result : int }",
         "type state_slot = { source : source ; prefix : Flow.Workspace.path ; zone : Flow.Workspace.path ; plane : [ `Frame | `Host ] ; ty : Flow.Ty.t ; }",
         "module Region : sig",
         "type instruction = | Const of float | Input of int * int * int | Uniform of int * int | Frame of string | Accumulator of int | Binary of Flow.Packed_ops.binary * int * int | Unary of Flow.Packed_ops.unary * int | Noise3 of int * int * int * int * int | Select of int * int * int",
@@ -750,7 +754,7 @@
         "val value_of_literal : literal -> Flow.Eval.value",
         "val pp : Format.formatter -> program -> unit"
       ],
-      "api_sha256": "340b56807e06bc96d2af46bf954d200709c7368b99cf7cd2fd30b0a609bf9966",
+      "api_sha256": "9392f394b9314a1a9e0adf35a0c53f57e82d912b1e62f10a65f11aabb84ebce2",
       "excluded_legacy_symbols": [],
       "library": "flow_ir",
       "module": "Core",
@@ -758,13 +762,25 @@
     },
     {
       "api": [
+        "val lower : Flow.Eval.plan -> Flow.Eval.value -> ( Core.program * Flow.Eval.residual option , string ) result"
+      ],
+      "api_sha256": "d9f66df6677419783436b5ad72097747a0a876bae57711554689271076351241",
+      "excluded_legacy_symbols": [],
+      "library": "flow_ir",
+      "module": "Core_draw",
+      "source": "lib/flow_ir/core_draw.mli"
+    },
+    {
+      "api": [
         "type prepared",
         "val prepare : ? fused : bool -> Core.program -> prepared",
         "val has_regions : prepared -> bool",
         "val execute : ? root : Flow.Eval.residual -> ? force : ( Packed.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> prepared -> live : Frame_input.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result",
-        "val run : ? root : Flow.Eval.residual -> ? force : ( Packed.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> Core.program -> live : Frame_input.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result"
+        "val run : ? root : Flow.Eval.residual -> ? force : ( Packed.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> Core.program -> live : Frame_input.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result",
+        "module Buffers = Core_marks.Buffers",
+        "val draw : ? root : Flow.Eval.residual -> ? force : ( Packed.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> ? image : ( Flow.Eval.value -> ( int , Flow.Diagnostic.t ) result ) -> prepared -> live : Frame_input.t -> size : int * int -> buffers : Buffers.t -> ( Scene_command.Marks.t , Flow.Diagnostic.t ) result"
       ],
-      "api_sha256": "50c8bf8b0eb44d8ba88111db41f9858742be6d99a04cdb89aa44061edcd0e058",
+      "api_sha256": "280f16709bd5ad444c6f79ac803da7261b699857a117b96b6fe067ff6a7c564c",
       "excluded_legacy_symbols": [],
       "library": "flow_ir",
       "module": "Core_exec",
@@ -782,13 +798,34 @@
     },
     {
       "api": [
-        "val lower : Flow.Eval.residual -> ( Core.program , string ) result"
+        "val lower : Flow.Eval.residual -> ( Core.program , string ) result",
+        "type draw_context = { value : Core.source -> Flow.Eval.value -> int ; local : Flow.Ty.t -> int ; emit : Core.source -> Core.statement_node -> unit ; }",
+        "val lower_draw : root : Flow.Eval.residual Lazy.t -> ( draw_context -> unit ) -> ( Core.program , string ) result"
       ],
-      "api_sha256": "5488199d7045b421eb9a8da89764bab6dcdc24629b9ad00abed705b2d5f271b4",
+      "api_sha256": "2eaed55af1e4275f1d296e19109e3159be2d5c9cc6b5f687a1a7ec17667d4d7c",
       "excluded_legacy_symbols": [],
       "library": "flow_ir",
       "module": "Core_lower",
       "source": "lib/flow_ir/core_lower.mli"
+    },
+    {
+      "api": [
+        "module Buffers : sig",
+        "type t",
+        "val create : unit -> t",
+        "val clear : t -> unit",
+        "val find : t -> int -> float array",
+        "end",
+        "type sink",
+        "val sink : ? image : ( Flow.Eval.value -> int ) -> size : int * int -> Buffers.t -> sink",
+        "val compile : Core.draw -> Flow.Eval.value array -> sink -> unit",
+        "val finish : sink -> Scene_command.Marks.t"
+      ],
+      "api_sha256": "7e0c6b58873c6210786ebb573251f8cfe964cda7e222218765ac2bc1a69bbe06",
+      "excluded_legacy_symbols": [],
+      "library": "flow_ir",
+      "module": "Core_marks",
+      "source": "lib/flow_ir/core_marks.mli"
     },
     {
       "api": [
@@ -813,6 +850,7 @@
         "module Core_region = Core_region",
         "module Core_lower = Core_lower",
         "module Core_exec = Core_exec",
+        "module Core_draw = Core_draw",
         "val qualify_workspace : ? record : bool -> ? inputs : ( string * ( string * Flow.Eval.value ) list ) list -> ? observe : ( Flow.Workspace.path option -> Flow.Eval.residual -> unit ) -> Flow.Workspace.t -> ( Flow.Workspace.t * Flow.Eval.t , Flow.Diagnostic.t ) result",
         "type id = Flow.Workspace.path * int list",
         "module Count : sig",
@@ -865,7 +903,7 @@
         "val force_display : ? state : Flow.Eval.state -> ? reference : bool -> ? policy : Gpu.policy -> program -> live : Frame_input.t -> ( displayed , Flow.Diagnostic.t ) result",
         "end"
       ],
-      "api_sha256": "9cd67ed7705c14646f0daf6385d785525a779fde59e49488fb05d0e9fc0d7b78",
+      "api_sha256": "8d820c37fe4143022613af6a99c8abc300a6405563661dd97997735f20348cc7",
       "excluded_legacy_symbols": [],
       "library": "flow_ir",
       "module": "Flow_ir",
@@ -1942,6 +1980,8 @@
         "val render : t -> unit",
         "module Private : sig",
         "val shapes : Scene_command.Shape_batch.t -> node",
+        "val geometry : Scene_command.Render_ir.geometry -> node",
+        "val transform : Scene_command.Render_ir.transform -> t -> node",
         "module Ui_batch = Scene_command.Ui_batch",
         "val layer_break : node",
         "val display_list : ? images : ( int * Image.t ) list -> Scene_command.Display_list.t -> node",
@@ -1962,7 +2002,7 @@
         "val release : t -> unit",
         "end"
       ],
-      "api_sha256": "5c4ed17d7a9a3dd7dd5e7a3dea6572ba5d82a45c8885dfafe99368aef71fb5a8",
+      "api_sha256": "2c1c10594e69d8fc30e80f71cf1eceb7e8b498404733843496eb6b657f50f6f2",
       "excluded_legacy_symbols": [],
       "library": "rays",
       "module": "Scene",
@@ -2134,9 +2174,10 @@
       "api": [
         "type prepared",
         "val prepare : ? profile : Flow_ir.Profile.t -> ? approx : Flow.Workspace.Paths.t -> ? states : Flow.Eval.value list -> Flow.Eval.plan -> Flow.Eval.value -> ( prepared , Flow.Diagnostic.t ) result",
-        "val render_prepared : ? state : Flow.Eval.state -> ? image : ( Flow.Eval.value -> ( Rays.Image.t , Flow.Diagnostic.t ) result ) -> ? gpu : ( Flow_ir.Gpu.value -> radius : float -> fill : int32 -> stroke : int32 -> stroke_width : float -> ( Scene_command.Shape_batch.gpu_token , Flow.Diagnostic.t ) result ) -> ? gpu_policy : Flow_ir.Gpu.policy -> ? reference : bool -> prepared -> live : Frame_input.t -> size : int * int -> ( Rays.Scene.t , Flow.Diagnostic.t ) result"
+        "val render_prepared : ? state : Flow.Eval.state -> ? image : ( Flow.Eval.value -> ( Rays.Image.t , Flow.Diagnostic.t ) result ) -> ? gpu : ( Flow_ir.Gpu.value -> radius : float -> fill : int32 -> stroke : int32 -> stroke_width : float -> ( Scene_command.Shape_batch.gpu_token , Flow.Diagnostic.t ) result ) -> ? gpu_policy : Flow_ir.Gpu.policy -> ? reference : bool -> prepared -> live : Frame_input.t -> size : int * int -> ( Rays.Scene.t , Flow.Diagnostic.t ) result",
+        "val core_drawing : bool ref"
       ],
-      "api_sha256": "ae8a130660598268e1bc1b2d3bec61a801e79fab9283d2e1e3710523feea8440",
+      "api_sha256": "4e492ba5ad6d893347d767d9fefdf20a507c8752d4f6fd7d3f2c82b243f01557",
       "excluded_legacy_symbols": [],
       "library": "rays_editor",
       "module": "Drawing",
