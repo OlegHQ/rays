@@ -28,7 +28,7 @@ type state = {
 }
 type draw = { mesh : mesh; state : state }
 type pipeline_family = Scene2 | Scene2_textured | Scene3 | Scene3_points | Scene3_textured | Scene3_shadow |
-  Scene3_stencil | Scene3_textured_stencil | Scene3_shadow_stencil | Scene3_world | Ui
+  Scene3_stencil | Scene3_textured_stencil | Scene3_shadow_stencil | Scene3_world | Ui | Marks
 (** Exact number of family/blend variants required for each supported sample
     count. Cache owners use this value so adding a family cannot silently
     evict a still-live pipeline during renderer construction. *)

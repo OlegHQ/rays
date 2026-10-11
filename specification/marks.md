@@ -287,3 +287,35 @@ An implementer must keep these exactly or parity with the P3.1 snapshots breaks:
 - Text `size <= 0` is not validated in `drawing.ml`; the font layer decides.
 - `draw/points` has no count cap in `drawing.ml`; the 1,000,000 cap on point
   sets is new here.
+
+## The `Marks` pipeline family (GPU layout)
+
+`Scene_execution.Marks` is a pipeline family beside `Ui` (the `Ui` shader and its 64-byte
+instance are untouched). One draw is one mark set of rect, circle or line: `count`
+instances, four vertices (a quad, indices `0 1 2 0 2 3` plus `4 i` per instance) and six
+vertex buffers at bindings 0 to 5, then the affine at 6 (24 bytes, as for `Ui`). The
+vertex stage reads instance `vid / 4`. No texture, sampler, depth or argument buffer;
+blending is the draw's blend as for `Ui`. Instance `i` of an attribute is element
+`i * stride` of its buffer; **stride 0 is a constant** (element 0 for every instance), so
+a constant and a buffer take the same code. A later WGSL port mirrors this table.
+
+| Binding | Attribute | Element | Rect | Circle | Line |
+| --- | --- | --- | --- | --- | --- |
+| 0 | position | float x, y (z, if the stride is 3, ignored) | top-left | centre | from |
+| 1 | extent | float | width, height | radius | end x, y |
+| 2 | fill | uint `0xRRGGBBAA` (mode 0) or float r, g, b in 0..1 (mode 1, alpha 255) | fill | fill | unused |
+| 3 | stroke | as fill | outline; word 0 = none | outline; word 0 = none | the line's colour |
+| 4 | width | float | stroke width | stroke width | line width |
+| 5 | params | 8 uint (below) | | | |
+
+`params` = `kind` (0 rect, 4 circle, 5 line, the `Shape_batch` kind words), then the strides in
+floats or words for position, extent, fill, stroke and width (one 32-bit element each, so a
+vec3 position has stride 3 and a float radius array stride 1), then fill mode and stroke mode.
+A float colour channel `c` becomes `floor(clamp(c, 0, 1) * 255 + 0.5)`, the same 8-bit value
+`Marks_scene` writes, then is unpacked as for `Ui`. A rect or circle with stroke word 0 has
+border width 0; otherwise the border is the width attribute. Geometry is computed in binary32
+on the GPU (`x + width`, `x - r`), so pixel parity with `Shape_batch` is exact when the inputs are
+binary32 values and may differ by one ulp of the sum otherwise; a CPU writer that wants exact
+parity pre-adds in binary64 and uploads the corners (use stride 0 or a second layout for that
+only if a test shows a difference). A buffer shorter than `count * stride` elements is the
+caller's error; the shader does not check.

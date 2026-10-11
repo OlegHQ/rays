@@ -376,6 +376,7 @@ let create_renderer ?device ~offscreen ~driver ~configuration () =
               };
               { group = 0; binding = 2; kind = Sampler; visibility = [ Fragment ] };
             ] )
+      | Marks -> (Runtime_shaders.marks, [])
     in
     let artifact bindings =
       Ogpu.Shader.create
@@ -402,6 +403,11 @@ let create_renderer ?device ~offscreen ~driver ~configuration () =
       (match family with
       | Scene_execution.Scene2 | Scene2_textured | Ui ->
           [ { Ogpu.Shader.group = 0; binding = 6; kind = Storage_buffer; visibility = [ Vertex ] } ]
+      | Marks ->
+          List.map
+            (fun binding ->
+              { Ogpu.Shader.group = 0; binding; kind = Storage_buffer; visibility = [ Vertex ] })
+            [ 1; 2; 3; 4; 5; 6 ]
       | Scene3 | Scene3_points | Scene3_textured | Scene3_shadow | Scene3_stencil
       | Scene3_textured_stencil | Scene3_shadow_stencil | Scene3_world ->
           [
@@ -425,6 +431,10 @@ let create_renderer ?device ~offscreen ~driver ~configuration () =
           (match family with
           | Scene_execution.Scene2 | Scene2_textured | Ui ->
               [ { Ogpu.Binding.binding = 6; kind = Buffer; visibility = [ Vertex ] } ]
+          | Marks ->
+              List.map
+                (fun binding -> { Ogpu.Binding.binding; kind = Buffer; visibility = [ Vertex ] })
+                [ 1; 2; 3; 4; 5; 6 ]
           | Scene3 | Scene3_points | Scene3_textured | Scene3_shadow | Scene3_stencil
           | Scene3_textured_stencil | Scene3_shadow_stencil | Scene3_world ->
               [
@@ -443,7 +453,7 @@ let create_renderer ?device ~offscreen ~driver ~configuration () =
                   { Ogpu.Binding.binding = 1; kind = Texture; visibility = [ Fragment ] };
                   { binding = 2; kind = Sampler; visibility = [ Fragment ] };
                 ]
-          | Scene3 | Scene3_points | Scene3_stencil -> entries
+          | Scene3 | Scene3_points | Scene3_stencil | Marks -> entries
           | Scene3_textured | Scene3_textured_stencil ->
               entries
               @ [
@@ -495,7 +505,7 @@ let create_renderer ?device ~offscreen ~driver ~configuration () =
                     color_format = Rgba8_unorm;
                     depth_format =
                       (match family with
-                      | Scene_execution.Scene2 | Scene2_textured | Ui -> Ogpu.Pipeline.No_depth
+                      | Scene_execution.Scene2 | Scene2_textured | Ui | Marks -> Ogpu.Pipeline.No_depth
                       | Scene3 | Scene3_points | Scene3_textured | Scene3_shadow | Scene3_world ->
                           Depth32_float
                       | Scene3_stencil | Scene3_textured_stencil | Scene3_shadow_stencil ->
@@ -511,7 +521,7 @@ let create_renderer ?device ~offscreen ~driver ~configuration () =
                     (match family with
                      | Scene2 | Scene2_textured | Scene3 | Scene3_points | Scene3_stencil -> true
                      | Scene3_textured | Scene3_shadow | Scene3_textured_stencil
-                     | Scene3_shadow_stencil | Scene3_world | Ui -> false)
+                     | Scene3_shadow_stencil | Scene3_world | Ui | Marks -> false)
                   backend_device descriptor)))
   in
   Scene_execution.create ?device ~sun_depth:make_sun_depth_pipeline ~offscreen driver configuration
