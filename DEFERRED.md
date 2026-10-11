@@ -28,6 +28,16 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
 
 ## Tests that got weaker
 
+- Restored, native verification pending 2026-10-11: Scene2 coordinate and
+  dense-command tests previously bypassed drawing (the latter ignored both
+  its IR and prepared draws). They now submit through the existing protected
+  capture helper. Coordinate checks cover square/clip/circle pixel bounds at
+  1x/2x and distinguish the circle from its bounding box. Dense checks render
+  all counts/phases/repeats against independent command preparation, reject
+  empty output and exercise retained transform ownership after another draw
+  moves. Typechecking, executable builds and the dependency gate pass. Native
+  coordinates takes its existing no-device skip; dense execution fails at
+  Metal device acquisition. Pixel comparisons remain unverified.
 - Restored, native verification pending 2026-10-11: `test_pathtracer` and
   `test_scene` now read actual GPU film bytes. Their formerly empty counters
   check deterministic/non-flat/opaque output, full-resolution previews,

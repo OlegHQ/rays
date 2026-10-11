@@ -77,7 +77,7 @@ let expect_square bytes ~width ~height ~x ~y ~size message =
        message size size x y bw bh bx by)
 
 let run () =
-  let run ~logical_width ~logical_height ~drawable_width ~drawable_height ~scale:_ =
+  let run ~logical_width ~logical_height ~drawable_width ~drawable_height ~scale =
     with_target ~logical_width ~logical_height ~drawable_width ~drawable_height
       (fun execution ->
         let facts = get (Rays_execution.presentation_facts execution) in
@@ -85,9 +85,30 @@ let run () =
           && facts.logical_height = logical_height
           && facts.drawable_width = drawable_width
           && facts.drawable_height = drawable_height)
-          "offscreen logical/drawable facts")
+          "offscreen logical/drawable facts";
+        let render commands =
+          let ir = get_ir (Scene_command.Render_ir.create commands) in
+          let pixels = Test_ui_pipeline.capture ~clear:(0.,0.,0.,1.) execution
+            (fun submission -> Rays_execution.Private.lower_scene2 submission
+              ~density:scale ~resource:(fun _ -> None) ir) in
+          require (Bytes.length pixels = drawable_width * drawable_height * 4)
+            "coordinate readback length";
+          pixels in
+        let square = render [|Scene_command.Render_ir.Geometry square_geometry|] in
+        expect_square square ~width:drawable_width ~height:drawable_height
+          ~x:(8 * scale) ~y:(8 * scale) ~size:(16 * scale) "logical square";
+        let clipped = render Scene_command.Render_ir.[|
+          Push_clip {x=12.;y=12.;width=8.;height=8.}; Geometry square_geometry; Pop_clip|] in
+        expect_square clipped ~width:drawable_width ~height:drawable_height
+          ~x:(12 * scale) ~y:(12 * scale) ~size:(8 * scale) "logical clip";
+        let circle = render [|Scene_command.Render_ir.Geometry circle_geometry|] in
+        expect_square circle ~width:drawable_width ~height:drawable_height
+          ~x:(24 * scale) ~y:(8 * scale) ~size:(16 * scale) "logical circle bounds";
+        require (filled (rgba circle ~width:drawable_width (32 * scale) (16 * scale)))
+          "circle center unfilled";
+        require (not (filled (rgba circle ~width:drawable_width (24 * scale) (8 * scale))))
+          "circle bounding-box corner filled";
+        Printf.printf "scene2 coordinates: %dx square, clip and circle checked\n%!" scale)
   in
   run ~logical_width:64 ~logical_height:32 ~drawable_width:64 ~drawable_height:32 ~scale:1;
-  run ~logical_width:64 ~logical_height:32 ~drawable_width:128 ~drawable_height:64 ~scale:2;
-  print_endline
-    "scene2 coordinates: 1x/2x headless square, clipped square, circle"
+  run ~logical_width:64 ~logical_height:32 ~drawable_width:128 ~drawable_height:64 ~scale:2

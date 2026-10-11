@@ -33,11 +33,11 @@ let new_batch () =
   rect ~x:49. ~y:17.5 ~width:11. ~height:1. ~color:stroke ();
   Scene_command.Ui_batch.Builder.publish builder
 
-let capture execution lower =
+let capture ?(clear = (1., 1., 1., 1.)) execution lower =
   let submission = get (Rays_execution.Private.begin_submission execution) in
   Fun.protect ~finally:(fun () -> Rays_execution.Private.cancel submission) (fun () ->
     let batch = get (lower submission) in
-    ignore (get (Rays_execution.Private.step ~clear:(1., 1., 1., 1.)
+    ignore (get (Rays_execution.Private.step ~clear
       submission [ batch ]));
     get (Rays_execution.capture execution))
 
