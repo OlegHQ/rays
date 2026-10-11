@@ -6,7 +6,10 @@ val node_result : ?with_:(string * Sop.Node.t) list -> string ->
 (** [node_result text] lowers the SOP expression [text] (for example
     ["(-> (sop/grid :columns 8) (sop/dissolve))"]) as the result of a [sop]
     graph. [~with_:["src", n]] makes [(sop/ext_src)] stand for the existing
-    node [n], for geometry only OCaml can build (see {!snapshot}). *)
+    node [n], for geometry only OCaml can build (see {!snapshot}). A binding
+    ["image/pixels", n] makes [(image/ext_pixels)] an image-typed external.
+    Both kinds retain the original node and its inputs without cooking it
+    during checking or lowering. *)
 
 val node : ?with_:(string * Sop.Node.t) list -> string -> Sop.Node.t
 (** As {!node_result}; a lowering error fails the test with its message. *)

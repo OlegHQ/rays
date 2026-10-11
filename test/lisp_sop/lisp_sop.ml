@@ -30,17 +30,38 @@ let restore with_ root =
   go root
 
 let node_result ?(with_ = []) text =
+  let image_name name =
+    if String.starts_with ~prefix:"image/" name then
+      Some (String.sub name 6 (String.length name - 6)) else None in
+  let factory_key name = match image_name name with
+    | Some name -> "lisp_sop_image_ext_" ^ name
+    | None -> "ext_" ^ name in
   let external_factories = List.map (fun (name, _) ->
     let marker = marker name in
-    Sop.Edit_graph.factory ~key:("ext_" ^ name) ~label:("Ext " ^ name)
+    Sop.Edit_graph.factory ~key:(factory_key name) ~label:("Ext " ^ name)
       ~category:["Test"] ~arity:0 (fun _ -> marker)) with_ in
+  let image_ops = List.filter_map (fun (name, _) -> Option.map (fun image_name ->
+    let prototype = Option.get (Flow.Op.find "image/noise" Flow.Context.value) in
+    { prototype with Flow.Op.name = "image/ext_" ^ image_name;
+      signature = {pos=[]; opt=[]; rest=None; kw=[]};
+      check = (fun _ -> ()); packed_extension = None;
+      body = (fun ~live:_ ~node _ -> node ("sop/" ^ factory_key name) []) })
+      (image_name name)) with_ in
   let factories = external_factories @ factories in
   let source = "(workspace w (graph g :context sop " ^ text ^ "))" in
   match Flow.Syntax.parse source with
   | Error d -> Error (Flow.Diagnostic.to_string d)
   | Ok forms ->
-      match Flow_sop.Lower.workspace ~extra:Editor_document.Contexts.descriptors
-              ~factories forms with
+      let lowered = Result.bind
+        (Flow_sop.Catalog.of_factories ~version:Flow_sop.Manifest.version
+          ~extra:Editor_document.Contexts.descriptors factories) (fun catalog ->
+        match Flow.Workspace.check ~ops:(image_ops @ Flow_sop.Operators.all) catalog forms with
+        | Some checked, _ -> Flow_sop.Lower.of_checked ~factories checked
+        | None, diagnostics -> Error (Option.value
+            ~default:(Flow.Diagnostic.error ~code:"E_LOWER" "Workspace did not check")
+            (List.find_opt (fun (d : Flow.Diagnostic.t) ->
+              d.severity = Flow.Diagnostic.Error) diagnostics))) in
+      match lowered with
       | Error d -> Error (Flow.Diagnostic.to_string d)
       | Ok lowered ->
           let graph = List.hd lowered.graphs in

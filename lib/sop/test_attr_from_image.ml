@@ -22,14 +22,11 @@ let channel_name = function
 let cook ?(channel = Rdk.Attribute_ops.Red) ?(uv = "uv") ?(grain=257) domains source image =
   let session = ok (Session.create ~max_entries:0 ~max_payload_bytes:0) in
   Fun.protect ~finally:(fun () -> Session.close session) (fun () ->
-    (* LISP GAP: Lisp_sop cannot bind an image-typed external input, so this node comes from the
-       catalog factory (the same schema the Lisp kind uses). *)
-    let node = ok (Sop.Edit_graph.instantiate Nodes.Attr_from_image.factory
-        [Lisp_sop.snapshot source; image_node image]) in
-    let node = fst (ok (Node.apply_parameters node
-        [ "attribute", Parameter.Text_value "sample";
-          "channel", Parameter.Choice_value (channel_name channel);
-          "uv", Parameter.Text_value uv ])) in
+    let node = Lisp_sop.node
+        ~with_:["src", Lisp_sop.snapshot source; "image/pixels", image_node image]
+        (Printf.sprintf
+          "(sop/attr_from_image (sop/ext_src) :image (image/ext_pixels) :attribute \"sample\" :channel %S :uv %S)"
+          (channel_name channel) uv) in
     let output = ok (Session.cook session ~context:(ok (Context.create ~domains ~grain ())) node) in
     let geometry = ok (Payload.geometry output.payload) in
     assert (Rdk.Topology.data_id (Rdk.Geometry.topology geometry) = Rdk.Topology.data_id (Rdk.Geometry.topology source));
@@ -38,6 +35,22 @@ let cook ?(channel = Rdk.Attribute_ops.Red) ?(uv = "uv") ?(grain=257) domains so
 let close a b = assert (abs_float (a -. b) < 1e-12)
 let run () =
   let source = geometry [|0.;1.;0.;1.;0.5;-4.;5.;0.25|] [|0.;0.;1.;1.;0.5;3.;-2.;0.75|] in
+  let image_cooks = ref 0 in
+  let image_source = Node.Private.make ~operation:"image/external" ~version:1 ~parameters:"pixels"
+      ~cook_mode:Node.Generator ~dependencies:Context.Dependencies.static
+      ~inputs:[|Lisp_sop.snapshot source|] (fun ~node_id:_ _ inputs ->
+        assert (Array.length inputs = 1 && Result.is_ok (Payload.geometry inputs.(0)));
+        incr image_cooks;
+        Ok Node.Private.{payload=Payload.Image image; diagnostics=[]; instances=None}) in
+  let node = Lisp_sop.node
+      ~with_:["src", Lisp_sop.snapshot source; "image/pixels", image_source]
+      "(let* [pixels (image/ext_pixels)] (sop/attr_from_image (sop/ext_src) :image pixels :attribute \"sample\"))" in
+  assert (!image_cooks = 0 && List.exists ((==) image_source) (Node.inputs node));
+  let session = ok (Session.create ~max_entries:8 ~max_payload_bytes:65536) in
+  Fun.protect ~finally:(fun () -> Session.close session) (fun () ->
+    let output = ok (Session.cook session ~context:(ok (Context.create ())) node) in
+    close (values (ok (Payload.geometry output.payload))).(0) 1.);
+  assert (!image_cooks = 1);
   List.iter (fun (channel, expected) ->
     let sampled = cook ~channel 1 source image |> values in
     Array.iter2 close sampled expected)

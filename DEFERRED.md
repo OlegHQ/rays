@@ -86,7 +86,12 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
 - No literal for a non-finite number.
 - No kind that builds a polygon from explicit points (`poly_fill` returns a closed curve
   unchanged); the gallery star uses `sop/sweep :caps true` instead.
-- An image-typed external cannot be passed through `Lisp_sop.node ~with_`.
+- Fixed and verified 2026-10-11: `Lisp_sop.node ~with_` accepts
+  `"image/pixels", node` as an image-typed `(image/ext_pixels)` binding, using
+  the existing immutable operator-extension API and normal checked lowering.
+  The image node and its inputs retain their identity and are not cooked
+  during lowering. `test_attr_from_image` now uses the Lisp surface for its
+  channel/UV/domain cases; `@lib/sop/runtest` and `@lib/flow_sop/runtest` pass.
 - What `chromatic_drift`, `pastel_flow` and `code_quadtree` need before a port is listed in
   `README.md`, "Not yet ported to Rays Lisp".
 
