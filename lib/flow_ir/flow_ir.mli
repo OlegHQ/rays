@@ -156,4 +156,19 @@ module Executor : sig
 
   val force_display : ?state:Flow.Eval.state -> ?reference:bool -> ?policy:Gpu.policy -> program -> live:Frame_input.t ->
     (displayed,Flow.Diagnostic.t)result
+
+  type marks
+  val compile_marks : ?profile:Profile.t -> ?approx:Flow.Workspace.Paths.t ->
+    ?count_source:Packed.count_source -> ?id:id -> string -> (string * Flow.Eval.value) list ->
+    (marks, Flow.Diagnostic.t) result
+  (** A mark set ([draw/circles], [rects], [lines], [points]) from its operator inputs by name.
+      The IR is optimized as a whole: attribute regions fuse and the set is placed
+      ([marks_graph]). *)
+
+  val marks_graph : marks -> t
+  val force_marks : ?state:Flow.Eval.state -> marks -> live:Frame_input.t ->
+    ((string * Flow.Eval.value) list, Flow.Diagnostic.t) result
+  (** Every attribute's value by name. An attribute whose rate is [Static] runs once and its
+      value is kept; a fused region runs once per frame for all its outputs; the others run
+      every call. *)
 end

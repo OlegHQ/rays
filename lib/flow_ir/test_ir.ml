@@ -744,3 +744,35 @@ let () =
        assert (Array.length Packed.Private.((view (packed_of graph i)).code) < Flow.Packed_ops.register_limit)
    | _ -> assert false);
   print_endline "Attribute fusion: one region with several outputs, byte-equal at 1 and 8 domains; declines on count, rate and the register limit"
+
+(* P4.8: static positions with animated colour run the position region once over ten frames. *)
+let () =
+  let run_frames positions =
+    let ticks = ref 0 in
+    let profile = Profile.create ~clock:(fun () -> incr ticks; float (!ticks * !ticks)) in
+    let ws, evaluated, p, c = circles_graph ~count:4096 ~positions ~fills:"[(sin t) (/ i 4096) (cos (* i t))]" () in
+    ignore ws;
+    let marks = ok (Executor.compile_marks ~profile "draw/circles" ["positions", p; "fill", c]) in
+    ignore evaluated;
+    let graph = Executor.marks_graph marks in
+    let rates = List.map (fun (_, i) -> graph.nodes.(i).rate) (attribute_edges graph (marks_node graph)) in
+    let seen = Hashtbl.create 4 in
+    let state = E.create_state () in
+    for frame = 0 to 9 do
+      let live = Frame_input.at_time (float frame *. 0.25) in
+      (match ok (Executor.force_marks ~state marks ~live) with
+       | ["positions", pv; "fill", cv] ->
+           assert (same_result (Ok pv) (E.Private.force_reference p ~live));
+           assert (same_result (Ok cv) (E.Private.force_reference c ~live))
+       | _ -> assert false);
+      List.iter (fun (e : execution) ->
+        let known = Option.value ~default:[] (Hashtbl.find_opt seen e.owner) in
+        if not (List.mem e.seconds known) then Hashtbl.replace seen e.owner (e.seconds :: known))
+        (Profile.executions profile)
+    done;
+    rates, Hashtbl.fold (fun _ runs acc -> List.length runs :: acc) seen [] |> List.sort compare in
+  (* Static positions: one run for the position region, ten for the colours. *)
+  assert (run_frames "[i 0 0]" = ([Static; Frame], [1; 10]));
+  (* Both animated and fused: one run per frame for the pair. *)
+  assert (snd (run_frames "[(* i t) 0 0]") = [10]);
+  print_endline "Rate split: a static attribute runs once over ten frames, a frame-rate one every frame"

@@ -625,15 +625,16 @@ module Executor = struct
       {ir; value = v; templates = Atomic.make []; core = Atomic.make []; owner = ref (); count_source; profile;
         approx;sink;gpu_kernel=None}) (optimize (finish b [|root|]))
   let graph p = p.ir
+  (* One timing per packed group, recorded when the group runs. *)
+  let measure ?(ran = ignore) profile = Option.map (fun profile -> profile.Profile.clock,
+    (fun packed ~seconds ~reference ->
+      ran ();
+      let sites = Packed.provenance packed in
+      let _, path, iter = Packed.site packed in
+      Profile.record profile {owner = path, iter; sites; seconds; tier = if reference then Interp else Cpu_kernel})) profile
   let force ?state ?elems ?resolve ?(reference = false) program ~live =
     let packed_ran = ref false in
-    let measure = Option.map (fun profile -> profile.Profile.clock,
-      (fun packed ~seconds ~reference ->
-        packed_ran := true;
-        let sites = Packed.provenance packed in
-        let _, path, iter = Packed.site packed in
-        let owner = path, iter in
-        Profile.record profile {owner; sites; seconds; tier = if reference then Interp else Cpu_kernel})) program.profile in
+    let measure = measure ~ran:(fun () -> packed_ran := true) program.profile in
     let state = Option.value ~default:(E.create_state ()) state in
     let fell_back = ref reference in
     let fallback () = fell_back := true; E.Private.force_reference ~state ?elems ?resolve program.value ~live in
@@ -748,4 +749,59 @@ module Executor = struct
     Result.bind (try_display ?state ~reference ?policy program ~live) (function
       |Some value->Ok value
       |None->Result.map(fun value->Cpu value)(force ?state ~reference program ~live))
+  (* A mark set's attributes, each computed at its own rate: a static attribute runs once
+     and its value is kept; a fused region runs once per frame for all its outputs. *)
+  type attribute_unit = { names : string list; fused : Packed.t option; rate : rate;
+    mutable kept : E.value list option }
+  type marks = { graph : t; programs : (string * program) list; units : attribute_unit list;
+    profile : Profile.t option }
+  let compile_marks ?profile ?(approx = W.Paths.empty) ?(count_source = fun _ _ -> None)
+      ?(id = (["@marks"], [])) set attributes =
+    let b = builder ~count_source W.Paths.empty W.Paths.empty in
+    let args = List.mapi (fun i (name, v) -> {name; node = value b (child id (name ^ "#" ^ string_of_int i)) v}) attributes in
+    match marks_of set args with
+    | None -> Error (Flow.Diagnostic.error ~code:"E_DRAW_KIND" (set ^ " is not a mark set."))
+    | Some kind ->
+        let root = add b id Ty.drawing (Count.Data id) kind args Static in
+        let ( let* ) = Result.bind in
+        let* graph = optimize (finish b [|root|]) in
+        let* programs = List.fold_right (fun (name, v) rest ->
+          let* rest = rest in
+          let* program = compile ?profile ~approx ~sink:(Display set) ~count_source v in
+          Ok ((name, program) :: rest)) attributes (Ok []) in
+        let node = graph.nodes.(graph.roots.(0)) in
+        let edges = attribute_edges graph node in
+        let units = List.fold_left (fun units ((a : attribute), i) ->
+          if List.mem a.edge (List.concat_map (fun u -> u.names) units) then units else
+          let shared = List.filter (fun ((_ : attribute), j) -> j = i) edges
+            |> List.sort (fun ((a : attribute), _) ((b : attribute), _) -> compare a.output b.output) in
+          let fused = match graph.nodes.(i).kind with
+            | Kernel {body = Packed_map p; _} when List.length shared > 1 -> Some p
+            | _ -> None in
+          let names = if fused = None then [a.edge] else List.map (fun ((a : attribute), _) -> a.edge) shared in
+          {names; fused; rate = graph.nodes.(i).rate; kept = None} :: units) [] edges |> List.rev in
+        Ok {graph; programs; units; profile}
+  let marks_graph m = m.graph
+  let force_marks ?state m ~live =
+    let state = Option.value ~default:(E.create_state ()) state in
+    let ( let* ) = Result.bind in
+    let separate names = List.fold_right (fun name rest ->
+      let* rest = rest in
+      let* v = force ~state (List.assoc name m.programs) ~live in Ok (v :: rest)) names (Ok []) in
+    let run u = match u.fused with
+      | None -> separate u.names
+      | Some packed ->
+          (* A failure reruns the attributes one by one for the precise diagnostic. *)
+          (match Packed.force_all ~state ?measure:(measure m.profile) packed ~live with
+           | Ok values -> Ok values
+           | Error _ -> separate u.names) in
+    let* values = List.fold_right (fun u rest ->
+      let* rest = rest in
+      let* values = match u.kept with
+        | Some values -> Ok values
+        | None -> let* values = run u in
+            if u.rate = Static then u.kept <- Some values; Ok values in
+      Ok (List.combine u.names values @ rest)) m.units (Ok []) in
+    Ok (List.map (fun (name, _) -> name, List.assoc name values) m.programs)
+
 end
