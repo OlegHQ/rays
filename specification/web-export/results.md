@@ -1020,6 +1020,39 @@ Finding A (first frame 22 s, 79 GB for static and panning at 1M, not changed): `
 residual and runs as a kernel (0.4 s). Not fixed here; the change is in `DEFERRED.md` (web export section). After the
 B fix the 1-frame panning run is still 23.1 s real, 9.93e9 allocated words.
 
+### Addendum 2026-10-11: where the 1.7 GB of a static 1,000,000-mark start went
+
+Cumulative OCaml allocation (`OCAMLRUNPARAM=v=0x400`, all domains), 1 frame, peak from `/usr/bin/time -l`, M1, load 4 to
+6, scratch executables built with the link line above (`static_alloc/build.sh`), dune dev profile:
+
+| 1,000,000 marks | Wall s (1 frame) | Allocated MB | Peak RSS MB | Peak footprint MB | Per extra frame (300 vs 1) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| static, before | 0.83 | 1,680 | 578 | 511 | not measured |
+| static, after | 0.85 | 1,032 | 565 | 496 | 295 KB |
+| panning, before | 1.28 | 1,680 | 580 | 513 | 318 KB |
+| panning, after | 1.27 | 1,032 | 563 | 496 | 314 KB |
+| animated, before and after | 0.88 / 0.79 | 214 | 257 | 202 | 351 KB |
+
+Evidence: `Gc.Memprof` (sampling 1e-4 words, 16-frame stacks, prelude prepended to the generated `.ml`; it sees the main
+domain only, which allocates the bulk) and `Gc.allocated_bytes` printed at each call of `Flow_ir.static_map`. Findings:
+- Three static evaluations of the same workspace per start, each with its own 4,096-element walk and its own kernel run:
+  `Contexts.of_workspace` from `Core_setup.workspace_doc`, `Contexts.of_workspace` from `Workspace.declared_camera`, and
+  `Contexts.window`. Each costs about 140 MB of main-domain allocation (the walked head, the 24 MB output, the
+  per-chunk register scratch). That is about 420 MB, the largest remaining part.
+- `Packed.force_all` built a closure per element (`Array.iteri (fun k registers -> ...)` inside the loop over
+  elements): about 112 bytes an element, 336 MB over the three forces. Fixed with a counted loop.
+- `Shape_batch.Private.valid` and `Builder.append` used local closures that return floats, which box them: 262 MB
+  at 1,000,000 instances (ocamlopt without flambda does not unbox across a local closure). Fixed with top-level
+  `[@inline]` accessors.
+- Left, all result-sized or per-mark: copies of the 64-byte-per-instance batch (`Builder.create`, `publish`'s `Bytes.sub`,
+  the lowering `Bytes.copy`, `ui_index_bytes`, the upload `Bytes.concat`: about 380 MB), and the CPU marks builder's
+  tuples and boxed floats per mark (`Marks_scene.pairs`, `Builder.style`, `circle`: about 170 MB).
+
+Not reached: under 150 MB needs the three evaluations to become one (a cache across `Contexts.of_workspace` and
+`Contexts.window`, which today each receive their own checked workspace) and the static marks to go to the GPU or be built
+without the intermediate copies. Both are design changes, not allocation fixes. Test: `lib/flow_ir/test_static_map`
+bounds the marginal allocation of a static map at 64 bytes an element on one domain (155 before, 43 after).
+
 ## P7.4 evaluation
 
 Date 2026-10-11. Every number below is copied from the section named in its table, or counted by the commands
