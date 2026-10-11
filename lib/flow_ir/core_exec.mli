@@ -1,6 +1,8 @@
 (** Initial-domain execution of the structured frame core, using native primitive
     bodies. State statements need [root], the residual whose state plane they use.
-    A region runs through [force] (default [Packed.force]). *)
+    A region runs through [force] (default [Packed.force]). With [root], any failure
+    restores the evaluation state and returns the tree walker's result for that
+    residual, so its diagnostic and span are the walker's. *)
 type prepared
 (** A program with its statements, constants and operators resolved once. *)
 

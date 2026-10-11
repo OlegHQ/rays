@@ -81,3 +81,8 @@
  (name test_core_operators)
  (modules test_core_operators)
  (libraries flow_ir flow))
+
+(test
+ (name test_core_errors)
+ (modules test_core_errors)
+ (libraries flow_ir flow))

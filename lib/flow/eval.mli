@@ -269,6 +269,14 @@ module Private : sig
   val residual_id : residual -> int
   (** Stable within one specialized evaluation; equality across evaluations is physical. *)
 
+  val checkpoint : residual -> (unit -> unit)
+  (** Snapshot the residual's evaluation state; the returned function restores it. *)
+
+  val rerun : residual -> (value, Diagnostic.t) result
+  (** The tree walker over this residual's own term, in its live evaluation and
+      without offering that term to the executor again: the diagnostic the
+      closure tier's fallback would report. Call after [checkpoint]'s restore. *)
+
   val state_read : residual -> instance:int -> path:Workspace.path -> iter:int list -> host:bool ->
     init:(unit -> value) -> value
   (** The state slot keyed by the instance, [prefix @ zone] path and iteration

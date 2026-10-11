@@ -1252,6 +1252,19 @@ module Private = struct
     prefix = r.rc.prefix; previous = r.previous; host = r.rc.host; geometry = r.rc.geometry}
   let residual_id r = r.rid
   let live_ctx r = match r.live with Some st -> {r.rc with st} | None -> r.rc
+  let checkpoint r =
+    let c = live_ctx r in
+    let saved = Option.map fork_state c.st.state in
+    fun () -> Option.iter (fun saved -> restore_state (Option.get c.st.state) saved) saved
+  let rerun r =
+    let c = live_ctx r in
+    let c = match r.rterm.path with Some p -> {c with base = p; route = []} | None -> c in
+    protect (fun () ->
+      try if r.previous then (match r.rterm.node with
+          | W.State {init; zone; _} -> state_previous c r.renv zone init
+          | _ -> assert false)
+        else concrete c (ev_raw c r.renv r.rterm)
+      with Fail (code, msg, None) -> raise (Fail (code, msg, span_of r.rterm)))
   let state_ctx r ~instance ~path ~iter ~host = {(live_ctx r) with inst = instance; prefix = path; iter; host}
   let state_read r ~instance ~path ~iter ~host ~init =
     let c = state_ctx r ~instance ~path ~iter ~host in

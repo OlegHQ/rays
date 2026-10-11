@@ -67,7 +67,7 @@ let () =
     let core=match I.Core_lower.lower r with Ok p -> p | Error n -> failwith (name ^ " " ^ body ^ ": refused " ^ n) in
     List.iter (fun live ->
       incr n;
-      match I.Core_exec.run ~root:r core ~live,E.Private.force_reference value ~live with
+      match I.Core_exec.run core ~live,E.Private.force_reference value ~live with
       | Ok a,Ok b -> if not (same a b) then failwith (Printf.sprintf "%s at %g: %s <> %s" body live.t (match a,b with E.Vec3 (x,y,z),E.Vec3 (p,q,r) -> Printf.sprintf "%h %h %h / %h %h %h" x y z p q r | _ -> E.show a) (E.show b))
       | Error (a : Flow.Diagnostic.t),Error (b : Flow.Diagnostic.t) ->
           if a.code<>b.code then failwith (Printf.sprintf "%s at %g: %s <> %s" body live.t a.code b.code)

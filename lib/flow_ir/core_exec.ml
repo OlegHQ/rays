@@ -211,7 +211,7 @@ let prepare (program : C.program) =
            | Error (d : Flow.Diagnostic.t) -> raise (V.Fail (d.code,d.message,d.span)))) in
   {program; body=block program.body}
 
-let execute ?root ?force prepared ~live =
+let attempt ?root ?force prepared ~live =
   let program=prepared.program in
   match Frame_input.validate live with
   | Error message -> Error (Flow.Diagnostic.error ~code:"E_FRAME" message)
@@ -224,5 +224,16 @@ let execute ?root ?force prepared ~live =
         Ok st.values.(program.results.(0))
       with V.Fail (code,message,span) -> Error (Flow.Diagnostic.error ?span ~code message)
         | Not_found | Invalid_argument _ | Failure _ -> Error (Flow.Diagnostic.error ~code:"E_CORE" "Invalid core program.")
+
+(* Any failure restores the evaluation state and reports the tree walker's own diagnostic,
+   as the closure tier's fallback does. Without a residual there is no walker to ask. *)
+let execute ?root ?force prepared ~live = match root with
+  | None -> attempt ?force prepared ~live
+  | Some r ->
+      let restore = E.Private.checkpoint r in
+      (match (try attempt ~root:r ?force prepared ~live with Stack_overflow | Out_of_memory | Not_found ->
+         Error (Flow.Diagnostic.error ~code:"E_CORE" "Core execution failed.")) with
+       | Ok _ as ok -> ok
+       | Error _ -> restore (); E.Private.rerun r)
 
 let run ?root ?force program ~live = execute ?root ?force (prepare program) ~live

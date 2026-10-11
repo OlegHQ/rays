@@ -597,11 +597,10 @@ module Executor = struct
                 let rec take n = function [] -> [] | _ when n=0 -> [] | x::xs -> x::take (n-1) xs in
                 ignore (Atomic.compare_and_set program.core cached ((r,prepared)::take 63 cached));
                 prepared in
-          Option.bind prepared (fun p -> match Core_exec.execute ~root:r ~force:(fun packed ->
+          Option.map (fun p -> Core_exec.execute ~root:r ~force:(fun packed ->
             if Option.fold ~none:false ~some:(fun count -> Cost.packed ~count <> Cpu_kernel) (Packed.static_count packed) then
               Error (Flow.Diagnostic.error ~code:"E_CORE_REGION" "Region is not placed on the CPU.")
-            else Packed.force ~state ?elems ?resolve ?measure packed ~live) p ~live with
-            | Ok v -> Some (Ok v) | Error _ -> None)
+            else Packed.force ~state ?elems ?resolve ?measure packed ~live) p ~live) prepared
           with _ -> None in
         match core with Some _ -> core | None -> execute_packed r live in
       E.Private.force_with_executor ~state ?elems ?resolve ~execute value ~live in

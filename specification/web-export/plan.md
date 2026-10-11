@@ -618,7 +618,20 @@ Phase 1
   core. One expectation updated: test_core_lower's second refusal case (a
   packed array/sum, now lowered) became a 2,048-node budget refusal.
   Flow and flow_ir focused gates passed on 2026-10-11.
-- [ ] P1.10 S
+- [x] P1.10 S
+  With a root residual, Core_exec.execute restores the evaluation state on any
+  failure and returns the tree walker's result for that residual (new
+  Eval.Private.checkpoint and rerun; the rerun uses the walker without
+  re-offering the term to the executor, so it cannot recurse). The hook now
+  returns that result instead of declining. test_core_errors: division by zero,
+  out-of-range nth, non-finite result and a state write followed by a failure
+  match the walker's diagnostic, span and state stamp, and at least one core
+  diagnostic differs without the rule. Follow-up found on the way: static
+  residuals carried the static state, so state statements had silently
+  declined; residuals now remember the live evaluation that offered them
+  (commit 60acf38a), and test_core_state fails on unexpected core errors.
+  Flow and flow_ir focused gates and default runtest passed on 2026-10-11
+  (API manifest promoted separately).
 - [ ] P1.11 H
 - [ ] P1.12 H
 - [ ] P1.13 H
