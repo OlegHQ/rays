@@ -778,9 +778,9 @@
         "val execute : ? root : Flow.Eval.residual -> ? force : ( Packed.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> prepared -> live : Frame_input.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result",
         "val run : ? root : Flow.Eval.residual -> ? force : ( Packed.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> Core.program -> live : Frame_input.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result",
         "module Buffers = Core_marks.Buffers",
-        "val draw : ? root : Flow.Eval.residual -> ? force : ( Packed.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> ? image : ( Flow.Eval.value -> ( int , Flow.Diagnostic.t ) result ) -> prepared -> live : Frame_input.t -> size : int * int -> buffers : Buffers.t -> ( Scene_command.Marks.t , Flow.Diagnostic.t ) result"
+        "val draw : ? root : Flow.Eval.residual -> ? force : ( Packed.t -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> ? device : ( Packed.t -> ( ( int * int * int ) option , Flow.Diagnostic.t ) result ) -> ? image : ( Flow.Eval.value -> ( int , Flow.Diagnostic.t ) result ) -> prepared -> live : Frame_input.t -> size : int * int -> buffers : Buffers.t -> ( Scene_command.Marks.t , Flow.Diagnostic.t ) result"
       ],
-      "api_sha256": "280f16709bd5ad444c6f79ac803da7261b699857a117b96b6fe067ff6a7c564c",
+      "api_sha256": "b50e0aba3f2caac875a0bb44114739feee12864694fbcde45796a90ba91481b2",
       "excluded_legacy_symbols": [],
       "library": "flow_ir",
       "module": "Core_exec",
@@ -816,13 +816,15 @@
         "val create : unit -> t",
         "val clear : t -> unit",
         "val find : t -> int -> float array",
+        "val device : t -> int -> int * int * int",
         "end",
         "type sink",
         "val sink : ? image : ( Flow.Eval.value -> int ) -> size : int * int -> Buffers.t -> sink",
+        "val device_value : sink -> token : int -> count : int -> width : int -> Flow.Eval.value",
         "val compile : Core.draw -> Flow.Eval.value array -> sink -> unit",
         "val finish : sink -> Scene_command.Marks.t"
       ],
-      "api_sha256": "7e0c6b58873c6210786ebb573251f8cfe964cda7e222218765ac2bc1a69bbe06",
+      "api_sha256": "b8cd9a9101af6c02cdcc52b4dd58969bdb42f786c36a2a03bf265c2ab5893e70",
       "excluded_legacy_symbols": [],
       "library": "flow_ir",
       "module": "Core_marks",
@@ -849,6 +851,7 @@
         "module Packed = Packed",
         "module Core = Core",
         "module Core_region = Core_region",
+        "module Core_fuse = Core_fuse",
         "module Core_lower = Core_lower",
         "module Core_exec = Core_exec",
         "module Core_draw = Core_draw",
@@ -908,6 +911,7 @@
         "val force : ? state : Flow.Eval.state -> ? elems : ( string * Flow.Eval.value ) list -> ? resolve : ( Flow.Eval.value -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> ? reference : bool -> program -> live : Flow.Eval.live -> ( Flow.Eval.value , Flow.Diagnostic.t ) result",
         "type displayed = Cpu of Flow.Eval.value | Gpu of Gpu.value",
         "val try_display : ? state : Flow.Eval.state -> ? resolve : ( Flow.Eval.value -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> ? reference : bool -> ? policy : Gpu.policy -> program -> live : Frame_input.t -> ( displayed option , Flow.Diagnostic.t ) result",
+        "val region_display : ? profile : Profile.t -> ? approx : Flow.Workspace.Paths.t -> ? policy : Gpu.policy -> unit -> ? state : Flow.Eval.state -> ? resolve : ( Flow.Eval.value -> ( Flow.Eval.value , Flow.Diagnostic.t ) result ) -> Packed.t -> live : Frame_input.t -> ( Gpu.value option , Flow.Diagnostic.t ) result",
         "val force_display : ? state : Flow.Eval.state -> ? reference : bool -> ? policy : Gpu.policy -> program -> live : Frame_input.t -> ( displayed , Flow.Diagnostic.t ) result",
         "type marks",
         "val compile_marks : ? profile : Profile.t -> ? approx : Flow.Workspace.Paths.t -> ? count_source : Packed.count_source -> ? id : id -> string -> ( string * Flow.Eval.value ) list -> ( marks , Flow.Diagnostic.t ) result",
@@ -915,7 +919,7 @@
         "val force_marks : ? state : Flow.Eval.state -> marks -> live : Frame_input.t -> ( ( string * Flow.Eval.value ) list , Flow.Diagnostic.t ) result",
         "end"
       ],
-      "api_sha256": "ed62669b1642e2e7c6d30c8fed5a29f0238de9b7fda1a2832d06bf0c2b5bbbfc",
+      "api_sha256": "b21e52d65a51b26f4273c0765a8a68d1880d651ea252c7b48a9dfc64193f63b3",
       "excluded_legacy_symbols": [],
       "library": "flow_ir",
       "module": "Flow_ir",
@@ -2186,9 +2190,9 @@
       "api": [
         "type prepared",
         "val prepare : ? profile : Flow_ir.Profile.t -> ? approx : Flow.Workspace.Paths.t -> ? states : Flow.Eval.value list -> Flow.Eval.plan -> Flow.Eval.value -> ( prepared , Flow.Diagnostic.t ) result",
-        "val render_prepared : ? state : Flow.Eval.state -> ? image : ( Flow.Eval.value -> ( Rays.Image.t , Flow.Diagnostic.t ) result ) -> ? gpu : ( Flow_ir.Gpu.value -> radius : float -> fill : int32 -> stroke : int32 -> stroke_width : float -> ( Scene_command.Shape_batch.gpu_token , Flow.Diagnostic.t ) result ) -> ? gpu_policy : Flow_ir.Gpu.policy -> prepared -> live : Frame_input.t -> size : int * int -> ( Rays.Scene.t , Flow.Diagnostic.t ) result"
+        "val render_prepared : ? state : Flow.Eval.state -> ? image : ( Flow.Eval.value -> ( Rays.Image.t , Flow.Diagnostic.t ) result ) -> ? gpu : Marks_scene.gpu -> prepared -> live : Frame_input.t -> size : int * int -> ( Rays.Scene.t , Flow.Diagnostic.t ) result"
       ],
-      "api_sha256": "8e86e3d478cf5dbeadf516001dfc961f1264a6a782f091f692fba0b815025715",
+      "api_sha256": "040d672bfaa69f2e410ac2b258f906ecd8e58f6ab4b72c17536536a1bc57a56f",
       "excluded_legacy_symbols": [],
       "library": "rays_editor",
       "module": "Drawing",
