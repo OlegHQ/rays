@@ -157,6 +157,8 @@ module Private : sig
   val unregister_gpu_vertices : gpu_vertices -> unit
   val gpu_vertex_count_for_test : unit -> int
   val cache_count_for_report : t -> int
+  val coalesced_draws_for_test : sampled_draw list -> int
+  (* The number of draws the renderer encodes for these, after merging neighbours; -1 on error. *)
 end
 
 (** Indirect-command replay plans: one automatic plan admitted after two

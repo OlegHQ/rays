@@ -1286,6 +1286,9 @@ module Private=struct
           end))
     end
   let close_gpu_marks=close_gpu_marks
+  let encoded_draws_for_test (batch:batch)=Scene_execution.Private.coalesced_draws_for_test(List.map(fun x->
+    {Scene_execution.family=x.family;blend=x.blend;texture=x.texture;auxiliary=x.auxiliary;
+     vertex_attributes=x.vertex_attributes;samples=x.samples;draw=x.value})batch.batch_draws)
   let snapshot_count_for_test value=Snapshot_table.length value.snapshots
   type nonrec submission=submission
   type nonrec batch=batch

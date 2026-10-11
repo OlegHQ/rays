@@ -1532,6 +1532,7 @@ module Private = struct
   let unregister_gpu_vertices=unregister_gpu_vertices
   let gpu_vertex_count_for_test()=Hashtbl.length gpu_vertex_registry
   let cache_count_for_report value=String_table.length value.cache
+  let coalesced_draws_for_test draws=Result.fold~ok:List.length~error:(fun _-> -1)(coalesce_draws draws)
 end
 type retained_stats={plan_hits:int64;plan_misses:int64;
   }

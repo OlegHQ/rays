@@ -126,6 +126,9 @@ module Private : sig
   val snapshot_count_for_test : t -> int
   type submission
   type batch
+  val encoded_draws_for_test : batch -> int
+  (* Draws the renderer encodes for the batch after neighbours merge ([-1] on error). *)
+
   (* Starts an isolated zero-copy Scene2 lowering transaction.  A later
       lowering or step failure releases every image snapshot owned by this
       submission without affecting another active submission. *)
