@@ -599,6 +599,56 @@ pair -3); the absolute cost is under a microsecond and runs once per kernel, not
 65,536 / 1,000,000 elements, total seconds with readback 0.000188 / 0.002917 / 0.037077, display (no readback)
 0.000153 / 0.001235 / 0.017531; pipeline compile 0.008152 s once.
 
+## P4.13: draw rows against the P4.1 baseline (2026-10-11)
+
+Commands: `_build/default/tools/bench_marks.exe` (CPU path, `Drawing.render_prepared`) and
+`_build/default/lib/rays_editor/native_qualification/bench_marks_gpu.exe` (new; GPU positions, qualification
+policy, same call plus the kernel dispatches with their completion and status read, not the render pass).
+Apple M1, OCaml 5.3.0, dune dev profile, load average 6 to 9 from other agents (one run per row set, no noise
+chasing). The baseline is `bench_marks.exe` built at 4ad9125a (P4.1), run in a worktree just before the "after"
+run. The P4.1 ledger line quoted 160 ms for animated circles 1M; the same build measured 137 ms here, so
+differences under about 15 percent on the animated rows are noise.
+
+CPU path, ms and bytes allocated per frame (median of 8 frames, 3 at 1M):
+
+| kind | mode | n | P4.1 ms | P4.1 bytes | now ms | now bytes |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| circles | static | 100,000 | 0.000 | 1,072 | 0.000 | 1,136 |
+| circles | animated | 100,000 | 14.230 | 59,520,696 | 14.284 | 59,521,400 |
+| rects | static | 100,000 | 0.001 | 1,072 | 0.001 | 1,136 |
+| rects | animated | 100,000 | 14.156 | 58,720,760 | 14.226 | 58,721,320 |
+| translate | moving | 100,000 | 4.795 | 32,006,408 | 0.004 | 6,768 |
+| circles | static | 1,000,000 | 0.001 | 1,072 | 0.003 | 1,136 |
+| circles | animated | 1,000,000 | 136.736 | 609,771,680 | 152.723 | 605,866,648 |
+| rects | static | 1,000,000 | 0.001 | 1,072 | 0.003 | 1,136 |
+| rects | animated | 1,000,000 | 135.987 | 601,771,936 | 136.081 | 601,771,080 |
+| translate | moving | 1,000,000 | 48.871 | 320,006,408 | 0.006 | 6,768 |
+
+The moving translate no longer scales with the count (P4.10): a static region runs once, an unchanged mark set
+keeps its scene node, and the renderer skips the byte comparison of a batch it already holds. The animated CPU rows
+are unchanged, as expected: P4.9 only changes sets that have a GPU attribute.
+
+GPU positions (`bench_marks_gpu.exe`; "radius" is a per-instance radius or size from a second GPU region, "fill" a
+per-instance CPU colour buffer, "per-instance" both; "uniform" is what the removed `gpu_circles` arm served):
+
+| kind | style | 100,000 ms | 100,000 bytes | 1,000,000 ms | 1,000,000 bytes | 1M against uniform |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| circles | uniform | 1.260 | 4,025,848 | 8.858 | 40,025,776 | 1.0x |
+| circles | radius | 1.602 | 6,025,904 | 12.299 | 60,025,832 | 1.4x |
+| circles | fill | 7.327 | 18,825,688 | 70.252 | 188,025,616 | 7.9x |
+| circles | per-instance | 7.744 | 20,825,744 | 73.664 | 208,025,672 | 8.3x |
+| rects | uniform | 1.234 | 4,025,872 | 9.079 | 40,025,800 | 1.0x |
+| rects | radius | 2.326 | 10,025,872 | 19.051 | 100,025,800 | 2.1x |
+| rects | fill | 7.334 | 18,825,712 | 70.232 | 188,025,640 | 7.7x |
+| rects | per-instance | 8.404 | 24,825,712 | 80.350 | 248,025,640 | 8.8x |
+
+The plan target (per-instance within 2 times the uniform-style GPU row at 1,000,000) is missed: 8.3x for circles and
+8.8x for rects. The "radius" and "fill" rows attribute it: a per-instance extent on the GPU costs 1.4x and 2.1x, the
+per-instance fill costs 7.7 to 7.9x. The fill is a CPU region (a `map` over 1,000,000 vec3 colours) that
+`Marks_scene` converts element by element through `drawing_color` into packed words, because a colour attribute
+cannot be a GPU region yet. Recorded in `DEFERRED.md`; not optimized. Against the CPU path (animated circles 1M,
+153 ms), per-instance GPU circles are 2.1x faster and allocate 2.9x less.
+
 ## P4.7 attribute fusion (2026-10-11)
 
 Command: `_build/default/tools/bench_core.exe attributes`. Apple M1, OCaml 5.3.0, dune dev profile, load average 4.9 8.7 10.6

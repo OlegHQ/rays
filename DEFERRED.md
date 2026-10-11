@@ -393,6 +393,15 @@ later. Numbers and commands are in `specification/web-export/results.md`.
 - `tools/web/runtime/gpu.js` re-uploads every kernel input on each dispatch (it converts to f32 and
   `writeBuffer`s the whole array); native skips sources whose stamp is unchanged. Static sources
   should be uploaded once and kept.
+- Per-instance GPU marks (P4.13). Plan gate was per-instance circles and rects at 1,000,000 within 2 times
+  the uniform-style GPU row (`lib/rays_editor/native_qualification/bench_marks_gpu.exe`, M1, load 6 to 9).
+  Reached 8.3x (circles, 73.7 ms against 8.9) and 8.8x (rects, 80.4 against 9.1). A per-instance radius or size
+  on the GPU costs 1.4x and 2.1x; a per-instance fill costs 7.7 to 7.9x. Likely cause: a colour attribute cannot
+  be a GPU region yet, so the fill is a CPU `map` over 1,000,000 vec3 colours that `Marks_scene` converts through
+  `drawing_color` into packed words (188 MB allocated per frame). The `Marks` shader already reads float rgb
+  (fill mode 1); letting `fill`, `stroke` and `color` be `Marks.Device` buffers (a `Core_exec.device_regions`
+  name list, `Marks.validate`, `Marks_scene.words`) would remove it. Still 2.1x faster than the CPU path
+  (animated circles 1M, 153 ms).
 
 ## Lisp gaps
 
