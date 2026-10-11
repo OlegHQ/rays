@@ -26,7 +26,7 @@
  (deps (glob_files goldens/frame_*.js)
   ../../sketches/flow_vectors/sketch.rays ../../examples/basic/sketch.rays
   ../../tools/web/test/frame_semantics.mjs ../../tools/web/test/rt_shim.mjs
-  ../../tools/web/runtime/prims.js ../../tools/web/runtime/runtime.js ../../tools/web/runtime/workers.js)
+  ../../tools/web/runtime/prims.js ../../tools/web/runtime/shape2.js ../../tools/web/runtime/runtime.js ../../tools/web/runtime/workers.js)
  (libraries flow_web flow flow_ir frame_input scene_command str))
 
 (test

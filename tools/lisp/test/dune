@@ -2,6 +2,9 @@
  (deps %{bin:rays-lisp}
   %{exe:../../core_census.exe}
   %{exe:../../core_fixtures.exe}
+  %{exe:../../shape2_fixtures.exe}
+  ../../web/test/shape2.mjs
+  ../../web/runtime/shape2.js
   ../../web/test/prims.mjs
   ../../web/runtime/prims.js
   ../../web/test/runtime.mjs

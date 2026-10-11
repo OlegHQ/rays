@@ -87,7 +87,7 @@ same([value.get('t'), value.get('dt'), value.get('index'), value.get('width'), v
 // ---- the frame clock and the manual step (sketch.ml:211-212, time.ml:19) ----
 {
   let clock = 100, seen = [];
-  const program = { regions: { r: 'function region(i, u, o, s, e) { return 7; }' }, frame(input, rt) { seen.push(input); rt.slots[0] = (rt.slots[0] ?? 0) + 1; return 'done'; } };
+  const program = { regions: [{ source: 'function region(i, u, o, s, e) { return 7; }' }], frame(input, state, rt) { seen.push(input); state[0] = (state[0] ?? 0) + 1; return 'done'; } };
   const rt = R.createRuntime(program, { now: () => clock, size: [800, 600] });
   rt.input.push(dom('keydown', { key: 'x' }), rect);
   clock = 100.25; same(await rt.stepFrame(), 'done', 'step result');
@@ -95,8 +95,8 @@ same([value.get('t'), value.get('dt'), value.get('index'), value.get('width'), v
   same(seen.map(s => [s.frame, s.tick, s.t, s.dt]), [[1, 1, 0.25, 0.1], [2, 2, 5, 0.1]], 'real time');
   same([seen[0].keys, seen[1].keys, seen[0].size], [['x'], ['x'], [800, 600]], 'step input');
   same(rt.slots, [2], 'slots persist across frames');
-  same(rt.region('r')([], [], [], 0, 0), 7, 'region from the table');
-  rt.load({ regions: {}, frame() {} }); same(rt.slots, [], 'reload resets slots');
+  same(rt.region(0)([], [], [], 0, 0), 7, 'region from the table');
+  rt.load({ regions: [], frame() {} }); same(rt.slots, [], 'reload resets slots');
   const fixed = R.createRuntime(program, { fixedDt: 0.5, now: () => clock }); seen = [];
   await fixed.stepFrame(); await fixed.stepFrame();
   same(seen.map(s => [s.frame, s.tick, s.t, s.dt]), [[1, 1, 0.5, 0.5], [2, 2, 1, 0.5]], 'fixed clock: t = count * dt');
@@ -104,6 +104,31 @@ same([value.get('t'), value.get('dt'), value.get('index'), value.get('width'), v
   same([seen[2].pointer, kinds(seen[2]), seen[2].frame], [[9, 8], ['closed'], 3], 'override');
   let threw = false; try { R.createRuntime(program, { fixedDt: 0 }); } catch { threw = true; }
   same(threw, true, 'fixedDt must be positive');
+}
+
+// ---- the frame module contract: frame(input, state, rt), rt services, rollback, invoke ----
+{
+  const region = `function region(inputs, uniforms, outputs, start, stop) {
+    for (let i = start; i < stop; i++) outputs[0][i] = inputs[0][i] * uniforms[0][0] + uniforms[1][0];
+    return 0; }`;
+  const bytes = new Float64Array([1, 2, 3, 4]).buffer;
+  const program = { regions: [{ source: region, count: 4, kept: 4, inputs: [[0, 4]], uniforms: [[10]], frame: [[0, "t"]], length: 1, width: 1, kernel: null }],
+    async frame(input, state, rt) {
+      rt.marks.push({ type: "marker" });
+      const cells = state[0] ??= new Map();
+      let c = cells.get("k");
+      if (c === undefined) cells.set("k", c = { value: 5, pending: undefined, stamp: input.frame });
+      if (c.stamp !== input.frame) { if (c.pending !== undefined) c.value = c.pending; c.pending = undefined; c.stamp = input.frame; }   // as the printed `cell` helper
+      if (input.frame === 2) { c.pending = 99; throw new rt.Fail("E_TEST", "boom"); }
+      c.pending = c.value + 1;
+      return [rt.add(1n, 2n), rt.marks.length, await rt.invoke(0, []), rt.image === undefined];
+    } };
+  const rt = R.createRuntime(program, { fixedDt: 0.5, data: bytes });
+  const [sum, marks, array] = await rt.stepFrame();
+  same([sum, marks, array.width, Array.from(array.data)], [3n, 1, 1, [10.5, 20.5, 30.5, 40.5]], "frame module: prims, marks, invoke");
+  let code = null; try { await rt.stepFrame(); } catch (e) { code = e.code; }
+  same([code, rt.slots[0].get("k").pending === undefined, rt.slots[0].get("k").value], ["E_TEST", true, 6], "a thrown frame drops its pending writes");
+  same(rt.marks.length, 1, "marks are emptied before each frame");
 }
 
 if (failures.length) { console.error(failures.join('\n')); process.exit(1); }

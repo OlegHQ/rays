@@ -1,11 +1,14 @@
 // Browser runtime, part 1: input translation, the frame record, state slots and the frame loop.
 // Hand-written and the same for every sketch; the compiler emits only `program.js`.
 //
-// Program module (assumed contract, to be matched by the frame printer):
-//   export const regions = { id: "function region(inputs, uniforms, outputs, start, stop) {...}" }
-//   export async function frame(input, rt)    // input: the record below; may also be synchronous
-// `rt` (see createRuntime) owns the state slot array `rt.slots` (undefined = absent, so a read runs the
-// initializer), the region table and, when given, the worker pool. DOM access is only in `start`.
+// Program module (the export's program.js, see lib/flow_web/js.mli and tools/lisp/web_export.mli):
+//   export function frame(input, state, rt)   // async when it invokes a region; state is rt.slots
+//   export const regions = [ {source, count, kept, inputs: [[offset, length]], uniforms, frame: [[slot, fact]],
+//                             length, width, kernel} ]
+// `rt` (see createRuntime) carries every prims.js export, the mark table `rt.marks` (emptied before each frame),
+// `rt.invoke(k, [])`, `rt.image(n)`, the shape2.js tessellation, the state slot array `rt.slots` (undefined =
+// absent, so a read runs the initializer), `rt.data` (data.bin as an ArrayBuffer) and, when given, the worker
+// pool. DOM access is only in `start`.
 //
 // Logical points: coordinates are CSS pixels relative to the canvas rectangle, never device pixels.
 // Event shapes follow the native `frame/input` (lib/flow/op.ml:104-135 `event_fields`, `event_value`)
@@ -14,6 +17,8 @@
 // (Int = BigInt, Record = Map, Vec3 = Float64Array).
 
 import { checkIsolation, createPool } from './workers.js';
+import * as prims from './prims.js';
+import * as shapes from './shape2.js';
 
 // ---- event records: op.ml:104-107 event_fields, defaults at op.ml:131-134 ----
 const ZERO = { text: () => '', int: () => 0n, float: () => 0, vec3: () => new Float64Array(3), list: () => [] };
@@ -103,39 +108,71 @@ export const frameValue = f => new Map([['t', f.t], ['dt', f.dt], ['index', BigI
 // opts: now() seconds; fixedDt (finite > 0) selects the fixed clock; pool (workers.js); gpu (gpu.js); size [w,h].
 // Clock as sketch.ml:211-212: the count increments first (frames start at 1); fixed: dt, t = count*dt;
 // real time: dt = min(delta, 0.1) (time.ml:19), t = seconds since start. frame and tick are both the count.
-export function createRuntime(program, { now = () => performance.now() / 1000, fixedDt, pool = null, gpu = null, size = [1, 1] } = {}) {
+export function createRuntime(program, { now = () => performance.now() / 1000, fixedDt, pool = null, gpu = null, data = null, size = [1, 1] } = {}) {
   if (fixedDt !== undefined && !(Number.isFinite(fixedDt) && fixedDt > 0)) throw new RangeError('fixedDt must be finite and positive');
   const origin = now(), compiled = new Map();
   let last = origin, count = 0;
+  const regionOf = k => program.regions[k] ?? prims.fail('E_CORE', 'Unknown region.');
+  const load = () => { if (rt.pool) program.regions.forEach((r, k) => rt.pool.load(k, r.source)); };
+  const FACTS = { t: input => input.t, 'frame/dt': input => input.dt, 'frame/index': input => input.frame,
+    'frame/width': input => input.size[0], 'frame/height': input => input.size[1] };
   const rt = {
-    program, pool, gpu, input: new Input(size), slots: [], frameValue,
+    ...prims, ...shapes,
+    program, pool, gpu, data, input: new Input(size), slots: [], frameValue, marks: [], current: null,
     // A region as a function, compiled once per source text; calls run on the calling thread.
     region(id) {
-      const source = program.regions[id];
+      const source = regionOf(id).source;
       if (!compiled.has(source)) compiled.set(source, new Function(`${source}\nreturn region;`)());
       return compiled.get(source);
     },
+    // Region k of the export's table: its inputs are views into data.bin, its captures are fixed at export, its
+    // frame facts come from the frame being run. Collecting regions only (the export refuses the rest); the
+    // value is the packed array Packed.force returns. Native falls back to the tree walker on a non-finite value;
+    // there is none here, so it is E_KERNEL.
+    async invoke(k, args) {
+      const r = regionOf(k), input = rt.current;
+      const inputs = r.inputs.map(([offset, length]) => new Float64Array(rt.data, offset, length));
+      const facts = new Float64Array(r.length);
+      for (const [slot, name] of r.frame) facts[slot] = Number(FACTS[name](input));
+      const uniforms = [...r.uniforms.map(u => Float64Array.from(u)), facts];
+      const outputs = [rt.pool ? rt.pool.alloc(r.kept * r.width) : new Float64Array(r.kept * r.width)];
+      const status = rt.pool ? await rt.pool.collect(k, inputs, uniforms, outputs, r.count)
+        : rt.region(k)(inputs, uniforms, outputs, 0, r.count);
+      if (status !== 0) prims.fail('E_KERNEL', 'Kernel needs reference evaluation.');
+      return new prims.PArray(r.width, outputs[0]);
+    },
+    // The host image resolver (plan image nodes): none on the web, as a native frame without one.
+    image: () => prims.fail('E_IMAGE', 'Drawing images need an environment-owned image resolver.'),
     // Reload (P6.7): a new program, fresh slots, the canvas and the counters kept.
-    load(next) { rt.program = next; rt.slots = []; compiled.clear(); },
+    load(next) { rt.program = next; rt.slots = []; compiled.clear(); load(); },
     // Run one frame. `override` replaces fields of the live snapshot (Frame_input.t fields, `events` as
-    // eventRecord Maps); the live events are drained either way. Resolves to program.frame's result.
+    // eventRecord Maps); the live events are drained either way. Resolves to program.frame's result. A frame that
+    // throws leaves no pending state write behind, as native `Eval.transaction` rolls them back.
     async stepFrame(override) {
       const t = now(), delta = Math.min(t - last, 0.1);
       last = t; count++;
       rt.gpu?.poll();   // gpu.js: status words of last frame's dispatches
       const dt = fixedDt ?? delta;
       const input = { ...rt.input.snapshot(), t: fixedDt !== undefined ? count * dt : t - origin, dt, frame: count, tick: count, ...override };
-      return rt.program.frame(input, rt);
+      rt.marks.length = 0;
+      rt.current = input;
+      try { return await rt.program.frame(input, rt.slots, rt); }
+      catch (error) {
+        for (const cells of rt.slots) for (const c of cells?.values() ?? [])
+          if (c.pending !== undefined && (c.stamp === input.frame || c.stamp === input.tick)) c.pending = undefined;
+        throw error;
+      }
     },
   };
+  load();
   return rt;
 }
 
 // ---- the DOM wiring: the only place that touches the page ----
-export async function start(canvas, program, { fixedDt, pool, win = globalThis } = {}) {
+export async function start(canvas, program, { fixedDt, pool, data = null, win = globalThis } = {}) {
   if (!checkIsolation(win)) return null;
   const rect = () => canvas.getBoundingClientRect();
-  const rt = createRuntime(program, { fixedDt, pool: pool ?? await createPool(), size: [Math.round(rect().width), Math.round(rect().height)] });
+  const rt = createRuntime(program, { fixedDt, data, pool: pool ?? await createPool(), size: [Math.round(rect().width), Math.round(rect().height)] });
   const push = e => rt.input.push(e, rect());
   for (const type of ['pointermove', 'pointerdown', 'pointerup', 'pointercancel']) canvas.addEventListener(type, e => {
     if (type === 'pointerdown') canvas.setPointerCapture?.(e.pointerId);
