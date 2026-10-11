@@ -37,8 +37,20 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   optional-parameter removal are covered only by the build and the window-free tests.
 - `lib/pxui/fixtures/kit_panel_2x.png` was regenerated after six widgets were deleted and
   was checked by eye only.
-- The gallery shapes rebuilt in Lisp (`fibonacci`, `disc`, `gyroid`, the star as a
-  `sop/sweep`) were not compared visually with the old OCaml ones.
+- Repaired and checked 2026-10-11: the gallery shape checker uses independent
+  OCaml inputs from `923dcecf^` and extracts the current authored Lisp graphs.
+  Fibonacci, disc and gyroid produce identical packed GPU vertices, indices,
+  attributes and transform uniforms; small float64 intermediate differences
+  do not survive packing. The star comparison exposed a collapsed axis:
+  Sweep uses a local XY profile, while the gallery supplied XZ points. Its
+  profile is now `[-z x 0]`, with a negative-Y backbone matching the old
+  polygon's extrusion normal. Bounds, surface area and signed volume agree
+  with the original polygon extrusion. The portable checker passes both
+  independently and with the pending compiler work; typechecking and the
+  dependency gate pass. `test_gallery_shapes_native` compares complete RGBA
+  captures from four views per shape and requires visible geometry and
+  background. Its actual attempt fails at Metal device acquisition. The
+  pixel comparisons remain unverified; no visual match is claimed here.
 
 ## Tests that got weaker
 

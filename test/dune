@@ -48,6 +48,22 @@
  (libraries rays rays_editor editor_document flow)
  (action (setenv SDL_AUDIODRIVER dummy (run %{test}))))
 
+(executable
+ (name test_gallery_shapes)
+ (modules test_gallery_shapes)
+ (libraries rays rdk rdk_rays sop lisp_sop flow))
+
+(rule
+ (aliases runtest test_gallery_shapes)
+ (deps ../examples/sop_gallery/gallery.rays)
+ (action (run %{exe:test_gallery_shapes.exe})))
+
+(rule
+ (aliases runtest-native test_gallery_shapes_native)
+ (locks %{workspace_root}/smoke_window)
+ (deps ../examples/sop_gallery/gallery.rays)
+ (action (run %{exe:test_gallery_shapes.exe} native)))
+
 (test
  (name test_workspace_images)
  (modules test_workspace_images)

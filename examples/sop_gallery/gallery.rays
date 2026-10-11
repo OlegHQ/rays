@@ -105,11 +105,11 @@
                    (sop/delete_attributes (sop/transform node :translate [x 0 0])
                                           :point_pattern "*" :vertex_pattern "*"
                                           :primitive_pattern "*" :detail_pattern "*"))
-           ; the star prism: 18 points alternating radius 1 and 0.45 (cos (pi i) is +1, -1), swept 0.65 up
+           ; the star prism: local XY profile [-z x 0], swept 0.65 down to match the original polygon's -Y normal
            star (sop/curve (for [i (range 18)]
                   (let* [a (/ (* pi i) 9.0) r (+ 0.725 (* 0.275 (cos (* pi i))))]
-                    [(* r (cos a)) 0.0 (* r (sin a))])) :closed true)
-           extruded (sop/sweep (sop/curve (list [0.0 0.0 0.0] [0.0 0.65 0.0])) star :caps true)
+                    [(- 0.0 (* r (sin a))) (* r (cos a)) 0.0])) :closed true)
+           extruded (sop/sweep (sop/curve (list [0.0 0.0 0.0] [0.0 -0.65 0.0])) star :caps true)
            lathe (sop/revolve (sop/curve (list [0.05 -1.2 0.0] [0.127 -1.1889 0.0] [0.2402 -1.1808 0.0] [0.3741 -1.1703 0.0] [0.5127 -1.1522 0.0] [0.6404 -1.1213 0.0] [0.7414 -1.0723 0.0] [0.8 -1.0 0.0] [0.8061 -0.8974 0.0] [0.7704 -0.7668 0.0] [0.7082 -0.6169 0.0] [0.6347 -0.4566 0.0] [0.5653 -0.2945 0.0] [0.5153 -0.1394 0.0] [0.5 0.0 0.0] [0.5309 0.1283 0.0] [0.5983 0.2548 0.0] [0.6854 0.3778 0.0] [0.7758 0.4956 0.0] [0.8528 0.6064 0.0] [0.8997 0.7085 0.0] [0.9 0.8 0.0] [0.8417 0.8816 0.0] [0.7356 0.9551 0.0] [0.5991 1.0204 0.0] [0.4499 1.0776 0.0] [0.3052 1.1265 0.0] [0.1828 1.1673 0.0] [0.1 1.2 0.0])) :divisions 36 :caps true :cap_group "")
            swept (sop/polywire (sop/resample (sop/curve (for [i (range 72)]
                   (let* [u (/ i 71.0) a (* (* u 4.0) pi)]
