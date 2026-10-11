@@ -58,8 +58,14 @@ let to_region t : Core.Region.t =
    stages = t.stages; fusion = t.fusion; dynamic = t.dynamic; count_source = t.count_source;
    body = t.body; binding_fn = t.binding_fn; sites = t.sites}
 
-exception Unsupported
+exception Unsupported = Core_region.Unsupported
 exception Compile_refused of Flow.Diagnostic.t
+let width_of = Core_region.width_of
+let components = Core_region.components
+let captured_value = Core_region.captured_value
+let count_of = Core_region.count_of
+let count_of_sources = Core_region.count_of_sources
+let reads_names = Core_region.reads_names
 
 let zipped t = t.iteration = Zip || Array.length t.sources = 1
 
@@ -94,70 +100,6 @@ let gpu_refusals t =
   if !bad_constant then
     refuse "Nonfinite float32 shader constants require reference evaluation.";
   List.rev !reasons
-
-let width_of ty = match Flow.Packed_ops.scalar_width ty with
-  | Some width -> width | None -> raise Unsupported
-let components = function
-  | E.Vec2 (x,y) -> [|x;y|] | Vec3 (x,y,z) -> [|x;y;z|]
-  | Vec4 (x,y,z,w) -> [|x;y;z;w|] | value -> [|V.num value|]
-
-let captured_value bindings name fields =
-  let value = match List.assoc_opt name bindings with Some v -> v | None -> raise Unsupported in
-  List.fold_left (fun value field -> match value, field with
-    | E.Record fs, field | Struct (_, _, fs), field ->
-        (match List.assoc_opt field fs with Some v -> v | None -> raise Unsupported)
-    | E.Vec3 (x, _, _), "x" | Vec3 (_, x, _), "y" | Vec3 (_, _, x), "z" -> E.Float x
-    | E.Vec2 (x,_), "x" | Vec2 (_,x), "y" -> E.Float x
-    | E.Vec4 (x,_,_,_), "x" | Vec4 (_,x,_,_), "y"
-    | Vec4 (_,_,x,_), "z" | Vec4 (_,_,_,x), "w" -> E.Float x
-    | _ -> raise Unsupported) value fields
-
-let count_of residual (s : W.term) = match s.node with
-  | W.Ref_binding (name, fields) ->
-      (try match captured_value (E.Private.residual_view residual).bindings name fields with
-       | E.Float_array _ | Vec2_array _ | Vec3_array _ | Vec4_array _ as v -> Some (V.array_length v) | _ -> None
-       with Unsupported -> None)
-  | Op {op = ("array/float" | "array/vec3" | "array/range"); args; _} ->
-      (match List.assoc_opt "count" args with
-       | Some {node = W.Lit (Param.Int_value n); _} when n >= 0 -> Some n | _ -> None)
-  | _ -> None
-
-let count_of_sources iteration counts =
-  let combine a b = match iteration with Zip -> min a b | Product ->
-    if b <> 0 && a > max_int / b then raise Unsupported else a * b in
-  if counts = [||] || (iteration = Product && Array.exists ((=) (Some 0)) counts) then Some 0
-  else if Array.for_all Option.is_some counts then
-    Some (Array.fold_left (fun n c -> combine n (Option.get c))
-      (if iteration = Zip then max_int else 1) counts) else None
-
-let rec pattern_names = function
-  | W.Name name -> [name] | W.Keys names -> names | W.Seq ps -> List.concat_map pattern_names ps
-let rec reads_names names (term : W.term) =
-  let any = List.exists (reads_names names) and fields fs = List.map snd fs in
-  match term.node with
-  | W.Ref_binding (name, _) -> List.mem name names
-  | Fn {params; body; _} ->
-      let bound = List.concat_map (fun (p, _) -> pattern_names p) params in
-      reads_names (List.filter (fun n -> not (List.mem n bound)) names) body
-  | Let (bindings, body) ->
-      let rec loop names = function
-        | [] -> reads_names names body
-        | (p, t) :: rest -> reads_names names t ||
-            loop (List.filter (fun n -> not (List.mem n (pattern_names p))) names) rest in
-      loop names bindings
-  | Op {args; _} | Call {args; _} | Record args -> any (fields args)
-  | Call_fn {args; _} -> any args
-  | Graph_ref {inputs; _} -> any (fields inputs)
-  | Vec ts | List_lit ts | Str ts | List_op (_, ts) | Hof (_, ts) -> any ts
-  | Loop {accs; clauses; body; _} -> any (body :: fields (accs @ clauses))
-  | State {init; step; _} -> any [init; step]
-  | If (c, a, b) -> any [c; a; b]
-  | Cond (arms, d) -> any (d :: List.concat_map (fun (a, b) -> [a; b]) arms)
-  | Case (s, arms, d) -> any (s :: d :: fields arms)
-  | Get (body, _) | Expanded {body; _} -> reads_names names body
-  | Bypass call -> Option.fold ~none:false ~some:(reads_names names) (W.bypass_input call)
-  | Assoc (r, args) -> any (r :: fields args)
-  | Lit _ | Text _ | Nil | Time | Fn_ref _ -> false
 
 let rec compile_impl ?(fusion = true) ?(dynamic = false)
     ?(count_source = fun _ _ -> None) residual (term : W.term) =
