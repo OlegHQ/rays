@@ -742,7 +742,8 @@ Phase 2
   Done 2026-10-11. The live-or-dynamic `Uniform` rule and `captured_value` were already part of `Core_region.lower` (P2.3: a template is `lower ~dynamic:true`). `rebind` now works on a region (`Core_region.rebind`); `Packed.rebind` delegates to it through `to_region`/`of_region`, and the term-based copy is deleted (it is not a term walker). `test_frame_kernel` template counts (2 compiled, 10 rebound, 12 executed; 1/5/6) are unchanged with the switch on and off; all of `@lib/flow_ir/runtest` passes with the default flipped.
 - [x] P2.6 S
   Done 2026-10-11. `Core_fuse.fuse` (new module) ports `fuse_maps` to regions with the same rules: Collect + Zip children of equal static count or origin, a shared-instruction table (`Marshal` key, so equal instructions share a register), the 64-register limit declining to the unfused region, count/origin recorded even without a fusable child. With `core_regions` on, `compile_impl` is `Core_region.lower` then `Core_fuse.fuse` then `of_region`; the old `fuse_maps` serves the switch-off path until P2.10. P2.1 snapshots identical with the switch on (dune reruns both snapshot tests with it); all of `@lib/flow_ir/runtest` and `@lib/flow_gpu/runtest` pass with the default flipped.
-- [ ] P2.7 H
+- [x] P2.7 H
+  Done 2026-10-11 with `core_regions` temporarily defaulted on (not committed): `@lib/flow_ir/runtest`, `@lib/flow_gpu/runtest` (three Metal goldens) and `@runtest-native` all passed (exit 0, including `runtime_live_resize`); `git status` shows `lib/flow_gpu/goldens` and the P2.1 snapshots untouched.
 - [ ] P2.8 H
 - [ ] P2.9 S
 - [ ] P2.R R
