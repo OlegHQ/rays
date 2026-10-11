@@ -2,6 +2,7 @@ let rec files directory = Array.to_list (Sys.readdir directory) |> List.sort Str
   |> List.concat_map (fun name -> let path = Filename.concat directory name in
     if Sys.is_directory path then files path else if Filename.check_suffix name ".rays" then [path] else [])
 let () =
+  Rays_editor.Drawing.core_drawing := (Sys.getenv_opt "RAYS_CORE_DRAWING" = Some "1");
   let root = if Array.length Sys.argv > 1 then Sys.argv.(1) else ".." in
   let directory = Sys.getenv_opt "RAYS_WORKSPACE_PIXELS" in
   let paths = files (Filename.concat root "examples") @ files (Filename.concat root "sketches")

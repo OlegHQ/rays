@@ -34,8 +34,30 @@ type source = {
   iter : iteration list; span : Flow.Diagnostic.span option;
 }
 
+(** Drawing statements: operands are locals holding the operator's own inputs, with every
+    default already resolved by the lowering ([Core_draw]); the executor checks and encodes them. *)
+type mark = Rect | Circle | Line
+type transform = Translate | Rotate | Scale
+type path = Rounded_rect | Polygon | Polyline
+type draw =
+  | Background of int  (** colour *)
+  | Point of { at : int; ink : int }
+  | Mark of { mark : mark; args : (string * int) list }
+      (** One mark; the arguments are the operator's own input names. *)
+  | Batch of { mark : mark; args : (string * int) list }
+      (** A mark set; the count is that of [positions] (of [from] for lines). *)
+  | Points of { positions : int; ink : int }
+  | Path of { path : path; args : (string * int) list }
+      (** Indexed path geometry from the shared tessellation. *)
+  | Text_run of { at : int; text : int; ink : int; size : int }
+  | Image of { source : Flow.Ty.t * int; at : int; scale : int; angle : int }
+      (** [source] is the plan node of the image, resolved by the host. *)
+  | Push of transform * int  (** open a view transform on its offset, angle or factor *)
+  | Pop
+
 type statement = { id : int; source : source; node : statement_node }
 and statement_node =
+  | Draw of draw
   | Assign of int * expr
   | Reset_call of int
   | If of { condition : int; yes : statement list; no : statement list }

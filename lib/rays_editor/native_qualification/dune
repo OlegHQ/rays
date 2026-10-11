@@ -5,10 +5,12 @@
 (copy_files ../workspace_images.ml)
 (copy_files ../workspace_images.mli)
 (copy_files ../workspace_resources.ml)
+(copy_files ../marks_scene.ml)
+(copy_files ../marks_scene.mli)
 
 (executable
  (name test_workspace_gpu_native)
- (modules test_workspace_gpu_native drawing workspace_gpu workspace_images workspace_resources)
+ (modules test_workspace_gpu_native drawing workspace_gpu workspace_images workspace_resources marks_scene)
  (libraries rays flow flow_ir flow_sop flow_gpu rays_execution scene_command lru runtime_resources ogpu sop_catalog))
 
 (rule

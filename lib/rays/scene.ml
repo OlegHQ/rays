@@ -9,7 +9,7 @@ and ui_node={ui:Scene_command.Ui_batch.t;
 and node=Group of t|Clear of Color.t|Geometry of Scene_command.Render_ir.geometry|Text of text_node|Image of image_node
  |Display_list of display_list_node|Ui of ui_node|Shapes of Scene_command.Shape_batch.t
  |View3d of view3d_node|Region of int*int*int*int*bool*int|Layer_break
- |Translate of int*int*t|Rotate of float*t|Scale of float*float*t|Clip of int*int*int*int*t|Blend of blend*t
+ |Translate of int*int*t|Rotate of float*t|Scale of float*float*t|Affine of Scene_command.Render_ir.transform*t|Clip of int*int*int*int*t|Blend of blend*t
 and t=node list
 let empty=[]let group x=Group x let clear c=Clear c
 let default_color=Color.white
@@ -124,6 +124,8 @@ let clip ~at:(x,y)~w~h nodes=Clip(x,y,w,h,nodes)
 module Private=struct
  let display_list=display_list
  let shapes batch=Shapes batch
+ let geometry geometry=Geometry geometry
+ let transform transform nodes=Affine(transform,nodes)
   module Ui_batch = Scene_command.Ui_batch
  let layer_break=Layer_break
  let ui ?(images=[]) batch=
@@ -211,12 +213,13 @@ module Private=struct
    |Group g::xs->nodes g;nodes xs
    |Translate(x,y,g)::xs->emit builder(Scene_command.Render_ir.Push_transform{xx=1.;xy=0.;yx=0.;yy=1.;tx=float x;ty=float y});nodes g;emit builder Scene_command.Render_ir.Pop_transform;nodes xs
    |Scale(x,y,g)::xs->emit builder(Scene_command.Render_ir.Push_transform{xx=x;xy=0.;yx=0.;yy=y;tx=0.;ty=0.});nodes g;emit builder Scene_command.Render_ir.Pop_transform;nodes xs
+   |Affine(t,g)::xs->emit builder(Scene_command.Render_ir.Push_transform t);nodes g;emit builder Scene_command.Render_ir.Pop_transform;nodes xs
    |Rotate(a,g)::xs->let c=cos a and s=sin a in emit builder(Scene_command.Render_ir.Push_transform{xx=c;xy=s;yx=(-.s);yy=c;tx=0.;ty=0.});nodes g;emit builder Scene_command.Render_ir.Pop_transform;nodes xs
    |Clip(x,y,w,h,g)::xs->emit builder(Scene_command.Render_ir.Push_clip{x=float x;y=float y;width=float w;height=float h});nodes g;emit builder Scene_command.Render_ir.Pop_clip;nodes xs
    |Blend(mode,g)::xs->let mode=match mode with Replace->Scene_command.Render_ir.Replace|Alpha->Alpha|Add->Add|Multiply->Multiply in emit builder(Scene_command.Render_ir.Set_blend mode);nodes g;emit builder(Scene_command.Render_ir.Set_blend Scene_command.Render_ir.Alpha);nodes xs
    |(View3d _|Ui _|Region _|Layer_break)::xs->nodes xs in
   nodes scene;Array.sub builder.values 0 builder.length
- let rec text_regions scene=List.concat_map(function Region(x,y,w,h,f,c)->[x,y,w,h,f,c]|Group g|Translate(_,_,g)|Rotate(_,g)|Scale(_,_,g)|Clip(_,_,_,_,g)|Blend(_,g)->text_regions g|_->[])scene
+ let rec text_regions scene=List.concat_map(function Region(x,y,w,h,f,c)->[x,y,w,h,f,c]|Group g|Translate(_,_,g)|Rotate(_,g)|Scale(_,_,g)|Affine(_,g)|Clip(_,_,_,_,g)|Blend(_,g)->text_regions g|_->[])scene
  let image_resources ?(density=1) scene=
    let rec nodes acc=function
     |[]->acc
@@ -224,7 +227,7 @@ module Private=struct
     |Text node::rest->let image=text_image ~density node in nodes((Image.Private.identity image,Rays_execution.Image(Image.Private.resource image))::acc)rest
     |Display_list node::rest->nodes(List.rev_append node.resources acc)rest
     |Group nested::rest|Translate(_,_,nested)::rest|Rotate(_,nested)::rest
-    |Scale(_,_,nested)::rest|Clip(_,_,_,_,nested)::rest|Blend(_,nested)::rest->
+    |Scale(_,_,nested)::rest|Affine(_,nested)::rest|Clip(_,_,_,_,nested)::rest|Blend(_,nested)::rest->
         nodes(nodes acc nested)rest
     |_::rest->nodes acc rest in
    List.rev(nodes[]scene)
@@ -272,6 +275,7 @@ module Private=struct
      |Translate(x,y,nodes)->add(fun node->wrap(Translate(x,y,[node])))false acc nodes
      |Rotate(angle,nodes)->add(fun node->wrap(Rotate(angle,[node])))false acc nodes
      |Scale(x,y,nodes)->add(fun node->wrap(Scale(x,y,[node])))false acc nodes
+     |Affine(t,nodes)->add(fun node->wrap(Affine(t,[node])))false acc nodes
      |Clip(x,y,w,h,nodes)->add(fun node->wrap(Clip(x,y,w,h,[node])))false acc nodes
      |Blend(mode,nodes)->add(fun node->wrap(Blend(mode,[node])))false acc nodes
      |node->Two_node(wrap node)::acc)acc nodes in
@@ -314,6 +318,7 @@ module Private=struct
    |Rotate(la,left),Rotate(ra,right)->la=ra&&same_native_scene left right
    |Scale(lx,ly,left),Scale(rx,ry,right)->lx=rx&&ly=ry&&
        same_native_scene left right
+   |Affine(left_t,left),Affine(right_t,right)->left_t=right_t&&same_native_scene left right
    |Clip(lx,ly,lw,lh,left),Clip(rx,ry,rw,rh,right)->
        lx=rx&&ly=ry&&lw=rw&&lh=rh&&same_native_scene left right
    |Blend(lm,left),Blend(rm,right)->lm=rm&&same_native_scene left right
@@ -370,6 +375,7 @@ module Private=struct
    |Translate(x,y,nodes)->Hashtbl.hash(8,x,y)lxor hash_native_scene nodes
    |Rotate(angle,nodes)->Hashtbl.hash(9,angle)lxor hash_native_scene nodes
    |Scale(x,y,nodes)->Hashtbl.hash(10,x,y)lxor hash_native_scene nodes
+   |Affine(t,nodes)->Hashtbl.hash(14,t)lxor hash_native_scene nodes
    |Clip(x,y,w,h,nodes)->Hashtbl.hash(11,x,y,w,h)lxor hash_native_scene nodes
    |Blend(mode,nodes)->Hashtbl.hash(12,mode)lxor hash_native_scene nodes
    |View3d node->Hashtbl.hash(13,node.viewport)
@@ -419,7 +425,7 @@ module Private=struct
    |Image node::rest->
        Result.bind(Runtime_resources.Image.Private.gpu_snapshot
          (Image.Private.resource node.image))(fun _->validate_native_images rest)
-   |(Group nested|Translate(_,_,nested)|Rotate(_,nested)|Scale(_,_,nested)
+   |(Group nested|Translate(_,_,nested)|Rotate(_,nested)|Scale(_,_,nested)|Affine(_,nested)
      |Clip(_,_,_,_,nested)|Blend(_,nested))::rest->
        Result.bind(validate_native_images nested)(fun()->validate_native_images rest)
    |Display_list node::rest->Result.bind(validate_native_resources node.resources)
@@ -585,7 +591,7 @@ module Private=struct
     |[]->true
     |View3d view::rest->Scene3.Private.cacheable view.scene&&nodes rest
     |Group nested::rest|Translate(_,_,nested)::rest|Rotate(_,nested)::rest
-    |Scale(_,_,nested)::rest|Clip(_,_,_,_,nested)::rest|Blend(_,nested)::rest->
+    |Scale(_,_,nested)::rest|Affine(_,nested)::rest|Clip(_,_,_,_,nested)::rest|Blend(_,nested)::rest->
         nodes nested&&nodes rest
     |Display_list _::rest|Ui _::rest|Shapes _::rest|Region _::rest|Layer_break::rest|Clear _::rest
     |Geometry _::rest|Text _::rest
@@ -644,7 +650,7 @@ module Private=struct
            Option.iter Image.destroy node.rendered3d;
            node.rendered3d <- None
        | Group nodes | Translate (_, _, nodes) | Rotate (_, nodes)
-       | Scale (_, _, nodes) | Clip (_, _, _, _, nodes) | Blend (_, nodes) ->
+       | Scale (_, _, nodes) | Affine (_, nodes) | Clip (_, _, _, _, nodes) | Blend (_, nodes) ->
            release nodes
        | Clear _ | Geometry _ | Image _
        | Display_list _ | Ui _ | Shapes _ | Region _

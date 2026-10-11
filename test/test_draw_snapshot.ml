@@ -4,7 +4,10 @@
    does; frames 0..30 are rendered in sequence with one evaluation state at a
    pinned size and pointer, with no GPU callback and no image callback. Frames
    0, 1 and 30 are written as the SHA-256 of Render_ir.serialize of the scene,
-   or as the diagnostic code when the frame cannot be drawn headless. *)
+   or as the diagnostic code when the frame cannot be drawn headless.
+   The digest covers Image resource ids, which come from the process-global
+   texture counter (rendered text allocates two per new string), so each
+   workspace must run in its own process, as the dune rule does. *)
 
 let width = 640
 let height = 480
@@ -65,9 +68,14 @@ let lines (directory, name) =
       | Error code -> Printf.sprintf "frame %d error %s\n" index code)) frames
   |> String.concat ""
 
-(* Usage: test_draw_snapshot.exe examples_audio  (prints that workspace's snapshot) *)
+(* Usage: test_draw_snapshot.exe [--core|--arms] examples_audio  (prints that workspace's snapshot) *)
 let () =
-  match List.tl (Array.to_list Sys.argv) with
+  let args = List.tl (Array.to_list Sys.argv) in
+  let args = match args with
+    | "--core" :: rest -> Rays_editor.Drawing.core_drawing := true; rest
+    | "--arms" :: rest -> Rays_editor.Drawing.core_drawing := false; rest
+    | _ -> args in
+  match args with
   | [] -> failwith "usage: test_draw_snapshot.exe <directory>_<name> ..."
   | names ->
       List.iter (fun name ->

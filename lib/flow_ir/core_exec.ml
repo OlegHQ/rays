@@ -6,6 +6,7 @@ type state = {
   values : E.value array; mutable builders : bool ref option array;  (* allocated by the first builder, so a call that builds nothing pays nothing *) calls : int array;
   live : Frame_input.t; root : E.residual option;
   force : (Packed.t -> (E.value, Flow.Diagnostic.t) result) option;
+  marks : Core_marks.sink option;  (* the table the draw statements of a draw program fill *)
 }
 (* A straight-line program of Float arithmetic on the frame time is one tree of unboxed
    operations. It only answers when every step is a finite Float; any other outcome
@@ -291,7 +292,7 @@ let prepare ?(fused=true) (program : C.program) =
   let bump n = writes.(n)<-writes.(n)+1 in
   let rec count statements = List.iter (fun (s : C.statement) -> match s.node with
     | Assign (n,_) | State_write {value=n;_} | Invoke {result=n;_} -> bump n
-    | Reset_call _ | Store _ -> ()
+    | Reset_call _ | Store _ | Draw _ -> ()
     | If {yes;no;_} -> count yes; count no
     | Iterate {index;item;body;_} -> bump index; bump item; count body
     | Counted {count=c;index;item;init;body;_} -> bump c; bump index; bump item; count init; count body
@@ -338,6 +339,11 @@ let prepare ?(fused=true) (program : C.program) =
            | `None -> if Array.length st.builders>0 then st.builders.(n)<-None);
           st.values.(n)<-v
     | Reset_call slot -> fun st -> st.calls.(slot)<-0
+    | Draw d ->
+        let run = Core_marks.compile d in
+        fun st -> (match st.marks with
+          | Some sink -> run st.values sink
+          | None -> V.fail "E_CORE" "Drawing statements need a mark table.")
     | If {condition;yes;no} ->
         let yes=block yes and no=block no in
         fun st -> (if V.truthy st.values.(condition) then yes else no) st
@@ -424,7 +430,7 @@ let general root force prepared live =
         let release () = if pooled then Atomic.set prepared.pool (Some values) in
         let st = {values;
           builders=[||]; calls=Array.make program.call_slots 0;
-          live; root; force} in
+          live; root; force; marks=None} in
         let result = try prepared.body st;
           if Array.length program.results<>1 then V.fail "E_CORE" "Expected one core result.";
           Ok st.values.(program.results.(0))
@@ -452,3 +458,22 @@ let execute ?root ?force prepared ~live = match root with
        | Error _ -> restore (); E.Private.rerun r)
 
 let run ?root ?force program ~live = execute ?root ?force (prepare program) ~live
+
+module Buffers = Core_marks.Buffers
+
+(* A draw program (Core_draw.lower) fills a mark table. A failure is the core's own
+   diagnostic: there is no walker for a drawing, so nothing is rerun. *)
+let draw ?root ?force ?image prepared ~live ~size ~buffers =
+  match Frame_input.validate live with
+  | Error message -> Error (Flow.Diagnostic.error ~code:"E_FRAME" message)
+  | Ok () ->
+      let program=prepared.program in
+      let sink=Core_marks.sink ?image:(Option.map (fun resolve value ->
+        match resolve value with
+        | Ok resource -> resource
+        | Error (d : Flow.Diagnostic.t) -> raise (V.Fail (d.code,d.message,d.span))) image) ~size buffers in
+      let st = {values=Array.make (Array.length program.locals) E.No_geo;
+        builders=[||]; calls=Array.make program.call_slots 0; live; root; force; marks=Some sink} in
+      (try prepared.body st; Ok (Core_marks.finish sink)
+       with V.Fail (code,message,span) -> Error (Flow.Diagnostic.error ?span ~code message)
+         | Not_found | Invalid_argument _ | Failure _ -> Error (Flow.Diagnostic.error ~code:"E_CORE" "Invalid core program."))

@@ -34,8 +34,26 @@ type source = {
   iter : iteration list; span : Flow.Diagnostic.span option;
 }
 
+(* Drawing statements: operands are locals holding the operator's own inputs, with every
+   default already resolved by the lowering (Core_draw); the executor checks and encodes them. *)
+type mark = Rect | Circle | Line
+type transform = Translate | Rotate | Scale
+type path = Rounded_rect | Polygon | Polyline
+type draw =
+  | Background of int
+  | Point of { at : int; ink : int }
+  | Mark of { mark : mark; args : (string * int) list }
+  | Batch of { mark : mark; args : (string * int) list }
+  | Points of { positions : int; ink : int }
+  | Path of { path : path; args : (string * int) list }
+  | Text_run of { at : int; text : int; ink : int; size : int }
+  | Image of { source : Flow.Ty.t * int; at : int; scale : int; angle : int }
+  | Push of transform * int
+  | Pop
+
 type statement = { id : int; source : source; node : statement_node }
 and statement_node =
+  | Draw of draw
   | Assign of int * expr
   | Reset_call of int
   | If of { condition : int; yes : statement list; no : statement list }
@@ -155,6 +173,25 @@ let pp fmt p =
     | Fields xs -> out "record{"; separated (fun (name,n) -> out "%S:" name; local n) xs; out "}"
     | Items ns -> out "list["; separated local ns; out "]"
     | Field (n,name) -> local n; out ".%S" name in
+  let draw d = match d with
+    | Background c -> out "draw/background "; local c
+    | Point {at;ink} -> out "draw/point at="; local at; out " ink="; local ink
+    | Mark {mark;args} | Batch {mark;args} ->
+        let plural = match d with Batch _ -> "s" | _ -> "" in
+        out "draw/%s%s" (match mark with Rect -> "rect" | Circle -> "circle" | Line -> "line") plural;
+        List.iter (fun (name,n) -> out " %s=" name; local n) args
+    | Points {positions;ink} -> out "draw/points positions="; local positions; out " ink="; local ink
+    | Path {path;args} ->
+        out "draw/%s" (match path with Rounded_rect -> "rounded_rect" | Polygon -> "polygon" | Polyline -> "polyline");
+        List.iter (fun (name,n) -> out " %s=" name; local n) args
+    | Text_run {at;text;ink;size} ->
+        out "draw/text at="; local at; out " text="; local text; out " ink="; local ink; out " size="; local size
+    | Image {source=(ty,id);at;scale;angle} ->
+        out "draw/image %s#%d at=" (Flow.Ty.to_string ty) id; local at; out " scale="; local scale;
+        out " angle="; local angle
+    | Push (t,n) ->
+        out "push %s " (match t with Translate -> "translate" | Rotate -> "rotate" | Scale -> "scale"); local n
+    | Pop -> out "pop" in
   let path xs = out "["; separated (fun s -> out "%S" s) xs; out "]" in
   let source s =
     out " @"; path s.site; out " owner="; path s.owner; out " instance=%d iter=[" s.instance;
@@ -182,7 +219,8 @@ let pp fmt p =
           nested "init" init; out " value="; local initial
       | State_peek {slot;found;value} -> local found; out " = state[%d] pending " slot; local value
       | State_write {slot;value} -> out "state[%d] <- " slot; local value
-      | Invoke {region;args;result} -> local result; out " = region[%d](" region; separated local args; out ")");
+      | Invoke {region;args;result} -> local result; out " = region[%d](" region; separated local args; out ")"
+      | Draw d -> draw d);
       source s.source; out "\n") xs in
   out "core\n";
   if p.call_slots > 0 then out "  calls %d\n" p.call_slots;

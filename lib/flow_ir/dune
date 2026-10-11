@@ -1,7 +1,7 @@
 (library
  (name flow_ir)
  (public_name rays.flow_ir)
- (modules operators packed core core_region core_fuse core_lower core_exec flow_ir)
+ (modules operators packed core core_region core_fuse core_lower core_exec flow_ir core_draw core_marks)
  (libraries flow param rays_math scene_command))
 
 (test
@@ -87,6 +87,18 @@
  (name test_core_errors)
  (modules test_core_errors)
  (libraries flow_ir flow))
+
+(test
+ (name test_core_draw)
+ (modules test_core_draw)
+ (deps core_draw.expected)
+ (libraries flow_ir flow))
+
+(test
+ (name test_core_marks)
+ (modules test_core_marks)
+ (deps core_marks.expected)
+ (libraries flow_ir flow scene_command))
 
 (test
  (name test_region_snapshot)

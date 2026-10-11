@@ -663,8 +663,9 @@ include the geometry entry needed by P3.6 and its native serialization oracle.
 No target reimplements tessellation or rasterizes these paths on a CPU.
 
 `E_DRAW_LENGTH` guards all per-instance attribute cardinalities; missing
-inputs are `E_DRAW_INPUT`, unknown draw kinds are `E_DRAW_KIND`, and invalid
-coordinates/transforms are `E_DRAW_RANGE`. Color decoding keeps
+inputs are `E_DRAW_INPUT`, unknown draw kinds are `E_DRAW_KIND`, invalid
+integer coordinates are `E_DRAW_RANGE`, and a non-finite rotate angle or scale
+factor is `E_NONFINITE` (as `drawing.ml` raises it). Color decoding keeps
 `E_DRAW_COLOR` and its type errors. A count is an element count in every
 attribute buffer. Resource entries resolve through an owned host resource
 table; they never silently disappear when a resolver is absent.
