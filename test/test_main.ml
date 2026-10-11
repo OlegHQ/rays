@@ -31,6 +31,7 @@ let tests = [
   "test_workspace_source", Test_workspace_source.run;
   "test_bloom_studio", Test_bloom_studio.run;
   "dependency_gate", Dependency_gate.run;
+  "sop_render_parity", Sop_render_parity.run;
 ]
 
 let () =

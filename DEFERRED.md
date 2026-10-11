@@ -6,10 +6,7 @@ deleted, not ticked.
 ## Tests that got weaker
 
 - 2026-10-11: every test file was compared with its version before `923dcecf` and the tests
-  whose subject survived are back. Four things were not restored and are the owner's call:
-  - `test/sop_render_parity.ml` (23 SOP graphs cooked at one and four domains and exported as
-    PNG, bytes compared) was written with the typed SOP constructors. It is not re-authored in
-    Lisp; the cooks are compared with native RDK in `lib/sop/test_nodes.ml`.
+  whose subject survived are back. Three things were not restored and are the owner's call:
   - `test/test_2d_ports.ml` compared eight Lisp ports with their OCaml `main.ml`. Those programs
     are deleted, so the ports are only compared with themselves across domain counts.
     `examples/particles` keeps an OCaml oracle in `test/test_drawing.ml`.
