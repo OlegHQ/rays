@@ -243,6 +243,7 @@ let run () =
       require(Bytes.sub pixels 0 4=Bytes.of_string"\009\017\031\255")
         "Canvas native to_image exact pixel");
     Canvas.destroy canvas;
+    require(Canvas.Private.native_stats canvas=Runtime.zero_stats)"Canvas native cache teardown delta";
     Canvas.destroy canvas;
     require(live_handles()=baseline)"Canvas native Metal live-handle delta";
     Printf.printf

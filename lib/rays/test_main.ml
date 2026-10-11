@@ -13,6 +13,11 @@ let tests = [
   "test_ink", Test_ink.run;
   "test_canvas_native", Test_canvas_native.run;
   "test_world", Test_world.run;
+  "test_rays_api", Test_rays_api.run;
+  "test_scene3_native_lowering", Test_scene3_native_lowering.run;
+  "test_scene3_native_lowering_native", Test_scene3_native_lowering.run_native;
+  "test_world_raster", Test_world_raster.run;
+  "test_retained_view_native", Test_retained_view_native.run;
 ]
 
 let () =
