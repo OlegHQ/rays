@@ -20,9 +20,6 @@ deleted, not ticked.
   - The Metal safe suites lost most of their statements to the binding prunes of 2026-09-26
     and 2026-10-06, before this restructure. They now cover the calls that are left; nobody
     compared them statement by statement with the versions before `0d136464`.
-- `Shape_batch.Private.copy` copies the `checked` mark, so a copy of a validated batch is never
-  scanned. The comment in `lib/scene_command/test_shape_batch.ml` says the mark belongs to the
-  batch that passed; decide which is meant.
 - `runtime_live_resize` is wall-clock based: it failed once under machine load ("a programmatic
   resize stalled the frame loop for 1016 ms") and has passed since. Rerun it once before
   reading a failure as a regression.
