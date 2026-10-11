@@ -650,7 +650,11 @@ Phase 1
   recursive_rectangles (`packed_higher_order` 17, `color/hsl` 1),
   sketches/flow_particles_gpu (`noise3` 4, `packed_higher_order` 1). A lowering
   slice task must close these.
-- [ ] P1.13 H
+- [x] P1.13 H
+  `tools/bench_core.ml` (in `bench-build`) times one scalar residual, `(+ (* (sin t) 0.5) (* t t))`;
+  the cost table names no expression, so this one was chosen. Medians of three runs:
+  tree walker 940.2 ns/eval, closure 132.6 ns/eval, core 391.8 ns/eval (core/closure 2.95).
+  That exceeds 1.1, so P1.14 is required. Command and rows in results.md, 2026-10-11.
 - [ ] P1.14 S
 - [ ] P1.15 S
 - [ ] P1.R R

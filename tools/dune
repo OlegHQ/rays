@@ -134,6 +134,11 @@
  (libraries rays rdk unix))
 
 (executable
+ (name bench_core)
+ (modules bench_core)
+ (libraries flow flow_ir frame_input unix))
+
+(executable
  (name boolean_stress)
  (modules boolean_stress)
  (libraries rays rdk unix))
@@ -154,6 +159,7 @@
  (deps
   bench_circle_from_edges.exe
   bench_convex_hull.exe
+  bench_core.exe
   bench_delaunay2.exe
   bench_extract_centroid.exe
   bench_extract_point_curve.exe

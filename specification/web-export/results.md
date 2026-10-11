@@ -427,3 +427,26 @@ handles it offers at the same hook. This is a count, not a timing.
 Total: 1,963 lowered, 46 refused across 7 of the 15 workspaces. The zero-error
 target of P1.12 is not met; the refused forms are the input to a lowering slice.
 The sweep itself passes, and the parity test is unchanged.
+
+## 2026-10-11 — P1.13 core scalar residual bench
+
+Command: `dune` builds the bench through `_build/default/tools/check.exe tools/bench_core.exe`
+(in `bench-build`), then `_build/default/tools/bench_core.exe` run three times.
+Machine: Apple M1, OCaml 5.3.0 native executable, default dune (dev) profile,
+one domain. Input: one scalar residual `(+ (* (sin t) 0.5) (* t t))` evaluated
+200,000 times per sample against the same frame input; the result is checked
+bit-for-bit against the reference walker before timing. Each run reports the
+median of three samples; the table is the median of the three runs. The cost
+table in `lib/flow_ir/flow_ir.ml` names no expression for its closure row, so
+this representative scalar expression was chosen. Allocation is
+`Gc.allocated_bytes` per evaluation.
+
+| Row | Wall ns per evaluation | Allocated bytes per evaluation |
+| --- | ---: | ---: |
+| tree walker (`compile_residuals` false, `core_residuals` false) | 940.2 | 5,336 |
+| closure tier (`compile_residuals` true) | 132.6 | 1,880 |
+| core (`core_residuals` true) | 391.8 | 3,208 |
+
+Core/closure ratio 2.95 (walker/closure 7.1). The plan's threshold is 1.1, so
+P1.14 (compile core programs to closures) is required; this entry does not
+change the core executor.
