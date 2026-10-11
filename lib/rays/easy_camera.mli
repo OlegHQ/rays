@@ -1,12 +1,6 @@
 (** Functional pointer-controlled orbit camera inspired by openFrameworks'
     [ofEasyCam]. All positions and control areas use logical points. *)
 
-type interaction = Orbit | Pan | Dolly
-type binding = {
-  button : Input.mouse_button;
-  key : Input.key option;
-  interaction : interaction;
-}
 type t
 
 val create :
@@ -21,10 +15,10 @@ val create :
 
 val update : t -> Frame.t -> t
 (** Consume the ordered pointer facts in one frame. Captured drags continue
-    outside the control area. Double-clicking a configured button resets the
+    outside the control area. Double-clicking resets the
     original target, distance, and orientation. Vertical wheel/trackpad motion
-    dollies and horizontal wheel/trackpad motion is ignored. The default drag
-    bindings are left orbit and middle/right pan. *)
+    dollies and horizontal wheel/trackpad motion is ignored. Left drags orbit
+    and middle/right drags pan. *)
 
 val camera : t -> Camera.t
 val target : t -> Vec3.t

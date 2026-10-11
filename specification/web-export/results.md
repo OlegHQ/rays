@@ -291,3 +291,40 @@ This intentionally removes the lower-level `Ui_batch.xform` and
 libraries and excludes `scene_command`; its generated text is unchanged by
 this removal. Its gate still reports the separately pending P1.7 Core
 signature, which has not been promoted.
+
+## 2026-10-11 — Deferred Easy Camera fixed bindings
+
+Machine: managed Darwin arm64 runner, OCaml 5.3.0 native development profile,
+one initial domain. Inputs: 512 prebuilt logical 320 × 240 frames cycling
+held Shift/Ctrl keys; idle frames have no events. Active frames include a
+key press, mouse press/move/release, with fixed orbit/pan buttons. Samples
+run 500,000 idle or 100,000 active updates; one full sample warms the path,
+then three samples report median wall time and allocated bytes. No profiler
+or concurrent build/test during the recorded samples. No GPU work.
+
+```sh
+_build/default/tools/check.exe lib/rays/test_main.exe
+_build/default/lib/rays/test_main.exe bench_easy_camera
+```
+
+| Path | Frames | Before seconds | After seconds | Before allocated bytes | After allocated bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Idle, alternating held keys | 500,000 | 0.007308960 | 0.001348972 | 72,000,096 | 96 |
+| Orbit/pan drags with key events | 100,000 | 0.031363964 | 0.022171021 | 265,471,024 | 219,871,008 |
+
+Removing the fixed binding list, unused modifier reconstruction and key
+cache avoids idle camera copies; active updates allocate about 456 fewer
+bytes per frame on this input. Wall time is lower in these short CPU samples;
+this is not a general application or rendering speed claim. The 96 idle
+bytes are sample overhead, not proof of zero allocation for all camera use.
+
+The test independently checks fixed button behavior, all four modifiers,
+logical half-open bounds, capture outside them, density parity, double-click
+reset, cancellation and fly navigation's WASD/Shift/wheel contract.
+Replaying 128 frames with orbit/pan, wheel, inertia and mixed key events
+produces byte-identical public camera-state dumps before and after.
+`@lib/rays/runtest`, typechecking, the dependency gate and the editor input
+test pass. The editor input fixture reports the existing autosave refusal
+under the runner's read-only home directory. The unused public `binding`
+and `interaction` types are intentionally removed; their manifest change
+is promoted separately from the pending P1.7 Core interface.

@@ -1,4 +1,7 @@
 let tests = [
+  "test_easy_camera", Test_easy_camera.run;
+  "dump_easy_camera", Test_easy_camera.dump;
+  "bench_easy_camera", Test_easy_camera.bench;
   "test_scene_rounded_cache", Test_scene_rounded_cache.run;
   "test_automatic_text_cache", Test_automatic_text_cache.run;
   "test_scene3_float32", Test_scene3_float32.run;

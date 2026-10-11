@@ -1,10 +1,4 @@
-type interaction = Orbit | Pan | Dolly
-
-type binding = {
-  button : Input.mouse_button;
-  key : Input.key option;
-  interaction : interaction;
-}
+type interaction = Orbit | Pan
 
 type settings = {
   target : Vec3.t;
@@ -40,12 +34,10 @@ type t = {
   far : float;
   control_area : (int * int * int * int) option;
   inertia : bool;
-  interactions : binding list;
   drag : (Input.mouse_button * interaction * (float * float)) option;
   velocity : motion option;
   last_press : (Input.mouse_button * (float * float) * float) option;
   pointer : (float * float) option;
-  previous_keys : Input.key list;
   initial : settings;
   mutable camera_cache : camera_snapshot option;
 }
@@ -69,13 +61,6 @@ let clamp_elevation elevation =
   let limit = (Float.pi /. 2.) -. 1e-4 in
   Float.max (-.limit) (Float.min limit elevation)
 
-let default_interactions =
-  [
-    { button = Input.LeftButton; key = None; interaction = Orbit };
-    { button = Input.MiddleButton; key = None; interaction = Pan };
-    { button = Input.RightButton; key = None; interaction = Pan };
-  ]
-
 let create ?(target = Vec3.zero) ?(distance = 10.) ?(azimuth = 0.)
     ?(elevation = 0.) ?(fov_y = Float.pi /. 3.)
     ?(inertia = true) () =
@@ -95,12 +80,10 @@ let create ?(target = Vec3.zero) ?(distance = 10.) ?(azimuth = 0.)
     far;
     control_area = None;
     inertia;
-    interactions = default_interactions;
     drag = None;
     velocity = None;
     last_press = None;
     pointer = None;
-    previous_keys = [];
     initial = { target; distance; azimuth; elevation };
     camera_cache = None;
   }
@@ -271,29 +254,11 @@ let apply_delta frame value interaction dx dy =
              (dy *. units_per_pixel))
       in
       { value with target = Vec3.add value.target delta }
-  | Dolly ->
-      let distance =
-        value.distance *. exp (dy *. dolly_sensitivity)
-      in
-      { value with distance = Float.max 1e-4 distance }
 
-let interaction_for_button value keys button =
-  let eligible binding =
-    binding.button = button
-    &&
-    match binding.key with
-    | None -> true
-    | Some key -> List.mem key keys
-  in
-  match
-    List.find_opt
-      (fun binding -> Option.is_some binding.key && eligible binding)
-      value.interactions
-  with
-  | Some binding -> Some binding.interaction
-  | None ->
-      List.find_opt eligible value.interactions
-      |> Option.map (fun (binding : binding) -> binding.interaction)
+let interaction_for_button = function
+  | Input.LeftButton -> Some Orbit
+  | MiddleButton | RightButton -> Some Pan
+  | MouseX1 | MouseX2 -> None
 
 let double_click value button point time =
   match value.last_press with
@@ -327,27 +292,18 @@ let apply_inertia frame value =
   | None, Some _ -> { value with velocity = None }
   | _ -> value
 
-let cache_keys (frame : Frame.t) value =
-  if value.previous_keys == frame.keys || value.previous_keys = frame.keys then value
-  else { value with previous_keys = frame.keys }
-
 let update value frame =
   if frame.Frame.events = [] then
-    apply_inertia frame (cache_keys frame value)
+    apply_inertia frame value
   else
-    let pointer_events = List.fold_left (fun flags -> function
-      | Event.MousePressed _ -> 3
-      | MouseMoved _ | MouseReleased _ -> flags lor 1 | _ -> flags) 0 frame.events in
-    let has_pointer = pointer_events land 1 <> 0 in
+    let has_pointer = List.exists (function
+      | Event.MousePressed _ | MouseMoved _ | MouseReleased _ -> true
+      | _ -> false) frame.events in
     let pointer = ref (if has_pointer then Option.value ~default:frame.Frame.mouse value.pointer
       else frame.mouse) in
-    let keys = if pointer_events land 2 <> 0
-      then Some (ref (Event.Private.keys_before ~previous:value.previous_keys
-        ~held:frame.keys frame.events)) else None in
     let value =
       List.fold_left
         (fun value event ->
-          (match keys with Some keys -> keys := Event.Private.keys_after !keys event | None -> ());
           match event with
           | Event.MousePressed (button, point) ->
               pointer := point;
@@ -356,8 +312,7 @@ let update value frame =
                 let value = reset value in
                 { value with last_press = Some (button, point, frame.time) }
               else
-                (match interaction_for_button value
-                    (match keys with Some keys -> !keys | None -> frame.keys) button with
+                (match interaction_for_button button with
                  | None ->
                      { value with last_press = Some (button, point, frame.time) }
                  | Some interaction ->
@@ -419,7 +374,7 @@ let update value frame =
     let value = if not has_pointer then value else match value.pointer with
       | Some previous when previous = !pointer -> value
       | _ -> { value with pointer = Some !pointer } in
-    apply_inertia frame (cache_keys frame value)
+    apply_inertia frame value
 
 (* One fly-camera step: held W/S/A/D/Q/E move along view forward, right,
    and the up axis at [speed] units/s (Shift x4); pointer motion yaws about

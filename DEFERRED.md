@@ -154,8 +154,18 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   instances and all remaining batch fields. The lower-level interface
   removal is intentional; the high-level stable manifest does not cover
   `scene_command` and is unchanged by it. Native pixels still need Metal.
-- Fields that are constant but still threaded: the `Easy_camera` binding
-  `key`, `Light.attenuation.linear`, the path tracer `scale`.
+- Removed and verified 2026-10-11: Easy Camera's immutable default bindings
+  are a direct left-orbit/middle-right-pan match. Its constant binding `key`,
+  inaccessible interaction list, previous-key cache and unreachable drag
+  Dolly branch are gone, along with the unused public `binding` and
+  `interaction` types. Fly navigation still consumes held WASD/Shift keys.
+  Focused tests cover modifiers, bounds/capture, density, reset/cancellation
+  and fly speed; 128 public camera states match exactly before/after.
+  `@lib/rays/runtest`, typechecking, the dependency gate and the editor input
+  test pass. The idle and active benchmarks are recorded in `results.md`;
+  the intended API removal has a separate reviewed manifest promotion.
+- Fields that are constant but still threaded: `Light.attenuation.linear`
+  and the path tracer `scale`.
 - `lib/sop/sop_topology.ml` keeps its prefix (`Topology` would shadow `Rdk.Topology`), and
   `Leader.keymap3` keeps its suffix (`Leader.keymap` is taken).
 - `lib/rays` is still 30 modules: the editor is built on `Sketch`/`Frame`/`Scene`, and

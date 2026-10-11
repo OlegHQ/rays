@@ -242,6 +242,9 @@ projected 2D painter ordering. Perspective and orthographic cameras use
 logical-point viewports and offer world/screen conversion and picking rays.
 Their public matrices use clip depth [-1,1]; the native renderer converts to
 Metal depth [0,1] at the packing boundary, including authored shadow matrices.
+Easy Camera uses fixed left-orbit and middle/right-pan buttons in logical
+points; it stores no configurable binding or modifier-key history. Its fly
+navigation consumes held WASD/Shift keys for the continuous frame step.
 Explicit asymmetric frusta,
 off-axis portal cameras, vertical projection flipping, and frustum diagnostic
 meshes cover multi-display and projection-mapping use cases.
@@ -942,7 +945,7 @@ Shortcuts, traversal and text selection use the held keys at
 each event. A modifier pressed or released later in the same frame cannot
 change an earlier event. `Ui.key_events` exposes these contexts to custom
 widgets; `Ui.press_keys` retains the keys at a pointer gesture's press through
-release, which graph/tree selection and camera binding selection also use.
+release, which graph/tree selection also use.
 The shared Router accepts the previous frame's held keys, retained by the
 editor. Fly movement still samples held keys for its continuous frame step.
 
