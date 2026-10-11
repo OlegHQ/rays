@@ -1,6 +1,7 @@
 module C = Core
 module V = Flow.Value
-let run program ~live =
+module E = Flow.Eval
+let run ?root program ~live =
   let values = Array.make (Array.length program.C.locals) Flow.Eval.No_geo in
   let builders = Array.make (Array.length program.C.locals) None in
   let calls = Array.make program.call_slots 0 in
@@ -72,6 +73,13 @@ let run program ~live =
         | Vec4 (x,_,_,_),"x" | Vec4 (_,x,_,_),"y" | Vec4 (_,_,x,_),"z" | Vec4 (_,_,_,x),"w" -> V.Float x
         | Record xs,name -> (match List.assoc_opt name xs with Some v -> v | None -> V.fail "E_FIELD" "Missing core field.")
         | _ -> V.fail "E_FIELD" "Invalid core field." in
+  let state_root () = match root with Some r -> r
+    | None -> V.fail "E_CORE_STATE" "Core state needs its residual's state." in
+  let slot_key n =
+    let s=program.C.state_slots.(n) in
+    s.source.instance,s.prefix @ s.zone,
+    List.map (function C.Static_index i -> i | Local_index l -> V.int_of (get l)) s.source.iter,
+    s.plane=`Host in
   let rec execute statements =
     List.iter (fun (s : C.statement) ->
       try match s.node with
@@ -109,7 +117,20 @@ let run program ~live =
           if i<0 || i>=Array.length xs then V.fail "E_LIST_RANGE" "Core store is outside its sequence.";
           seal value;
           xs.(i)<-get value
-      | State_read _ | State_write _ -> V.fail "E_CORE_STATE" "Core state lowering is not available yet."
+      | State_read {slot;result;init;initial} ->
+          let instance,path,iter,host=slot_key slot in
+          builders.(result)<-None;
+          values.(result)<-E.Private.state_read (state_root ()) ~instance ~path ~iter ~host
+            ~init:(fun () -> execute init; get initial)
+      | State_peek {slot;found;value} ->
+          let instance,path,iter,host=slot_key slot in
+          let pending=E.Private.state_peek (state_root ()) ~instance ~path ~iter ~host in
+          values.(found)<-V.Bool (Option.is_some pending);
+          values.(value)<-Option.value ~default:V.No_geo pending
+      | State_write {slot;value} ->
+          let instance,path,iter,host=slot_key slot in
+          seal value;
+          values.(value)<-E.Private.state_write (state_root ()) ~instance ~path ~iter ~host (get value)
       | Invoke _ -> V.fail "E_CORE_REGION" "Core region lowering is not available yet."
       with V.Fail (code,message,None) -> raise (V.Fail (code,message,s.source.span))) statements in
   match Frame_input.validate live with

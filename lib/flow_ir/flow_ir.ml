@@ -597,7 +597,7 @@ module Executor = struct
                 let rec take n = function [] -> [] | _ when n=0 -> [] | x::xs -> x::take (n-1) xs in
                 ignore (Atomic.compare_and_set program.core cached ((r,prepared)::take 63 cached));
                 prepared in
-          Option.bind prepared (fun p -> match Core_exec.run p ~live with
+          Option.bind prepared (fun p -> match Core_exec.run ~root:r p ~live with
             | Ok v -> Some (Ok v) | Error _ -> None)
           with _ -> None in
         match core with Some _ -> core | None -> execute_packed r live in

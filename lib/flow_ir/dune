@@ -66,3 +66,8 @@
  (modules test_frame_kernel)
  (deps ../../examples/particles/sketch.rays)
  (libraries flow_ir flow rays_math))
+
+(test
+ (name test_core_state)
+ (modules test_core_state)
+ (libraries flow_ir flow))

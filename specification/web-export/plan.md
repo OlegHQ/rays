@@ -583,7 +583,16 @@ Phase 1
   exception: core_lower.expected expression 5 changed from `refused sum` to its
   core print (one hunk; every earlier program print byte-identical). Flow and
   flow_ir focused gates passed on 2026-10-11.
-- [ ] P1.8 S
+- [x] P1.8 S
+  State lowers to numbered slots keyed exactly as the walker (instance,
+  prefix @ zone, iteration tuple, host or frame plane) through new
+  Eval.Private.state_read/peek/write, so fork_state and transaction cover it.
+  New State_peek statement; a `previous` residual lowers to the read alone.
+  Frame operators and frame/input events were already core expressions;
+  test_core_state compares 13 state shapes (loops, functions, records, event
+  records, errors, coercion) over eight frames against the walker, with equal
+  state stamps. One expectation updated: test_core_lower no longer pins the
+  `state` refusal. Flow and flow_ir focused gates passed on 2026-10-11.
 - [ ] P1.9 S
 - [ ] P1.10 S
 - [ ] P1.11 H
@@ -609,7 +618,10 @@ Phase 2
 
 Phase 3
 - [ ] P3.1 H
-- [ ] P3.2 S
+- [x] P3.2 S
+  `specification/marks.md` written 2026-10-11 (commit 4f08e4f6): mark sets,
+  geometry, image, text, transform/clip push-pop; caps 1,000,000 per set
+  (`Shape_batch`) and 1,048,576 entries (`Render_ir`). Reviewed by P3.R.
 - [ ] P3.3 S
 - [ ] P3.3b H
 - [ ] P3.4 S

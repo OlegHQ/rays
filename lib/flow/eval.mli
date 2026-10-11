@@ -260,12 +260,27 @@ module Private : sig
     instance : int;
     prefix : Workspace.path;
     previous : bool;
+    host : bool;
+    geometry : bool;
   }
   val residual_view : residual -> residual_view
   (** Immutable specialized term and captured values for downstream IR construction. *)
 
   val residual_id : residual -> int
   (** Stable within one specialized evaluation; equality across evaluations is physical. *)
+
+  val state_read : residual -> instance:int -> path:Workspace.path -> iter:int list -> host:bool ->
+    init:(unit -> value) -> value
+  (** The state slot keyed by the instance, [prefix @ zone] path and iteration
+      tuple: begin the logical frame, then its before-state, else [init ()],
+      checked as stored data. Shares the walker's keys, so [fork_state] and
+      [transaction] cover it. *)
+
+  val state_peek : residual -> instance:int -> path:Workspace.path -> iter:int list -> host:bool -> value option
+  (** The slot's pending write in this frame. *)
+
+  val state_write : residual -> instance:int -> path:Workspace.path -> iter:int list -> host:bool -> value -> value
+  (** Check [value] as stored data and make it the slot's pending write. *)
 
   val residual_ops : residual -> Op.t list
   (** The immutable operator extension list of the captured workspace. *)

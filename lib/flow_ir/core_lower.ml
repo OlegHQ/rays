@@ -20,6 +20,7 @@ let lower root =
   let budget = ref 2048 and active = Hashtbl.create 8 in
   let calls = Hashtbl.create 8 and next_call = ref 0 and next_function = ref (-1) in
   let mixed_numeric = Hashtbl.create 8 in
+  let slots = ref [] and next_slot = ref 0 and plane = ref `Frame and geometry = ref false in
   let new_identity () = let n= !next_function in decr next_function; n in
   let call_slot identity = match Hashtbl.find_opt calls identity with
     | Some n -> n | None -> let n= !next_call in incr next_call; Hashtbl.add calls identity n; n in
@@ -147,13 +148,15 @@ let lower root =
     let id = E.Private.residual_id r in
     match Hashtbl.find_opt cache id with Some value -> value | None ->
     let view = E.Private.residual_view r in
-    if view.previous then refuse "state";
     if Hashtbl.mem active id then refuse "cycle";
     Hashtbl.add active id ();
-    Fun.protect ~finally:(fun () -> Hashtbl.remove active id) (fun () ->
+    let saved=(!plane,!geometry) in
+    plane:=if view.host then `Host else `Frame; geometry:=view.geometry;
+    Fun.protect ~finally:(fun () -> Hashtbl.remove active id; plane:=fst saved; geometry:=snd saved) (fun () ->
       let env = Names.of_seq (List.to_seq (List.map (fun (name,v) -> name,Known v) view.bindings)) in
       let source = source_of_view view in
-      let value = term statements cache source env view.term in
+      let value = if view.previous then state_term statements cache {source with C.span=Some view.term.form.span}
+          env view.term true else term statements cache source env view.term in
       Hashtbl.add cache id value;
       value)
   and term statements cache source env (x : W.term) =
@@ -197,6 +200,7 @@ let lower root =
          | Some texts -> Known (V.Text (String.concat "" (List.map (fun (_,v) -> match v with V.Text s -> s | _ -> assert false) texts)))
          | None -> primitive statements cache source Flow.Ty.Text Text_concat (List.map (fun v -> "part",v) texts))
     | Time -> emit statements source Flow.Ty.Float (Frame Time)
+    | State _ -> state_term statements cache source env x false
     | Vec ts when List.length ts >= 2 && List.length ts <= 4 ->
         let args = List.map compile ts in
         (match known_values (List.map (fun v -> "",v) args) with
@@ -313,8 +317,38 @@ let lower root =
         loop statements cache source env x.ty kind accs (List.map (fun (p,t) -> p,Some t) clauses) skip body zone None
     | node -> refuse (match node with
         | Vec _ -> "vector" | Lit _ -> "literal" | Call _ -> "call"
-        | Graph_ref _ -> "ref" | State _ -> "state"
+        | Graph_ref _ -> "ref"
         | _ -> assert false)
+  and state_term statements cache source env (x : W.term) previous_only =
+    match x.node with
+    | W.State {binder;init;step;zone} ->
+        if !geometry then refuse "state";
+        let ty=x.ty in
+        let numeric n = if List.mem ty [Flow.Ty.Int;Float] then Hashtbl.add mixed_numeric n () in
+        let slot= !next_slot in incr next_slot;
+        slots:={C.source;prefix=source.prefix;zone;plane= !plane;ty} :: !slots;
+        let initial_body=ref [] and initial_cache=Hashtbl.copy cache in
+        let initial=ensure initial_body initial_cache source (term initial_body initial_cache source env init) in
+        let previous=local ty in numeric previous;
+        statements:=statement (number ()) source
+          (State_read {slot;result=previous;init=List.rev !initial_body;initial}) :: !statements;
+        let previous=Computed (previous,ty) in
+        if previous_only then previous else begin
+          let env=bind statements cache source env binder previous in
+          let found=local Flow.Ty.Bool and pending=local ty and result=local ty in
+          numeric pending; numeric result;
+          statements:=statement (number ()) source (State_peek {slot;found;value=pending}) :: !statements;
+          let id=number () in
+          let yes=[statement (number ()) source (Assign (result,Local pending))] in
+          let body=ref [] and step_cache=Hashtbl.copy cache in
+          let value=ensure body step_cache source
+            (coerce body step_cache source ty (term body step_cache source env step)) in
+          body:=statement (number ()) source (State_write {slot;value}) :: !body;
+          body:=statement (number ()) source (Assign (result,Local value)) :: !body;
+          statements:=statement id source (If {condition=found;yes;no=List.rev !body}) :: !statements;
+          Computed (result,ty)
+        end
+    | _ -> refuse "state"
   and resolve statements cache = function
     | Known (V.Residual r) -> residual statements cache r | v -> v
   and sequence_count statements cache source sequence =
@@ -845,6 +879,6 @@ let lower root =
     let source = { (source_of_view view) with C.span=Some view.term.form.span } in
     let result = ensure body cache source result in
     Ok {C.constants=Array.of_list (List.rev !constants);locals=Array.of_list (List.rev !locals);
-      body=List.rev !body;results=[|result|];state_slots=[||];regions=[||];call_slots= !next_call}
+      body=List.rev !body;results=[|result|];state_slots=Array.of_list (List.rev !slots);regions=[||];call_slots= !next_call}
   with Unsupported name -> Error name
     | V.Fail _ | Not_found | Invalid_argument _ | Failure _ -> Error "constant"

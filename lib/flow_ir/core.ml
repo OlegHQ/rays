@@ -44,6 +44,8 @@ and statement_node =
       limit : int; init : statement list; body : statement list }
   | Store of { sequence : int; index : int; value : int }
   | State_read of { slot : int; result : int; init : statement list; initial : int }
+  | State_peek of { slot : int; found : int; value : int }
+      (** [found] := whether this frame already holds a pending write; [value] := it. *)
   | State_write of { slot : int; value : int }
   | Invoke of { region : int; args : int list; result : int }
 
@@ -155,6 +157,7 @@ let pp fmt p =
       | Store {sequence;index;value} -> local sequence; out "["; local index; out "] <- "; local value
       | State_read {slot;result;init;initial} -> local result; out " = state[%d] " slot;
           nested "init" init; out " value="; local initial
+      | State_peek {slot;found;value} -> local found; out " = state[%d] pending " slot; local value
       | State_write {slot;value} -> out "state[%d] <- " slot; local value
       | Invoke {region;args;result} -> local result; out " = region[%d](" region; separated local args; out ")");
       source s.source; out "\n") xs in

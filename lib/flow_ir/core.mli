@@ -47,6 +47,8 @@ and statement_node =
           run body with ordinal index and Int(first+index) item. *)
   | Store of { sequence : int; index : int; value : int }
   | State_read of { slot : int; result : int; init : statement list; initial : int }
+  | State_peek of { slot : int; found : int; value : int }
+      (** [found] := whether this frame already holds a pending write; [value] := it. *)
   | State_write of { slot : int; value : int }
   | Invoke of { region : int; args : int list; result : int }
 

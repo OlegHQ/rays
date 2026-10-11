@@ -1242,11 +1242,27 @@ module Private = struct
     instance : int;
     prefix : W.path;
     previous : bool;
+    host : bool;
+    geometry : bool;
   }
   let residual_view r = {term = r.rterm; bindings = Smap.bindings r.renv;
     site = site r.rc; owner = r.rc.base; iter = r.rc.iter; instance = r.rc.inst;
-    prefix = r.rc.prefix; previous = r.previous}
+    prefix = r.rc.prefix; previous = r.previous; host = r.rc.host; geometry = r.rc.geometry}
   let residual_id r = r.rid
+  let state_ctx r ~instance ~path ~iter ~host = {r.rc with inst = instance; prefix = path; iter; host}
+  let state_read r ~instance ~path ~iter ~host ~init =
+    let c = state_ctx r ~instance ~path ~iter ~host in
+    let state,frame = state_plane c in
+    begin_frame state (Lazy.force c.st.source) frame;
+    match Smap.find_opt (state_key c []) state.before with
+    | Some v -> state_data c v | None -> state_data c (init ())
+  let state_peek r ~instance ~path ~iter ~host =
+    let c = state_ctx r ~instance ~path ~iter ~host in
+    Smap.find_opt (state_key c []) (fst (state_plane c)).next
+  let state_write r ~instance ~path ~iter ~host v =
+    let c = state_ctx r ~instance ~path ~iter ~host in
+    let v = state_data c v in
+    let state,_ = state_plane c in state.next <- Smap.add (state_key c []) v state.next; v
   let residual_ops r = r.rc.st.ops
   let force_reference ?state ?elems ?resolve v ~live = force_with ?state ?elems ?resolve ~compiled:false v ~live
   let closure_available r = Option.is_some (fast_of r)
