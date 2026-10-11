@@ -721,8 +721,8 @@ Phase 1
   `tools/workspace_parity.ml`, `tools/bench_core.ml`. Decision for P1.14: core/closure is 1.25 to
   1.27 over five runs (median 1.26; load average 6, so not quiet), above the 1.25 acceptance
   threshold, so the phase is not ticked and P1.14b is added. P1.16 was prepared (an uncommitted
-  working tree, kept as `git stash` "p1.16-prepared") and compiles with `--ship`-level tests green
-  in `@lib/flow` and `@lib/flow_ir`; it resumes after P1.14b.
+  working tree, kept as the newest `git stash` entry, applies on 4314b0fc's parent tree) with `@lib/flow/runtest`
+  and `@lib/flow_ir/runtest` green, `--ship` not run; it resumes after P1.14b.
 - [ ] P1.16 S
 
 Phase 2
