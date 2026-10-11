@@ -754,7 +754,7 @@ let test_poly_path_contract () =
   let after = Session.stats evaluator in
   check (after.hits > before.hits) "procedural PolyPath did not cache";
   check (match (Lisp_sop.node ~with_:["source", (Lisp_sop.snapshot (source))] (Printf.sprintf {|(sop/poly_path (sop/ext_source) :maximum_distance %s)|} ((Lisp_sop.float Float.nan)))) with
-    | _ -> false | exception Invalid_argument _ -> true)
+    | _ -> false | exception Invalid_argument message -> contains message "E_NONFINITE")
     "procedural PolyPath refuses a non-finite distance at construction";
   Session.close evaluator
 
@@ -1056,9 +1056,9 @@ let test_local_subdivide_contract () =
   let after_all_edge_hit = Session.stats evaluator in
   check (after_all_edge_hit.hits > before_all_edge_hit.hits)
     "procedural all-edge crease override did not cache";
-  (* Lisp contract: there is no NaN literal, so a non-finite weight cannot be written at all *)
+  (* Explicit NaN literals are refused by the parameter's finite-value check. *)
   check (try ignore (Lisp_sop.node ~with_:["base", (Lisp_sop.snapshot (base))] (Printf.sprintf {|(sop/subdivide (sop/ext_base) :hole_group "" :crease_weight %s)|} ((Lisp_sop.float Float.nan))));
-      false with Invalid_argument message -> contains message "E_UNBOUND")
+      false with Invalid_argument message -> contains message "E_NONFINITE")
     "procedural Subdivide accepted non-finite all-edge sharpness at construction";
   let chaikin_base = Rdk.Plane_generators.grid ~connectivity:Rdk.Plane_generators.Grid_quads
       ~columns:2 ~rows:2 ~size:2. () |> Result.get_ok in
@@ -1676,7 +1676,7 @@ let test_edge_equalize_contract () =
     with Invalid_argument _ -> true)
     "procedural Edge Equalize accepted zero iterations";
   check (try ignore (Lisp_sop.node ~with_:["source", (source)] (Printf.sprintf {|(sop/edge_equalize (sop/ext_source) :tolerance %s)|} ((Lisp_sop.float nan)))); false
-    with Invalid_argument _ -> true)
+    with Invalid_argument message -> contains message "E_NONFINITE")
     "procedural Edge Equalize accepted a non-finite tolerance";
   check (Result.is_ok (Lisp_sop.node_result ~with_:["source", (source)] {|(sop/edge_equalize (sop/ext_source) :group " ")|}))
     "procedural Edge Equalize: Lisp accepts a blank group (the default, meaning none)";
@@ -1758,8 +1758,8 @@ let test_blend_shapes_contract () =
    | Ok _ -> fail "procedural Blend Shapes accepted a missing point group");
   check (match Lisp_sop.node_result ~with_:["source", source; "first", first]
                  (Printf.sprintf {|(sop/blend_shapes (sop/ext_source) (sop/ext_first) :weight1 %s)|} (Lisp_sop.float nan)) with
-    | Error _ -> true
-    | Ok node -> (match Session.cook evaluator ~context:current node with Error _ -> true | Ok _ -> false))
+    | Error message -> contains message "E_NONFINITE"
+    | Ok _ -> false)
     "procedural Blend Shapes accepted a non-finite weight";
   Session.close evaluator;
 
@@ -1842,8 +1842,8 @@ let test_attribute_composite_contract () =
     "procedural Attribute Composite empty additional-input semantics";
   check (match Lisp_sop.node_result ~with_:["first", first; "second", second]
                  (Printf.sprintf {|(sop/attribute_composite (sop/ext_first) (sop/ext_second) :weight1 %s)|} (Lisp_sop.float nan)) with
-    | Error _ -> true
-    | Ok node -> (match Session.cook evaluator ~context:current node with Error _ -> true | Ok _ -> false))
+    | Error message -> contains message "E_NONFINITE"
+    | Ok _ -> false)
     "procedural Attribute Composite accepted a non-finite input weight";
   Session.close evaluator;
 

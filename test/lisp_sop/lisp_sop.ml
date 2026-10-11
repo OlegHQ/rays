@@ -76,11 +76,7 @@ let node ?with_ text = match node_result ?with_ text with
   | Error message -> failwith ("Lisp_sop: " ^ message ^ "\n" ^ text)
 
 (* Printing OCaml values as Lisp literals, for the holes of ported tests. *)
-let float x =
-  let rec go p = let s = Printf.sprintf "%.*g" p x in
-    if p >= 17 || float_of_string s = x then s else go (p + 1) in
-  let s = go 15 in
-  if String.exists (fun c -> c = '.' || c = 'e' || c = 'n' || c = 'i') s then s else s ^ ".0"
+let float = Flow.Lisp.float
 
 let vec3 (v : Rays_math.Vec3.t) = Printf.sprintf "[%s %s %s]" (float v.x) (float v.y) (float v.z)
 

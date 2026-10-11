@@ -367,6 +367,11 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   undo 2.344131 → 2.336025 ms, scrub 1.842022 → 1.837015 ms, scrub excluding
   cook 1.741886 → 1.739025 ms. Bytes/frame remain 5,902,734 / 5,372,644 /
   5,372,644 for drag/scrub/scrub excluding cook; undo 6,677,352 → 6,677,208.
+  Follow-up verified: `Lisp_sop.float` now uses this same printer. Five SOP
+  refusal tests exercise explicit NaN and require `E_NONFINITE` at the
+  parameter boundary, replacing the old unknown-name refusal or generic
+  failure check. `@lib/sop/test_sop` passes; the shared helper's broader
+  SOP and Flow-SOP gates also pass.
 - No kind that builds a polygon from explicit points (`poly_fill` returns a closed curve
   unchanged); the gallery star uses `sop/sweep :caps true` instead.
 - Fixed and verified 2026-10-11: `Lisp_sop.node ~with_` accepts
