@@ -6,6 +6,7 @@
 //   const presenter = await createPresenter(canvas, {dpr, images, clear, shader})   // null (one message) without WebGPU
 //   presenter.present(marks, [width, height])   // the table of rt.marks, painter order; logical points
 //   presenter.dpr = 2                            // optional: the pixel ratio of the next present
+//   presenter.constants = data                   // optional: data.bin; attribute arrays that are views of it are uploaded once
 //   presenter.errors                             // WebGPU validation messages (empty when all is well)
 //   presenter.dispose()
 //
@@ -119,13 +120,38 @@ export async function createPresenter(canvas, { dpr, images = () => null, clear 
     return buffer;
   };
 
+  // A CPU attribute array that is a view of `self.constants` (data.bin: the runtime sets it at start and on a reload)
+  // is a constant of the program, so its f32 copy is uploaded once and kept, by byte offset and element count; a new
+  // data.bin releases them all. Any other CPU array is this frame's (a region's fresh output) and is uploaded per frame.
+  const kept = new Map();
+  let keptOf = null;
+  const constant = (view, n) => {
+    if (keptOf !== self.constants) { for (const b of kept.values()) b.destroy(); kept.clear(); keptOf = self.constants; }
+    const key = `${view.byteOffset}:${n}:${view.BYTES_PER_ELEMENT}`;
+    let buffer = kept.get(key);
+    if (!buffer) {
+      const data = f32(view, n);
+      buffer = device.createBuffer({ size: Math.max(16, data.byteLength), usage: U.STORAGE | U.COPY_DST, label: 'constant attribute' });
+      device.queue.writeBuffer(buffer, 0, data);
+      kept.set(key, buffer);
+      self.uploads.constants++;
+    }
+    return buffer;
+  };
+
   // A mark set's six attribute buffers and params (marks.md, "The Marks pipeline family").
   // An attribute buffer is a CPU array (copied to f32 here) or a device reference {gpu: kernelId, output, length} that
   // the compiler placed on the GPU (program.js `gpu`): the kernel's output buffer is bound as it is, count * width
   // floats of a larger allocation (gpu.js: dispatch id = kernel id, output buffers `${id}:out${k}`).
-  const elements = a => typeof a.buffer.gpu === 'string'
-    ? { buffer: gpu?.buffer(`${a.buffer.gpu}:out${a.buffer.output}`) ?? fail('E_KERNEL', `GPU output ${a.buffer.gpu} is not there.`), size: a.count * a.width * 4 }
-    : f32(a.buffer, a.count * a.width);
+  const elements = a => {
+    const n = a.count * a.width;
+    if (typeof a.buffer.gpu === 'string')
+      return { buffer: gpu?.buffer(`${a.buffer.gpu}:out${a.buffer.output}`) ?? fail('E_KERNEL', `GPU output ${a.buffer.gpu} is not there.`), size: n * 4 };
+    if (n > 0 && self.constants && ArrayBuffer.isView(a.buffer) && a.buffer.buffer === self.constants)
+      return { buffer: constant(a.buffer, n), size: n * 4 };
+    self.uploads.frame++;
+    return f32(a.buffer, n);
+  };
   const markResources = e => {
     const vec2 = a => 'constant' in a ? [Float32Array.of(a.constant[0], a.constant[1]), 0] : [elements(a), a.width];
     const one = a => 'constant' in a ? [Float32Array.of(a.constant), 0] : [elements(a), a.width];
@@ -235,6 +261,8 @@ export async function createPresenter(canvas, { dpr, images = () => null, clear 
     for (const g of garbage.splice(0)) g.destroy();   // destroy waits for the submitted work
   };
 
-  const self = { present, errors, device, canvas, dpr, dispose() { for (const t of texts.values()) t.texture.destroy(); texts.clear(); device.destroy(); } };
+  const self = { present, errors, device, canvas, dpr, constants: null,
+    uploads: { constants: 0, frame: 0 },   // attribute arrays uploaded once and per frame, for tests
+    dispose() { for (const t of texts.values()) t.texture.destroy(); texts.clear(); for (const b of kept.values()) b.destroy(); kept.clear(); device.destroy(); } };
   return self;
 }

@@ -1115,3 +1115,212 @@ The shared set is the library's `(modules ...)` list in `lib/flow_ir/dune`. `cor
 `region_snapshot.ml` are excluded because only test stanzas link them. The literal `find` with only
 `! -name 'test_*'` gives 4,915, which includes them. Goldens (`*.expected`, `*.metal`, `goldens/*`, `snapshots/*`)
 are data and are not counted. These are line counts, not a measure of complexity.
+
+## 2026-10-11 addendum: native teardown footprint, and what a frame retained
+
+`DEFERRED.md` listed `runtime_native_qualification` as unstable ("physical footprint did not plateau", about 21 MB
+over a 9 MB "SDL window baseline", at every commit back to `d88c46b`). It was a real leak, in Rays, in three parts.
+Machine: Apple M1, macOS 27.0.1, OCaml 5.3.0, dune dev profile (the Metal bridge is built `-O0`), 1-minute load 3 to
+10 from another agent's builds. Footprint is `/usr/bin/footprint -p PID -f bytes` after `Gc.full_major`. Before =
+`49c0f65d`.
+
+Method. A scratch executable (not kept) looped one lifecycle at a time and printed the footprint: SDL only
+(`Sdl3.Init.init`, window, Metal view, destroy, quit), `Runtime.create`/`destroy`, and N rendered frames of one
+triangle in a hidden window followed by `destroy`. `heap -s`, `vmmap -summary` and `footprint` of the 72-cycle loop
+at cycles 16, 48 and 71 named what grew; `leaks --trace=ADDRESS` named the owner; `OBJC_DEBUG_MISSING_POOLS=YES` under
+`lldb` (breakpoint on `objc_autoreleaseNoPool`, `bt`) named the caller.
+
+Evidence. At cycle 71 the heap held 77 `SDL3Window`, 77 `SDL3_cocoametalview`, 77 `CAMetalLayer` (one per window ever
+closed) and 602 `AGXG13GFamilyCommandBuffer` with their 601 render-pass descriptors and encoders (one per frame of
+the 600-frame scenario run before the loop). `leaks --trace` gave one owner for a window and a command buffer alike:
+`'_main_thread' + 568 --> <@autoreleasepool content>`, the initial thread's root autorelease page. An OCaml program
+has no Cocoa run loop, so nothing ever drains that page: an object autoreleased outside a pool of the stub's own is
+retained for the life of the process.
+
+1. `lib/sdl3/sdl3_cocoa.c`, `rays_window_plain_titlebar`: `setTitlebarAppearsTransparent:` and
+   `setTitleVisibility:` ran with no pool and autoreleased the `NSWindow` about 95 times and its title-bar views (682
+   of the 746 reports on the initial thread in one lifecycle). No closed window was ever deallocated: 385 KiB each.
+   The test's "SDL window baseline" loop goes through the same function, so it measured Rays, not SDL.
+2. `lib/metal/metal_bridge.mm`: `object_of_handle` returned its object unretained, which ARC autoreleases when the
+   return-value handshake fails (always at `-O0`); 28 handwritten stubs had no pool (`-contents` in the buffer copies
+   autoreleases the buffer: it returns an inner pointer; so did the release-queue drain), nor had the generated
+   `presentDrawable:` call. Each frame left its command buffer, encoder, pass descriptor, drawable and every written
+   buffer retained: 4.0 KiB of footprint per frame, and the GPU memory of the buffers with them (the 13 to 29 MB
+   `IOAccelerator` step the loop showed after a scenario had run).
+3. `lib/metal/metal.ml`: every child handle registered a `Gc.finalise` closure that held its parent's lifetime
+   record. The frame's command buffer and its encoder were therefore promoted at every minor collection and needed two
+   major cycles to go; with the default `space_overhead` the major heap then grows with the frame count instead of
+   settling (no major collection completed between frames 8,000 and 16,000 in one run).
+
+Fixes: the three Cocoa helper functions bracket themselves with `objc_autoreleasePoolPush`/`Pop`; handle lookups
+return retained, the handwritten stubs open a pool (`Autorelease_pool` guard) and `presentDrawable:` is `pool = true`;
+child finalisers are `Gc.finalise_last` closures over the `destroyed` flag and the parent's dependent counter, not
+the records.
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| Qualification loop, floor of cycles 24-47 and of 48-71, KiB | 59,408 and 80,929 | 35,296 and 35,296 |
+| Qualification growth between the floors, KiB (three runs after) | 21,521 (and 20,048, 22,624) | 0, 16, 48 |
+| "SDL window baseline" the test subtracted, KiB | 9,280 | 0 |
+| SDL-only lifecycle, KiB per lifecycle (cycles 8 to 48) | 385 | 2.4 |
+| `Runtime.create`/`destroy`, KiB per lifecycle (cycles 8 to 80) | 412 | 0 (24,896 at 8, 24,688 at 80) |
+| Footprint after 600 / 6,000 frames and `destroy`, KiB | 37,792 / 59,520 | 28,640 / 28,848 at 24,000 (a full major every 1,000 frames) |
+| Per rendered frame, KiB | 4.02 | 0 |
+| Objects autoreleased with no pool, initial thread, one lifecycle and two frames | 746 | 0 |
+| The same, `examples/particles`, 30 frames | 2,006 | 0 |
+| OCaml heap, no forced collection: footprint after 24,000 frames and `destroy`, KiB | 40,064 | 30,416 |
+| The same after 96,000 frames and `destroy`, KiB | 65,200 | 30,096 |
+| The same during the run, at frame 4,000 and at 24,000, KiB | 37,392 and 46,464 | 36,400 and 36,912 |
+| During a 96,000-frame run, at frame 16,000 and at 96,000, KiB | not sampled | 36,592 and 36,592 |
+| Major collections completed in 24,000 frames (in 96,000) | 19 | 27 (68) |
+
+The middle step alone (parts 1 and 2 fixed, `Gc.finalise` kept) still grew 0.35 KiB per frame with no forced
+collection: 40,064 KiB after 24,000 frames, 47,952 after 48,000, 65,200 after 96,000. `Gc.Memprof` (promotion
+callback) attributed the promoted words to `Metal.Command_buffer.create_owned` (its `Hashtbl.create 16`, the
+finaliser closures and the lifetime record) and `Render_encoder.create_owned`.
+
+Frame cost is unchanged. Offscreen 64x64 target, 2,000 frames per sample, median of five samples, third of three
+alternating before/after pairs (the quietest): one draw 266.5 against 266.0 microseconds per frame, 64 draws with
+changing vertex bytes 453.2 against 453.0; 16,032 and 252,288 bytes allocated per frame in both.
+
+Tests. `runtime_native_qualification` is unchanged (its baseline loop and its 4,096 KiB bound included) and passes:
+growth 0 to 48 KiB against a measured baseline of 0 to 64. New `runtime_autorelease`
+(`lib/runtime/native_qualification`, `@runtest-native` and `@qualification`) runs two window lifecycles with frames,
+readback, resize, cursor, text input and background, and two offscreen ones, in a child with
+`OBJC_DEBUG_MISSING_POOLS=YES`, and fails on any report from the initial thread: 773 with the Cocoa fix reverted, 454
+with the bridge fix reverted, 0 now. `examples/pxui`, `sketches/million_marks` and `examples/pathtracer` report 0
+by hand as well. `dune build @runtest-native` passes.
+
+## 2026-10-11 addendum: per-instance GPU mark colours (P4.13 gate)
+
+Command: `_build/default/lib/rays_editor/native_qualification/bench_marks_gpu.exe` (same method as P4.13: one
+`Drawing.render_prepared` with GPU positions under the qualification policy, median of 5 frames at 1,000,000, wall
+milliseconds and bytes allocated per frame; the render pass is not included). Apple M1, OCaml 5.3.0, dune dev
+profile, 1-minute load 4.3 to 7.7 (another agent building). Before = `49c0f65d` libraries under the new bench source;
+the three "moving" rows are new and make the per-instance attribute read `t`, so it is a region of every frame.
+"kernels" is the number of GPU runners the frame used.
+
+| kind | style | before ms | before bytes | kernels | after ms | after bytes | kernels | after against uniform |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| circles | uniform | 10.511 | 40,025,808 | 1 | 4.608 | 8,026,472 | 1 | 1.0x |
+| circles | radius | 15.602 | 60,025,864 | 1 | 4.769 | 8,026,552 | 1 | 1.0x |
+| circles | fill | 78.331 | 188,025,648 | 1 | 4.908 | 8,026,376 | 1 | 1.1x |
+| circles | per-instance | 83.222 | 208,025,704 | 1 | 4.701 | 8,026,456 | 1 | 1.0x |
+| circles | moving radius | 21.077 | 80,041,848 | 2 | 9.446 | 16,042,512 | 2 | 2.0x |
+| circles | moving fill | 122.982 | 269,956,200 | 1 | 9.272 | 16,042,864 | 2 | 2.0x |
+| circles | moving both | 148.119 | 308,003,432 | 2 | 14.349 | 24,059,072 | 3 | 3.1x |
+| rects | uniform | 10.415 | 40,025,832 | 1 | 4.844 | 8,026,384 | 1 | 1.0x |
+| rects | radius | 24.136 | 100,025,832 | 1 | 4.733 | 8,026,416 | 1 | 1.0x |
+| rects | fill | 78.545 | 188,025,672 | 1 | 4.705 | 8,026,288 | 1 | 1.0x |
+| rects | per-instance | 91.941 | 248,025,672 | 1 | 4.833 | 8,026,320 | 1 | 1.0x |
+| rects | moving radius | 20.756 | 80,042,424 | 2 | 9.786 | 16,042,976 | 2 | 2.0x |
+| rects | moving fill | 123.720 | 266,018,040 | 1 | 9.296 | 16,042,776 | 2 | 1.9x |
+| rects | moving both | 142.444 | 306,034,216 | 2 | 14.452 | 24,059,536 | 3 | 3.0x |
+
+At 100,000 the after rows are 0.66 (uniform), 0.82 (per-instance), 1.44 (moving fill) and 2.08 ms (moving both).
+
+The P4.13 gate (per-instance within 2 times the uniform row at 1,000,000) is met: 1.0x for circles and rects, from
+7.9x and 8.8x in the same run. What the note in `DEFERRED.md` guessed was half of it. Three causes, three changes:
+
+1. The bench's per-instance radius, size and fill do not read `t`: they are static regions, computed once on the CPU
+   and not placed on the GPU (the frame uses one kernel, the positions; the P4.13 note took the radius for a second
+   GPU region). `Marks_scene.gpu_set` nevertheless converted every host attribute of a device set on every frame
+   (1,000,000 colours through `drawing_color` into words: 148 MB and 68 ms; a radius or size array into float32).
+   Now the bytes of a host array are kept while the array is physically the previous frame's, so they are neither
+   converted nor uploaded again (`Rays_execution.gpu_marks` already skipped identical bytes).
+2. A colour could not be a device attribute, so a fill that does read `t` ran as a CPU region and was converted the
+   same way (123 ms). `fill`, `stroke` and `color` are now offered like positions (`Core_exec.device_regions`),
+   `Core_marks.colour_attr` and `Marks.validate` accept a device colour of width 3, and `gpu_marks` sets the shader's
+   colour mode 1 (float r, g, b) for it. The web export already placed colour regions on the GPU; this is the native
+   half.
+3. `array/range` boxed a value per index (40 bytes each): 40 MB and about 5 ms a frame for the inline
+   `(array/range 1000000)` every kernel of the bench reads. It fills its array directly (8 MB). That is the whole
+   change of the uniform row.
+
+Remaining, and why "moving both" is 3x: each frame-rate attribute is its own kernel dispatch on native (the draw
+program invokes its regions one by one; `Core_fuse.merge` is used by the web export only), and each dispatch
+evaluates, packs and uploads its inline static source again (the 8 MB a kernel still allocates), about 4.7 ms at
+1,000,000. A source bound once (`(let* [indices (array/range n)] ...)`, as `sketches/million_marks` does) is a
+constant the kernels share and do not upload again.
+
+Correctness: `test_workspace_gpu_marks` (`@lib/rays_editor/runtest-native`) now draws radii, a rect fill and a line
+colour that read `t` on the GPU beside host sizes and line ends, requires 8 kernels for its two drawings and equal
+pixels with the CPU path at three times; `test_core_marks` checks which attributes become device buffers and the
+length refusal; `test_marks` the validation of a device colour. Draw snapshots (CPU scenes) are unchanged.
+
+## 2026-10-11 addendum: a static packed map at startup (P7.2 finding A)
+
+`sketches/million_marks` with its drift term removed (`(* 0.1 (sin (+ t (* x 6.0))))` replaced by `0.0`, so no mark
+reads `t`), at 1,000,000 and at 100,000 marks, built as an application with the rule of `examples/particles/dune`
+(`rays-lisp ml`, `rays_editor`). Method as in P7.2: one frame, `RAYS_MAX_FRAMES=1 OCAMLRUNPARAM=v=0x400
+/usr/bin/time -p APP`, `allocated_words` from the runtime summary. Apple M1, OCaml 5.3.0, dune dev profile,
+1-minute load 5.4 to 7.3 (another agent building). Before = `aea5037d`.
+
+| Marks | First frame, before: real s / user s / allocated words | After |
+| --- | --- | --- |
+| 1,000,000 static | 23.45 / 22.41 / 9,916,402,236 (79.3 GB) | 1.21 / 1.83 / 212,004,045 (1.7 GB) |
+| 100,000 static | 3.31 / 2.54 / 996,502,231 | 0.73 / 0.45 / 62,358,449 |
+| 100,000 animated (the drift kept: a GPU kernel) | 2.48 / 0.21 / 8,204,333 | unchanged path |
+
+Cause, as the P7.2 addendum found: the static stage walked the whole `map` with the tree walker (`Flow.Eval.hof`,
+`Map` arm), and it did so twice a start (`Flow_ir.qualify_workspace` for the lowering, and
+`Editor_document.Contexts.window`, which evaluates the whole workspace to read the settings graph).
+
+The proposal in `DEFERRED.md` was to defer such a map as a `Static`-rate residual. Not done that way: every consumer
+that needs the concrete array at static time would have had to be deferred or refused with it. Instead the static
+stage keeps its meaning and the map is made by the region it would be at frame rate. For a static packed `map` of
+more than 4,096 elements the walker evaluates the first 4,096 elements as before; then a host callback
+(`Flow.Eval.Private.static_with_kernels ~bulk`, supplied by `Flow_ir.static_map`: `Packed.compile` and
+`Packed.force` when the residual reads no frame fact and no state) may return the whole array. The evaluator takes
+it only when it is a packed array of the map's kind and length whose first 4,096 elements equal the walked ones bit
+for bit; otherwise, and whenever the region refuses the form or fails, the walker evaluates the rest, so values and
+diagnostics are the walker's. `Flow_ir.static` is `Eval.static` with that callback; `qualify_workspace` and
+`Contexts.window` use it. What is left of the 1.2 s is the 4,096 walked elements, twice, and the kernel.
+
+One observable difference, documented in `core.md` and `eval.mli`: records made inside such a map cover its first
+4,096 elements. The walker alone kept visiting later elements until a path inside a branch had 4,096 records of its
+own; a path every element reaches has the same 4,096 either way.
+
+The walker itself, same day: `Op.find ~extra` scanned the workspace's operator list (the whole SOP catalog in the
+editor) at each of its three tries for every operator application. The evaluation state now holds `Op.finder ops`,
+the same lookup with the list indexed once. Plain `Flow.Eval.static ~record:true` of the 100,000-mark static
+workspace through `Web_export.load` (scratch timer, median of three): 1.049 s and 2.62 GB before, 0.695 s and
+2.49 GB after. 43 percent of what it still allocates is the context record `sub` copies for every argument.
+
+Tests: `lib/flow/test_workspace_eval` (the callback is offered only maps over 4,096 elements, once each; a correct
+array is used as it is; a refusal, a wrong prefix, another length or kind are walked; records and call indices equal
+the plain evaluation; a failure past element 4,096 is the walker's; a map that reads `t` is never offered) and
+`lib/flow_ir/test_static_map` (`Flow_ir.static` and `qualify_workspace` equal `Eval.static` bit for bit on seven
+maps, among them the hash of `million_marks`; equal diagnostics; 200,000 elements in under two seconds of processor
+time).
+
+## 2026-10-11 addendum: constant attribute buffers in the browser (P7.3)
+
+Workspaces and command as in P7.3 (`web_shot.exe --time 300 LISP marks_shot.exe tools/web/test/web_shot.mjs DIR
+900 700`; `sketches/million_marks` with the drift term removed, and the same with the pan `(* 100.0 (sin t))`),
+headless Chrome 154 on Apple M1, 1-minute load 3.1 to 3.5 with the corpus sweep running beside it. Before = the
+exporter built at `aea5037d` (its embedded runtime), after = the same exporter with the new `present.js` and
+`runtime.js`. Uncapped milliseconds per frame (`stepFrame` + `present` + `onSubmittedWorkDone`), 300 frames.
+
+| Marks | Case | Before, median / p95 | After, median / p95 |
+| --- | --- | --- | --- |
+| 1,000,000 | static | 33.08 / 35.83 | 26.83 / 29.99 |
+| 1,000,000 | panning | 33.30 / 35.50 | 26.84 / 27.88 |
+| 10,000 | static | 1.25 / 1.52 | 1.13 / 1.25 |
+
+The presenter made a new GPU buffer and converted and wrote 12 MB for the static positions on every frame. An
+attribute array that is a view of `presenter.constants` (`data.bin`; the runtime sets it at start and on a reload)
+is now converted and uploaded once and kept by byte offset and element count; a new `data.bin` releases what was
+kept, and any other CPU array (a region's output, a fresh array each invoke) is uploaded per frame as before. What
+remains at 1,000,000 is the draw itself: the static case now costs less than the animated one of P7.3 (29.9 ms),
+which dispatches a kernel as well.
+
+`tools/web/test/present_check.mjs` (`@qualification-web`, real Chrome) draws one table three times from views of a
+`data.bin`, then with a second `data.bin`, then with views of a buffer that is not `data.bin`: kept uploads 2, 2,
+2, 4, 4 and per-frame uploads 1, 2, 3, 4, 7, with the pixels of each.
+
+The other web bullet of `DEFERRED.md`, kernel inputs uploaded again on each dispatch, was already closed by P6.4a
+(`31915438`): `runtime.js` `gpuRun` uploads a kernel group's inputs once per load (`gpu.upload`) and passes the
+buffers to `dispatch`, and a static group runs once. `tools/web/test/runtime.mjs` asserts it ("the frame-rate
+group runs again, the steady one does not, inputs stay uploaded"). `gpu.dispatch` converts an input only when it is
+handed a plain array, which the tests do. The bullet is removed.

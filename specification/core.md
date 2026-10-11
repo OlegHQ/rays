@@ -19,6 +19,20 @@ and resource descriptions. It never serializes an OCaml closure, cache, SDL
 object or GPU handle. The remaining checked expressions lower once to a frame
 program and its regions.
 
+A static packed `map` of more than 4,096 elements is made differently, not
+to a different value. The walker evaluates its first 4,096 elements as usual
+(their records, call indices and failures are the ordinary ones). The host
+may then supply the whole array from the CPU region the map would be at frame
+rate (`Flow_ir.static`, which `qualify_workspace` uses); it is accepted only
+when it is a packed array of the map's kind and length whose first 4,096
+elements equal the walked ones bit for bit. When the region refuses the form,
+fails, reads anything live or disagrees, the walker evaluates the remaining
+elements itself, so a failure past element 4,096 is still the walker's
+diagnostic. Records inside such a map are those of its first 4,096 elements;
+the walker alone would keep visiting later elements until a path inside a
+branch had 4,096 of its own. At 1,000,000 elements the walker costs about 22
+microseconds and 79 KB an element; the region about 20 nanoseconds.
+
 The **frame program** runs on the initial native domain, or the browser's main
 thread, once per logical frame. It reads one immutable input snapshot, computes
 scalar and bounded structured data, advances state slots, invokes regions, and

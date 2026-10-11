@@ -107,7 +107,31 @@ window.__result = (async () => {
       out[c.name] = { width, height, pixels: Array.from(data), check: c.check ? eval(c.check)(data, width, height) : null };
     } catch (e) { out[c.name] = { error: String(e && e.stack || e) }; }
   }
-  return { cases: out, errors: presenter.errors, adapter: presenter.device.adapterInfo?.description ?? '' };
+  // Constants: attribute arrays that are views of presenter.constants (data.bin) are uploaded once and kept; an array
+  // that is not (the radii, made each frame) is uploaded every frame; a new data.bin replaces what was kept.
+  const constants = {};
+  try {
+    presenter.dpr = 1;
+    const table = (data, radius) => [{ type: 'mark_set', kind: 'circle', count: 2,
+      position: { buffer: new Float64Array(data, 0, 6), count: 2, width: 3 }, radius: { buffer: Float64Array.of(radius, radius), count: 2, width: 1 },
+      fill: { buffer: new Float64Array(data, 48, 6), count: 2, width: 3 }, stroke: k(0), stroke_width: k(1) }];
+    const make = (x, colour) => { const d = new ArrayBuffer(96); new Float64Array(d).set([x, 30, 0, 70, 70, 0, ...colour, 0, 0, 1]); return d; };
+    const probe = async (x, y) => {
+      read.canvas.width = canvas.width; read.canvas.height = canvas.height; read.drawImage(canvas, 0, 0);
+      const p = read.getImageData(x, y, 1, 1).data; await presenter.device.queue.onSubmittedWorkDone(); return [p[0], p[1], p[2]]; };
+    const first = make(30, [1, 0, 0]), second = make(50, [0, 1, 0]);
+    const before = { ...presenter.uploads };
+    presenter.constants = first;
+    const steps = [];
+    for (const radius of [10, 10, 12]) { presenter.present(table(first, radius), [100, 100]); steps.push({ ...presenter.uploads, at: await probe(30, 30), far: await probe(70, 70) }); }
+    presenter.constants = second;
+    presenter.present(table(second, 10), [100, 100]);
+    steps.push({ ...presenter.uploads, at: await probe(50, 30), old: await probe(24, 30) });
+    presenter.present(table(first, 10), [100, 100]);   // views of another buffer than data.bin are this frame's own
+    steps.push({ ...presenter.uploads, at: await probe(30, 30) });
+    constants.before = before; constants.steps = steps;
+  } catch (e) { constants.error = String(e && e.stack || e); }
+  return { cases: out, constants, errors: presenter.errors, adapter: presenter.device.adapterInfo?.description ?? '' };
 })().catch(e => ({ failure: String(e && e.stack || e) }));
 `;
 
@@ -139,6 +163,19 @@ for (const c of cases) {
   }
   if (c.expect) { probes++; if (!c.expect(r.check)) { bad++; console.log(`FAIL ${c.name}: ${JSON.stringify(r.check)}`); } }
   console.log(`${c.probes ? c.probes.length + ' probes' : JSON.stringify(r.check)}  ${c.name}`);
+}
+{
+  const c = report.constants, near = (got, want) => got.every((v, j) => Math.abs(v - want[j]) <= TOLERANCE);
+  probes++;
+  if (c.error) { bad++; console.log(`FAIL constants: ${c.error}`); }
+  else {
+    const kept = c.steps.map(s => s.constants - c.before.constants), perFrame = c.steps.map(s => s.frame - c.before.frame);
+    const ok = JSON.stringify(kept) === '[2,2,2,4,4]' && JSON.stringify(perFrame) === '[1,2,3,4,7]'
+      && c.steps.slice(0, 3).every(s => near(s.at, [255, 0, 0]) && near(s.far, [0, 0, 255]))
+      && near(c.steps[3].at, [0, 255, 0]) && near(c.steps[3].old, [0, 0, 0]) && near(c.steps[4].at, [255, 0, 0]);
+    if (!ok) { bad++; console.log(`FAIL constants: ${JSON.stringify(c)}`); }
+    console.log(`kept uploads ${kept}, per-frame uploads ${perFrame}  constants of data.bin are uploaded once`);
+  }
 }
 if (report.errors.length) { bad++; console.log('WebGPU errors:', report.errors); }
 console.log(`present_check: ${probes} checks, ${bad} failures, tolerance ${TOLERANCE}, ${report.adapter}`);

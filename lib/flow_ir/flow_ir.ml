@@ -11,6 +11,23 @@ module W = Flow.Workspace
 module V = Flow.Value
 module Ty = Flow.Ty
 
+(* A static packed map of more than 4,096 elements runs as the kernel it would be at frame rate
+   instead of through the walker for every element (about 22 microseconds and 79 KB each). The
+   evaluator checks the result against the elements it walked and walks the rest itself when the
+   kernel refuses, fails or reads anything live. *)
+let static_map residual =
+  let value = E.Residual residual in
+  if E.frame_dependent value || E.state_dependent value then None else
+  match Packed.compile residual (E.Private.residual_view residual).term with
+  | None -> None
+  | Some packed ->
+      (match Packed.force packed ~live:(Frame_input.at_time 0.) with
+       | Ok value -> Some value
+       | Error _ | exception (V.Fail _ | Invalid_argument _ | Not_found | Failure _) -> None)
+
+let static ?record ?inputs workspace =
+  E.Private.static_with_kernels ?record ?inputs ~bulk:static_map workspace
+
 let qualify_workspace ?record ?inputs ?observe (workspace : W.t) =
   let roots = Hashtbl.create 32 and index = Hashtbl.create 32 and outcomes = Hashtbl.create 32
   and callable_owners = Hashtbl.create 16 in
@@ -118,7 +135,7 @@ let qualify_workspace ?record ?inputs ?observe (workspace : W.t) =
       | _ -> Hashtbl.replace outcomes path reasons) producer;
     Option.iter (fun callback -> callback producer (Result.value adapted ~default:residual)) observe in
   let (let*) = Result.bind in
-  let* evaluated = E.Private.static_with_kernels ?record ?inputs ~observe:observed workspace in
+  let* evaluated = E.Private.static_with_kernels ?record ?inputs ~observe:observed ~bulk:static_map workspace in
   let reasons path = match List.assoc_opt path workspace.packed with
     | Some (W.Refused reasons) -> reasons
     | _ -> Option.value ~default:(pending path) (Hashtbl.find_opt outcomes path) in

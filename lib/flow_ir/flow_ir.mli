@@ -9,6 +9,15 @@ module Core_lower = Core_lower
 module Core_exec = Core_exec
 module Core_draw = Core_draw
 
+val static :
+  ?record:bool -> ?inputs:(string * (string * Flow.Eval.value) list) list ->
+  Flow.Workspace.t -> (Flow.Eval.t, Flow.Diagnostic.t) result
+(** {!Flow.Eval.static} with the same result, in which a static packed [map] of more than
+    4,096 elements runs as its CPU kernel after the walker has made the first 4,096 elements
+    ({!Flow.Eval.Private.static_with_kernels}, [bulk]). The walker finishes the map itself when
+    the kernel refuses the form, fails, or differs from the walked elements. {!qualify_workspace}
+    evaluates the same way. *)
+
 val qualify_workspace :
   ?record:bool -> ?inputs:(string * (string * Flow.Eval.value) list) list ->
   ?observe:(Flow.Workspace.path option -> Flow.Eval.residual -> unit) ->

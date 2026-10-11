@@ -9,6 +9,17 @@
  (action (run %{exe:runtime_native_qualification.exe})))
 
 (executable
+ (name runtime_autorelease)
+ (modules runtime_autorelease)
+ (foreign_stubs (language c) (names runtime_autorelease_stubs))
+ (libraries runtime scene_execution ogpu sdl3 unix))
+
+(rule
+ (aliases qualification runtest-native)
+ (locks smoke_window)
+ (action (run %{exe:runtime_autorelease.exe})))
+
+(executable
  (name runtime_live_resize)
  (modules runtime_live_resize)
  (libraries runtime runtime_input ogpu sdl3 unix))

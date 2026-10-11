@@ -833,3 +833,78 @@ let () = (* report.md L10, L18, L20: one bypass index, nonfinite guards, whole i
     match Eval.static (check "(workspace w (graph g :context value (nth (list 1 2 3 4) 2.5)))") with
     | Error d -> assert (d.code = "E_LIST_RANGE")
     | Ok _ -> failwith "nth 2.5 read an element")
+
+(* A static packed map of more than 4,096 elements: the host's whole value is taken only when it
+   agrees with the elements the walker made; the evaluation is the ordinary one either way. *)
+let () =
+  let ws = check "(workspace bulk
+      (graph g :context host
+        (let* [f (fn [i] (let* [twice (* i 2)] [twice (+ i 0.5) 0]))
+               large (map f (array/range 5000))
+               again (map f (array/range 4100))
+               small (map f (array/range 4096))
+               floats (map (fn [i] (* i 0.25)) (array/range 4097))]
+          {:large large :again again :small small :floats floats})))" in
+  let ordinary = static ~record:true ws in
+  let field (r : Eval.t) name = match result r "g" with
+    | Eval.Record fields -> List.assoc name fields | _ -> failwith "g is a record" in
+  let data (v : Eval.value) = match v with
+    | Eval.Float_array d | Vec2_array d | Vec3_array d | Vec4_array d -> d | _ -> failwith "packed" in
+  let records (r : Eval.t) = List.map (fun (path, values) -> path, List.length values) r.records in
+  let same_as_ordinary (r : Eval.t) =
+    List.iter (fun name -> assert (field r name = field ordinary name)) ["large"; "again"; "small"; "floats"];
+    assert (records r = records ordinary) in
+  (* the true arrays, by element count *)
+  let whole n = List.find_map (fun name ->
+    let v = field ordinary name in
+    if Value.array_length v = n then Some v else None) ["large"; "again"; "floats"] in
+  let offered = ref [] in
+  let run bulk = offered := [];
+    ok (Eval.Private.static_with_kernels ~record:true ~bulk:(fun residual ->
+      let view = Eval.Private.residual_view residual in
+      let n = match view.term.node with
+        | Workspace.Hof (`Map, [_; source]) ->
+            (match Eval.Private.eval_term residual source ~live:(Frame_input.at_time 0.) with
+             | Ok v -> Value.array_length v | Error d -> failwith (Diagnostic.to_string d))
+        | _ -> failwith "a map is offered" in
+      offered := n :: !offered; bulk n) ws) in
+  (* Supplied whole and correct: used. Only the maps over 4,096 elements are offered, once each. *)
+  let supplied = run whole in
+  assert (List.sort compare !offered = [4097; 4100; 5000]);
+  same_as_ordinary supplied;
+  (* The arrays are the host's own, not copies: it was not walked past the first 4,096. *)
+  assert (data (field supplied "large") == data (Option.get (whole 5000)));
+  (* Refused by the host: the walker finishes. *)
+  let walked = run (fun _ -> None) in
+  same_as_ordinary walked;
+  assert (data (field walked "large") != data (Option.get (whole 5000)));
+  (* A value that differs inside the walked elements, has another length or another element kind
+     is not taken. *)
+  let wrong n = Option.map (fun v ->
+    let d = Array.copy (data v) in
+    d.(7) <- d.(7) +. 1.;
+    match v with Eval.Float_array _ -> Eval.Float_array d | _ -> Eval.Vec3_array d) (whole n) in
+  same_as_ordinary (run wrong);
+  same_as_ordinary (run (fun _ -> whole 4100));
+  same_as_ordinary (run (fun n -> Option.map (fun v -> Eval.Vec2_array (data v)) (whole n)));
+  same_as_ordinary (run (fun _ -> Some (Eval.Int 1)));
+  (* A difference past the walked elements cannot be seen: the host's value stands. This is the
+     contract the host's kernel has with the walker, not something the evaluator can check. *)
+  let late n = Option.map (fun v ->
+    let d = Array.copy (data v) in
+    d.(Array.length d - 1) <- 99.;
+    match v with Eval.Float_array _ -> Eval.Float_array d | _ -> Eval.Vec3_array d) (whole n) in
+  let trusted = run late in
+  assert ((data (field trusted "large")).(14999) = 99.);
+  (* A failure past the walked elements is the walker's own when the host has no value. *)
+  let failing = check "(workspace bulk (graph g :context host (map (fn [i] (exp (- i 4300))) (array/range 5200))))" in
+  (match Eval.static failing, Eval.Private.static_with_kernels ~bulk:(fun _ -> None) failing with
+   | Error a, Error b -> assert (a.code = "E_NONFINITE" && a = b)
+   | _ -> failwith "a nonfinite element past the walked ones fails either way");
+  (* A map that reads the frame is never offered: it becomes a residual before any host call. *)
+  let live = check "(workspace bulk (graph g :context host (map (fn [i] (+ i t)) (array/range 5000))))" in
+  let asked = ref 0 in
+  (match ok (Eval.Private.static_with_kernels ~bulk:(fun _ -> incr asked; None) live) with
+   | r -> (match result r "g" with Eval.Residual _ -> () | _ -> failwith "a live map stays a residual"));
+  assert (!asked = 0);
+  print_endline "Static bulk maps: offered past 4,096 elements, checked against the walked ones, refused or wrong values walked"

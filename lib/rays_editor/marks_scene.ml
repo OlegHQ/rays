@@ -43,31 +43,45 @@ let word_bytes n f = let b = Bytes.create (4 * n) in
   for i = 0 to n - 1 do Bytes.set_int32_le b (4 * i) (f i) done; b
 let host bytes stride = { source = Bytes bytes; stride }
 
+(* The bytes of a host array are kept while the array is physically the same: a static attribute
+   of a device set is converted once, and the unchanged bytes are not uploaded again. Keyed by the
+   set's slot and the attribute's place in it. *)
+type converted = (int * int, float array * bytes) Hashtbl.t
+let kept (converted : converted option) key (d : float array) build = match converted with
+  | None -> build ()
+  | Some table -> (match Hashtbl.find_opt table key with
+      | Some (old, bytes) when old == d -> bytes
+      | _ -> let bytes = build () in Hashtbl.replace table key (d, bytes); bytes)
+
 (* Floats of [width] per instance: constant pairs and scalars take stride 0. *)
-let vectors buffers ~device count (a : (float * float) M.attr) = match a with
+let vectors buffers ~device ~kept count (a : (float * float) M.attr) = match a with
   | M.Constant (x, y) -> host (float_bytes 3 (function 0 -> x | 1 -> y | _ -> 0.)) 0
-  | Buffer b -> let d = data buffers b in host (float_bytes (b.width * count) (Array.get d)) b.width
+  | Buffer b -> let d = data buffers b in
+      host (kept d (fun () -> float_bytes (b.width * count) (Array.get d))) b.width
   | Device b -> { source = Device (device b.id); stride = b.width }
-let scalars buffers ~device count (a : float M.attr) = match a with
+let scalars buffers ~device ~kept count (a : float M.attr) = match a with
   | M.Constant x -> host (float_bytes 1 (fun _ -> x)) 0
-  | Buffer b -> let d = data buffers b in host (float_bytes count (Array.get d)) 1
+  | Buffer b -> let d = data buffers b in host (kept d (fun () -> float_bytes count (Array.get d))) 1
   | Device b -> { source = Device (device b.id); stride = 1 }
-let words buffers count (a : int32 M.attr) = match a with
+(* A device colour is float r, g, b (the shader's mode 1); a host one is packed words (mode 0). *)
+let words buffers ~device ~kept count (a : int32 M.attr) = match a with
   | M.Constant c -> host (word_bytes 1 (fun _ -> c)) 0
-  | Buffer _ -> let c = colours buffers a in host (word_bytes count c) 1
-  | Device _ -> no_device ()
+  | Buffer b -> let c = colours buffers a in host (kept (data buffers b) (fun () -> word_bytes count c)) 1
+  | Device b -> { source = Device (device b.id); stride = b.width }
 
 (* Rect, circle and line sets with a device attribute: position, extent, fill, stroke, width. *)
-let gpu_set buffers ~device ~gpu ~slot count (kind : M.kind) =
-  let vec = vectors buffers ~device count and one = scalars buffers ~device count
-  and word = words buffers count in
+let gpu_set buffers ~device ~gpu ~converted ~slot count (kind : M.kind) =
+  let at place d build = kept converted (slot, place) d build in
+  let vec place = vectors buffers ~device ~kept:(at place) count
+  and one place = scalars buffers ~device ~kept:(at place) count
+  and word place = words buffers ~device ~kept:(at place) count in
   let kind_word, attributes = match kind with
     | Rect {position; size; fill; stroke; _} ->
-        0, [| vec position; vec size; word fill; word stroke; host (float_bytes 1 (fun _ -> 1.)) 0 |]
+        0, [| vec 0 position; vec 1 size; word 2 fill; word 3 stroke; host (float_bytes 1 (fun _ -> 1.)) 0 |]
     | Circle {position; radius; fill; stroke; stroke_width} ->
-        4, [| vec position; one radius; word fill; word stroke; one stroke_width |]
+        4, [| vec 0 position; one 1 radius; word 2 fill; word 3 stroke; one 4 stroke_width |]
     | Line {position; end_; stroke; stroke_width} ->
-        5, [| vec position; vec end_; host (word_bytes 1 (fun _ -> 0l)) 0; word stroke; one stroke_width |]
+        5, [| vec 0 position; vec 1 end_; host (word_bytes 1 (fun _ -> 0l)) 0; word 3 stroke; one 4 stroke_width |]
     | Point _ -> assert false in
   match gpu ~slot ~kind:kind_word ~count attributes with
   | Ok token -> Scene.Private.shapes (Scene_command.Shape_batch.Private.of_gpu token)
@@ -76,9 +90,10 @@ let gpu_set buffers ~device ~gpu ~slot count (kind : M.kind) =
 let has_device (kind : M.kind) =
   let d : type a. a M.attr -> bool = function M.Device _ -> true | _ -> false in
   match kind with
-  | Rect {position; size; _} -> d position || d size
-  | Circle {position; radius; stroke_width; _} -> d position || d radius || d stroke_width
-  | Line {position; end_; stroke_width; _} -> d position || d end_ || d stroke_width
+  | Rect {position; size; fill; stroke; _} -> d position || d size || d fill || d stroke
+  | Circle {position; radius; fill; stroke; stroke_width} ->
+      d position || d radius || d stroke_width || d fill || d stroke
+  | Line {position; end_; stroke; stroke_width} -> d position || d end_ || d stroke_width || d stroke
   | Point _ -> false
 
 let int_coordinate x =
@@ -125,8 +140,8 @@ let points buffers count position fill =
 
 (* The scene node of a mark set, kept while its description and the physical attribute arrays are the
    same as the previous frame's: a batch whose data did not change is not built again. *)
-type cache = (int, M.entry * float array list * Scene.node) Hashtbl.t
-let cache () : cache = Hashtbl.create 8
+type cache = { nodes : (int, M.entry * float array list * Scene.node) Hashtbl.t; converted : converted }
+let cache () : cache = { nodes = Hashtbl.create 8; converted = Hashtbl.create 8 }
 let arrays buffers (kind : M.kind) =
   let one : type a. a M.attr -> float array list = function
     | M.Buffer b -> [data buffers b] | _ -> [] in
@@ -138,7 +153,7 @@ let arrays buffers (kind : M.kind) =
 let cached cache buffers ordinal (entry : M.entry) kind build =
   match cache with
   | None -> build ()
-  | Some table ->
+  | Some { nodes = table; _ } ->
       let data = arrays buffers kind in
       match Hashtbl.find_opt table ordinal with
       | Some (previous, old, node) when previous = entry && List.length old = List.length data
@@ -170,7 +185,7 @@ let scene ~buffers ?image ?gpu ?cache ?(device = fun _ -> no_device ()) marks =
           | Mark_set {count; kind} when has_device kind ->
               (match gpu with
                | None -> no_device ()
-               | Some gpu -> add (gpu_set buffers ~device ~gpu ~slot:!slot count kind); incr slot)
+               | Some gpu -> add (gpu_set buffers ~device ~gpu ~converted:(Option.map (fun c -> c.converted) cache) ~slot:!slot count kind); incr slot)
           | Mark_set {count; kind} as entry -> add (set entry kind (fun () -> shapes buffers count kind))
           | Geometry {vertices; indices; color} -> add (Scene.Private.geometry {vertices; indices; color})
           | Image {resource; x; y; scale; angle} ->

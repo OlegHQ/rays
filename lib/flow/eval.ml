@@ -121,6 +121,7 @@ and st = {
   owner : unit ref;  (* identifies the executor behind [execute] *)
   compiled_residuals : bool;  (* offer every forced residual to [execute], not only map/loop roots *)
   mutable observe_kernel : (residual -> unit) option;
+  mutable bulk : (residual -> value option) option;  (* the whole value of a large static packed map, see [hof] *)
   source : string Lazy.t;
   state : state option;
   mutable states : value list;
@@ -141,6 +142,7 @@ and st = {
   defs : (string, W.graph) Hashtbl.t;
   kind_fns : (string * (string * Context.t * Check.slot list)) list;
   ops : Op.t list;
+  find_op : string -> Context.t -> Op.t option;  (* [Op.finder ops]: [ops] is a list, the whole SOP catalog in the editor *)
 }
 
 and node = { id : int; inst : int; site : W.path; iter : int list; kind : string; ty : Ty.t;
@@ -185,6 +187,7 @@ let state_plane c =
       state.host<-Some plane;plane in
     plane,live.tick
 let fn_id st = let id = st.nfns in st.nfns <- id + 1; id
+let find_op st name = st.find_op name Context.value
 let fn_call c fid count = match c.st.time with
   | None -> let k = !count in incr count; k
   | Some _ -> let k = Option.value ~default:0 (Hashtbl.find_opt c.st.fn_calls fid) in
@@ -564,7 +567,7 @@ and widen_like c w v =
   match w,v with Int _,Float _ -> v | _ -> coerce_like c w v
 
 and apply_op c ?(authored = 0) name (vals : (string * value) list) : value =
-  let o = match Op.find ~extra:c.st.ops name Context.value with
+  let o = match find_op c.st name with
     | Some o -> o | None -> failf "E_UNKNOWN" "Unknown operator %s." name in
   let vals = match o.shape with
     | Op.Struct {splice = true} ->
@@ -619,7 +622,7 @@ and call_fn ?body c f (vals : value list) : value =
       let c' = { c with iter = c.iter @ [ k ] } in
       if Hashtbl.mem c.st.defs name then apply_def ?body c' name vals
       else begin
-        match Op.find ~extra:c.st.ops name Context.value with
+        match find_op c.st name with
         | Some o ->
             let names = Array.of_list (List.map fst (o.signature.pos @ o.signature.opt)) in
             let named = List.mapi (fun i v ->
@@ -671,7 +674,43 @@ and hof c env term kind f rest =
       let n = List.fold_left (fun n (length, _) -> min n length) max_int ls in
       let n = if ls = [] then 0 else n in
       let item k = call fv (List.map (fun (_, get) -> get k) ls) in
-      (match out with Ty.Array e -> array_init e n (fun k -> concrete c (item k))
+      (match out, c.st.time, c.st.bulk with
+       | Ty.Array e, None, Some bulk when n > max_iterations ->
+           (* A large static packed map. The walker makes the first 4,096 elements as always (their
+              records, call indices and failures are the ordinary ones); the host may then supply
+              the whole array, which is taken only when it has the walked elements bit for bit. Any
+              other outcome walks the rest: the value never depends on the host. *)
+           let head = array_init e max_iterations (fun k -> concrete c (item k)) in
+           let width, walked = match head with
+             | Vec2_array d -> 2, d | Vec3_array d -> 3, d | Vec4_array d -> 4, d
+             | Float_array d -> 1, d | _ -> assert false in
+           let same (d : float array) = Array.length d = n * width && (
+             let i = ref 0 in
+             while !i < Array.length walked
+                   && Int64.equal (Int64.bits_of_float d.(!i)) (Int64.bits_of_float walked.(!i)) do incr i done;
+             !i = Array.length walked) in
+           let whole = match bulk {rid = Atomic.fetch_and_add bulk_ids (-1); rterm = term;
+               renv = capture term env; rc = c; previous = false; live = None; core = None} with
+             | Some (Float_array d as v) when width = 1 && same d -> Some v
+             | Some (Vec2_array d as v) when width = 2 && same d -> Some v
+             | Some (Vec3_array d as v) when width = 3 && same d -> Some v
+             | Some (Vec4_array d as v) when width = 4 && same d -> Some v
+             | _ -> None in
+           (match whole with
+            | Some v ->
+                (* the calls the walker would have made *)
+                (match fv with Closure cl -> cl.calls := !(cl.calls) + (n - max_iterations)
+                 | Named f -> f.ncalls := !(f.ncalls) + (n - max_iterations));
+                v
+            | None ->
+                if n > Sys.max_floatarray_length / width then
+                  fail "E_ARRAY_RANGE" "Array length is outside native storage bounds.";
+                let data = Array.make (n * width) 0. in
+                Array.blit walked 0 data 0 (Array.length walked);
+                for k = max_iterations to n - 1 do Value.array_put data width k (concrete c (item k)) done;
+                (match width with 2 -> Vec2_array data | 3 -> Vec3_array data | 4 -> Vec4_array data
+                 | _ -> Float_array data))
+       | Ty.Array e, _, _ -> array_init e n (fun k -> concrete c (item k))
        | _ -> List (join_values (Array.init n item)))
   | `Filter, [ l ] ->
       let count, get = List.hd (lists_of [ l ]) in
@@ -896,15 +935,15 @@ let new_state ~record ws =
   let graphs = Hashtbl.create 8 and defs = Hashtbl.create 8 in
   List.iter (fun (g : W.graph) -> Hashtbl.replace graphs g.name g) ws.W.graphs;
   List.iter (fun (g : W.graph) -> Hashtbl.replace defs g.name g) ws.W.defs;
-  { time = None; resolve = None; execute = None; owner = ref (); compiled_residuals = true; observe_kernel = None;
+  { time = None; resolve = None; execute = None; owner = ref (); compiled_residuals = true; observe_kernel = None; bulk = None;
     source = lazy (Digest.string (fst (Lisp.print ws.W.source))); state = None; states = [];
     nfns = 0; fn_calls = Hashtbl.create 1;
     steps = 0; nodes = []; authored = []; nnodes = 0; cells = []; cache = Hashtbl.create 8;
     memo = Hashtbl.create 1; rids = 0; record; elems = Smap.empty; recs = Hashtbl.create 64; graphs; defs;
-    kind_fns = ws.W.kind_fns; ops = ws.ops }
+    kind_fns = ws.W.kind_fns; ops = ws.ops; find_op = Op.finder ws.ops }
 
 let live_state (st : st) ~state ?(elems = Smap.empty) (l : live) =
-  { st with time = Some l; state = Some state; observe_kernel = None;
+  { st with time = Some l; state = Some state; observe_kernel = None; bulk = None;
     steps = 0; memo = Hashtbl.create 16;
     fn_calls = Hashtbl.create 16; record = false; elems }
 
@@ -917,7 +956,7 @@ let protect f =
   | Stack_overflow -> Error (diagnostic "E_DEPTH" "Evaluation is nested too deeply." None)
   | Out_of_memory -> Error (diagnostic "E_ARRAY_MEMORY" "Frame data exceeds available memory." None)
 
-let static_impl ?(record = false) ?(inputs = []) ?observe ws =
+let static_impl ?(record = false) ?(inputs = []) ?observe ?bulk ws =
   Phase_timer.measure Evaluate (fun () ->
   protect (fun () ->
     if List.length inputs <> List.length (List.sort_uniq String.compare (List.map fst inputs)) then
@@ -927,8 +966,8 @@ let static_impl ?(record = false) ?(inputs = []) ?observe ws =
         failf "E_UNKNOWN_GRAPH" "Unknown graph input target: %s." name) inputs;
     List.iter (fun (_, ins) -> List.iter (fun (_, value) -> Value.validate value) ins) inputs;
     let st = new_state ~record ws in
-    st.observe_kernel <- observe;
-    Fun.protect ~finally:(fun () -> st.observe_kernel <- None) (fun () ->
+    st.observe_kernel <- observe; st.bulk <- bulk;
+    Fun.protect ~finally:(fun () -> st.observe_kernel <- None; st.bulk <- None) (fun () ->
     let c = root st in
     let results = List.map (fun (g : W.graph) ->
       let over = Option.value (List.assoc_opt g.name inputs) ~default:[] in
@@ -970,7 +1009,7 @@ and term_dependent frame st env (term : W.term) =
   | W.Ref_binding (name, _) ->
       Option.fold ~none:false ~some:(dependent frame) (Smap.find_opt name env)
   | W.Op {op; args; _} ->
-      (frame && (Option.get (Op.find ~extra:st.ops op Context.value)).live) || fields args
+      (frame && (Option.get (find_op st op)).live) || fields args
   | W.Call {args; _} | W.Record args -> fields args
   | W.Call_fn {fn; args; body} ->
       definition fn || Option.fold ~none:false ~some:term_dep body || any args

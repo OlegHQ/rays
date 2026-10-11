@@ -77,62 +77,92 @@ later. Numbers and commands are in `specification/web-export/results.md`.
     its maps run about 10,000 elements times roughly 50 statements in the core
     interpreter. `examples/drawing` is about 1.07 times slower. The closure tier is gone
     after P1.16 (`3f1ff18c`); compare against a checkout of `3c1314b3`.
+  - Measured again 2026-10-11 (M1, load 5 to 6, nothing changed in the executor): micro
+    core 152 to 154 ns and 1,912 bytes per evaluation, walker 942 to 949 ns.
+    `examples/particles` on the core path costs 3.8 ms of processor time and 12.9 MB
+    allocated per frame (`marks_shot.exe examples/particles OUT 800 600 N`, user time and
+    `allocated_words` at 601 frames minus 1 frame, over 600): 645 bytes for each of the
+    20,000 element steps. Cause read from `Core_lower`: only a residual that is itself a
+    packed `map` is tried as a region (`packed_region`); the two maps of particles are
+    nested in a `state` step, whose sources are frame locals, so `hof` lowers them to
+    `Counted` loops of boxed statements. The closure tier had the walker offer each inner
+    map to the packed template tier (`Packed.compile_template`, still tested by
+    `test_frame_kernel`). Next step: let a region take its arrays from frame locals
+    (`Invoke`'s `args`, always `[]` today; `Packed.force` with given arrays; a template
+    with no local-dependent uniform), emitted by `Core_lower.hof` for a packed map whose
+    sources are arrays. It changes lowering goldens and the web `rt.invoke(k, args)`.
 - The corpus sweep `@test/test_workspace_ir` takes 20 to 25 minutes since P1.11, because
   every comparison now runs with the core path off and on. After P1.16 there is one
   path; check the second pass is gone and the time is back down.
+  - 2026-10-11, partly checked. The sweep executable over the 43 examples and sketches
+    took 633 s real, 673 s user (M1, load 3 to 6, run by hand from `_build/default/test`,
+    so the kit and the fixtures were not timed; no baseline was taken the same day). A
+    `sample` taken while it was on `sketches/million_marks` shows the tree walker
+    (`Eval.ev`, `apply_op`, `Op.find`): the reference forces of the 1,000,000-element map
+    at four times and two domain counts, about 22 s each before the lookup change of the
+    same day. That workspace, added in P7.2, is the likely bulk of the time now, not a
+    second core pass. Next step: time the sweep with and without `million_marks`.
 - Packed `map`/`filter` forms that `Packed.compile` refuses (dynamic `int`/`floor`, state,
   array captures; 40 residuals in the corpus) run as a counted frame-level loop over
   `Array_nth`, single-threaded, not as a region. Correct, not fast; widening
-  `Packed.compile` would move them to parallel blocks or the GPU.
+  `Packed.compile` would move them to parallel blocks or the GPU. The particles
+  measurement and next step above are this bullet's too.
 - Compiling a packed kernel through `Core_region.lower` and `of_region` (P2.4 to P2.6) costs
   more than walking the term: `tools/bench_core.exe kernels`, compile of one map over 1,024
   elements 1.46 to 2.19 microseconds (+50 percent), 1,000,000-element map 2.18 to 2.38 (+9),
   sum 1.11 to 1.28 (+15); fused pair unchanged. Likely cause: building the region record
   and then `of_region` (validation pass, `dependent` recomputation, a second record copy).
-  Force time is unaffected. Once per kernel, not per frame, so left alone.
-- `tools/web/runtime/gpu.js` re-uploads every kernel input on each dispatch (it converts to f32 and
-  `writeBuffer`s the whole array); native skips sources whose stamp is unchanged. Static sources
-  should be uploaded once and kept.
-- Per-instance GPU marks (P4.13). Plan gate was per-instance circles and rects at 1,000,000 within 2 times
-  the uniform-style GPU row (`lib/rays_editor/native_qualification/bench_marks_gpu.exe`, M1, load 6 to 9).
-  Reached 8.3x (circles, 73.7 ms against 8.9) and 8.8x (rects, 80.4 against 9.1). A per-instance radius or size
-  on the GPU costs 1.4x and 2.1x; a per-instance fill costs 7.7 to 7.9x. Likely cause: a colour attribute cannot
-  be a GPU region yet, so the fill is a CPU `map` over 1,000,000 vec3 colours that `Marks_scene` converts through
-  `drawing_color` into packed words (188 MB allocated per frame). The `Marks` shader already reads float rgb
-  (fill mode 1); letting `fill`, `stroke` and `color` be `Marks.Device` buffers (a `Core_exec.device_regions`
-  name list, `Marks.validate`, `Marks_scene.words`) would remove it. Still 2.1x faster than the CPU path
-  (animated circles 1M, 153 ms).
-- Static CPU attribute buffers are re-uploaded every frame by the web presenter (P7.3,
-  `results.md`, `million_marks` with the drift removed, 1,000,000 marks, M1, headless Chrome 154,
-  load 4 to 17): 34 ms per frame static and 39 ms panning against 30 ms for the animated GPU kernel
-  case; 10,000 marks cost about 2 ms. Fix: cache the uploaded buffer by array identity in
-  `present.js` (and a f64 `data.bin` is still 24 MB at 1M).
-- A static packed `map` is evaluated by the tree walker at startup, not by a kernel (found in P7.2,
-  `results.md`, `million_marks` with the drift term removed, 1,000,000 marks, M1): first frame about 22 s and
-  79 GB allocated (`allocated_words` 9.9e9, about 22 microseconds and 79 KB per element), against 0.4 s when the
-  map reads `t`. Root cause: `Flow.Eval.hof` (`lib/flow/eval.ml`, `Map` arm, `array_init e n (fun k ->
-  concrete c (item k))`) runs the function through `ev`/`apply_op`/`call_fn` for every element whenever the
-  static stage can finish it; only a `Needs_t` makes a residual that `Flow_ir.residual` (`lib/flow_ir/flow_ir.ml`)
-  turns into a `Packed_map` kernel (GPU or block CPU tier). `sample` of the process shows `Eval.ev`,
-  `Op.find`/`Hashtbl.find_opt` (the `"value/" ^ name` lookups), `List.mem` and `caml_compare` in the walker, nothing
-  in a kernel. Fix I would make: in `hof`, when `st.time = None`, the output is `Ty.Array` and the element count is
-  at least a threshold (say 4,096, the GPU's 1,024 minimum or `Packed` block size), raise the same exception that
-  `Needs_t` raises so the map becomes a `Static`-rate residual, which `hoist`, `Core_exec.static_invokes` and
-  `Flow_ir.compile_marks` already run once and keep. Not done: it changes which graphs finish in the static stage
-  (a consumer that needs the concrete array, such as an `exact`, a host graph output or `array/length`
-  feeding a graph parameter, would then fail with `E_EVAL` unless it is also deferred), so it needs a corpus pass
-  (`@test/test_workspace_ir`, 20 to 25 minutes) and a rule for those consumers.
+  Force time is unaffected. Once per kernel, not per frame, so left alone. Measured again
+  2026-10-11 (one run, load 3.4 with the sweep beside it, no code change): 1.52, 2.27,
+  4.39 (fused) and 1.37 (sum) microseconds, so the two maps are within 4 percent of the
+  old numbers and the sum is 0.26 microseconds above.
+- Native mark attributes are one kernel dispatch each (found closing P4.13, whose gate is met:
+  `results.md`, 2026-10-11 addendum). A mark set whose radius and fill both read `t` beside GPU positions is
+  three dispatches, 14.3 ms at 1,000,000 against 4.6 for one (`bench_marks_gpu.exe`, "moving both"). Two things
+  are left. The draw program invokes its regions one by one, where the web export fuses the attributes of one
+  set into one kernel (`Core_fuse.merge` in `tools/lisp/web_export.ml`, `groups`); the native counterpart is to
+  merge the device-eligible `Invoke`s of one `Batch` in `Core_exec.prepare`. And a kernel whose source is an
+  inline static expression (`(map f (array/range n))`) evaluates, packs and uploads that source on every
+  dispatch (8 MB and most of the 4.7 ms): `Packed.Private.prepare` asks the walker for the source term each
+  frame, and `Run.dispatch` only skips an upload when the array is physically the same. Keeping the value of a
+  source the static stage could have finished (no frame fact, state, element or host source) per `Packed.t`
+  would remove it; a source bound in a `let*` is already a shared constant.
+- A static attribute array of the web export is still a constant of `data.bin` in binary64: 24 MB for the
+  1,000,000 static marks of P7.3 (the presenter now uploads it once, `results.md`, 2026-10-11 addendum). Shipping
+  it as binary32 was tried on paper and not done, for two reasons found in the code. The node parity
+  (`tools/web_parity.ml`, `tools/web/test/frames.mjs`) compares every attribute buffer with the native binary64
+  one within 1e-6, and a binary32 constant near 300 is off by up to 2e-5; and a kernel input cannot be binary32
+  either, because under node the shim runs a GPU-placed region on the CPU from the same stored input
+  (`frames.mjs`, `rt.gpuArray = k => rt.invoke(k, [])`). The step that removes the payload instead of halving
+  it: let the export keep a large static `map` that only feeds mark attributes as a region (the static stage
+  folds it to a constant today), so `gpuRun` dispatches it once per load and nothing is stored or uploaded but
+  its inputs. That needs `Web_export.lower` to evaluate with such maps deferred (the `Needs_t` route in
+  `Flow.Eval.hof`, for this caller only), to fall back to the folded program when a deferred region is not
+  GPU-placed (a static CPU region would run every frame: `rt.invoke` keeps nothing), and `marks_shot` and
+  `web_parity` to run the same lowered program.
 
 ## Known native test instability
 
-2026-10-11: `runtime_native_qualification` (`lib/runtime/native_qualification`, aliases
-`qualification`, run directly as the built exe) fails with "native repeated teardown
-physical footprint did not plateau beyond the SDL window baseline" on this machine
-(M1, current macOS). It is deterministic and not a regression: HEAD `ac8466a1` three
-runs gave growth 21088, 20960, 21024 KiB over baselines of about 9.4 MB; `99115fe8`
-gave 21153 and 21233 KiB; `4c00087b` gave 21057 KiB; `d88c46b` fails too. The
-growth is the same (about 21 MB) at every commit, so no recent change added it;
-the check (floors of footprint over 72 create/destroy cycles) is
-sensitive to the OS allocator, not to a Rays resource. Not investigated further and the
-threshold is unchanged; do not use this test as a regression signal until the
-footprint source is attributed (vmmap on the 72-cycle loop).
+2026-10-11: `runtime_native_qualification` failed with "physical footprint did not plateau beyond the SDL
+window baseline" (growth about 21 MB over a 9 MB baseline, at every commit back to `d88c46b`). Attributed and
+fixed at its cause; the test and its 4,096 KiB bound are unchanged and it now passes (growth 0 to 48 KiB,
+measured baseline 0 to 64). Evidence, method and numbers: `specification/web-export/results.md`, "native
+teardown footprint" addendum.
+
+- What was retained: every `NSWindow` ever closed with its view tree (385 KiB per lifecycle), and every frame's
+  Metal command buffer, encoder, pass descriptor, drawable and written buffers (4.0 KiB per frame). One owner for
+  all of them (`leaks --trace`): the initial thread's root autorelease page. An OCaml program has no Cocoa run
+  loop, so an object autoreleased outside a pool of the stub's own is never released.
+- Which part of the cycle: window creation, not teardown. `rays_window_plain_titlebar` (`lib/sdl3/sdl3_cocoa.c`,
+  called by `Sdl3.Window.create`) messaged AppKit with no pool and autoreleased the window about 95 times. The
+  test's "SDL window baseline" loop goes through the same function, so the baseline was Rays too. The 21 MB the
+  test saw on top was the scenario's 600 frames: buffers kept alive by the same page (the `IOAccelerator` rise
+  from 13 to 29 MB between cycles 16 and 48).
+- Fixed in `lib/sdl3/sdl3_cocoa.c` and `lib/metal/metal_bridge.mm` (a pool in every stub that messages
+  Objective-C, handle lookups return retained, `presentDrawable:` pooled), and `lib/metal/metal.ml`
+  (`Gc.finalise_last` for child handles: the OCaml heap grew 0.35 KiB per frame without it).
+  `lib/runtime/native_qualification/runtime_autorelease` (`@runtest-native`) fails on any object the initial
+  thread autoreleases with no pool in place.
+- Next step, left to the owner because it changes the test: the baseline loop (`sdl_window_floor_growth`) now
+  measures nothing, so it can go, and the bound can come down from 4,096 KiB (1,024 held with eight times the
+  margin in six runs).

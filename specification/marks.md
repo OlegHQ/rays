@@ -53,7 +53,7 @@ kind = Rect of { position; size; fill; stroke; stroke_width }
      | Point of { position; fill : int32 }            (* fill is a constant only *)
 
 attribute = Constant of value | Buffer of { id : int; count : int; width : int }
-          | Device of { id : int; count : int; width : int }   (* position, size, end_, radius, stroke_width only *)
+          | Device of { id : int; count : int; width : int }   (* a GPU array; a colour is float r, g, b *)
 value     = (float * float) for position, size, end_; float for radius, stroke_width;
             int32 (0xRRGGBBAA) for fill, stroke
 ```
@@ -67,8 +67,12 @@ the caller clears it once per frame and `Marks_scene` reads it while adapting.
 A colour buffer in that table is a packed vec3 array of 0..1 floats, as above. `count` is an element count, not a float count.
 
 A **device buffer** (`Device`) has the same `id`, `count` and `width` but names a GPU array the
-caller owns: a region's output, float32, `count * width` elements. Only a position, size, end,
-radius or width may be one (`validate`: a colour is `Constant` or `Buffer`); it is `byte 2` in the
+caller owns: a region's output, float32, `count * width` elements. Any attribute may be one; a
+device colour has width 3 like a colour buffer, float r, g, b in 0..1 and opaque, and the shader
+quantizes it (`floor(clamp(c, 0, 1) * 255 + 0.5)`, fill and stroke mode 1). That is the GPU
+region's approximate contract, not the host conversion bit for bit: the channel is binary32, a
+byte may differ by one at a rounding boundary, and a channel beyond the integer range clamps to
+255 where the host conversion wraps (`core.md`, `color/byte`). It is `byte 2` in the
 serialization. Natively a region whose every use is such an attribute of a mark set may stay on
 the GPU: `Core_exec.draw ~device` offers it, and `Buffers.device` resolves the id to the host's
 token (`Core_marks.device_value` is the placeholder in the locals). The CPU adapter has no GPU
@@ -277,14 +281,17 @@ integers there. `Pop_transform` and `Pop_clip` close the innermost open push.
 0) registers a `Rays_execution.Private.gpu_marks` source which binds each device attribute's
 buffer directly and uploads the others in the layout below (constants with stride 0; a CPU
 position or extent array as float32 with stride `width`; a colour buffer converted on the CPU, as
-for `Shape_batch`, to `0xRRGGBBAA` words, fill and stroke mode 0), and the set rides in the scene
+for `Shape_batch`, to `0xRRGGBBAA` words, fill and stroke mode 0; a device colour bound with stride
+3 and mode 1). The bytes of a host array are kept while the array is physically the previous
+frame's, so a static attribute beside a device one is converted and uploaded once, not per
+frame. The set rides in the scene
 as a `Shape_batch` GPU token, so transform, clip, blend and painter order are the ordinary
 ones. A rect's stroke width is the constant 1, as `Shape_batch.rect`'s; a line's fill is unused.
 Every other mark set, including every set when there is no GPU host, stays a `Shape_batch`
 (and `Ink` for points): the draw snapshots hash the CPU scene and do not change. A mark set is
 never split: CPU and device attributes of one set share one draw. A region runs on the GPU
-only if every use of its result is a `positions`, `from`, `to`, `sizes` or `radius` of a mark
-set (a colour cannot be one), the region is placed `Gpu` by the current backend (site in
+only if every use of its result is a `positions`, `from`, `to`, `sizes`, `radius`, `fill`,
+`stroke` or `color` of a mark set, the region is placed `Gpu` by the current backend (site in
 `approx`, static count of at least 1,024, a measured cheaper cost or `Qualification`), and
 no other offer of the same region has run this frame (a second dispatch would overwrite the
 first's output; it runs on the CPU). A host float in a device set (a CPU position, extent or
