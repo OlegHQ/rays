@@ -568,6 +568,12 @@ let run () =
   if Ui.cursor field_ui <> Some `Text then fail "a text field did not request the I-beam";
   Ui.frame field_ui (frame ~scale:1. ~time:0.8 [move (300, 200)]) field;
   if Ui.cursor field_ui <> None then fail "the I-beam outlived hover";
+  let area_ui = Ui.create ~font_size:11 () in
+  let area ui = ignore (Ui.text_area_submit ui ~at:(0., 0.) ~w:200. ~h:100. "area" "hello") in
+  Ui.frame area_ui (frame ~scale:1. ~time:0.9 []) area;
+  Ui.frame area_ui (frame ~scale:1. ~time:1.0 [move (50, 30)]) area;
+  if Ui.cursor area_ui <> Some `Text then fail "a text area did not request the I-beam";
+  Ui.destroy area_ui;
   Ui.destroy field_ui;
   Ui.destroy ui;
   (* Keys that come and go (150,000 of them, 500 a frame) leave the retained state the size it was. *)
@@ -807,7 +813,9 @@ let run () =
   area_step [Event.TextInput "X"];
   let x_at = String.index !area 'X' in
   if x_at < 60 || x_at > 99 then fail (Printf.sprintf "a click on the third row landed at column %d" x_at);
-
+  (* a text line is one and a half times the 11-point text: 17 points *)
+  let y_third, _ = region () in
+  if y_third < 2 * 17 then fail (Printf.sprintf "a wrapped caret is on the first row (y %d)" y_third);
   area_step [Event.KeyPressed Input.ArrowUp; Event.TextInput "Y"];
   let y_at = String.index !area 'Y' in
   if y_at >= x_at || x_at - y_at > 60 then
