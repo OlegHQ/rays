@@ -80,7 +80,8 @@ let rec ty_json : T.t -> string = function
 (* ---- native evaluation: one assignment through Core_exec ---- *)
 let arg_name prim i = match prim, i with
   | C.Integer _, _ | Equal, _ | Remainder, _ -> if i = 0 then "a" else "b"
-  | Array_range, _ | Sequence_build, _ -> "count"
+  | Array_range, _ -> "count"
+  | Sequence_build, _ -> if i = 0 then "count" else "width"
   | Array_float, _ | Array_vec3, _ -> if i = 0 then "count" else "value"
   | Array_count, _ -> "array"
   | Array_nth, _ -> if i = 0 then "array" else "index"
@@ -191,6 +192,9 @@ let () =
     [E.List [||]; l3; digits [txt "a"; v3 1. 2. 3.]; int 4];
   List.iter (fun c -> add C.Sequence_build [c])
     [int (-1); int 0; int 1; int 5; int 4096; int 4097; flt_ 2.5; flt_ 0.4; E.Bool true; txt "x"; flt_ 1e19];
+  (* a width allocates packed storage, with no list cap *)
+  List.iter (fun w -> List.iter (fun c -> add C.Sequence_build [c; int w])
+    [int (-1); int 0; int 1; int 5; int 4097; int 100_000; flt_ 2.5; flt_ 1e19]) [1; 2; 3; 4];
   List.iter (fun l ->
     List.iter (fun (f, c) -> add C.Sequence_slice [l; int f; int c])
       [(0, 0); (0, 3); (1, 2); (3, 0); (4, 0); (2, 2); (-1, 1); (1, -1); (0, 4); (3, 1)])

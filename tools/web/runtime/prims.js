@@ -161,8 +161,13 @@ export function sequence_get(l, index) {
   return i < 0n || i >= BigInt(xs.length)
     ? err('E_LIST_RANGE', `nth index ${i} is out of range for a list of length ${xs.length}.`) : xs[Number(i)];
 }
-export function sequence_build(count) {
+export function sequence_build(count, width) {
   const n = intOf(count);
+  if (width !== undefined) { // packed storage: no list cap
+    const w = Number(intOf(width));
+    return n < 0n || n > MAX_LENGTH / BigInt(w) ? err('E_ARRAY_RANGE', 'Array length is outside native storage bounds.')
+      : new PArray(w, new Float64Array(Number(n) * w));
+  }
   return n < 0n || n > 4096n ? err('E_ITER_BOUND', 'Core list length exceeds its bound.') : new Array(Number(n)).fill(null);
 }
 export function sequence_slice(l, first, count) {
