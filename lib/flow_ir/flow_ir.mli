@@ -129,9 +129,23 @@ val fuse_attributes : t -> t
 
 val fuse : t -> t
 val prune : t -> t
+type target = { legal : node -> tier -> bool; cost : tier -> count:int -> float }
+(* What a back end can run. [legal node tier] says whether the node may be placed on the tier
+   (the CPU tiers are normally always legal; [Gpu] needs a region it can emit, or a mark set it
+   can draw; [Gpu_readback] is the copy of a GPU value back to the CPU). [cost] estimates seconds. *)
+val native : target
+(** Metal: a region needs a static count of at least 1,024 and no GPU refusal; readback is
+    legal; [cost] is {!Cost.estimate}. [place] without a target is exactly this. *)
+
 val place : ?approx:Flow.Workspace.Paths.t ->
-  ?gpu_cost:(Packed.t -> count:int -> float option) -> t -> (t, Flow.Diagnostic.t) result
-val optimize : t -> (t, Flow.Diagnostic.t) result
+  ?gpu_cost:(Packed.t -> count:int -> float option) -> ?target:target -> t -> (t, Flow.Diagnostic.t) result
+(** A [Marks] node is placed like a kernel: [Gpu] when at least one attribute is a GPU region
+    and every other attribute is a GPU region or a constant, [Cpu_kernel] when an attribute is
+    a CPU region, else [Interp]. A target whose [legal _ Gpu_readback] is false never places a
+    region on the GPU if its value would have to come back: it feeds an exact read, or a mark
+    set that is not wholly on the GPU. *)
+
+val optimize : ?target:target -> t -> (t, Flow.Diagnostic.t) result
 (** Each pass retains authored provenance; precision legality precedes placement. *)
 
 module Executor : sig

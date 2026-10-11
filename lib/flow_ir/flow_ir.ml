@@ -389,21 +389,57 @@ let fuse_attributes ir =
     | _ -> ()) ir.nodes;
   {ir with nodes; groups = singleton_groups nodes}
 
-let place ?(approx=W.Paths.empty) ?(gpu_cost=fun _ ~count:_ -> None) ir =
+type target = { legal : node -> tier -> bool; cost : tier -> count:int -> float }
+let native = {
+  legal = (fun node tier -> match tier, node.kind, node.count with
+    | Gpu, Kernel {body = Packed_map packed; _}, Count.Static count ->
+        count >= 1024 && Packed.gpu_refusals packed = []
+    | Gpu, Marks _, _ -> true
+    | Gpu, _, _ -> false
+    | _ -> true);
+  cost = (fun tier ~count -> Cost.estimate tier ~count) }
+
+let place ?(approx=W.Paths.empty) ?(gpu_cost=fun _ ~count:_ -> None) ?(target=native) ir =
   validate ir;
   let nodes = Array.copy ir.nodes in
   let exception Refused of Flow.Diagnostic.t in
+  let cheapest node legal ~count =
+    let legal = match List.filter (target.legal node) legal with [] -> legal | allowed -> allowed in
+    List.fold_left (fun best tier -> if target.cost tier ~count < target.cost best ~count then tier else best)
+      (List.hd legal) (List.tl legal) in
+  let packed node ~count = cheapest node [Interp; Cpu_kernel] ~count in
+  let is_readback node = match node.kind with Kernel {body = Readback; _} -> true | _ -> false in
+  let regions_of node = List.map (fun (_, i) -> i) (attribute_edges ir node) in
+  let gpu = Array.map (fun node ->
+    match node.kind, node.count with
+    | Kernel {body = Packed_map packed'; _}, Count.Static count
+      when List.exists (fun (path, _) -> W.Paths.mem path approx) node.provenance ->
+        target.legal node Gpu && Option.fold ~none:false ~some:(fun seconds ->
+          Float.is_finite seconds && seconds >= 0. && seconds < target.cost (packed node ~count) ~count)
+          (gpu_cost packed' ~count)
+    | _ -> false) ir.nodes in
+  (* A target without readback keeps a region on the CPU when its value must come back:
+     a consumer that reads it exactly, or a mark set that is not wholly on the GPU. *)
+  let uniform i = match ir.nodes.(i).kind, ir.nodes.(i).count with
+    | Source (Constant _), _ | _, Count.Static 1 -> true | _ -> false in
+  let changed = ref true in
+  while !changed do
+    changed := false;
+    let demote i = if gpu.(i) then (gpu.(i) <- false; changed := true) in
+    Array.iter (fun node ->
+      if is_readback node && not (target.legal node Gpu_readback) then
+        List.iter (fun e -> demote e.node) node.args;
+      match node.kind with
+      | Marks _ when not (target.legal node Gpu_readback) ->
+          let regions = regions_of node in
+          if not (List.for_all (fun i -> gpu.(i) || uniform i) regions) then List.iter demote regions
+      | _ -> ()) ir.nodes
+  done;
   try
     Array.iteri (fun i node ->
-      let gpu=match node.kind,node.count with
-        |Kernel{body=Packed_map packed;_},Count.Static count when count>=1024
-          && List.exists(fun(path,_)->W.Paths.mem path approx)node.provenance ->
-            Packed.gpu_refusals packed = [] &&
-              Option.fold ~none:false ~some:(fun seconds->Float.is_finite seconds && seconds>=0.
-                && seconds<Cost.estimate (Cost.packed ~count) ~count)(gpu_cost packed ~count)
-        |_->false in
+      let gpu = gpu.(i) in
       let approximate = List.exists (fun e -> nodes.(e.node).precision = Approx) node.args in
-      let readback = match node.kind with Kernel {body = Readback; _} -> true | _ -> false in
+      let readback = is_readback node in
       let forbidden = match node.kind with
         | Opaque _ | Sink (Export | Sop_input | State_seed | Cache_key) | Source (State_previous _) -> true
         | Kernel k -> k.requires_exact && not readback
@@ -415,19 +451,26 @@ let place ?(approx=W.Paths.empty) ?(gpu_cost=fun _ ~count:_ -> None) ir =
       let tier = match node.kind with
         | Opaque _ -> Cooked
         | Kernel {body = Packed_map _; _} when gpu -> Gpu
-        | Kernel {body = Readback; _} when approximate -> Gpu_readback
+        | Kernel {body = Readback; _} when approximate && target.legal node Gpu_readback -> Gpu_readback
         | Kernel {body = Packed_map _; _} ->
-            (match node.count with Count.Static count -> Cost.packed ~count | _ -> Cpu_kernel)
+            (match node.count with Count.Static count -> packed node ~count | _ -> Cpu_kernel)
         | Kernel {body = Reference r; _} -> if Result.is_ok (Core_lower.lower r) then
-            Cost.cheapest ~legal:[Interp;Closure] ~count:(match node.count with Count.Static n -> n | _ -> 1)
+            cheapest node [Interp; Closure] ~count:(match node.count with Count.Static n -> n | _ -> 1)
             else Interp
         | Kernel _ -> Closure
+        | Marks _ ->
+            (* Like a kernel: the GPU when every attribute is a GPU region or a constant. *)
+            let regions = regions_of node in
+            let on_gpu i = nodes.(i).tier = Gpu in
+            if List.exists on_gpu regions && List.for_all (fun i -> on_gpu i || uniform i) regions
+               && target.legal node Gpu then Gpu
+            else if List.exists (fun i -> not (uniform i)) regions then Cpu_kernel else Interp
         | _ -> Interp in
       nodes.(i) <- {node with precision; tier}) ir.nodes;
     Ok {ir with nodes}
   with Refused d -> Error d
 
-let optimize ir = Result.map fuse (place (prune (fuse_attributes (share (hoist ir)))))
+let optimize ?target ir = Result.map fuse (place ?target (prune (fuse_attributes (share (hoist ir)))))
 
 module Residuals = Hashtbl.Make (struct
   type t = E.residual

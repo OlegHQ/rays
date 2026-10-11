@@ -815,7 +815,8 @@ Phase 4
 - [ ] P4.9 S
 - [ ] P4.10 S
 - [ ] P4.11 S
-- [ ] P4.12 S
+- [x] P4.12 S
+  Done 2026-10-11. `Flow_ir.target = {legal : node -> tier -> bool; cost : tier -> count:int -> float}` is exported and constructible outside `flow_ir`; `Flow_ir.native` is Metal (a region is GPU-legal with a static count of at least 1,024 and no `Packed.gpu_refusals`; a `Marks` node is GPU-legal; every other tier legal; `cost` is `Cost.estimate`). `place` and `optimize` take `?target` (default `native`); the old placement cases of `test_ir` pass unchanged, and the measured GPU-against-CPU comparison and the CPU choice now read `target.cost`. A `Marks` node is placed like a kernel: `Gpu` when one attribute is a GPU region and the others are GPU regions or constants and `legal node Gpu`; `Cpu_kernel` when some attribute is a CPU region; else `Interp`. A target whose `legal _ Gpu_readback` is false never leaves a region on the GPU whose value would have to come back (the producer of an `(exact x)` read, or any region of a mark set that is not wholly GPU); a CPU-only target (`Gpu` illegal) places nothing on the GPU. New `test_ir` cases: native mark-set tiers, a no-readback target, a CPU-only target and a custom cost table. `@lib/flow_ir/runtest`, `@lib/flow_gpu/runtest`, `@test/dependency_gate`, `@check` pass.
 - [ ] P4.13 H
 - [ ] P4.R R
 - [ ] P4.14 H

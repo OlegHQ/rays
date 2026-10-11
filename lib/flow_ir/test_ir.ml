@@ -708,7 +708,7 @@ let () =
        assert (i = j && a.output = 0 && b.output = 1 && a.role = Position && b.role = Fill);
        let fused = packed_of graph i in
        assert (Packed.Private.((view fused).outputs |> Array.length) = 2);
-       assert (graph.nodes.(i).rate = Frame && set.tier = Interp);
+       assert (graph.nodes.(i).rate = Frame && set.tier = Cpu_kernel);
        (* The fused result is the separate kernels' result byte for byte, at 1 and 8 domains. *)
        List.iter (fun time -> List.iter (fun domains ->
          let live = Frame_input.at_time time in
@@ -776,3 +776,52 @@ let () =
   (* Both animated and fused: one run per frame for the pair. *)
   assert (snd (run_frames "[(* i t) 0 0]") = [10]);
   print_endline "Rate split: a static attribute runs once over ten frames, a frame-rate one every frame"
+
+(* P4.12: placement against a target; mark sets are placed like kernels. *)
+let () =
+  let ws = check "(workspace gpu (graph g :context value (let* [mapped (map (fn [x] (+ x t)) (array/range 1024))] 0.0)))" in
+  let ws, evaluation = ok (qualify_workspace ~record:true ws) in
+  let value = List.assoc ["g"; "mapped"] evaluation.records |> List.hd |> snd in
+  let program = ok (Executor.compile ~approx:ws.approx value) in
+  let packed = Array.find_map (function {kind = Kernel {body = Packed_map packed; _}; _} -> Some packed | _ -> None)
+    (Executor.graph program).nodes |> Option.get in
+  let region name count = node ~ty:(Flow.Ty.Array Flow.Ty.Vec3) ~count:(Count.Static count) name
+    (Kernel {body = Packed_map packed; elementwise = true; requires_exact = true}) in
+  let approximable = Flow.Workspace.Paths.of_list [["big"]; ["small"]; ["other"]] in
+  let gpu_cost _ ~count:_ = Some 0. in
+  let set args = node ~args "circles" (Marks {set = "draw/circles"; attributes = [
+    {role = Position; edge = "positions"; output = 0}; {role = Fill; edge = "fill"; output = 0}]}) in
+  let tiers ?target nodes root =
+    (ok (place ~approx:approximable ~gpu_cost ?target (ir nodes [root]))).nodes |> Array.map (fun (n : node) -> n.tier) in
+  (* Native: a mark set is on the GPU when its regions are, wherever a constant stands in. *)
+  let colour = constant "colour" 1. in
+  assert (tiers [region "big" 1024; colour; set [edge "positions" 0; edge "fill" 1]] 2 = [|Gpu; Interp; Gpu|]);
+  assert ((tiers [region "big" 1024; region "other" 1024; set [edge "positions" 0; edge "fill" 1]] 2).(2) = Gpu);
+  (* A CPU region keeps the set on the CPU; the GPU region stays (native readback is legal). *)
+  let mixed = [region "big" 1024; region "small" 16; set [edge "positions" 0; edge "fill" 1]] in
+  let native_mixed = tiers mixed 2 in
+  assert (native_mixed.(0) = Gpu && native_mixed.(1) <> Gpu && native_mixed.(2) = Cpu_kernel);
+  assert ((tiers [colour; node ~args:[edge "positions" 0; edge "fill" 0] "circles"
+    (Marks {set = "draw/circles"; attributes = [{role = Position; edge = "positions"; output = 0}]})] 1).(1) = Interp);
+  (* A target that forbids readback: the region that would have to come back stays on the CPU. *)
+  let no_readback = {native with legal = (fun n tier -> tier <> Gpu_readback && native.legal n tier)} in
+  let mixed_no_readback = tiers ~target:no_readback mixed 2 in
+  assert (mixed_no_readback.(0) <> Gpu && mixed_no_readback.(2) = Cpu_kernel);
+  assert ((tiers ~target:no_readback [region "big" 1024; region "other" 1024;
+    set [edge "positions" 0; edge "fill" 1]] 2).(2) = Gpu);
+  let exact = node "exact" ~args:[edge "value" 0] (Kernel {body = Readback; elementwise = true; requires_exact = false}) in
+  let sop = node "sop" ~args:[edge "value" 1] (Sink Sop_input) in
+  assert (tiers [region "big" 1024; exact; sop] 2 = [|Gpu; Gpu_readback; Interp|]);
+  let local = tiers ~target:no_readback [region "big" 1024; exact; sop] 2 in
+  assert (local.(0) = Cpu_kernel && local.(1) <> Gpu_readback);
+  (* A target that forbids the GPU outright: everything runs on the CPU. *)
+  let cpu_only = {native with legal = (fun n tier -> tier <> Gpu && tier <> Gpu_readback && native.legal n tier)} in
+  assert (Array.for_all (fun tier -> tier <> Gpu) (tiers ~target:cpu_only mixed 2));
+  (* A dearer CPU makes the GPU win where the native table would not. *)
+  let slow_cpu = {native with cost = (fun tier ~count -> native.cost tier ~count *.
+    (match tier with Interp | Cpu_kernel -> 1e6 | _ -> 1.))} in
+  assert ((ok (place ~approx:approximable ~gpu_cost:(fun _ ~count:_ -> Some 0.01)
+    ~target:slow_cpu (ir [region "big" 1024] [0]))).nodes.(0).tier = Gpu);
+  assert ((ok (place ~approx:approximable ~gpu_cost:(fun _ ~count:_ -> Some 0.01)
+    (ir [region "big" 1024] [0]))).nodes.(0).tier = Cpu_kernel);
+  print_endline "Placement targets: mark sets placed like kernels; no-readback and CPU-only targets; custom cost table"
