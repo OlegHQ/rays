@@ -3,7 +3,7 @@ module P = Flow_ir.Packed
 type slot = {mutable buffer : B.buffer option; mutable capacity : int; mutable bytes : bytes;
   mutable uploaded:(float array * int) option}
 type t = {device:B.device; queue:B.queue; pipelines : Pipelines.t; msl : Emit.msl; inputs : slot array;
-  output : slot; table : slot; status:slot; uniforms : bytes; mutable closed : bool; mutable creations : int;
+  outputs : slot array; table : slot; status:slot; uniforms : bytes; mutable closed : bool; mutable creations : int;
   mutable input_uploads:int; mutable input_uploaded_bytes:int;
   mutable status_reads:int; mutable readback_bytes:int;
   mutable generation : int; mutable table_ready:bool; domain : Domain.id}
@@ -37,7 +37,7 @@ let unpack_array bytes length =
 let create_owned device queue pipelines (msl : Emit.msl) =
   if not(Domain.is_main_domain())then invalid_arg "Run.create: initial domain required";
   {device;queue;pipelines;msl;inputs=Array.map (fun _ -> slot ()) msl.input_widths;
-    output=slot ();table=slot ();status=slot();uniforms=Bytes.create msl.uniform_bytes;
+    outputs=Array.map (fun _ -> slot ()) msl.output_widths;table=slot ();status=slot();uniforms=Bytes.create msl.uniform_bytes;
     closed=false;creations=0;input_uploads=0;input_uploaded_bytes=0;
     status_reads=0;readback_bytes=0;generation=0;table_ready=false;domain=Domain.self ()}
 let create gpu=create_owned(Rays_execution.gpu_device gpu)(Rays_execution.gpu_queue gpu)
@@ -60,7 +60,7 @@ let dispatch t (values : P.Private.inputs) =
   let error message = Error (Flow.Diagnostic.error ~code:"E_KERNEL" message) in
   if t.closed || Domain.self ()<>t.domain then error "GPU program owner is closed or called from another domain."
   else if values.count<0 || values.count>Int32.to_int Int32.max_int ||
-    values.count>Sys.max_string_length/4/t.msl.output_width then error "GPU count exceeds native storage bounds."
+    values.count>Sys.max_string_length/4/Array.fold_left max 1 t.msl.output_widths then error "GPU count exceeds native storage bounds."
   else if Array.length values.arrays<>Array.length t.inputs then error "GPU input arity changed."
   else if Array.exists (fun index -> Array.length values.arrays.(index)<values.count*t.msl.input_widths.(index))
       (Array.init (Array.length t.inputs) Fun.id) then error "GPU input count changed."
@@ -69,7 +69,7 @@ let dispatch t (values : P.Private.inputs) =
      including dispatches whose completion subsequently fails. *)
   t.generation<-t.generation+1;
   if values.count=0 then begin
-    Ok {owner=t;count=0;width=t.msl.output_width;gpu_seconds=None;generation=t.generation}
+    Ok {owner=t;count=0;width=t.msl.output_widths.(0);gpu_seconds=None;generation=t.generation}
   end
   else try
     let msl=t.msl in
@@ -104,7 +104,7 @@ let dispatch t (values : P.Private.inputs) =
         t.input_uploaded_bytes<-t.input_uploaded_bytes+Bytes.length slot.bytes
       end;
       buffer) t.inputs in
-    let output=ensure t t.output (values.count*msl.output_width*4) in
+    let outputs=Array.mapi (fun k slot -> ensure t slot (values.count*msl.output_widths.(k)*4)) t.outputs in
     let status=ensure t t.status 4 in
     Bytes.set_int32_le t.status.bytes 0 0l;
     get(B.write_buffer status ~offset:0L t.status.bytes);
@@ -130,10 +130,11 @@ let dispatch t (values : P.Private.inputs) =
         get (B.set_pipeline encoder compiled.pipeline);
         Array.iteri (fun index buffer -> get (B.set_buffer encoder ~index buffer)) buffers;
         let index=Array.length buffers in
-        get (B.set_buffer encoder ~index output);
-        get (B.set_bytes encoder ~index:(index+1) t.uniforms);
-        get(B.set_buffer encoder ~index:(index+2) status);
-        Option.iter (fun table -> get (B.set_buffer encoder ~index:(index+3) table)) table;
+        Array.iteri (fun k output -> get (B.set_buffer encoder ~index:(index+k) output)) outputs;
+        let index=index+Array.length outputs in
+        get (B.set_bytes encoder ~index t.uniforms);
+        get(B.set_buffer encoder ~index:(index+1) status);
+        Option.iter (fun table -> get (B.set_buffer encoder ~index:(index+2) table)) table;
         get (B.dispatch_threads encoder ~threads:(values.count,1,1) ~threadgroup:(256,1,1)));
       let receipt=get (B.commit commands) in committed:=true;receipt) in
     get (B.complete_through queue receipt.epoch);
@@ -141,28 +142,29 @@ let dispatch t (values : P.Private.inputs) =
     t.status_reads<-t.status_reads+1;
     if Bytes.get_int32_le flags 0<>0l then
       raise(Failed(Flow.Diagnostic.error ~code:"E_KERNEL" "GPU output contains a nonfinite value."));
-    Ok {owner=t;count=values.count;width=msl.output_width;gpu_seconds=B.gpu_duration queue receipt;
+    Ok {owner=t;count=values.count;width=msl.output_widths.(0);gpu_seconds=B.gpu_duration queue receipt;
       generation=t.generation}
   with Failed error -> Error error
     | Out_of_memory -> error "GPU staging exceeds available memory."
   end
-let readback output =
+let readback ?(index=0) output =
   if output.owner.closed || Domain.self ()<>output.owner.domain || output.generation<>output.owner.generation then
     Error (Flow.Diagnostic.error ~code:"E_GPU" "GPU output was closed or superseded.")
   else try
-    let length=output.count*output.width in
+    let width=output.owner.msl.output_widths.(index) in
+    let length=output.count*width in
     let values,finite=if length=0 then [||],true else begin
-      let bytes=get(B.read_buffer (Option.get output.owner.output.buffer) ~offset:0L ~length:(length*4))in
+      let bytes=get(B.read_buffer (Option.get output.owner.outputs.(index).buffer) ~offset:0L ~length:(length*4))in
       output.owner.readback_bytes<-output.owner.readback_bytes+length*4;
       unpack_array bytes length
     end in
     if not finite then
       Error (Flow.Diagnostic.error ~code:"E_KERNEL" "GPU output contains a nonfinite value.")
-    else Ok (match output.width with 2 -> Flow.Eval.Vec2_array values
+    else Ok (match width with 2 -> Flow.Eval.Vec2_array values
       | 3 -> Vec3_array values | 4 -> Vec4_array values | _ -> Float_array values)
   with Failed error -> Error error
-let buffer output = if output.owner.closed || Domain.self()<>output.owner.domain || output.generation<>output.owner.generation
-  then None else output.owner.output.buffer
+let buffer ?(index=0) output = if output.owner.closed || Domain.self()<>output.owner.domain || output.generation<>output.owner.generation
+  then None else output.owner.outputs.(index).buffer
 let count output = output.count
 let width output = output.width
 let gpu_seconds output = output.gpu_seconds
@@ -171,7 +173,7 @@ let close t =
   if not t.closed then begin
   Array.iter (fun slot -> Option.iter (fun buffer -> ignore (B.destroy_buffer buffer)) slot.buffer;
     slot.buffer<-None;slot.bytes<-Bytes.empty;slot.capacity<-0;slot.uploaded<-None)
-    (Array.append t.inputs [|t.output;t.table;t.status|]);
+    (Array.concat [t.inputs;t.outputs;[|t.table;t.status|]]);
   t.closed<-true
 end
 module Private = struct

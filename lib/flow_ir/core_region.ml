@@ -368,7 +368,7 @@ let lower ?(fusion = true) ?(dynamic = false)
     let program = {residual; term; sources = Array.map (fun t -> residual, t) sources;
       widths; uniforms = Array.of_list (List.rev !uniforms);
       code = Array.of_list (List.rev !code);
-      output; count; iteration; result; skip; stages = [residual, term]; fusion; dynamic; body; binding_fn;
+      outputs = [|output|]; count; iteration; result; skip; stages = [residual, term]; fusion; dynamic; body; binding_fn;
       uniform_names = Array.of_list (List.rev !uniform_names); count_source;
       origin = None; sites} in
     Ok program

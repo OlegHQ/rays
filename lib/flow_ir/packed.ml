@@ -15,7 +15,7 @@ type origin = W.path * int list
 type count_source = E.residual -> W.term -> origin option
 type t = { residual : E.residual; term : W.term; sources : (E.residual * W.term) array;
   widths : int array; uniforms : E.value array; code : instruction array;
-  dependent : bool array; output : int array; count : int option;
+  dependent : bool array; outputs : int array array; count : int option;
   iteration : iteration; result : result; skip : int array;
   stages : (E.residual * W.term) list; fusion : bool; dynamic : bool;
   body : W.term; binding_fn : string option; uniform_names : (string * string list) array;
@@ -43,16 +43,18 @@ let of_region (r : Core.Region.t) =
   if not !operands_ok then invalid "Region instruction reads a register defined later."
   else if Array.length r.code > Flow.Packed_ops.register_limit then
     invalid (Printf.sprintf "Region exceeds %d registers." Flow.Packed_ops.register_limit)
-  else if not (Array.for_all (ok (Array.length r.code)) r.output) then invalid "Region output names a missing register."
+  else if r.outputs = [||] || (Array.length r.outputs > 1 && r.result <> Collect) then
+    invalid "A region has one output, or several only when it collects."
+  else if not (Array.for_all (Array.for_all (ok (Array.length r.code))) r.outputs) then invalid "Region output names a missing register."
   else Ok {residual = r.residual; term = r.term; sources = r.sources; widths = r.widths;
-    uniforms = r.uniforms; code = r.code; dependent = dependent_of r.code; output = r.output;
+    uniforms = r.uniforms; code = r.code; dependent = dependent_of r.code; outputs = r.outputs;
     count = r.count; iteration = r.iteration; result = r.result; skip = r.skip; stages = r.stages;
     fusion = r.fusion; dynamic = r.dynamic; body = r.body; binding_fn = r.binding_fn;
     uniform_names = r.uniform_names; count_source = r.count_source; origin = r.origin; sites = r.sites}
 
 let to_region t : Core.Region.t =
   {residual = t.residual; term = t.term; sources = t.sources; widths = t.widths;
-   uniforms = t.uniforms; uniform_names = t.uniform_names; code = t.code; output = t.output;
+   uniforms = t.uniforms; uniform_names = t.uniform_names; code = t.code; outputs = t.outputs;
    count = t.count; origin = t.origin; iteration = t.iteration; result = t.result; skip = t.skip;
    stages = t.stages; fusion = t.fusion; dynamic = t.dynamic; count_source = t.count_source;
    body = t.body; binding_fn = t.binding_fn; sites = t.sites}
@@ -73,7 +75,7 @@ let output_reachable t =
     | Select (a, b, c) | Noise3 (a, b, c, _, _) -> use a; use b; use c
     | _ -> ()
   end in
-  Array.iter use t.output;
+  Array.iter (Array.iter use) t.outputs;
   used
 
 let gpu_refusals t =
@@ -120,7 +122,8 @@ exception Nonfinite
 let get = function Ok x -> x | Error d -> raise (Failed d)
 
 let ordered_add t =
-  let width = Array.length t.output in
+  let output = t.outputs.(0) in
+  let width = Array.length output in
   match t.result with
   | Accumulate (_, false) when width >= 1 && width <= 4 && t.iteration = Zip
       && Array.length t.sources = 1 && t.widths = [|width|] && Array.length t.skip = 0
@@ -130,12 +133,12 @@ let ordered_add t =
         if t.code.(k) <> Input (0, width, k) || t.dependent.(k)
           || t.code.(width+k) <> Accumulator k || not t.dependent.(width+k)
           || t.code.(2*width+k) <> Binary (Add, width+k, k) || not t.dependent.(2*width+k)
-          || t.output.(k) <> 2*width+k then matched := false
+          || output.(k) <> 2*width+k then matched := false
       done;
       !matched
   | _ -> false
 
-let rec force ?state ?elems ?resolve ?measure t ~live =
+let rec force_all ?state ?elems ?resolve ?measure t ~live =
   let state = Option.value ~default:(E.create_state ()) state in
   let work () =
     let rec evaluate residual (term : W.term) =
@@ -177,7 +180,8 @@ let rec force ?state ?elems ?resolve ?measure t ~live =
            | None -> raise Unsupported)
       | _ -> 0.) t.code in
     let started = Option.map (fun (clock, _) -> clock ()) measure in
-    let width = Array.length t.output in
+    let widths = Array.map Array.length t.outputs in
+    let width = widths.(0) in
     List.iter (fun (_, (term : W.term)) -> match term.ty with
       | Ty.Array ty ->
           let width = width_of ty in
@@ -193,8 +197,9 @@ let rec force ?state ?elems ?resolve ?measure t ~live =
       done; !lo in
     let kept = count - Array.length skip in
     let collecting = match t.result with Collect | Accumulate (_, true) -> true | _ -> false in
-    if collecting && kept > Sys.max_floatarray_length / width then V.fail "E_ARRAY_RANGE" "Kernel output exceeds native storage bounds.";
-    let output = Array.make (if collecting then kept * width else 0) 0. in
+    if collecting && Array.exists (fun width -> kept > Sys.max_floatarray_length / width) widths then
+      V.fail "E_ARRAY_RANGE" "Kernel output exceeds native storage bounds.";
+    let outputs = Array.map (fun width -> Array.make (if collecting then kept * width else 0) 0.) widths in
     let accumulator = match seed with
       | Some (E.Vec2 _ | Vec3 _ | Vec4 _ as value) -> components value
       | Some v -> Array.make width (V.num v) | None -> Array.make width 0. in
@@ -321,8 +326,10 @@ let rec force ?state ?elems ?resolve ?measure t ~live =
       execute false 0 length;
       for j = 0 to length - 1 do
         (match t.result with Accumulate _ -> execute true j (j + 1) | _ -> ());
+        Array.iteri (fun k registers ->
+        let output = outputs.(k) and width = widths.(k) in
         for component = 0 to width - 1 do
-          let x = scratch.(t.output.(component) * block_size + j) in
+          let x = scratch.(registers.(component) * block_size + j) in
           if not (Float.is_finite x) then raise Nonfinite;
           (match t.result with
            | Collect -> () | Accumulate _ -> accumulator.(component) <- x
@@ -331,7 +338,7 @@ let rec force ?state ?elems ?resolve ?measure t ~live =
                if not (Float.is_finite total) then raise Nonfinite;
                accumulator.(component) <- total);
           if collecting then output.((output_start+j) * width + component) <- x
-        done;
+        done) t.outputs;
         (match t.result with Sum _ -> initialized := true | _ -> ())
       done
       done end in
@@ -346,16 +353,17 @@ let rec force ?state ?elems ?resolve ?measure t ~live =
              ordered first middle; ordered middle last
            end in
          ordered 0 chunks);
-    let value = if collecting then (match width with 2 -> E.Vec2_array output
-      | 3 -> E.Vec3_array output | 4 -> E.Vec4_array output | _ -> E.Float_array output)
-    else match t.result, seed with
+    let value = if collecting then Array.to_list (Array.mapi (fun k output -> match widths.(k) with
+      | 2 -> E.Vec2_array output | 3 -> E.Vec3_array output | 4 -> E.Vec4_array output
+      | _ -> E.Float_array output) outputs)
+    else [match t.result, seed with
       | Accumulate _, Some seed when kept = 0 -> seed
       | Sum false, _ when kept = 0 -> E.Int 0
       | _ -> (match width with
           | 2 -> E.Vec2 (accumulator.(0), accumulator.(1))
           | 3 -> E.Vec3 (accumulator.(0), accumulator.(1), accumulator.(2))
           | 4 -> E.Vec4 (accumulator.(0), accumulator.(1), accumulator.(2), accumulator.(3))
-          | _ -> E.Float accumulator.(0)) in
+          | _ -> E.Float accumulator.(0))] in
     Option.iter (fun (clock, report) -> report t ~seconds:(max 0. (clock () -. Option.get started)) ~reference:false) measure;
     value in
   let result = E.transaction state (fun () ->
@@ -365,11 +373,17 @@ let rec force ?state ?elems ?resolve ?measure t ~live =
     | V.Fail (code, message, span) -> Error (Flow.Diagnostic.error ?span ~code message)
     | Invalid_argument message -> Error (Flow.Diagnostic.error ~code:"E_KERNEL" ("Kernel needs reference evaluation: " ^ message))
     | Out_of_memory -> Error (Flow.Diagnostic.error ~code:"E_ARRAY_MEMORY" "Frame data exceeds available memory.")) in
-  match result with Ok _ -> result | Error _ ->
+  match result with Ok _ -> result | Error _ when Array.length t.outputs > 1 -> result | Error _ ->
     let started = Option.map (fun (clock, _) -> clock ()) measure in
     let result = reference ~state ?elems ?resolve t ~live in
     Option.iter (fun (clock, report) -> report t ~seconds:(max 0. (clock () -. Option.get started)) ~reference:true) measure;
-    result
+    Result.map (fun value -> [value]) result
+
+and force ?state ?elems ?resolve ?measure t ~live =
+  match force_all ?state ?elems ?resolve ?measure t ~live with
+  | Ok [value] -> Ok value
+  | Ok _ -> Error (Flow.Diagnostic.error ~code:"E_KERNEL" "Program has several outputs; use force_all.")
+  | Error _ as error -> error
 
 and force_uniforms ~state ?elems ?resolve ?measure t ~live =
   let execute residual live =
@@ -386,13 +400,13 @@ module Private = struct
   let trace = trace
   let ordered_add = ordered_add
   let output_reachable = output_reachable
-  type view = {code : instruction array; widths : int array; output : int array;
+  type view = {code : instruction array; widths : int array; outputs : int array array;
     uniform_widths : int array; collecting : bool; }
   let view (t : t) =
     let uniform_widths = Array.make (Array.length t.uniforms) 1 in
     Array.iter (function Uniform (index, component) ->
       uniform_widths.(index) <- max uniform_widths.(index) (component+1) | _ -> ()) t.code;
-    {code=t.code; widths=t.widths; output=t.output; uniform_widths;
+    {code=t.code; widths=t.widths; outputs=t.outputs; uniform_widths;
       collecting=(match t.result with Collect -> true | _ -> false);
       }
   type inputs = {arrays : float array array; uniforms : float array array;

@@ -24,7 +24,7 @@ and fuse (t : Core.Region.t) : Core.Region.t =
     Some (Array.fold_left (fun n c -> min n (Option.get c)) max_int counts) else t.count in
   let t = {t with count; origin = (match t.result with Collect -> origin | _ -> None)} in
   let can_fuse = function
-    | Some p when p.result = Collect && p.iteration = Zip && p.skip = [||] ->
+    | Some p when p.result = Collect && p.iteration = Zip && p.skip = [||] && Array.length p.outputs = 1 ->
         Array.length t.sources = 1 || (Option.is_some p.count && p.count = count)
           || (Option.is_some origin && p.origin = origin)
     | _ -> false in
@@ -59,7 +59,7 @@ and fuse (t : Core.Region.t) : Core.Region.t =
           | Noise3 (a, b, c, seed, octaves) -> emit (Noise3 (at a, at b, at c, seed, octaves))
           | Select (a, b, c) -> emit (Select (at a, at b, at c))
           | instruction -> emit instruction) p.code;
-      Array.map (Array.get registers) p.output in
+      Array.map (Array.map (Array.get registers)) p.outputs in
     let inputs = Array.mapi (fun i child ->
       if can_fuse child then begin
         let p = Option.get child in
@@ -67,14 +67,14 @@ and fuse (t : Core.Region.t) : Core.Region.t =
         let uniform = append_uniforms p.uniforms in
         stages := !stages @ p.stages;
         sites := p.sites @ !sites;
-        append_code p (fun i width component -> emit (Input (inputs.(i), width, component))) uniform
+        (append_code p (fun i width component -> emit (Input (inputs.(i), width, component))) uniform).(0)
       end else begin
         let source = append_source t.sources.(i) t.widths.(i) in
         Array.init t.widths.(i) (fun component -> emit (Input (source, t.widths.(i), component)))
       end) children in
     let uniform = append_uniforms t.uniforms in
-    let output = append_code t (fun i _ component -> inputs.(i).(component)) uniform in
+    let outputs = append_code t (fun i _ component -> inputs.(i).(component)) uniform in
     {t with sources = Array.of_list (List.rev !sources); widths = Array.of_list (List.rev !widths);
       uniforms = Array.of_list (List.rev !uniforms); code = Array.of_list (List.rev !code);
-      output; iteration = Zip; stages = !stages; sites = !sites}
+      outputs; iteration = Zip; stages = !stages; sites = !sites}
   with Core_region.Unsupported -> t

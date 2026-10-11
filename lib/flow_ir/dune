@@ -53,7 +53,7 @@
 
 (test
  (name test_packed)
- (modules test_packed region_snapshot)
+ (modules test_packed region_snapshot test_program)
  (deps (glob_files snapshots/*.txt))
  (libraries flow_ir flow rays_math))
 

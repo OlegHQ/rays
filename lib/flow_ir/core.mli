@@ -72,7 +72,7 @@ module Region : sig
     residual : Flow.Eval.residual; term : Flow.Workspace.term;
     sources : (Flow.Eval.residual * Flow.Workspace.term) array; widths : int array;
     uniforms : Flow.Eval.value array; uniform_names : (string * string list) array;
-    code : instruction array; output : int array;
+    code : instruction array; outputs : int array array;
     count : int option; origin : origin option;
     iteration : iteration; result : result; skip : int array;
     stages : (Flow.Eval.residual * Flow.Workspace.term) list;

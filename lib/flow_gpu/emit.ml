@@ -2,7 +2,7 @@ module P = Flow_ir.Packed
 module S = Ogpu.Shader
 type msl = {source : string; entry : string; interface : S.binding list;
   uniform_layout : (string * int * int) list; uniform_bytes : int;
-  table_seeds : int array; output_width : int; input_widths : int array}
+  table_seeds : int array; output_widths : int array; input_widths : int array}
 let names = Flow.Packed_ops.names
 let perlin = {|float fade(float t) { return t*t*t*(t*(t*6.0f-15.0f)+10.0f); }
 float blend(float a, float b, float t) { return a+t*(b-a); }
@@ -83,16 +83,18 @@ let kernel program = try
     Printf.bprintf body "  float r%d=%s;\n" slot expression;
     Printf.bprintf body "  if(!isfinite(r%d)) atomic_store_explicit(status,1u,memory_order_relaxed);\n" slot
     end) view.code;
-  Array.iteri (fun component slot ->
-    Printf.bprintf body "  output[i*%d+%d]=r%d;\n"
-      (Array.length view.output) component slot) view.output;
+  let outputs = Array.length view.outputs in
+  let output_name k = if outputs = 1 then "output" else "output" ^ string_of_int k in
+  Array.iteri (fun k registers -> Array.iteri (fun component slot ->
+    Printf.bprintf body "  %s[i*%d+%d]=r%d;\n"
+      (output_name k) (Array.length registers) component slot) registers) view.outputs;
   let count = Array.length view.widths in
   let arguments = Array.to_list (Array.mapi (fun index _ -> Printf.sprintf
     "device const float* input%d [[buffer(%d)]]" index index) view.widths)
-    @ [Printf.sprintf "device float* output [[buffer(%d)]]" count;
-       Printf.sprintf "constant uint* uniforms [[buffer(%d)]]" (count+1);
-       Printf.sprintf "device atomic_uint* status [[buffer(%d)]]" (count+2)]
-    @ (if table_seeds=[||] then [] else [Printf.sprintf "device const int* table [[buffer(%d)]]" (count+3)])
+    @ List.init outputs (fun k -> Printf.sprintf "device float* %s [[buffer(%d)]]" (output_name k) (count+k))
+    @ [Printf.sprintf "constant uint* uniforms [[buffer(%d)]]" (count+outputs);
+       Printf.sprintf "device atomic_uint* status [[buffer(%d)]]" (count+outputs+1)]
+    @ (if table_seeds=[||] then [] else [Printf.sprintf "device const int* table [[buffer(%d)]]" (count+outputs+2)])
     @ ["uint i [[thread_position_in_grid]]"] in
   let prefix = "#include <metal_stdlib>\nusing namespace metal;\n" ^
     (if table_seeds=[||] then "" else perlin) in
@@ -103,9 +105,9 @@ let kernel program = try
   let source = prefix ^ "kernel void " ^ entry ^ "(\n  " ^ signature ^ ") {\n" ^ body ^ "}\n" in
   let input_used=Array.make count false in
   Array.iteri(fun slot->function P.Input(input,_,_)when used.(slot)->input_used.(input)<-true|_->())view.code;
-  let interface = List.init (count+3+(if table_seeds=[||] then 0 else 1)) Fun.id
+  let interface = List.init (count+outputs+2+(if table_seeds=[||] then 0 else 1)) Fun.id
     |>List.filter(fun binding->binding>=count || input_used.(binding))
-    |>List.map(fun binding->S.{group=0;binding;kind=(if binding=count+1 then Uniform_buffer else Storage_buffer);visibility=[Compute]})in
+    |>List.map(fun binding->S.{group=0;binding;kind=(if binding=count+outputs then Uniform_buffer else Storage_buffer);visibility=[Compute]})in
   Ok {source;entry;interface;uniform_layout=List.rev !uniform_layout;uniform_bytes= !offset;
-    table_seeds;output_width=Array.length view.output;input_widths=view.widths}
+    table_seeds;output_widths=Array.map Array.length view.outputs;input_widths=view.widths}
 with Unsupported message -> Error (Flow.Diagnostic.error ~code:"E_GPU_FORM" message)

@@ -34,8 +34,10 @@ let record result =
       let view = P.Private.view packed in
       add "program\n";
       Array.iteri (fun i x -> add "  r%d = %s\n" i (instruction x)) view.code;
-      add "  widths %s\n  output %s\n  uniform_widths %s\n  collecting %b\n"
-        (ints view.widths) (ints view.output) (ints view.uniform_widths) view.collecting;
+      add "  widths %s\n%s  uniform_widths %s\n  collecting %b\n"
+        (ints view.widths)
+        (String.concat "" (Array.to_list (Array.map (fun o -> "  output " ^ ints o ^ "\n") view.outputs)))
+        (ints view.uniform_widths) view.collecting;
       List.iter (fun (d : Flow.Diagnostic.t) -> add "  gpu_refusal %s %S\n" d.code d.message)
         (P.gpu_refusals packed);
       add "\n");

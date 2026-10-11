@@ -56,6 +56,14 @@ val force : ?state:Flow.Eval.state -> ?elems:(string * Flow.Eval.value) list ->
   ?resolve:(Flow.Eval.value -> (Flow.Eval.value, Flow.Diagnostic.t) result) ->
   ?measure:((unit -> float) * (t -> seconds:float -> reference:bool -> unit)) ->
   t -> live:Flow.Eval.live -> (Flow.Eval.value, Flow.Diagnostic.t) result
+val force_all : ?state:Flow.Eval.state -> ?elems:(string * Flow.Eval.value) list ->
+  ?resolve:(Flow.Eval.value -> (Flow.Eval.value, Flow.Diagnostic.t) result) ->
+  ?measure:((unit -> float) * (t -> seconds:float -> reference:bool -> unit)) ->
+  t -> live:Flow.Eval.live -> (Flow.Eval.value list, Flow.Diagnostic.t) result
+(** One packed array per output, in output order. A program with several outputs
+    only collects and has no reference fallback; [force] is the single-output
+    accessor and refuses such a program. *)
+
 val reference : ?state:Flow.Eval.state -> ?elems:(string * Flow.Eval.value) list ->
   ?resolve:(Flow.Eval.value -> (Flow.Eval.value, Flow.Diagnostic.t) result) ->
   t -> live:Flow.Eval.live -> (Flow.Eval.value, Flow.Diagnostic.t) result
@@ -70,7 +78,7 @@ module Private : sig
   val output_reachable : t -> bool array
   (** Fresh instruction mask used by GPU qualification and code generation. *)
 
-  type view = {code : instruction array; widths : int array; output : int array;
+  type view = {code : instruction array; widths : int array; outputs : int array array;
     uniform_widths : int array; collecting : bool; }
   val view : t -> view
   (* Borrowed immutable arrays for downstream compilation. *)

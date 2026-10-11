@@ -41,7 +41,7 @@ let () =
   List.iter (fun (width, body) ->
     let program = Test_program.compile ~fusion:false body in
     let msl = Test_program.ok (Flow_gpu.Emit.kernel program) in
-    assert (msl.output_width = width);
+    assert (msl.output_widths = [|width|]);
     let prepared = Test_program.ok (Flow_ir.Packed.Private.prepare program ~live:(Frame_input.at_time 1.)) in
     assert (prepared.count = 1024);
     assert (Marshal.to_string (Flow_ir.Packed.force program ~live:(Frame_input.at_time 1.)) [Marshal.No_sharing]
@@ -85,13 +85,13 @@ let () =
     let path="goldens/" ^ name ^ ".metal" in
     if writing then Out_channel.with_open_bin path (fun channel -> output_string channel msl.source)
     else assert (In_channel.with_open_bin path In_channel.input_all=msl.source);
-    assert (List.length msl.interface=Array.length msl.input_widths+3+
+    assert (List.length msl.interface=Array.length msl.input_widths+Array.length msl.output_widths+2+
       (if msl.table_seeds=[||] then 0 else 1));
     assert (Ogpu.Shader.validate_bindings msl.interface=Ok ());
     let inputs=Test_program.ok (Flow_ir.Packed.Private.prepare program ~live:(Frame_input.at_time 1.)) in
     assert (inputs.count=1024);
     assert (Array.length inputs.frame=Array.length (Flow_ir.Packed.Private.view program).code))
-    (Test_program.fixtures 1024);
+    (Test_program.fixtures 1024 @ ["two_outputs",Test_program.two_outputs ()]);
   List.iter (fun source ->
     let program = Test_program.compile source in
     match Flow_ir.Packed.gpu_refusals program, Flow_gpu.Emit.kernel program with

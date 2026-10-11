@@ -284,3 +284,24 @@ let () =
   print_endline "Packed diagnostics: refusal reasons/spans, 64-register boundary, captures and unfused fallback passed"
 
 let () = Region_snapshot.finish "test_packed"
+
+(* Several outputs per region, outside the trace above: the snapshots stay single-output. *)
+let () =
+  let program = Test_program.two_outputs () in
+  let live = Frame_input.at_time 1.25 in
+  let results = List.map (fun domains ->
+    let result = ref [] in
+    Rays_math.Parallel.run ~domains (fun () -> result := ok (I.Packed.force_all program ~live));
+    !result) [1; 8] in
+  (match results with
+   | [one; eight] ->
+       assert (Marshal.to_string one [Marshal.No_sharing] = Marshal.to_string eight [Marshal.No_sharing]);
+       (match one with
+        | [E.Float_array a; E.Vec2_array b] ->
+            assert (Array.length a = 1024 && Array.length b = 2048);
+            Array.iteri (fun i x ->
+              assert (x = float_of_int i +. 1.25 && b.(2 * i) = float_of_int i && b.(2 * i + 1) = x)) a
+        | _ -> assert false)
+   | _ -> assert false);
+  assert (Result.is_error (I.Packed.force program ~live));
+  print_endline "Packed outputs: two outputs match at 1 and 8 domains"

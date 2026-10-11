@@ -7,8 +7,9 @@ val dispatch : t -> Flow_ir.Packed.Private.inputs -> (output, Flow.Diagnostic.t)
     slot retains only its last successfully uploaded array and covered length,
     until buffer replacement or close. Frame/uniform/status writes remain live. *)
 
-val readback : output -> (Flow.Eval.value, Flow.Diagnostic.t) result
-val buffer : output -> Ogpu.Backend.buffer option
+(** [index] picks an output of a multi-output program (default the first); [width] is the first output's. *)
+val readback : ?index:int -> output -> (Flow.Eval.value, Flow.Diagnostic.t) result
+val buffer : ?index:int -> output -> Ogpu.Backend.buffer option
 val count : output -> int
 val width : output -> int
 val gpu_seconds : output -> float option

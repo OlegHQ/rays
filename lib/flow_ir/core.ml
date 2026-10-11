@@ -67,7 +67,8 @@ module Region = struct
     residual : Flow.Eval.residual; term : Flow.Workspace.term;
     sources : (Flow.Eval.residual * Flow.Workspace.term) array; widths : int array;
     uniforms : Flow.Eval.value array; uniform_names : (string * string list) array;
-    code : instruction array; output : int array;
+    code : instruction array;
+    outputs : int array array; (* component registers of each output; [Collect] regions only may have several *)
     count : int option; origin : origin option;
     iteration : iteration; result : result; skip : int array;
     stages : (Flow.Eval.residual * Flow.Workspace.term) list;
@@ -197,7 +198,7 @@ let pp fmt p =
       (match r.result with Collect -> "collect" | Sum zero -> if zero then "sum0" else "sum"
         | Accumulate (_, scan) -> if scan then "scan" else "fold")
       (match r.count with Some c -> string_of_int c | None -> "?")
-      (names r.widths) (names r.output) (Array.length r.uniforms) (names r.skip) (List.length r.stages);
+      (names r.widths) (String.concat " | " (Array.to_list (Array.map names r.outputs))) (Array.length r.uniforms) (names r.skip) (List.length r.stages);
     Array.iteri (fun i (x : Region.instruction) ->
       out "    r%d = " i;
       (match x with

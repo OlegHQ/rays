@@ -798,7 +798,8 @@ Phase 4
 - [ ] P4.2 S
 - [ ] P4.3 S
 - [ ] P4.4 S
-- [ ] P4.5 S
+- [x] P4.5 S
+  Done 2026-10-11. `Core.Region.t.output : int array` is now `outputs : int array array` (component registers per output; `Packed.of_region` refuses an empty list, or several outputs unless the region collects). `Packed.Private.view.outputs` is the same. `Packed.force_all` returns one packed array per output (`Eval.value list`); `Packed.force` stays the single-output accessor and errors on a multi-output program, which has no reference fallback. `Core_fuse` fuses a multi-output parent but never absorbs a multi-output child. The Metal emitter declares one buffer per output (`output` when single, `output0..` otherwise) at bindings `n..n+k-1`, then uniforms, status, table; `Emit.msl.output_width` became `output_widths`; `Run` owns one buffer per output and `Run.readback ?index`/`Run.buffer ?index` pick one. A single-output program prints as before: the P2.1 snapshots and the `arithmetic`, `select`, `noise` goldens are byte-identical (no mechanical reformat was needed); the new `two_outputs.metal` golden and the `Test_program.two_outputs` fixture (built at region level) are checked by `test_emit`, `test_packed` (1 and 8 domains, byte-equal) and natively by `test_run`. `@lib/flow_ir/runtest`, `@lib/flow_gpu/runtest`, `@runtest-native` pass.
 - [ ] P4.6 S
 - [ ] P4.7 S
 - [ ] P4.8 S
