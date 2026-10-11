@@ -345,3 +345,48 @@
 (rule (alias runtest-native) (locks smoke_window)
  (action (setenv SDL_AUDIODRIVER dummy
   (run %{exe:test_host_effects.exe} /tmp/rays-host-effects-export))))
+
+; Draw-graph scene snapshots (P3.1): each workspace's scene is regenerated into
+; the build directory and diffed against the checked-in file.
+(executable
+ (name test_draw_snapshot)
+ (modules test_draw_snapshot)
+ (libraries rays rays_editor editor_document flow flow_sop sop_catalog scene_command frame_input))
+
+(rule
+ (alias runtest)
+ (deps (source_tree ../examples) (source_tree ../sketches) (source_tree draw_snapshots))
+ (action
+  (setenv SDL_VIDEODRIVER dummy
+   (setenv SDL_AUDIODRIVER dummy
+    (progn
+     (with-stdout-to examples_audio.txt (run %{exe:test_draw_snapshot.exe} examples_audio))
+     (diff draw_snapshots/examples_audio.txt examples_audio.txt)
+     (with-stdout-to examples_basic.txt (run %{exe:test_draw_snapshot.exe} examples_basic))
+     (diff draw_snapshots/examples_basic.txt examples_basic.txt)
+     (with-stdout-to examples_drawing.txt (run %{exe:test_draw_snapshot.exe} examples_drawing))
+     (diff draw_snapshots/examples_drawing.txt examples_drawing.txt)
+     (with-stdout-to examples_file_dialog.txt (run %{exe:test_draw_snapshot.exe} examples_file_dialog))
+     (diff draw_snapshots/examples_file_dialog.txt examples_file_dialog.txt)
+     (with-stdout-to examples_generative.txt (run %{exe:test_draw_snapshot.exe} examples_generative))
+     (diff draw_snapshots/examples_generative.txt examples_generative.txt)
+     (with-stdout-to examples_noise.txt (run %{exe:test_draw_snapshot.exe} examples_noise))
+     (diff draw_snapshots/examples_noise.txt examples_noise.txt)
+     (with-stdout-to examples_particles.txt (run %{exe:test_draw_snapshot.exe} examples_particles))
+     (diff draw_snapshots/examples_particles.txt examples_particles.txt)
+     (with-stdout-to examples_pxui.txt (run %{exe:test_draw_snapshot.exe} examples_pxui))
+     (diff draw_snapshots/examples_pxui.txt examples_pxui.txt)
+     (with-stdout-to examples_recursive_rectangles.txt (run %{exe:test_draw_snapshot.exe} examples_recursive_rectangles))
+     (diff draw_snapshots/examples_recursive_rectangles.txt examples_recursive_rectangles.txt)
+     (with-stdout-to sketches_flow_contours.txt (run %{exe:test_draw_snapshot.exe} sketches_flow_contours))
+     (diff draw_snapshots/sketches_flow_contours.txt sketches_flow_contours.txt)
+     (with-stdout-to sketches_flow_image.txt (run %{exe:test_draw_snapshot.exe} sketches_flow_image))
+     (diff draw_snapshots/sketches_flow_image.txt sketches_flow_image.txt)
+     (with-stdout-to sketches_flow_image_kernel.txt (run %{exe:test_draw_snapshot.exe} sketches_flow_image_kernel))
+     (diff draw_snapshots/sketches_flow_image_kernel.txt sketches_flow_image_kernel.txt)
+     (with-stdout-to sketches_flow_particles_gpu.txt (run %{exe:test_draw_snapshot.exe} sketches_flow_particles_gpu))
+     (diff draw_snapshots/sketches_flow_particles_gpu.txt sketches_flow_particles_gpu.txt)
+     (with-stdout-to sketches_flow_shader.txt (run %{exe:test_draw_snapshot.exe} sketches_flow_shader))
+     (diff draw_snapshots/sketches_flow_shader.txt sketches_flow_shader.txt)
+     (with-stdout-to sketches_flow_vectors.txt (run %{exe:test_draw_snapshot.exe} sketches_flow_vectors))
+     (diff draw_snapshots/sketches_flow_vectors.txt sketches_flow_vectors.txt))))))
