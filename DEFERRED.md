@@ -6,11 +6,7 @@ deleted, not ticked.
 ## Tests that got weaker
 
 - 2026-10-11: every test file was compared with its version before `923dcecf` and the tests
-  whose subject survived are back. Two things were not restored and are the owner's call:
-  - The path tracer's `RAYS_PATH_TRACER_EXACT_M1` digests were stale before the prune (the
-    kernel's rect-light transport changed in `4fce19a5`); the rule that set the switch is
-    removed. Today's frames hash to `f2d5db77d2304128e7b179ab29121798` (lit sphere) and
-    `d6ad096a19f992493f21101954aac616` (instanced), unrecorded.
+  whose subject survived are back. One thing was not restored and is the owner's call:
   - The Metal safe suites lost most of their statements to the binding prunes of 2026-09-26
     and 2026-10-06, before this restructure. They now cover the calls that are left; nobody
     compared them statement by statement with the versions before `0d136464`.
