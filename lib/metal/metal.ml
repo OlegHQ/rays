@@ -5534,12 +5534,12 @@ module Render_encoder = struct
        && Float.is_finite viewport.zfar)
     then error operation Invalid_argument "viewport values must be finite"
     else if
-      viewport.x < 0. || viewport.y < 0. || viewport.width <= 0. || viewport.height <= 0.
-      || viewport.x +. viewport.width > float value.target.descriptor.width
-      || viewport.y +. viewport.height > float value.target.descriptor.height
+      (* The origin and extent may leave the target: a viewport maps clip space
+         and Metal rasterizes only the part on the attachment. *)
+      viewport.width <= 0. || viewport.height <= 0.
       || viewport.znear < 0. || viewport.znear > 1. || viewport.zfar < 0. || viewport.zfar > 1.
       || viewport.znear > viewport.zfar
-    then error operation Invalid_argument "viewport is outside the render target or depth range"
+    then error operation Invalid_argument "viewport is empty or outside the depth range"
     else
       let* () =
         native_result operation

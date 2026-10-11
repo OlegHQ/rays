@@ -719,6 +719,11 @@ let run driver =
     get (Backend.set_render_pipeline encoder flat);
     get (Backend.set_stage_buffer encoder Vertex ~index:0 offsets);
     set_color encoder 1. 0. 0.5 1.;
+    (* A viewport may hang over the target; an empty one is refused. *)
+    (match Backend.set_viewport encoder {x=0;y=0;width=0;height=4} with
+     | Error { Error.kind = Invalid_argument; _ } -> ()
+     | _ -> failwith "empty viewport was accepted");
+    get (Backend.set_viewport encoder {x= -2;y= -2;width=8;height=8});
     get (Backend.set_viewport encoder {x=0;y=0;width=4;height=4});
     get (Backend.set_scissor encoder {x=0;y=0;width=4;height=4});
     get (Backend.set_cull encoder Cull_none);

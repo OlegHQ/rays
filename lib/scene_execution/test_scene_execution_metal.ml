@@ -145,8 +145,12 @@ let run () =
   let compacted_texture:Scene_execution.sampled_texture={key="native-sampler-eviction";levels;sampler=sampler~min_filter:Linear~mag_filter:Linear();gpu=None}in
   List.iter(fun _->ignore(get(render_textured renderer[
     Scene_execution.Scene2_textured,Ogpu.Pipeline.Replace,Some compacted_texture,
-      {mesh=mesh_uv 0.5 0.5;state}])))frames;
+      {mesh=mesh_uv 0.5 0.5;state}]));
+    let bytes=get(Scene_execution.read_pixels renderer~bytes_per_row:16)in
+    if (Char.code(Bytes.get bytes 0),Char.code(Bytes.get bytes 1),Char.code(Bytes.get bytes 2))<>(128,128,128) then
+      failwith"sampler cache eviction changed the linear sampler result")frames;
   let replacement=[|{Scene_execution.width=2;height=2;bytes=Bytes.make 16 '\255'};{width=1;height=1;bytes=Bytes.of_string"\000\000\255\255"}|]in let replaced:Scene_execution.sampled_texture={key="native-mip-chain";levels=replacement;sampler=sampler();gpu=None}in let before_reload=Scene_execution.upload_bytes renderer in ignore(get(render_textured renderer[Scene_execution.Scene3_textured,Ogpu.Pipeline.Replace,Some replaced,{mesh=mesh_uv 0.1 0.1;state}]));if Scene_execution.upload_bytes renderer<=before_reload then failwith"texture generation replacement was not uploaded";
+  (let bytes=get(Scene_execution.read_pixels renderer~bytes_per_row:16)in if (Char.code(Bytes.get bytes 0),Char.code(Bytes.get bytes 1),Char.code(Bytes.get bytes 2))<>(255,255,255) then failwith"replaced texture generation did not sample the new levels");
   let malformed={replaced with Scene_execution.key="malformed";levels=[|{Scene_execution.width=2;height=2;bytes=Bytes.make 15 '\000'}|]}and before_reject=Scene_execution.upload_bytes renderer in begin match render_textured renderer[Scene_execution.Scene3_textured,Ogpu.Pipeline.Replace,Some malformed,{mesh=mesh_uv 0.1 0.1;state}]with Error _ when Scene_execution.upload_bytes renderer=before_reject->()|_->failwith"malformed texture was not rejected atomically"end;
   let shadow_vertices=Bytes.copy vertices3 in for index=0 to 2 do let offset=index*68 in Bytes.set_int64_le shadow_vertices(offset+16)(Int64.bits_of_float 0.5);Bytes.set_int64_le shadow_vertices(offset+40)(Int64.bits_of_float 1.);Bytes.set_int32_le shadow_vertices(offset+48)0xffffffffl done;
   let shadow_mesh={mesh3 with Scene_execution.key="fullscreen-scene3-shadow";vertices=shadow_vertices}in
@@ -159,8 +163,15 @@ let run () =
   List.iter(fun(name,auxiliary,expected)->List.iter(fun _frame->ignore(get(render_resources renderer[Scene_execution.Scene3_shadow,Ogpu.Pipeline.Replace,None,Some auxiliary,{mesh=shadow_mesh;state}]));let bytes=get(Scene_execution.read_pixels renderer~bytes_per_row:16)in let actual=Char.code(Bytes.get bytes 0)in if actual<>expected then failwith(Printf.sprintf"scene execution Metal shadow %s %d<>%d"name actual expected))frames)
     ["bias",shadow_aux~bias:0.02"native-shadow-bias"Scene_execution.Tap1 1. 0.49,255;"strength",shadow_aux"native-shadow-strength"Scene_execution.Tap1 0.5 0.,128];
   let reload_key="native-shadow-reload"in let first_shadow=shadow_aux reload_key Scene_execution.Tap1 1. 0. in ignore(get(render_resources renderer[Scene_execution.Scene3_shadow,Ogpu.Pipeline.Replace,None,Some first_shadow,{mesh=shadow_mesh;state}]));let before_shadow_reload=Scene_execution.upload_bytes renderer in let reloaded_shadow=shadow_aux reload_key Scene_execution.Tap1 0.5 1. in ignore(get(render_resources renderer[Scene_execution.Scene3_shadow,Ogpu.Pipeline.Replace,None,Some reloaded_shadow,{mesh=shadow_mesh;state}]));if Scene_execution.upload_bytes renderer<=before_shadow_reload then failwith"shadow generation replacement was not uploaded";
+  (* Shadow texture keys carry their generation, so only the parameters reload:
+     strength 1 gave 0, strength 0.5 over the same depth map gives 128. *)
+  (let bytes=get(Scene_execution.read_pixels renderer~bytes_per_row:16)in if Char.code(Bytes.get bytes 0)<>128 then failwith(Printf.sprintf"replaced shadow parameters were not applied: %d"(Char.code(Bytes.get bytes 0))));
   let malformed_aux={reloaded_shadow with Scene_execution.key="malformed-shadow";buffer=Bytes.empty}and before_shadow_reject=Scene_execution.upload_bytes renderer in begin match render_resources renderer[Scene_execution.Scene3_shadow,Ogpu.Pipeline.Replace,None,Some malformed_aux,{mesh=shadow_mesh;state}]with Error _ when Scene_execution.upload_bytes renderer=before_shadow_reject->()|_->failwith"malformed shadow was not rejected atomically"end;
+  let corners label=let bytes=get(Scene_execution.read_pixels renderer~bytes_per_row:32)in
+    List.iter(fun at->if (Char.code(Bytes.get bytes at),Char.code(Bytes.get bytes(at+1)),Char.code(Bytes.get bytes(at+2)))<>(255,0,128) then failwith("resized pixel "^label))[0;28;7*32;7*32+28]in
   get(Scene_execution.resize renderer{configuration with physical_width=8;physical_height=8});ignore(get(Scene_execution.render renderer[{mesh;state={state with viewport=(0,0,8,8);scissor=(0,0,8,8)}}]));
+  corners"8x8 draw";
   ignore(get(Scene_execution.render renderer[{mesh;state={state with viewport=(0,0,16,16);scissor=(-4,0,32,32)}}]));
+  corners"oversized viewport and scissor";
   if List.mem 4 supported then(ignore(get(Scene_execution.render_sampled_resources renderer[sampled 4 {mesh=mesh3;state={state with viewport=(0,0,8,8);scissor=(0,0,8,8)}}]));let captured=get(Scene_execution.read_pixels renderer~bytes_per_row:32)in if Bytes.length captured<>256||Char.code(Bytes.get captured 0)<>255||Char.code(Bytes.get captured 2)<>128 then failwith"resized multisample capture pixel");
   get(Scene_execution.destroy renderer);if live_handles()<>before then failwith"scene execution Metal live delta";print_endline"scene execution Metal: SDL-free draw/resize, exact pixel, zero delta"

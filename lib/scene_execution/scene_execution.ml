@@ -778,10 +778,9 @@ let resolve_prepared value prepared draws =
       |exception Not_found->rebuild())
   |None->coalesce_draws draws
 let intersect_extent ~bound_w ~bound_h (x,y,w,h)=
-  let x=max 0 x and y=max 0 y in
-  let w=min w(bound_w-x)and h=min h(bound_h-y)in
-  if bound_w<=0||bound_h<=0||w<=0||h<=0 then(0,0,max 1 bound_w,max 1 bound_h)
-  else(x,y,w,h)
+  let x0=max 0 x and y0=max 0 y in
+  let x1=min bound_w (x+w) and y1=min bound_h (y+h) in
+  if x1<=x0||y1<=y0 then None else Some(x0,y0,x1-x0,y1-y0)
 let automatic_signature
     (family,blend,samples,state,texture,auxiliary,environment,item,uniform,attributes,gpu_vertices) =
   (* Submission signatures own affine bytes.  Scene values are immutable by
@@ -1008,8 +1007,14 @@ let encode_batch value commands ~clear (batch:batch_plan)=
     (if batch.batch_first then Ogpu.Render_pass.Clear else Load)clear in
   let* encoder=Ogpu.Backend.render_encoder commands target in
   let bound_w=value.configuration.Ogpu.Surface.physical_width and bound_h=value.configuration.physical_height in
-  let x,y,width,height=intersect_extent~bound_w~bound_h batch.batch_state.viewport
-  and sx,sy,sw,sh=intersect_extent~bound_w~bound_h batch.batch_state.scissor in
+  (* A viewport or scissor with no pixel on the target draws nothing.  The
+     viewport is passed whole: it maps clip space, so a view that hangs over
+     the target edge keeps its proportions and only the scissor is clipped. *)
+  let visible,(x,y,width,height),(sx,sy,sw,sh)=
+    match intersect_extent~bound_w~bound_h batch.batch_state.viewport,
+          intersect_extent~bound_w~bound_h batch.batch_state.scissor with
+    |Some _,Some scissor->true,batch.batch_state.viewport,scissor
+    |_->false,(0,0,max 1 bound_w,max 1 bound_h),(0,0,max 1 bound_w,max 1 bound_h)in
   let* ()=Ogpu.Backend.set_viewport encoder{x;y;width;height}in
   let* ()=Ogpu.Backend.set_scissor encoder{x=sx;y=sy;width=sw;height=sh}in
   let* ()=Ogpu.Backend.set_cull encoder batch.batch_state.cull in
@@ -1022,7 +1027,7 @@ let encode_batch value commands ~clear (batch:batch_plan)=
     |Some state->Ogpu.Backend.set_stencil_reference encoder~front:state.front_reference~back:state.back_reference
     |None->Ok()in
   let* ()=
-    if Array.length batch.batch_draws=0 then Ok()
+    if Array.length batch.batch_draws=0||not visible then Ok()
     else
     let* ()=if batch.batch_resources=[] then Ok()
       else Ogpu.Backend.use_resources encoder batch.batch_resources in
