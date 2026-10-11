@@ -373,16 +373,28 @@ without a device; each failure below was a test or product defect, not a flake.
   parameter boundary, replacing the old unknown-name refusal or generic
   failure check. `@lib/sop/test_sop` passes; the shared helper's broader
   SOP and Flow-SOP gates also pass.
-- No kind that builds a polygon from explicit points (`poly_fill` returns a closed curve
-  unchanged); the gallery star uses `sop/sweep :caps true` instead.
+- Fixed and verified 2026-10-11: `(sop/curve points :filled true)` builds one polygon
+  primitive from explicit points. `poly_fill` was not at fault: it fills one-sided boundary
+  edges of polygon primitives, and `sop/curve` only made polylines, so there was nothing for it
+  to fill. No new SOP kind (`sop/curve` is a lowered builtin; `filled` is a graph keyword row
+  like `closed`). The gallery star is now `(sop/poly_extrude <filled curve> :distance 0.65)` on
+  the original XZ points; `test/test_gallery_shapes` passes in both modes, including the exact
+  native pixel comparison against the old polygon extrusion. Test: `test_nodes` (one 18-point
+  polygon; extruded star has 20 primitives and volume 0.65 x star area).
 - Fixed and verified 2026-10-11: `Lisp_sop.node ~with_` accepts
   `"image/pixels", node` as an image-typed `(image/ext_pixels)` binding, using
   the existing immutable operator-extension API and normal checked lowering.
   The image node and its inputs retain their identity and are not cooked
   during lowering. `test_attr_from_image` now uses the Lisp surface for its
   channel/UV/domain cases; `@lib/sop/runtest` and `@lib/flow_sop/runtest` pass.
-- What `chromatic_drift`, `pastel_flow` and `code_quadtree` need before a port is listed in
-  `README.md`, "Not yet ported to Rays Lisp".
+- Checked 2026-10-11, none of `chromatic_drift`, `pastel_flow` or `code_quadtree` is portable:
+  each still needs a subsystem that is not a small addition, so none was ported. The README list
+  (updated the same day) states exactly what is missing: UI slider/button/undo ops and
+  settings save/load (`chromatic_drift`, `pastel_flow`); a texture op for 3D surfaces and a
+  PNG-sequence export (`chromatic_drift`); blend and depth control on `scene/` layers
+  (`pastel_flow`); directory listing, text-file read, child processes and a text atlas
+  (`code_quadtree`). The per-vertex colour/normal gap is partly closed (`sop/set_color`,
+  `sop/normals`, `:filled` polygons), but a faithful port still needs the items above.
 
 ## Docs
 
