@@ -1724,7 +1724,7 @@
     },
     {
       "api": [
-        "type attenuation = { constant : float ; linear : float ; quadratic : float ; }",
+        "type attenuation = { constant : float ; quadratic : float ; }",
         "type kind = | Directional of { direction : Vec3.t } | Point of { position : Vec3.t ; attenuation : attenuation } | Spot of { position : Vec3.t ; direction : Vec3.t ; cutoff : float ; concentration : float ; attenuation : attenuation ; } | Area of { position : Vec3.t ; direction : Vec3.t ; width : float ; height : float ; samples : int ; attenuation : attenuation ; }",
         "type t = { kind : kind ; diffuse : Color.t ; intensity : float ; }",
         "val attenuation : ? constant : float -> ? quadratic : float -> unit -> attenuation",
@@ -1733,7 +1733,7 @@
         "val spot : ? diffuse : Color.t -> ? intensity : float -> ? attenuation : attenuation -> at : Vec3.t -> direction : Vec3.t -> cutoff : float -> concentration : float -> unit -> t",
         "val area : ? diffuse : Color.t -> ? intensity : float -> ? attenuation : attenuation -> ? samples : int -> at : Vec3.t -> direction : Vec3.t -> width : float -> height : float -> unit -> t"
       ],
-      "api_sha256": "0c33b0197d26b571ff56aea99ca5b7a5e2bd193fc0311ffd6345fa71ef58f6ef",
+      "api_sha256": "b0b26b7f510394a102a6fd7053b2eba8d82ab744989504bd4728c207f89dfb0e",
       "excluded_legacy_symbols": [],
       "library": "rays",
       "module": "Light",
