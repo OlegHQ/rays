@@ -896,3 +896,48 @@ more frames), no failed frame (`__rays.error`), no presenter error, a non-empty 
 
 11 open, 4 are refused with a code and a span, none fails. Unlike `web_parity.exe` (node: marks against the native
 executor), this checks the real page: workers, one WebGPU device, presenter, `start`'s loop.
+
+## P7.3 browser numbers
+
+Date 2026-10-11. Machine: Apple M1 (16 GB, macOS 27.0.1), integrated GPU through Chrome's Metal WebGPU adapter;
+Google Chrome 154.0.0.0 `--headless=new`, node 24.19. Load averages while measuring: 3.8 to 17 (other agents were
+building and benchmarking; `uptime` before the first run: 17.0, after the last: 3.8), so read the numbers as
+indicative. Canvas 900x700, dpr 1.
+
+Workspaces: copies of `sketches/million_marks/sketch.rays` (not edited in the checkout) with `count` 10000 or 1000000.
+animated = as checked in (marks drift with `t`, one dispatched GPU kernel). static = the drift term removed, so the
+export folds the region to a constant CPU buffer (24 MB at 1M) that the presenter currently re-uploads every frame:
+measured as it is. panning = static marks with the pan offset `(* 100 (sin t))` in place of `view.x`, so only the
+transform changes (regions may not capture pointer state, `E_WEB_CAPTURE`).
+
+Command per case (`DIR` holds the variant's `sketch.rays`):
+`_build/default/tools/web_shot.exe --time 300 _build/default/tools/lisp/lisp.exe _build/default/tools/marks_shot.exe tools/web/test/web_shot.mjs DIR 900 700`
+
+`--time N` skips the native render and comparison. Phase 1: the page's own rAF loop runs, the interval between
+consecutive `presenter.present` calls is recorded for N frames ("rAF"; headless Chrome paces it at 60 Hz, 16.7 ms,
+and the loop does not wait for the GPU). Phase 2: the loop is halted and N frames are driven by hand, each timed as
+`stepFrame` + `present` + `await device.queue.onSubmittedWorkDone()` ("uncapped", the real per-frame cost). Load =
+`performance.now()` at the first presented frame (navigation start; includes module load, device, worker pool, data.bin
+fetch). Compile = `createGpu` around shader-module and pipeline creation (`gpu.compileMs`).
+
+| Marks | Case | rAF median / p95 ms | Uncapped median / p95 / mean ms | Load ms | Compile ms | counts (invoke, gpu) |
+| --- | --- | --- | --- | --- | --- | --- |
+| 10,000 | static | 16.5 / 22.7 | 1.93 / 2.43 / 2.07 | 254 | 0.0 (no kernel) | 0, 0 |
+| 10,000 | panning | 16.7 / 21.2 | 2.00 / 2.50 / 2.11 | 255 | 0.0 (no kernel) | 0, 0 |
+| 10,000 | animated | 16.5 / 23.0 | 1.17 / 1.49 / 1.22 | 264 | 2.3 | 0, 607 |
+| 1,000,000 | static | 23.7 / 34.3 | 34.1 / 40.1 / 35.4 | 311 | 0.0 (no kernel) | 0, 0 |
+| 1,000,000 | panning | 23.5 / 32.0 | 39.5 / 41.3 / 38.6 | 295 | 0.0 (no kernel) | 0, 0 |
+| 1,000,000 | animated | 21.3 / 43.5 | 29.9 / 32.7 / 30.3 | 297 | 14.8 | 0, 605 |
+
+`gpu` counts both phases (about 300 frames each plus frames the loop ran while the page started); no case runs a CPU
+region (`invoke` 0) and none reports a presenter error.
+
+Findings:
+- 10,000 marks cost about 1 to 2 ms per frame in every case: the 60 Hz cap, not the work, sets the rAF numbers.
+- 1,000,000 marks cost 30 to 40 ms per frame (25 to 33 fps uncapped). The rAF median (21 to 24 ms) is below the
+  uncapped cost because the rAF loop does not wait for the GPU between frames; the uncapped column is the honest one.
+- The static and panning cases at 1M are not faster than animated (34 and 39 against 30 ms): the 24 MB CPU buffer is
+  re-uploaded every frame, which costs more than dispatching the drift kernel and keeping its output on the GPU.
+  Recorded in `DEFERRED.md` (presenter cache of CPU attribute buffers by array identity).
+- Kernel compile is 2.3 ms (10,000) and 14.8 ms (1,000,000): the kernel text is the same apart from the count, and the cause of the
+  difference was not investigated; either is far below load time (250 to 310 ms).

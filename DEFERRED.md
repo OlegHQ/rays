@@ -402,6 +402,11 @@ later. Numbers and commands are in `specification/web-export/results.md`.
   (fill mode 1); letting `fill`, `stroke` and `color` be `Marks.Device` buffers (a `Core_exec.device_regions`
   name list, `Marks.validate`, `Marks_scene.words`) would remove it. Still 2.1x faster than the CPU path
   (animated circles 1M, 153 ms).
+- Static CPU attribute buffers are re-uploaded every frame by the web presenter (P7.3,
+  `results.md`, `million_marks` with the drift removed, 1,000,000 marks, M1, headless Chrome 154,
+  load 4 to 17): 34 ms per frame static and 39 ms panning against 30 ms for the animated GPU kernel
+  case; 10,000 marks cost about 2 ms. Fix: cache the uploaded buffer by array identity in
+  `present.js` (and a f64 `data.bin` is still 24 MB at 1M).
 
 ## Lisp gaps
 

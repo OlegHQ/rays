@@ -68,7 +68,9 @@ export async function createGpu(table, { onError = e => console.error(e), win = 
     }
     return { ...k, key: keyOf(k), layout, pipeline, tableBuffer };
   };
+  const compileStart = performance.now();   // gpu.compileMs: shader modules and pipelines (P7.3)
   for (const k of await Promise.all(table.kernels.map(build))) kernels.set(k.id, k);
+  const compileMs = performance.now() - compileStart;
 
   const owned = new Map();   // id -> {buffer, capacity, used}
   const own = (id, bytes, usage) => {
@@ -87,7 +89,7 @@ export async function createGpu(table, { onError = e => console.error(e), win = 
   const maxBinding = device.limits.maxStorageBufferBindingSize;
 
   const gpu = {
-    device, kernels,
+    device, kernels, compileMs,
     // Reload (plan P6.7): a new kernel table. A kernel whose WGSL, entry, bindings and noise seeds are unchanged
     // keeps its pipeline; only the others are compiled; a table the new one no longer uses is released.
     async update(next) {

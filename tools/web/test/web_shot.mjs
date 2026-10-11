@@ -12,7 +12,7 @@ import { launch } from './chrome.mjs';
 import { compare, decodePng } from './png.mjs';
 
 const [url, dir, w, h, ...frames] = process.argv.slice(2);
-const [W, H] = [Number(w), Number(h)], wanted = frames.map(Number), last = Math.max(...wanted);
+const [W, H] = [Number(w), Number(h)], wanted = frames.map(Number), last = Math.max(0, ...wanted), TIME = Number(process.env.WEB_SHOT_TIME ?? 0);
 const browser = await launch(url, process.env.WEB_SHOT_CHROME_FLAGS?.split(' '));   // the flags are for testing the unavailable path
 const wait = async (what, test, ms = 30000) => {
   const end = Date.now() + ms;
@@ -26,6 +26,29 @@ try {
   } catch (error) {
     const text = await browser.evaluate('document.body.innerText').catch(() => '');
     if (/WebGPU/.test(text)) { console.error(`web_shot: WebGPU unavailable: ${text.trim()}`); code = 3; } else { console.error(`web_shot: ${error.message} ${text.slice(0, 200)}`); code = 4; }
+    throw code;
+  }
+  if (TIME) {   // P7.3 timing mode: no comparison
+    const r = await browser.evaluate(`(async () => {
+      const rt = __rays, p = rt.presenter, stats = a => { const s = [...a].sort((x, y) => x - y);
+        return { median: s[s.length >> 1], p95: s[Math.floor(s.length * 0.95)], mean: s.reduce((x, y) => x + y, 0) / s.length }; };
+      const times = [], present = p.present.bind(p);   // the page's own loop: intervals between presented frames
+      p.present = (...a) => { times.push(performance.now()); return present(...a); };
+      while (times.length < ${TIME} + 1) await new Promise(r => setTimeout(r, 50));
+      const rafMs = times.slice(0, ${TIME} + 1).map((t, i, a) => t - a[i - 1]).slice(1);
+      p.present = present; rt.halt(); await new Promise(r => setTimeout(r, 400));
+      rt.load(rt.program); p.dpr = 1;
+      const cost = [], dt = 1 / 60, device = rt.gpu.device;
+      for (let f = 1; f <= ${TIME}; f++) {
+        const a = performance.now();
+        await rt.stepFrame({ t: f * dt, dt, frame: f, tick: f, pointer: [100, 100], size: [${W}, ${H}], events: [], keys: [], buttons: [] });
+        p.present(rt.marks, [${W}, ${H}]); await device.queue.onSubmittedWorkDone();
+        cost.push(performance.now() - a);
+      }
+      return { raf: stats(rafMs), uncapped: stats(cost), loadMs: rt.firstPresentMs, compileMs: rt.gpu.compileMs, counts: rt.counts, errors: p.errors, ua: navigator.userAgent };
+    })()`);
+    console.log('TIMING ' + JSON.stringify(r));
+    if (r.errors.length) code = 1;
     throw code;
   }
   const shots = await browser.evaluate(`(async () => {

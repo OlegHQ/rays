@@ -261,7 +261,7 @@ export async function start(canvas, program, { fixedDt, pool, data = null, win =
   let stopped = false, failed = false;
   const loop = async () => {
     if (stopped) return;
-    try { await rt.stepFrame(); presenter.present(rt.marks, rt.input.size); } catch (error) { console.error(error); rt.error = error; failed = true; return; }
+    try { await rt.stepFrame(); presenter.present(rt.marks, rt.input.size); rt.firstPresentMs ??= performance.now(); } catch (error) { console.error(error); rt.error = error; failed = true; return; }
     win.requestAnimationFrame(loop);
   };
   rt.presenter = presenter;

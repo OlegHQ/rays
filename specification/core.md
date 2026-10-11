@@ -789,6 +789,7 @@ operation. A user function/macro row is not a new runtime primitive.
 | `glyph` | compiler rule | Expand macro to image region and draw image entry; `noise3`, arithmetic, comparisons, branches. |
 | `grad` | compiler rule | Expand gradient macro: `+`, `-`, `*`, component reads. |
 | `half` | compiler rule | Inline definition: `/` and argument `coerce`. |
+| `hash` | compiler rule | Expand the workspace macro of `million_marks`: `abs`, `mod`, `*`, `+`, `sin`. |
 | `haze` | compiler rule | Expand image-body macro: `pow`, `mod`, `max`, `+`, `-`, `*`, `/`. |
 | `host/dialog` | refused on web | Native conditional dialog intrinsic and result-event boundary. |
 | `host/play` | refused on web | Native conditional sample-playback intrinsic. |
@@ -819,6 +820,7 @@ operation. A user function/macro row is not a new runtime primitive.
 | `or` | primitive | `or`; eager arguments. |
 | `palette-color` | compiler rule | Inline checked definition: `int/mul`, `int/and`, `int/xor`, `int/div`, `int/mod`, arithmetic, comparisons, branches and the `color/hsl` lowering. |
 | `panel` | compiler rule | Expand shader macro to ordered image entries and pixel regions using its constituent macros. |
+| `pointer/down` | intrinsic | Snapshot primary-button state, as Bool. |
 | `pointer/x` | intrinsic | Snapshot logical pointer x, as Float. |
 | `pointer/y` | intrinsic | Snapshot logical pointer y, as Float. |
 | `pow` | primitive | `pow` |
