@@ -5,19 +5,7 @@ let checked body =
   let forms = ok (Flow.Syntax.parse ("(workspace w (graph g :context value " ^ body ^ "))")) in
   match Flow.Workspace.check {Flow.Check.version=1;kinds=[]} forms with
   | Some ws,[] -> ws | _,ds -> failwith (String.concat "; " (List.map Flow.Diagnostic.to_string ds))
-let expressions = [
-  "(sum [k (range 6)] (/ (sin (* (+ t k) (+ (* 2 k) 1))) (+ (* 2 k) 1)))";
-  "(let* [a 3 b (* a 2)] (+ (* t b) (mod t 0.7)))";
-  "(if (> (sin t) 0.2) (pow t 2) (- 0 t))";
-  "(let* [v [(* t 2) (+ t 1) (min t 3)]] (+ v.x v.y))";
-  "(nth (for [i (range 4)] (* i t)) 2)";
-  "(sum [x (for [i (range 4)] (+ (* i t) 1))] (* x 2))";
-  "(sum [i (range 5)] (sum [j (range 3)] (* (+ t i) j)))";
-  "(let* [a t a1 (+ a a) a2 (+ a1 a1) a3 (+ a2 a2)] (* a3 0.5))";
-  "(let* [c (value/lerp [1 2 3] [t 0 1] 0.25)] c.z)";
-  "(sum [i (range 0)] t)";
-  "(/ t 0)";
-]
+let expressions = Core_fixtures.lower_expressions
 let dump () =
   let buffer = Buffer.create 4096 in
   let fmt = Format.formatter_of_buffer buffer in

@@ -127,3 +127,367 @@ let region program =
    | Collect -> ());
   add "  }\n  return 0;\n}\n";
   Buffer.contents line
+
+(* ---- the frame level ---- *)
+module C = Flow_ir.Core
+
+exception Refused of string * string * Flow.Diagnostic.span option
+
+let escape text =
+  let b = Buffer.create (String.length text + 2) in
+  Buffer.add_char b '"';
+  String.iter (function
+    | '"' -> Buffer.add_string b "\\\"" | '\\' -> Buffer.add_string b "\\\\"
+    | '\n' -> Buffer.add_string b "\\n" | '\r' -> Buffer.add_string b "\\r" | '\t' -> Buffer.add_string b "\\t"
+    | c when Char.code c < 32 || Char.code c = 127 -> Printf.bprintf b "\\u%04x" (Char.code c)
+    | c -> Buffer.add_char b c) text;
+  Buffer.add_char b '"';
+  Buffer.contents b
+
+let rec literal : C.literal -> string = function
+  | Int n -> string_of_int n ^ "n" | Float x -> number x
+  | Bool b -> string_of_bool b | Text s -> escape s
+  | Vector xs -> "Float64Array.of(" ^ String.concat ", " (List.map number (Array.to_list xs)) ^ ")"
+  | List xs -> "[" ^ String.concat ", " (List.map literal (Array.to_list xs)) ^ "]"
+  | Record fields -> "new Map([" ^ String.concat ", "
+      (List.map (fun (n, v) -> "[" ^ escape n ^ ", " ^ literal v ^ "]") fields) ^ "])"
+  | Array {width; data} -> Printf.sprintf "new rt.PArray(%d, Float64Array.of(%s))" width
+      (String.concat ", " (List.map number (Array.to_list data)))
+  | Empty_geometry -> "null"
+
+let rec ty_json : Flow.Ty.t -> string = function
+  | Float -> {|"float"|} | Int -> {|"int"|} | Bool -> {|"bool"|} | Text -> {|"text"|}
+  | Vec2 -> {|"vec2"|} | Vec3 -> {|"vec3"|} | Vec4 -> {|"vec4"|} | Any -> {|"any"|}
+  | List t -> "{list: " ^ ty_json t ^ "}"
+  | Record fields -> "{record: [" ^ String.concat ", "
+      (List.map (fun (n, t) -> "[" ^ escape n ^ ", " ^ ty_json t ^ "]") fields) ^ "]}"
+  | _ -> {|"other"|}
+
+(* The name prims.js exports a primitive under. *)
+let export_name primitive = match C.primitive_name primitive with
+  | "+" -> "add" | "-" -> "sub" | "*" -> "mul" | "/" -> "div" | "<" -> "lt" | "<=" -> "le"
+  | ">" -> "gt" | ">=" -> "ge" | "=" -> "eq" | "equal?" -> "equal"
+  | name -> String.map (fun c -> if c = '/' then '_' else c) name
+
+(* Fixed-arity primitives: the argument names, in prims.js's parameter order. *)
+let signature : C.primitive -> string list option = function
+  | Numeric _ | Remainder | Integer _ | Equal -> Some ["a"; "b"]
+  | Math _ | Exp | Floor | Ceil | Round | Int_convert | Float_convert | Color_byte _ -> Some ["x"]
+  | Show | Truthy | Coerce _ -> Some ["value"]
+  | Sequence_length -> Some ["list"] | Sequence_get -> Some ["list"; "index"]
+  | Sequence_build -> Some ["count"; "width"]
+  | Sequence_slice -> Some ["list"; "first"; "count"]
+  | Array_range -> Some ["count"] | Array_float | Array_vec3 -> Some ["count"; "value"]
+  | Array_count -> Some ["array"] | Array_nth -> Some ["array"; "index"]
+  | Array_slice -> Some ["array"; "first"; "count"] | Array_concat -> Some ["first"; "second"]
+  | Noise3 -> Some ["position"; "seed"; "octaves"]
+  | Fail _ -> Some []
+  | Text_concat | Sequence_concat | Rand | Color_parse -> None
+
+(* Helpers the module carries, emitted only when the body calls them (name, text). *)
+let helpers = [
+  "field", {|const field = (rt, v, name) => v instanceof Map
+  ? (v.has(name) ? v.get(name) : rt.fail("E_FIELD", "Missing core field."))
+  : v instanceof Float64Array && "xyzw".indexOf(name) >= 0 && "xyzw".indexOf(name) < v.length
+    ? v["xyzw".indexOf(name)] : rt.fail("E_FIELD", "Invalid core field.");
+|};
+  "store", {|const store = (rt, s, index, value) => {
+  const i = Number(rt.coerce("int", index));
+  if (s instanceof rt.PArray) {
+    const n = s.data.length / s.width;
+    if (i < 0 || i >= n) rt.fail("E_LIST_RANGE", "Core store is outside its sequence.");
+    const comps = value instanceof Float64Array ? value : Array(s.width).fill(rt.float(value));
+    if (comps.length !== s.width) rt.fail("E_ARRAY_TYPE", "Packed array element has the wrong vector width.");
+    for (let j = 0; j < s.width; j++)
+      s.data[i * s.width + j] = Number.isFinite(comps[j]) ? comps[j] : rt.fail("E_NONFINITE", "array produced a nonfinite value.");
+  } else {
+    if (i < 0 || i >= s.length) rt.fail("E_LIST_RANGE", "Core store is outside its sequence.");
+    s[i] = value;
+  }
+};
+|};
+  "cell", {|const cell = (state, slot, key, stamp) => {
+  const cells = state[slot] ??= new Map();
+  let c = cells.get(key);
+  if (c === undefined) cells.set(key, c = { value: undefined, pending: undefined, stamp });
+  else if (c.stamp !== stamp) {
+    if (c.pending !== undefined) c.value = c.pending;
+    c.pending = undefined; c.stamp = stamp;
+  }
+  return c;
+};
+|};
+  "num", {|const num = (rt, v) => typeof v === "number" ? v : typeof v === "bigint" ? Number(v)
+  : typeof v === "boolean" ? +v : rt.fail("E_TYPE", "Expected a number.");
+const comps = (rt, v) => v instanceof Float64Array && v.length === 3 ? v : (n => [n, n, n])(num(rt, v));
+const toInt = (rt, x) => Number.isFinite(x) && x < 2 ** 62 && x >= -(2 ** 62) ? Math.trunc(x)
+  : rt.fail("E_DRAW_RANGE", "A drawing coordinate must fit an integer.");
+const point = (rt, v) => { const c = comps(rt, v); return [toInt(rt, c[0]), toInt(rt, c[1])]; };
+const pair = (rt, v) => { const c = comps(rt, v); return [c[0], c[1]]; };
+const rgba = (rt, v) => {
+  const c = rt.color_parse(v);
+  return (Number(c.get("r")) << 24 | Number(c.get("g")) << 16 | Number(c.get("b")) << 8 | Number(c.get("a"))) | 0;
+};
+const packed3 = (rt, v) => v instanceof rt.PArray && v.width === 3;
+const ink = (rt, v) => packed3(rt, v) ? -1 : rgba(rt, v);
+const emit = (rt, entry) => {
+  if (rt.marks.length >= 1048576) rt.fail("E_DRAW_RANGE", "A drawing has too many entries.");
+  rt.marks.push(entry);
+};
+const emitAll = (rt, entries) => { for (const e of entries) emit(rt, e); };
+const buffer = (data, count, width) => ({ buffer: data, count, width });
+const items = (rt, v) => v instanceof rt.PArray ? Array.from({ length: Number(rt.array_count(v)) }, (_, i) => rt.array_nth(v, i))
+  : Array.isArray(v) ? v : rt.fail("E_TYPE", "Expected an array.");
+const arg = (rt, a, k) => a[k] ?? rt.fail("E_DRAW_INPUT", "draw needs " + k + ".");
+const colourAttr = (rt, count, v) => {
+  if (!packed3(rt, v)) return { constant: rgba(rt, v) };
+  if (v.data.length !== 3 * count) rt.fail("E_DRAW_LENGTH", "Colors and positions have different lengths.");
+  return buffer(v.data, count, 3);
+};
+const checkColours = (rt, n, a) => {
+  for (const k of ["fill", "stroke", "color"])
+    if (packed3(rt, a[k]) && a[k].data.length !== 3 * n) rt.fail("E_DRAW_LENGTH", "Colors and positions have different lengths.");
+};
+const pointsAttr = (rt, v) => {
+  if (v instanceof rt.PArray && (v.width === 2 || v.width === 3)) {
+    const n = v.data.length / v.width;
+    return [n, buffer(v.data, n, v.width)];
+  }
+  const xs = items(rt, v), data = new Float64Array(2 * xs.length);
+  xs.forEach((x, i) => { const p = pair(rt, x); data[2 * i] = p[0]; data[2 * i + 1] = p[1]; });
+  return [xs.length, buffer(data, xs.length, 2)];
+};
+const markSet = (rt, batch, kind, a) => {
+  const style = n => [a.fill === undefined ? { constant: 0 } : colourAttr(rt, n, a.fill),
+    a.stroke === undefined ? { constant: 0 } : colourAttr(rt, n, a.stroke)];
+  const where = key => batch ? pointsAttr(rt, arg(rt, a, key)) : [1, { constant: pair(rt, arg(rt, a, key)) }];
+  const one = v => ({ constant: pair(rt, v) });
+  const width = { constant: 1 };
+  if (kind === "circle") {
+    const [n, position] = where(batch ? "positions" : "at");
+    const r = arg(rt, a, "radius");
+    let radius;
+    if (!batch) radius = { constant: num(rt, r) };
+    else if (r instanceof rt.PArray && r.width === 1) {
+      if (r.data.length !== n) rt.fail("E_DRAW_LENGTH", "Radii and positions have different lengths.");
+      radius = buffer(r.data, n, 1);
+    } else if (typeof r === "bigint" || typeof r === "number") radius = { constant: num(rt, r) };
+    else rt.fail("E_TYPE", "Radius is a number or packed float array.");
+    checkColours(rt, n, a);
+    const [fill, stroke] = style(n);
+    emit(rt, { type: "mark_set", kind, count: n, position, radius, fill, stroke, stroke_width: width });
+  } else if (kind === "rect") {
+    const [n, position] = where(batch ? "positions" : "at");
+    const s = arg(rt, a, batch ? "sizes" : "size");
+    let size;
+    if (!batch) size = one(s);
+    else if (packed3(rt, s)) {
+      if (s.data.length !== 3 * n) rt.fail("E_DRAW_LENGTH", "Sizes and positions have different lengths.");
+      size = buffer(s.data, n, 3);
+    } else if (s instanceof Float64Array && s.length === 3) size = one(s);
+    else rt.fail("E_TYPE", "Sizes are a vec3 or packed vec3 array.");
+    checkColours(rt, n, a);
+    const [fill, stroke] = style(n);
+    emit(rt, { type: "mark_set", kind, count: n, position, size, fill, stroke, stroke_width: width });
+  } else {
+    const [n, position] = where("from");
+    let end;
+    if (batch) {
+      const [m, e] = pointsAttr(rt, arg(rt, a, "to"));
+      if (m !== n) rt.fail("E_DRAW_LENGTH", "Line endpoints have different lengths.");
+      end = e;
+    } else end = one(arg(rt, a, "to"));
+    checkColours(rt, n, a);
+    emit(rt, { type: "mark_set", kind, count: n, position, end, stroke: colourAttr(rt, n, arg(rt, a, "color")),
+      stroke_width: { constant: num(rt, arg(rt, a, "width")) } });
+  }
+};
+const optColour = (rt, v) => v === undefined ? null : rgba(rt, v);
+const pathOf = (rt, kind, a) => {
+  if (kind === "polygon") emitAll(rt, rt.polygon(items(rt, arg(rt, a, "points")).map(p => point(rt, p)), optColour(rt, a.fill), optColour(rt, a.stroke)));
+  else if (kind === "polyline") emitAll(rt, rt.polyline(items(rt, arg(rt, a, "points")).map(p => point(rt, p)), ink(rt, arg(rt, a, "color"))));
+  else {
+    const [w, h] = point(rt, arg(rt, a, "size")), [x, y] = point(rt, arg(rt, a, "at"));
+    const radius = Math.max(0, Math.min(Number(rt.coerce("int", arg(rt, a, "radius"))), Math.trunc(Math.min(Math.abs(w), Math.abs(h)) / 2)));
+    emit(rt, { type: "push_transform", xx: 1, xy: 0, yx: 0, yy: 1, tx: x, ty: y });
+    emitAll(rt, rt.rounded_rect(w, h, radius, optColour(rt, a.fill), optColour(rt, a.stroke)));
+    emit(rt, { type: "pop_transform" });
+  }
+};
+const transform = (rt, kind, v) => {
+  if (kind === "translate") {
+    const [x, y] = point(rt, v);
+    emit(rt, { type: "push_transform", xx: 1, xy: 0, yx: 0, yy: 1, tx: x, ty: y });
+  } else if (kind === "rotate") {
+    const a = num(rt, v);
+    if (!Number.isFinite(a)) rt.fail("E_NONFINITE", "angle produced a nonfinite value.");
+    emit(rt, { type: "push_transform", xx: Math.cos(a), xy: Math.sin(a), yx: -Math.sin(a), yy: Math.cos(a), tx: 0, ty: 0 });
+  } else {
+    const [x, y] = v instanceof Float64Array && v.length === 3 ? [v[0], v[1]] : (n => [n, n])(num(rt, v));
+    if (!Number.isFinite(x) || !Number.isFinite(y)) rt.fail("E_NONFINITE", "scale produced a nonfinite value.");
+    emit(rt, { type: "push_transform", xx: x, xy: 0, yx: 0, yy: y, tx: 0, ty: 0 });
+  }
+};
+|}]
+
+type context = { program : C.program; body : Buffer.t; used : (string, unit) Hashtbl.t;
+  mutable map : (int * Flow.Diagnostic.span) list; mutable async : bool }
+
+let local n = "l" ^ string_of_int n
+let use ctx name = Hashtbl.replace ctx.used name ()
+
+let call ctx primitive args =
+  let refuse message = raise (Refused ("E_WEB_PRIMITIVE", message, None)) in
+  let values = match signature primitive with
+    | None -> List.map (fun (_, n) -> local n) args
+    | Some names ->
+        List.iter (fun (name, _) -> if not (List.mem name names) then
+          refuse (Printf.sprintf "Primitive %s has no argument %s." (C.primitive_name primitive) name)) args;
+        let rec last = function [] -> [] | n :: rest ->
+          (match List.assoc_opt n args with Some v -> local v | None -> "undefined") :: last rest in
+        let values = last names in
+        let rec trim = function "undefined" :: rest -> trim rest | l -> l in
+        List.rev (trim (List.rev values)) in
+  ignore ctx;
+  let statics = match primitive with
+    | C.Coerce ty -> [ty_json ty] | Color_byte C.Clamped -> [{|"clamped"|}] | Color_byte Unclamped -> [{|"unclamped"|}]
+    | Fail (code, message) -> [escape code; escape message] | _ -> [] in
+  Printf.sprintf "rt.%s(%s)" (export_name primitive) (String.concat ", " (statics @ values))
+
+let expression ctx : C.expr -> string = function
+  | Constant n -> Printf.sprintf "K[%d]" n
+  | Local n -> local n
+  | Call_index slot -> Printf.sprintf "BigInt(calls[%d]++)" slot
+  | Frame field -> (match field with
+      | Time -> "input.t" | Dt -> "input.dt" | Index -> "BigInt(input.frame)" | Tick -> "BigInt(input.tick)"
+      | Width -> "BigInt(input.size[0])" | Height -> "BigInt(input.size[1])"
+      | Pointer_x -> "input.pointer[0]" | Pointer_y -> "input.pointer[1]" | Input -> "rt.frameValue(input)")
+  | Prim (primitive, args) -> call ctx primitive args
+  | Vec ns -> "Float64Array.of(" ^ String.concat ", " (List.map (fun n -> "rt.float(" ^ local n ^ ")") ns) ^ ")"
+  | Fields fields -> "new Map([" ^ String.concat ", "
+      (List.map (fun (name, n) -> "[" ^ escape name ^ ", " ^ local n ^ "]") fields) ^ "])"
+  | Items ns -> "rt.sequence_concat(" ^ String.concat ", " (List.map (fun n -> "[" ^ local n ^ "]") ns) ^ ")"
+  | Field (n, name) -> use ctx "field"; Printf.sprintf "field(rt, %s, %s)" (local n) (escape name)
+
+let object_of args = "{" ^ String.concat ", " (List.map (fun (k, n) -> k ^ ": " ^ local n) args) ^ "}"
+let kind_name = function C.Rect -> "rect" | C.Circle -> "circle" | C.Line -> "line"
+
+let draw ctx : C.draw -> string = fun d ->
+  use ctx "num";
+  match d with
+  | Background c -> Printf.sprintf "emitAll(rt, rt.polygon([[0, 0], [input.size[0], 0], [input.size[0], input.size[1]], [0, input.size[1]]], rgba(rt, %s), null));" (local c)
+  | Point {at; ink} -> Printf.sprintf "{ const [x, y] = point(rt, %s); emitAll(rt, rt.polygon([[x, y], [x + 1, y], [x + 1, y + 1], [x, y + 1]], ink(rt, %s), null)); }" (local at) (local ink)
+  | Mark {mark; args} -> Printf.sprintf "markSet(rt, false, %s, %s);" (escape (kind_name mark)) (object_of args)
+  | Batch {mark; args} -> Printf.sprintf "markSet(rt, true, %s, %s);" (escape (kind_name mark)) (object_of args)
+  | Points {positions; ink} -> Printf.sprintf "{ const [count, position] = pointsAttr(rt, %s); emit(rt, {type: \"mark_set\", kind: \"point\", count, position, fill: ink(rt, %s)}); }" (local positions) (local ink)
+  | Path {path; args} -> Printf.sprintf "pathOf(rt, %s, %s);"
+      (escape (match path with C.Rounded_rect -> "rounded_rect" | Polygon -> "polygon" | Polyline -> "polyline")) (object_of args)
+  | Text_run {at; text; ink; size} -> Printf.sprintf "if (typeof %s !== \"string\") rt.fail(\"E_TYPE\", \"Drawing text is text.\"); else if (%s !== \"\") { const [x, y] = point(rt, %s); emit(rt, {type: \"text\", x, y, size: Number(rt.coerce(\"int\", %s)), color: ink(rt, %s), text: %s}); }"
+      (local text) (local text) (local at) (local size) (local ink) (local text)
+  | Image {source = (_, id); at; scale; angle} -> Printf.sprintf "{ const resource = rt.image(%d); const [x, y] = point(rt, %s), scale = num(rt, %s), angle = num(rt, %s); if (!Number.isFinite(scale) || !Number.isFinite(angle) || scale <= 0) rt.fail(\"E_DRAW_RANGE\", \"Scene.image: invalid transform\"); emit(rt, {type: \"image\", resource, x, y, scale, angle}); }" id (local at) (local scale) (local angle)
+  | Push (t, n) -> Printf.sprintf "transform(rt, %s, %s);" (escape (match t with C.Translate -> "translate" | Rotate -> "rotate" | Scale -> "scale")) (local n)
+  | Pop -> "emit(rt, {type: \"pop_transform\"});"
+
+let rec statements ctx depth (list : C.statement list) =
+  List.iter (statement ctx depth) list
+and statement ctx depth (s : C.statement) =
+  let pad = String.make (2 * depth) ' ' in
+  let line fmt = Printf.ksprintf (fun text -> Buffer.add_string ctx.body (pad ^ text ^ "\n")) fmt in
+  let block body = statements ctx (depth + 1) body in
+  Option.iter (fun span -> ctx.map <- (s.id, span) :: ctx.map) s.source.span;
+  let at = Printf.sprintf "at = %d; " s.id in
+  let slot_key slot =
+    let iter = ctx.program.state_slots.(slot).source.iter in
+    let stamp = if ctx.program.state_slots.(slot).plane = `Host then "input.tick" else "input.frame" in
+    let key = if iter = [] then {|""|} else "[" ^ String.concat ", " (List.map (function
+      | C.Static_index i -> string_of_int i | Local_index l -> local l ^ ".toString()") iter) ^ "].join(\",\")" in
+    use ctx "cell";
+    Printf.sprintf "cell(state, %d, %s, %s)" slot key stamp in
+  match s.node with
+  | Assign (n, e) -> line "%s%s = %s;" at (local n) (expression ctx e)
+  | Reset_call slot -> line "%scalls[%d] = 0;" at slot
+  | Draw d -> line "%s%s" at (draw ctx d)
+  | If {condition; yes; no} ->
+      line "%sif (rt.truthy(%s)) {" at (local condition); block yes;
+      if no = [] then line "}" else (line "} else {"; block no; line "}")
+  | Iterate {sequence; index; item; limit; body} ->
+      line "%s{" at;
+      let id = s.id in
+      line "  const s%d = %s, c%d = Array.isArray(s%d) ? s%d.length : Number(rt.array_count(s%d));" id (local sequence) id id id id;
+      line "  if (c%d > %d) rt.fail(\"E_ITER_BOUND\", \"Core iteration exceeds its bound.\");" id limit;
+      line "  for (let i%d = 0; i%d < c%d; i%d++) {" id id id id;
+      line "    %s = BigInt(i%d); %s = Array.isArray(s%d) ? s%d[i%d] : rt.array_nth(s%d, i%d);" (local index) id (local item) id id id id id;
+      statements ctx (depth + 2) body;
+      line "  }"; line "}"
+  | Counted {first; last; count; index; item; limit; init; body} ->
+      let id = s.id in
+      line "%s{" at;
+      line "  const f%d = rt.coerce(\"int\", %s), e%d = rt.coerce(\"int\", %s), n%d = e%d > f%d ? e%d - f%d : 0n;" id (local first) id (local last) id id id id id;
+      line "  if (n%d > %dn) rt.fail(\"E_ITER_BOUND\", \"Core iteration exceeds its bound.\");" id limit;
+      line "  %s = n%d;" (local count) id;
+      statements ctx (depth + 1) init;
+      line "  for (let i%d = 0, c%d = Number(n%d); i%d < c%d; i%d++) {" id id id id id id;
+      line "    const j%d = BigInt(i%d); %s = j%d; %s = f%d + j%d;" id id (local index) id (local item) id id;
+      statements ctx (depth + 2) body;
+      line "  }"; line "}"
+  | Store {sequence; index; value} ->
+      use ctx "store"; line "%sstore(rt, %s, %s, %s);" at (local sequence) (local index) (local value)
+  | State_read {slot; result; init; initial} ->
+      let id = s.id in
+      line "%s{ const c%d = %s;" at id (slot_key slot);
+      line "  if (c%d.value !== undefined) %s = c%d.value; else {" id (local result) id;
+      statements ctx (depth + 2) init;
+      line "    %s = %s;" (local result) (local initial);
+      line "  } }"
+  | State_peek {slot; found; value} ->
+      let id = s.id in
+      line "%s{ const c%d = %s; %s = c%d.pending !== undefined; %s = %s ? c%d.pending : null; }" at id (slot_key slot)
+        (local found) id (local value) (local found) id
+  | State_write {slot; value} -> line "%s%s.pending = %s;" at (slot_key slot) (local value)
+  | Invoke {region; args; result} ->
+      ctx.async <- true;
+      line "%s%s = await rt.invoke(%d, [%s]);" at (local result) region (String.concat ", " (List.map local args))
+
+let frame_result (program : C.program) =
+  let body = Buffer.create 4096 in
+  let ctx = { program; body; used = Hashtbl.create 8; map = []; async = false } in
+  statements ctx 2 program.body;
+  let code = Buffer.contents body in
+  let mentions name = Hashtbl.mem ctx.used name in
+  let out = Buffer.create 8192 in
+  Buffer.add_string out "// Rays web export: frame program. frame(input, state, rt); see lib/flow_web/js.mli.\n";
+  if Array.length program.constants > 0 then Buffer.add_string out "let K;\n";
+  List.iter (fun (name, text) ->
+    if mentions name then Buffer.add_string out text) helpers;
+  Printf.bprintf out "export %sfunction frame(input, state, rt) {\n" (if ctx.async then "async " else "");
+  if Array.length program.constants > 0 then
+    Printf.bprintf out "  K ??= [%s];\n" (String.concat ", " (List.map literal (Array.to_list program.constants)));
+  let n = Array.length program.locals in
+  if n > 0 then begin
+    let names = List.init n local in
+    let rec rows = function [] -> [] | l ->
+      let row = List.filteri (fun i _ -> i < 16) l and rest = List.filteri (fun i _ -> i >= 16) l in
+      ("  let " ^ String.concat ", " row ^ ";\n") :: rows rest in
+    List.iter (Buffer.add_string out) (rows names)
+  end;
+  Buffer.add_string out "  let at = 0;\n";
+  if program.call_slots > 0 then Printf.bprintf out "  const calls = new Int32Array(%d);\n" program.call_slots;
+  Buffer.add_string out "  try {\n";
+  Buffer.add_string out code;
+  Buffer.add_string out "  } catch (e) {\n    if (e !== null && typeof e === \"object\" && e.statement === undefined) e.statement = at;\n    throw e;\n  }\n";
+  (match Array.to_list program.results with
+   | [r] -> Printf.bprintf out "  return %s;\n" (local r)
+   | rs -> Printf.bprintf out "  return [%s];\n" (String.concat ", " (List.map local rs)));
+  Buffer.add_string out "}\n";
+  Buffer.contents out, List.rev ctx.map
+
+let frame program =
+  match frame_result program with
+  | result -> Ok (fst result)
+  | exception Refused (code, message, span) -> Error (Flow.Diagnostic.error ?span ~code message)
+
+let frame_map program =
+  match frame_result program with
+  | _, map -> String.concat "" (List.map (fun (id, (s : Flow.Diagnostic.span)) ->
+      Printf.sprintf "%d %d %d\n" id s.start s.finish) map)
+  | exception Refused _ -> ""

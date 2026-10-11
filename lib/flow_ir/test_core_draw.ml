@@ -4,32 +4,7 @@ let checked body =
   let forms = ok (Flow.Syntax.parse ("(workspace w (graph g :context draw " ^ body ^ "))")) in
   match Flow.Workspace.check {Flow.Check.version=1;kinds=[]} forms with
   | Some ws,[] -> ws | _,ds -> failwith (String.concat "; " (List.map Flow.Diagnostic.to_string ds))
-let pictures = [
-  "(draw/background \"#14161c\")";
-  "(draw/merge (draw/rect [1 2 0] [30 40 0]) (draw/rect [1 2 0] [3 4 0] :stroke \"#fff\") (draw/rect [0 0 0] [5 5 0] :fill \"#f00\" :stroke \"#00f\"))";
-  "(draw/circle [10 20 0] 4)";
-  "(draw/circle [10 20 0] (+ 4 (* 2 (sin t))) :fill \"#5aaaf0\")";
-  "(draw/line [0 0 0] [5 5 0])";
-  "(draw/line [0 0 0] [5 5 0] :color \"#0f0\" :width 3)";
-  "(draw/point [3 4 0])";
-  "(draw/point [3 4 0] :color \"#abc\")";
-  "(draw/translate [1.9 -2.5 0] (draw/merge (draw/point [0 0 0]) (draw/rotate (* t 2) (draw/scale 2 (draw/point [1 1 0])))))";
-  "(draw/scale [2 3 0] (draw/background \"#000\"))";
-  "(let* [p (map (fn [i] [(* i 10) (* i t) 0]) (array/range 4))] (draw/circles p))";
-  "(let* [p (map (fn [i] [(* i 10) (* i t) 0]) (array/range 4)) r (map (fn [i] (* i 0.5)) (array/range 4))] (draw/circles p :radius r :stroke \"#fff\"))";
-  "(let* [p (map (fn [i] [i 0 0]) (array/range 4))] (draw/rects p [10 10 0] :fill \"#f00\"))";
-  "(let* [p (map (fn [i] [i 0 0]) (array/range 4)) c (map (fn [i] [(/ i 4) 0 0]) (array/range 4))] (draw/rects p [10 10 0] :fill c))";
-  "(let* [p (map (fn [i] [i 0 0]) (array/range 4))] (draw/lines p p :width 2))";
-  "(let* [p (map (fn [i] [i 0 0]) (array/range 4))] (draw/points p :color \"#1e1e1e\"))";
-  "(draw/text [12 12 0] (str \"frame \" (frame/index)))";
-  "(draw/text [12 12 0] \"hi\" :color \"#abc\" :size 20)";
-  "(draw/rounded_rect [4 5 0] [60 40 0] :radius 8 :fill \"#123\")";
-  "(draw/rounded_rect [4 5 0] [60 40 0])";
-  "(draw/polygon (map (fn [i] [i (* i i) 0]) (array/range 4)) :stroke \"#fff\")";
-  "(draw/polyline (map (fn [i] [i (* i i) 0]) (array/range 4)) :color \"#f0f\")";
-  "(draw/image (image/noise) :at [4 5 0] :scale 2 :angle (* t 0.5))";
-  "(draw/image (image/noise))";
-]
+let pictures = Core_fixtures.pictures
 let dump () =
   let buffer = Buffer.create 4096 in
   let fmt = Format.formatter_of_buffer buffer in

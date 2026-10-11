@@ -6,57 +6,7 @@ let rec same (a : E.value) (b : E.value) = match a,b with
   | List a,List b -> Array.length a=Array.length b && Array.for_all2 same a b
   | Record a,Record b -> List.length a=List.length b && List.for_all2 (fun (n,a) (m,b) -> n=m && same a b) a b
   | a,b -> a=b
-let cases = [
-  "literal","(if (> t -1000.) (list t 1 2.) (list))";
-  "range","(range t)";
-  "range-two","(range (- t 2.) (+ t 3.))";
-  "range-large-integers","(range (+ 9007199254740992. (* t 2.)) (+ (+ 9007199254740992. (* t 2.)) 6.))";
-  "take","(take t (list 0 1 2))";
-  "drop","(drop t (list 0 1 2))";
-  "rest","(rest (list t))";
-  "reverse","(reverse (list t 1 2))";
-  "concat","(concat (list t 1) (list 2 3.))";
-  "nth","(nth (list 1 2 3) t)";
-  "count","(count (range t))";
-  "map","(map (fn [x] (+ x t)) (range 1000))";
-  "map-zip","(map (fn [x y z] (+ (+ x y) (+ z t))) (list 1 2 3) (list 4) (list 5 6))";
-  "map-tags","(map (fn [x] (if (> t 0.) x (float x))) (range 3))";
-  "map-empty","(map (fn [x] (/ t 0.)) (range 0))";
-  "filter","(filter (fn [x] (> x t)) (range 8))";
-  "reduce","(reduce (fn [a x] (+ a (* x t))) 0 (range 1024))";
-  "reduce-tags","(reduce (fn [a x] (+ a x)) 0 (list t 0.25))";
-  "reduce-widened-tag","(reduce (fn [a x] (if (> x 0.) 1.5 2)) 0 (list t 0))";
-  "reduce-record","(reduce (fn [a x] (assoc a :n (+ a.n t))) {:n 0.} (range 3))";
-  "reduce-record-int","(reduce (fn [a x] (assoc a :n (+ a.n t))) {:n 0} (range 3))";
-  "reduce-empty","(reduce (fn [a x] (/ t 0.)) 0 (range 0))";
-  "sort","(sort-by (fn [x] (- t x)) (range 12))";
-  "sort-stable","(sort-by (fn [x] (+ t x.k)) (list {:k 2 :id 0} {:k 1 :id 1} {:k 2 :id 2} {:k 1 :id 3}))";
-  "sort-empty","(sort-by (fn [x] (/ t 0.)) (range 0))";
-  "for-large","(for [i (range 1000)] (+ i t))";
-  "for-live-items","(for [i (list t (+ t 1.))] (* i t))";
-  "for-product","(for [i (range 2) j (range 3)] :skip [4] (+ (+ (* 10 i) j) t))";
-  "for-dependent","(for [i (range 3) j (range i)] (+ (+ (* 10 i) j) t))";
-  "for-lazy-source","(for [i (range 0) j (list (/ t 0.))] t)";
-  "for-skip","(for [i (range 4)] :skip [0 1 2 3] (/ t 0.))";
-  "sum-dynamic","(sum [i (range t)] (* i t))";
-  "sum-product","(sum [i (range 4) j (range 3)] (+ (+ i j) t))";
-  "sum-bound","(sum [i (range t) j (range 2)] t)";
-  "fold","(fold [a 0] [i (range 1000)] (+ a t))";
-  "fold-record","(fold [a {:x 0. :y 1.}] [i (range 4)] (assoc a :x (+ a.x t) :y a.x))";
-  "fold-record-packed","(fold [a {:n 0.}] [i (array/range 4096)] (assoc a :n (+ a.n t)))";
-  "scan","(scan [a 0] [i (range 4)] (+ a t))";
-  "scan-record","(scan [a {:n 0}] [i (range 3)] (assoc a :n (+ a.n t)))";
-  "nested-skip","(for [i (range 3)] (for [j (range 2)] :skip [[1 0] [2 1]] (+ (+ (* 10 i) j) t)))";
-  "captured-list-count","(let* [xs (list t (/ t 0.))] (+ (count xs) t))";
-  "captured-list-nth","(let* [xs (list t 1)] (nth xs 0))";
-  "captured-list-lazy","(let* [xs (list t (/ t 0.))] (nth xs 0))";
-  "captured-list-map","(let* [xs (list t 1) ys (map (fn [x] (+ x 1.)) xs)] (if (> t -1000.) ys ys))";
-  "captured-list-reduce","(let* [xs (list t 1)] (reduce + 0 xs))";
-  "captured-list-ignored","(let* [xs (list t (/ t 0.)) ys (map (fn [x] 1) xs)] (+ (first ys) t))";
-  "list-accumulator","(fold [a (list 0)] [i (range 2)] (list (+ (nth a 0) t)))";
-  "empty-list-accumulator","(fold [a (list)] [i (range 1)] (list t 0.5))";
-  "empty-list-accumulator-tags","(fold [a (list)] [i (range 2)] (if (> i 0) (list 1) (list t)))";
-]
+let cases = Core_fixtures.lists
 let check (name,body) =
   let tested=if String.starts_with ~prefix:"captured-" name then body
     else "(if (> t -1000.) " ^ body ^ " " ^ body ^ ")" in

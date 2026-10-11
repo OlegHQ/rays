@@ -11,7 +11,7 @@
 
 (test
  (name test_core_lower)
- (modules test_core_lower)
+ (modules test_core_lower core_fixtures)
  (deps core_lower.expected)
  (libraries flow_ir flow))
 
@@ -24,7 +24,7 @@
 
 (test
  (name test_core_control)
- (modules test_core_control)
+ (modules test_core_control core_fixtures)
  (deps core_control.expected)
  (libraries flow_ir flow))
 
@@ -36,7 +36,7 @@
 
 (test
  (name test_core_lists)
- (modules test_core_lists)
+ (modules test_core_lists core_fixtures)
  (libraries flow_ir flow))
 
 (test
@@ -70,12 +70,12 @@
 
 (test
  (name test_core_state)
- (modules test_core_state)
+ (modules test_core_state core_fixtures)
  (libraries flow_ir flow))
 
 (test
  (name test_core_regions)
- (modules test_core_regions)
+ (modules test_core_regions core_fixtures)
  (libraries flow_ir flow))
 
 (test
@@ -90,7 +90,7 @@
 
 (test
  (name test_core_draw)
- (modules test_core_draw)
+ (modules test_core_draw core_fixtures)
  (deps core_draw.expected)
  (libraries flow_ir flow))
 
