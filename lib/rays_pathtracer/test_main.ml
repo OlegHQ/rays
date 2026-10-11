@@ -5,6 +5,7 @@ let tests = [
   "test_parity", Test_parity.run;
   "test_scene", Test_scene.run;
   "bench_scene", Test_scene.bench;
+  "bench_world", Test_world.bench;
 ]
 
 let () =

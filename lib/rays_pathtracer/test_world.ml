@@ -87,7 +87,8 @@ let run () =
           let reference = capture tracer peaked 4096
           and bsdf_reference = capture bsdf peaked 4096 in
           let difference = Float.abs (mean_red reference -. mean_red bsdf_reference) in
-          assert (mean_red reference > 0. && difference < 2.);
+          assert (mean_red reference > 0. && difference < 1.5);
+          assert (rmse reference bsdf_reference < 4.);
           let mis_short = capture tracer peaked 16 and bsdf_short = capture bsdf peaked 16 in
           let mis_error = rmse mis_short reference and bsdf_error = rmse bsdf_short reference in
           assert (mis_error < bsdf_error);
@@ -103,6 +104,19 @@ let run () =
           let transparent = capture ~camera:miss_camera tracer
             (world ~background:W.Transparent [gradient white]) 2 in
           Bytes.iter (fun value -> assert (value = '\000')) transparent;
+          (* With the sphere in view only the miss pixels are background: a
+             corner is the colour or alpha 0, the centre an opaque hit. *)
+          let wide = camera ~fov:0.6 () and center = ((16 * 32) + 16) * 4 in
+          let over = capture ~camera:wide tracer
+            (world ~background:(W.Color background) [gradient white]) 2 in
+          for channel = 0 to 3 do
+            assert (Char.code (Bytes.get over channel) = expected.(channel))
+          done;
+          assert (Bytes.get over (center + 3) = '\255'
+            && Bytes.sub over center 3 <> Bytes.sub over 0 3);
+          let cut = capture ~camera:wide tracer
+            (world ~background:W.Transparent [gradient white]) 2 in
+          assert (Bytes.get cut 3 = '\000' && Bytes.get cut (center + 3) = '\255');
           let mirror = scene (P.material ~roughness:0.005 ~metallic:1. (rgb 0.8 0.8 0.8))
             [P.rect_light ~intensity:4. ~size:(6.,6.) ~target:(v3 0. 0. 0.) (v3 0. 0. 8.)] in
           let geometry = get (P.mesh ~spheres:mirror.spheres []) in
@@ -118,3 +132,44 @@ let run () =
 
 (* Convergence probe for specification/pathtracer.md (not in runtest):
    dune exec --root . lib/rays_pathtracer/test_main.exe -- bench_world *)
+let bench () =
+  let frames t cam n =
+    for _ = 1 to n do get (P.render t cam); get (P.flush t) done;
+    Test_pathtracer.pixels t in
+  let floor = get (Result.map_error Rdk.Error.to_string
+    (Rdk.Box_generator.box ~center:(v3 0. (-1.05) 0.) ~size:(v3 6. 0.1 6.) ())) in
+  let ball = get (Result.map_error Rdk.Error.to_string
+    (Rdk.Uv_sphere.run ~center:(v3 0. 0. 0.) ~segments:48 ~rings:24 ~radius:1. ())) in
+  let scene = { P.objects = [ (floor, P.material ~roughness:0.7 (rgb 0.7 0.7 0.7))
+                            ; (ball, P.material ~roughness:0.3 (rgb 0.8 0.5 0.3)) ]
+              ; spheres = []
+              ; strands = []
+              ; environment = { sky = rgb 0.8 0.8 0.8; ground = rgb 0.3 0.3 0.3
+                              ; panels = [ P.panel ~intensity:8. ~width:0.4 ~height:0.3 (v3 0.3 1. 0.2) ] }
+              ; lights = [] } in
+  let room emit = match List.assoc "white room" W.presets with
+    | { W.layers = [ ({ layer = Room r; _ } as e) ]; _ } as w ->
+        W.bake ~width:512 ~height:256 { w with layers = [ { e with layer = Room { r with emit } } ] }
+    | _ -> failwith "white room preset changed" in
+  let configs = [ "procedural dome", None; "room, panels in map", Some (room W.Dome)
+                ; "room, promoted panels", Some (room W.Light) ] in
+  let cam = Rays.Camera.perspective ~fov_y:0.8 ~at:(v3 0. 0.5 5.) ~target:(v3 0. (-0.2) 0.) () in
+  let render world n =
+    let t = get (P.create ~spp:1 ~width:256 ~height:256 scene) in
+    get (P.set_world t world);
+    ignore (frames t cam 1);
+    P.reset t;
+    let start = Unix.gettimeofday () in
+    let image = frames t cam n in
+    let ms = (Unix.gettimeofday () -. start) *. 1000. /. float n in
+    P.destroy t;
+    image, ms in
+  let references = List.map (fun (_, w) -> fst (render w 2048)) configs in
+  for round = 1 to 3 do
+    List.iter2 (fun (name, w) reference ->
+      let image16, ms = render w 16 in
+      let image64, _ = render w 64 in
+      Printf.printf "round %d %-22s %.2f ms/frame  rmse@16 %.2f  rmse@64 %.2f\n%!"
+        round name ms (rmse image16 reference) (rmse image64 reference))
+      configs references
+  done

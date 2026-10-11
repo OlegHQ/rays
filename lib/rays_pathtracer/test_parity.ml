@@ -113,7 +113,7 @@ let run () =
                  allowance. Measured natively (M1, 2026-10-11): mean error
                  0.0-2.9%, highlight centroid distance 0.2-4.8 px, spread
                  0.03-2.4 px (the probe disc radius is about 16 px). *)
-              if relative > 0.2 || distance > 8. || spread > 4. then
+              if relative > 0.05 || distance > 8. || spread > 4. then
                 failures := Printf.sprintf "%s probe %d" name i :: !failures)
               discs) World.presets));
       assert (live () = baseline);

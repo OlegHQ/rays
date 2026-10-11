@@ -50,6 +50,13 @@ let run () =
         ; (Rdk.Transform_ops.transform (M.mul t2 b) ball, blue)
         ; (floor, gray) ]) in
       let placed = scene_of t1 in
+      let render ?(frames = 2) () =
+        P.reset tracer;
+        for _ = 1 to frames do get (P.render tracer camera); get (P.flush tracer) done;
+        Test_pathtracer.pixels tracer in
+      get (P.replace_mesh tracer placed);
+      let scene_pixels = render ~frames:4 () in
+      assert (scene_pixels = render ~frames:4 ());
       let capture mesh =
         get (P.replace_mesh tracer mesh); P.reset tracer;
         for _ = 1 to 2 do get (P.render tracer camera); get (P.flush tracer) done;
@@ -77,14 +84,34 @@ let run () =
           sum := !sum + weight; weighted := !weighted + weight * (pixel mod 64)
         done;
         assert (!sum > 0); float !weighted /. float !sum in
-      assert (red_center shifted_pixels > red_center placed_pixels);
+      let before = red_center placed_pixels and after = red_center shifted_pixels in
+      Printf.printf "pathtracer scene: red centroid %.1f -> %.1f\n" before after;
+      assert (after > before +. 3.);
       (match P.scene_mesh [] with Error _ -> () | Ok _ -> failwith "empty scene accepted");
+      (match P.scene_mesh [ (M.identity, get (P.mesh ~spheres:[{ P.center = V.zero; radius = 1.;
+          sphere_material = red }] [])) ] with
+       | Error _ -> () | Ok _ -> failwith "scene object with spheres accepted");
+      (* Nested: a scene is itself an object. *)
       get (P.replace_mesh tracer (get (P.scene_mesh [ (M.identity, placed) ])));
+      assert (scene_pixels = render ~frames:4 ());
+      (* move: re-placing objects over the built BLASes matches a fresh
+         scene_mesh at the new transforms, directly, superseding a pending
+         move, and queued behind a full build. *)
       let t1' = M.mul (M.translation (V.create 0.8 0. 0.)) t1 in
+      let same name pixels =
+        let total = ref 0 in
+        Bytes.iteri (fun i c -> if i mod 4 <> 3 then
+          total := !total + abs (Char.code c - Char.code (Bytes.get shifted_pixels i))) pixels;
+        let mean = float !total /. float (64 * 48 * 3) in
+        Printf.printf "pathtracer scene: move (%s) vs scene_mesh mean |diff| %.3f\n" name mean;
+        assert (mean < 0.5) in
       get (P.replace_mesh tracer placed);
       get (P.move tracer [ t1'; t2; M.identity ]); get (P.flush tracer);
+      same "direct" (render ());
       get (P.move tracer [ t1; t2; M.identity ]); get (P.move tracer [ t1'; t2; M.identity ]); get (P.flush tracer);
+      same "superseded" (render ());
       get (P.queue_mesh tracer placed); get (P.move tracer [ t1'; t2; M.identity ]); get (P.flush tracer);
+      same "queued" (render ());
       (match P.move tracer [ t1 ] with Error _ -> () | Ok () -> failwith "move with a wrong count accepted");
       (* An edit renders like a camera move: once a queued swap installs, the
          next frame is an uncounted preview, and the one after accumulates. *)
@@ -109,6 +136,10 @@ let run () =
       let moves = List.init runs (fun i -> time (fun () ->
         get (P.move tracer [ M.identity; at (float i *. -0.1) ]); get (P.flush tracer))) in
       let median l = List.nth (List.sort compare l) (List.length l / 2) in
+      Printf.printf "pathtracer scene: 2001-instance scene: scene_mesh+queue_mesh+flush %.2f ms, move+flush %.2f ms (median of %d)\n%!"
+        (median full) (median moves) runs;
+      (* what a move saves depends on the machine and the GPU's state (both runs end in one flush), so
+         the default run prints the numbers and a qualification run (RAYS_QUALIFY=1) checks them *)
       if Sys.getenv_opt "RAYS_QUALIFY" <> None then assert (median moves < median full);
       (* 2. One mesh with triangles and analytic spheres builds (one BLAS per
          kind under a TLAS) and shows both: an emissive red sphere over the
