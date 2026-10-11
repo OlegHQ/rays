@@ -8,6 +8,7 @@ module C = Flow_ir.Core_exec
 let drawings = Atomic.make 0
 type prepared = {id : int; states : I.program;
   core : (C.prepared * E.residual option * C.Buffers.t, Flow.Diagnostic.t) result Lazy.t; whole : bool;
+  cache : Marks_scene.cache;
   display : Flow_ir.Packed.t -> live:Frame_input.t -> (Flow_ir.Gpu.value option, Flow.Diagnostic.t) result;
   mutable kept : ((int*int)*Scene.t) option}
 let prepare ?profile ?(approx=Flow.Workspace.Paths.empty) ?(states = []) (plan : E.plan) root =
@@ -29,7 +30,7 @@ let prepare ?profile ?(approx=Flow.Workspace.Paths.empty) ?(states = []) (plan :
     core=lazy(match Flow_ir.Core_draw.lower plan root with
       |Ok(program,residual)->Ok(C.prepare program,residual,C.Buffers.create())
       |Error name->Error(Flow.Diagnostic.error ~code:"E_DRAW_KIND" (Printf.sprintf "The drawing cannot be lowered to the core path (%s)." name)));
-    whole=static root; kept=None;
+    whole=static root; kept=None; cache=Marks_scene.cache ();
     display=(let display=I.region_display ?profile ~approx () in fun packed ~live->display packed ~live)}
 
 (* The draw program runs into a mark table which Marks_scene adapts. Retention is whole-program: a
@@ -67,7 +68,7 @@ let render_core (program, root, buffers) ~state ?image ?gpu prepared ~live ~size
               !drawn in
         let table = Array.of_list (List.rev !images) in
         let table_devices = Array.of_list (List.rev !devices) in
-        let* scene = Marks_scene.scene ~buffers ~image:(fun id -> table.(id - 1)) ?gpu
+        let* scene = Marks_scene.scene ~buffers ~cache:prepared.cache ~image:(fun id -> table.(id - 1)) ?gpu
           ~device:(fun id -> let token, _, _ = C.Buffers.device buffers id in table_devices.(token)) marks in
         if prepared.whole && !devices = [] then prepared.kept <- Some (size, scene);
         Ok scene)

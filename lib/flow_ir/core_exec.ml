@@ -9,6 +9,46 @@ type state = {
   marks : Core_marks.sink option;  (* the table the draw statements of a draw program fill *)
   device : (Packed.t -> ((int * int * int) option, Flow.Diagnostic.t) result) option;
 }
+(* The top-level Invoke statements of a draw program whose result cannot change between frames:
+   the region does not depend on the frame, its arguments are locals written once from constants
+   and such results, and nothing else writes the result. Their values are computed once. *)
+let static_invokes (program : C.program) =
+  let n = Array.length program.locals in
+  let writes = Array.make n 0 and nested = Array.make n false in
+  let rec walk top (s : C.statement) =
+    let w a = writes.(a) <- writes.(a) + 1; if not top then nested.(a) <- true in
+    match s.node with
+    | Assign (a, _) | Invoke {result = a; _} | Store {sequence = a; _} | State_write {value = a; _} -> w a
+    | If {yes; no; _} -> List.iter (walk false) yes; List.iter (walk false) no
+    | Iterate {index; item; body; _} -> w index; w item; List.iter (walk false) body
+    | Counted {count; index; item; init; body; _} ->
+        List.iter w [count; index; item]; List.iter (walk false) init; List.iter (walk false) body
+    | State_read {result; init; _} -> w result; List.iter (walk false) init
+    | State_peek {found; value; _} -> w found; w value
+    | Draw _ | Reset_call _ -> () in
+  List.iter (walk true) program.body;
+  let static = Array.make n false in
+  let once a = writes.(a) = 1 && not nested.(a) in
+  let constant : C.expr -> bool = function
+    | Constant _ -> true
+    | Local a | Field (a, _) -> static.(a)
+    | Prim (op, args) -> op <> Rand && List.for_all (fun (_, a) -> static.(a)) args
+    | Vec ns | Items ns -> List.for_all (fun a -> static.(a)) ns
+    | Fields fs -> List.for_all (fun (_, a) -> static.(a)) fs
+    | Frame _ | Call_index _ -> false in
+  let region_static (r : C.region) =
+    not (E.frame_dependent (E.Residual r.residual)) && not (E.state_dependent (E.Residual r.residual))
+    && Array.for_all (fun (source, _) -> not (E.frame_dependent (E.Residual source))) r.sources in
+  List.iter (fun (s : C.statement) -> match s.node with
+    | Assign (a, e) when once a && constant e -> static.(a) <- true
+    | Invoke {region; args; result} when once result && List.for_all (fun a -> static.(a)) args
+                                         && region_static program.regions.(region) -> static.(result) <- true
+    | _ -> ()) program.body;
+  let invokes = Array.make n false in
+  List.iter (fun (s : C.statement) -> match s.node with
+    | Invoke {result; _} -> invokes.(result) <- static.(result) | _ -> ()) program.body;
+  invokes
+
 (* A region whose every result is read only as the positions, sizes, radius, from or to of a
    mark set may run on the GPU instead; the others are read by the frame program. *)
 let device_regions (program : C.program) =
@@ -284,6 +324,7 @@ let rec builds (statements : C.statement list) = List.exists (fun (s : C.stateme
 let prepare ?(fused=true) (program : C.program) =
   let track = builds program.body in
   let device_ok = device_regions program in
+  let static_ok = static_invokes program in
   let constants = Array.map C.value_of_literal program.constants in
   let expression : C.expr -> state -> E.value = function
     | C.Constant n -> let v=constants.(n) in fun _ -> v
@@ -453,9 +494,13 @@ let prepare ?(fused=true) (program : C.program) =
           st.values.(value)<-E.Private.state_write (state_root st) ~instance ~path ~iter ~host st.values.(value)
     | Invoke {region;result;_} ->
         let packed=Packed.of_region program.regions.(region) in
-        let on_device=device_ok.(region) in
+        let on_device=device_ok.(region) and keep=static_ok.(result) in
+        let kept=ref None in
         fun st ->
           if Array.length st.builders>0 then st.builders.(result)<-None;
+          match !kept with
+          | Some v when st.marks<>None -> st.values.(result)<-v
+          | _ ->
           let packed=match packed with Ok p -> p | Error (d :: _) -> raise (V.Fail (d.code,d.message,d.span)) | Error [] -> assert false in
           let fail (d : Flow.Diagnostic.t) = raise (V.Fail (d.code,d.message,d.span)) in
           let device=match st.device,st.marks with
@@ -468,7 +513,7 @@ let prepare ?(fused=true) (program : C.program) =
             | _ -> false in
           if not device then
             (match (match st.force with Some force -> force packed | None -> Packed.force packed ~live:st.live) with
-             | Ok v -> st.values.(result)<-v
+             | Ok v -> st.values.(result)<-v; if keep && st.marks<>None then kept:=Some v
              | Error d -> fail d)) in
   {program; body=block program.body; code=if fused then scalar_tree program constants else None;
    pool=Atomic.make None; stateless=Array.length program.state_slots=0 && Array.length program.regions=0}

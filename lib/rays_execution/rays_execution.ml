@@ -216,8 +216,10 @@ let sampled_texture_bytes (texture:Scene_execution.sampled_texture)=
 (* The last bytes one UI batch position lowered to. Unchanged content reuses
    them, so the executor's mesh cache hits by physical identity instead of
    hashing every instance each frame. *)
+(* [ui_source] is the batch the vertices were copied from: a published batch is immutable, so the
+   same one again is unchanged without comparing its bytes. *)
 type ui_slot={mutable ui_vertices:bytes;mutable ui_indices:bytes;
-  mutable ui_affine:bytes}
+  mutable ui_affine:bytes;mutable ui_source:bytes}
 let ui_slot_capacity=256
 type t = { runtime:runtime;
   assets:Runtime_resources.Assets.t; mutable dead:bool;
@@ -668,11 +670,14 @@ let lower_scene2_uncached value ~lease_policy ~density ~resource:resolve ir =
           let slot=match Int_table.find value.ui_slots slot_key with
             |slot->slot
             |exception Not_found->
-                let slot={ui_vertices=Bytes.empty;ui_indices=Bytes.empty;ui_affine=Bytes.empty}in
+                let slot={ui_vertices=Bytes.empty;ui_indices=Bytes.empty;ui_affine=Bytes.empty;ui_source=Bytes.empty}in
                 Int_table.add value.ui_slots slot_key slot;slot in
-          if Bytes.length slot.ui_vertices<>Bytes.length instances ||
-             not(Bytes.equal slot.ui_vertices instances)then
-            slot.ui_vertices<-Bytes.copy instances;
+          if slot.ui_source!=instances then begin
+            if Bytes.length slot.ui_vertices<>Bytes.length instances ||
+               not(Bytes.equal slot.ui_vertices instances)then
+              slot.ui_vertices<-Bytes.copy instances;
+            slot.ui_source<-instances
+          end;
           if Bytes.length slot.ui_indices<>count*24 then
             slot.ui_indices<-ui_index_bytes count;
           write_affine ui_affine_scratch(render_transform(List.hd !transforms));
@@ -972,7 +977,7 @@ let lower_ui submission ~density ~resource ui=
         |slot->slot
         |exception Not_found->
             let slot={ui_vertices=Bytes.empty;ui_indices=Bytes.empty;
-              ui_affine=Bytes.empty}in
+              ui_affine=Bytes.empty;ui_source=Bytes.empty}in
             Int_table.add slots slot_key slot;slot in
       if Bytes.length slot.ui_vertices<>length||
          not(same_bytes_range instances first slot.ui_vertices)then

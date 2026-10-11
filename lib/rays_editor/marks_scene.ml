@@ -117,7 +117,29 @@ let points buffers count position fill =
   done;
   Ink.take batch
 
-let scene ~buffers ?image ?gpu ?(device = fun _ -> no_device ()) marks =
+(* The scene node of a mark set, kept while its description and the physical attribute arrays are the
+   same as the previous frame's: a batch whose data did not change is not built again. *)
+type cache = (int, M.entry * float array list * Scene.node) Hashtbl.t
+let cache () : cache = Hashtbl.create 8
+let arrays buffers (kind : M.kind) =
+  let one : type a. a M.attr -> float array list = function
+    | M.Buffer b -> [data buffers b] | _ -> [] in
+  match kind with
+  | Rect r -> one r.position @ one r.size @ one r.fill @ one r.stroke @ one r.stroke_width
+  | Circle c -> one c.position @ one c.radius @ one c.fill @ one c.stroke @ one c.stroke_width
+  | Line l -> one l.position @ one l.end_ @ one l.stroke @ one l.stroke_width
+  | Point p -> one p.position
+let cached cache buffers ordinal (entry : M.entry) kind build =
+  match cache with
+  | None -> build ()
+  | Some table ->
+      let data = arrays buffers kind in
+      match Hashtbl.find_opt table ordinal with
+      | Some (previous, old, node) when previous = entry && List.length old = List.length data
+                                         && List.for_all2 (==) old data -> node
+      | _ -> let node = build () in Hashtbl.replace table ordinal (entry, data, node); node
+
+let scene ~buffers ?image ?gpu ?cache ?(device = fun _ -> no_device ()) marks =
   let fail code message = Error (Flow.Diagnostic.error ~code message) in
   match M.validate marks with
   | Error message -> fail "E_DRAW_RANGE" message
@@ -130,16 +152,20 @@ let scene ~buffers ?image ?gpu ?(device = fun _ -> no_device ()) marks =
         | (wrap, outer) :: rest -> stack := rest; top := wrap (List.rev !top) :: outer
         | [] -> assert false in
       let integer x = int_coordinate x in
-      let slot = ref 0 in
+      let slot = ref 0 and sets = ref 0 in
+      let set entry kind build = incr sets; cached cache buffers !sets entry kind build in
       try
         Array.iter (function
-          | M.Mark_set {count; kind = Point {position; fill}} ->
-              Option.iter add (points buffers count position fill)
+          | M.Mark_set {count; kind = Point {position; fill}} as entry ->
+              (* A point set with no points has no node; it is never kept. *)
+              (match set entry (Point {position; fill}) (fun () -> match points buffers count position fill with
+                  | Some node -> node | None -> raise Exit) with
+               | node -> add node | exception Exit -> ())
           | Mark_set {count; kind} when has_device kind ->
               (match gpu with
                | None -> no_device ()
                | Some gpu -> add (gpu_set buffers ~device ~gpu ~slot:!slot count kind); incr slot)
-          | Mark_set {count; kind} -> add (shapes buffers count kind)
+          | Mark_set {count; kind} as entry -> add (set entry kind (fun () -> shapes buffers count kind))
           | Geometry {vertices; indices; color} -> add (Scene.Private.geometry {vertices; indices; color})
           | Image {resource; x; y; scale; angle} ->
               (match image with

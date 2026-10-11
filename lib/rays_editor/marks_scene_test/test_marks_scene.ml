@@ -103,3 +103,28 @@ let () =
    | Error d -> assert (d.code = "E_IMAGE") | Ok _ -> assert false);
   Printf.printf "Marks_scene: %d draw graphs serialize to the digests of the removed arms; hand-built marks match\n"
     (List.length pictures)
+
+(* A static batch under a moving translate is kept: a frame allocates the same at 10,000 and 100,000
+   instances, and the kept batch draws what a fresh drawing draws. *)
+let () =
+  let size = (800, 600) in
+  let prepare n =
+    let source = Printf.sprintf "(workspace w (graph g :context draw (draw/translate [(* 10 (sin t)) 0 0] (draw/rects (map (fn [i] [(* (mod i 800) 1.0) (/ i 1250) 0]) (array/range %d)) [3 3 0] :fill \"#5aaaf0\"))))" n in
+    let evaluation = ok (E.static (match Flow.Workspace.check {Flow.Check.version=0;kinds=[]} (ok (Flow.Syntax.parse source)) with
+      | Some ws,[] -> ws | _,ds -> failwith (String.concat "; " (List.map Flow.Diagnostic.to_string ds)))) in
+    ok (Rays_editor.Drawing.prepare ~states:evaluation.states evaluation.plan (List.assoc "g" evaluation.results)) in
+  let frame prepared state i = ok (Rays_editor.Drawing.render_prepared ~state prepared
+    ~live:{(Frame_input.at_time (float i /. 60.)) with frame = i; tick = i; size} ~size) in
+  let allocated n =
+    let prepared = prepare n and state = E.create_state () in
+    ignore (frame prepared state 0); ignore (frame prepared state 1);
+    let before = Gc.allocated_bytes () in
+    ignore (frame prepared state 2);
+    Gc.allocated_bytes () -. before in
+  let small = allocated 10_000 and large = allocated 100_000 in
+  if large > small +. 100_000. then
+    failwith (Printf.sprintf "a moving translate over a static batch allocates with the count: %.0f bytes at 10,000, %.0f at 100,000" small large);
+  let kept = prepare 2_000 and state = E.create_state () in
+  ignore (frame kept state 0);
+  assert (Bytes.equal (serialize (frame kept state 3)) (serialize (frame (prepare 2_000) (E.create_state ()) 3)));
+  Printf.printf "Retention: a moving translate over a static batch allocates %.0f bytes at 10,000 instances and %.0f at 100,000\n" small large

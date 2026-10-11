@@ -13,7 +13,11 @@ type attribute = { source : source; stride : int }
 type gpu = slot:int -> kind:int -> count:int -> attribute array ->
   (Scene_command.Shape_batch.gpu_token, Flow.Diagnostic.t) result
 
-val scene : buffers:Flow_ir.Core_exec.Buffers.t -> ?image:(int -> Rays.Image.t) -> ?gpu:gpu ->
+type cache
+val cache : unit -> cache
+(** The nodes built for the mark sets of the last frame, by position in the table. *)
+
+val scene : buffers:Flow_ir.Core_exec.Buffers.t -> ?image:(int -> Rays.Image.t) -> ?gpu:gpu -> ?cache:cache ->
   ?device:(int -> Flow_ir.Gpu.value) -> Scene_command.Marks.t ->
   (Rays.Scene.t, Flow.Diagnostic.t) result
 (** [buffers] is the table the marks' buffer ids refer to; [image] maps an [Image] entry's
@@ -23,4 +27,8 @@ val scene : buffers:Flow_ir.Core_exec.Buffers.t -> ?image:(int -> Rays.Image.t) 
     A mark set with a [Device] attribute (its buffer id resolved by [device]) goes to [gpu] and
     becomes one [Marks]-family draw; its CPU attributes are uploaded in the same layout (a
     colour buffer as packed words). Every other mark set stays a [Shape_batch], so a CPU-only
-    frame is unchanged. Without [gpu] a [Device] attribute is [E_GPU]. *)
+    frame is unchanged. Without [gpu] a [Device] attribute is [E_GPU].
+
+    With [cache], a rect, circle, line or point set whose entry and attribute arrays (physically)
+    equal the previous frame's at the same position reuses its node: a static batch is not built
+    again. *)
