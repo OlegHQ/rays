@@ -29,7 +29,8 @@ let with_renderer driver name body=
   match Scene_execution_fixtures.create_offscreen driver configuration with
   |Error{Ogpu.Error.kind=No_adapter;_}->Printf.printf"automatic scratch (%s): skipped (no device)\n"name
   |Error error->failwith(Ogpu.Error.to_string error)
-  |Ok renderer->body renderer
+  |Ok renderer->Fun.protect ~finally:(fun()->get(Scene_execution.destroy renderer))
+      (fun()->body renderer)
 
 let run () =
   let driver,live_handles=Ogpu.Impl.create_driver()in
@@ -48,14 +49,12 @@ let run () =
   (match get(Scene_execution.replay_prepared_sampled_resources
       ~identity:"scratch-retained"~version:8L replay_renderer)with
    |None->()
-   |Some _->failwith"retained replay accepted a stale version");
-  get(Scene_execution.destroy replay_renderer));
+   |Some _->failwith"retained replay accepted a stale version"));
   with_renderer driver"capacity"(fun renderer->
   let over=draws 65_537 in
   (match render_blended renderer over with
    |Error error when error.Ogpu.Error.kind=Capacity->()
-   |_->failwith"prepared scratch accepted more than 65,536 draws");
-  get(Scene_execution.destroy renderer));
+   |_->failwith"prepared scratch accepted more than 65,536 draws"));
   with_renderer driver"segments"(fun renderer->
   let first={Scene_execution.mesh=mesh 70_000;state}
   and second={Scene_execution.mesh=mesh 70_001;
@@ -64,14 +63,40 @@ let run () =
     texture=None;auxiliary=None;vertex_attributes=None;samples=1;draw=first};
     {Scene_execution.family=Scene3;blend=Ogpu.Pipeline.Replace;
     texture=None;auxiliary=None;vertex_attributes=None;samples=1;draw=second}]in
-  ignore(get(Scene_execution.render_sampled_resources renderer stable));
-  ignore(get(Scene_execution.render_sampled_resources renderer stable));
+  let render ~border draws=
+    require(get(Scene_execution.render_sampled_resources renderer draws))
+      "mixed Scene2/Scene3 frame was skipped";
+    let pixels=get(Scene_execution.read_pixels renderer~bytes_per_row:(64*4))in
+    require(Bytes.length pixels=64*64*4)"mixed frame readback length";
+    for y=0 to 63 do for x=0 to 63 do
+      let at=(y*64+x)*4 in
+      let channel i=Char.code(Bytes.get pixels(at+i))in
+      let expected=if border&&(x=0||x=63||y=0||y=63)then
+        255,255,255,255 else 64,128,191,255 in
+      require((channel 0,channel 1,channel 2,channel 3)=expected)
+        (Printf.sprintf"mixed frame pixel (%d,%d), border=%b"x y border)
+    done done in
+  render ~border:false stable;
+  render ~border:false stable;
+  let stats=Scene_execution.retained_stats renderer in
+  require(stats.plan_hits=0L&&stats.plan_misses=2L)
+    "automatic replay did not wait for two identical frames";
+  render ~border:false stable;
+  let stats=Scene_execution.retained_stats renderer in
+  require(stats.plan_hits=1L&&stats.plan_misses=2L)
+    "mixed automatic plan was not replayed";
   let changed=[List.hd stable;
     {(List.nth stable 1) with draw=
       {second with state={second.state with scissor=(1,1,62,62)}}}]in
-  ignore(get(Scene_execution.render_sampled_resources renderer changed));
-  ignore(get(Scene_execution.render_sampled_resources renderer changed));
-  get(Scene_execution.destroy renderer));
+  render ~border:true changed;
+  render ~border:true changed;
+  let stats=Scene_execution.retained_stats renderer in
+  require(stats.plan_hits=1L&&stats.plan_misses=4L)
+    "changed scissor reused a stale automatic plan";
+  render ~border:true changed;
+  let stats=Scene_execution.retained_stats renderer in
+  require(stats.plan_hits=2L&&stats.plan_misses=4L)
+    "changed mixed plan was not admitted after two frames");
   with_renderer driver"release"(fun renderer->
   let releases=ref 0 in
   let release()=incr releases in
@@ -92,16 +117,14 @@ let run () =
         texture=Some malformed;auxiliary=None;vertex_attributes=None;samples=1;
         draw={mesh=mesh 1;state}}]with
    |Error _->()|Ok _->failwith"malformed sampled texture unexpectedly rendered");
-  require(!releases=2)"failed upload did not run release hook exactly once";
-  get(Scene_execution.destroy renderer));
+  require(!releases=2)"failed upload did not run release hook exactly once");
   with_renderer driver"viewport"(fun renderer->
   let oversized={state with viewport=(0,0,128,128);scissor=(16,-8,128,128)}in
   ignore(get(render_blended renderer
     [Ogpu.Pipeline.Replace,{Scene_execution.mesh=mesh 0;state=oversized}]));
   let offset={state with viewport=(100,100,8,8);scissor=(100,100,8,8)}in
   ignore(get(render_blended renderer
-    [Ogpu.Pipeline.Replace,{Scene_execution.mesh=mesh 1;state=offset}]));
-  get(Scene_execution.destroy renderer));
+    [Ogpu.Pipeline.Replace,{Scene_execution.mesh=mesh 1;state=offset}])));
   with_renderer driver"uniforms"(fun renderer->
   let affine offset=let bytes=Bytes.make 24 '\000'in
     Bytes.set_int32_le bytes 0(Int32.bits_of_float 1.);
@@ -123,7 +146,6 @@ let run () =
   for frame=3 to 7 do
     Bytes.set_int32_le transforms.(1) 8(Int32.bits_of_float(float frame));
     ignore(get(render_blended renderer(uniform_draws())))
-  done;
-  get(Scene_execution.destroy renderer));
+  done);
   let after=live_handles()in
   require(after=before)(Printf.sprintf"automatic scratch leaked handles %d -> %d"before after)

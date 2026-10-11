@@ -28,6 +28,15 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
 
 ## Tests that got weaker
 
+- Restored, native verification pending 2026-10-11: automatic scratch's
+  mixed Scene2/Scene3 case now verifies every RGBA pixel before and after a
+  scissor edit, including the exposed white border. Exact hit/miss counters
+  prove admission waits for two identical frames, the next frame replays,
+  and a scissor edit invalidates/re-admits the plan. The shared renderer
+  helper now destroys every case's renderer on assertion failure as well as
+  success. Typechecking, executable builds, portable scene-execution tests
+  and the dependency gate pass. All six native scratch cases explicitly
+  skip with no device here, so neither pixels nor replay counts are verified.
 - Restored, native verification pending 2026-10-11: `test_gpu_film` now
   captures a standalone tracer before creating the presenting coordinator
   and compares its complete frame with the shared-device tracer's texture
