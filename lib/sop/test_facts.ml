@@ -35,6 +35,52 @@ let counted source calls reads writes transform =
 
 let rewire node geometry = Node.Private.rebuild_with_inputs node [|(Lisp_sop.snapshot (geometry))|]
 
+let test_reuse volatile =
+  let original = fixture () |> with_color 1. in
+  let source = Lisp_sop.snapshot original in
+  let node = Lisp_sop.node ~with_:["source", source]
+      (Printf.sprintf {|(sop/transform (sop/ext_source) :translate %s)|} (Lisp_sop.vec3 Rays_math.Vec3.unit_x)) in
+  let evaluator = session () in
+  if volatile then Session.set_volatile evaluator (fun id -> id = Node.id node);
+  let first = cook evaluator 1 node in
+  let first_stats = Session.stats evaluator in
+  let updated = with_color 2. original in
+  let node = rewire node updated in
+  let second = cook evaluator 8 node in
+  let stats = Session.stats evaluator in
+  check (stats.cooks = first_stats.cooks + 1 && stats.hits = first_stats.hits + 1)
+    "color edit recooked the transform";
+  check (Geometry.positions (Result.get_ok (Sop.Payload.geometry first.payload)) == Geometry.positions (Result.get_ok (Sop.Payload.geometry second.payload)))
+    "cache hit did not share computed positions";
+  check (Geometry.topology (Result.get_ok (Sop.Payload.geometry second.payload)) == Geometry.topology original)
+    "cache hit replaced topology";
+  check (Geometry.find_attribute ~owner:Attribute.Point "Cd" (Result.get_ok (Sop.Payload.geometry second.payload)) =
+    Geometry.find_attribute ~owner:Attribute.Point "Cd" updated) "cache hit returned stale color";
+  let cold = session () in
+  check (geometry_bytes (Result.get_ok (Sop.Payload.geometry second.payload)) = geometry_bytes (Result.get_ok (Sop.Payload.geometry (cook cold 1 node).payload)))
+    "refreshed output differs from a cold cook";
+  Session.close cold;
+  let again = cook evaluator 8 node in
+  check ((Result.get_ok (Sop.Payload.geometry again.payload)) == (Result.get_ok (Sop.Payload.geometry second.payload))) "warm hit churned geometry identity";
+  let removed = Geometry.without_attribute ~owner:Attribute.Point "Cd" updated in
+  let extra = scalar ~owner:Attribute.Detail "extra" 1 3. in
+  let added = Geometry.with_attribute extra removed |> get in
+  let output = cook evaluator 1 (rewire node added) in
+  check (Geometry.find_attribute ~owner:Attribute.Point "Cd" (Result.get_ok (Sop.Payload.geometry output.payload)) = None
+      && Geometry.find_attribute ~owner:Attribute.Detail "extra" (Result.get_ok (Sop.Payload.geometry output.payload)) = Some extra)
+    "cache hit did not carry an attribute addition/removal";
+  let renamed = Geometry.without_attribute ~owner:Attribute.Detail "extra" added
+    |> Geometry.with_attribute (scalar ~owner:Attribute.Detail "renamed" 1 3.) |> get in
+  let output = cook evaluator 1 (rewire node renamed) in
+  check (Geometry.find_attribute ~owner:Attribute.Detail "extra" (Result.get_ok (Sop.Payload.geometry output.payload)) = None
+      && Geometry.find_attribute ~owner:Attribute.Detail "renamed" (Result.get_ok (Sop.Payload.geometry output.payload)) <>
+         None) "cache hit did not carry a rename";
+  Session.clear evaluator;
+  check ((Session.stats evaluator).retained_payload_bytes = 0
+    && (Session.stats evaluator).retained_entries = 0
+    && (Session.stats evaluator).volatile_entries = 0) "clear retained component payloads";
+  Session.close evaluator
+
 let test_dependencies () =
   let geometry = fixture () |> with_color 1. in
   let calls = ref 0 in
@@ -283,6 +329,8 @@ let test_parameter_reads () =
   Session.close evaluator
 
 let () =
+  test_reuse false;
+  test_reuse true;
   test_dependencies ();
   test_write_footprint ();
   test_refusals ();

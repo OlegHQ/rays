@@ -73,7 +73,14 @@ let run () =
   assert (Marshal.to_string one [Marshal.No_sharing] = Marshal.to_string eight [Marshal.No_sharing]);
   let bytes = Bytes.init 16 (fun i -> Char.chr (int_of_float (rgba.(i) *. 255.))) in
   let packed_image = ok (Image.Private.of_owned_rgba8 ~width:2 ~height:2 bytes) in
+  let expanded_image = ok (Image.create ~width:2 ~height:2 ~rgba:(Image.Private.storage packed_image)) in
+  List.iter (fun channel ->
+    let exact = values (cook ~channel 1 dense expanded_image) in
+    assert (values (cook ~channel 1 dense packed_image)=exact);
+    assert (values (cook ~channel 8 dense packed_image)=exact))
+    [Rdk.Attribute_ops.Red;Green;Blue;Alpha;Luminance];
   assert (Image.payload_bytes packed_image=16);
+  assert (Image.Private.storage image = rgba);
   let node = ok (Sop.Edit_graph.instantiate Nodes.Attr_from_image.factory
       [Lisp_sop.snapshot source; image_node image]) in
   let facts = Node.facts node in
