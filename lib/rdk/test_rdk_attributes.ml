@@ -51,14 +51,43 @@ let promotion ~geometry ~triangle_geometry =
       |> Geometry.with_attribute reduction_values |> get_ok
       |> Geometry.with_attribute reduction_ids |> get_ok
       |> Geometry.with_attribute reduction_labels |> get_ok in
-  let _owner_point = Attribute.create_owned ~name:"owner_point"
+  let owner_point = Attribute.create_owned ~name:"owner_point"
       ~owner:Attribute.Point (Attribute.Int [|10; 11; 12; 13|]) |> get_ok
-  and _owner_vertex = Attribute.create_owned ~name:"owner_vertex"
+  and owner_vertex = Attribute.create_owned ~name:"owner_vertex"
       ~owner:Attribute.Vertex (Attribute.Int [|20; 21; 22; 23; 24; 25|]) |> get_ok
-  and _owner_primitive = Attribute.create_owned ~name:"owner_primitive"
+  and owner_primitive = Attribute.create_owned ~name:"owner_primitive"
       ~owner:Attribute.Primitive (Attribute.Int [|30; 31|]) |> get_ok
-  and _owner_detail = Attribute.create_owned ~name:"owner_detail"
+  and owner_detail = Attribute.create_owned ~name:"owner_detail"
       ~owner:Attribute.Detail (Attribute.Int [|40|]) |> get_ok in
+  let owner_source = List.fold_left (fun geometry attribute ->
+    Geometry.with_attribute attribute geometry |> get_ok) triangle_geometry
+      [owner_point;owner_vertex;owner_primitive;owner_detail] in
+  let owner_source_bytes = geometry_bytes owner_source in
+  let transfer_owners domains = Parallel.run ~domains (fun () ->
+    Attribute_ops.transfer_all ~grain:1 ~point_pattern:"owner*"
+      ~vertex_pattern:"owner*" ~primitive_pattern:"owner*" ~detail_pattern:"owner*"
+      ~source:owner_source ~target:triangle_geometry () |> get_ok) in
+  let owners_one = transfer_owners 1 and owners_many = transfer_owners 4 in
+  let owner_specific = Attribute_ops.transfer_points ~pattern:"owner*"
+      ~source:owner_source ~target:triangle_geometry () |> get_ok in
+  let owner_specific = Attribute_ops.transfer_primitives ~pattern:"owner*"
+      ~source:owner_source ~target:owner_specific () |> get_ok in
+  let owner_specific = Attribute_ops.transfer_vertices ~pattern:"owner*"
+      ~source:owner_source ~target:owner_specific () |> get_ok in
+  let owner_specific = Attribute_ops.transfer_detail ~pattern:"owner*"
+      ~source:owner_source ~target:owner_specific () |> get_ok in
+  check (geometry_bytes owners_one = geometry_bytes owners_many
+      && geometry_bytes owners_one = geometry_bytes owner_specific
+      && geometry_bytes owner_source = owner_source_bytes)
+    "all-owner transfer matches owner kernels/domain exactness/unchanged input";
+  List.iter (fun (owner, name, values) ->
+    check (Attribute.storage (Geometry.find_attribute ~owner name owners_one
+        |> Option.get) = Attribute.Int values)
+      ("all-owner transfer values for " ^ name)) Attribute.[
+      Point,"owner_point",[|10;11;12;13|];
+      Vertex,"owner_vertex",[|20;21;22;20;22;25|];
+      Primitive,"owner_primitive",[|30;31|];
+      Detail,"owner_detail",[|40|]];
   let promote_array domains method_ name = Parallel.run ~domains (fun () ->
     promote ~grain:1 ~method_ ~delete_source:false
       ~source:Attribute.Point ~destination:Attribute.Detail ~name reductions
@@ -122,7 +151,17 @@ let promotion ~geometry ~triangle_geometry =
         ~delete_source:false ~source:Attribute.Point
         ~destination:Attribute.Detail ~pattern:"sample* ^sample_label"
         reductions |> get_ok) in
-  let _pattern_one = promoted_pattern 1 and _pattern_many = promoted_pattern 4 in
+  let pattern_one = promoted_pattern 1 and pattern_many = promoted_pattern 4 in
+  check (geometry_bytes pattern_one = geometry_bytes pattern_many
+      && Attribute.storage (Geometry.find_attribute ~owner:Attribute.Detail
+          "sample" pattern_one |> Option.get) = Attribute.Float [|9.|]
+      && Attribute.storage (Geometry.find_attribute ~owner:Attribute.Detail
+          "sample_id" pattern_one |> Option.get) = Attribute.Int [|9|]
+      && Geometry.find_attribute ~owner:Attribute.Detail "sample_label"
+          pattern_one = None
+      && List.for_all (fun name -> Geometry.find_attribute ~owner:Attribute.Point
+          name pattern_one <> None) ["sample";"sample_id";"sample_label"])
+    "pattern promotion values/exclusion/source preservation/domain exactness";
   let array_pattern domains = Parallel.run ~domains (fun () ->
       Attribute_ops.promote_pattern ~grain:1
         ~method_:Attribute_ops.Unique_values ~delete_source:false
@@ -345,7 +384,23 @@ let promotion ~geometry ~triangle_geometry =
         ~piece_attribute:"dense_piece" ~into:"piece_mode" ~delete_source:false
         ~source:Attribute.Point ~destination:Attribute.Point ~name:"dense_value"
         dense |> get_ok) in
-  let _dense_one = dense_promoted 1 and _dense_many = dense_promoted 4 in
+  let dense_one = dense_promoted 1 and dense_many = dense_promoted 4 in
+  check (geometry_bytes dense_one = geometry_bytes dense_many)
+    "piece mode promotion complete geometry differs by domain count";
+  (* Each 40-point partition has distinct values, so every mode is tied. *)
+  let expected_modes = Array.init (dense_count / dense_piece_size) (fun piece ->
+    let smallest = ref max_int in
+    for point = piece * dense_piece_size to (piece + 1) * dense_piece_size - 1 do
+      smallest := min !smallest ((point * 17) mod 101)
+    done;
+    !smallest) in
+  (match Attribute.storage (Geometry.find_attribute ~owner:Attribute.Point
+      "piece_mode" dense_one |> Option.get) with
+   | Attribute.Int values when Array.length values = dense_count ->
+       Array.iteri (fun point value -> check
+         (value = expected_modes.(point / dense_piece_size))
+         "piece mode promotion chooses the smallest tied value") values
+   | _ -> fail "piece mode promotion storage/cardinality");
   let dense_unique domains = Parallel.run ~domains (fun () ->
       promote ~grain:257 ~method_:Attribute_ops.Unique_values
         ~piece_attribute:"dense_piece" ~into:"piece_unique"
@@ -427,7 +482,13 @@ let transfer ~geometry ~triangle_geometry =
       Attribute_ops.transfer_points ~grain:1 ~max_distance:3.
         ~mode:(Attribute_ops.Inverse_distance { neighbors = 2; power = 1. })
         ~source:transfer_source ~target:transfer_target () |> get_ok) in
-  let _transfer_one = transferred 1 and _transfer_many = transferred 4 in
+  let transfer_one = transferred 1 and transfer_many = transferred 4 in
+  check (geometry_bytes transfer_one = geometry_bytes transfer_many
+      && Attribute.storage (Geometry.find_attribute ~owner:Attribute.Point
+          "weight" transfer_one |> Option.get) = Attribute.Float [|0.;5.;100.|]
+      && Attribute.storage (Geometry.find_attribute ~owner:Attribute.Point
+          "id" transfer_one |> Option.get) = Attribute.Int [|5;5;0|])
+    "point transfer exact match/interpolation/ties/miss/domain exactness";
   (match Attribute_ops.transfer_points ~names:["weight"] ~pattern:"*"
       ~source:transfer_source ~target:transfer_target () with
    | Error error when Error.code error = "invalid_transfer" -> ()
@@ -438,17 +499,30 @@ let transfer ~geometry ~triangle_geometry =
    | _ -> fail "point transfer accepted a malformed pattern");
   let source_second = Group.init ~owner:Group.Point ~name:"source_second" 2
       (fun point -> point = 1)
-  and _target_outer = Group.init ~owner:Group.Point ~name:"target_outer" 3
+  and target_outer = Group.init ~owner:Group.Point ~name:"target_outer" 3
       (fun point -> point <> 1) in
+  let restricted_transfer domains = Parallel.run ~domains (fun () ->
+    Attribute_ops.transfer_points ~grain:1 ~max_distance:3.
+      ~source_points:source_second ~target_points:target_outer
+      ~source:transfer_source ~target:transfer_target () |> get_ok) in
+  let restricted_one = restricted_transfer 1
+  and restricted_many = restricted_transfer 4 in
+  check (geometry_bytes restricted_one = geometry_bytes restricted_many
+      && Attribute.storage (Geometry.find_attribute ~owner:Attribute.Point
+          "weight" restricted_one |> Option.get)
+        = Attribute.Float [|10.;100.;100.|])
+    "point transfer source/target restrictions preserve unselected and missed values";
   let primitive_weight = Attribute.create_owned ~name:"primitive_weight"
       ~owner:Attribute.Primitive (Attribute.Float [|10.; 20.|]) |> get_ok
   and primitive_id = Attribute.create_owned ~name:"primitive_id"
       ~owner:Attribute.Primitive (Attribute.Int [|4; 8|]) |> get_ok in
   let primitive_source = triangle_geometry
+      (* Exact centroids (2,1)/(1,2) make the target (1.5,1.5) a true tie. *)
+      |> Transform_ops.transform (Mat4.scaling (Vec3.create 3. 3. 3.))
       |> Geometry.with_attribute primitive_weight |> get_ok
       |> Geometry.with_attribute primitive_id |> get_ok in
   let primitive_target_positions = Packed.Float3.Private.of_owned_exn
-      ~x:[|0.; 1.; 0.5|] ~y:[|0.; 0.; 1.5|] ~z:[|0.; 0.; 0.|] in
+      ~x:[|0.; 3.; 1.5|] ~y:[|0.; 0.; 4.5|] ~z:[|0.; 0.; 0.|] in
   let primitive_target_topology = Tb.create ~point_count:3 () in
   Tb.add_triangle primitive_target_topology 0 1 2;
   let primitive_target_geometry = Geometry.create
@@ -458,8 +532,20 @@ let transfer ~geometry ~triangle_geometry =
       Attribute_ops.transfer_primitives ~grain:1
         ~mode:(Attribute_ops.Inverse_distance { neighbors = 2; power = 1. })
         ~source:primitive_source ~target:primitive_target_geometry () |> get_ok) in
-  let _primitive_one = primitive_transferred 1
-  and _primitive_many = primitive_transferred 4 in
+  let primitive_one = primitive_transferred 1
+  and primitive_many = primitive_transferred 4 in
+  check (geometry_bytes primitive_one = geometry_bytes primitive_many)
+    "primitive transfer complete geometry differs by domain count";
+  (match Attribute.storage (Geometry.find_attribute ~owner:Attribute.Primitive
+      "primitive_id" primitive_one |> Option.get) with
+   | Attribute.Int [|value|] -> check (value = 4)
+       (Printf.sprintf "primitive transfer discrete tie: got %d, expected 4" value)
+   | _ -> fail "primitive transfer integer storage/cardinality");
+  (match Attribute.storage (Geometry.find_attribute ~owner:Attribute.Primitive
+      "primitive_weight" primitive_one |> Option.get) with
+   | Attribute.Float [|value|] -> check (near value 15.)
+       "primitive transfer barycenter interpolation"
+   | _ -> fail "primitive transfer floating storage/cardinality");
   (match Attribute_ops.transfer_primitives ~source_primitives:source_second
       ~source:primitive_source ~target:primitive_target_geometry () with
    | Error error when Error.code error = "invalid_transfer" -> ()
@@ -505,6 +591,9 @@ let transfer ~geometry ~triangle_geometry =
   (match Spatial_index.create ~grain:0 (Geometry.positions indexed_geometry) with
    | Error error when Error.code error = "invalid_parameter" -> ()
    | _ -> fail "spatial index accepted a non-positive parallel grain");
+  let indexed domains = Parallel.run ~domains (fun () ->
+    Spatial_index.create ~grain:7 (Geometry.positions indexed_geometry) |> get_ok) in
+  let indexes = [indexed 1; indexed 4] in
   for query = 0 to 127 do
     let value = float_of_int query in
     let qx = sin (value *. 0.31) *. 6.
@@ -517,7 +606,16 @@ let transfer ~geometry ~triangle_geometry =
       if distance < !expected_distance
          || (distance = !expected_distance && point < !expected) then begin
         expected := point; expected_distance := distance
-      end) indexed_points
+      end) indexed_points;
+    List.iter (fun index ->
+      let indices = Array.make 3 (-17)
+      and distances_squared = Array.make 3 (-17.) in
+      let count = Spatial_index.Private.nearest_k_into index
+          ~x:qx ~y:qy ~z:qz ~max_distance_squared:Float.infinity
+          ~indices ~distances_squared ~offset:1 ~count:1 in
+      check (count = 1 && indices = [|-17; !expected; -17|]
+          && distances_squared = [|-17.; !expected_distance; -17.|])
+        "spatial index nearest/reference/domain exactness and output slice") indexes
   done;
   let surface_positions = Packed.Float3.Private.of_owned_exn
       ~x:[|0.; 2.; 0.|] ~y:[|0.; 0.; 2.|] ~z:[|0.; 0.; 0.|] in
@@ -558,13 +656,13 @@ let transfer ~geometry ~triangle_geometry =
       |> get_ok in
   if Surface_index.triangle_count all_corner_surface <> 0 then
     fail "surface index all-corners vertex restriction";
-  let _initial_surface_weight = Attribute.create_owned ~name:"sampled_weight"
+  let initial_surface_weight = Attribute.create_owned ~name:"sampled_weight"
       ~owner:Attribute.Point (Attribute.Float [|99.; 99.|]) |> get_ok
-  and _initial_corner = Attribute.create_owned ~name:"sampled_corner"
+  and initial_corner = Attribute.create_owned ~name:"sampled_corner"
       ~owner:Attribute.Point (Attribute.Float [|88.; 88.|]) |> get_ok
-  and _initial_piece = Attribute.create_owned ~name:"sampled_piece"
+  and initial_piece = Attribute.create_owned ~name:"sampled_piece"
       ~owner:Attribute.Point (Attribute.Int [|6; 6|]) |> get_ok
-  and _initial_distance = Attribute.create_owned ~name:"surface_distance"
+  and initial_distance = Attribute.create_owned ~name:"surface_distance"
       ~owner:Attribute.Point (Attribute.Float [|77.; 77.|]) |> get_ok in
   let duplicate_geometry = Geometry.create ~positions:surface_positions
       ~topology:(Tb.freeze (let builder =
@@ -573,9 +671,54 @@ let transfer ~geometry ~triangle_geometry =
         Tb.add_triangle builder 0 1 2; builder)) () |> get_ok in
   let restricted_piece = Attribute.create_owned ~name:"piece"
       ~owner:Attribute.Primitive (Attribute.Int [|7; 9|]) |> get_ok in
-  let _restricted_source = Geometry.with_attribute restricted_piece
+  let restricted_source = Geometry.with_attribute restricted_piece
       duplicate_geometry |> get_ok
-  and _restricted_target = Line_geometry.points [|(0.5,0.5,1.); (0.5,0.5,1.)|] in
+  and restricted_target = Line_geometry.points [|(0.5,0.5,1.); (0.5,0.5,1.)|] in
+  let restricted_target = List.fold_left (fun geometry attribute ->
+    Geometry.with_attribute attribute geometry |> get_ok) restricted_target
+      [initial_surface_weight;initial_corner;initial_piece;initial_distance] in
+  let restricted_target_bytes = geometry_bytes restricted_target in
+  let target_first = Group.init ~owner:Group.Point ~name:"first" 2
+      (fun point -> point = 0) in
+  let surface_attributes = List.map (fun (source_owner, source_name, target_name) ->
+    Attribute_ops.{source_owner;source_name;target_name}) Attribute.[
+      Point,"weight","sampled_weight";
+      Vertex,"corner_value","sampled_corner";
+      Primitive,"piece","sampled_piece"] in
+  let sampled domains = Parallel.run ~domains (fun () ->
+    Attribute_ops.transfer_surface ~grain:1 ~target_elements:target_first
+      ~distance_attribute:"surface_distance" ~attributes:surface_attributes
+      ~source:surface_source ~target:restricted_target () |> get_ok) in
+  let sampled_one = sampled 1 and sampled_many = sampled 4 in
+  check (geometry_bytes sampled_one = geometry_bytes sampled_many
+      && geometry_bytes restricted_target = restricted_target_bytes)
+    "surface transfer selected targets/domain exactness/unchanged input";
+  List.iter (fun (name, storage) ->
+    check (Attribute.storage (Geometry.find_attribute ~owner:Attribute.Point
+        name sampled_one |> Option.get) = storage)
+      ("surface transfer interpolation/unselected value for " ^ name)) Attribute.[
+      "sampled_weight",Float [|1.5;99.|];
+      "sampled_corner",Float [|17.5;88.|];
+      "sampled_piece",Int [|7;6|];
+      "surface_distance",Float [|1.;77.|]];
+  let source_second = Group.init ~owner:Group.Primitive ~name:"second" 2
+      (fun primitive -> primitive = 1) in
+  let restricted_sample domains = Parallel.run ~domains (fun () ->
+    Attribute_ops.transfer_surface ~grain:1 ~source_primitives:source_second
+      ~target_elements:target_first
+      ~attributes:[Attribute_ops.{source_owner=Attribute.Primitive;
+        source_name="piece";target_name="sampled_piece"}]
+      ~source:restricted_source ~target:restricted_target () |> get_ok) in
+  let restricted_one = restricted_sample 1
+  and restricted_many = restricted_sample 4 in
+  check (geometry_bytes restricted_one = geometry_bytes restricted_many
+      && geometry_bytes restricted_target = restricted_target_bytes
+      && Attribute.storage (Geometry.find_attribute ~owner:Attribute.Point
+          "sampled_piece" restricted_one |> Option.get) = Attribute.Int [|9;6|]
+      && Attribute.storage (Geometry.find_attribute ~owner:Attribute.Point
+          "surface_distance" restricted_one |> Option.get)
+        = Attribute.Float [|77.;77.|])
+    "surface transfer source primitive restriction overrides coincident tie";
   let degenerate_positions = Packed.Float3.Private.of_owned_exn
       ~x:[|0.; 1.; 2.|] ~y:[|0.; 0.; 0.|] ~z:[|0.; 0.; 0.|] in
   let degenerate_topology = Tb.create ~point_count:3 () in

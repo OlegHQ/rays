@@ -44,6 +44,14 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   `Nothing`), unchanged inputs and complete geometry bytes at one/four domains.
   `_build/default/lib/rdk/test_main.exe test_copy_to_points` and
   `@lib/rdk/runtest` pass. Target selections retain point-index order.
+- Verified 2026-10-11: `test_rdk_attributes` uses every formerly unused
+  result/fixture. Assertions cover pattern exclusions, dense mode ties,
+  all four transfer owners, point/primitive interpolation and miss handling,
+  source/target restrictions, surface barycentric interpolation and coincident
+  primitive selection, unchanged inputs and complete one/four-domain bytes.
+  The 128-query linear nearest-point oracle now actually queries both indexes
+  and checks distances, indices and untouched output-slice sentinels.
+  `_build/default/lib/rdk/test_main.exe test_rdk` and `@lib/rdk/runtest` pass.
 - Verified 2026-10-11: `test_materials` exercises the fixed 500ms carry budget
   with a live geometry input and a controlled 600ms preparation callback.
   The held-back preview preserves the original document/history; Escape
