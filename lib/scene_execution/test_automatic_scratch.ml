@@ -120,11 +120,41 @@ let run () =
   require(!releases=2)"failed upload did not run release hook exactly once");
   with_renderer driver"viewport"(fun renderer->
   let oversized={state with viewport=(0,0,128,128);scissor=(16,-8,128,128)}in
-  ignore(get(render_blended renderer
-    [Ogpu.Pipeline.Replace,{Scene_execution.mesh=mesh 0;state=oversized}]));
+  let pixel pixels x y=let at=(y*64+x)*4 in
+    Char.code(Bytes.get pixels at),Char.code(Bytes.get pixels(at+1)),Char.code(Bytes.get pixels(at+2))in
+  let read()=get(Scene_execution.read_pixels renderer~bytes_per_row:(64*4))in
+  require(get(render_blended~clear:(0.,0.,0.,1.) renderer
+    [Ogpu.Pipeline.Replace,{Scene_execution.mesh=mesh 0;state=oversized}]))
+    "oversized viewport frame was skipped";
+  (* The scissor is clipped to the target: columns 0-15 keep the clear. *)
+  let pixels=read()in
+  require(pixel pixels 15 0=(0,0,0)&&pixel pixels 15 63=(0,0,0))"scissor left edge was painted";
+  require(pixel pixels 16 0=(255,255,255)&&pixel pixels 63 63=(255,255,255)&&pixel pixels 40 30=(255,255,255))
+    "clipped viewport did not cover the target right of the scissor";
   let offset={state with viewport=(100,100,8,8);scissor=(100,100,8,8)}in
-  ignore(get(render_blended renderer
-    [Ogpu.Pipeline.Replace,{Scene_execution.mesh=mesh 1;state=offset}])));
+  require(get(render_blended~clear:(0.,0.,0.,1.) renderer
+    [Ogpu.Pipeline.Replace,{Scene_execution.mesh=mesh 1;state=offset}]))
+    "off-target frame was skipped";
+  let pixels=read()in
+  require(List.for_all(fun(x,y)->pixel pixels x y=(0,0,0))[0,0;31,31;63,63;16,0])
+    "a draw entirely off the target painted the target";
+  (* A viewport wider than the target is not squeezed into it: the target shows
+     the half of a red|green image its pixels cover, at either overhang. *)
+  let halves:Scene_execution.sampled_texture={key="viewport-halves";
+    levels=[|{width=2;height=1;bytes=Bytes.of_string"\xff\x00\x00\xff\x00\xff\x00\xff"}|];
+    sampler={label=None;min_filter=Nearest;mag_filter=Nearest;mip_filter=No_mip;
+      address_u=Clamp_to_edge;address_v=Clamp_to_edge;lod_min=0.;lod_max=0.;
+      max_anisotropy=1};gpu=None}in
+  List.iteri(fun index(x,expected,label)->
+    require(get(Scene_execution.render_sampled_resources~clear:(0.,0.,0.,1.)renderer
+      [sampled~texture:halves Scene_execution.Scene2 Ogpu.Pipeline.Replace
+        {mesh=mesh(2+index);state={state with viewport=(x,0,128,64)}}]))
+      "overhanging viewport frame was skipped";
+    let pixels=read()in
+    for y=0 to 63 do for x=0 to 63 do
+      require(pixel pixels x y=expected)(Printf.sprintf"%s viewport half at %d,%d"label x y)
+    done done)
+    [0,(255,0,0),"right-overhanging";-64,(0,255,0),"left-overhanging"]);
   with_renderer driver"uniforms"(fun renderer->
   let affine offset=let bytes=Bytes.make 24 '\000'in
     Bytes.set_int32_le bytes 0(Int32.bits_of_float 1.);

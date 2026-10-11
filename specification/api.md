@@ -265,8 +265,7 @@ See [`3d.md`](./3d.md) for the rendering contract.
 The public `Rdk` facade keeps its packed geometry, topology, attribute, mesh,
 and Boolean paths while implementations live in one-way `rdk_core`, `rdk_exact`,
 `rdk_spatial`, `rdk_attrib`, `rdk_gen`, `rdk_curve`, `rdk_mesh`, and `rdk_boolean`
-libraries. `Rdk.Curve_sampling` provides deterministic Bézier and
-Catmull–Rom samples, `Rdk.Iso_surface` extracts packed isosurfaces,
+libraries. `Rdk.Iso_surface` extracts packed isosurfaces,
 `Rdk.Uv_sphere` generates packed latitude/longitude spheres.
 `Rdk.Group_ops`, `Rdk.Group_mesh`, `Rdk.Graph_color`,
 `Rdk.Blast_by_attribute`, `Rdk.Separate_pieces`, `Rdk.Deletion`,

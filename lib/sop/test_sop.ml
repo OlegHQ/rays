@@ -129,6 +129,142 @@ Lisp_sop.node ~with_:["input", (input)] (Printf.sprintf {|(sop/transform (sop/ex
          | [input] -> inspectable_transform ~label input parameters
          | _ -> invalid_arg "inspectable_transform expects one input")
 
+let test_node_owned_parameters_and_graph_edit () =
+  let source = Lisp_sop.snapshot (Rdk.Line_geometry.points [|0., 0., 0.|]) in
+  let editable = inspectable_transform ~label:"move" source inspectable_default in
+  let graph = Lisp_sop.node ~with_:["editable", editable]
+      "(sop/merge (sop/ext_editable) (sop/ext_editable))" in
+  let evaluator = session () in
+  check (List.length (Node.parameter_fields editable) = 2
+      && Node.has_parameters editable)
+    "node-owned parameter metadata was not exposed";
+  let original_infos = Graph.inspect graph in
+  let translated, effects = edit_parameters graph
+      ~node_id:(Node.id editable)
+      ["translate_x", Parameter.Float_value 1.5] |> get_ok in
+  check (effects.cook && not effects.view && not effects.export)
+    "graph edit lost cook impact";
+  let edited = Option.get (Graph.find translated ~node_id:(Node.id editable)) in
+  check (Node.id edited = Node.id editable
+      && List.map (fun info -> info.Graph.id) (Graph.inspect translated)
+         = List.map (fun info -> info.Graph.id) original_infos)
+    "graph edit did not preserve logical node identities";
+  (match Node.inputs translated with
+   | [left; right] -> check (left == right && Node.id left = Node.id editable)
+       "graph edit duplicated a shared subgraph"
+   | _ -> fail "merge lost an input after the edit");
+  let current = context () in
+  ignore (cook_ok evaluator current graph);
+  let before_edit = Session.stats evaluator in
+  let output = cook_ok evaluator current translated in
+  let after_edit = Session.stats evaluator in
+  let positions = Rdk.Packed.Float3.Private.view
+      (Rdk.Geometry.positions (Result.get_ok (Sop.Payload.geometry output.payload))) in
+  check (positions.x = [|1.5; 1.5|])
+    "edited node did not rebuild its cook closure";
+  check (after_edit.hits > before_edit.hits)
+    "stable graph edit did not reuse an unaffected cached input";
+  let view_only, view_effects = edit_parameters translated
+      ~node_id:(Node.id editable)
+      ["display_gain", Parameter.Float_value 1.75] |> get_ok in
+  check (not view_effects.cook && view_effects.view && not view_effects.export)
+    "view-only node edit requested a cook";
+  let before_view = Session.stats evaluator in
+  ignore (cook_ok evaluator current view_only);
+  check ((Session.stats evaluator).cooks = before_view.cooks)
+    "view-only metadata invalidated cooked geometry";
+  let view_node = Option.get (Graph.find view_only ~node_id:(Node.id editable)) in
+  let display = List.find (fun field -> field.Parameter.name = "display_gain")
+      (Node.parameter_fields view_node) in
+  check (display.current = Parameter.Float_value 1.75)
+    "view-only node value was not retained for the inspector";
+  Session.close evaluator
+
+let test_encoded_parameter () =
+  let initial = { rules = [1; 2] } in
+  let field = Parameter.view encoded_schema initial |> List.hd in
+  check (field.kind = Parameter.Text_view
+      && field.current = Parameter.Text_value "1,2")
+    "encoded parameter did not expose its deterministic text form";
+  let edited, effects = Parameter.apply_all encoded_schema initial
+      ["rules", Parameter.Text_value "3, 5, 8"] |> get_ok in
+  check (edited.rules = [3; 5; 8] && effects.cook)
+    "encoded parameter did not decode an inspector edit";
+  check (Parameter.key encoded_schema initial
+      <> Parameter.key encoded_schema edited)
+    "encoded parameter did not participate in cache identity";
+  check (Result.is_error (Parameter.apply_all encoded_schema initial
+      ["rules", Parameter.Text_value "3,nope"]))
+    "encoded parameter accepted an invalid structured edit"
+
+let test_async_cook_latest_request () =
+  let worker = Async_cook.create ~max_entries:4
+      ~max_payload_bytes:4_000_000 |> get_ok in
+  let slow = custom ~operation:"async_test_slow" ~version:1
+      ~parameters:"delay=0.3" [Lisp_sop.snapshot (Rdk.Line_geometry.points [|0., 0., 0.|])]
+      (fun ~context inputs ->
+        Unix.sleepf 0.3;
+        if Context.cancelled context then Error "cancelled"
+        else Ok inputs.(0)) in
+  let prepare output = Ok (Rdk.Geometry.point_count (Result.get_ok (Sop.Payload.geometry output.Session.payload))) in
+  let first = Async_cook.submit worker ~context:(context ~domains:2 ())
+      ~node:slow ~prepare |> get_ok in
+  ignore (wait_until (fun () -> match Async_cook.status worker with
+    | Async_cook.Cooking _ -> Some ()
+    | Idle -> None));
+  let second = Async_cook.submit worker ~context:(context ~domains:2 ())
+      ~node:(Lisp_sop.snapshot (Rdk.Line_geometry.points [|0., 0., 0.; 1., 0., 0.; 2., 0., 0.|]))
+      ~prepare |> get_ok in
+  let completion = wait_until (fun () -> Async_cook.poll worker) in
+  check (first <> second && completion.request_id = second)
+    "async cook published a stale request";
+  (match completion.result with
+   | Ok 3 -> ()
+   | Ok _ -> fail "async cook latest request returned the wrong geometry"
+   | Error error -> fail (Async_cook.error_to_string error));
+  check (Async_cook.status worker = Idle)
+    "async cook remained busy after publishing the latest result";
+  Async_cook.close worker;
+  Async_cook.close worker
+
+let test_lru_limits_and_lifetime () =
+  let box = Lisp_sop.node {|(sop/box :normals "Auto" :connectivity "Triangles")|} in
+  let graph = Lisp_sop.node ~with_:["box", box] "(sop/null (sop/ext_box))" in
+  let evaluator = session ~entries:1 () in
+  ignore (cook_ok evaluator (context ()) graph);
+  let stats = Session.stats evaluator in
+  check (stats.retained_entries = 1 && stats.evictions >= 1)
+    "entry-bounded LRU did not evict";
+  Session.clear evaluator;
+  let stats = Session.stats evaluator in
+  check (stats.retained_entries = 0 && stats.retained_payload_bytes = 0)
+    "Session.clear retained payload";
+  Session.close evaluator;
+  (match Session.cook evaluator ~context:(context ()) graph with
+   | Ok _ -> fail "closed session cooked"
+   | Error error -> check (error.code = "session_closed") "closed session error code");
+  let uncached = session ~entries:8 ~bytes:0 () in
+  ignore (cook_ok uncached (context ()) box);
+  check ((Session.stats uncached).retained_entries = 0)
+    "payload budget retained oversized entry";
+  Session.close uncached
+
+let test_shared_input_memo () =
+  let pick previous = custom ~operation:"pick_first" ~version:1
+      [previous; previous] (fun ~context:_ inputs -> Ok inputs.(0)) in
+  let rec chain node count = if count = 0 then node else chain (pick node) (count - 1) in
+  let graph = chain (Lisp_sop.node {|(sop/grid :width_mode "Auto" :height_mode "Auto" :columns 2 :rows 2 :size 1.0)|}) 30 in
+  let evaluator = session () in
+  ignore (cook_ok evaluator (context ()) graph);
+  let stats = Session.stats evaluator in
+  check (stats.misses = 31 && stats.hits = 0)
+    "shared inputs were evaluated once per path instead of once per node";
+  ignore (cook_ok evaluator (context ()) graph);
+  let stats = Session.stats evaluator in
+  check (stats.misses = 31 && stats.hits = 31)
+    "shared inputs were looked up once per path on a warm cook";
+  Session.close evaluator
+
 let test_static_context_cache () =
   let graph =
     Lisp_sop.node {|(sop/grid :width_mode "Auto" :height_mode "Auto" :columns 4 :rows 3 :size 5.0)|}
@@ -980,7 +1116,10 @@ let test_local_subdivide_contract () =
   check (contains (Node.parameters stitch_tri_graph)
       "cracks=stitch__triangulate")
     "procedural Stitch Triangulate cache identity";
-  ignore (cook_ok evaluator current stitch_tri_graph);
+  let stitch_tri = cook_ok evaluator current stitch_tri_graph in
+  check (Rdk.Geometry.primitive_count (Result.get_ok (Sop.Payload.geometry stitch_tri.payload))
+      > Rdk.Geometry.primitive_count (Result.get_ok (Sop.Payload.geometry pull_tri.payload)))
+    "procedural Stitch Triangulate did not append bridge primitives";
   let consistent_graph = Lisp_sop.node ~with_:["source", (Lisp_sop.snapshot (source))] {|(sop/subdivide
    (sop/ext_source)
    :crease_weight_mode "Auto"
@@ -1689,7 +1828,6 @@ let test_edge_relax_contract () =
   let graph = Lisp_sop.node ~with_:["source", (source); "reference", (reference)] {|(sop/edge_relax (sop/ext_source) (sop/ext_reference) :iterations 128 :tolerance 1e-07)|} in
   check (Node.version graph = 1
       && contains (Node.parameters graph) "iterations=128"
-      && contains (Node.parameters graph) "target_mode=individual"
       && contains (Node.parameters graph) "target_mode=individual_lengths")
     "procedural Edge Relax cache identity";
   let output = cook_ok evaluator current graph in
@@ -2230,6 +2368,11 @@ let run () =
   test_volatile_slots ();
   test_async_await ();
   test_async_volatile_on_worker ();
+  test_async_cook_latest_request ();
+  test_node_owned_parameters_and_graph_edit ();
+  test_encoded_parameter ();
+  test_lru_limits_and_lifetime ();
+  test_shared_input_memo ();
   test_static_context_cache ();
   test_grid_generator_contract ();
   test_circle_generator_contract ();

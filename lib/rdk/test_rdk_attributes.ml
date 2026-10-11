@@ -199,10 +199,31 @@ let promotion ~geometry ~triangle_geometry =
       |> Geometry.with_attribute overlap_a |> get_ok
       |> Geometry.with_attribute overlap_copy |> get_ok
       |> Geometry.with_attribute overlap_piece |> get_ok in
+  let same_owner = Attribute_ops.promote_pattern ~method_:Attribute_ops.First
+      ~source:Attribute.Point ~destination:Attribute.Point ~pattern:"a copy_a"
+      ~into_pattern:"renamed copy_a" overlap_source |> get_ok in
+  let same_owner_values name = match Attribute.storage
+      (Geometry.find_attribute ~owner:Attribute.Point name same_owner
+       |> Option.get) with Attribute.Int values -> values | _ -> [||] in
+  if Geometry.find_attribute ~owner:Attribute.Point "a" same_owner <> None
+      || same_owner_values "renamed" <> [|1; 2; 3|]
+      || same_owner_values "copy_a" <> [|4; 5; 6|] then
+    fail "pattern same-owner rename changed an unrenamed attribute";
   let same_owner_noop = Attribute_ops.promote_pattern ~source:Attribute.Point
       ~destination:Attribute.Point ~pattern:"a" overlap_source |> get_ok in
   if Geometry.data_id same_owner_noop <> Geometry.data_id overlap_source then
     fail "pattern same-owner identity changed geometry";
+  let overlap_promoted = Attribute_ops.promote_pattern ~method_:Attribute_ops.First
+      ~piece_attribute:"piece" ~source:Attribute.Point
+      ~destination:Attribute.Point ~pattern:"[ac]*"
+      ~into_pattern:"copy_?*" overlap_source |> get_ok in
+  let overlap_result name = match Attribute.storage
+      (Geometry.find_attribute ~owner:Attribute.Point name overlap_promoted
+       |> Option.get) with Attribute.Int values -> values | _ -> [||] in
+  if Geometry.find_attribute ~owner:Attribute.Point "a" overlap_promoted <> None
+      || overlap_result "copy_a" <> [|1; 2; 3|]
+      || overlap_result "copy_copy_a" <> [|4; 5; 6|] then
+    fail "pattern promotion overlapping simultaneous rename/delete";
   (match Attribute_ops.promote_pattern ~source:Attribute.Point
       ~destination:Attribute.Point ~pattern:"sample*" ~into_pattern:"P*"
       reductions with
@@ -753,6 +774,21 @@ let transfer ~geometry ~triangle_geometry =
   let quad_index = Surface_index.create quad_surface |> get_ok in
   if Surface_index.triangle_count quad_index <> 2 then
     fail "surface index did not triangulate a quad exactly";
+  let quad_target = Line_geometry.points [|(0.2, 0.7, 1.); (0.8, 0.7, 1.)|] in
+  let quad_transfer = Attribute_ops.transfer_surface ~grain:1
+      ~attributes:Attribute_ops.[
+        {source_owner = Attribute.Point; source_name = "quad_weight";
+         target_name = "quad_weight"};
+        {source_owner = Attribute.Vertex; source_name = "quad_corner";
+         target_name = "quad_corner"}]
+      ~source:quad_surface ~target:quad_target () |> get_ok in
+  let surface_float name geometry = Geometry.find_attribute
+      ~owner:Attribute.Point name geometry |> Option.get
+      |> Attribute.get (Attribute.key ~name ~owner:Attribute.Point Attribute.float)
+      |> Option.get in
+  if not (near_array [|2.3; 1.9|] (surface_float "quad_weight" quad_transfer))
+     || not (near_array [|33.; 29.|] (surface_float "quad_corner" quad_transfer))
+  then fail "general-polygon point/vertex surface interpolation";
   let concave_positions = Packed.Float3.Private.of_owned_exn
       ~x:[|0.; 2.; 2.; 1.; 0.|] ~y:[|0.; 0.; 2.; 1.; 2.|]
       ~z:(Array.make 5 0.) in
@@ -763,6 +799,10 @@ let transfer ~geometry ~triangle_geometry =
   let concave_index = Surface_index.create concave_geometry |> get_ok in
   if Surface_index.triangle_count concave_index <> 3 then
     fail "surface index concave polygon triangle cardinality";
+  (match Surface_index.raycast concave_index ~origin:(Vec3.create 0.4 1.4 0.75)
+      ~direction:(Vec3.neg Vec3.unit_z) with
+   | Ok (Some hit) when hit.primitive = 0 && near hit.distance 0.75 -> ()
+   | _ -> fail "surface index missed a concave polygon interior");
   let bow_tie_positions = Packed.Float3.Private.of_owned_exn
       ~x:[|0.; 2.; 0.; 2.|] ~y:[|0.; 2.; 2.; 0.|]
       ~z:(Array.make 4 0.) in

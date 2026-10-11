@@ -71,6 +71,15 @@ let run () =
       get (P.render tracer camera); get (P.flush tracer);
       P.reset tracer;
       get (P.render tracer moved); get (P.flush tracer);
+      assert (pixels tracer <> preview);
+      (* A camera move in the middle of an accumulation is deterministic too. *)
+      let motion_run () =
+        P.reset tracer;
+        get (P.render tracer camera); get (P.flush tracer);
+        get (P.render tracer camera); get (P.flush tracer);
+        get (P.render tracer moved); get (P.flush tracer);
+        pixels tracer in
+      assert (motion_run () = motion_run ());
       get (P.render tracer moved); get (P.flush tracer);
       assert (P.samples tracer = 2);
       let matrix = Rays.Mat4.mul
@@ -92,6 +101,7 @@ let run () =
       Bytes.iteri (fun i value -> largest_difference := max !largest_difference
         (abs (Char.code value - Char.code (Bytes.get transformed_pixels i)))) instanced_pixels;
       assert (!largest_difference <= 2);
+      let expected = transformed_pixels in
       get (P.queue_mesh tracer instanced);
       get (P.queue_mesh tracer (get (P.mesh [transformed, P.material (rgb 0.7 0.5 0.3)])));
       get (P.flush tracer);
@@ -99,6 +109,8 @@ let run () =
       get (P.render tracer camera); get (P.flush tracer);
       assert (P.samples tracer = 0); (* an edit's first frame is a preview *)
       get (P.render tracer camera); get (P.flush tracer);
+      (* The last queued mesh wins and renders as when it was replaced directly. *)
+      assert (pixels tracer = expected);
       let stable_handles = ref None in
       for index = 1 to 10 do
         let matrix = Rays.Mat4.mul
@@ -231,6 +243,7 @@ let run () =
       let moving = get (P.mesh_instanced ~prototype:(sphere, P.material (rgb 0.5 0.5 0.5))
         ~materials:[| red; green |] ~motion:[| place (-2.); place 4.5 |] [| place (-2.); place 2. |]) in
       let moving_pixels = capture moving in
+      assert (capture moving = moving_pixels);
       assert (channel_at static_pixels end_point 1 = 0);
       assert (channel_at moving_pixels end_point 1 > 0);
       assert (channel_at moving_pixels right 1 > 0 &&

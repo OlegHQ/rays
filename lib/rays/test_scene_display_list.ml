@@ -2,6 +2,10 @@ open Rays
 
 let run () =
   let builder = Scene_command.Display_list.Builder.create () in
+  (* The rectangle (2, 3) 8 x 9 in opaque red, as two triangles. *)
+  let rectangle = { Scene_command.Render_ir.vertices = [|2.; 3.; 10.; 3.; 10.; 12.; 2.; 12.|];
+    indices = [|0; 1; 2; 0; 2; 3|]; color = 0xff0000ffl } in
+  Scene_command.Display_list.Builder.geometry builder rectangle;
   let segment = Result.get_ok
       (Scene_command.Display_list.Builder.publish builder ~id:41L ~version:3L) in
   let node = Scene.Private.display_list segment in
@@ -24,7 +28,8 @@ let run () =
        when String.starts_with ~prefix:"scene-stage:" identity ->
        (match Array.to_list (Scene_command.Render_ir.Private.commands_readonly ir) with
         | [Scene_command.Render_ir.Push_transform _;
-           Scene_command.Render_ir.Pop_transform] -> ()
+           Scene_command.Render_ir.Geometry geometry;
+           Scene_command.Render_ir.Pop_transform] when geometry = rectangle -> ()
         | _ -> failwith "transformed display-list command order drift")
    | _ -> failwith "transformed display list bypassed retained transform lowering");
   let equivalent () = [Scene.clear Color.black;

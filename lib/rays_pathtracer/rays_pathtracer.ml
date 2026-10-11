@@ -212,7 +212,6 @@ type t = {
   mutable history_epoch : int;
   mutable pending : pending list;  (* oldest first, at most two in flight *)
   mutable retired : (unit -> unit) list;  (* freed once no frame is in flight *)
-  mutable history_scale : int;
   mutable bands : int;  (* row bands per accumulation frame *)
   mutable frame_gpu : float;  (* GPU seconds of the frame in progress *)
   mutable completed : int;
@@ -1261,7 +1260,6 @@ let create ?(spp = 1) ?(bounces = 6) ?(exposure = 1.) ?(round_samples = 4) ~widt
           history_epoch = 0;
           pending = [];
           retired = [];
-          history_scale = 1;
           bands = 3;
           frame_gpu = 0.;
           completed = 0;
@@ -1296,9 +1294,6 @@ let camera_fov camera =
   match Rays.Camera.projection camera with
   | Perspective { fov_y; _ } -> Ok fov_y
   | Orthographic _ -> Error "path tracer requires a perspective camera"
-
-(* The frame size the next dispatch traces: the whole frame, every pixel. *)
-let dispatch_size t = 1, t.width, t.height
 
 let uniform_bytes t (camera : camera) fov ~row_offset =
   let open Rays.Vec3 in
@@ -1341,10 +1336,8 @@ let uniform_bytes t (camera : camera) fov ~row_offset =
   put_vec4 48 up (Rays.Camera.focus_distance camera);
   put_rgb 64 t.sky;
   put_rgb 80 t.ground;
-  let scale, dispatch_width, dispatch_height = dispatch_size t in
-  put_u32 bytes 96 dispatch_width;
-  put_u32 bytes 100 dispatch_height;
-  put_u32 bytes 140 scale;
+  put_u32 bytes 96 t.width;
+  put_u32 bytes 100 t.height;
   put_u32 bytes 276 row_offset;
   put_u32 bytes 104 t.frame;
   put_u32 bytes 108 t.spp;
@@ -1378,7 +1371,6 @@ let uniform_bytes t (camera : camera) fov ~row_offset =
   let* () =
     match t.history_camera with
     | None -> Ok ()
-    | Some _ when t.history_scale <> scale -> Ok ()
     | Some previous ->
         let* previous_fov = camera_fov previous in
         let forward, right, up = axes previous in
@@ -1685,19 +1677,18 @@ let render t (camera : camera) =
       t.scene_edited <- false;
       t.moving <- true
     end;
-    let scale, dispatch_width, dispatch_height = dispatch_size t in
     (* ponytail: the queue holds three command buffers, one of which a mesh
        build may hold; more bands would need lazy submission from [poll]. *)
     let free_slots = 3 - (if t.building = None then 0 else 1) in
-    let bands = if t.moving then 1 else max 1 (min t.bands (min dispatch_height free_slots)) in
-    let rows_per_band = (dispatch_height + bands - 1) / bands in
+    let bands = if t.moving then 1 else max 1 (min t.bands (min t.height free_slots)) in
+    let rows_per_band = (t.height + bands - 1) / bands in
     let slot = t.next_output_slot in
     let previous_history = t.history_slot in
     let next_history = previous_history lxor 1 in
     let* pipeline, table = current_pipeline t in
     let band index =
       let row_offset = index * rows_per_band in
-      let rows = max 1 (min rows_per_band (dispatch_height - row_offset)) in
+      let rows = max 1 (min rows_per_band (t.height - row_offset)) in
       let last = index = bands - 1 in
       let* uniforms = uniform_bytes t camera fov ~row_offset in
       let* commands = gpu (B.begin_commands t.queue) in
@@ -1735,7 +1726,7 @@ let render t (camera : camera) =
         let* () = set 12 t.history_geometry.(previous_history) in
         let* () = set 13 t.history_color.(next_history) in
         let* () = set 14 t.history_geometry.(next_history) in
-        let* () = gpu (B.dispatch_threads encoder ~threads:(dispatch_width, rows, 1) ~threadgroup:(16, 16, 1)) in
+        let* () = gpu (B.dispatch_threads encoder ~threads:(t.width, rows, 1) ~threadgroup:(16, 16, 1)) in
         let* () = gpu (B.end_compute encoder) in
         let* () =
           if not t.moving then Ok ()
@@ -1747,7 +1738,7 @@ let render t (camera : camera) =
             let* () = set 1 t.history_color.(next_history) in
             let* () = set 2 t.history_geometry.(next_history) in
             let* () = gpu (B.set_texture resolve ~index:0 t.outputs.(slot)) in
-            let* () = gpu (B.dispatch_threads resolve ~threads:(dispatch_width, dispatch_height, 1) ~threadgroup:(16, 16, 1)) in
+            let* () = gpu (B.dispatch_threads resolve ~threads:(t.width, t.height, 1) ~threadgroup:(16, 16, 1)) in
             gpu (B.end_compute resolve)
         in
         gpu (B.commit commands)
@@ -1765,7 +1756,6 @@ let render t (camera : camera) =
     let* () = submit 0 in
     t.next_output_slot <- (slot + 1) mod 3;
     t.history_slot <- next_history;
-    t.history_scale <- scale;
     (* A preview frame is shown but never counted: accumulation restarts at
        frame zero once the camera rests. *)
     if not t.moving then t.frame <- t.frame + 1;

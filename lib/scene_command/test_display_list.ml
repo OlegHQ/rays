@@ -3,8 +3,23 @@ open Scene_command
 let require condition message = if not condition then failwith message
 
 let () =
+  (* Sixteen rectangles inside one clip are 18 commands: more than the
+     builder's first 16 slots, so its storage doubles once to 32. *)
+  let rectangle index = { Render_ir.vertices = [|float index; 2.; float index +. 3.; 2.;
+      float index +. 3.; 6.; float index; 6.|];
+    indices = [|0; 1; 2; 0; 2; 3|]; color = Int32.of_int index } in
+  (* What a builder of [capacity] slots holding these geometries reports:
+     an opcode byte, eight values, a colour and an integer a slot, and a word
+     for each vertex coordinate and index. *)
+  let word = Sys.word_size / 8 in
+  let source_bytes ~capacity geometries =
+    capacity + (capacity * 8 * word) + (capacity * 4) + (capacity * word)
+    + List.fold_left (fun total (geometry : Render_ir.geometry) ->
+        total + ((Array.length geometry.vertices + Array.length geometry.indices) * word))
+      0 geometries in
   let builder = Display_list.Builder.create () in
   Display_list.Builder.push_clip builder ~x:0. ~y:0. ~width:64. ~height:64.;
+  for index = 0 to 15 do Display_list.Builder.geometry builder (rectangle index) done;
   Display_list.Builder.pop_clip builder;
   let first = Result.get_ok (Display_list.Builder.publish builder ~id:7L ~version:1L)
   and same = Result.get_ok (Display_list.Builder.publish builder ~id:7L ~version:1L) in
@@ -15,11 +30,19 @@ let () =
     Render_ir.Private.identity (Display_list.render_ir same))
     "unchanged display-list IR lost its identity";
   let commands = Render_ir.Private.commands_readonly (Display_list.render_ir first) in
-  require (Array.length commands = 2)
+  require (Array.length commands = 18)
     "display-list command cardinality drift";
-  (match commands.(0), commands.(1) with
-   | Render_ir.Push_clip _, Render_ir.Pop_clip -> ()
+  (match commands.(0), commands.(17) with
+   | Render_ir.Push_clip { x = 0.; y = 0.; width = 64.; height = 64. }, Render_ir.Pop_clip -> ()
    | _ -> failwith "display-list command order drift");
+  for index = 0 to 15 do
+    match commands.(index + 1) with
+    | Render_ir.Geometry geometry when geometry = rectangle index -> ()
+    | _ -> failwith "display-list growth lost or reordered a command"
+  done;
+  require (Display_list.source_bytes first
+           = source_bytes ~capacity:32 (List.init 16 rectangle))
+    "display-list geometric growth drift";
   Display_list.Builder.reset builder;
   let reset = Result.get_ok
       (Display_list.Builder.publish builder ~id:7L ~version:1L) in
@@ -30,6 +53,16 @@ let () =
   require (Render_ir.Private.identity (Display_list.render_ir reset) <>
     Render_ir.Private.identity (Display_list.render_ir first))
     "changed display-list IR reused its old identity";
+  require (Display_list.source_bytes reset = source_bytes ~capacity:32 [])
+    "display-list reset released capacity";
+  Display_list.Builder.geometry builder (rectangle 3);
+  let second = Result.get_ok
+      (Display_list.Builder.publish builder ~id:7L ~version:2L) in
+  require (second != first && second != reset && Display_list.version second = 2L
+    && Render_ir.Private.commands_readonly (Display_list.render_ir second)
+       = [|Render_ir.Geometry (rectangle 3)|]
+    && Display_list.source_bytes second = source_bytes ~capacity:32 [rectangle 3])
+    "display-list reset released capacity or failed to republish";
   let invalid = Display_list.Builder.create () in
   Display_list.Builder.pop_clip invalid;
   (match Display_list.Builder.publish invalid ~id:8L ~version:1L with
@@ -55,4 +88,4 @@ let () =
        when owned.vertices.(0) = 0. -> ()
    | _ -> failwith "display-list complete command or ownership parity drift");
 
-  print_endline "display list: exact validation, stable publication"
+  print_endline "display list: packed growth, exact validation, stable publication"

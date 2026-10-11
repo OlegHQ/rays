@@ -198,6 +198,10 @@ let test_scale_parallel_exactness () =
   check (same_group (group Group.Point "points" one)
       (group Group.Point "points" four))
     "Group Random point one/four-domain exactness";
+  let count = Geometry.point_count source in
+  let selected = Group.cardinality (group Group.Point "points" one) in
+  check (selected > count * 38 / 100 && selected < count * 48 / 100)
+    "Group Random point selection tracks probability 0.431";
   check (same_group (group Group.Vertex "vertices" one)
       (group Group.Vertex "vertices" four))
     "Group Random vertex one/four-domain exactness";
@@ -221,33 +225,29 @@ let test_scale_parallel_exactness () =
 let test_checked_boundary () =
   let source = Line_geometry.points [|(0., 0., 0.); (1., 0., 0.)|] in
   let seed = Rand.seed 29 in
-  let direct = Group_ops.group_random ~seed ~probability:0.5
+  let selected = Group_ops.group_random ~seed ~probability:0.5
       ~owner:Group_ops.Group_points ~name:"selected" source |> get_ok
-  and compatibility = Group_ops.group_random ~seed ~probability:0.5
-      ~owner:Group_ops.Group_points ~name:"selected" source |> get_ok in
-  check (same_group (group Group.Point "selected" direct)
-      (group Group.Point "selected" compatibility))
-    "Group Random checked boundary changed the selection";
-  let compare_errors direct compatibility expected_code =
-    match direct, compatibility with
-    | Error direct, Error compatibility ->
-        check (Error.operation direct = "group_random"
-            && Error.code direct = expected_code
-            && Error.to_string direct = Error.to_string compatibility)
-          "Group Random checked boundary changed the typed error"
-    | _ -> fail "Group Random checked boundary accepted invalid input" in
-  compare_errors
+      |> group Group.Point "selected" in
+  for point = 0 to 1 do
+    check (Group.mem point selected
+        = (Rand.float_at seed ~index:point < 0.5))
+      "Group Random checked boundary selection"
+  done;
+  let expect_error result expected_code =
+    match result with
+    | Error error ->
+        check (Error.operation error = "group_random"
+            && Error.code error = expected_code)
+          "Group Random checked boundary typed error"
+    | Ok _ -> fail "Group Random checked boundary accepted invalid input" in
+  expect_error
     (Group_ops.group_random ~probability:(-1.)
-       ~owner:Group_ops.Group_points ~name:"bad" source)
-    (Group_ops.group_random ~probability:(-1.) ~owner:Group_ops.Group_points
-       ~name:"bad" source) "invalid_group";
+       ~owner:Group_ops.Group_points ~name:"bad" source) "invalid_group";
   let cancel = Cancel.create () in
   Cancel.cancel cancel;
-  compare_errors
+  expect_error
     (Group_ops.group_random ~cancel ~probability:0.5
-       ~owner:Group_ops.Group_points ~name:"bad" source)
-    (Group_ops.group_random ~cancel ~probability:0.5 ~owner:Group_ops.Group_points
-       ~name:"bad" source) "cancelled"
+       ~owner:Group_ops.Group_points ~name:"bad" source) "cancelled"
 
 let run () =
   test_points_and_base ();

@@ -4,6 +4,16 @@ open Rdk_test_support
 
 let near ?(epsilon = 1e-9) left right = abs_float (left -. right) <= epsilon
 
+(* v + 2w (q x v) + 2 q x (q x v) for a unit quaternion. *)
+let rotate (q : Quat.t) (v : Vec3.t) =
+  let cross (ax, ay, az) (bx, by, bz) =
+    (ay *. bz) -. (az *. by), (az *. bx) -. (ax *. bz), (ax *. by) -. (ay *. bx) in
+  let u = q.x, q.y, q.z in
+  let tx, ty, tz = cross u (v.x, v.y, v.z) in
+  let cx, cy, cz = cross u (tx, ty, tz) in
+  Vec3.create (v.x +. 2. *. ((q.w *. tx) +. cx)) (v.y +. 2. *. ((q.w *. ty) +. cy))
+    (v.z +. 2. *. ((q.w *. tz) +. cz))
+
 let float_attribute geometry name =
   match Geometry.find_attribute ~owner:Attribute.Point name geometry with
   | Some attribute ->
@@ -133,6 +143,53 @@ let check_equal_arc_spacing () =
   check (distance.(0) = 0. && distance.(divisions) > 0.)
     "Spiral distance output"
 
+let check_frames_and_composition () =
+  let geometry = make ~extent:(Spiral.Spiral_turns { turns = 2.; height = 3. })
+      ~radius:(Spiral.Spiral_archimedean_change {
+        start_radius = 0.5; increase_per_turn = 0.3 })
+      ~divisions:(Spiral.Spiral_divisions_per_curve 64) ~spiral_count:2
+      ~angle_attribute:"angle" ~x_axis_attribute:"xaxis"
+      ~y_axis_attribute:"yaxis" ~tangent_attribute:"tangent"
+      ~orient_attribute:"orient" ~distance_attribute:"distance" () in
+  let x = float3_attribute geometry "xaxis"
+  and y = float3_attribute geometry "yaxis"
+  and z = float3_attribute geometry "tangent"
+  and q = float4_attribute geometry "orient"
+  and angle = float_attribute geometry "angle"
+  and distance = float_attribute geometry "distance" in
+  for point = 0 to Geometry.point_count geometry - 1 do
+    let dot ax ay az bx by bz = (ax *. bx) +. (ay *. by) +. (az *. bz) in
+    check (near (dot x.x.(point) x.y.(point) x.z.(point)
+        x.x.(point) x.y.(point) x.z.(point)) 1.
+      && near (dot y.x.(point) y.y.(point) y.z.(point)
+        y.x.(point) y.y.(point) y.z.(point)) 1.
+      && near (dot z.x.(point) z.y.(point) z.z.(point)
+        z.x.(point) z.y.(point) z.z.(point)) 1.
+      && near (dot x.x.(point) x.y.(point) x.z.(point)
+        y.x.(point) y.y.(point) y.z.(point)) 0.
+      && near (dot x.x.(point) x.y.(point) x.z.(point)
+        z.x.(point) z.y.(point) z.z.(point)) 0.
+      && near (dot y.x.(point) y.y.(point) y.z.(point)
+        z.x.(point) z.y.(point) z.z.(point)) 0.)
+      "Spiral frame is not orthonormal";
+    let orient = Quat.create ~x:q.x.(point) ~y:q.y.(point)
+        ~z:q.z.(point) ~w:q.w.(point) in
+    let qx = rotate orient Vec3.unit_x
+    and qy = rotate orient Vec3.unit_y
+    and qz = rotate orient Vec3.unit_z in
+    check (near qx.x x.x.(point) && near qx.y x.y.(point)
+        && near qx.z x.z.(point) && near qy.x y.x.(point)
+        && near qy.y y.y.(point) && near qy.z y.z.(point)
+        && near qz.x z.x.(point) && near qz.y z.y.(point)
+        && near qz.z z.z.(point)) "Spiral orient does not encode its frame"
+  done;
+  check (near (angle.(65) -. angle.(0)) Float.pi
+      && distance.(0) = 0. && distance.(65) = 0.)
+    "Spiral per-curve angle/distance reset";
+  let swept = Sweep_circle.run ~sides:8 ~radius:0.05 geometry |> get_ok in
+  check (Geometry.primitive_count swept > 0)
+    "Spiral curve failed Sweep composition"
+
 let check_transform_and_validation () =
   let rotation = Vec3.create 0.3 0.5 0.7 and center = Vec3.create 3. (-2.) 5. in
   let source = Vec3.create 2. 0. 0. in
@@ -238,6 +295,7 @@ let run () =
   check_default_and_extent ();
   check_radius_families_ramps_and_count ();
   check_equal_arc_spacing ();
+  check_frames_and_composition ();
   check_transform_and_validation ();
   check_parallel_exact ();
   print_endline "Spiral tests passed"

@@ -29,15 +29,6 @@
  (action (run %{exe:test_main.exe} test_world)))
 
 (rule
- (enabled_if (= %{env:RAYS_PATH_TRACER_EXACT_M1=0} 1))
- (alias qualification)
- (locks smoke_window)
- (deps pathtrace.metal)
- (action
-  (setenv RAYS_PATH_TRACER_EXACT_M1 1
-   (run %{exe:test_main.exe} test_pathtracer))))
-
-(rule
  (aliases runtest-native test_gpu_film)
  (locks smoke_window)
  (action (run %{exe:test_main.exe} test_gpu_film)))

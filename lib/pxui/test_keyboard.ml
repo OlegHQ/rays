@@ -29,7 +29,12 @@ let run () =
       "Tab/Enter did not activate the first control or leaked into the host";
     step [key Input.Tab; key Input.Space];
     check !model.enabled "Space did not toggle the focused control";
-    step ~keys:[Input.Shift] [key Input.Tab; key Input.Tab; Event.TextInput "!"];
+    (* Rebuilding fewer controls prunes focus and keeps hidden controls inert. *)
+    Ui.frame ui (frame []) (fun ui -> Ui.panel ui ~width:400. "controls" (fun () -> ()));
+    check (not (Ui.text_input_focused ui)) "disappearing focused controls kept focus";
+    step [key Input.Space];
+    check !model.enabled "a control that had disappeared kept its keyboard activation";
+    step ~keys:[Input.Shift] [key Input.Tab; Event.TextInput "!"];
     check (!model.text = "old!!") "Shift-Tab did not enter the last text field";
     step [key Input.Meta; key (Input.KeyChar 'a'); Event.KeyReleased Input.Meta;
       Event.TextInput "new"];

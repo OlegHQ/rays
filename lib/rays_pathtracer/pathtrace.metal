@@ -116,16 +116,6 @@ template <> struct Isect<true, true> {
   static auto go(thread Tracer &t, ray r, Scene s, Table table, float time) { return t.intersect(r, s, time, table); }
 };
 
-// Preview frames trace every scale-th pixel and fill the block they stand for.
-inline void write_block(texture2d<float, access::write> output, uint2 gid, uint scale, float4 value) {
-  if (scale <= 1u) { output.write(value, gid); return; }
-  for (uint dy = 0; dy < scale; ++dy)
-    for (uint dx = 0; dx < scale; ++dx) {
-      uint2 p = gid * scale + uint2(dx, dy);
-      if (p.x < output.get_width() && p.y < output.get_height()) output.write(value, p);
-    }
-}
-
 struct Uniforms {
   float4 eye;      // xyz, w = lens radius (0 = pinhole)
   float4 forward;  // xyz, w = tan(fov / 2)
@@ -137,7 +127,7 @@ struct Uniforms {
   uint panel_count, bounces;
   float exposure;
   uint round_samples;
-  uint light_count, preview, pad1, scale;  // scale: preview block size
+  uint light_count, preview, pad1, pad2;
   float4 prev_eye;
   float4 prev_forward;
   float4 prev_right;
@@ -796,7 +786,7 @@ inline void trace_pixel(
     float count = u.preview ? 1.0f : float((u.frame + 1u) * spp);
     rgba.w = uchar(clamp(total.w / count, 0.0f, 1.0f) * 255.0f + 0.5f);
   }
-  write_block(output, gid, u.preview ? u.scale : 1u, float4(rgba) / 255.0f);
+  output.write(float4(rgba) / 255.0f, gid);
 }
 
 kernel void pathtrace(
@@ -914,5 +904,5 @@ kernel void resolve_preview(
   // ponytail: a transparent World preview is opaque exactly where the centre
   // sample hit geometry; accumulation later gives edges fractional alpha.
   if (u.world && u.background == 2u && center.w <= 0.0f) rgba.w = 0;
-  write_block(output, gid, u.preview ? u.scale : 1u, float4(rgba) / 255.0f);
+  output.write(float4(rgba) / 255.0f, gid);
 }

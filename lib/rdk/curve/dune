@@ -4,4 +4,4 @@
  (libraries rdk_core rdk_exact rdk_spatial rays_math)
  (flags (:standard -open Rdk_core -open Rdk_exact -open Rdk_spatial))
  (private_modules )
- (modules circle_from_edges curve_ops curve_sampling curve_subdivide poly_path polywire resample_curves sweep))
+ (modules circle_from_edges curve_ops curve_subdivide poly_path polywire resample_curves sweep))

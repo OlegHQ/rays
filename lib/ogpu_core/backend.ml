@@ -750,9 +750,11 @@ let set_stage_sampler (encoder:render_encoder) stage ~index (sampler:sampler)=
   else if sampler.sampler_device!=render_device encoder then error op Error.Cross_device"sampler belongs to another device"
   else encoder.render_raw.set_stage_sampler stage ~index sampler.sampler_raw.sampler_token
 let valid_rect op (rect:Render_pass.rect)=if rect.x<0||rect.y<0||rect.width<=0||rect.height<=0 then error op Error.Invalid_argument"rectangle is empty or negative"else Ok()
-let set_viewport (encoder:render_encoder) rect=
+let set_viewport (encoder:render_encoder) (rect:Render_pass.rect)=
   let op="Backend.set_viewport"in
-  match open_render op encoder with Error _ as e->e|Ok()->match valid_rect op rect with Error _ as e->e|Ok()->encoder.render_raw.set_viewport rect
+  (* A viewport maps clip space and may hang over the target; only its size is checked. *)
+  match open_render op encoder with Error _ as e->e|Ok()->
+    if rect.width<=0||rect.height<=0 then error op Error.Invalid_argument"viewport is empty"else encoder.render_raw.set_viewport rect
 let set_scissor (encoder:render_encoder) rect=
   let op="Backend.set_scissor"in
   match open_render op encoder with Error _ as e->e|Ok()->match valid_rect op rect with Error _ as e->e|Ok()->encoder.render_raw.set_scissor rect

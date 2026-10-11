@@ -222,4 +222,9 @@ let run () =
       && Geometry.vertex_count one = 150_000
       && Geometry.primitive_count one = 50_000)
     "Edge Straighten scale cardinality";
+  let large_y = (positions one).y in
+  check (Array.for_all Fun.id (Array.init 50_000 (fun c ->
+      abs_float (large_y.(3 * c) -. large_y.(3 * c + 1)) < 1e-9
+      && abs_float (large_y.(3 * c + 2) -. large_y.(3 * c + 1)) < 1e-9)))
+    "Edge Straighten scale result is collinear per component";
   print_endline "edge straighten tests passed"

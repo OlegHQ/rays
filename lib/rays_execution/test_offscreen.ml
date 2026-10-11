@@ -61,6 +61,10 @@ let run () =
             {configuration with logical_width=5;logical_height=4;
               drawable_width=5;drawable_height=4})in
           clear_to bigger(0.,0.,1.,1.);
+          let facts=get(Rays_execution.presentation_facts bigger)in
+          require(facts.logical_width=5&&facts.logical_height=4&&
+            facts.drawable_width=5&&facts.drawable_height=4&&facts.pixel_density=1.)
+            "offscreen resized facts";
           let pixels=get(Rays_execution.capture bigger)in
           ignore(get(Rays_execution.destroy bigger));pixels in
         require(Bytes.length resized=5*4*4)"offscreen resized extent";

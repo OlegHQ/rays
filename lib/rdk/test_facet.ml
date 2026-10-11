@@ -998,6 +998,8 @@ let check_parallel_exact () =
   let one = run 1 and many = run 4 in
   check (equal_geometry one many)
     "one-domain and four-domain Facet orientation differ";
+  check (not (equal_geometry one inconsistent))
+    "Facet orientation left the inconsistent grid unchanged";
   let displaced = Plane_generators.grid ~columns:240 ~rows:180 ~uv_attribute:"uv" ~size:20.
       () |> get_ok
       |> Deform.noise_displace ~grain:257 ~amplitude:0.8 ~frequency:0.7
@@ -1006,8 +1008,9 @@ let check_parallel_exact () =
       Facet.run ~grain:257 ~cusp_angle:0.08 displaced |> get_ok) in
   let one = run 1 and many = run 4 in
   check (equal_geometry one many)
-    "one-domain and four-domain Facet cusping differ"
-  ;
+    "one-domain and four-domain Facet cusping differ";
+  check (Geometry.point_count one > Geometry.point_count displaced)
+    "Facet cusping split no displaced edges";
   let selected = primitive_group source
       (fun primitive -> primitive land 1 = 0) in
   let run domains = Parallel.run ~domains (fun () ->
@@ -1025,6 +1028,8 @@ let check_parallel_exact () =
   let one = run 1 and many = run 4 in
   check (equal_geometry one many)
     "one-domain and four-domain point-selected Facet geometry differ";
+  check (Geometry.point_count one > Geometry.point_count source)
+    "point-selected Facet split no points";
   let topology = Geometry.topology source in
   let index = Topology_index.create topology in
   let selected_edges = Edge_group.init ~topology ~index ~name:"facet_edges"
@@ -1035,6 +1040,8 @@ let check_parallel_exact () =
   let one = run 1 and many = run 4 in
   check (equal_geometry one many)
     "one-domain and four-domain edge-selected Facet geometry differ";
+  check (Geometry.point_count one > Geometry.point_count source)
+    "edge-selected Facet split no points";
   let inline_selected = primitive_group inline
       (fun primitive -> primitive land 1 = 0) in
   let run domains = Parallel.run ~domains (fun () ->

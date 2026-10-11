@@ -461,6 +461,9 @@ let test_dense_parallel_exactness () =
         source |> get_ok) in
   let one = cook 1 and four = cook 4 in
   check (equal_geometry one four) "PolyCut one/four-domain geometry differs";
+  check (Geometry.primitive_count one > curves
+      && Geometry.point_count one > Geometry.point_count source)
+    "PolyCut dense fixture did not cut any curve";
   let one_mesh = Rdk_rays.Rays_mesh.to_mesh one |> get_ok
   and four_mesh = Rdk_rays.Rays_mesh.to_mesh four |> get_ok in
   check (Mesh.Private.packed_view one_mesh = Mesh.Private.packed_view four_mesh)
