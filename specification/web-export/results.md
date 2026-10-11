@@ -997,6 +997,29 @@ Findings:
 - The 1-frame runs of static and panning at 1M take about 22 s and allocate about 79 GB (`allocated_words` near 9.9e9),
   against 0.4 s for animated at 1M. The subtraction removes this first-frame cost, but it is unexplained and worth a look.
 
+### Addendum 2026-10-11: both findings traced
+
+Finding B (panning, 52 ms and 233 MB per frame) was not a mark rebuild. `Marks_scene` kept its scene node (a debug
+counter showed 4 cache misses in 200 frames, all on frame 1). The cost was after it: a moved `draw/translate` makes
+a new scene, `Scene.stage_scene2_layer` misses its cache, and `stage_materialized` calls
+`Render_ir.create_internal`, which ran `Shape_batch.Private.valid` over every instance (boxed float reads,
+`Shape_batch.float`/`loop` in `sample`) of a batch it already held. The P4.10 bench (`tools/bench_marks.ml`) stops at
+`Drawing.render_prepared`, so it never reached the staging. Fix (4decc9f0): a published batch remembers that it
+validated (`checked`). `lib/scene_command/test_shape_batch.ml` asserts that restaging an unchanged 20,000-instance
+batch allocates under 4 KB (fails without the fix).
+
+Remeasured with `cpu.sh`/`build_variant.sh`, same method as above (one run each, load 2.5 to 3):
+
+| Marks | Case | CPU ms per frame, before | CPU ms per frame, after | Bytes per frame, before | Bytes per frame, after |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 1,000,000 | panning | 51.6 | 3.0 | 233,420,712 | 321,000 |
+
+Finding A (first frame 22 s, 79 GB for static and panning at 1M, not changed): `sample` shows the time in
+`Flow.Eval` (`ev`, `apply_op`, `Op.find`, `List.mem`, `caml_compare`): the static stage walks the whole `map` over
+1,000,000 indices with the tree walker, about 22 microseconds and 79 KB per element. A map that reads `t` becomes a
+residual and runs as a kernel (0.4 s). Not fixed here; the change is in `DEFERRED.md` (web export section). After the
+B fix the 1-frame panning run is still 23.1 s real, 9.93e9 allocated words.
+
 ## P7.4 evaluation
 
 Date 2026-10-11. Every number below is copied from the section named in its table, or counted by the commands
