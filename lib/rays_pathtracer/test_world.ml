@@ -1,11 +1,5 @@
 (* The World path: CDF + MIS sampling is unbiased (furnace, and MIS matches
-  | Ok t ->
-      let live = let _, live = Ogpu.Impl.create_driver () in live in
-      P.destroy t;
-      let baseline = live () in
-      checks ();
-      assert (live () = baseline)
- BSDF-only sampling on a peaked map with a sun), MIS has lower variance,
+   BSDF-only sampling on a peaked map with a sun), MIS has lower variance,
    miss pixels show the background, and rect lights are hittable. *)
 module P = Rays_pathtracer
 module W = Rays.World
@@ -27,7 +21,8 @@ let black_dome = { P.sky = rgb 0. 0. 0.; ground = rgb 0. 0. 0.; panels = [] }
 (* A lone analytic sphere: convex, so every path is direct light and the
    indirect firefly clamp never applies. *)
 
-let camera ?(fov = 0.3) () =
+(* Keep all corner rays inside the sphere's projected disc for the furnace. *)
+let camera ?(fov = 0.2) () =
   Rays.Camera.perspective ~fov_y:fov ~at:(v3 0. 0. 6.) ~target:(v3 0. 0. 0.) ()
 
 let mean_red bytes =
@@ -47,7 +42,79 @@ let resolved x =
   int_of_float ((Float.pow (Float.min 1. (Float.max 0. c)) (1. /. 2.2) *. 255.) +. 0.5)
 
 let run () =
-  ()
+  let live = let _, live = Ogpu.Impl.create_driver () in live in
+  let baseline = live () in
+  let scene material lights = { P.objects = []; strands = [];
+    spheres = [{ P.center = v3 0. 0. 0.; radius = 1.; sphere_material = material }];
+    environment = black_dome; lights } in
+  let matte = scene (P.material ~roughness:1. (rgb 0.8 0.8 0.8)) [] in
+  (* The flag is read only by create. Restore its previous effective value
+     even if device acquisition or shader compilation fails. *)
+  let create bsdf_only scene =
+    let previous = Sys.getenv_opt "RAYS_PATHTRACER_BSDF_ONLY" in
+    Fun.protect ~finally:(fun () -> Unix.putenv "RAYS_PATHTRACER_BSDF_ONLY"
+      (Option.value ~default:"" previous)) (fun () ->
+        Unix.putenv "RAYS_PATHTRACER_BSDF_ONLY" (if bsdf_only then "1" else "0");
+        P.create ~spp:1 ~width:32 ~height:32 scene) in
+  match create false matte with
+  | Error message when Sys.getenv_opt "RAYS_REQUIRE_RAYTRACING" = None ->
+      Printf.printf "pathtracer World: skipped (%s)\n" message
+  | Error message -> failwith message
+  | Ok tracer ->
+      Fun.protect ~finally:(fun () -> P.destroy tracer) (fun () ->
+        let bsdf = get (create true matte) in
+        Fun.protect ~finally:(fun () -> P.destroy bsdf) (fun () ->
+          let capture ?(camera = camera ()) tracer baked frames =
+            get (P.set_world tracer (Some baked));
+            for _ = 1 to 2 do get (P.render tracer camera); get (P.flush tracer) done;
+            P.reset tracer;
+            for _ = 1 to frames do get (P.render tracer camera); get (P.flush tracer) done;
+            assert (P.samples tracer = frames);
+            let pixels = Test_pathtracer.pixels tracer in
+            assert (Bytes.length pixels = 32 * 32 * 4);
+            pixels in
+          let furnace = world [gradient white] in
+          let uniform = capture tracer furnace 1024 in
+          let furnace_mean = mean_red uniform in
+          assert (Float.abs (furnace_mean -. 224.) < 2.);
+          Bytes.iteri (fun i value -> if i mod 4 = 3 then assert (value = '\255')) uniform;
+          let peaked = world ~sun:(`Manual (0., 0.7))
+            [gradient (W.rgb 0.02 0.02 0.02);
+             W.Shape { shape = W.Circle; azimuth = 0.5; elevation = 0.5;
+               width = 0.4; height = 0.4; softness = 0.05; color = white;
+               intensity = 8.; emit = W.Dome };
+             W.Sun { angular_radius = 0.12; intensity = 50.; tint = white }] in
+          let reference = capture tracer peaked 4096
+          and bsdf_reference = capture bsdf peaked 4096 in
+          let difference = Float.abs (mean_red reference -. mean_red bsdf_reference) in
+          assert (mean_red reference > 0. && difference < 2.);
+          let mis_short = capture tracer peaked 16 and bsdf_short = capture bsdf peaked 16 in
+          let mis_error = rmse mis_short reference and bsdf_error = rmse bsdf_short reference in
+          assert (mis_error < bsdf_error);
+          Printf.printf "World: furnace %.2f, converged mean difference %.3f, 16-spp RMSE MIS %.3f BSDF %.3f\n"
+            furnace_mean difference mis_error bsdf_error;
+          let miss_camera = Rays.Camera.perspective ~fov_y:0.3
+            ~at:(v3 0. 0. 6.) ~target:(v3 0. 0. 7.) () in
+          let background = W.rgb 0.2 0.4 0.6 in
+          let colored = capture ~camera:miss_camera tracer
+            (world ~background:(W.Color background) [gradient white]) 2 in
+          let expected = [|resolved background.r; resolved background.g; resolved background.b; 255|] in
+          Bytes.iteri (fun i value -> assert (Char.code value = expected.(i mod 4))) colored;
+          let transparent = capture ~camera:miss_camera tracer
+            (world ~background:W.Transparent [gradient white]) 2 in
+          Bytes.iter (fun value -> assert (value = '\000')) transparent;
+          let mirror = scene (P.material ~roughness:0.005 ~metallic:1. (rgb 0.8 0.8 0.8))
+            [P.rect_light ~intensity:4. ~size:(6.,6.) ~target:(v3 0. 0. 0.) (v3 0. 0. 8.)] in
+          let geometry = get (P.mesh ~spheres:mirror.spheres []) in
+          get (P.replace_mesh tracer geometry); get (P.replace_mesh bsdf geometry);
+          get (P.set_lights tracer mirror.lights); get (P.set_lights bsdf mirror.lights);
+          let dark = world [gradient (W.rgb 0. 0. 0.)] in
+          let reflected = capture bsdf dark 1024 and sampled = capture tracer dark 1024 in
+          let center = ((16 * 32 + 16) * 4) in
+          assert (Char.code (Bytes.get reflected center) > 200);
+          assert (Float.abs (mean_red reflected -. mean_red sampled) < 2.)));
+      assert (live () = baseline);
+      print_endline "pathtracer World: furnace, MIS, backgrounds, reflected rect and teardown checked"
 
 (* Convergence probe for specification/pathtracer.md (not in runtest):
    dune exec --root . lib/rays_pathtracer/test_main.exe -- bench_world *)

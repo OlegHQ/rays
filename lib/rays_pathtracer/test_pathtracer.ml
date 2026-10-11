@@ -186,7 +186,8 @@ let run () =
           environment = { P.sky = rgb 1. 1. 1.; ground = rgb 1. 1. 1.; panels = [] };
           lights = [] } in
         let tracer = get (P.create ~spp:4 ~width:32 ~height:32 scene) in
-        let camera = Rays.Camera.perspective ~fov_y:0.3
+        (* Every corner ray must hit the sphere, rather than the white sky. *)
+        let camera = Rays.Camera.perspective ~fov_y:0.2
           ~at:(Rays.Vec3.create 0. 0. 6.)
           ~target:(Rays.Vec3.create 0. 0. 0.) () in
         for _ = 1 to 16 do get (P.render tracer camera); get (P.flush tracer) done;

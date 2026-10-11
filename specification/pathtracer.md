@@ -241,10 +241,13 @@ background resolves to exactly its tone-mapped value; `Transparent` misses
 have alpha 0; a rect light behind the camera appears in a mirror sphere under
 BSDF-only sampling (so only by being hit) and MIS agrees.
 
-Current audit (2026-10-11): `test_world.run` is empty and the qualification
-`test_parity.run` reports success without comparing images. These checks
-must be restored; the historical measurements above do not establish current
-coverage. World and pathtracer checks belong to the native/qualification
+Current audit (2026-10-11): the formerly empty `test_world.run` now renders
+each of these behaviors, reads GPU pixels and checks sample counts and handle
+teardown. Its executable builds, but the forced native attempt fails because
+this runner has no Metal device; convergence bounds need native validation.
+The qualification `test_parity.run` still reports success without comparing
+images and needs restoration. The historical measurements above do not
+establish current coverage. World and pathtracer checks belong to the native/qualification
 aliases, rather than the window-free default `runtest`.
 
 ## Determinism and tests
