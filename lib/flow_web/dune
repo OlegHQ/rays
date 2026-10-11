@@ -1,5 +1,13 @@
+(copy_files ../flow_ir/test_program.ml)
+
 (library
  (name flow_web)
  (public_name rays.flow_web)
  (modules flow_web wgsl)
  (libraries flow flow_ir param rays_math scene_command))
+
+(test
+ (name test_wgsl)
+ (modules test_wgsl test_program)
+ (deps (glob_files goldens/*.wgsl))
+ (libraries flow_web flow flow_ir))

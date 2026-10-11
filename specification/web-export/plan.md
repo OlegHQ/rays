@@ -824,7 +824,8 @@ Phase 5
   added; `@test/runtest` green, API manifest unchanged.
 - [x] P5.2 S
   2026-10-11. `Wgsl.kernel : Packed.t -> (wgsl, Diagnostic.t) result` mirrors `Emit.kernel` over `Private.view` with the same `gpu_refusals` (`E_GPU_FORM`), binding numbering and uniform layout; `flow_web` defines its own `binding`/`kind` (no `flow_gpu`/`ogpu`). f32 storage arrays, `bitcast<f32>` constants and uniforms, exponent-bits finite test, `atomic<u32>` status, `@workgroup_size(64)`; uniforms are a `var<uniform>` `array<vec4<u32>, n>` (`uniform_bytes` rounded to 16) so they do not use a storage-buffer slot. Comparisons yield `select(0.0, 1.0, ..)`; `pow` goes through a `wpow` helper because WGSL `pow(0, y<=0)` is undefined. `@lib/flow_web/check` green.
-- [ ] P5.3 H
+- [x] P5.3 H
+  2026-10-11. `lib/flow_web/test_wgsl.ml` diffs `goldens/{arithmetic,noise,select,two_outputs}.wgsl` (regenerate with `test_wgsl.exe --write-goldens` from `lib/flow_web`) and checks binding numbering against the matching Metal goldens and the shared `E_GPU_FORM` refusals; `test_program.ml` is linked with `copy_files`. No WGSL validator exists here (`naga`, `tint`, `wgsl_analyzer` absent from PATH; node has no WebGPU), so the goldens are read by hand only and the first real compile is P6.8. `@lib/flow_web/runtest` green.
 - [ ] P5.4 S
 - [ ] P5.5 S
 - [ ] P5.6 H

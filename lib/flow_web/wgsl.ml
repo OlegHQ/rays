@@ -126,7 +126,7 @@ let kernel program = try
   let uniform_words = (!offset + 15) / 16 in
   let declarations = Buffer.create 512 in
   let declare binding kind decl =
-    Printf.bprintf declarations "@group(0) @binding(%d) var%s: %s;\n" binding
+    Printf.bprintf declarations "@group(0) @binding(%d) var%s %s;\n" binding
       (match kind with Uniform_buffer -> "<uniform>" | Storage_read -> "<storage, read>"
        | Storage_read_write -> "<storage, read_write>") decl in
   let interface = ref [] in
