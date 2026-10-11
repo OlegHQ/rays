@@ -18,7 +18,13 @@ and callable =
    a workspace operator that reuses the name keeps its own body and declines. *)
 let shipped (o : Flow.Op.t) = List.memq o Operators.all || not (List.exists (fun (s : Flow.Op.t) -> s.name=o.name) Operators.all)
 
-let lower root =
+type draw_context = {
+  value : C.source -> E.value -> int;  (* the local holding a constant or residual value *)
+  local : Flow.Ty.t -> int; emit : C.source -> C.statement_node -> unit }
+
+(* [draw] writes the program's statements in place of lowering one residual; only a residual
+   reached through [value] forces [root], which then stands for the whole evaluation. *)
+let lower_with ~draw (root : E.residual Lazy.t) =
   let constants = ref [] and locals = ref [] and next_constant = ref 0
   and next_local = ref 0 and next_statement = ref 0 in
   let budget = ref 2048 and active = Hashtbl.create 8 in
@@ -217,7 +223,7 @@ let lower root =
         let start = match Names.find_opt name env with Some v -> resolve statements cache v | None -> refuse "binding" in
         List.fold_left (fun v name -> field statements cache source x.ty v name) start fields
     | Op {op;args;_} ->
-        let o = match Flow.Op.find ~extra:(E.Private.residual_ops root) op Flow.Context.value with
+        let o = match Flow.Op.find ~extra:(E.Private.residual_ops (Lazy.force root)) op Flow.Context.value with
           | Some o when o.ctx=Flow.Context.value && o.shape=Flow.Op.Scalar && shipped o -> o | _ -> refuse op in
         let args = List.map (fun (n,t) -> n,compile t) args in
         (match known_values args with
@@ -302,9 +308,9 @@ let lower root =
     | Hof (_,[]) -> refuse "higher_order"
     | Graph_ref {graph;inputs=[]} ->
         (* The referenced graph's body in its own default instance, as the live walker re-runs it. *)
-        let g=match E.Private.residual_graph root graph with Some g -> g | None -> refuse "ref" in
+        let g=match E.Private.residual_graph (Lazy.force root) graph with Some g -> g | None -> refuse "ref" in
         let zone=[graph] in
-        let source={source with C.instance=Option.value ~default:source.instance (E.Private.graph_instance root graph);
+        let source={source with C.instance=Option.value ~default:source.instance (E.Private.graph_instance (Lazy.force root) graph);
           prefix=[];site=zone;owner=zone;iter=[]} in
         let saved= !plane in
         plane:=if g.context=Flow.Context.host then `Host else `Frame;
@@ -820,10 +826,10 @@ let lower root =
           bind statements cache source env pattern value) cl.env cl.params values in
         term statements cache source env (Option.value specialized ~default:cl.body)
     | Named n ->
-        (match E.Private.residual_definition root n.name with
+        (match E.Private.residual_definition (Lazy.force root) n.name with
         | Some _ -> definition statements cache source n.name specialized values
         | None ->
-            let o=match Flow.Op.find ~extra:(E.Private.residual_ops root) n.name Flow.Context.value with
+            let o=match Flow.Op.find ~extra:(E.Private.residual_ops (Lazy.force root)) n.name Flow.Context.value with
               | Some o when o.ctx=Flow.Context.value && o.shape=Flow.Op.Scalar && shipped o -> o | _ -> refuse n.name in
             let names=Array.of_list (List.map fst (o.signature.pos @ o.signature.opt)) in
             let args=List.mapi (fun i v -> (if i<Array.length names then names.(i) else
@@ -832,7 +838,7 @@ let lower root =
             | Some args when not o.live -> Known (o.body ~live:(Frame_input.at_time 0.) ~node:(fun _ _ -> refuse n.name) args)
             | _ -> operation statements cache source ty n.name args)
   and definition statements cache source name specialized values =
-    let declaration=match E.Private.residual_definition root name with Some d -> d | None -> refuse "call_fn" in
+    let declaration=match E.Private.residual_definition (Lazy.force root) name with Some d -> d | None -> refuse "call_fn" in
     if List.compare_lengths declaration.inputs values <> 0 then refuse "call_fn";
     let zone=["def:"^name] in
     let source={source with C.prefix=source.prefix @ source.site;site=zone;owner=zone} in
@@ -1064,11 +1070,21 @@ let lower root =
   try
     let body = ref [] in
     let cache=Hashtbl.create 16 in
-    let result = residual body cache root in
-    let view = E.Private.residual_view root in
-    let source = { (source_of_view view) with C.span=Some view.term.form.span } in
-    let result = ensure body cache source result in
+    let results = match draw with
+      | Some build ->
+          build {value=(fun source v -> ensure body cache source (Known v)); local;
+            emit=(fun source node -> body := statement (number ()) source node :: !body)};
+          [||]
+      | None ->
+          let root = Lazy.force root in
+          let result = residual body cache root in
+          let view = E.Private.residual_view root in
+          let source = { (source_of_view view) with C.span=Some view.term.form.span } in
+          [|ensure body cache source result|] in
     Ok {C.constants=Array.of_list (List.rev !constants);locals=Array.of_list (List.rev !locals);
-      body=List.rev !body;results=[|result|];state_slots=Array.of_list (List.rev !slots);regions=Array.of_list !regions;call_slots= !next_call}
+      body=List.rev !body;results;state_slots=Array.of_list (List.rev !slots);regions=Array.of_list !regions;call_slots= !next_call}
   with Unsupported name -> Error name
     | V.Fail _ | Not_found | Invalid_argument _ | Failure _ -> Error "constant"
+
+let lower root = lower_with ~draw:None (Lazy.from_val root)
+let lower_draw ~root build = lower_with ~draw:(Some build) root

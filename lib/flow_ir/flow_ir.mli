@@ -5,6 +5,7 @@ module Packed = Packed
 module Core = Core
 module Core_lower = Core_lower
 module Core_exec = Core_exec
+module Core_draw = Core_draw
 
 val qualify_workspace :
   ?record:bool -> ?inputs:(string * (string * Flow.Eval.value) list) list ->

@@ -291,7 +291,7 @@ let prepare ?(fused=true) (program : C.program) =
   let bump n = writes.(n)<-writes.(n)+1 in
   let rec count statements = List.iter (fun (s : C.statement) -> match s.node with
     | Assign (n,_) | State_write {value=n;_} | Invoke {result=n;_} -> bump n
-    | Reset_call _ | Store _ -> ()
+    | Reset_call _ | Store _ | Draw _ -> ()
     | If {yes;no;_} -> count yes; count no
     | Iterate {index;item;body;_} -> bump index; bump item; count body
     | Counted {count=c;index;item;init;body;_} -> bump c; bump index; bump item; count init; count body
@@ -338,6 +338,7 @@ let prepare ?(fused=true) (program : C.program) =
            | `None -> if Array.length st.builders>0 then st.builders.(n)<-None);
           st.values.(n)<-v
     | Reset_call slot -> fun st -> st.calls.(slot)<-0
+    | Draw _ -> fun _ -> V.fail "E_CORE" "Drawing statements need the mark executor."
     | If {condition;yes;no} ->
         let yes=block yes and no=block no in
         fun st -> (if V.truthy st.values.(condition) then yes else no) st

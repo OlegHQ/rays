@@ -3,6 +3,7 @@ module Packed = Packed
 module Core = Core
 module Core_lower = Core_lower
 module Core_exec = Core_exec
+module Core_draw = Core_draw
 module E = Flow.Eval
 module W = Flow.Workspace
 module V = Flow.Value
