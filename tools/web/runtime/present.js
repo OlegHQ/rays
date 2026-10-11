@@ -18,7 +18,8 @@
 // subtract; alpha at the start of every frame). Mark sets draw as instanced `Marks` quads; geometry as
 // indexed triangles with one ink; a point set as unit-square geometry of its ink after truncating positions;
 // text as one white string rasterized on a 2D canvas at dpr and tinted by the ink (`Scene.text_image`);
-// an image as a linear-sampled quad of `images(resource)` (ImageBitmap, canvas or image element; null is
+// an image as a linear-sampled quad of `images(resource)` (ImageBitmap, canvas, image element or a
+// resident {texture, view, w, h} on the shared device; null is
 // E_IMAGE). Only an unresolvable image throws; an error of the GPU is in `presenter.errors`.
 
 import { requestDevice } from './gpu.js';
@@ -108,6 +109,7 @@ export async function createPresenter(canvas, { dpr, images = () => null, clear 
     return entry;
   };
   const pictureTexture = source => {
+    if (source.texture && source.view) return source;   // generated RGBA8 on this same GPUDevice
     let entry = pictures.get(source);
     if (!entry) pictures.set(source, entry = upload(source, source.width, source.height));
     return entry;

@@ -53,6 +53,7 @@ function differ(a, b, key, path) {
 
 const rt = createRuntime(program, { fixedDt: 1 / 60, now: () => 0, size: [640, 480], data });
 rt.gpuArray = k => rt.invoke(k, []);   // no GPU under node: a region the export placed on the GPU is run on the CPU, so the mark table has its elements
+rt.image = n => n + 1;   // resource identities and transforms only here; generated pixels are checked in gpu_images_e2e.mjs
 let bad = 0;
 for (let i = 0; i < expected.length; i++) {
   let got;

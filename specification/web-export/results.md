@@ -1473,3 +1473,65 @@ The other web bullet of `DEFERRED.md`, kernel inputs uploaded again on each disp
 buffers to `dispatch`, and a static group runs once. `tools/web/test/runtime.mjs` asserts it ("the frame-rate
 group runs again, the steady one does not, inputs stay uploaded"). `gpu.dispatch` converts an input only when it is
 handed a plain array, which the tests do. The bullet is removed.
+
+## Generated-image export repair: P6.4b/P6.4c (2026-10-11)
+
+Before: the exporter refused every `draw/image`, including generated `image/map` pixels, with
+`E_WEB_IMAGE` and a misleading host-resolver message. After: `flow_contours`, `flow_image_kernel` and
+`flow_shader` export to live WebGPU images. The sketch sources and native rendering code are unchanged.
+File-backed images, `image/noise` and `image/render` remain explicit export refusals.
+
+Machine: Apple M1, macOS 27.0.1, node v24.19.0, headless Chrome 154, Metal WebGPU adapter.
+Fixed step 1/60, pointer (100,100), DPR 1. The metric is unchanged: at most 0.5% of pixels differ by more
+than 8 in any RGB channel, no difference above 64. Native image pixels come from `Flow_sop.Image_kernel`;
+the contour and shader fixtures use its native `Flow_gpu.Run`/`Image_sink` display path. These have hard
+predicates and quantized bands whose f64 CPU snapshots can differ visibly from their existing f32 display.
+Synthetic and gradient fixtures retain the independent native CPU snapshot oracle.
+
+| Fixture | Logical size | Frame | Pixels differing by >8 | Worst channel difference | Mean pixel difference | GPU producer dispatches | CPU invokes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| synthetic, alpha/transform/clamp/ties | 65×43 | 3 | 0 | 1 | 0.0007 | 4 | 0 |
+| same, after resize | 97×51 | 7 | 0 | 0 | 0.0000 | 8 | 0 |
+| flow_contours | 640×480 | 3 | 0 | 1 | 0.0002 | 18 | 0 |
+| same, after resize | 800×600 | 7 | 0 | 1 | 0.0002 | 42 | 0 |
+| flow_image_kernel | 320×280 | 3 | 0 | 3 | 1.5657 | 3 | 0 |
+| flow_shader | 760×760 | 3 | 0 | 1 | 0.0000 | 63 | 0 |
+
+The synthetic fixture shares an animated image between two draws and has one static image. Its producer
+counts prove sharing and static reuse. RGBA8 bytes for the ties fixture are exactly `[0,2,2,128]`. The test
+also checks texture identity across unchanged dimensions, replacement after reload, and `E_IMAGE` for
+zero/negative/fractional/nonfinite/over-limit dimensions. All generated pixels stay on the shared device
+in production; the test alone reads pixels for comparison.
+
+The first UV implementation used plain f32 division. Against native GPU contours at 640×480, 96 pixels
+differed by >8, worst 215. Refining the quotient with the multiplication residual (`fma`) reduced that to
+0 pixels >8, worst 1. This corrects hardware division rounding rather than weakening the metric. WGSL
+allows division error of 2.5 ULP ([floating-point accuracy](https://www.w3.org/TR/WGSL/#floating-point-accuracy));
+the test pins the resulting hard-edge parity on this adapter.
+
+Actual `web --watch` integration: a capture-only edit changes the core-compiled argument module, the browser
+uses the new capture in resident pixels, the unchanged pixel pipeline is reused, and a refused subsequent
+edit leaves `/version` and the last successful export intact. Content-addressed module filenames prevent
+the browser's ES-module cache from keeping stale capture computations.
+
+Commands (repository root):
+
+```sh
+_build/default/tools/check.exe @lib/flow_web/runtest @tools/lisp/test/runtest @tools/runtest
+_build/default/tools/check.exe @qualification-web
+node tools/web/test/gpu_images_e2e.mjs _build/default/tools/lisp/lisp.exe _build/default/tools/marks_shot.exe .
+_build/default/tools/web_parity.exe examples/audio examples/basic examples/drawing examples/file_dialog examples/generative examples/noise examples/particles examples/pxui examples/recursive_rectangles sketches/flow_contours sketches/flow_image sketches/flow_image_kernel sketches/flow_particles_gpu sketches/flow_shader sketches/flow_vectors
+_build/default/tools/check.exe --ship
+_build/default/tools/check.exe @lib/flow_gpu/runtest-native
+```
+
+All prior web qualification checks pass: WGSL execution/nonfinite handling, presenter probes, GPU marks,
+constant uploads, reload, and particles at frames 1/30/120. The 15-workspace corpus now has 14 successful
+exports and 120-frame mark comparisons, one explicit `E_WEB_IMAGE` refusal (`flow_image`, `image/noise`),
+and no browser failures. Both export runs of `flow_contours` are byte-identical; no UV array enters `data.bin`.
+All 86 previous JS frame goldens and previous WGSL goldens remain unchanged.
+
+Shipping (`@all`, `@runtest`, `@smoke`, `git diff --check`) exits 0. The native workspace IR sweep passes
+43 standard files and 13 fixtures at four times with one/eight domains; one custom-catalog executable is
+checked separately. Native GPU kernel and image qualification checks exit 0, including ties/clipping,
+live colors, reuse/resize, stale generations, resident image/mesh consumers and ownership.

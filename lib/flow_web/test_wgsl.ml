@@ -61,4 +61,11 @@ let () =
     | _ -> assert false)
     ["(sum [x (array/range 1024)] (+ x t))";
      "(for [x (array/range 1024)] :skip [0] (+ x t))"];
+  let pixels = List.assoc "vec4" (Test_program.vector_fixtures 1) in
+  let image = Test_program.ok (Flow_web.Wgsl.kernel ~image:true pixels) in
+  assert (image.input_widths = [||] && image.output_widths = [|4|]);
+  assert (List.map (fun (b : Flow_web.Wgsl.binding) -> b.binding) image.interface = [0; 1; 2]);
+  assert (List.exists (fun (name, _, _) -> name = "image:width") image.uniform_layout);
+  assert (List.exists (fun (name, _, _) -> name = "image:height") image.uniform_layout);
+  assert (Result.is_error (Flow_web.Wgsl.kernel ~image:true (snd (List.hd programs))));
   print_endline "WGSL printer: goldens and shared refusals passed"

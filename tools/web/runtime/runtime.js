@@ -176,8 +176,23 @@ export function createRuntime(program, { now = () => performance.now() / 1000, f
       const r = regionOf(k), g = rt.gpuRun(r.kernel);
       return new prims.PArray(r.width, { gpu: r.kernel, output: r.gpu.output, length: g.count * r.width });
     },
-    // The host image resolver (plan image nodes): none on the web, as a native frame without one.
-    image: () => prims.fail('E_IMAGE', 'Drawing images need an environment-owned image resolver.'),
+    // One resident image per plan node. Its scalar arguments use the core frame printer; the pixel
+    // function uses the packed WGSL printer. Static images run once per load; shared draws run once per frame.
+    image(n) {
+      const image = rt.program.images?.[n] ?? prims.fail('E_IMAGE', 'Unknown generated image.');
+      const stamp = image.animated ? rt.current.frame : 0, id = image.kernel;
+      if (stamps.get(id) !== stamp) {
+        if (!rt.gpu) prims.fail('E_IMAGE', 'Generated images need WebGPU.');
+        const [w, h, ...captures] = image.args(rt.current, rt.slots, rt);
+        const uniforms = {};
+        captures.forEach((u, i) => { uniforms[`uniform:${i}`] = ArrayBuffer.isView(u) ? u : Number(u); });
+        for (const [slot, name] of image.frame) uniforms[`frame:${slot}:${name}`] = Number(FACTS[name](rt.current));
+        rt.gpu.image(id, { width: Number(w), height: Number(h), uniforms });
+        stamps.set(id, stamp);
+        rt.counts.gpu++;
+      }
+      return n + 1;
+    },
     // Reload (P6.7): a new program, fresh slots, the canvas and the counters kept. Regions are compiled once per
     // source text, so one whose text is unchanged is not compiled again.
     load(next) { rt.program = next; rt.slots = []; load(); },
@@ -248,7 +263,8 @@ export async function start(canvas, program, { fixedDt, pool, data = null, win =
   const table = await fetch(new URL('../kernels.json', import.meta.url)).then(r => r.json(), () => ({ kernels: [] }));
   const gpuErrors = [];
   const gpu = await createGpu(table, { device, win, onError: e => gpuErrors.push(e) });
-  const presenter = await createPresenter(canvas, { win, device, gpu });
+  const presenter = await createPresenter(canvas, { win, device, gpu,
+    images: n => gpu.imageTexture(`image${n - 1}`) });
   const rect = () => canvas.getBoundingClientRect();
   const rt = createRuntime(program, { fixedDt, data, gpu, gpuErrors, pool: pool ?? await createPool(), size: [Math.round(rect().width), Math.round(rect().height)] });
   const push = e => rt.input.push(e, rect());

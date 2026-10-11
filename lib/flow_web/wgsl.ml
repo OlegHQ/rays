@@ -6,6 +6,14 @@ type wgsl = {source : string; entry : string; interface : binding list;
   table_seeds : int array; output_widths : int array; input_widths : int array}
 let finite = {|fn wfinite(x: f32) -> bool { return (bitcast<u32>(x) & 0x7f800000u) != 0x7f800000u; }
 |}
+(* Refine the hardware division to match native's double UV grid rounded to f32. A one-ULP
+   UV error can flip a hard glyph edge. WGSL permits 2.5 ULP for division (section 15.7.4). *)
+let image_uv = {|fn pixel_uv(index: u32, size: f32) -> f32 {
+  let x = f32(index) + 0.5;
+  let q = x / size;
+  return q + fma(-q, size, x) / size;
+}
+|}
 let power = {|fn wpow(a: f32, b: f32) -> f32 {
   let x = abs(a);
   if (x == 0.0) {
@@ -80,9 +88,11 @@ let binary operation a b =
 let unary operation a = match operation with
   | P.Sin -> "sin(" ^ a ^ ")" | Cos -> "cos(" ^ a ^ ")"
   | Sqrt -> "sqrt(abs(" ^ a ^ "))" | Abs -> "abs(" ^ a ^ ")" | Not -> truth ("(" ^ a ^ " == 0.0)")
-let kernel program = try
+let kernel ?(image = false) program = try
   let view = P.Private.view program in
   (match P.gpu_refusals program with [] -> () | reason :: _ -> fail reason.message);
+  if image && (view.widths <> [|2|] || Array.map Array.length view.outputs <> [|4|]) then
+    fail "An image kernel needs one UV input and one vec4 output.";
   let offset = ref 4 and uniform_layout = ref [] in
   let uniform name width =
     let first = !offset in offset := first+width*4;
@@ -90,6 +100,8 @@ let kernel program = try
   let uniforms = Array.mapi (fun index width -> uniform ("uniform:" ^ string_of_int index) width) view.uniform_widths in
   let frames = Array.mapi (fun index -> function
     | P.Frame name -> uniform (Printf.sprintf "frame:%d:%s" index name) 1 | _ -> 0) view.code in
+  let image_width = if image then uniform "image:width" 1 else 0 in
+  let image_height = if image then uniform "image:height" 1 else 0 in
   let used = P.Private.output_reachable program in
   let word index = Printf.sprintf "uniforms[%d].%c" (index/4) "xyzw".[index mod 4] in
   let has operation = Array.exists Fun.id (Array.mapi (fun slot instruction -> used.(slot) && operation instruction) view.code) in
@@ -103,6 +115,10 @@ let kernel program = try
     if used.(slot) then begin
     let expression = match instruction with
       | P.Const value -> Printf.sprintf "bitcast<f32>(0x%lxu)" (Int32.bits_of_float value)
+      | Input (_,_,component) when image ->
+          Printf.sprintf "pixel_uv(%s, bitcast<f32>(%s))"
+            (if component = 0 then "i % image_width" else "i / image_width")
+            (word (if component = 0 then image_width else image_height))
       | Input (input,width,component) -> Printf.sprintf "input%d[i * %du + %du]" input width component
       | Uniform (index,component) -> Printf.sprintf "bitcast<f32>(%s)" (word (uniforms.(index)+component))
       | Frame _ -> Printf.sprintf "bitcast<f32>(%s)" (word frames.(slot))
@@ -120,9 +136,9 @@ let kernel program = try
   Array.iteri (fun k registers -> Array.iteri (fun component slot ->
     Printf.bprintf body "  %s[i * %du + %du] = r%d;\n"
       (output_name k) (Array.length registers) component slot) registers) view.outputs;
-  let count = Array.length view.widths in
+  let count = if image then 0 else Array.length view.widths in
   let input_used=Array.make count false in
-  Array.iteri(fun slot->function P.Input(input,_,_)when used.(slot)->input_used.(input)<-true|_->())view.code;
+  Array.iteri(fun slot->function P.Input(input,_,_)when used.(slot) && not image->input_used.(input)<-true|_->())view.code;
   let uniform_words = (!offset + 15) / 16 in
   let declarations = Buffer.create 512 in
   let declare binding kind decl =
@@ -137,13 +153,16 @@ let kernel program = try
   bind (count+outputs+1) Storage_read_write "status: atomic<u32>";
   if table_seeds <> [||] then bind (count+outputs+2) Storage_read "table: array<i32>";
   let prefix = Buffer.contents declarations ^ finite
+    ^ (if image then image_uv else "")
     ^ (if has (function P.Binary (P.Pow,_,_) -> true | _ -> false) then power else "")
     ^ (if table_seeds=[||] then "" else perlin) in
   let signature = "(@builtin(global_invocation_id) gid: vec3<u32>)" in
-  let body = "  let i = gid.x;\n  if (i >= uniforms[0].x) { return; }\n" ^ Buffer.contents body in
+  let body = "  let i = gid.x;\n  if (i >= uniforms[0].x) { return; }\n"
+    ^ (if image then Printf.sprintf "  let image_width = u32(bitcast<f32>(%s));\n" (word image_width) else "")
+    ^ Buffer.contents body in
   let entry = "kernel_" ^ Digest.to_hex (Digest.string (prefix ^ signature ^ body)) in
   let source = prefix ^ "@compute @workgroup_size(64)\nfn " ^ entry ^ signature ^ " {\n" ^ body ^ "}\n" in
   Ok {source;entry;interface=List.rev !interface;uniform_layout=List.rev !uniform_layout;
     uniform_bytes=uniform_words*16;table_seeds;
-    output_widths=Array.map Array.length view.outputs;input_widths=view.widths}
+    output_widths=Array.map Array.length view.outputs;input_widths=(if image then [||] else view.widths)}
 with Unsupported message -> Error (Flow.Diagnostic.error ~code:"E_GPU_FORM" message)

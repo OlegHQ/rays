@@ -1017,7 +1017,8 @@ compares the catalog digest it was generated with (`Contexts.catalog_digest`).
 | `ml FILE` | the generated `main.ml` of a `sketch.rays` (the verbatim source, its digest and the catalog digest, passed to `Rays_editor.Workspace.main`) |
 | `source FILE` | the text as an OCaml module, for a sketch with its own `main.ml` |
 | `dune DIR` | the `sketches/dune.rays.inc` include |
-| `web FILE -o DIR` | the web export (roadmap: `specification/web-export/plan.md`): checks the file, runs the static stage with graph inputs at their defaults, lowers the first `draw` graph to the core and writes a standalone browser application into DIR. Output is byte-deterministic. A refusal prints its diagnostic with the span and exits 1, writing nothing |
+| `web FILE -o DIR` | checks the file, runs the static stage with graph inputs at their defaults, lowers the first `draw` graph to the core and writes a standalone browser application into DIR. Output is byte-deterministic. A refusal prints its diagnostic with the span and exits 1, writing nothing |
+| `web --watch FILE [-o DIR] [--port N]` | previews on localhost (default port 8000), re-exports on save and reloads the browser; a refused edit keeps the last successful export |
 
 The web export covers the 2D canvas only: a `:context draw` graph and the values that feed it. Files:
 `program.js` (the frame program, `frame(input, state, rt)`, from `Flow_web.Js.frame`, then `export const regions`, one
@@ -1033,10 +1034,23 @@ invoked on the CPU: the frame prints `rt.gpuArray(k)`, a packed array of a devic
 `{gpu, output, length}`, the runtime dispatches its kernel once per frame (once per load when no frame fact feeds
 it; the attributes of one mark set with equal count and rate share one multi-output kernel) and the presenter binds
 the kernel's output buffer as the attribute buffer. `program.js` then also exports `gpu`, the kernel groups with
-their inputs. A mark set that is not wholly so keeps the CPU path. Refusals, all
+their inputs. A mark set that is not wholly so keeps the CPU path.
+
+Generated `image/map` images use the same packed compiler as native images. Their pixel functions compile to
+WGSL; the GPU derives UV coordinates at pixel centers, converts vec4 output to straight-alpha RGBA8 with clamping
+and ties-to-even rounding, and the presenter samples the resident texture on the same device. Dimensions and
+scalar captures are evaluated each frame through the core/JS compiler. Static images dispatch once per load;
+shared images dispatch at most once per frame. Unchanged dimensions reuse texture storage, resize replaces it,
+and reload releases it. `program.js` exports `images` keyed by plan id; argument functions live in
+content-addressed `image<ID>-<digest>.js` modules so imported captures reload correctly. The capacity is 64 images;
+WebGPU texture, storage and dispatch bounds are checked before allocation. No image pixels are read back during
+production frames. A recent WebGPU browser and HTTPS (or localhost) are required; serve with
+`Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` for workers.
+
+Refusals, all
 with the span of the form: `E_WEB_GRAPH` (the draw graph reaches a `sop` or `scene` graph), `E_WEB_LOWER` (the
-draw graph does not lower to the core, for example the 2,048-node residual budget), `E_WEB_IMAGE` (a `draw/image`
-needs a host image resolver), `E_WEB_REGION` (a sum or fold region, a frame fact the runtime lacks) and
+draw graph does not lower to the core), `E_WEB_IMAGE` (image kinds other than `image/map`, or image dimensions/captures
+requiring packed regions or state), `E_WEB_REGION` (a sum or fold region, a frame fact the runtime lacks) and
 `E_WEB_CAPTURE` (a region input that changes from frame to frame). `tools/web_parity.exe DIR...` runs the
 exported program under `node` for 120 fixed-step frames and compares each frame's mark table with the native
 core executor's (structure exactly, floats within 1e-6); results are in `specification/web-export/results.md`.

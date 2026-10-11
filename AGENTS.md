@@ -37,11 +37,13 @@ differ, Lisp decides: its names, defaults, ranges and errors are the contract, a
 "one declaration", for SOPs). A new capability ships in Lisp first; do not add an OCaml-only
 parameter or behaviour.
 
-Web export, roadmap, not yet built (rely on nothing it names until its task has landed): the
-compiler emits a standalone browser application from a Lisp workspace. Its scope is the 2D canvas only (`:context draw` graphs
+Web export: `dune exec rays-lisp -- web FILE.rays -o DIR` emits a standalone browser
+application; `web --watch FILE.rays [-o DIR] [--port 8000]` previews and reloads it.
+Its scope is the 2D canvas only (`:context draw` graphs
 and the values that feed them). PXUI and the editor are never exported; they are editor chrome and
 stay native. `scene` and `sop` graphs are a later phase, after the majority of SOPs are written in
-Rays Lisp, since a node whose body is OCaml has nothing to export. The design summary and the
+Rays Lisp, since a node whose body is OCaml has nothing to export. Generated `image/map`
+images run as WebGPU kernels; other image kinds are refused explicitly. The design summary and the
 task plan are `specification/web-export/plan.md`.
 
 ## Libraries

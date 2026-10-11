@@ -133,6 +133,28 @@ same([value.get('t'), value.get('dt'), value.get('index'), value.get('width'), v
 
 
 // ---- reload: watch() against a fake server, rt.load, and gpu.update (plan P6.7) ----
+// Generated images: scalar frame captures, shared references, static reuse and reload invalidation.
+{
+  const calls = [];
+  const images = {
+    0: { kernel: 'image0', animated: true, frame: [[2, 't']], args: input => [BigInt(input.size[0]), 3n, input.t, input.t > 0] },
+    1: { kernel: 'image1', animated: false, frame: [], args: () => [5n, 7n, Float64Array.of(1, 2, 3)] },
+  };
+  const program = { regions: [], images, frame(input, state, rt) { return [rt.image(0), rt.image(0), rt.image(1)]; } };
+  const rt = R.createRuntime(program, { fixedDt: 0.5, size: [65, 3], gpu: { poll() {}, image: (id, args) => calls.push([id, args]) } });
+  same(await rt.stepFrame(), [1, 1, 2], 'shared image resource identity');
+  same(calls[0], ['image0', { width: 65, height: 3, uniforms: { 'uniform:0': 0.5, 'uniform:1': 1, 'frame:2:t': 0.5 } }], 'image scalar captures use this frame');
+  same(calls[1][1].uniforms['uniform:0'], Float64Array.of(1, 2, 3), 'image vector capture');
+  await rt.stepFrame({ size: [97, 3] });
+  same([calls.length, calls[2][1].width, rt.counts], [3, 97, { invoke: 0, gpu: 3 }], 'shared and static images do not repeat dispatch');
+  rt.load(program); await rt.stepFrame();
+  same(calls.length, 5, 'reload invalidates static and animated images');
+  const noGpu = R.createRuntime(program, { fixedDt: 0.5 });
+  let code; try { await noGpu.stepFrame(); } catch (e) { code = e.code; }
+  same(code, 'E_IMAGE', 'generated image needs the GPU');
+}
+
+// ---- reload: watch() against a fake server, rt.load, and gpu.update (plan P6.7) ----
 {
   globalThis.compiles = [];
   const region = name => `globalThis.compiles.push(${JSON.stringify(name)});\nfunction region(i, u, o, s, e) { return ${JSON.stringify(name)}; }`;
