@@ -916,10 +916,11 @@
       "api": [
         "val parameter : string",
         "val closed_parameter : string",
+        "val filled_parameter : string",
         "val encode : ( float * float * float ) array -> string",
         "val factory : Sop.Edit_graph.factory"
       ],
-      "api_sha256": "e318d80a97003163c60106f8ddd56c8da2e6a490764701990c1473281a0868e5",
+      "api_sha256": "a39d08e357b4bb94a5b17d405130dd86fad62071809cdbad4be18c15886f157d",
       "excluded_legacy_symbols": [],
       "library": "flow_sop",
       "module": "Curve",

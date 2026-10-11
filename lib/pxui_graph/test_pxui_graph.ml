@@ -894,7 +894,7 @@ let run_scope () =
     check (s.drawn_items > 0 && s.drawn_zones <= s.zones) (name ^ ": nothing drawn"))
     [ "bloom", "flower", 12, 1, 84; "sunflower", "sunflower", 9, 1, 36; "orrery", "orrery", 22, 3, 117;
       "facade", "facade", 14, 2, 89; "kit", "kit", 22, 8, 112; "tree", "tree", 9, 1, 184;
-      "garland", "garland", 19, 5, 90; "wave", "wave", 7, 2, 45; "tiles", "tiles", 14, 5, 70 ];
+      "garland", "garland", 19, 5, 90; "wave", "wave", 7, 2, 46; "tiles", "tiles", 14, 5, 70 ];
   (* the iteration selector: buttons and track are hit-tested boxes *)
   let w = load_workspace "sunflower" in
   let zone = [ "sunflower"; "seeds_each" ] in
