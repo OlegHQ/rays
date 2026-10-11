@@ -512,3 +512,26 @@ exception handlers, the cached-program lookup and optional-argument boxing), whe
 calls one cached closure. Closing it needs the evaluator to hold the prepared program on the
 residual instead of asking the executor each time. That is a change to `lib/flow/eval.ml` and
 its hook contract, not to the core program, so it is left for a later task.
+
+## 2026-10-11 — P1.14a prepared core program on the residual (target not met)
+
+Command: `_build/default/tools/check.exe tools/bench_core.exe`, then `_build/default/tools/bench_core.exe` three
+times. Machine, input and method as in P1.14 (Apple M1, OCaml 5.3.0, one domain, 200,000 evaluations per sample,
+median of three samples, median of three runs); load average 3 to 4.5 (not quiet). Before = `5fd386f5`.
+
+| Row | Before ns/eval | Before bytes/eval | After ns/eval | After bytes/eval |
+| --- | ---: | ---: | ---: | ---: |
+| tree walker | 887.2 | 5,240 | 896.9 | 5,280 |
+| closure tier | 119.5 | 1,784 | 119.6 | 1,824 |
+| core | 166.7 | 2,096 | 151.2 | 1,960 |
+| core/closure | 1.39 | | 1.26 | |
+
+(Individual runs: 1.25, 1.26, 1.26; an earlier quieter series of the same tree gave 1.24.) The gate (at most 1.1) is not met.
+
+Changes, in order of effect: (1) `Eval.residual.core` holds the executor's prepared program with the owner token
+of the `Executor.program` that filled it; `force_res` calls it directly, without the state snapshot, the second
+exception handler, the cached-program lookup or optional-argument boxing (1.39 to 1.31; a first version
+without the owner check broke `test_frame_kernel`'s own hook, which shows the slot must be per executor).
+(2) the postfix scalar path skips `Frame_input.validate` (it reads only `t`; an invalid frame ends in the walker's
+result anyway), is lifted out of the closure allocating `general`, and uses unchecked stack accesses (1.31 to 1.25).
+What remains, about 30 ns, is the postfix interpreter (nine dispatches and `sin`) against the closure tier's tree.

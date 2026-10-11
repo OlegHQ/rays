@@ -27,18 +27,21 @@ let code_value code t =
   let stack=Array.create_float (Array.length code) and top=ref 0 in
   for i=0 to Array.length code-1 do
     (match Array.unsafe_get code i with
-     | Push c -> stack.(!top)<-c; incr top
-     | Push_time -> stack.(!top)<-t; incr top
-     | Sin_op -> let r=sin stack.(!top-1) in if not (Float.is_finite r) then raise Non_finite; stack.(!top-1)<-r
-     | Cos_op -> let r=cos stack.(!top-1) in if not (Float.is_finite r) then raise Non_finite; stack.(!top-1)<-r
-     | Sqrt_op -> stack.(!top-1)<-sqrt (Float.abs stack.(!top-1))
-     | op ->
-         let a=stack.(!top-2) and b=stack.(!top-1) in
-         let r=(match op with Add_op -> a +. b | Sub_op -> a -. b | _ -> a *. b) in
-         if not (Float.is_finite r) then raise Non_finite;
-         decr top; stack.(!top-1)<-r)
+     | Push c -> Array.unsafe_set stack !top c; incr top
+     | Push_time -> Array.unsafe_set stack !top t; incr top
+     | Sin_op -> let r=sin (Array.unsafe_get stack (!top-1)) in
+         if not (Float.is_finite r) then raise Non_finite; Array.unsafe_set stack (!top-1) r
+     | Cos_op -> let r=cos (Array.unsafe_get stack (!top-1)) in
+         if not (Float.is_finite r) then raise Non_finite; Array.unsafe_set stack (!top-1) r
+     | Sqrt_op -> Array.unsafe_set stack (!top-1) (sqrt (Float.abs (Array.unsafe_get stack (!top-1))))
+     | Add_op -> decr top; let r=Array.unsafe_get stack (!top-1) +. Array.unsafe_get stack !top in
+         if not (Float.is_finite r) then raise Non_finite; Array.unsafe_set stack (!top-1) r
+     | Sub_op -> decr top; let r=Array.unsafe_get stack (!top-1) -. Array.unsafe_get stack !top in
+         if not (Float.is_finite r) then raise Non_finite; Array.unsafe_set stack (!top-1) r
+     | Mul_op -> decr top; let r=Array.unsafe_get stack (!top-1) *. Array.unsafe_get stack !top in
+         if not (Float.is_finite r) then raise Non_finite; Array.unsafe_set stack (!top-1) r)
   done;
-  stack.(0)
+  Array.unsafe_get stack 0
 
 type prepared = { program : C.program; body : state -> unit; code : op array option;
   track : bool;  (* some local is a list/array builder, so ownership is tracked *)
@@ -328,12 +331,11 @@ let prepare ?(fused=true) (program : C.program) =
 
 let has_regions prepared = Array.length prepared.program.regions>0
 
-let attempt ?root ?force prepared ~live =
+let general root force prepared live =
   let program=prepared.program in
   match Frame_input.validate live with
-  | Error message -> Error (Flow.Diagnostic.error ~code:"E_FRAME" message)
-  | Ok () ->
-      let general () =
+    | Error message -> Error (Flow.Diagnostic.error ~code:"E_FRAME" message)
+    | Ok () ->
         let st = {values=Array.make (Array.length program.locals) E.No_geo;
           builders=if prepared.track then Array.make (Array.length program.locals) None else [||]; calls=Array.make program.call_slots 0;
           live; root; force} in
@@ -341,10 +343,15 @@ let attempt ?root ?force prepared ~live =
           if Array.length program.results<>1 then V.fail "E_CORE" "Expected one core result.";
           Ok st.values.(program.results.(0))
         with V.Fail (code,message,span) -> Error (Flow.Diagnostic.error ?span ~code message)
-          | Not_found | Invalid_argument _ | Failure _ -> Error (Flow.Diagnostic.error ~code:"E_CORE" "Invalid core program.") in
-      match prepared.code with
-      | None -> general ()
-      | Some code -> (match code_value code live.t with r -> Ok (V.Float r) | exception Non_finite -> general ())
+          | Not_found | Invalid_argument _ | Failure _ -> Error (Flow.Diagnostic.error ~code:"E_CORE" "Invalid core program.")
+
+let attempt ?root ?force prepared ~live =
+  (* The postfix code reads only the time and every step is finite-checked, so frame facts it
+     never reads need no validation: an invalid frame ends in the walker's own result anyway. *)
+  match prepared.code with
+  | None -> general root force prepared live
+  | Some code -> (match code_value code live.t with r -> Ok (V.Float r)
+      | exception Non_finite -> general root force prepared live)
 
 (* Any failure restores the evaluation state and reports the tree walker's own diagnostic,
    as the closure tier's fallback does. Without a residual there is no walker to ask. *)
@@ -352,7 +359,7 @@ let execute ?root ?force prepared ~live = match root with
   | None -> attempt ?force prepared ~live
   | Some r ->
       let restore = if prepared.stateless then ignore else E.Private.checkpoint r in
-      (match (try attempt ~root:r ?force prepared ~live with Stack_overflow | Out_of_memory | Not_found ->
+      (match (try attempt ~root:r ?force prepared ~live with _ ->
          Error (Flow.Diagnostic.error ~code:"E_CORE" "Core execution failed.")) with
        | Ok _ as ok -> ok
        | Error _ -> restore (); E.Private.rerun r)

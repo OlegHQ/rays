@@ -316,6 +316,7 @@ slice is the tree walker: results are bit-identical, as the closure tier's are.
 | P1.12a | S | P1.12 | `core_lower.ml`, `core_exec.ml`, `lib/flow` value/eval accessors, tests, `results.md` | Repair: lower the 46 residuals P1.12 found refused (`packed_higher_order`, `noise3`, `ref`, `color/hsl`). A packed `map` or `filter` a region refuses is built element by element (`sequence/build` with a width, no list cap); `noise3` is its primitive; `color/hsl` and `color/gradient` expand per `core.md`; a `ref` without overrides inlines the graph in its cached instance. Parity cases beside the existing ones | Zero refused for the 15 workspaces; `@lib/flow/runtest`, `@lib/flow_ir/runtest`, `@test/test_workspace_ir` |
 | P1.13 | H | P1.11 | `tools/bench_core.ml`, `tools/dune`, `results.md` | A new bench printing three rows for one scalar residual (the expression of the `Closure` row in `flow_ir.ml:133-160`): tree walker, closure tier, core. Add it to `bench-build`. Record the rows | Rows printed; entry present |
 | P1.14 | S | P1.13 | `core_exec.ml` | Only if the core row is more than 1.1 times the closure row: compile a core program once into OCaml closures instead of interpreting it, keeping the interpreter as the test reference. Re-record | Core at most 1.1 times closure; P1.4 and P1.11 pass |
+| P1.14a | S | P1.14 | `lib/flow/eval.ml`, `.mli`, `core_exec.ml`, `flow_ir.ml` | Repair: the evaluator keeps the executor's prepared program on the residual (an owner-checked slot filled by the hook on first offer), so a repeat force skips the cached-program lookup, the state snapshot, the second handler and optional-argument boxing; no `flow_ir` dependency, no global hook; the error rule is unchanged | Core at most 1.1 times closure on `tools/bench_core.exe`; `@lib/flow/runtest`, `@lib/flow_ir/runtest` |
 | P1.15 | S | P1.14 | `lib/flow/eval.ml` | Flip `core_residuals` to default `true` | All default tests, and `@test/test_workspace_ir` |
 | P1.R | R | P1.15, P1.2a, P1.6a | | Run `--ship` and `@runtest-native`. Confirm P1.12 shows full coverage. Re-list the callers of `fast_of`, `closure_available` and `compile_residuals` for P1.16 | All green |
 | P1.16 | S | P1.R | `lib/flow/eval.ml`, `.mli`, callers | Delete `compile`, `cnode`, `fast`, `fast_of` and both switches. Keep the `Closure` tier name in `Flow_ir.tier`, now meaning a core frame program, so placement tests are unchanged. Promote the API manifest in a second commit | `--ship` |
@@ -680,6 +681,13 @@ Phase 1
   walker); parity, flow, flow_ir and default tests pass. Remaining hot spot: the hook round trip
   (about 40 ns: snapshot, handlers, cached-program lookup), which needs the evaluator to hold the
   prepared program on the residual. Ratio is at most 1.5, so P1.15 proceeds.
+- [ ] P1.14a S
+  note: not met after two attempts; core/closure 1.39 to 1.25 (core 166.7 to 148.0 ns, closure 118.1 ns,
+  three-run medians, load average 4.5; results.md, 2026-10-11). Kept: `residual.core` slot (owner-checked,
+  filled by `Executor` on first offer, called by `force_res` with no snapshot and no handler; `Core_exec.execute`
+  now catches every exception and the postfix path no longer validates frame facts it does not read).
+  Remaining about 30 ns is the postfix interpreter itself (about 9 dispatches plus `sin`) against the closure
+  tier's boxed-float tree, not the hook.
 - [x] P1.15 S
   `Eval.Private.core_residuals` now defaults to true. Default tests
   (`SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy _build/default/tools/check.exe`, EXIT=0,

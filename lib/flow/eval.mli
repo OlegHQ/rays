@@ -214,7 +214,7 @@ module Private : sig
   (** Number of memo misses, for the checked-term reuse regression. *)
 
   val force_with_executor : ?state:state -> ?elems:(string * value) list ->
-    ?resolve:(value -> (value, Diagnostic.t) result) ->
+    ?resolve:(value -> (value, Diagnostic.t) result) -> ?owner:unit ref ->
     ?compiled:bool ->
     execute:(residual -> live -> (value, Diagnostic.t) result option) ->
     value -> live:live -> (value, Diagnostic.t) result
@@ -278,6 +278,11 @@ module Private : sig
 
   val checkpoint : residual -> (unit -> unit)
   (** Snapshot the residual's evaluation state; the returned function restores it. *)
+
+  val set_core : residual -> owner:unit ref -> (live -> (value, Diagnostic.t) result) -> unit
+  (** Keep the executor's prepared program on the residual: later forces whose
+      [~owner] (passed to {!force_with_executor}) is the same ref call it directly. It must be total, restore state and
+      rerun the walker on failure ({!checkpoint}, {!rerun}). *)
 
   val rerun : residual -> (value, Diagnostic.t) result
   (** The tree walker over this residual's own term, in its live evaluation and

@@ -104,7 +104,9 @@ and fn =
 (* Captures contain the term's lexically free names, including nested bodies. *)
 and residual = { rid : int; rterm : W.term; renv : value Smap.t; rc : ctx;
   previous : bool; mutable fast : fast;
-  mutable live : st option  (* the evaluation that last offered this residual to the executor *) }
+  mutable live : st option;  (* the evaluation that last offered this residual to the executor *)
+  mutable core : (unit ref * (Frame_input.t -> (value, Diagnostic.t) result)) option
+    (* the prepared program of the executor named by the unit ref (physical): total, restores state and reruns the walker on failure *) }
 
 and state = { mutable source : string; mutable frame : int option;
   mutable before : value Smap.t; mutable next : value Smap.t; mutable host : state option }
@@ -119,6 +121,7 @@ and st = {
   resolve : (value -> (value, Diagnostic.t) result) option;
   execute : (residual -> Frame_input.t -> (value, Diagnostic.t) result option) option;
   compiled_residuals : bool;
+  owner : unit ref;  (* identifies the executor behind [execute] *)
   mutable observe_kernel : (residual -> unit) option;
   source : string Lazy.t;
   state : state option;
@@ -426,12 +429,15 @@ and force_res c r =
         | _ -> slow () in
       let v = match c.st.time,c.st.execute with
         | Some live,Some execute when !core_residuals && c.st.compiled_residuals ->
-            let saved = Option.map fork_state c.st.state in
             r.live <- Some c.st;
-            let result = try execute r live with _ -> None in
-            (match result with Some (Ok v) -> v | _ ->
-              Option.iter (fun saved -> restore_state (Option.get c.st.state) saved) saved;
-              classic ())
+            (match r.core with
+             | Some (owner, run) when owner == c.st.owner -> (match run live with Ok v -> v | Error d -> raise (Fail (d.code, d.message, d.span)))
+             | _ ->
+                let saved = Option.map fork_state c.st.state in
+                let result = try execute r live with _ -> None in
+                (match result with Some (Ok v) -> v | _ ->
+                  Option.iter (fun saved -> restore_state (Option.get c.st.state) saved) saved;
+                  classic ()))
         | _ -> classic () in
       Hashtbl.replace c.st.memo r.rid v;
       v
@@ -447,7 +453,7 @@ and ev c env (x : W.term) : value =
       (match st.observe_kernel, x.node with
        | Some observe, (W.Hof ((`Map | `Reduce), _) | W.Loop _ | W.Op {op = ("array/sum" | "image/map"); _}) ->
            observe {rid = Atomic.fetch_and_add bulk_ids (-1); rterm = x;
-             renv = capture x env; rc = c; previous = false; fast = Untried; live = None}
+             renv = capture x env; rc = c; previous = false; fast = Untried; live = None; core = None}
        | _ -> ());
       let saved = st.nodes and saved_n = st.nnodes and saved_authored = st.authored in
       (match ev_raw c env x with
@@ -456,7 +462,7 @@ and ev c env (x : W.term) : value =
            (* ponytail: nodes made by the abandoned attempt are dropped, its records are kept *)
            st.nodes <- saved; st.nnodes <- saved_n; st.authored <- saved_authored;
            st.rids <- st.rids + 1;
-           let r = Residual { rid = st.rids; rterm = x; renv = capture x env; rc = c; previous = false; fast = Untried; live = None} in
+           let r = Residual { rid = st.rids; rterm = x; renv = capture x env; rc = c; previous = false; fast = Untried; live = None; core = None} in
            (match x.node with W.State _ -> st.states <- r :: st.states | _ -> ());
            (* the record is the residual: a probe forces it at the time it shows *)
            (match x.path with Some p -> note c p r | None -> ()); r
@@ -465,7 +471,7 @@ and ev c env (x : W.term) : value =
       let evaluate () = match st.execute, x.node with
         | Some execute, (W.Hof ((`Map | `Reduce), _) | W.Loop _ | W.Op {op = "array/sum"; _}) ->
             st.rids <- st.rids + 1;
-            let r = {rid = st.rids; rterm = x; renv = capture x env; rc = c; previous = false; fast = Untried; live = None} in
+            let r = {rid = st.rids; rterm = x; renv = capture x env; rc = c; previous = false; fast = Untried; live = None; core = None} in
             (match execute r live with
              | Some (Ok v) -> v
              | Some (Error d) -> raise (Fail (d.code, d.message, d.span))
@@ -591,7 +597,7 @@ and ev_raw c env (x : W.term) : value =
       let previous = match st.time with
         | None ->
             st.rids <- st.rids + 1;
-            Residual {rid = st.rids; rterm = x; renv = capture x env; rc = c; previous = true; fast = Failed; live = None}
+            Residual {rid = st.rids; rterm = x; renv = capture x env; rc = c; previous = true; fast = Failed; live = None; core = None}
         | Some _ -> state_previous c env zone init in
       let env = bind_pat c ~mk:(Some (fun n -> zone @ [":" ^ n])) ~whole:true binder previous env in
       (match st.time with
@@ -787,7 +793,7 @@ and hof c env term kind f rest =
    | `Map, Closure cl when c.st.record && c.rec_ && (match out with Ty.Array _ -> true | _ -> false) ->
        c.st.rids <- c.st.rids + 1;
        let call = Residual {rid = c.st.rids; rterm = term; renv = capture term env; rc = c;
-         previous = false; fast = Untried; live = None} in
+         previous = false; fast = Untried; live = None; core = None} in
        note c (cl.zone @ ["~calls"]) (Record ["offset", Int !(cl.calls); "call", call])
    | _ -> ());
   let lists_of ts = List.mapi (fun i t ->
@@ -955,7 +961,7 @@ and geometry_loop c cz env op fs p body zone =
     if points then begin
       c.st.rids <- c.st.rids + 1;
       let term = { W.path = None; ty = Ty.Vec3; node = W.Ref_binding (ekey, []); form = body.W.form } in
-      Residual { rid = c.st.rids; rterm = term; renv = Smap.empty; rc = ci; previous = false; fast = Untried; live = None}, Text ekey
+      Residual { rid = c.st.rids; rterm = term; renv = Smap.empty; rc = ci; previous = false; fast = Untried; live = None; core = None}, Text ekey
     end else
       (match mk_node (sub ci "element") "zone/element" [] with
        | Deferred ((Ty.Named "geometry"), id) as g -> g, Int id
@@ -1026,7 +1032,7 @@ let new_state ~record ws =
   let graphs = Hashtbl.create 8 and defs = Hashtbl.create 8 in
   List.iter (fun (g : W.graph) -> Hashtbl.replace graphs g.name g) ws.W.graphs;
   List.iter (fun (g : W.graph) -> Hashtbl.replace defs g.name g) ws.W.defs;
-  { time = None; resolve = None; execute = None; compiled_residuals = true; observe_kernel = None;
+  { time = None; resolve = None; execute = None; owner = ref (); compiled_residuals = true; observe_kernel = None;
     source = lazy (Digest.string (fst (Lisp.print ws.W.source))); state = None; states = [];
     nfns = 0; fn_calls = Hashtbl.create 1;
     steps = 0; nodes = []; authored = []; nnodes = 0; cells = []; cache = Hashtbl.create 8;
@@ -1126,7 +1132,7 @@ let frame_dependent = dependent true
 let state_dependent = dependent false
 
 (* one live state per call, made from the first residual met *)
-let with_live ?state ?elems ?resolve ?execute ?(compiled = true) (l : live) (f : (residual -> ctx) -> 'a) : ('a, Diagnostic.t) result =
+let with_live ?state ?elems ?resolve ?execute ?(owner = ref ()) ?(compiled = true) (l : live) (f : (residual -> ctx) -> 'a) : ('a, Diagnostic.t) result =
   let state = Option.value ~default:(create_state ()) state in
   let saved = fork_state state in
   let elems = Option.map Smap.of_list elems in
@@ -1134,7 +1140,7 @@ let with_live ?state ?elems ?resolve ?execute ?(compiled = true) (l : live) (f :
   let ctx_of r =
     let st = match !live with
       | Some s -> s
-      | None -> let s = { (live_state r.rc.st ~state ?elems l) with compiled_residuals = compiled; resolve; execute } in
+      | None -> let s = { (live_state r.rc.st ~state ?elems l) with compiled_residuals = compiled; resolve; execute; owner } in
           live := Some s; s in
     { r.rc with st } in
   match Frame_input.validate l with
@@ -1148,10 +1154,10 @@ let with_live ?state ?elems ?resolve ?execute ?(compiled = true) (l : live) (f :
 let residual_eval r ~live =
   with_live live (fun ctx_of -> let c = ctx_of r in force_res c r)
 
-let force_with ?state ?elems ?resolve ?execute ?compiled v ~live =
+let force_with ?state ?elems ?resolve ?execute ?owner ?compiled v ~live =
   if not (is_live v) then Ok v
   else
-    with_live ?state ?elems ?resolve ?execute ?compiled live (fun ctx_of ->
+    with_live ?state ?elems ?resolve ?execute ?owner ?compiled live (fun ctx_of ->
       let rec go v = match v with
         | Residual r -> let c = ctx_of r in go (force_res c r)
         | Struct (_, Ty.Array _, _) -> (match resolve with
@@ -1220,11 +1226,11 @@ module Private = struct
     Residual {rid = Atomic.fetch_and_add bulk_ids (-1); rterm = term;
       renv = List.fold_left (fun env (name, value) -> Smap.add name value env)
         (Smap.singleton function_name (Fn fn)) inputs;
-      rc = {at with data = true; rec_ = false}; previous = false; fast = Untried; live = None})
+      rc = {at with data = true; rec_ = false}; previous = false; fast = Untried; live = None; core = None})
   let free_names term = Names.elements (free_names term)
   let free_name_walks () = Atomic.get free_walks
-  let force_with_executor ?state ?elems ?resolve ?compiled ~execute v ~live =
-    force_with ?state ?elems ?resolve ?compiled ~execute v ~live
+  let force_with_executor ?state ?elems ?resolve ?owner ?compiled ~execute v ~live =
+    force_with ?state ?elems ?resolve ?owner ?compiled ~execute v ~live
   let function_bindings = function Closure cl -> Smap.bindings cl.env | Named _ -> []
   let function_id = function Closure cl -> cl.fid | Named n -> n.fid
   let state_values state = List.map snd (Smap.bindings state.before) @ List.map snd (Smap.bindings state.next)
@@ -1258,6 +1264,7 @@ module Private = struct
     let c = live_ctx r in
     let saved = Option.map fork_state c.st.state in
     fun () -> Option.iter (fun saved -> restore_state (Option.get c.st.state) saved) saved
+  let set_core r ~owner run = r.core <- Some (owner, run)
   let rerun r =
     let c = live_ctx r in
     let c = match r.rterm.path with Some p -> {c with base = p; route = []} | None -> c in

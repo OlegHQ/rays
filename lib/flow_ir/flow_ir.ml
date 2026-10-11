@@ -545,7 +545,7 @@ let of_evaluation ws catalog evaluation =
 
 module Executor = struct
   type program = { ir : t; value : E.value; dataflow : bool; templates : Packed.t list Atomic.t;
-    core : (E.residual * Core_exec.prepared option) list Atomic.t;
+    core : (E.residual * Core_exec.prepared option) list Atomic.t; owner : unit ref;
     count_source : Packed.count_source; profile : Profile.t option; approx:W.Paths.t;
     sink:sink option;mutable gpu_kernel:(Gpu.backend*Packed.t*Gpu.kernel)option }
   let compile ?profile ?(approx=W.Paths.empty) ?sink ?(count_source = fun _ _ -> None) v =
@@ -555,7 +555,7 @@ module Executor = struct
       let dataflow = Array.exists (function
         | {kind = Kernel {body = Packed_map _; _}; tier = Cpu_kernel; _} -> true
         | _ -> false) ir.nodes in
-      {ir; value = v; dataflow; templates = Atomic.make []; core = Atomic.make []; count_source; profile;
+      {ir; value = v; dataflow; templates = Atomic.make []; core = Atomic.make []; owner = ref (); count_source; profile;
         approx;sink;gpu_kernel=None}) (optimize (finish b [|root|]))
   let graph p = p.ir
   let force ?state ?elems ?resolve ?(reference = false) program ~live =
@@ -600,14 +600,18 @@ module Executor = struct
                 prepared in
           match prepared with
           | None -> None
-          | Some p when not (Core_exec.has_regions p) -> Some (Core_exec.execute ~root:r p ~live)
+          | Some p when not (Core_exec.has_regions p) ->
+              let root = Some r in
+              let run live = Core_exec.execute ?root p ~live in
+              E.Private.set_core r ~owner:program.owner run;
+              Some (run live)
           | Some p -> Some (Core_exec.execute ~root:r ~force:(fun packed ->
               if Option.fold ~none:false ~some:(fun count -> Cost.packed ~count <> Cpu_kernel) (Packed.static_count packed) then
                 Error (Flow.Diagnostic.error ~code:"E_CORE_REGION" "Region is not placed on the CPU.")
               else Packed.force ~state ?elems ?resolve ?measure packed ~live) p ~live)
           with _ -> None in
         match core with Some _ -> core | None -> execute_packed r live in
-      E.Private.force_with_executor ~state ?elems ?resolve ~execute value ~live in
+      E.Private.force_with_executor ~state ?elems ?resolve ~owner:program.owner ~execute value ~live in
     let run () = if reference then fallback () else if !(E.Private.core_residuals) || not program.dataflow then force_with_packed program.value ~live else
     match Frame_input.validate live with
     | Error _ -> fallback ()
