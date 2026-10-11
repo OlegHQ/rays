@@ -18,8 +18,9 @@
 //   } ] }
 // Binding order is fixed by the printer: inputs (bound ones), outputs, uniforms, status, then the table.
 //
-// Surface: createGpu(table, {onError, win}) -> gpu | null (null after one plain message when WebGPU is
-// missing), gpu.dispatch(kernelId, {count, inputs, uniforms, id}) -> {count, outputs: [{id, buffer, width}]},
+// Surface: requestDevice(win) -> GPUDevice | null (the one device a page shares between this file and present.js; one
+// plain message when WebGPU is missing), createGpu(table, {onError, win, device}) -> gpu | null (a device is requested
+// when not given), gpu.upload(array) -> GPUBuffer (an input that stays on the device), gpu.dispatch(kernelId, {count, inputs, uniforms, id}) -> {count, outputs: [{id, buffer, width}]},
 // gpu.poll() (call once per frame: reports status words of earlier dispatches), gpu.buffer(id),
 // gpu.readback(id) (async, tests only), gpu.flush() (async: wait for all pending status words), gpu.dispose().
 // `inputs[i]` is an array/typed array (finite after rounding to f32) or a GPUBuffer from an earlier dispatch;
@@ -29,18 +30,23 @@
 // that call site. Errors are {code: 'E_KERNEL', message}; a status word of 1 arrives through onError on the
 // poll after the work completes, never in the dispatching frame.
 
-const U = globalThis.GPUBufferUsage;
 const WORKGROUP = 64;
 const fail = message => { throw Object.assign(new Error(message), { code: 'E_KERNEL' }); };
 const isBuffer = x => x && typeof x.mapAsync === 'function';
 const KIND = { read: 'read-only-storage', read_write: 'storage', uniform: 'uniform' };
 
-export async function createGpu(table, { onError = e => console.error(e), win = globalThis } = {}) {
+export async function requestDevice(win = globalThis) {
   const say = text => { if (win.document?.body) win.document.body.textContent = text; else console.error(text); };
   if (!win.navigator?.gpu) { say('This page needs WebGPU, which this browser does not provide. Use a recent Chrome, Edge or Safari.'); return null; }
   const adapter = await win.navigator.gpu.requestAdapter();
   if (!adapter) { say('WebGPU is present but no GPU adapter is available.'); return null; }
-  const device = await adapter.requestDevice();
+  return adapter.requestDevice();
+}
+
+export async function createGpu(table, { onError = e => console.error(e), win = globalThis, device } = {}) {
+  device ??= await requestDevice(win);
+  if (!device) return null;
+  const U = globalThis.GPUBufferUsage;
   device.lost.then(info => onError({ code: 'E_KERNEL', message: `GPU device lost: ${info.message}` }));
   device.addEventListener('uncapturederror', e => onError({ code: 'E_KERNEL', message: e.error.message }));
 
@@ -93,6 +99,14 @@ export async function createGpu(table, { onError = e => console.error(e), win = 
       for (const k of kernels.values()) if (!keep.has(k.tableBuffer)) k.tableBuffer?.destroy();
       kernels.clear();
       for (const k of built) kernels.set(k.id, k);
+    },
+    // An input that stays on the device between dispatches: the elements as f32 (finite), in a buffer the caller destroys.
+    upload(array) {
+      const f32 = Float32Array.from(array);
+      for (let i = 0; i < f32.length; i++) if (!Number.isFinite(f32[i])) fail('GPU inputs must remain finite when represented as float32.');
+      const buffer = device.createBuffer({ size: Math.max(16, f32.byteLength), usage: U.STORAGE | U.COPY_DST, label: 'input' });
+      device.queue.writeBuffer(buffer, 0, f32);
+      return buffer;
     },
     dispatch(kernelId, { count, inputs = [], uniforms = {}, id = kernelId }) {
       const k = kernels.get(kernelId);

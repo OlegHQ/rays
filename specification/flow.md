@@ -1026,8 +1026,14 @@ object per packed region: its `Js.region` source, element count, `inputs` as `[o
 (little-endian doubles: every packed-array constant and region input), `program.map` (statement id, start and
 finish offsets), `kernels.json` and `kernels.wgsl` (the WGSL kernels of the regions legal on the web target, in
 the table `gpu.js` loads), `index.html` and `runtime/` (the fixed browser runtime, embedded in the executable).
-Regions are placed for the web target: a frame reads a region's value, and an in-frame readback is illegal on the
-web (`Flow_web.Target`), so they run on the CPU; GPU-legal ones are exported for the presenter. Refusals, all
+Regions are placed for the web target (`Flow_web.Target`): a region the frame reads runs on the CPU, since an
+in-frame readback is illegal on the web. A region whose value only feeds the attributes of mark sets (rects,
+circles, lines) and that has a kernel (a static count of at least 1,024, nothing the target refuses) is not
+invoked on the CPU: the frame prints `rt.gpuArray(k)`, a packed array of a device reference
+`{gpu, output, length}`, the runtime dispatches its kernel once per frame (once per load when no frame fact feeds
+it; the attributes of one mark set with equal count and rate share one multi-output kernel) and the presenter binds
+the kernel's output buffer as the attribute buffer. `program.js` then also exports `gpu`, the kernel groups with
+their inputs. A mark set that is not wholly so keeps the CPU path. Refusals, all
 with the span of the form: `E_WEB_GRAPH` (the draw graph reaches a `sop` or `scene` graph), `E_WEB_LOWER` (the
 draw graph does not lower to the core, for example the 2,048-node residual budget), `E_WEB_IMAGE` (a `draw/image`
 needs a host image resolver), `E_WEB_REGION` (a sum or fold region, a frame fact the runtime lacks) and

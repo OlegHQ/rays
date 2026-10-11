@@ -89,49 +89,167 @@ type files = (string * string) list
 
 (* A region is exported as data when nothing it reads changes with the frame: two probes with different
    clocks, pointers, sizes and frame numbers must prepare the same inputs and captures. *)
-let region_entry ~data k (r : C.Region.t) =
+type fixed = { packed : Flow_ir.Packed.t; view : Flow_ir.Packed.Private.view; arrays : float array array;
+  uniforms : float array array; count : int; frame : (int * string) list }
+
+let fixed_inputs (r : C.Region.t) =
   let refuse code message = Error (D.error ~span:(span_of_region r) ~code message) in
   match Flow_ir.Packed.of_region r with
   | Error (d :: _) -> Error d
   | Error [] -> refuse "E_WEB_REGION" "This region does not compile."
   | Ok packed ->
       let view = Flow_ir.Packed.Private.view packed in
-      if r.result <> C.Region.Collect || Array.length view.outputs <> 1 then
-        refuse "E_WEB_REGION" "The web export runs collecting single-output regions only; this sum or fold needs a later release."
-      else
-        let probe t frame = { (Frame_input.at_time t) with dt = 0.25; frame; tick = frame; size = (640 + frame, 480);
-          pointer = (100. +. t, 100.) } in
-        let prepare live = try Flow_ir.Packed.Private.prepare packed ~live with Not_found | Invalid_argument _ | Failure _ ->
-          Error (D.error ~span:(span_of_region r) ~code:"E_WEB_REGION" "This region could not be prepared.") in
-        let* a = prepare (probe 0. 1) in
-        let* b = prepare (probe 0.5 7) in
-        if a.arrays <> b.arrays || a.uniforms <> b.uniforms || a.count <> b.count then
-          refuse "E_WEB_CAPTURE" "This region reads a value that changes from frame to frame; the web export needs its inputs fixed."
-        else if Array.exists (Array.exists (fun x -> not (Float.is_finite x))) a.uniforms then
-          refuse "E_WEB_REGION" "This region captures a non-finite value."
-        else begin
-          let frame = Array.to_list view.code |> List.mapi (fun slot -> function
-            | C.Region.Frame name -> [slot, name] | _ -> []) |> List.concat in
-          match List.find_opt (fun (_, name) -> not (List.mem name frame_facts)) frame with
-          | Some (_, name) -> refuse "E_WEB_REGION" ("This region reads the frame fact " ^ name ^ ", which the web runtime does not provide.")
-          | None ->
-              let skipped = Array.to_list r.skip |> List.filter (fun i -> i >= 0 && i < a.count) |> List.length in
-              let placed = if Array.length a.arrays = 0 then "[]" else list (fun values ->
-                let offset, length = data values in Printf.sprintf "[%d, %d]" offset length) (Array.to_list a.arrays) in
-              let gpu = match a.count with
-                | n when n >= 1024 && Flow_web.Target.region packed ~count:(Some n) = [] ->
-                    (match Flow_web.Wgsl.kernel packed with Ok w -> Some w | Error _ -> None)
-                | _ -> None in
-              let text = Printf.sprintf
-                "{\"source\": %s, \"count\": %d, \"kept\": %d, \"inputs\": %s, \"uniforms\": %s, \"frame\": %s, \"length\": %d, \"width\": %d, \"kernel\": %s}"
-                (Flow_web.Kernel_table.json_string (Flow_web.Js.region packed)) a.count (a.count - skipped) placed
-                (list (fun u -> list number (Array.to_list u)) (Array.to_list a.uniforms))
-                (list (fun (slot, name) -> Printf.sprintf "[%d, %s]" slot (Flow_web.Kernel_table.json_string name)) frame)
-                (Array.length view.code) (Array.length view.outputs.(0))
-                (match gpu with Some _ -> Printf.sprintf "\"k%d\"" k | None -> "null") in
-              Ok (text, Option.map (fun (w : Flow_web.Wgsl.wgsl) ->
-                let id = Printf.sprintf "k%d" k in Flow_web.Kernel_table.entry ~id w, "// kernel " ^ id ^ "\n" ^ w.source) gpu)
-        end
+      let probe t frame = { (Frame_input.at_time t) with dt = 0.25; frame; tick = frame; size = (640 + frame, 480);
+        pointer = (100. +. t, 100.) } in
+      let prepare live = try Flow_ir.Packed.Private.prepare packed ~live with Not_found | Invalid_argument _ | Failure _ ->
+        Error (D.error ~span:(span_of_region r) ~code:"E_WEB_REGION" "This region could not be prepared.") in
+      let* a = prepare (probe 0. 1) in
+      let* b = prepare (probe 0.5 7) in
+      if a.arrays <> b.arrays || a.uniforms <> b.uniforms || a.count <> b.count then
+        refuse "E_WEB_CAPTURE" "This region reads a value that changes from frame to frame; the web export needs its inputs fixed."
+      else if Array.exists (Array.exists (fun x -> not (Float.is_finite x))) a.uniforms then
+        refuse "E_WEB_REGION" "This region captures a non-finite value."
+      else begin
+        let frame = Array.to_list view.code |> List.mapi (fun slot -> function
+          | C.Region.Frame name -> [slot, name] | _ -> []) |> List.concat in
+        match List.find_opt (fun (_, name) -> not (List.mem name frame_facts)) frame with
+        | Some (_, name) -> refuse "E_WEB_REGION" ("This region reads the frame fact " ^ name ^ ", which the web runtime does not provide.")
+        | None -> Ok {packed; view; arrays = a.arrays; uniforms = a.uniforms; count = a.count; frame}
+      end
+
+(* The data of a region as the JSON members both the region table and the GPU table carry. *)
+let fixed_members ?kept ~data f =
+  let placed = if Array.length f.arrays = 0 then "[]" else list (fun values ->
+    let offset, length = data values in Printf.sprintf "[%d, %d]" offset length) (Array.to_list f.arrays) in
+  Printf.sprintf "\"count\": %d, %s\"inputs\": %s, \"uniforms\": %s, \"frame\": %s" f.count
+    (match kept with Some n -> Printf.sprintf "\"kept\": %d, " n | None -> "") placed
+    (list (fun u -> list number (Array.to_list u)) (Array.to_list f.uniforms))
+    (list (fun (slot, name) -> Printf.sprintf "[%d, %s]" slot (Flow_web.Kernel_table.json_string name)) f.frame)
+
+(* A region the web target can run as a kernel: a static count of at least 1,024 and nothing the target refuses
+   (the legality [Flow_web.Target.web] gives a GPU region). *)
+let web_kernel (f : fixed) =
+  if f.count >= 1024 && Flow_web.Target.region f.packed ~count:(Some f.count) = [] then
+    Result.to_option (Flow_web.Wgsl.kernel f.packed)
+  else None
+
+type region_entry = { prefix : string; fixed : fixed; kernel : Flow_web.Wgsl.wgsl option; width : int; region : C.Region.t }
+
+let region_entry ~data (r : C.Region.t) =
+  let* f = fixed_inputs r in
+  if r.result <> C.Region.Collect || Array.length f.view.outputs <> 1 then
+    Error (D.error ~span:(span_of_region r) ~code:"E_WEB_REGION"
+      "The web export runs collecting single-output regions only; this sum or fold needs a later release.")
+  else
+    let skipped = Array.to_list r.skip |> List.filter (fun i -> i >= 0 && i < f.count) |> List.length in
+    let prefix = Printf.sprintf "{\"source\": %s, %s, \"length\": %d, \"width\": %d"
+      (Flow_web.Kernel_table.json_string (Flow_web.Js.region f.packed)) (fixed_members ~kept:(f.count - skipped) ~data f)
+      (Array.length f.view.code) (Array.length f.view.outputs.(0)) in
+    Ok {prefix; fixed = f; kernel = (if r.skip = [||] then web_kernel f else None); width = Array.length f.view.outputs.(0); region = r}
+
+(* ---- placement of mark sets on the GPU ---- *)
+
+let draw_uses : C.draw -> int list = function
+  | Background c -> [c]
+  | Point {at; ink} -> [at; ink]
+  | Mark {args; _} | Batch {args; _} | Path {args; _} -> List.map snd args
+  | Points {positions; ink} -> [positions; ink]
+  | Text_run {at; text; ink; size} -> [at; text; ink; size]
+  | Image {at; scale; angle; _} -> [at; scale; angle]
+  | Push (_, n) -> [n]
+  | Pop -> []
+
+let expr_uses : C.expr -> int list = function
+  | Constant _ | Frame _ | Call_index _ -> []
+  | Local n -> [n]
+  | Prim (_, args) | Fields args -> List.map snd args
+  | Vec ns | Items ns -> ns
+  | Field (n, _) -> [n]
+
+(* The locals a statement reads and the locals it defines (its own, not its nested statements'). *)
+let uses_defs (s : C.statement) = match s.node with
+  | Draw d -> draw_uses d, []
+  | Assign (d, e) -> expr_uses e, [d]
+  | Reset_call _ -> [], []
+  | If {condition; _} -> [condition], []
+  | Iterate {sequence; index; item; _} -> [sequence], [index; item]
+  | Counted {first; last; count; index; item; _} -> [first; last], [count; index; item]
+  | Store {sequence; index; value} -> [sequence; index; value], []
+  | State_read {result; initial; _} -> [initial], [result]
+  | State_peek {found; value; _} -> [], [found; value]
+  | State_write {value; _} -> [value], []
+  | Invoke {args; result; _} -> args, [result]
+
+(* The packed arrays a mark set's attribute takes from a region, by argument name and width: what the presenter binds
+   as a storage buffer (position stride = width; a width-3 colour is the float colour mode). *)
+let attribute (mark : C.mark) name width = match mark, name, width with
+  | (Circle | Rect), "positions", (2 | 3) | Line, ("from" | "to"), (2 | 3)
+  | Circle, "radius", 1 | Rect, "sizes", 3
+  | (Circle | Rect), ("fill" | "stroke"), 3 | Line, "color", 3 -> true
+  | _ -> false
+
+module Ints = Set.Make (Int)
+
+(* The regions the frame never reads (and, per mark set, the ones of each set in argument order): each [Invoke] result is defined once and used only as an attribute of a mark
+   set ([Batch] of rects, circles or lines), and every region-valued attribute of such a set is itself in the result.
+   [width k] is [Some w] for a region with a kernel on the web target. A mark set that is not wholly so keeps the
+   CPU path for all its regions (plan P6.4a). *)
+let gpu_regions (program : C.program) ~(width : int -> int option) =
+  let statements = all_statements program.body in
+  let uses = Hashtbl.create 64 and defs = Hashtbl.create 64 in
+  let bump table l = Hashtbl.replace table l (1 + Option.value (Hashtbl.find_opt table l) ~default:0) in
+  List.iter (fun s -> let u, d = uses_defs s in List.iter (bump uses) u; List.iter (bump defs) d) statements;
+  Array.iter (bump uses) program.results;
+  let invokes = List.filter_map (fun (s : C.statement) -> match s.node with
+    | Invoke {region; result; _} -> Some (region, result) | _ -> None) statements in
+  let batches = List.filter_map (fun (s : C.statement) -> match s.node with
+    | Draw (Batch {mark; args}) -> Some (mark, args) | _ -> None) statements in
+  let region_of = Hashtbl.create 16 in
+  List.iter (fun (k, l) -> Hashtbl.replace region_of l k) invokes;
+  let good = ref (Ints.of_list (List.filter_map (fun (k, _) -> Option.map (fun _ -> k) (width k)) invokes)) in
+  let changed = ref true in
+  let drop k = if Ints.mem k !good then (good := Ints.remove k !good; changed := true) in
+  while !changed do
+    changed := false;
+    List.iter (fun (k, l) ->
+      let w = Option.value (width k) ~default:0 in
+      let as_attribute = List.fold_left (fun n (mark, args) ->
+        n + List.length (List.filter (fun (name, a) -> a = l && attribute mark name w) args)) 0 batches in
+      if Hashtbl.find_opt defs l <> Some 1 || Option.value (Hashtbl.find_opt uses l) ~default:0 <> as_attribute then drop k) invokes;
+    List.iter (fun (_, args) ->
+      let regions = List.filter_map (fun (_, a) -> Hashtbl.find_opt region_of a) args in
+      if List.exists (fun k -> not (Ints.mem k !good)) regions then List.iter drop regions) batches
+  done;
+  let per_batch = List.map (fun (_, args) ->
+    List.fold_left (fun seen (_, a) -> match Hashtbl.find_opt region_of a with
+      | Some k when Ints.mem k !good && not (List.mem k seen) -> seen @ [k] | _ -> seen) [] args) batches in
+  !good, List.filter (( <> ) []) per_batch
+
+(* A kernel the program dispatches: the regions it computes (one output each, in order) and their shared inputs. *)
+type group = { id : string; members : int list; fixed : fixed; wgsl : Flow_web.Wgsl.wgsl }
+
+(* The attributes of one mark set that are GPU regions of equal count, origin and rate fuse into one kernel with an
+   output each (plan P4.7, [Core_fuse.merge]); when they disagree, decline or the kernel is illegal, each keeps its own. *)
+let groups (entries : region_entry array) per_batch =
+  let taken = Hashtbl.create 8 in
+  let single k = let e = entries.(k) in
+    {id = Printf.sprintf "k%d" k; members = [k]; fixed = e.fixed; wgsl = Option.get e.kernel} in
+  let fused ks = match Flow_ir.Core_fuse.merge (List.map (fun k -> entries.(k).region) ks) with
+    | Some merged ->
+        (match fixed_inputs merged with
+         | Ok f when Array.length f.view.outputs = List.length ks ->
+             Option.map (fun wgsl -> {id = Printf.sprintf "k%d" (List.hd ks); members = ks; fixed = f; wgsl}) (web_kernel f)
+         | _ -> None)
+    | None -> None in
+  List.concat_map (fun regions ->
+    let regions = List.filter (fun k -> not (Hashtbl.mem taken k)) regions in
+    List.iter (fun k -> Hashtbl.add taken k ()) regions;
+    let static k = entries.(k).fixed.frame = [] in
+    List.concat_map (fun is_static ->
+      match List.filter (fun k -> static k = is_static) regions with
+      | [] -> []
+      | [k] -> [single k]
+      | ks -> (match fused ks with Some g -> [g] | None -> List.map single ks)) [true; false]) per_batch
 
 let index_html name = Printf.sprintf {|<!doctype html>
 <meta charset="utf-8">
@@ -148,6 +266,7 @@ await start(document.getElementById("canvas"), program, { data });
 </script>
 |} name
 
+
 let files (doc : Doc.t) (lowered : lowered) : (files, D.t) result =
   let program = lowered.program in
   let statements = all_statements program.body in
@@ -157,19 +276,37 @@ let files (doc : Doc.t) (lowered : lowered) : (files, D.t) result =
           "The web export cannot draw an image yet: a draw image needs a host image resolver.")
     | None -> Ok () in
   let data = Buffer.create 4096 in
+  let stored = Hashtbl.create 16 in
   let store values =
     let offset = Buffer.length data in
     Array.iter (fun x -> Buffer.add_int64_le data (Int64.bits_of_float x)) values;
+    Hashtbl.replace stored values (offset, Array.length values);
     offset, Array.length values in
-  let* entries = Array.to_list program.regions |> List.mapi (fun k r -> k, r)
-    |> List.fold_left (fun acc (k, r) -> let* acc = acc in let* entry = region_entry ~data:store k r in Ok (entry :: acc)) (Ok [])
-    |> Result.map List.rev in
-  let* js = Flow_web.Js.frame ~store:(fun values ->
+  (* A kernel's inputs are the data its regions already hold, when they are the same arrays. *)
+  let shared values = match Hashtbl.find_opt stored values with Some placed -> placed | None -> store values in
+  let* entries = Array.to_list program.regions
+    |> List.fold_left (fun acc r -> let* acc = acc in let* entry = region_entry ~data:store r in Ok (entry :: acc)) (Ok [])
+    |> Result.map (fun l -> Array.of_list (List.rev l)) in
+  let good, per_batch = gpu_regions program ~width:(fun k -> Option.map (fun _ -> entries.(k).width) entries.(k).kernel) in
+  let groups = groups entries per_batch in
+  let group_of = Hashtbl.create 8 in
+  List.iter (fun g -> List.iteri (fun output k -> Hashtbl.replace group_of k (g, output)) g.members) groups;
+  let* js = Flow_web.Js.frame ~gpu:(fun k -> Ints.mem k good) ~store:(fun values ->
     let offset, length = store values in Printf.sprintf "new Float64Array(rt.data, %d, %d)" offset length) program in
-  let regions = "export const regions = [" ^ String.concat ",\n  " (List.map fst entries) ^ "];\n" in
-  let kernels = List.filter_map snd entries in
+  let region_text k (e : region_entry) = match Hashtbl.find_opt group_of k with
+    | Some (g, output) -> Printf.sprintf "%s, \"kernel\": \"%s\", \"gpu\": {\"output\": %d}}" e.prefix g.id output
+    | None -> Printf.sprintf "%s, \"kernel\": %s}" e.prefix
+        (match e.kernel with Some _ -> Printf.sprintf "\"k%d\"" k | None -> "null") in
+  let regions = "export const regions = [" ^ String.concat ",\n  " (Array.to_list (Array.mapi region_text entries)) ^ "];\n" in
+  let table = if groups = [] then "" else
+    "export const gpu = {" ^ String.concat ",\n  " (List.map (fun g ->
+      Printf.sprintf "\"%s\": {%s}" g.id (fixed_members ~data:shared g.fixed)) groups) ^ "};\n" in
+  let kernel id (w : Flow_web.Wgsl.wgsl) = Flow_web.Kernel_table.entry ~id w, "// kernel " ^ id ^ "\n" ^ w.source in
+  let kernels = List.concat (List.mapi (fun k (e : region_entry) -> match Hashtbl.find_opt group_of k with
+    | Some (g, _) -> if List.hd g.members = k then [kernel g.id g.wgsl] else []
+    | None -> (match e.kernel with Some w -> [kernel (Printf.sprintf "k%d" k) w] | None -> [])) (Array.to_list entries)) in
   let name = Doc.name doc in
-  Ok ([ "program.js", js ^ "\n" ^ regions;
+  Ok ([ "program.js", js ^ "\n" ^ regions ^ table;
         "program.map", Flow_web.Js.frame_map program;
         "kernels.json", Flow_web.Kernel_table.table (List.map fst kernels);
         "kernels.wgsl", String.concat "\n" (List.map snd kernels);

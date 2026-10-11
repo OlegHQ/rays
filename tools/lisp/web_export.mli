@@ -24,8 +24,15 @@ val files : Editor_document.Workspace_doc.t -> lowered -> (files, Flow.Diagnosti
       (instructions), [width] (components per element) and [kernel] (its id in [kernels.json], or [null]).
     - [program.map]: {!Flow_web.Js.frame_map}.
     - [kernels.json] and [kernels.wgsl]: the WGSL kernels of the regions legal on the web target (a static
-      count of at least 1,024 and {!Flow_web.Target.region} empty), in the table [gpu.js] loads. The frame
-      runs every region on the CPU, since a frame reads its value (an in-frame readback is illegal on the web).
+      count of at least 1,024 and {!Flow_web.Target.region} empty), in the table [gpu.js] loads. A kernel that
+      the frame can use without reading its value is dispatched by the runtime and its region is not invoked on
+      the CPU: a region whose every [Invoke] result is defined once and used only as the positions, radii, sizes,
+      colours, [from] or [to] of rect, circle and line sets, whose sets' region attributes all qualify, has
+      [kernel] and [gpu: {output}] in the region table, [rt.gpuArray(k)] in the frame, and an entry of
+      [export const gpu = {id: {count, inputs, uniforms, frame}}], the kernel's inputs and captures. Attributes of
+      one set with equal count and rate are merged by {!Flow_ir.Core_fuse.merge} into one kernel with an output
+      each (id of the first member). Any other region is invoked on the CPU, since a frame that reads a value
+      would need an in-frame readback, which is illegal on the web.
     - [data.bin]: little-endian doubles; offsets are multiples of 8.
     - [index.html] and [runtime/*.js].
     Refused: an image ([E_WEB_IMAGE]), a region that is not a collecting single-output one

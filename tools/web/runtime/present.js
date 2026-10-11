@@ -20,6 +20,8 @@
 // an image as a linear-sampled quad of `images(resource)` (ImageBitmap, canvas or image element; null is
 // E_IMAGE). Only an unresolvable image throws; an error of the GPU is in `presenter.errors`.
 
+import { requestDevice } from './gpu.js';
+
 const U = globalThis.GPUBufferUsage, T = globalThis.GPUTextureUsage;
 // The native automatic font is the system UI font (SF Mono on macOS, lib/sdl3_ttf/sdl3_ttf.ml).
 const FONT = 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace';
@@ -54,12 +56,9 @@ export async function loadImage(url) {
   return createImageBitmap(await (await fetch(url)).blob(), { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
 }
 
-export async function createPresenter(canvas, { dpr, images = () => null, clear = [0, 0, 0, 1], shader, win = globalThis } = {}) {
-  const say = text => { if (win.document?.body) win.document.body.textContent = text; else console.error(text); };
-  if (!win.navigator?.gpu) { say('This page needs WebGPU, which this browser does not provide. Use a recent Chrome, Edge or Safari.'); return null; }
-  const adapter = await win.navigator.gpu.requestAdapter();
-  if (!adapter) { say('WebGPU is present but no GPU adapter is available.'); return null; }
-  const device = await adapter.requestDevice();
+export async function createPresenter(canvas, { dpr, images = () => null, clear = [0, 0, 0, 1], shader, win = globalThis, device, gpu = null } = {}) {
+  device ??= await requestDevice(win);
+  if (!device) return null;
   const errors = [];
   device.addEventListener('uncapturederror', e => { errors.push(e.error.message); console.error(e.error.message); });
   const format = win.navigator.gpu.getPreferredCanvasFormat();
@@ -121,15 +120,21 @@ export async function createPresenter(canvas, { dpr, images = () => null, clear 
   };
 
   // A mark set's six attribute buffers and params (marks.md, "The Marks pipeline family").
+  // An attribute buffer is a CPU array (copied to f32 here) or a device reference {gpu: kernelId, output, length} that
+  // the compiler placed on the GPU (program.js `gpu`): the kernel's output buffer is bound as it is, count * width
+  // floats of a larger allocation (gpu.js: dispatch id = kernel id, output buffers `${id}:out${k}`).
+  const elements = a => typeof a.buffer.gpu === 'string'
+    ? { buffer: gpu?.buffer(`${a.buffer.gpu}:out${a.buffer.output}`) ?? fail('E_KERNEL', `GPU output ${a.buffer.gpu} is not there.`), size: a.count * a.width * 4 }
+    : f32(a.buffer, a.count * a.width);
   const markResources = e => {
-    const vec2 = a => 'constant' in a ? [Float32Array.of(a.constant[0], a.constant[1]), 0] : [f32(a.buffer, a.count * a.width), a.width];
-    const one = a => 'constant' in a ? [Float32Array.of(a.constant), 0] : [f32(a.buffer, a.count * a.width), a.width];
-    const col = a => 'constant' in a ? [Uint32Array.of(a.constant >>> 0), 0, 0] : [f32(a.buffer, a.count * a.width), a.width, 1];
+    const vec2 = a => 'constant' in a ? [Float32Array.of(a.constant[0], a.constant[1]), 0] : [elements(a), a.width];
+    const one = a => 'constant' in a ? [Float32Array.of(a.constant), 0] : [elements(a), a.width];
+    const col = a => 'constant' in a ? [Uint32Array.of(a.constant >>> 0), 0, 0] : [elements(a), a.width, 1];
     const line = e.kind === 'line';
     const pos = vec2(e.position), ext = line ? vec2(e.end) : e.kind === 'circle' ? one(e.radius) : vec2(e.size);
     const fill = line ? [new Uint32Array(1), 0, 0] : col(e.fill), stroke = col(e.stroke), width = one(e.stroke_width);
     const params = Uint32Array.of(KIND[e.kind], pos[1], ext[1], fill[1], stroke[1], width[1], fill[2], stroke[2]);
-    return [pos[0], ext[0], fill[0], stroke[0], width[0], params].map(store);
+    return [pos[0], ext[0], fill[0], stroke[0], width[0], params].map(x => x instanceof Object && x.buffer && !ArrayBuffer.isView(x) ? x : { buffer: store(x) });
   };
 
   const present = (marks, size) => {
@@ -170,7 +175,7 @@ export async function createPresenter(canvas, { dpr, images = () => null, clear 
           geometry(vertices, indices, e.fill);
         } else if (e.count > 0 && live()) {
           const resources = markResources(e);
-          add('marks', new Float32Array(16), resources.map((buffer, binding) => [binding, { buffer }]), clips.at(-1), pass => pass.draw(6, e.count));
+          add('marks', new Float32Array(16), resources.map((resource, binding) => [binding, resource]), clips.at(-1), pass => pass.draw(6, e.count));
         }
         break;
       case 'geometry': geometry(e.vertices, e.indices, e.color); break;

@@ -691,6 +691,14 @@ Ten pass, five are refused with a span, none fails. The image refusals point at 
 Before this task three bugs were fixed on the way: the printer refused every `not`, the kernel-table JSON writer
 escaped UTF-8 bytes one by one, and `prims.js` `sequence_build` ignored the packed width.
 
+**Addendum 2026-10-11 (P6.4a).** The native draw lowering budget was raised to 32,768 (P5.13a) and the exporter
+has no budget constant of its own (`Web_export.lower` calls `Core_draw.lower`), so `examples/drawing` now
+exports. The same command over all 15 workspaces, after the GPU-attribute change below: 11 pass (120 frames each), 4 are
+refused `E_WEB_IMAGE` (`sketches/flow_contours` 77:3, `flow_image` 5:3, `flow_image_kernel` 7:3, `flow_shader` 67:3), 0 fail. Only
+the `examples/drawing` row changes: pass, an event-driven state machine over records.
+`sketches/flow_particles_gpu` still passes, but its region is now a GPU region (node has no GPU, so the harness
+answers `rt.gpuArray` with the CPU value; `frames.mjs`).
+
 ## P6.7: reload of a served export in headless Chrome (2026-10-11)
 
 Command, from the repository root after `dune build tools/lisp/lisp.exe`:
@@ -754,3 +762,27 @@ so a 90 degree image leaves the screen. The presenter reproduces the native matr
 the test uses pi, where the two agree. `lib/` was off limits for this task.
 Fixed on the way: a probe taken at a width-2 line's end showed 218, not 255: coverage `0.5 - d/px` with `px = |fwidth|`
 is the native line shader's, not a port error.
+
+## 2026-10-11: GPU attribute regions in real Chrome (P6.4a)
+
+Machine: Apple M1, Google Chrome 154 `--headless=new` (Metal WebGPU adapter), node 24. Gate: `dune build
+@qualification-web` (`tools/web/test/gpu_marks_e2e.mjs`; oracle `tools/marks_shot.exe`, the core executor in f64 and
+`Canvas` at density 1). Two workspaces are exported with `rays-lisp web`, served with COOP/COEP, and run in Chrome with
+one `GPUDevice` shared by `gpu.js` and `present.js` (no worker pool is needed: no region runs on the CPU), 5 fixed
+frames (dt 1/60, 640x480 or the sketch's 800x600, pointer (100, 100)), then `present`, read back and compared.
+Metric: largest channel difference per pixel; pass when at most 0.5% of the pixels differ by more than 8 and none by more
+than 64 (the metric of `present_e2e.mjs`, now `compare` in `png.mjs`).
+
+| Workspace | Attributes on the GPU | Kernels | Pixels differing by > 8 | Worst | Mean | GPU dispatches / CPU invokes |
+| --- | --- | --- | --- | --- | --- | --- |
+| synthetic (2,048 circles, a `draw/circles` with animated positions and radii, static colours) | positions and radii, fused; the colours are a static CPU buffer | `k0`, 2 outputs | 0 of 307,200 | 1 | 0.0007 | 5 / 0 |
+| `sketches/flow_particles_gpu` (1,000,000 circles, noise positions) | positions | `k0`, 1 output | 0 of 480,000 | 1 | 0.0190 | 5 / 0 |
+
+Both results are read from `window.__rays.counts` of the same page (`counts.gpu` = one dispatch per frame, `counts.invoke`
+= CPU invocations of regions, 0); the mark table's position `buffer` is the device reference `{gpu, output, length}`
+and never a `Float64Array`. The real `index.html` (`start`: one device, worker pool, rAF loop) also runs both with
+0 CPU invokes and a growing `counts.gpu` (about 170 dispatches in 3 s). f32 against f64 positions did not move a pixel
+by more than 1 level in either picture; a one-million-circle picture of radius 0.3 is 0.28 px of coverage per circle,
+so an error would show as many pixels at once. Static-rate kernels (no frame fact) are dispatched once per load by
+construction (`runtime.mjs`); the static stage folds a frame-independent region to a constant first, so none of the corpus
+reaches that path.

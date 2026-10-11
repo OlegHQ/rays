@@ -201,5 +201,35 @@ same([value.get('t'), value.get('dt'), value.get('index'), value.get('width'), v
   same([modules, [...gpu.kernels.keys()]], [4, ['k0']], 'gpu.update: an unchanged table compiles nothing, dropped kernels go');
 }
 
+{
+  // GPU attribute regions (P6.4a): a kernel group runs once per frame, or once per load without a frame fact; its inputs
+  // are uploaded once; the value is a packed array of device references; the frame never touches the CPU region.
+  const calls = [], uploads = [];
+  const gpu = { poll() {}, upload: a => { uploads.push(a.length); return { destroy() {} }; },
+    dispatch: (id, o) => calls.push([id, o.count, Object.keys(o.uniforms).sort(), o.uniforms['frame:3:t'], o.inputs.length]) };
+  const bytes = new Float64Array(8).buffer;
+  const region = { source: '', count: 4, kept: 4, inputs: [[0, 4]], uniforms: [[7]], frame: [[3, 't']], length: 4, width: 3, kernel: 'g0', gpu: { output: 0 } };
+  const steady = { source: '', count: 4, kept: 4, inputs: [[0, 4]], uniforms: [], frame: [], length: 4, width: 1, kernel: 'g1', gpu: { output: 0 } };
+  const program = { regions: [region, steady],
+    gpu: { g0: { count: 4, inputs: [[0, 4]], uniforms: [[7]], frame: [[3, 't']] }, g1: { count: 4, inputs: [[0, 4]], uniforms: [], frame: [] } },
+    async frame(input, state, rt) { return [await rt.gpuArray(0), await rt.gpuArray(0), await rt.gpuArray(1)]; } };
+  const errors = [];
+  const rt = R.createRuntime(program, { fixedDt: 0.5, data: bytes, gpu, gpuErrors: errors });
+  const [a, b, c] = await rt.stepFrame();
+  same([a.width, a.data, b.data, c.data, calls.length, uploads, rt.counts],
+    [3, { gpu: 'g0', output: 0, length: 12 }, { gpu: 'g0', output: 0, length: 12 }, { gpu: 'g1', output: 0, length: 4 }, 2, [4, 4], { invoke: 0, gpu: 2 }], 'gpu: one dispatch per group per frame, device references');
+  same(calls[0], ['g0', 4, ['frame:3:t', 'uniform:0'], 0.5, 1], 'gpu: uniforms by layout name, frame facts from the frame');
+  await rt.stepFrame();
+  same([calls.length, calls[2][3], uploads.length], [3, 1, 2], 'gpu: the frame-rate group runs again, the steady one does not, inputs stay uploaded');
+  rt.load(program); await rt.stepFrame();
+  same([calls.length, uploads.length], [5, 4], 'gpu: a reload runs every group again with fresh inputs');
+  errors.push({ code: 'E_KERNEL', message: 'GPU output contains a nonfinite value.' });
+  let code = null; try { await rt.stepFrame(); } catch (e) { code = e.code; }
+  same([code, errors.length], ['E_KERNEL', 0], 'gpu: a status word of an earlier dispatch fails the next frame');
+  const bare = R.createRuntime(program, { data: bytes });
+  let none = null; try { await bare.stepFrame(); } catch (e) { none = e.code; }
+  same(none, 'E_KERNEL', 'gpu: a GPU region without a device is an error, never a silent CPU run');
+}
+
 if (failures.length) { console.error(failures.join('\n')); process.exit(1); }
 console.log('runtime: ok');

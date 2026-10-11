@@ -2,6 +2,7 @@ module Operators = Operators
 module Packed = Packed
 module Core = Core
 module Core_region = Core_region
+module Core_fuse = Core_fuse
 module Core_lower = Core_lower
 module Core_exec = Core_exec
 module Core_draw = Core_draw

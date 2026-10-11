@@ -334,7 +334,7 @@ const transform = (rt, kind, v) => {
 |}]
 
 type context = { program : C.program; body : Buffer.t; used : (string, unit) Hashtbl.t;
-  mutable map : (int * Flow.Diagnostic.span) list; mutable async : bool }
+  mutable map : (int * Flow.Diagnostic.span) list; mutable async : bool; gpu : int -> bool }
 
 let local n = "l" ^ string_of_int n
 let use ctx name = Hashtbl.replace ctx.used name ()
@@ -449,11 +449,12 @@ and statement ctx depth (s : C.statement) =
   | State_write {slot; value} -> line "%s%s.pending = %s;" at (slot_key slot) (local value)
   | Invoke {region; args; result} ->
       ctx.async <- true;
-      line "%s%s = await rt.invoke(%d, [%s]);" at (local result) region (String.concat ", " (List.map local args))
+      if ctx.gpu region then line "%s%s = await rt.gpuArray(%d);" at (local result) region
+      else line "%s%s = await rt.invoke(%d, [%s]);" at (local result) region (String.concat ", " (List.map local args))
 
-let frame_result ?store (program : C.program) =
+let frame_result ?store ?(gpu = fun _ -> false) (program : C.program) =
   let body = Buffer.create 4096 in
-  let ctx = { program; body; used = Hashtbl.create 8; map = []; async = false } in
+  let ctx = { program; body; used = Hashtbl.create 8; map = []; async = false; gpu } in
   statements ctx 2 program.body;
   let code = Buffer.contents body in
   let mentions name = Hashtbl.mem ctx.used name in
@@ -484,8 +485,8 @@ let frame_result ?store (program : C.program) =
   Buffer.add_string out "}\n";
   Buffer.contents out, List.rev ctx.map
 
-let frame ?store program =
-  match frame_result ?store program with
+let frame ?store ?gpu program =
+  match frame_result ?store ?gpu program with
   | result -> Ok (fst result)
   | exception Refused (code, message, span) -> Error (Flow.Diagnostic.error ?span ~code message)
 

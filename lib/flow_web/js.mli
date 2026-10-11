@@ -34,10 +34,16 @@ val region : Flow_ir.Packed.t -> string
     Skipped indices are not evaluated and do not occupy an output slot. Noise
     permutation tables are embedded in the source. *)
 
-val frame : ?store:(float array -> string) -> Flow_ir.Core.program -> (string, Flow.Diagnostic.t) result
+val frame : ?store:(float array -> string) -> ?gpu:(int -> bool) -> Flow_ir.Core.program -> (string, Flow.Diagnostic.t) result
 (** [store], when given, prints every packed-array constant: it receives the elements and returns a JavaScript
     expression for a [Float64Array] of them (the export keeps them in [data.bin]); without it the elements
     are written inline.
+
+    [gpu region], when given and true for a region index, prints the region's [Invoke] as [await rt.gpuArray(k)] instead of
+    [await rt.invoke(k, [])]: the export placed the region on the GPU, and the runtime answers with a packed array whose
+    [data] is not elements but a device reference [{gpu: kernelId, output, length}], which only a mark set attribute may
+    carry (it appears as the [buffer] of an attribute; the presenter binds the kernel's output buffer). Without [gpu]
+    the output is exactly as before.
 
     The frame level as one ES module exporting [frame(input, state, rt)] (an [async] function
     exactly when the program invokes a region). It returns the program's single result, or an array

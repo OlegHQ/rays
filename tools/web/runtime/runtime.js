@@ -20,6 +20,7 @@ import { checkIsolation, createPool } from './workers.js';
 import * as prims from './prims.js';
 import * as shapes from './shape2.js';
 import { createPresenter } from './present.js';
+import { createGpu, requestDevice } from './gpu.js';
 
 // ---- event records: op.ml:104-107 event_fields, defaults at op.ml:131-134 ----
 const ZERO = { text: () => '', int: () => 0n, float: () => 0, vec3: () => new Float64Array(3), list: () => [] };
@@ -109,13 +110,17 @@ export const frameValue = f => new Map([['t', f.t], ['dt', f.dt], ['index', BigI
 // opts: now() seconds; fixedDt (finite > 0) selects the fixed clock; pool (workers.js); gpu (gpu.js); size [w,h].
 // Clock as sketch.ml:211-212: the count increments first (frames start at 1); fixed: dt, t = count*dt;
 // real time: dt = min(delta, 0.1) (time.ml:19), t = seconds since start. frame and tick are both the count.
-export function createRuntime(program, { now = () => performance.now() / 1000, fixedDt, pool = null, gpu = null, data = null, size = [1, 1] } = {}) {
+export function createRuntime(program, { now = () => performance.now() / 1000, fixedDt, pool = null, gpu = null, gpuErrors = [], data = null, size = [1, 1] } = {}) {
   if (fixedDt !== undefined && !(Number.isFinite(fixedDt) && fixedDt > 0)) throw new RangeError('fixedDt must be finite and positive');
   const origin = now(), compiled = new Map();
   let last = origin, count = 0;
   const regionOf = k => rt.program.regions[k] ?? prims.fail('E_CORE', 'Unknown region.');
+  const stamps = new Map(), deviceInputs = new Map();   // GPU kernel groups: the frame each last ran, and their uploaded inputs
   const held = new Map();   // region id -> the source the pool holds, so a reload sends only the changed ones
   const load = () => {
+    stamps.clear();
+    for (const buffers of deviceInputs.values()) for (const b of buffers) b.destroy();
+    deviceInputs.clear();
     const live = new Set(rt.program.regions.map(r => r.source));
     for (const source of compiled.keys()) if (!live.has(source)) compiled.delete(source);
     if (rt.pool) rt.program.regions.forEach((r, k) => { if (held.get(k) !== r.source) { rt.pool.load(k, r.source); held.set(k, r.source); } });
@@ -124,7 +129,8 @@ export function createRuntime(program, { now = () => performance.now() / 1000, f
     'frame/width': input => input.size[0], 'frame/height': input => input.size[1] };
   const rt = {
     ...prims, ...shapes,
-    program, pool, gpu, data, input: new Input(size), slots: [], frameValue, marks: [], current: null,
+    program, pool, gpu, gpuErrors, data, input: new Input(size), slots: [], frameValue, marks: [], current: null,
+    counts: { invoke: 0, gpu: 0 },   // CPU region invocations and GPU dispatches, for tests
     // A region as a function, compiled once per source text; calls run on the calling thread.
     region(id) {
       const source = regionOf(id).source;
@@ -136,6 +142,7 @@ export function createRuntime(program, { now = () => performance.now() / 1000, f
     // value is the packed array Packed.force returns. Native falls back to the tree walker on a non-finite value;
     // there is none here, so it is E_KERNEL.
     async invoke(k, args) {
+      rt.counts.invoke++;
       const r = regionOf(k), input = rt.current;
       const inputs = r.inputs.map(([offset, length]) => new Float64Array(rt.data, offset, length));
       const facts = new Float64Array(r.length);
@@ -146,6 +153,28 @@ export function createRuntime(program, { now = () => performance.now() / 1000, f
         : rt.region(k)(inputs, uniforms, outputs, 0, r.count);
       if (status !== 0) prims.fail('E_KERNEL', 'Kernel needs reference evaluation.');
       return new prims.PArray(r.width, outputs[0]);
+    },
+    // A region the compiler placed on the GPU (program.js `gpu`, plan P6.4a): its kernel group runs once per frame, or once
+    // per load when no frame fact feeds it, with the inputs uploaded once; the value is a packed array of device references
+    // {gpu, output, length} that only a mark set attribute can hold, which the presenter binds (present.js `elements`).
+    gpuRun(id) {
+      const g = rt.program.gpu?.[id] ?? prims.fail('E_CORE', 'Unknown GPU kernel.');
+      const input = rt.current, stamp = g.frame.length ? input.frame : 0;
+      if (stamps.get(id) === stamp) return g;
+      if (!rt.gpu) prims.fail('E_KERNEL', 'This region runs on the GPU and there is no GPU.');
+      if (!deviceInputs.has(id)) deviceInputs.set(id, g.inputs.map(([offset, length]) => rt.gpu.upload(new Float64Array(rt.data, offset, length))));
+      const uniforms = {};
+      g.uniforms.forEach((u, i) => { uniforms[`uniform:${i}`] = u; });
+      for (const [slot, name] of g.frame) uniforms[`frame:${slot}:${name}`] = Number(FACTS[name](input));
+      try { rt.gpu.dispatch(id, { count: g.count, inputs: deviceInputs.get(id), uniforms }); }
+      catch (e) { prims.fail(e.code ?? 'E_KERNEL', e.message); }
+      stamps.set(id, stamp);
+      rt.counts.gpu++;
+      return g;
+    },
+    gpuArray(k) {
+      const r = regionOf(k), g = rt.gpuRun(r.kernel);
+      return new prims.PArray(r.width, { gpu: r.kernel, output: r.gpu.output, length: g.count * r.width });
     },
     // The host image resolver (plan image nodes): none on the web, as a native frame without one.
     image: () => prims.fail('E_IMAGE', 'Drawing images need an environment-owned image resolver.'),
@@ -159,6 +188,7 @@ export function createRuntime(program, { now = () => performance.now() / 1000, f
       const t = now(), delta = Math.min(t - last, 0.1);
       last = t; count++;
       rt.gpu?.poll();   // gpu.js: status words of last frame's dispatches
+      if (rt.gpuErrors.length) { const e = rt.gpuErrors.shift(); prims.fail(e.code, e.message); }
       const dt = fixedDt ?? delta;
       const input = { ...rt.input.snapshot(), t: fixedDt !== undefined ? count * dt : t - origin, dt, frame: count, tick: count, ...override };
       rt.marks.length = 0;
@@ -212,10 +242,14 @@ export function watch(rt, { fetch = globalThis.fetch?.bind(globalThis), load = u
 // ---- the DOM wiring: the only place that touches the page ----
 export async function start(canvas, program, { fixedDt, pool, data = null, win = globalThis } = {}) {
   if (!checkIsolation(win)) return null;
-  const presenter = await createPresenter(canvas, { win });
-  if (!presenter) return null;
+  const device = await requestDevice(win);   // one device for the kernels (gpu.js) and the presenter (present.js)
+  if (!device) return null;
+  const table = await fetch(new URL('../kernels.json', import.meta.url)).then(r => r.json(), () => ({ kernels: [] }));
+  const gpuErrors = [];
+  const gpu = await createGpu(table, { device, win, onError: e => gpuErrors.push(e) });
+  const presenter = await createPresenter(canvas, { win, device, gpu });
   const rect = () => canvas.getBoundingClientRect();
-  const rt = createRuntime(program, { fixedDt, data, pool: pool ?? await createPool(), size: [Math.round(rect().width), Math.round(rect().height)] });
+  const rt = createRuntime(program, { fixedDt, data, gpu, gpuErrors, pool: pool ?? await createPool(), size: [Math.round(rect().width), Math.round(rect().height)] });
   const push = e => rt.input.push(e, rect());
   for (const type of ['pointermove', 'pointerdown', 'pointerup', 'pointercancel']) canvas.addEventListener(type, e => {
     if (type === 'pointerdown') canvas.setPointerCapture?.(e.pointerId);
@@ -227,10 +261,12 @@ export async function start(canvas, program, { fixedDt, pool, data = null, win =
   let stopped = false, failed = false;
   const loop = async () => {
     if (stopped) return;
-    try { await rt.stepFrame(); presenter.present(rt.marks, rt.input.size); } catch (error) { console.error(error); failed = true; return; }
+    try { await rt.stepFrame(); presenter.present(rt.marks, rt.input.size); } catch (error) { console.error(error); rt.error = error; failed = true; return; }
     win.requestAnimationFrame(loop);
   };
-  rt.stop = () => { stopped = true; rt.pool?.close(); presenter.dispose(); };
+  rt.presenter = presenter;
+  rt.halt = () => { stopped = true; };   // the rAF loop ends after its current frame; the page and device stay (tests step frames by hand)
+  rt.stop = () => { stopped = true; rt.pool?.close(); gpu.dispose(); presenter.dispose(); };
   rt.resume = () => { if (failed && !stopped) { failed = false; win.requestAnimationFrame(loop); } };   // a reload revives a failed frame loop
   win.requestAnimationFrame(loop);
   win.__rays = rt;   // for tests and the console

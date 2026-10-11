@@ -33,3 +33,9 @@
  (name test_target)
  (modules test_target test_program)
  (libraries flow_web flow flow_ir))
+
+(test
+ (name test_js_gpu)
+ (modules test_js_gpu core_fixtures)
+ (deps (glob_files goldens/frame_gpu_*.js))
+ (libraries flow_web flow flow_ir str))

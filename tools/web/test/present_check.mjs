@@ -116,6 +116,7 @@ const files = {
   '/page.js': pageScript,
   '/present.js': readFileSync(join(runtimeDir, 'present.js')),
   '/marks.wgsl': readFileSync(join(runtimeDir, 'marks.wgsl')),
+  '/gpu.js': readFileSync(join(runtimeDir, 'gpu.js')),   // present.js imports requestDevice from it
 };
 const server = await serve(files);
 const chrome = await launch(server.url);

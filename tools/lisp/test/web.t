@@ -52,3 +52,48 @@ So is a draw image, which needs a host image resolver.
 
   $ rays-lisp web ../../../sketches/flow_image/sketch.rays -o image 2>&1 | sed -n 2p
   Error [E_WEB_IMAGE]: The web export cannot draw an image yet: a draw image needs a host image resolver.
+
+A mark set whose attributes are GPU regions never invokes them on the CPU: the frame names a device array, and two
+attributes of equal count and rate share one kernel with an output each.
+
+  $ rays-lisp web ../../../sketches/flow_particles_gpu/sketch.rays -o gpu
+  $ grep -c "rt.gpuArray(0)" gpu/program.js
+  1
+  $ grep -c "rt.invoke" gpu/program.js
+  0
+  [1]
+  $ grep -c '^export const gpu = ' gpu/program.js
+  1
+  $ grep -o '"id":"k[0-9]*"' gpu/kernels.json
+  "id":"k0"
+  $ cat > fused.rays <<'X'
+  > (workspace w
+  >   (graph g :context draw
+  >     (let* [p (map (fn [i] [(+ i t) i 0]) (array/range 2048))
+  >            r (map (fn [i] (+ 1 (* 0.001 (+ i t)))) (array/range 2048))]
+  >       (draw/circles p :radius r))))
+  > X
+  $ rays-lisp web fused.rays -o fused
+  $ grep -o '"gpu": {[^}]*}' fused/program.js
+  "gpu": {"output": 0}
+  "gpu": {"output": 1}
+  $ grep -c '"id":' fused/kernels.json
+  1
+  $ grep -o '"output_widths":\[[0-9,]*\]' fused/kernels.json
+  "output_widths":[3,1]
+
+The frame reading a region's value (here one element of it) keeps that region on the CPU: a read on the GPU would be
+a readback in the frame, which the web cannot do.
+
+  $ cat > read.rays <<'X'
+  > (workspace w
+  >   (graph g :context draw
+  >     (let* [p (map (fn [i] [(+ i t) i 0]) (array/range 2048))]
+  >       (draw/merge (draw/circles p :radius 2) (draw/circle (array/nth p 0) 3)))))
+  > X
+  $ rays-lisp web read.rays -o read
+  $ grep -c "rt.gpuArray" read/program.js
+  0
+  [1]
+  $ grep -c "rt.invoke(0" read/program.js
+  1
