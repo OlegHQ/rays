@@ -117,12 +117,24 @@ let run () =
         sphere_material = P.material ~emission:(rgb 4. 0. 0.) (rgb 0. 0. 0.) }] in
       let mixed = get (P.mesh ~spheres [floor, gray]) in
       let mixed_pixels = capture mixed in
+      (* The red pixels are the sphere's footprint: none outside its projected
+         disc and most of the disc. Green and blue stay below 100, not near
+         zero, because the black dielectric also reflects the sky (best pixel
+         measured 252, 57, 66). *)
+      let screen at = Option.get (Rays.Camera.world_to_screen ~viewport:(0,0,64,48) camera at) in
+      let center = screen (V.create 0. 1. 0.) in
+      let radius = Float.abs ((screen (V.create 0.5 1. 0.)).x -. center.x) in
       let red_pixels = ref 0 in
       for pixel = 0 to 64 * 48 - 1 do
         let channel i = Char.code (Bytes.get mixed_pixels (pixel * 4 + i)) in
-        if channel 0 > 200 && channel 1 < 100 && channel 2 < 100 then incr red_pixels
+        if channel 0 > 200 && channel 1 < 100 && channel 2 < 100 then begin
+          incr red_pixels;
+          assert (Float.hypot (float (pixel mod 64) +. 0.5 -. center.x)
+            (float (pixel / 64) +. 0.5 -. center.y) <= radius +. 1.)
+        end
       done;
-      assert (!red_pixels > 10);
+      Printf.printf "pathtracer scene: %d red pixels in a disc of radius %.2f px\n" !red_pixels radius;
+      assert (float !red_pixels >= 0.7 *. Float.pi *. radius *. radius);
       let without_floor = capture (get (P.mesh ~spheres [])) in
       let point = Option.get (Rays.Camera.world_to_screen ~viewport:(0,0,64,48)
         camera (V.create 3. 0. 0.)) in
