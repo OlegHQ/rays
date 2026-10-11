@@ -4,7 +4,10 @@
    does; frames 0..30 are rendered in sequence with one evaluation state at a
    pinned size and pointer, with no GPU callback and no image callback. Frames
    0, 1 and 30 are written as the SHA-256 of Render_ir.serialize of the scene,
-   or as the diagnostic code when the frame cannot be drawn headless. *)
+   or as the diagnostic code when the frame cannot be drawn headless.
+   The digest covers Image resource ids, which come from the process-global
+   texture counter (rendered text allocates two per new string), so each
+   workspace must run in its own process, as the dune rule does. *)
 
 let width = 640
 let height = 480
