@@ -243,3 +243,19 @@
   (source_tree ../sketches/flow_particles_gpu))
  (action
   (system "if command -v node >/dev/null 2>&1; then node web/test/gpu_marks_e2e.mjs lisp/lisp.exe marks_shot.exe ..; else echo 'gpu_marks_e2e: skipped (node not found)'; fi")))
+
+(executable
+ (name web_shot)
+ (modules web_shot)
+ (libraries unix))
+
+; Pixel parity of the served web export in a real browser (plan P6.8): examples/particles at fixed-step frames 1, 30 and 120
+; against the native render (marks_shot), through `rays-lisp web --watch` and headless Chrome with WebGPU. Exit 3 means
+; WebGPU is unavailable in that Chrome; a missing node or Chrome is a printed skip.
+(rule
+ (alias qualification-web)
+ (deps web/test/web_shot.mjs web/test/png.mjs web/test/chrome.mjs
+  (glob_files web/runtime/*.js) web/runtime/marks.wgsl lisp/lisp.exe marks_shot.exe
+  (source_tree ../examples/particles))
+ (action
+  (run ./web_shot.exe lisp/lisp.exe ./marks_shot.exe web/test/web_shot.mjs ../examples/particles 800 600 1 30 120)))

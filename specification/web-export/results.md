@@ -836,3 +836,34 @@ by more than 1 level in either picture; a one-million-circle picture of radius 0
 so an error would show as many pixels at once. Static-rate kernels (no frame fact) are dispatched once per load by
 construction (`runtime.mjs`); the static stage folds a frame-independent region to a constant first, so none of the corpus
 reaches that path.
+
+## 2026-10-11: browser pixel parity of the served export, `examples/particles` (P6.8)
+
+Command, from the repository root: `dune build @qualification-web` (rule in `tools/dune`), which runs
+`tools/web_shot.exe lisp/lisp.exe marks_shot.exe web/test/web_shot.mjs ../examples/particles 800 600 1 30 120`.
+Machine: Apple M1, Google Chrome 154.0.8037.98 `--headless=new` (Metal WebGPU adapter), node 24.19.0.
+
+What runs: `marks_shot` renders the native picture of fixed-step frames 1, 30 and 120 (core executor, `Marks_scene`,
+`Canvas` at density 1; dt 1/60, pointer (100, 100), 800x600). `web_shot.exe` starts `rays-lisp web --watch
+examples/particles/sketch.rays -o DIR --port 0` (127.0.0.1, COOP/COEP), and `web_shot.mjs` opens the served page in
+Chrome. The page runs `start` (one `GPUDevice`, worker pool, presenter, watcher). The script then halts the rAF loop
+(`__rays.halt()`), resets the state slots (`__rays.load(__rays.program)`) and drives `__rays.stepFrame` itself with
+the fixed clock (`t = frame/60`, `dt = 1/60`, `frame = tick = frame`, size 800x600, no events, keys or buttons) from
+frame 1 to 120, presenting at dpr 1 and reading the canvas back (`drawImage` then `toDataURL`) at the three frames.
+
+Tolerance: largest channel difference per pixel; a frame passes when at most 0.5% of its pixels differ by more than 8
+and none by more than 64 (`compare` in `tools/web/test/png.mjs`, the metric of the P6.4 pixel checks).
+
+| Frame | Pixels differing by > 8 | Worst | Mean |
+| --- | --- | --- | --- |
+| 1 | 0 of 480,000 | 0 | 0.0000 |
+| 30 | 0 of 480,000 | 0 | 0.0000 |
+| 120 | 0 of 480,000 | 0 | 0.0000 |
+
+Each frame is 2 mark entries (the background polygon and one point set of 10,000 particles); the particles live in
+state and are computed by frame-level loops in f64, so web and native positions agree to the last bit and the picture
+is exact. Counters: 0 CPU region invocations and 0 GPU dispatches (nothing in this program is a region). The three web
+PNGs are kept beside the native ones in the temporary directory only when the check fails.
+Exit codes of `web_shot.exe`: 0 pass or skipped (a missing node or Chrome prints why), 1 mismatch, 2 usage, 3 WebGPU
+unavailable (checked with `WEB_SHOT_CHROME_FLAGS="--headless=new --disable-gpu --disable-features=WebGPU"`, which gives
+"WebGPU is present but no GPU adapter is available" and exit 3), 4 a tool or the page failed.
