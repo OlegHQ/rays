@@ -39,11 +39,21 @@ let run () =
   let native_facts = Input.snapshot native in
   if native_facts.pointer <> (9., 14.) then
     failwith "SDL logical coordinates were incorrectly Retina-scaled";
+  (* Three rounds of 0,0 -> 7,11 -> 9,14: the absolute moves sum to 9,14. *)
+  if native_facts.mouse_delta <> (9., 14.) then
+    failwith "frame delta accumulation drift";
   Input.begin_frame native;
+  if (Input.snapshot native).mouse_delta <> (0., 0.) then
+    failwith "frame deltas did not reset";
   get (Runtime_input_sdl3.push native (wheel ~x:0.5 ~y:(-1.5) Flipped));
+  (match Input.drain native with
+   | [Wheel (0.5, -1.5)] -> ()
+   | _ -> failwith "flipped trackpad scroll was inverted a second time");
   Input.begin_frame native;
   get (Runtime_input_sdl3.push native (wheel ~x:0.5 ~y:(-1.5) Normal));
-  ignore (Input.drain native);
+  (match Input.drain native with
+   | [Wheel (0.5, -1.5)] -> ()
+   | _ -> failwith "ordinary wheel direction changed");
   Input.begin_frame native;
   get (Runtime_input_sdl3.push native (key Space));
   (match Input.drain native with
@@ -72,7 +82,10 @@ let run () =
   get (Runtime_input_sdl3.push native (key (Char 'a')));
   get (Runtime_input_sdl3.push native (key Control));
   get (Runtime_input_sdl3.push native (key (Char 'a') ~down:false));
-  ignore (Input.drain native);
+  (match Input.drain native with
+   | [Key_pressed { key = Char 'a' }; Key_pressed { key = Control };
+      Key_released { key = Char 'a' }] -> ()
+   | _ -> failwith "keys are not the translated key variants in order");
   (match Runtime_input_sdl3.translate (key (Unknown 0x4000_0064)) with
    | Some (Key_pressed { key = Unknown 0x4000_0064; _ }) -> ()
    | _ -> failwith "an unknown key lost its code");
@@ -178,5 +191,11 @@ let run () =
     get(Runtime_input_sdl3.push bounded(Sdl3.Event.Mouse_motion{
       x=float index;y=0.;dx=1.;dy=0.}))
   done;
+  (* A full queue drops its oldest event: the newest eight remain. *)
+  if Input.drain bounded
+     <> List.init 8 (fun index -> Input.Pointer_moved (float (99_993 + index), 0.)) then
+    failwith "input queue is not bounded";
+  if (Input.snapshot bounded).pointer <> (100_000., 0.) then
+    failwith "events dropped from a full queue did not update the pointer";
   print_endline
     "runtime input: native trace33, Retina, reset, capture, window, pinch, drop, bounded"

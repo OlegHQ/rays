@@ -58,6 +58,14 @@ let run () =
       if uploaded <= 0L then failwith "scene2 retained argument fixture was not uploaded";
       if Some uploaded <> !first_uploaded then
         failwith "scene2 retained argument stable draw was re-expanded or re-uploaded";
+      let counters (stats : Runtime.stats) = stats.retained_plan_misses, stats.retained_plan_hits in
+      let describe (stats : Runtime.stats) =
+        Printf.sprintf "misses %Ld hits %Ld" stats.retained_plan_misses stats.retained_plan_hits in
+      let retained = Runtime.stats runtime in
+      (* Automatic replay: frame 1 records the candidate, frame 2 admits and
+         builds the plan, frames 3..20 replay it. *)
+      if counters retained <> (2L, 18L) then
+        failwith ("scene2 retained argument counters are not exact: " ^ describe retained);
       let settled_release = ref None in
       let peak_live = ref 0 in
       for frame = 1 to 1000 do
@@ -88,6 +96,8 @@ let run () =
       (* The churn frames admit one new automatic plan (two misses, one build)
          that replaces the earlier one, then replay it for 998 frames while the
          same-shape texture is recycled with one upload per generation. *)
+      if counters churn <> (4L, 1016L) then
+        failwith ("managed-image churn rebuilt its retained render plan: " ^ describe churn);
       if Int64.sub churn.uploaded_bytes uploaded <> 256000L then
         failwith (Printf.sprintf "managed-image churn upload cardinality is not exact: %Ld" (Int64.sub churn.uploaded_bytes uploaded));
       if !peak_live <> Option.get !settled_release then
@@ -104,6 +114,9 @@ let run () =
       let pixels = get (Runtime.read_pixels runtime ~bytes_per_row:((Runtime.frame_facts runtime).drawable_width * 4)) in
       if Bytes.sub pixels 0 4 <> Bytes.of_string "\x11\x22\x33\xff" then
         failwith "mixed canonical Scene2 exact pixel mismatch";
+      let mixed = Runtime.stats runtime in
+      if counters mixed <> (6L, 1614L) then
+        failwith ("mixed plain/textured Scene2 did not retain one stable plan: " ^ describe mixed);
       for frame = 0 to 159 do
         let identity = frame mod 80 in
         let mesh =
@@ -113,6 +126,11 @@ let run () =
         if not (get (Runtime.render runtime [{ Scene_execution.mesh; state }])) then
           failwith "80-identity retained-plan frame was not presented"
       done;
+      let cycled = Runtime.stats runtime in
+      (* Every frame differs from its predecessor, so no automatic plan is
+         admitted: 160 misses and no replay. *)
+      if counters cycled <> (Int64.add (fst (counters mixed)) 160L, snd (counters mixed)) then
+        failwith ("80 mesh identities thrashed the aligned retained-plan cache: " ^ describe cycled);
       let affine tx =
         let bytes = Bytes.make 48 '\000' in
         Bytes.set_int64_le bytes 0 (Int64.bits_of_float 1.);
