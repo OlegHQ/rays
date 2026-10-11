@@ -199,8 +199,12 @@ type body = Operation of string | Vector | Field of string | List_value
   | Reference of E.residual | Packed_map of Packed.t | Readback
 type kernel = { body : body; elementwise : bool; requires_exact : bool }
 type sink = Display of string | Export | Sop_input | State_seed | Cache_key
+type role = Position | Target | Size | Fill | Stroke | Width
+(* [output] picks one of the several outputs of a fused region node. *)
+type attribute = { role : role; edge : string; output : int }
+type marks = { set : string; attributes : attribute list }
 type kind = Source of source | Kernel of kernel
-  | Opaque of string * Flow.Check.kernel_facts option | Sink of sink
+  | Opaque of string * Flow.Check.kernel_facts option | Sink of sink | Marks of marks
 type edge = { name : string; node : int }
 type node = { id : id; ty : Ty.t; count : Count.t; rate : rate; precision : precision;
   kind : kind; args : edge list; scope : int list; invariant : bool;
@@ -226,6 +230,10 @@ end
 
 let rate_join a b = match a, b with
   | Event, _ | _, Event -> Event | Frame, _ | _, Frame -> Frame | _ -> Static
+let attribute_edges (_ : t) (node : node) = match node.kind with
+  | Marks m -> List.filter_map (fun a -> List.find_opt (fun e -> e.name = a.edge) node.args
+      |> Option.map (fun e -> a, e.node)) m.attributes
+  | _ -> []
 let singleton_groups nodes = Array.init (Array.length nodes) (fun i -> [|i|])
 let graph nodes roots = {nodes; roots; groups = singleton_groups nodes}
 
@@ -286,7 +294,7 @@ let hoist ir =
   let nodes = Array.copy ir.nodes in
   Array.iteri (fun i node ->
     match node.kind with
-    | Kernel {body = (Reference _ | Packed_map _); _} | Source _ | Opaque _ | Sink _ -> ()
+    | Kernel {body = (Reference _ | Packed_map _); _} | Source _ | Opaque _ | Sink _ | Marks _ -> ()
     | Kernel _ when node.invariant && node.rate = Static
         && List.for_all (fun e -> nodes.(e.node).rate = Static && nodes.(e.node).scope = []) node.args ->
         nodes.(i) <- {node with scope = []}
@@ -319,7 +327,7 @@ let fuse ir =
   Array.iter (fun i -> uses.(i) <- uses.(i) + 1) ir.roots;
   let barrier = ref 0 in
   Array.iteri (fun i node ->
-    (match node.kind with Sink _ | Opaque _ -> incr barrier | _ -> ());
+    (match node.kind with Sink _ | Opaque _ | Marks _ -> incr barrier | _ -> ());
     barriers.(i) <- !barrier;
     List.iter (fun e -> uses.(e.node) <- uses.(e.node) + 1) node.args) ir.nodes;
   Array.iteri (fun i node -> if fusible node.kind then
@@ -526,6 +534,18 @@ and residual b r =
         with Unsupported -> b.checks <- saved_checks; make_reference () in
       Residuals.add b.residuals r index; index
 
+(* The draw operators that make a mark set, and the role each input plays. *)
+let mark_roles = function
+  | "draw/circles" -> ["positions", Position; "radius", Size; "fill", Fill; "stroke", Stroke]
+  | "draw/rects" -> ["positions", Position; "sizes", Size; "fill", Fill; "stroke", Stroke]
+  | "draw/lines" -> ["from", Position; "to", Target; "color", Stroke; "width", Width]
+  | "draw/points" -> ["positions", Position; "color", Fill]
+  | _ -> []
+let marks_of set (args : edge list) = match mark_roles set with
+  | [] -> None
+  | roles -> Some (Marks {set; attributes = List.filter_map (fun e ->
+      Option.map (fun role -> {role; edge = e.name; output = 0}) (List.assoc_opt e.name roles)) args})
+
 let finish b roots = graph (Array.of_list (List.rev b.rev))
   (Array.append roots (Array.of_list (List.rev b.checks)))
 let of_evaluation ws catalog evaluation =
@@ -537,7 +557,9 @@ let of_evaluation ws catalog evaluation =
   Array.iter (fun (n : E.node) ->
     let id = identity n.inst (n.site, n.iter) in
     let args = List.mapi (fun i (name, v) -> {name; node = value b (child id (name ^ "#" ^ string_of_int i)) v}) n.args in
-    let kind = if Flow.Op.is_display_kind n.kind then Sink (Display n.kind)
+    let kind = match marks_of n.kind args with
+      | Some marks -> marks
+      | None -> if Flow.Op.is_display_kind n.kind then Sink (Display n.kind)
       else Opaque (n.kind, Option.join (Hashtbl.find_opt facts n.kind)) in
     let index = add b id n.ty (Count.Data id) kind args Static in
     Hashtbl.replace b.deferred n.id index) evaluation.E.plan.nodes;

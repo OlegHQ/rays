@@ -74,11 +74,19 @@ type body =
   | Readback
 type kernel = { body : body; elementwise : bool; requires_exact : bool }
 type sink = Display of string | Export | Sop_input | State_seed | Cache_key
+(* A mark set is the draw operator ([draw/circles], [draw/rects], [draw/lines],
+   [draw/points]) and its attributes. The node's [id] and [provenance] are the drawing
+   call's path; an attribute's [edge] names the argument that carries it, so every pass
+   carries it. [output] picks one of the several outputs of a fused region node (else 0). *)
+type role = Position | Target | Size | Fill | Stroke | Width
+type attribute = { role : role; edge : string; output : int }
+type marks = { set : string; attributes : attribute list }
 type kind =
   | Source of source
   | Kernel of kernel
   | Opaque of string * Flow.Check.kernel_facts option
   | Sink of sink
+  | Marks of marks
 type edge = { name : string; node : int }
 type node = {
   id : id;
@@ -107,6 +115,10 @@ end
 
 val of_evaluation : Flow.Workspace.t -> Flow.Check.catalog -> Flow.Eval.t -> t
 (** Build from the specialized plan, residual captures, graph results and folds. *)
+
+val attribute_edges : t -> node -> (attribute * int) list
+(** The attributes of a [Marks] node with the node each reads, in attribute order; its
+    [rate] is that attribute's rate. Empty for any other node. *)
 
 val share : t -> t
 val hoist : t -> t

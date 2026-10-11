@@ -643,3 +643,43 @@ let () =
     assert (W.Paths.mem ["g";"mapped"] qualified.approx && W.Paths.mem ["h";"mapped"] qualified.approx))
     [forms;List.map zero forms];
   print_endline "Workspace qualification: actual captures, empty/vector/loop/noise kernels, limits, ambiguity, callable ownership and repeated/zero IDs passed"
+
+(* P4.6: a mark set is one node that names its attribute edges. *)
+let () =
+  let marks = Marks {set = "draw/circles"; attributes = [
+    {role = Position; edge = "positions"; output = 0}; {role = Size; edge = "radius"; output = 0};
+    {role = Fill; edge = "fill"; output = 0}]} in
+  let set = node ~args:[edge "positions" 1; edge "radius" 2; edge "fill" 3] "circles" marks in
+  let graph = ir [constant "unused" 9.; op "pos" [edge "x" 0]; constant "r" 1.; constant "r2" 1.; set] [4] in
+  let graph = {graph with nodes = Array.mapi (fun i n -> if i = 1 then {n with args = []} else n) graph.nodes} in
+  (* Every pass keeps the node, its attribute list and its provenance. *)
+  let shared = share graph in
+  assert (Array.length shared.nodes = 4);
+  let kept (g : t) = let n = g.nodes.(g.roots.(0)) in
+    n.kind = marks && n.provenance = [(["circles"], [])] in
+  assert (kept shared && kept (hoist shared) && kept (prune shared));
+  let pruned = prune shared in
+  assert (Array.length pruned.nodes = 3);
+  let set = pruned.nodes.(pruned.roots.(0)) in
+  assert (List.map (fun (a, i) -> a.role, pruned.nodes.(i).id) (attribute_edges pruned set)
+    = [Position, (["pos"], []); Size, (["r"], []); Fill, (["r"], [])]);
+  let placed = ok (place pruned) and fused = fuse pruned in
+  assert (kept placed && kept fused);
+  assert (attribute_edges placed placed.nodes.(1) = []);
+  (* The drawing call's nodes become mark sets; other draw calls stay display sinks. *)
+  let ws = check "(workspace w (graph g :context draw (draw/merge (draw/circle [1 2 0] 3)
+    (let* [p (map (fn [i] [i 0 0]) (array/range 2048)) r (map (fn [i] (* i 0.5)) (array/range 2048))]
+      (draw/circles p :radius r :stroke \"#fff\")))))" in
+  let evaluated = ok (E.static ~record:true ws) in
+  let catalog = Flow.Check.{version = 1; kinds = []} in
+  let optimized = ok (optimize (of_evaluation ws catalog evaluated)) in
+  let sets = Array.to_list optimized.nodes |> List.filter (fun n -> match n.kind with Marks _ -> true | _ -> false) in
+  (match sets with
+   | [n] -> (match n.kind with
+       | Marks m -> assert (m.set = "draw/circles");
+           assert (List.map (fun a -> a.role, a.edge) m.attributes
+             = [Position, "positions"; Size, "radius"; Stroke, "stroke"])
+       | _ -> assert false);
+       assert (List.length (attribute_edges optimized n) = 3)
+   | _ -> failwith "expected one mark set");
+  assert (Array.exists (fun n -> n.kind = Sink (Display "draw/circle")) optimized.nodes)
