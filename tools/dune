@@ -202,3 +202,8 @@
  (name shape2_fixtures)
  (modules shape2_fixtures)
  (libraries scene_command))
+
+(executable
+ (name web_parity)
+ (modules web_parity)
+ (libraries web_export flow flow_ir flow_web frame_input scene_command))
