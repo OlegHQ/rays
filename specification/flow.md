@@ -1017,6 +1017,23 @@ compares the catalog digest it was generated with (`Contexts.catalog_digest`).
 | `ml FILE` | the generated `main.ml` of a `sketch.rays` (the verbatim source, its digest and the catalog digest, passed to `Rays_editor.Workspace.main`) |
 | `source FILE` | the text as an OCaml module, for a sketch with its own `main.ml` |
 | `dune DIR` | the `sketches/dune.rays.inc` include |
+| `web FILE -o DIR` | the web export (roadmap: `specification/web-export/plan.md`): checks the file, runs the static stage with graph inputs at their defaults, lowers the first `draw` graph to the core and writes a standalone browser application into DIR. Output is byte-deterministic. A refusal prints its diagnostic with the span and exits 1, writing nothing |
+
+The web export covers the 2D canvas only: a `:context draw` graph and the values that feed it. Files:
+`program.js` (the frame program, `frame(input, state, rt)`, from `Flow_web.Js.frame`, then `export const regions`, one
+object per packed region: its `Js.region` source, element count, `inputs` as `[offset, length]` views into
+`data.bin`, captured `uniforms`, the frame facts it reads, its width and the id of its kernel), `data.bin`
+(little-endian doubles: every packed-array constant and region input), `program.map` (statement id, start and
+finish offsets), `kernels.json` and `kernels.wgsl` (the WGSL kernels of the regions legal on the web target, in
+the table `gpu.js` loads), `index.html` and `runtime/` (the fixed browser runtime, embedded in the executable).
+Regions are placed for the web target: a frame reads a region's value, and an in-frame readback is illegal on the
+web (`Flow_web.Target`), so they run on the CPU; GPU-legal ones are exported for the presenter. Refusals, all
+with the span of the form: `E_WEB_GRAPH` (the draw graph reaches a `sop` or `scene` graph), `E_WEB_LOWER` (the
+draw graph does not lower to the core, for example the 2,048-node residual budget), `E_WEB_IMAGE` (a `draw/image`
+needs a host image resolver), `E_WEB_REGION` (a sum or fold region, a frame fact the runtime lacks) and
+`E_WEB_CAPTURE` (a region input that changes from frame to frame). `tools/web_parity.exe DIR...` runs the
+exported program under `node` for 120 fixed-step frames and compares each frame's mark table with the native
+core executor's (structure exactly, floats within 1e-6); results are in `specification/web-export/results.md`.
 
 ## 13. Evaluation
 

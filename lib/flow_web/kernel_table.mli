@@ -1,5 +1,8 @@
 (** The kernel table tools/web/runtime/gpu.js loads (format: its header comment), as JSON text. *)
 
+val json_string : string -> string
+(** A JSON (and JavaScript) string literal; control characters are escaped, UTF-8 bytes pass through. *)
+
 val entry : ?cpu:string -> id:string -> Wgsl.wgsl -> string
 (** One kernel object: the printer's source, entry, interface, uniform layout, noise seeds with their
     512-entry permutations ([Rays_math.Noise.Private.permutation], as the Metal host uploads), and

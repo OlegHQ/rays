@@ -4,7 +4,7 @@ let json_string s =
   String.iter (function
     | '"' -> Buffer.add_string b "\\\"" | '\\' -> Buffer.add_string b "\\\\"
     | '\n' -> Buffer.add_string b "\\n"
-    | c when Char.code c < 32 || Char.code c > 126 -> Printf.bprintf b "\\u%04x" (Char.code c)
+    | c when Char.code c < 32 || Char.code c = 127 -> Printf.bprintf b "\\u%04x" (Char.code c)
     | c -> Buffer.add_char b c) s;
   Buffer.add_char b '"'; Buffer.contents b
 let json_list f items = "[" ^ String.concat "," (List.map f items) ^ "]"

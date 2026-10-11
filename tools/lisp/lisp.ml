@@ -1,4 +1,4 @@
-(* rays-lisp: check, ml, source, dune and fmt for .rays sketches.
+(* rays-lisp: check, ml, source, dune, fmt and web for .rays sketches.
    Stdlib and Arg only; the catalog is the in-process one. *)
 module S = Flow.Syntax
 module D = Flow.Diagnostic
@@ -101,10 +101,26 @@ let fmt path =
   | _, Some doc, _ -> print_string (Doc.to_text doc)
   | _, None, _ -> exit 1
 
+(* The web export: check, lower the draw graph, print the files into DIR.  A refusal prints its diagnostic. *)
+let web path dir =
+  let text, doc, passed = check_file path in
+  if not passed then exit 1;
+  let refuse d = prerr_endline (D.report ~file:path ~source:text d); exit 1 in
+  let doc = Option.get doc in
+  match Result.bind (Web_export.lower doc) (Web_export.files doc) with
+  | Error d -> refuse d
+  | Ok files ->
+      let rec mkdir d = if not (Sys.file_exists d) then (mkdir (Filename.dirname d); Sys.mkdir d 0o755) in
+      List.iter (fun (name, contents) ->
+        let file = Filename.concat dir name in
+        mkdir (Filename.dirname file);
+        Out_channel.with_open_bin file (fun oc -> output_string oc contents)) files
+
 let () = match Array.to_list Sys.argv with
   | _ :: "check" :: (_ :: _ as files) -> check_all files
   | [ _; "ml"; f ] -> ml f
   | [ _; "source"; f ] -> source f
   | [ _; "dune"; d ] -> dune d
   | [ _; "fmt"; f ] -> fmt f
-  | _ -> die "usage: rays-lisp check FILE... | ml FILE | source FILE | dune DIR | fmt FILE"
+  | [ _; "web"; f; "-o"; dir ] -> web f dir
+  | _ -> die "usage: rays-lisp check FILE... | ml FILE | source FILE | dune DIR | fmt FILE | web FILE -o DIR"

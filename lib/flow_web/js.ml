@@ -144,15 +144,17 @@ let escape text =
   Buffer.add_char b '"';
   Buffer.contents b
 
-let rec literal : C.literal -> string = function
+let rec literal ?store : C.literal -> string = function
   | Int n -> string_of_int n ^ "n" | Float x -> number x
   | Bool b -> string_of_bool b | Text s -> escape s
   | Vector xs -> "Float64Array.of(" ^ String.concat ", " (List.map number (Array.to_list xs)) ^ ")"
-  | List xs -> "[" ^ String.concat ", " (List.map literal (Array.to_list xs)) ^ "]"
+  | List xs -> "[" ^ String.concat ", " (List.map (literal ?store) (Array.to_list xs)) ^ "]"
   | Record fields -> "new Map([" ^ String.concat ", "
-      (List.map (fun (n, v) -> "[" ^ escape n ^ ", " ^ literal v ^ "]") fields) ^ "])"
-  | Array {width; data} -> Printf.sprintf "new rt.PArray(%d, Float64Array.of(%s))" width
-      (String.concat ", " (List.map number (Array.to_list data)))
+      (List.map (fun (n, v) -> "[" ^ escape n ^ ", " ^ literal ?store v ^ "]") fields) ^ "])"
+  | Array {width; data} -> (match store with
+      | Some store -> Printf.sprintf "new rt.PArray(%d, %s)" width (store data)
+      | None -> Printf.sprintf "new rt.PArray(%d, Float64Array.of(%s))" width
+          (String.concat ", " (List.map number (Array.to_list data))))
   | Empty_geometry -> "null"
 
 let rec ty_json : Flow.Ty.t -> string = function
@@ -172,6 +174,7 @@ let export_name primitive = match C.primitive_name primitive with
 (* Fixed-arity primitives: the argument names, in prims.js's parameter order. *)
 let signature : C.primitive -> string list option = function
   | Numeric _ | Remainder | Integer _ | Equal -> Some ["a"; "b"]
+  | Math Not -> Some ["a"]
   | Math _ | Exp | Floor | Ceil | Round | Int_convert | Float_convert | Color_byte _ -> Some ["x"]
   | Show | Truthy | Coerce _ -> Some ["value"]
   | Sequence_length -> Some ["list"] | Sequence_get -> Some ["list"; "index"]
@@ -448,7 +451,7 @@ and statement ctx depth (s : C.statement) =
       ctx.async <- true;
       line "%s%s = await rt.invoke(%d, [%s]);" at (local result) region (String.concat ", " (List.map local args))
 
-let frame_result (program : C.program) =
+let frame_result ?store (program : C.program) =
   let body = Buffer.create 4096 in
   let ctx = { program; body; used = Hashtbl.create 8; map = []; async = false } in
   statements ctx 2 program.body;
@@ -461,7 +464,7 @@ let frame_result (program : C.program) =
     if mentions name then Buffer.add_string out text) helpers;
   Printf.bprintf out "export %sfunction frame(input, state, rt) {\n" (if ctx.async then "async " else "");
   if Array.length program.constants > 0 then
-    Printf.bprintf out "  K ??= [%s];\n" (String.concat ", " (List.map literal (Array.to_list program.constants)));
+    Printf.bprintf out "  K ??= [%s];\n" (String.concat ", " (List.map (literal ?store) (Array.to_list program.constants)));
   let n = Array.length program.locals in
   if n > 0 then begin
     let names = List.init n local in
@@ -481,8 +484,8 @@ let frame_result (program : C.program) =
   Buffer.add_string out "}\n";
   Buffer.contents out, List.rev ctx.map
 
-let frame program =
-  match frame_result program with
+let frame ?store program =
+  match frame_result ?store program with
   | result -> Ok (fst result)
   | exception Refused (code, message, span) -> Error (Flow.Diagnostic.error ?span ~code message)
 

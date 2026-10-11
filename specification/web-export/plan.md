@@ -847,7 +847,8 @@ Phase 5
   Cram test `web_prims.t` and `tools/web/test/prims.mjs` added 2026-10-11
   (commit aacf6bd8): 9,524 cases, 54 primitives, zero mismatches.
   `@tools/lisp/test/runtest` passed; a deliberately broken copy was detected.
-- [ ] P5.10 S
+- [x] P5.10 S
+  2026-10-11. `rays-lisp web FILE -o DIR` (`tools/lisp/web_export.ml`, library `web_export`, so `tools/web_parity.exe` shares it): `lower` runs the static stage and `Core_draw.lower`; `files` writes `program.js` (`Js.frame` with packed constants as views into `rt.data`, then `export const regions`), `program.map`, `kernels.json`/`kernels.wgsl` (GPU-legal kernels, `Kernel_table`), `data.bin`, `index.html` and `runtime/` (embedded by `embed.exe` at build time). Formats are in `web_export.mli` and `specification/flow.md` section 12. Refusals with spans: `E_WEB_GRAPH`, `E_WEB_LOWER`, `E_WEB_IMAGE`, `E_WEB_REGION`, `E_WEB_CAPTURE`. Also fixed: `Js.frame` refused every `not` (its argument is named `a`). Gate: `dune build tools/lisp/lisp.exe`, `@tools/lisp/test/runtest`, `@lib/flow_web/runtest`.
 - [ ] P5.11 H
 - [ ] P5.12 S
 - [ ] P5.13 H

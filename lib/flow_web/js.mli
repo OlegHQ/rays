@@ -34,8 +34,12 @@ val region : Flow_ir.Packed.t -> string
     Skipped indices are not evaluated and do not occupy an output slot. Noise
     permutation tables are embedded in the source. *)
 
-val frame : Flow_ir.Core.program -> (string, Flow.Diagnostic.t) result
-(** The frame level as one ES module exporting [frame(input, state, rt)] (an [async] function
+val frame : ?store:(float array -> string) -> Flow_ir.Core.program -> (string, Flow.Diagnostic.t) result
+(** [store], when given, prints every packed-array constant: it receives the elements and returns a JavaScript
+    expression for a [Float64Array] of them (the export keeps them in [data.bin]); without it the elements
+    are written inline.
+
+    The frame level as one ES module exporting [frame(input, state, rt)] (an [async] function
     exactly when the program invokes a region). It returns the program's single result, or an array
     of results when there are not exactly one (a draw program returns [[]]). A failure is thrown
     as [rt.Fail] (or a JavaScript error) with the executing statement's {!C.statement} [id] set as
