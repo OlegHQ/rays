@@ -1161,7 +1161,7 @@ the records.
 | --- | ---: | ---: |
 | Qualification loop, floor of cycles 24-47 and of 48-71, KiB | 59,408 and 80,929 | 35,296 and 35,296 |
 | Qualification growth between the floors, KiB (three runs after) | 21,521 (and 20,048, 22,624) | 0, 16, 48 |
-| "SDL window baseline" the test subtracted, KiB | 9,280 | 0 (removed) |
+| "SDL window baseline" the test subtracted, KiB | 9,280 | 0 |
 | SDL-only lifecycle, KiB per lifecycle (cycles 8 to 48) | 385 | 2.4 |
 | `Runtime.create`/`destroy`, KiB per lifecycle (cycles 8 to 80) | 412 | 0 (24,896 at 8, 24,688 at 80) |
 | Footprint after 600 / 6,000 frames and `destroy`, KiB | 37,792 / 59,520 | 28,640 / 28,848 at 24,000 (a full major every 1,000 frames) |
@@ -1183,8 +1183,8 @@ Frame cost is unchanged. Offscreen 64x64 target, 2,000 frames per sample, median
 alternating before/after pairs (the quietest): one draw 266.5 against 266.0 microseconds per frame, 64 draws with
 changing vertex bytes 453.2 against 453.0; 16,032 and 252,288 bytes allocated per frame in both.
 
-Tests. `runtime_native_qualification` passes unchanged in what it measures, and is stricter: the baseline
-subtraction is gone and the bound is 1,024 KiB instead of 4,096. New `runtime_autorelease`
+Tests. `runtime_native_qualification` is unchanged (its baseline loop and its 4,096 KiB bound included) and passes:
+growth 0 to 48 KiB against a measured baseline of 0 to 64. New `runtime_autorelease`
 (`lib/runtime/native_qualification`, `@runtest-native` and `@qualification`) runs two window lifecycles with frames,
 readback, resize, cursor, text input and background, and two offscreen ones, in a child with
 `OBJC_DEBUG_MISSING_POOLS=YES`, and fails on any report from the initial thread: 773 with the Cocoa fix reverted, 454
@@ -1247,3 +1247,80 @@ Correctness: `test_workspace_gpu_marks` (`@lib/rays_editor/runtest-native`) now 
 colour that read `t` on the GPU beside host sizes and line ends, requires 8 kernels for its two drawings and equal
 pixels with the CPU path at three times; `test_core_marks` checks which attributes become device buffers and the
 length refusal; `test_marks` the validation of a device colour. Draw snapshots (CPU scenes) are unchanged.
+
+## 2026-10-11 addendum: a static packed map at startup (P7.2 finding A)
+
+`sketches/million_marks` with its drift term removed (`(* 0.1 (sin (+ t (* x 6.0))))` replaced by `0.0`, so no mark
+reads `t`), at 1,000,000 and at 100,000 marks, built as an application with the rule of `examples/particles/dune`
+(`rays-lisp ml`, `rays_editor`). Method as in P7.2: one frame, `RAYS_MAX_FRAMES=1 OCAMLRUNPARAM=v=0x400
+/usr/bin/time -p APP`, `allocated_words` from the runtime summary. Apple M1, OCaml 5.3.0, dune dev profile,
+1-minute load 5.4 to 7.3 (another agent building). Before = `aea5037d`.
+
+| Marks | First frame, before: real s / user s / allocated words | After |
+| --- | --- | --- |
+| 1,000,000 static | 23.45 / 22.41 / 9,916,402,236 (79.3 GB) | 1.21 / 1.83 / 212,004,045 (1.7 GB) |
+| 100,000 static | 3.31 / 2.54 / 996,502,231 | 0.73 / 0.45 / 62,358,449 |
+| 100,000 animated (the drift kept: a GPU kernel) | 2.48 / 0.21 / 8,204,333 | unchanged path |
+
+Cause, as the P7.2 addendum found: the static stage walked the whole `map` with the tree walker (`Flow.Eval.hof`,
+`Map` arm), and it did so twice a start (`Flow_ir.qualify_workspace` for the lowering, and
+`Editor_document.Contexts.window`, which evaluates the whole workspace to read the settings graph).
+
+The proposal in `DEFERRED.md` was to defer such a map as a `Static`-rate residual. Not done that way: every consumer
+that needs the concrete array at static time would have had to be deferred or refused with it. Instead the static
+stage keeps its meaning and the map is made by the region it would be at frame rate. For a static packed `map` of
+more than 4,096 elements the walker evaluates the first 4,096 elements as before; then a host callback
+(`Flow.Eval.Private.static_with_kernels ~bulk`, supplied by `Flow_ir.static_map`: `Packed.compile` and
+`Packed.force` when the residual reads no frame fact and no state) may return the whole array. The evaluator takes
+it only when it is a packed array of the map's kind and length whose first 4,096 elements equal the walked ones bit
+for bit; otherwise, and whenever the region refuses the form or fails, the walker evaluates the rest, so values and
+diagnostics are the walker's. `Flow_ir.static` is `Eval.static` with that callback; `qualify_workspace` and
+`Contexts.window` use it. What is left of the 1.2 s is the 4,096 walked elements, twice, and the kernel.
+
+One observable difference, documented in `core.md` and `eval.mli`: records made inside such a map cover its first
+4,096 elements. The walker alone kept visiting later elements until a path inside a branch had 4,096 records of its
+own; a path every element reaches has the same 4,096 either way.
+
+The walker itself, same day: `Op.find ~extra` scanned the workspace's operator list (the whole SOP catalog in the
+editor) at each of its three tries for every operator application. The evaluation state now holds `Op.finder ops`,
+the same lookup with the list indexed once. Plain `Flow.Eval.static ~record:true` of the 100,000-mark static
+workspace through `Web_export.load` (scratch timer, median of three): 1.049 s and 2.62 GB before, 0.695 s and
+2.49 GB after. 43 percent of what it still allocates is the context record `sub` copies for every argument.
+
+Tests: `lib/flow/test_workspace_eval` (the callback is offered only maps over 4,096 elements, once each; a correct
+array is used as it is; a refusal, a wrong prefix, another length or kind are walked; records and call indices equal
+the plain evaluation; a failure past element 4,096 is the walker's; a map that reads `t` is never offered) and
+`lib/flow_ir/test_static_map` (`Flow_ir.static` and `qualify_workspace` equal `Eval.static` bit for bit on seven
+maps, among them the hash of `million_marks`; equal diagnostics; 200,000 elements in under two seconds of processor
+time).
+
+## 2026-10-11 addendum: constant attribute buffers in the browser (P7.3)
+
+Workspaces and command as in P7.3 (`web_shot.exe --time 300 LISP marks_shot.exe tools/web/test/web_shot.mjs DIR
+900 700`; `sketches/million_marks` with the drift term removed, and the same with the pan `(* 100.0 (sin t))`),
+headless Chrome 154 on Apple M1, 1-minute load 3.1 to 3.5 with the corpus sweep running beside it. Before = the
+exporter built at `aea5037d` (its embedded runtime), after = the same exporter with the new `present.js` and
+`runtime.js`. Uncapped milliseconds per frame (`stepFrame` + `present` + `onSubmittedWorkDone`), 300 frames.
+
+| Marks | Case | Before, median / p95 | After, median / p95 |
+| --- | --- | --- | --- |
+| 1,000,000 | static | 33.08 / 35.83 | 26.83 / 29.99 |
+| 1,000,000 | panning | 33.30 / 35.50 | 26.84 / 27.88 |
+| 10,000 | static | 1.25 / 1.52 | 1.13 / 1.25 |
+
+The presenter made a new GPU buffer and converted and wrote 12 MB for the static positions on every frame. An
+attribute array that is a view of `presenter.constants` (`data.bin`; the runtime sets it at start and on a reload)
+is now converted and uploaded once and kept by byte offset and element count; a new `data.bin` releases what was
+kept, and any other CPU array (a region's output, a fresh array each invoke) is uploaded per frame as before. What
+remains at 1,000,000 is the draw itself: the static case now costs less than the animated one of P7.3 (29.9 ms),
+which dispatches a kernel as well.
+
+`tools/web/test/present_check.mjs` (`@qualification-web`, real Chrome) draws one table three times from views of a
+`data.bin`, then with a second `data.bin`, then with views of a buffer that is not `data.bin`: kept uploads 2, 2,
+2, 4, 4 and per-frame uploads 1, 2, 3, 4, 7, with the pixels of each.
+
+The other web bullet of `DEFERRED.md`, kernel inputs uploaded again on each dispatch, was already closed by P6.4a
+(`31915438`): `runtime.js` `gpuRun` uploads a kernel group's inputs once per load (`gpu.upload`) and passes the
+buffers to `dispatch`, and a static group runs once. `tools/web/test/runtime.mjs` asserts it ("the frame-rate
+group runs again, the steady one does not, inputs stay uploaded"). `gpu.dispatch` converts an input only when it is
+handed a plain array, which the tests do. The bullet is removed.
