@@ -1,6 +1,5 @@
 type attenuation = {
   constant : float;
-  linear : float;
   quadratic : float;
 }
 
@@ -29,7 +28,7 @@ type t = {
   intensity : float;
 }
 
-let no_attenuation = { constant = 1.; linear = 0.; quadratic = 0. }
+let no_attenuation = { constant = 1.; quadratic = 0. }
 
 let attenuation ?(constant = 1.) ?(quadratic = 0.) () =
   if constant < 0. || quadratic < 0.
@@ -38,7 +37,7 @@ let attenuation ?(constant = 1.) ?(quadratic = 0.) () =
   then invalid_arg "Light.attenuation: coefficients must be finite and non-negative";
   if constant = 0. && quadratic = 0. then
     invalid_arg "Light.attenuation: at least one coefficient must be non-zero";
-  { constant; linear = 0.; quadratic }
+  { constant; quadratic }
 
 let validate_intensity intensity =
   if not (Float.is_finite intensity) || intensity < 0. then

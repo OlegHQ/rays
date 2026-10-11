@@ -164,8 +164,15 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   `@lib/rays/runtest`, typechecking, the dependency gate and the editor input
   test pass. The idle and active benchmarks are recorded in `results.md`;
   the intended API removal has a separate reviewed manifest promotion.
-- Fields that are constant but still threaded: `Light.attenuation.linear`
-  and the path tracer `scale`.
+- Removed and verified 2026-10-11: `Light.attenuation.linear` was always
+  zero through its constructor and had no Lisp declaration. The OCaml record
+  now stores constant/quadratic coefficients only; the native uniform ABI
+  keeps its zero-filled reserved linear slots. Complete uniform buffers for
+  all four light kinds and all four area sample counts match before/after.
+  Constructor-validation and exact field-layout tests, `@lib/rays/runtest`,
+  typechecking and dependency checks pass. The removed public record field
+  has a separate reviewed API promotion. Native pixels remain unverified.
+- Fields that are constant but still threaded: the path tracer `scale`.
 - `lib/sop/sop_topology.ml` keeps its prefix (`Topology` would shadow `Rdk.Topology`), and
   `Leader.keymap3` keeps its suffix (`Leader.keymap` is taken).
 - `lib/rays` is still 30 modules: the editor is built on `Sketch`/`Frame`/`Scene`, and

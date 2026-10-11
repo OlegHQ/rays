@@ -240,6 +240,9 @@ lowering error. Changing only colors or UVs reuses the geometry mirror.
 The renderer uses native Metal color, depth, and stencil attachments, not
 projected 2D painter ordering. Perspective and orthographic cameras use
 logical-point viewports and offer world/screen conversion and picking rays.
+Internal light attenuation stores constant and quadratic coefficients;
+its divisor is `constant + quadratic * distance²`. Authored scene lights
+use physical inverse-square falloff (`constant = 0`, `quadratic = 1`).
 Their public matrices use clip depth [-1,1]; the native renderer converts to
 Metal depth [0,1] at the packing boundary, including authored shadow matrices.
 Easy Camera uses fixed left-orbit and middle/right-pan buttons in logical

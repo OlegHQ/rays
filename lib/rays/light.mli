@@ -2,7 +2,6 @@
 
 type attenuation = {
   constant : float;
-  linear : float;
   quadratic : float;
 }
 
@@ -34,6 +33,8 @@ type t = {
 
 val attenuation :
   ?constant:float -> ?quadratic:float -> unit -> attenuation
+(** Falloff divisor [constant + quadratic * distance²]. Both coefficients
+    must be finite and non-negative, with at least one non-zero. *)
 
 val directional :
   ?diffuse:Color.t ->

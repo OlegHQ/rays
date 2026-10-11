@@ -233,12 +233,14 @@ let uniforms_blinn_phong ~camera ~viewport scene(drawing:Scene3.Private.drawing)
   color bytes 52 material.ambient;color bytes 56 material.diffuse;color bytes 60 material.specular;color bytes 64 material.emissive;put32 bytes 68 material.shininess;
   let ambient=Scene3.Private.ambient scene in color bytes 69 ambient;
   let lights=Array.of_list(Scene3.Private.lights scene)in
+  (* The native light ABI reserves linear slots; the zero-filled buffer
+     keeps them zero while preserving the shared twenty-word layout. *)
   put32 bytes 73(float(Array.length lights));put32 bytes 74(if drawing.cull=Cull_none then 1. else 0.);put32 bytes 75(if Scene3.Private.separate_specular scene then 1. else 0.);
   Array.iteri(fun index(light:Light.t)->let o=84+index*20 in let vector p=put32 bytes(o+1)p.Vec3.x;put32 bytes(o+2)p.y;put32 bytes(o+3)p.z in color bytes(o+4)light.diffuse;put32 bytes(o+8)light.intensity;match light.kind with
     |Directional{direction}->put32 bytes o 0.;vector direction
-    |Point{position;attenuation}->put32 bytes o 1.;vector position;put32 bytes(o+9)attenuation.constant;put32 bytes(o+10)attenuation.linear;put32 bytes(o+11)attenuation.quadratic
-    |Spot{position;direction;cutoff;concentration;attenuation}->put32 bytes o 2.;vector position;put32 bytes(o+9)direction.x;put32 bytes(o+10)direction.y;put32 bytes(o+11)direction.z;put32 bytes(o+12)(cos cutoff);put32 bytes(o+13)(cos cutoff);put32 bytes(o+14)concentration;put32 bytes(o+15)attenuation.constant;put32 bytes(o+16)attenuation.linear;put32 bytes(o+17)attenuation.quadratic
-    |Area{position;direction;width;height;samples;attenuation}->put32 bytes o 3.;vector position;put32 bytes(o+9)direction.x;put32 bytes(o+10)direction.y;put32 bytes(o+11)direction.z;put32 bytes(o+12)width;put32 bytes(o+13)height;put32 bytes(o+14)(float samples);put32 bytes(o+15)attenuation.constant;put32 bytes(o+16)attenuation.linear;put32 bytes(o+17)attenuation.quadratic)lights;bytes
+    |Point{position;attenuation}->put32 bytes o 1.;vector position;put32 bytes(o+9)attenuation.constant;put32 bytes(o+11)attenuation.quadratic
+    |Spot{position;direction;cutoff;concentration;attenuation}->put32 bytes o 2.;vector position;put32 bytes(o+9)direction.x;put32 bytes(o+10)direction.y;put32 bytes(o+11)direction.z;put32 bytes(o+12)(cos cutoff);put32 bytes(o+13)(cos cutoff);put32 bytes(o+14)concentration;put32 bytes(o+15)attenuation.constant;put32 bytes(o+17)attenuation.quadratic
+    |Area{position;direction;width;height;samples;attenuation}->put32 bytes o 3.;vector position;put32 bytes(o+9)direction.x;put32 bytes(o+10)direction.y;put32 bytes(o+11)direction.z;put32 bytes(o+12)width;put32 bytes(o+13)height;put32 bytes(o+14)(float samples);put32 bytes(o+15)attenuation.constant;put32 bytes(o+17)attenuation.quadratic)lights;bytes
 let uniforms ?world ~camera ~viewport scene(drawing:Scene3.Private.drawing)=
   let bytes=uniforms_blinn_phong ~camera ~viewport scene drawing in
   Option.iter(fun world->world_uniforms bytes world drawing.material)world;bytes

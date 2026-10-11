@@ -1,4 +1,7 @@
 let tests = [
+  "test_light", Test_light.run;
+  "dump_light", Test_light.dump;
+  "bench_light", Test_light.bench;
   "test_easy_camera", Test_easy_camera.run;
   "dump_easy_camera", Test_easy_camera.dump;
   "bench_easy_camera", Test_easy_camera.bench;

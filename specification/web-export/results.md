@@ -328,3 +328,37 @@ test pass. The editor input fixture reports the existing autosave refusal
 under the runner's read-only home directory. The unused public `binding`
 and `interaction` types are intentionally removed; their manifest change
 is promoted separately from the pending P1.7 Core interface.
+
+## 2026-10-11 — Deferred Light linear coefficient
+
+Machine: managed Darwin arm64 runner, OCaml 5.3.0 native development profile,
+one initial domain. Input: 64 lights cycling directional, point, spot and
+area kinds over one immutable triangle. Each of 5,000 calls creates a fresh
+Scene3 wrapper and stages at 320 × 240 logical points, reusing the mesh
+mirror and forcing new light uniforms. One full-sample warmup, then three
+samples; median wall time and allocated bytes. No profiler, GPU operation
+or concurrent build/test during either measurement.
+
+```sh
+_build/default/tools/check.exe lib/rays/test_main.exe
+_build/default/lib/rays/test_main.exe bench_light
+```
+
+| Representation | Median seconds | Allocated bytes |
+| --- | ---: | ---: |
+| Stored zero linear coefficient | 0.030397892 | 106,000,096 |
+| Constant/quadratic record | 0.029451132 | 106,000,096 |
+
+Allocation is unchanged in staging. Light construction precedes the timer,
+so the smaller attenuation record is not measured here. The 3.1% lower
+wall-time median on this short CPU input does not establish a general
+speedup. Reserved native ABI slots stay zero in the existing twenty-word
+light layout; runtime shaders are unchanged.
+
+The new test checks constructor refusals and all twenty words of each of
+the four light kinds, including every area sample count. Complete 5,456-byte
+uniform buffers match before/after in all four cases. CPU Rays tests,
+typechecking, dependency checks and scene-tree light routing pass. Native
+pixel behavior remains unverified without Metal. The public `linear`
+record field is intentionally removed, with its own reviewed API promotion
+separate from pending P1.7 changes.
