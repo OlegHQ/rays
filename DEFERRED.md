@@ -75,6 +75,13 @@ later. Numbers and commands are in `specification/web-export/results.md`.
   - Region programs are not cached on the residual; only region-free programs use the
     slot, because a region's `force` closure captures per-call state.
   - Final micro ratio at P1.14b: 1.23 (core 146.9 ns, closure 119.7 ns).
+  - 2026-10-12, measured, not fixed: by cycles the ratio is 1.19 (core 449, closure 376 per evaluation,
+    one run each). The postfix interpreter is about 9% of samples; the rest is fixed overhead in
+    `Executor.force` and `Eval.with_live`: two `Hashtbl.create 16` per force, two `caml_hash` calls
+    for the memo, the evaluation-state record copied twice. Removing those is an estimated 25% of
+    cycles, which would put core below the closure tier. For the boxed `Counted` loops (particles,
+    packed map/filter): compile them to block kernels inside `Core_exec.prepare`, so the lowered IR
+    and the web printers stay byte-identical.
   - Whole-frame time over the 15 eligible workspaces, core against closure, measured
     once before P1.16 (the bench mode was not kept): faster on 7, equal on 6, slower on
     2. `examples/particles` is about 2.3 times slower (4.5 ms against 2.0 ms per frame):
@@ -106,6 +113,10 @@ later. Numbers and commands are in `specification/web-export/results.md`.
     at four times and two domain counts, about 22 s each before the lookup change of the
     same day. That workspace, added in P7.2, is the likely bulk of the time now, not a
     second core pass. Next step: time the sweep with and without `million_marks`.
+  - 2026-10-12, one partial run: `sketches/flow_particles_gpu` alone took 386 s; every file before
+    it totalled 18 s. The walker costs 3.7 to 7.9 microseconds per element and each big map looks
+    to be walked about 12 times per time and domain count (inferred, not counted): the same
+    residual is reached through several recorded paths. Next step: walk each residual once.
 - Packed `map`/`filter` forms that `Packed.compile` refuses (dynamic `int`/`floor`, state,
   array captures; 40 residuals in the corpus) run as a counted frame-level loop over
   `Array_nth`, single-threaded, not as a region. Correct, not fast; widening
