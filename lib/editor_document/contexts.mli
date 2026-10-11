@@ -28,6 +28,10 @@ val window : Workspace_doc.t -> (window, Flow.Diagnostic.t) result
 (** The window of a checked workspace: its settings graph evaluated, defaults
     without one. *)
 
+val document_window : Document.t -> (window, Flow.Diagnostic.t) result
+(** {!window} of the workspace a document was made from, read from the document's own
+    lowering ({!of_workspace}) with no second static evaluation. *)
+
 val has_settings : Workspace_doc.t -> bool
 
 val of_workspace : factories:Sop.Edit_graph.factory list -> ?previous:Document.t ->

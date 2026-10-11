@@ -381,12 +381,18 @@ let close value =
 
 let run ?inputs ?name ?presets ?factories ?settings ?lights
     ?camera ?background ?seed ?grain ?domains ?max_entries ?max_payload_bytes
-    ~config ~workspace ?source ~prepare ~draw ?overlay ?status () =
+    ?opened ~config ~workspace ?source ~prepare ~draw ?overlay ?status () =
   let name = Option.value name ~default:(Workspace_doc.name workspace) in
-  let init _frame = let value=create ?inputs ~name ?presets ?factories ?settings
+  (* [opened], the caller's document of this workspace, is handed to the editor once and not
+     kept by the loop: after an edit or a reload only the history decides how long it lives. *)
+  let handed = ref opened in
+  let init _frame =
+    let opened = !handed in
+    handed := None;
+    let value=create ?inputs ~name ?presets ?factories ?settings
       ?lights
       ?camera ?background ?seed ?grain ?domains ?max_entries ?max_payload_bytes
-      ~workspace ?source ~prepare ~draw ?overlay ?status () |> Result.get_ok in
+      ?opened ~workspace ?source ~prepare ~draw ?overlay ?status () |> Result.get_ok in
     value.host.deterministic<-(match config.Sketch.clock with Fixed _->true|Realtime->false);value in
   let update value frame =
     let value = update value frame in

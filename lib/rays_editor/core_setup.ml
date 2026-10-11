@@ -4,11 +4,15 @@ include Core_list
 (* ---- creation ---- *)
 
 (* The document a workspace starts from: one geometry object per [sop] graph
-   beside the sketch's own scene objects ([seed_scene]). *)
-let workspace_doc ~factories ~seed_scene workspace =
+   beside the sketch's own scene objects ([seed_scene]). [opened] is the caller's
+   [Contexts.of_workspace ~factories workspace], when it already built it to read the window
+   and the camera (Workspace.run): the workspace is evaluated once a start. *)
+let workspace_doc ?opened ~factories ~seed_scene workspace =
   let ( let* ) = Result.bind in
   let flow r = Result.map_error Flow.Diagnostic.to_string r in
-  let* doc = flow (Editor_document.Contexts.of_workspace ~factories workspace) in
+  let* doc = match opened with
+    | Some doc -> Ok doc
+    | None -> flow (Editor_document.Contexts.of_workspace ~factories workspace) in
   let declared = doc.scene.graph.geometry in
   (* the host's camera and lights are defaults of a workspace with no scene graph; a scene
      graph is authoritative (it may say there are none) *)
@@ -47,10 +51,10 @@ let create ?settings ?(keymap = Leader.keymap)
     ?(seed = 0L) ?(grain = 16_384)
     ?domains ?(max_entries = 512)
     ?(max_payload_bytes = 256 * 1024 * 1024) ?await ?(carry_budget = 0.5)
-    ~workspace ~prepare () =
+    ?opened ~workspace ~prepare () =
   let factories = if factories = [] then Sop_catalog.Editor.factories else factories in
   let settings = Option.value settings ~default:workspace.Workspace_doc.settings in
-  let opened = workspace_doc ~factories ~seed_scene:(seed_scene factories)
+  let opened = workspace_doc ?opened ~factories ~seed_scene:(seed_scene factories)
       { workspace with Workspace_doc.settings } in
   Result.bind opened (fun doc ->
   Result.map (fun cook ->

@@ -157,21 +157,32 @@ module Workspace = struct
           let* graph = Sop.Edit_graph.compile_node g.network.geometry ~node_id in
           Ok ((g.name, graph) :: rest)) lowered.graphs (Ok [])
 
+  let document_camera (document : Document.t) base =
+    let scene = document.scene.graph.Flow_sop.Network.geometry in
+    match Option.bind (List.nth_opt (Objects.ids "camera" scene) 0) (fun node_id ->
+        Option.bind (Sop.Edit_graph.find scene ~node_id) Objects.Camera.of_node) with
+    | Some (view, _) -> Rays.Easy_camera.of_view ~eye:(Rays.Camera.position view)
+        ~target:(Rays.Camera.target view) base
+    | None -> base
+
   let declared_camera ?(factories = Sop_catalog.Editor.factories) doc base =
     match Contexts.of_workspace ~factories doc with
     | Error _ -> base
-    | Ok document ->
-        let scene = document.Document.scene.graph.Flow_sop.Network.geometry in
-        (match Option.bind (List.nth_opt (Objects.ids "camera" scene) 0) (fun node_id ->
-            Option.bind (Sop.Edit_graph.find scene ~node_id) Objects.Camera.of_node) with
-         | Some (view, _) -> Rays.Easy_camera.of_view ~eye:(Rays.Camera.position view)
-             ~target:(Rays.Camera.target view) base
-         | None -> base)
+    | Ok document -> document_camera document base
 
+  (* One static evaluation a start: the document the editor opens is built here, and the window
+     and the camera are read from it. A document that does not build leaves each reader the
+     answer it had alone (the window's own evaluation, the base camera, the editor's error). An
+     explicit empty factory list is the one case where the camera and the editor never read the
+     same document, so it shares nothing. *)
   let run ?inputs ?factories ?source doc =
     let doc = match inputs with None -> doc | Some inputs -> {doc with Workspace_doc.inputs} in
     let source = Option.bind source (fun { path; digest } -> Source.find ~path ~digest)
       |> Option.map (fun source -> Source_file.with_imports source (Workspace_doc.import_texts doc)) in
+    let opened = match factories with
+      | Some [] -> None
+      | _ -> Result.to_option (Contexts.of_workspace
+          ~factories:(Option.value factories ~default:Sop_catalog.Editor.factories) doc) in
     Result.map (fun window ->
     let config = { Rays.Sketch.default_config with width = window.width; height = window.height;
                    title = window.title; fps = Some window.fps } in
@@ -179,10 +190,14 @@ module Workspace = struct
     let scene3 = Surface.scene3 in
     let lights = [ Rays.Light.directional ~direction:(Rays.Vec3.create (-1.) (-1.4) (-0.8))
                      ~diffuse:Rays.Color.white () ] in
-    let camera = declared_camera ?factories doc (Rays.Easy_camera.create ~target:Rays.Vec3.zero ~distance:3.6
-        ~azimuth:0.4 ~elevation:0.6 ()) in
-    Editor.run ?inputs ~config ~lights ~camera ?factories ~seed:(Int64.of_int window.seed) ~workspace:doc ?source ~prepare ~scene3 ())
-      (workspace_window doc)
+    let base = Rays.Easy_camera.create ~target:Rays.Vec3.zero ~distance:3.6 ~azimuth:0.4 ~elevation:0.6 () in
+    let camera = match opened, factories with
+      | Some document, _ -> document_camera document base
+      | None, Some [] -> declared_camera ~factories:[] doc base
+      | None, _ -> base in
+    Environment.run ?inputs ~config ~lights ~camera ?factories ~seed:(Int64.of_int window.seed) ?opened
+      ~workspace:doc ?source ~prepare ~draw:scene3 ())
+      (match opened with Some document -> Contexts.document_window document | None -> workspace_window doc)
 
   let export ?graph ?(fps = 60) ~directory ~frames doc =
     let factories = Sop_catalog.Editor.factories in

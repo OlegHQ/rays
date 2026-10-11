@@ -627,7 +627,7 @@ let part_files () =
       | Arg, Some expr -> Option.map (fun value -> node.path, row.key, [], expr, value) (literal expr)
       | _ -> None) node.rows
     @ Option.fold ~none:[] ~some:(fun (zone : Projection.zone) -> sites zone.scope) node.zone) scope.nodes in
-  let covered = ref 0 in
+  let covered = ref 0 and windows = ref 0 in
   List.iter (fun file ->
     let text = In_channel.with_open_bin file In_channel.input_all in
     match Result.bind (Rays_editor.Source.read_imports ~file text)
@@ -635,6 +635,14 @@ let part_files () =
     | Error ds when List.exists (fun (d : Flow.Diagnostic.t) -> d.code = "E_UNKNOWN_KIND") ds -> ()
     | Error ds -> fail (file ^ ": " ^ show ds)
     | Ok doc ->
+    (* a start reads its window from the document it opens: the same answer as the settings
+       graph evaluated for the window alone, for every file *)
+    (match Editor_document.Contexts.of_workspace ~factories doc with
+     | Ok document ->
+         incr windows;
+         check (Editor_document.Contexts.document_window document = Editor_document.Contexts.window doc)
+           (file ^ ": the opened document's window is not the workspace's")
+     | Error _ -> ());
     let lowered = L.of_checked ~factories ~inputs:doc.inputs doc.checked |> Result.get_ok in
     let scopes = List.map (fun (g : Flow.Workspace.graph) -> Projection.of_graph catalog doc.checked g.name) doc.checked.graphs
       @ List.map (fun (g : Flow.Workspace.graph) -> Projection.of_graph catalog doc.checked ("def:" ^ g.name)) doc.checked.defs in
@@ -688,6 +696,8 @@ let part_files () =
         (String.sub file 3 (String.length file - 3)) (List.length edits) !fast !patched !refused (List.length !slow) slow_ms
     end) files;
   check (!covered >= 15) (Printf.sprintf "only %d checked-in files have a scrubbable literal" !covered);
+  check (!windows >= 30) (Printf.sprintf "only %d checked-in files open as a document" !windows);
+  Printf.printf "workspace start: the opened document of %d checked-in files says the window their settings graph says\n" !windows;
   print_endline "workspace literal edits: every checked-in .rays saves the full path's bytes with the full path's refusals"
 
 let part_projection_reuse () =

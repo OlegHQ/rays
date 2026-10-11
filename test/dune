@@ -409,3 +409,18 @@
  (alias runtest-native)
  (locks %{workspace_root}/smoke_window)
  (action (run %{exe:test_drawing.exe} %{dep:../examples/particles/sketch.rays} /tmp/rays-drawing-export)))
+
+; One evaluation a start, the first frame of a million static marks, and a reload after a
+; shared start: each opens the sketch's window through Workspace.run.
+(executable
+ (name test_workspace_start)
+ (modules test_workspace_start)
+ (libraries rays_editor editor_document sop_catalog flow unix))
+
+(rule
+ (aliases runtest-native test_workspace_start)
+ (locks %{workspace_root}/smoke_window)
+ (action
+  (progn
+   (run %{exe:test_workspace_start.exe} start %{dep:../sketches/million_marks/sketch.rays})
+   (run %{exe:test_workspace_start.exe} reload))))

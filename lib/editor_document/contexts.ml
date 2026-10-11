@@ -199,13 +199,22 @@ let settings_of = function
   | _ -> Error (diag "E_LOWER" "A settings graph returns a (settings/config ...) call.")
 
 (* The window the settings graph asks for; defaults without one. *)
-let window (workspace : Workspace_doc.t) =
-  let* evaluated = Flow_ir.static ~inputs:workspace.inputs workspace.checked in
-  let* () = check_context_time workspace evaluated.plan in
-  let* value = result workspace evaluated.plan Flow.Context.settings in
+let plan_window (workspace : Workspace_doc.t) plan =
+  let* () = check_context_time workspace plan in
+  let* value = result workspace plan Flow.Context.settings in
   match value with
   | None -> Ok (Param.default window_schema)
   | Some value -> Result.map (Settings.get window_schema) (settings_of value)
+
+let window (workspace : Workspace_doc.t) =
+  let* evaluated = Flow_ir.static ~inputs:workspace.inputs workspace.checked in
+  plan_window workspace evaluated.plan
+
+(* The same window from a document's own lowering, whose plan is the one [window] evaluates: a
+   host that opens the document does not evaluate the workspace again to size its window. *)
+let document_window (doc : Document.t) =
+  let workspace, (lowered : Flow_sop.Lower.t) = doc.workspace in
+  plan_window workspace lowered.plan
 
 (* ---- where things are written ---- *)
 
