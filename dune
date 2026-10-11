@@ -21,7 +21,7 @@
  (locks smoke_window)
  (action
   (setenv RAYS_MAX_FRAMES 30
-   (run %{exe:examples/sop_gallery/main.exe}))))
+   (run %{exe:examples/sop_gallery/lisp.exe}))))
 
 (rule
  (alias smoke-all)

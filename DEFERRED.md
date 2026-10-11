@@ -16,9 +16,14 @@ State on 2026-10-10: nothing is committed. `dune build @all`, `dune build @doc`,
   in this managed runner (report: `/private/tmp/rays-canvas-size-debug/editor.txt`).
   Its assertion remains intact; native rendering gates still need a runner
   with an available Metal device.
-- `dune build @smoke` and `@smoke-all` have not been run. `examples/particles` and
-  `examples/procedural_modeling` now generate `lisp.exe` like the other examples (built,
-  not launched).
+- Attempted 2026-10-11: `@smoke` exposed a stale root rule for the removed
+  `examples/sop_gallery/main.exe`; it now launches `lisp.exe`. Both native
+  smoke examples build and reach startup, then fail with SDL's "The video
+  driver did not add any displays" in this runner. The smoke gate is not
+  green; `@smoke-all` remains unverified. `examples/particles` and
+  `examples/procedural_modeling` generate `lisp.exe` like the other examples
+  (built, not launched). Generated Lisp sketches also lack the root smoke
+  window lock; their scheduling still needs repair and native verification.
 - `@qualification` has not been run. The path tracer, runtime and OGPU changes from the
   optional-parameter removal are covered only by the build and the window-free tests.
 - `lib/pxui/fixtures/kit_panel_2x.png` was regenerated after six widgets were deleted and
