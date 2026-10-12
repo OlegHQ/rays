@@ -1539,3 +1539,24 @@ last bad index within the earliest failing grain range, and several nodes
 preserve invalid unselected coordinates or normals. Those policies belong in
 Lisp node bodies and must not be collapsed into this query's validity rule.
 No additional whole-node or phase checkbox is marked by this foundation.
+
+### Checked attribute Core and JavaScript host contract
+
+The checked query also has its required `specification/core.md` intrinsic row
+and JavaScript immutable-geometry host twin. `tools/core_fixtures.ml` adds 176
+native/JavaScript query cases: every owner and all eight requested storage
+kinds, missing and wrong storage, finite data, and all four numeric widths with
+NaN and both infinities. Twelve additional JavaScript checks require exact
+signed-zero, positive-zero replacement, maximum-finite and subnormal values,
+integer validity, independent arrays, source immutability and fresh results.
+These checks exercise the host protocol directly; the 2D exporter continues to
+refuse reached host Sources.
+
+Request 60554 exited 0 for `@tools/lisp/test/runtest`
+`@lib/flow_web/runtest @lib/flow_sop/runtest`
+`@tools/api_manifest/runtest @test/dependency_gate`. This includes
+`web_prims.t` and `core_census.t`, with no fixture or catalog promotion.
+Log: `/tmp/rays-checked-attribute-host-contract2.log`. The preceding host-contract
+request 59880 also exited 0; request60554 adds the exact JavaScript bit checks.
+Checked arithmetic and the selected raw-byte-preserving writer are still
+required before Point Jitter or grouped Set Color can pass their whole gates.

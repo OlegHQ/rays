@@ -543,6 +543,14 @@ let () =
         match Sop.Session.cook session ~context node with
         |Error d->Error(Flow.Diagnostic.error ~code:d.code d.message)
         |Ok output->Ok(geometry_value(Result.get_ok(Sop.Payload.geometry output.payload))))) in
+  let checked_read geometry name owner kind =
+    let args=["geometry",E.Deferred(T.geometry,0);"attribute",E.Text name;
+      "owner",E.Text owner;"type",E.Text kind] in
+    (op "sop/attr_checked").check args;
+    let resolve=Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->Some geometry) in
+    Result.bind(resolve(E.Source("sop/attr_checked",T.Any,args@["component",E.Text"values"]))) (fun values->
+      Result.map(fun valid->E.Record["values",values;"valid",valid])
+        (resolve(E.Source("sop/attr_checked",T.Array T.Int,args@["component",E.Text"valid"])))) in
   List.iter(fun(owner,count)->List.iter(fun kind->
     let floats width=Array.init(count*width)(fun i->if i mod 2=0 then -0. else float i+.0.25) in
     let values=match kind with
@@ -583,7 +591,23 @@ let () =
     let wrong=if kind="text" then "float" else "text" in
     List.iter(fun name->List.iter(fun requested->
       add_host "sop/attr" [geometry_value typed;E.Text name;E.Text owner;E.Text requested]
-        (host_result(fun()->read typed name owner requested false))) [kind;wrong]) ["typed";"missing"];
+        (host_result(fun()->read typed name owner requested false));
+      add_host "sop/attr_checked" [geometry_value typed;E.Text name;E.Text owner;E.Text requested]
+        (host_result(fun()->checked_read typed name owner requested))) [kind;wrong]) ["typed";"missing"];
+    if List.mem kind ["float";"vec2";"vec3";"vec4"] then
+      List.iter(fun bad->
+        let width=match kind with "float"->1|"vec2"->2|"vec3"->3|_->4 in
+        let planes=Array.init width(fun c->Array.init count(fun i->
+          if i=0 && c=width-1 then bad else if c=0 then -0. else Float.max_float)) in
+        let storage=match kind with
+          |"float"->Rdk.Attribute.Float planes.(0)
+          |"vec2"->Float2(Result.get_ok(Rdk.Packed.Float2.of_owned ~x:planes.(0) ~y:planes.(1)))
+          |"vec3"->Float3(Rdk.Packed.Float3.Private.of_owned_exn ~x:planes.(0) ~y:planes.(1) ~z:planes.(2))
+          |_->Float4(Result.get_ok(Rdk.Packed.Float4.of_owned ~x:planes.(0) ~y:planes.(1) ~z:planes.(2) ~w:planes.(3))) in
+        let bad_geometry=Rdk.Geometry.with_attribute
+          (Rdk.Attribute.create_owned ~owner:owner_enum ~name:"typed" storage|>Result.get_ok)geometry|>Result.get_ok in
+        add_host "sop/attr_checked" [geometry_value bad_geometry;E.Text"typed";E.Text owner;E.Text kind]
+          (host_result(fun()->checked_read bad_geometry "typed" owner kind))) [nan;infinity;neg_infinity];
     List.iter(fun name->List.iter(fun requested->
       add_host "sop/has_attr" ([geometry_value typed;E.Text name;E.Text owner]
         @(if requested="" then [] else [E.Text requested]))
@@ -817,7 +841,7 @@ let () =
     let body = String.concat ",\n" (List.rev !(Hashtbl.find cases name)) in
     Out_channel.with_open_bin (Filename.concat outdir (export name ^ ".json")) (fun oc ->
       Printf.fprintf oc "{\"primitive\":%s,\"export\":%s,\"cases\":[\n%s\n]}\n" (str name) (str (export name)) body))
-    (List.map C.primitive_name inventory @ ["array/sum";"sop/context_seed";"sop/delete_attr";"sop/attr";"sop/with_attr";"sop/has_attr";"sop/count";"sop/edges";
+    (List.map C.primitive_name inventory @ ["array/sum";"sop/context_seed";"sop/delete_attr";"sop/attr";"sop/attr_checked";"sop/with_attr";"sop/has_attr";"sop/count";"sop/edges";
       "sop/group";"sop/group_names";"sop/group_order";"sop/with_group";
       "sop/attr_type";"sop/attr_names";"sop/rename_attr";"sop/swap_attr";"sop/delete_attrs";
       "sop/rename_group";"sop/delete_group";"sop/rename_edge";"sop/delete_edge";"text/glob_error";"text/glob_rewrite_error";

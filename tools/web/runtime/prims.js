@@ -1008,6 +1008,22 @@ export function sop_has_attr(geometry, name, owner = 'point', type) {
   const storage = attributeStorage(geometry, name, owner);
   return !!storage && (type === undefined || storage.get('type') === type);
 }
+export function sop_attr_checked(geometry, name, owner = 'point', type = 'vec3') {
+  attributeArgs(name, owner, type);
+  if (!['float', 'vec2', 'vec3', 'vec4'].includes(type))
+    err('E_ATTR_TYPE', 'Checked attributes require float, vec2, vec3 or vec4 storage.');
+  const values = sop_attr(geometry, name, owner, type);
+  const count = values.data.length / values.width, valid = new BigInt64Array(count);
+  for (let i = 0; i < count; i++) {
+    const start = i * values.width;
+    let finite = true;
+    for (let c = 0; c < values.width; c++)
+      if (!Number.isFinite(values.data[start + c])) finite = false;
+    if (finite) valid[i] = 1n;
+    else values.data.fill(0, start, start + values.width);
+  }
+  return new Map([['values', values], ['valid', new PArray(1, valid)]]);
+}
 export function sop_with_attr(geometry, name, owner, type, values) {
   attributeArgs(name, owner, type);
   const count = owner === 'point' ? length(geometry.get('positions'))

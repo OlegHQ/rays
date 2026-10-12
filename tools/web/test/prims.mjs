@@ -28,6 +28,30 @@ for (const [name, args, expected] of [
   if (!Object.is(prims[name](...args), expected)) throw new Error(`${name}: signed-zero/subnormal math mismatch`);
 }
 
+for (const [type, width] of [['float', 1], ['vec2', 2], ['vec3', 3], ['vec4', 4]]) {
+  for (const bad of [NaN, Infinity, -Infinity]) {
+    const data = Float64Array.from({ length: width * 3 }, (_, i) => i % width === 0 ? -0 : Number.MAX_VALUE);
+    data[width - 1] = bad;
+    data[width * 3 - 1] = Number.MIN_VALUE;
+    const source = new PArray(width, data);
+    const geometry = new Map([['attributes', [new Map([
+      ['owner', 'point'], ['name', 'raw'], ['type', type], ['values', source],
+    ])]]]);
+    const result = prims.sop_attr_checked(geometry, 'raw', 'point', type);
+    const values = result.get('values').data, valid = result.get('valid').data;
+    if (valid[0] !== 0n || valid[1] !== 1n || valid[2] !== 1n || values === data)
+      throw new Error('sop_attr_checked: validity or ownership mismatch');
+    for (let i = 0; i < values.length; i++)
+      if (!Object.is(values[i], i < width ? 0 : data[i]))
+        throw new Error('sop_attr_checked: exact finite or sanitized bits mismatch');
+    values.fill(99); valid.fill(99n);
+    if (!Object.is(data[width - 1], bad)) throw new Error('sop_attr_checked: source mutation');
+    const again = prims.sop_attr_checked(geometry, 'raw', 'point', type);
+    if (again.get('valid').data[0] !== 0n || !Object.is(again.get('values').data[width], data[width]))
+      throw new Error('sop_attr_checked: repeated query retained mutable results');
+  }
+}
+
 // ---- decoding the JSON encoding of core_fixtures.ml ----
 const decodeFloat = v => {
   if (typeof v === 'number') return v;
