@@ -214,6 +214,15 @@ Its resolver runs only when the expression is reached, checks the declared
 result type and rejects another unresolved marker. Geometry handles remain
 private immutable host captures; this expression is refused by the 2D web target.
 
+`Host_source` constructs a typed source from computed locals and resolves it
+when reached. A storage-valued argument of a cooked call may instead retain
+its immutable query as `Source_descriptor`. The native attribute consumer
+checks its storage kind and owner cardinality before sharing unchanged planes;
+it does not interleave, copy or finite-scan them. This preserves native storage
+transfer semantics, including NaN payloads and infinities. Computed arrays and
+numeric consumers still materialize and validate their inputs. Both source
+expressions are refused by the current 2D web target.
+
 If native lowering cannot cover a form, it returns that form's name. During
 the staged migration, execution continues through the existing path. If core
 execution fails, the native caller reruns the tree walker to obtain its exact
@@ -972,7 +981,7 @@ operation. A user function/macro row is not a new runtime primitive.
 | `sop/merge` | refused on web | Native geometry composition; not a numeric sequence operation. |
 | `sop/transform` | refused on web | Native geometry transform; not a drawing view transform. |
 | `sop/delete_attr` | intrinsic | Geometry metadata deletion by owner and Houdini-style name pattern. The host protocol is an immutable geometry record with ordered attribute records carrying owner, name and payload. Native uses `Rdk.Attribute_ops.delete`; the JavaScript twin preserves topology, positions, ordering and unselected payloads. Outside the current 2D export scope. |
-| `sop/attr`, `sop/with_attr` | intrinsic | Cooked owner-aware attributes, default point/vec3. Float and tuple storage use packed arrays; integer storage stays exact signed native integers; text storage uses typed string arrays with exact decoded contents. `float_array` and `int_array` use records of integer CSR offsets and typed flat values; offsets start at zero, remain monotone and end at the flat count. Missing/wrong storage is `E_ATTR_TYPE`, owner cardinality is `E_ATTR_COUNT`, nonfinite writes are `E_NONFINITE`. Point P is canonical vec3 positions. Host geometry attributes carry owner, name, type and immutable copied values; twins preserve topology and other payloads. Outside the current 2D export scope. |
+| `sop/attr`, `sop/with_attr` | intrinsic | Cooked owner-aware attributes, default point/vec3. Float and tuple storage use packed arrays; integer storage stays exact signed native integers; text storage uses typed string arrays with exact decoded contents. `float_array` and `int_array` use records of integer CSR offsets and typed flat values; offsets start at zero, remain monotone and end at the flat count. Missing/wrong storage is `E_ATTR_TYPE`, owner cardinality is `E_ATTR_COUNT`, nonfinite computed writes are `E_NONFINITE`. Unchanged native attribute queries share immutable storage and preserve its bytes. Point P is canonical vec3 positions. Host geometry attributes carry owner, name, type and immutable copied values; twins preserve topology and other payloads. Outside the current 2D export scope. |
 | `sop/has_attr` | intrinsic | A genuine Boolean cooked host source, with owner and optional literal storage type. Without type it tests any storage; with type it tests exact storage. Point P always has vec3 storage. Lazy branches can explicitly preserve native absent/wrong-normal fallbacks without reading nonexistent data. Sources retain truthful geometry/attribute dependencies. |
 | `sop/count` | intrinsic | Cooked topology count over the immutable geometry host protocol. Selectors `points`, `vertices`, `primitives`, `edges` return exact signed native integers. Invalid selectors are `E_TOPOLOGY_COUNT`; unavailable geometry is `E_DATA_SOURCE`. Reads depend on topology, rather than coordinate or attribute values. Outside the current 2D export scope. |
 | `sop/edges` | intrinsic | Cooked topology source returning separate exact integer arrays `a`, `b`, with normalized endpoint pairs in first outgoing-corner occurrence order; self-edges remain and open polylines have no outgoing final corner. Arrays are owned copies. Native indexing uses `Topology_index`; JavaScript preserves the same order. Unavailable geometry is `E_DATA_SOURCE`. Outside the current 2D export scope. |

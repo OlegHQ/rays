@@ -187,7 +187,7 @@ let draw_uses : C.draw -> int list = function
 let expr_uses : C.expr -> int list = function
   | Constant _ | Frame _ | Call_index _ | Source _ -> []
   | Local n -> [n]
-  | Prim (_, args) | Fields args | Host_source {args;_} -> List.map snd args
+  | Prim (_, args) | Fields args | Host_source {args;_} | Source_descriptor {args;_} -> List.map snd args
   | Vec ns | Items ns -> ns
   | Field (n, _) -> [n]
 

@@ -99,7 +99,8 @@ let coverage programs =
     | Assign (_, e) -> mark (match e with
         | C.Constant _ -> "constant" | Local _ -> "local" | Frame _ -> "frame" | Call_index _ -> "call_index"
         | Prim _ -> "prim" | Vec _ -> "vec" | Fields _ -> "fields" | Items _ -> "items" | Field _ -> "field"
-        | Source _ -> "source" | Host_source _ -> "host_source")
+        | Source _ -> "source" | Host_source _ -> "host_source"
+        | Source_descriptor _ -> "source_descriptor")
     | Reset_call _ -> mark "reset_call"
     | Draw d -> mark (match d with
         | C.Background _ -> "background" | Point _ -> "point" | Mark _ -> "mark" | Batch _ -> "batch" | Points _ -> "points"

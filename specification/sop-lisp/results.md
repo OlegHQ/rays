@@ -1118,3 +1118,22 @@ with no Set Float body in the pending draft. Apple M1, OCaml 5.3.0,
 Four-domain allocation records the initial domain only. Both cold-cook ratios
 pass the unchanged 2× gate. The Set Float port is complete in its separate
 source commit; B.11 remains incomplete.
+
+### Immutable attribute storage transfers
+
+The reviewed public declaration snapshot is `97c1c610`. Core retains an
+unchanged attribute query as `Source_descriptor` only for a cooked storage
+consumer. Shared `Attribute_kernel.write_source` checks storage kind and
+destination cardinality before adopting immutable planes. Numeric consumers
+and computed arrays keep ordinary strict execution and finite checks. The
+current 2D JavaScript target explicitly refuses the new cooked source form;
+no SOP web-export support is claimed.
+
+Focused checks 46311 (typecheck/FlowSOP), 25554 (IR/Web) and 71782 (Rest Position)
+passed. The Rest oracle covers Store/Extract/Swap, all normal policies,
+optional references, compiled/reference paths and 1/8 domains. Exceptional
+NaN payloads, infinities, signed zeros and huge finite native values retain
+exact bytes and physical unchanged-plane identity, without mutating inputs.
+A computed identity map over those planes still raises `E_NONFINITE`.
+Post-promotion API and tools request 48150 exited 0. This storage proof is
+not a whole-node speed gate; Rest Position remains unregistered.

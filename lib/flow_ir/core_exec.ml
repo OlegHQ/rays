@@ -36,7 +36,7 @@ let static_invokes (program : C.program) =
     | Prim (op, args) -> op <> Rand && List.for_all (fun (_, a) -> static.(a)) args
     | Vec ns | Items ns -> List.for_all (fun a -> static.(a)) ns
     | Fields fs -> List.for_all (fun (_, a) -> static.(a)) fs
-    | Frame _ | Call_index _ | Source _ | Host_source _ -> false in
+    | Frame _ | Call_index _ | Source _ | Host_source _ | Source_descriptor _ -> false in
   let region_static (r : C.region) =
     not (E.frame_dependent (E.Residual r.residual)) && not (E.state_dependent (E.Residual r.residual))
     && Array.for_all (fun (source, _) -> not (E.frame_dependent (E.Residual source))) r.sources in
@@ -59,7 +59,7 @@ let device_regions (program : C.program) =
   let expression : C.expr -> unit = function
     | Constant _ | Frame _ | Call_index _ | Source _ -> ()
     | Local a | Field (a, _) -> use a
-    | Prim (_, args) | Fields args | Host_source {args;_} -> List.iter (fun (_, a) -> use a) args
+    | Prim (_, args) | Fields args | Host_source {args;_} | Source_descriptor {args;_} -> List.iter (fun (_, a) -> use a) args
     | Vec ns | Items ns -> List.iter use ns in
   let draw : C.draw -> unit = function
     | Batch {args; _} -> List.iter (fun (name, a) ->
@@ -365,7 +365,7 @@ let counted_kernel (program : C.program) loop_id index item body =
   let expr use : C.expr -> unit = function
     | Constant _ | Frame _ | Call_index _ | Source _ -> ()
     | Local n | Field (n,_) -> use n
-    | Prim (_,args) | Fields args | Host_source {args;_} -> List.iter (fun (_,n) -> use n) args
+    | Prim (_,args) | Fields args | Host_source {args;_} | Source_descriptor {args;_} -> List.iter (fun (_,n) -> use n) args
     | Vec ns | Items ns -> List.iter use ns in
   let rec outside (s : C.statement) = if s.id<>loop_id then match s.node with
     | Assign (_,e) -> expr use e
@@ -597,6 +597,8 @@ let prepare ?(fused=true) (program : C.program) =
         let value=E.Source(name,ty,List.map(fun(name,index)->name,st.values.(index))args) in
         (match E.Private.force_reference ?resolve:st.resolve value ~live:st.live with
          |Ok value->value|Error d->V.raise_diagnostic d)
+    | Source_descriptor {name;ty;args}->fun st->
+        E.Source(name,ty,List.map(fun(name,index)->name,st.values.(index))args)
     | Local n -> fun st -> st.values.(n)
     | Call_index slot -> fun st -> let n=st.calls.(slot) in st.calls.(slot)<-n+1; V.Int n
     | Frame field ->

@@ -15,6 +15,12 @@ val materialized_source : Sop.Node.t -> Sop.Node.t
 (** A normal geometry consumer: cooking it through Session expands upstream
     packed instances at the existing input boundary. Retain it with its source. *)
 
+val write_source : geometry:(int -> Rdk.Geometry.t option) ->
+  owner:Rdk.Attribute.owner -> kind:string -> string -> Flow.Eval.value -> Rdk.Geometry.t ->
+  (Rdk.Geometry.t option, Flow.Diagnostic.t) result
+(** Share an unchanged typed attribute query's immutable storage after checking
+    owner/type/cardinality. [None] retains the ordinary computed-array path. *)
+
 val prepare : ?profile:Flow_ir.Profile.t -> ?strict:bool -> ?approx:Flow.Workspace.Paths.t -> ?sink:Flow_ir.sink ->
   sources:int list -> Sop.Node.t list -> Flow.Eval.value ->
   (Flow_ir.Executor.program, Flow.Diagnostic.t) result

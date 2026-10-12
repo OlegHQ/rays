@@ -34,6 +34,9 @@ type expr =
   | Host_source of { name : string; ty : Flow.Ty.t; args : (string * int) list }
       (** Construct a typed host source from computed arguments. The ordinary
           resolver materializes it only when this expression executes. *)
+  | Source_descriptor of { name : string; ty : Flow.Ty.t; args : (string * int) list }
+      (** Immutable host-array query retained for a cooked storage consumer.
+          Numeric consumers still resolve and validate their array inputs. *)
   | Prim of primitive * (string * int) list
   | Vec of int list | Fields of (string * int) list | Items of int list
   | Field of int * string

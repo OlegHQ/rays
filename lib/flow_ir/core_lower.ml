@@ -197,7 +197,20 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
           env view.term true else term statements cache source env view.term in
       Hashtbl.add cache id value;
       value)
-  and term statements cache source env (x : W.term) =
+  and descriptor statements cache source = function
+    | Known ((V.Source(name,ty,fields) | V.Struct(name,(Flow.Ty.Array _ as ty),fields)))
+        when storage_argument ty ->
+        emit statements source ty (Source_descriptor{name;ty;
+          args=List.map(fun(name,value)->name,ensure statements cache source (Known value))fields})
+    | Known (V.Record fields) -> Record_fields(List.map(fun(name,value)->
+        name,descriptor statements cache source(Known value))fields)
+    | Record_fields fields -> Record_fields(List.map(fun(name,value)->name,descriptor statements cache source value)fields)
+    | value -> value
+  and storage_argument = function
+    | Flow.Ty.Array _ -> true
+    | Record fields -> List.exists(fun(_,ty)->storage_argument ty)fields
+    | _ -> false
+  and term ?(borrow=false) statements cache source env (x : W.term) =
     decr budget; if !budget < 0 then refuse "budget";
     let source = {source with C.site=Option.value x.path ~default:source.site;span=Some x.form.span} in
     let compile = term statements cache source env in
@@ -238,7 +251,8 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
     | Lit (Param.Float_value f) -> Known (V.Float f)
     | Lit (Param.Bool_value b) -> Known (V.Bool b)
     | Text s -> Known (V.Text s) | Nil -> Known V.No_geo
-    | Record fields -> Record_fields (List.map (fun (name,t) -> name,compile t) fields)
+    | Record fields -> Record_fields (List.map (fun (name,t) -> name,
+        term ~borrow statements cache source env t) fields)
     | List_lit items ->
         if List.length items>4096 then refuse "list_limit";
         let items=List.map compile items in
@@ -250,7 +264,8 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
     | List_op (_,items) ->
         primitive statements cache source x.ty Sequence_concat
           (List.map (fun item -> "list",compile item) items)
-    | Get (value,name) -> field statements cache source x.ty (compile value) name
+    | Get (value,name) -> field statements cache source x.ty
+        (term ~borrow statements cache source env value) name
     | Assoc (record,updates) ->
         let record=compile record in
         List.fold_left (fun record (name,t) ->
@@ -279,11 +294,14 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
     | Ref_binding (name,_) when String.starts_with ~prefix:"$elem:" name -> refuse "element"
     | Ref_binding (name,fields) ->
         let start = match Names.find_opt name env with Some v -> resolve statements cache v | None -> refuse "binding" in
-        List.fold_left (fun v name -> field statements cache source x.ty v name) start fields
+        let value=List.fold_left (fun v name -> field statements cache source x.ty v name) start fields in
+        if borrow then descriptor statements cache source value else value
     | Op {op;args;_} ->
         let o = match Flow.Op.find ~extra:(E.Private.residual_ops (Lazy.force root)) op Flow.Context.value with
           | Some o -> o | _ -> refuse op in
-        let args = List.map (fun (n,t) -> n,compile t) args in
+        let args = List.map (fun (n,t) -> n,
+          if Flow.Ty.is_cooked x.ty && storage_argument t.W.ty then term ~borrow:true statements cache source env t
+          else compile t) args in
         let rec data_source=function
           | V.Source _ | Struct(_,Flow.Ty.Array _,_) -> true
           | V.Record fields->List.exists(fun(_,v)->data_source v)fields
@@ -297,15 +315,17 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
           | V.Source("$core/argument",_,["index",V.Int index])->snd(List.nth args index)
           | (V.Source(name,ty,fields)|Struct(name,(Flow.Ty.Array _ as ty),fields)) as value ->
               if List.for_all(fun(_,v)->match host v with Known _->true|_->false)fields then Known value else
-              emit statements source ty (Host_source{name;ty;
-                args=List.map(fun(name,v)->name,ensure statements cache source (host v))fields})
+              let args=List.map(fun(name,v)->name,ensure statements cache source (host v))fields in
+              emit statements source ty (if borrow && storage_argument ty then Source_descriptor{name;ty;args}
+                else Host_source{name;ty;args})
           | V.Record fields->Record_fields(List.map(fun(name,v)->name,host v)fields)
           | value->Known value in
         if Flow.Ty.is_cooked x.ty then
           emit statements source x.ty (Host_source{name="$core/operator";ty=x.ty;
             args=List.map(fun(name,v)->name,ensure statements cache source v)
               (("$name",Known(V.Text op))::args)}) else
-        (match prototype with Some value when data_source value->host value | _ ->
+        (match prototype with Some value when data_source value->
+          let value=host value in if borrow then descriptor statements cache source value else value | _ ->
         if o.ctx<>Flow.Context.value || o.shape<>Flow.Op.Scalar || not (shipped o) then refuse op;
         (match known_values args with
         | Some values when not o.live ->
@@ -315,7 +335,8 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
         | _ -> operation statements cache source x.ty op args))
     | Call {kind;ctx;args}->
         if not(Flow.Ty.is_cooked x.ty)then refuse "call";
-        let args=List.map(fun(name,t)->name,ensure statements cache source (compile t))args in
+        let args=List.map(fun(name,t)->name,ensure statements cache source
+          (term ~borrow:(storage_argument t.W.ty) statements cache source env t))args in
         emit statements source x.ty (Host_source{name="$core/catalog";ty=x.ty;
           args=("$name",ensure statements cache source (Known(V.Text kind)))::
             ("$context",ensure statements cache source (Known(V.Text(Flow.Context.name ctx))))::args})
@@ -323,24 +344,24 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
         let env = List.fold_left (fun env (pattern,value) ->
           let value=term statements cache source env value in
           bind statements cache source env pattern value) env bindings in
-        term statements cache source env body
+        term ~borrow statements cache source env body
     | If (condition,yes,no) ->
         branch statements cache source x.ty (compile condition)
-          (fun body cache -> term body cache source env yes)
-          (fun body cache -> term body cache source env no)
+          (fun body cache -> term ~borrow body cache source env yes)
+          (fun body cache -> term ~borrow body cache source env no)
     | Cond (arms,default) ->
         let rec arms_lower statements cache = function
-          | [] -> term statements cache source env default
+          | [] -> term ~borrow statements cache source env default
           | (condition,value)::rest ->
               let condition=term statements cache source env condition in
               branch statements cache source x.ty condition
-                (fun body cache -> term body cache source env value)
+                (fun body cache -> term ~borrow body cache source env value)
                 (fun body cache -> arms_lower body cache rest) in
         arms_lower statements cache arms
     | Case (scrutinee,arms,default) ->
         let scrutinee=compile scrutinee in
         let rec arms_lower statements cache = function
-          | [] -> term statements cache source env default
+          | [] -> term ~borrow statements cache source env default
           | (lit,value)::rest ->
               let lit : E.value = match lit.Flow.Syntax.node with
                 | Str s -> V.Text s | Sym s -> Bool (s="true")
@@ -363,14 +384,15 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
                     primitive statements cache source Flow.Ty.Bool (Numeric Eq) ["a",scrutinee;"b",Known lit]
                 | _ -> primitive statements cache source Flow.Ty.Bool Equal ["a",scrutinee;"b",Known lit] in
               branch statements cache source x.ty condition
-                (fun body cache -> term body cache source env value)
+                (fun body cache -> term ~borrow body cache source env value)
                 (fun body cache -> arms_lower body cache rest) in
         arms_lower statements cache arms
     | Call_fn {fn;args;body} ->
         let values=List.map compile args in
-        (match Names.find_opt fn env with
-        | Some f -> call statements cache source x.ty body (as_callable source f) values
-        | None -> definition statements cache source fn body values)
+        let value=match Names.find_opt fn env with
+        | Some f -> call ~borrow statements cache source x.ty body (as_callable source f) values
+        | None -> definition ~borrow statements cache source fn body values in
+        if borrow then descriptor statements cache source value else value
     | Fn_ref name ->
         let identity=new_identity () in
         statements := statement (number ()) source (Reset_call (call_slot identity)) :: !statements;
@@ -386,9 +408,10 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
               statements := statement (number ()) source (Reset_call (call_slot identity)) :: !statements;
               Closure {params;body;zone;env;instance=source.instance;prefix=source.prefix;identity} in
         Callable closure
-    | Expanded {body;_} -> compile body
+    | Expanded {body;_} -> term ~borrow statements cache source env body
     | Bypass inner ->
-        (match W.bypass_input inner with Some input -> coerce statements cache source inner.ty (compile input)
+        (match W.bypass_input inner with Some input -> coerce statements cache source inner.ty
+            (term ~borrow statements cache source env input)
           | None -> refuse "bypass")
     | Hof (kind,fn::rest) ->
         let fn=as_callable source (compile fn) in
@@ -973,7 +996,7 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
             Closure {params;body;env;instance;prefix;zone;identity}
         | _ -> (match E.Private.function_name f with Some name -> Named {name;identity} | None -> refuse "fn"))
     | _ -> ignore source; refuse "fn"
-  and call statements cache source ty specialized fn values =
+  and call ?(borrow=false) statements cache source ty specialized fn values =
     let identity=match fn with Closure cl -> cl.identity | Named n -> n.identity in
     let index=ensure statements cache source (emit statements source Flow.Ty.Int (Call_index (call_slot identity))) in
     let source={source with C.iter=source.iter @ [Local_index index]} in
@@ -984,10 +1007,10 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
         let env=List.fold_left2 (fun env (pattern,ty) value ->
           let value=match ty with None -> value | Some ty -> coerce statements cache source ty value in
           bind statements cache source env pattern value) cl.env cl.params values in
-        term statements cache source env (Option.value specialized ~default:cl.body)
+        term ~borrow statements cache source env (Option.value specialized ~default:cl.body)
     | Named n ->
         (match E.Private.residual_definition (Lazy.force root) n.name with
-        | Some _ -> definition statements cache source n.name specialized values
+        | Some _ -> definition ~borrow statements cache source n.name specialized values
         | None ->
             let o=match Flow.Op.find ~extra:(E.Private.residual_ops (Lazy.force root)) n.name Flow.Context.value with
               | Some o when o.ctx=Flow.Context.value && o.shape=Flow.Op.Scalar && shipped o -> o | _ -> refuse n.name in
@@ -997,14 +1020,14 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
             match known_values args with
             | Some args when not o.live -> Known (o.body ~live:(Frame_input.at_time 0.) ~node:(fun _ _ -> refuse n.name) args)
             | _ -> operation statements cache source ty n.name args)
-  and definition statements cache source name specialized values =
+  and definition ?(borrow=false) statements cache source name specialized values =
     let declaration=match E.Private.residual_definition (Lazy.force root) name with Some d -> d | None -> refuse "call_fn" in
     if List.compare_lengths declaration.inputs values <> 0 then refuse "call_fn";
     let zone=["def:"^name] in
     let source={source with C.prefix=source.prefix @ source.site;site=zone;owner=zone} in
     let env=List.fold_left2 (fun env (name,ty,_) value ->
       Names.add name (coerce statements cache source ty value) env) Names.empty declaration.inputs values in
-    term statements cache source env (Option.value specialized ~default:declaration.body)
+    term ~borrow statements cache source env (Option.value specialized ~default:declaration.body)
   and operation statements cache source ty name args =
     let prim ty op args = primitive statements cache source ty op args in
     let arg key = List.assoc key args in

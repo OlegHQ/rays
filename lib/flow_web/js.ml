@@ -459,7 +459,7 @@ let expression ctx : C.expr -> string = function
   | Constant n -> Printf.sprintf "K[%d]" n
   | Local n -> local n
   | Call_index slot -> Printf.sprintf "BigInt(calls[%d]++)" slot
-  | Source _ | Host_source _ -> raise (Refused ("E_WEB_SOURCE", "This host-owned source is outside the 2D web target.", None))
+  | Source _ | Host_source _ | Source_descriptor _ -> raise (Refused ("E_WEB_SOURCE", "This host-owned source is outside the 2D web target.", None))
   | Frame field -> (match field with
       | Time -> "input.t" | Dt -> "input.dt" | Index -> "BigInt(input.frame)" | Tick -> "BigInt(input.tick)"
       | Width -> "BigInt(input.size[0])" | Height -> "BigInt(input.size[1])"

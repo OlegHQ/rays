@@ -157,6 +157,12 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(k
     let kernel_source = lazy (Digest.string (fst (Lisp.print (checked.source @ checked.macros @
       List.map (fun (g : Workspace.graph) -> g.form) checked.defs @
       List.map (fun (d : Workspace.node_definition) -> d.body.form) checked.nodes)))) in
+    let attribute_options args =
+      let text key default code=match List.assoc_opt key args with
+        |None->default|Some(E.Text text)->text|_->fail code ("Attribute "^key^" must be static text") in
+      let owner=ok(Attribute_kernel.owner(text "owner" "point" "E_ATTR_OWNER"))
+      and kind=text "type" "vec3" "E_ATTR_TYPE" in
+      ignore(ok(Attribute_kernel.value_type kind));owner,kind in
     let structural_node residual captures =
       let program=match Flow_ir.Core_lower.lower ~strict:true residual with
         |Ok program->program|Error name->fail "E_PACKED_FORM" ("Cooked selection cannot compile "^name^".") in
@@ -189,6 +195,26 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(k
                 (Result.map_error(fun(d:Sop.Diagnostic.error)->Diagnostic.error ?cause:d.cause ~code:d.code d.message)
                   (Sop.Session.cook session ~context node))
                 (fun value->Result.map(fun value->output:=Some value;value)(validate value))) in
+          let geometry id=match Hashtbl.find_opt geometries id with
+            |Some geometry->Some geometry
+            |None->
+                let output=ok(snapshot Ty.geometry id) in
+                let geometry=match output.payload,output.instances with
+                  |Sop.Payload.Geometry geometry,None->geometry
+                  |Sop.Payload.Geometry source,Some transforms->
+                      (match Rdk.Instance_copy.materialize_instances ~transforms source with
+                       |Ok geometry->geometry|Error e->fail "E_DATA_SOURCE" (Rdk.Error.to_string e))
+                  |_->fail "E_DATA_SOURCE" "A geometry source has an image payload." in
+                Hashtbl.add geometries id geometry;Some geometry in
+          let register_output ty (output:Sop.Session.output)=
+            let id= !next in decr next;
+            let node=Sop.Node.Private.make ~operation:"flow.host_snapshot" ~version:1
+              ~parameters:(string_of_int id) ~cook_mode:Sop.Node.Generator ~inputs:[||]
+              ~dependencies:Sop.Context.Dependencies.static
+              (fun ~node_id:_ _context _inputs->Ok Sop.Node.Private.{payload=output.payload;
+                diagnostics=output.diagnostics;instances=output.instances}) in
+            Hashtbl.add handles id(ty,node,ref(Some output));
+            E.Deferred(ty,id) in
           let rec cooked_term factories ty value = match value with
             |E.Deferred(actual,id) when Ty.is_cooked actual->
                 if actual<>ty then fail "E_DATA_SOURCE" "A cooked argument has the wrong declared type.";
@@ -219,6 +245,26 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(k
               then fail "E_DATA_SOURCE" "A host call has no checked catalog kind.";
             if not catalog && Option.is_none(Flow.Op.find ~extra:checked.ops name Context.sop)
               then fail "E_DATA_SOURCE" "A host call has no checked operator.";
+            let borrowed=if catalog || name<>"sop/with_attr" then Ok None else
+              match List.assoc_opt "geometry" args,List.assoc_opt "attribute" args,List.assoc_opt "values" args with
+              |Some(E.Deferred(actual,id)),Some(E.Text name),Some values when actual=Ty.geometry->
+                  if Sop.Context.cancelled context then error "E_CANCELLED" "Attribute kernel cancelled." else
+                  let owner,kind=attribute_options args in
+                  let target=Option.get(geometry id) in
+                  Result.map(fun result->Option.map(fun geometry->
+                    let output=ok(snapshot Ty.geometry id) in
+                    register_output Ty.geometry {output with payload=Sop.Payload.Geometry geometry;instances=None})result)
+                    (Attribute_kernel.write_source ~geometry ~owner ~kind name values target)
+              |_->Ok None in
+            Result.bind borrowed(function Some result->Ok result|None->
+            let rec deferred=function
+              |E.Source _|E.Struct(_,Ty.Array _,_)->true
+              |E.Record fields->List.exists(fun(_,value)->deferred value)fields
+              |E.List values->Array.exists deferred values
+              |_->false in
+            let args=List.map(fun(name,value)->name,if deferred value then
+                ok(E.Private.force_reference ~resolve:(Attribute_kernel.resolve ~geometry)
+                  value ~live:(Sop.Context.input context)) else value)args in
             let call_context=if ty=Ty.image then Flow.Context.image else Context.sop in
             let form=Syntax.make(List[]) in
             let capture_factories=ref [] and overrides=ref [] in
@@ -239,7 +285,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(k
                 |Some root->Result.bind(Result.map_error(Diagnostic.error ~code:"E_LOWER")
                     (Edit.compile_node graph.network.geometry ~node_id:root))(fun node->
                   let id= !next in decr next;Hashtbl.add handles id(ty,node,ref None);Ok(E.Deferred(ty,id))))
-              |_->error "E_DATA_SOURCE" "A cooked call must return one typed result.") in
+              |_->error "E_DATA_SOURCE" "A cooked call must return one typed result.")) in
           let resolve value=try match value with
             |E.Source("$core/cooked",ty,["id",E.Int id])->Result.map(fun _->E.Deferred(ty,id))(handle ty id)
             |E.Source(("$core/operator"|"$core/catalog" as kind),ty,args)->
@@ -248,16 +294,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(k
                  |Some(E.Text name)->call ty (kind="$core/catalog") name
                      (List.filter(fun(name,_)->name<>"$name" && name<>"$context")args)
                  |_->error "E_DATA_SOURCE" "A host call needs its checked kind.")
-            |value->Attribute_kernel.resolve ~geometry:(fun id->
-                match Hashtbl.find_opt geometries id with Some geometry->Some geometry|None->
-                let output=ok(snapshot Ty.geometry id) in
-                let geometry=match output.payload,output.instances with
-                  |Sop.Payload.Geometry geometry,None->geometry
-                  |Sop.Payload.Geometry source,Some transforms->
-                      (match Rdk.Instance_copy.materialize_instances ~transforms source with
-                       |Ok geometry->geometry|Error e->fail "E_DATA_SOURCE" (Rdk.Error.to_string e))
-                  |_->fail "E_DATA_SOURCE" "A geometry source has an image payload." in
-                Hashtbl.add geometries id geometry;Some geometry)value
+            |value->Attribute_kernel.resolve ~geometry value
             with Fail d->Error d in
           let result=Flow_ir.Core_exec.execute ~resolve
             ~force:(fun program->Flow_ir.Packed.force ~strict:true ~resolve program ~live:(Sop.Context.input context))
@@ -270,12 +307,6 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(k
             (Result.map(fun(output:Sop.Session.output)->Sop.Node.Private.{payload=output.payload;
               diagnostics=output.diagnostics;instances=output.instances})result))) in
       Sop.Node.Private.with_facts {(Sop.Node.facts node) with reads=["*"];writes=["*"]} node in
-    let attribute_options args =
-      let text key default code=match List.assoc_opt key args with
-        |None->default|Some(E.Text text)->text|_->fail code ("Attribute "^key^" must be static text") in
-      let owner=ok(Attribute_kernel.owner(text "owner" "point" "E_ATTR_OWNER"))
-      and kind=text "type" "vec3" "E_ATTR_TYPE" in
-      ignore(ok(Attribute_kernel.value_type kind));owner,kind in
     let attribute_node ?state ?elems ?(owner=Rdk.Attribute.Point) ?(kind="vec3") ~name ~values ~sources inputs =
       if strict_body then ignore (ok (Attribute_kernel.prepare ~strict:true ~sources inputs values));
       Attribute_kernel.node ?state ?elems ~strict:strict_body ~reference ~profile ~owner ~kind

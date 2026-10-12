@@ -55,7 +55,7 @@ let reads value =
            | Some (E.Text name), Some (E.Deferred (ty, id)) when Flow.Ty.is_geometry ty ->
                names := name :: !names; safe := id :: !safe
            | _ -> opaque := true)
-      | Op {op=("sop/count"|"sop/edges"|"sop/group"|"sop/group_names"|"sop/group_order");args;_} ->
+      | Op {op=("sop/count"|"sop/edges"|"sop/group"|"sop/group_names"|"sop/group_order"|"sop/group_entries");args;_} ->
           (match Option.bind (List.assoc_opt "geometry" args) (lookup bindings) with
            | Some (E.Deferred (ty,id)) when Flow.Ty.is_geometry ty -> safe:=id::!safe
            | _ -> opaque:=true)
@@ -84,7 +84,7 @@ let reads value =
     scan term;
     List.filter (fun id -> not (List.mem id !unsafe)) !safe in
   let rec visit safe = function
-    | E.Source (("sop/count"|"sop/edges"|"sop/group"|"sop/group_names"|"sop/group_order"),_,args) ->
+    | E.Source (("sop/count"|"sop/edges"|"sop/group"|"sop/group_names"|"sop/group_order"|"sop/group_entries"),_,args) ->
         (match List.assoc_opt "geometry" args with
          | Some (E.Deferred (ty,_)) when Flow.Ty.is_geometry ty -> ()
          | _ -> opaque:=true)
@@ -218,6 +218,73 @@ let install ~owner ~kind name planes geometry =
         | A.Float3 positions -> G.with_positions positions geometry
         | _ -> Error "Canonical point P requires vec3 storage."
       else Result.bind (A.create_owned ~name ~owner storage) (fun attr -> G.with_attribute attr geometry)))
+
+let borrowed_storage ~geometry values =
+  let descriptor = function
+    | E.Struct("sop/attr",ty,args) | E.Source("sop/attr",ty,args) -> Some(ty,args)
+    | _ -> None in
+  let source args = match List.assoc_opt "geometry" args,List.assoc_opt "attribute" args with
+    | Some(E.Deferred(ty,id)),Some(E.Text name) when Flow.Ty.is_geometry ty ->
+        (match geometry id with
+         |None->error "E_DATA_SOURCE" "Attribute source has not been cooked."
+         |Some geometry->Result.bind(options args)(fun(owner,kind)->
+           Result.map(fun storage->storage,owner_count geometry owner)
+             (typed_storage ~owner ~name ~kind geometry)))
+    |_->error "E_ATTR_TYPE" "sop/attr needs geometry and an attribute name." in
+  match descriptor values with
+  | Some (ty,args) -> Result.bind(source args)(fun(storage,count)->
+      let component=List.assoc_opt "component" args in
+      let result=match storage,component with
+        |(A.Float_array _|A.Int_array _),None->error "E_ATTR_TYPE" "This attribute storage requires its typed array foundation."
+        |storage,None->Ok(storage,count)
+        |A.Float_array data,Some(E.Text "offsets") ->
+            let data=(Rdk.Packed.Float_array.Private.view data).offsets in Ok(A.Int data,Array.length data)
+        |A.Float_array data,Some(E.Text "values") ->
+            let data=(Rdk.Packed.Float_array.Private.view data).values in Ok(A.Float data,Array.length data)
+        |A.Int_array data,Some(E.Text "offsets") ->
+            let data=(Rdk.Packed.Int_array.Private.view data).offsets in Ok(A.Int data,Array.length data)
+        |A.Int_array data,Some(E.Text "values") ->
+            let data=(Rdk.Packed.Int_array.Private.view data).values in Ok(A.Int data,Array.length data)
+        |_->error "E_ATTR_TYPE" "This attribute storage requires its typed array foundation." in
+      Result.bind result(fun(storage,count)->Result.bind(value_type(storage_kind storage))(fun actual->
+        if ty<>Flow.Ty.Any && ty<>actual then error "E_DATA_SOURCE" "The host returned a data source of the wrong type."
+        else Ok(Some(storage,count)))))
+  | None -> (match values with
+      |E.Record fields -> (match Option.bind(List.assoc_opt "offsets" fields)descriptor,
+          Option.bind(List.assoc_opt "values" fields)descriptor with
+        |Some(offset_ty,offsets),Some(value_ty,values) when List.assoc_opt "component" offsets=Some(E.Text "offsets")
+            && List.assoc_opt "component" values=Some(E.Text "values")
+            && List.remove_assoc "component" offsets=List.remove_assoc "component" values ->
+            Result.bind(source(List.remove_assoc "component" offsets))(fun(storage,count)->
+              let actual=match storage with A.Float_array _->Some Flow.Ty.(Array Float)
+                |A.Int_array _->Some Flow.Ty.(Array Int)|_->None in
+              match actual with
+              |None->error "E_ATTR_TYPE" "This attribute storage requires its typed array foundation."
+              |Some actual when (offset_ty=Flow.Ty.Any || offset_ty=Flow.Ty.(Array Int))
+                  &&(value_ty=Flow.Ty.Any || value_ty=actual)->Ok(Some(storage,count))
+              |Some _->error "E_DATA_SOURCE" "The host returned a data source of the wrong type.")
+        |_->Ok None)
+      |_->Ok None)
+
+let write_source ~geometry ~owner ~kind name values target =
+  Result.bind(borrowed_storage ~geometry values)(function
+    |None->Ok None
+    |Some(storage,count)->
+        if storage_kind storage<>kind then error "E_ATTR_TYPE" ("sop/with_attr requires "^kind^" storage.")
+        else if count<>owner_count target owner then error "E_ATTR_COUNT"
+          (match kind with
+           |"int"->"Integer attribute count differs from owner count."
+           |"text"->"Text attribute count differs from owner count."
+           |"float_array"|"int_array"->"CSR row count differs from owner count."
+           |_->Printf.sprintf "%s needs %d %s values; got %d." name (owner_count target owner) (owner_name owner) count)
+        else
+          (* This transfers immutable RDK storage. Native storage transfers also
+             retain nonfinite planes; computed numeric arrays remain checked. *)
+          Result.map Option.some (Result.map_error(Flow.Diagnostic.error ~code:"E_ATTR_TYPE")
+            (if owner=A.Point && name="P" then match storage with
+               |A.Float3 positions->G.with_positions positions target
+               |_->Error "Canonical point P requires vec3 storage."
+             else Result.bind(A.create_owned ~name ~owner storage)(fun attribute->G.with_attribute attribute target))))
 let write ~grain ~owner ~kind name values geometry =
   let owned storage = Result.map_error(Flow.Diagnostic.error ~code:"E_ATTR_TYPE")
     (Result.bind (A.create_owned ~name ~owner storage)(fun attr->G.with_attribute attr geometry)) in
@@ -483,7 +550,8 @@ let node ?state ?(reference = false) ?(strict = false) ?elems ?profile ?(owner=A
         else if Sop.Context.cancelled context then error "E_CANCELLED" "Attribute kernel cancelled."
         else Result.bind program (fun program ->
           let live=Sop.Context.input context in
-          Result.bind (if reference then Ok None else
+          Result.bind (write_source ~geometry ~owner ~kind name values geometries.(0)) (fun borrowed ->
+          Result.bind (match borrowed with Some _ -> Ok borrowed | None -> if reference then Ok None else
             Result.bind(write_constant ?state ?elems ~resolve ~owner ~kind ~name constant geometries.(0) ~live)
               (function Some geometry->Ok(Some geometry)|None->
                 write_planes ?state ?elems ~strict ~resolve ~geometry ~owner ~kind ~name program geometries.(0) ~live))
@@ -492,7 +560,7 @@ let node ?state ?(reference = false) ?(strict = false) ?elems ?profile ?(owner=A
                 Result.bind (Flow_ir.Executor.force ?state ?elems ~reference ~strict ~resolve program ~live)
                   (fun values -> if Sop.Context.cancelled context then
                       error "E_CANCELLED" "Attribute kernel cancelled."
-                    else write ~grain:(Sop.Context.grain context) ~owner ~kind name values geometries.(0)))) in
+                    else write ~grain:(Sop.Context.grain context) ~owner ~kind name values geometries.(0))))) in
       Result.map_error (fun (d : Flow.Diagnostic.t) -> Sop.Diagnostic.error ?cause:d.cause ~code:d.code d.message)
         (Result.map (fun geometry -> N.Private.{geometry; diagnostics = []; instances = None}) result)) in
   N.Private.with_facts { (N.facts node) with elementwise = (match owner with A.Point->N.Points|Primitive->Primitives|_->None);

@@ -194,6 +194,52 @@ let typed_refusals () =
      "(sop/rest_position (sop/rest_input) false)"];
   print_endline "rest_position draft: wrong positional and optional input types preserve native refusal codes"
 
+let exceptional_storage () =
+  let values=[|-0.;0.;Float.infinity;Float.neg_infinity;
+    Int64.float_of_bits 0x7ff8000000000123L;max_float;-.max_float|] in
+  let planes offset=Packed.Float3.Private.of_owned_exn
+    ~x:(Array.init 7(fun i->values.((i+offset)mod 7)))
+    ~y:(Array.init 7(fun i->values.((i+offset+2)mod 7)))
+    ~z:(Array.init 7(fun i->values.((i+offset+4)mod 7))) in
+  let geometry offset=payload(points 7 0.)
+    |>Geometry.with_positions(planes offset)|>get_string_ok
+    |>add "rest" Attribute.Point(Attribute.Float3(planes(offset+1)))
+    |>add "N" Attribute.Point(Attribute.Float3(planes(offset+2)))
+    |>add "restN" Attribute.Point(Attribute.Float3(planes(offset+3))) in
+  let base=geometry 0 and sample=geometry 1 in
+  let input=Lisp_sop.snapshot base and before=geometry_bytes base
+  and sample_before=geometry_bytes sample in
+  let attr name geometry=Geometry.find_attribute ~owner:Attribute.Point name geometry|>Option.get
+    |>Attribute.Private.storage in
+  let shares a b=match a,b with Attribute.Float3 a,Attribute.Float3 b->a==b|_->false in
+  List.iter(fun mode->List.iter(fun normals->List.iter(fun sample_node->
+    let keywords=Printf.sprintf ":mode %S :normals %S" mode normals in
+    let expected_node=native input sample_node["mode",P.Choice_value mode;"normals",P.Choice_value normals] in
+    with_session(fun session->
+      let expected=cook session 1 97 expected_node in
+      List.iter(fun reference->let actual_node=node ~reference input sample_node keywords in
+        List.iter(fun domains->
+          let actual=cook session domains 97 actual_node in
+          check(geometry_bytes actual=geometry_bytes expected)
+            "rest_position exceptional planes differ from native storage bytes";
+          check(Geometry.positions actual==Geometry.positions expected)
+            "rest_position copied unchanged position storage";
+          List.iter(fun name->check(shares(attr name actual)(attr name expected))
+            ("rest_position copied unchanged attribute storage: "^name))["rest";"N";"restN"])
+          [1;8]) [false;true])) [None;Some(Lisp_sop.snapshot sample)])
+    ["None";"If present";"Always"]) ["Store";"Extract";"Swap"];
+  check(before=geometry_bytes base && sample_before=geometry_bytes sample)
+    "rest_position exceptional storage transfer mutated an input";
+  (* Borrowing only covers unchanged storage. Even an identity numeric map
+     evaluates its input and keeps the ordinary nonfinite refusal. *)
+  let mapped=Lisp_sop.workspace_node ~with_:["source",input]
+    "(workspace checked_map (defnode sop/checked_map [(geo : geometry)] (sop/with_attr geo :mapped (exact (map (fn [p] p) (sop/attr geo :P))))) (graph g :context sop (sop/checked_map (sop/ext_source))))" in
+  with_session(fun session->List.iter(fun domains->
+    match Sop.Session.cook session ~context:(context domains 97) mapped with
+    |Error error->check(error.code="E_NONFINITE") "Mapped exceptional source lost nonfinite refusal"
+    |Ok _->fail "Computed numeric map accepted a nonfinite source") [1;8]);
+  print_endline "rest_position: native exceptional-plane bytes and shared storage preserved; computed numeric inputs remain checked"
+
 let benchmark () =
   let count=1_000_000 in
   let input=Lisp_sop.snapshot(payload(points count 0.)) in
@@ -212,4 +258,4 @@ let benchmark () =
       [1;4]) ["Store";"Extract";"Swap"]
 
 let () = if Array.exists((=)"--bench")Sys.argv then benchmark()
-  else (verify(); errors(); parameter_edits(); typed_refusals())
+  else (verify(); errors(); parameter_edits(); typed_refusals(); exceptional_storage())

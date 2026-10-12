@@ -29,6 +29,7 @@ type expr =
   | Call_index of int
   | Source of Flow.Eval.value
   | Host_source of { name : string; ty : Flow.Ty.t; args : (string * int) list }
+  | Source_descriptor of { name : string; ty : Flow.Ty.t; args : (string * int) list }
   | Prim of primitive * (string * int) list
   | Vec of int list | Fields of (string * int) list | Items of int list
   | Field of int * string
@@ -205,6 +206,8 @@ let pp fmt p =
     | Call_index n -> out "call[%d]++" n
     | Source value -> out "source<%s>" (Flow.Ty.to_string (Flow.Value.ty_of value))
     | Host_source {name;ty;args}->out "host_source<%s %S>(" (Flow.Ty.to_string ty) name;
+        separated (fun(name,n)->out "%S:" name;local n)args;out ")"
+    | Source_descriptor {name;ty;args}->out "source_descriptor<%s %S>(" (Flow.Ty.to_string ty) name;
         separated (fun(name,n)->out "%S:" name;local n)args;out ")"
     | Prim (op,args) ->
         out "%s" (primitive_name op);
