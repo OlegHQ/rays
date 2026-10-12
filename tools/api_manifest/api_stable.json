@@ -337,11 +337,12 @@
         "val empty : t",
         "val sample : clock : ( unit -> float ) -> ( unit -> 'a ) -> 'a * t",
         "val measure : phase -> ( unit -> 'a ) -> 'a",
+        "val without : ( unit -> 'a ) -> 'a",
         "val calls : t -> phase -> int",
         "val seconds : t -> phase -> float",
         "val summary : t -> string"
       ],
-      "api_sha256": "5f88e31bd4d6790a6b3ec8c147293714028ed8b228ef339994c87acc2720a300",
+      "api_sha256": "febb75d40a6d9a22d743bfbff1ba9616b061f61e322e3a284a7c59769fdfa95f",
       "excluded_legacy_symbols": [],
       "library": "flow",
       "module": "Phase_timer",
