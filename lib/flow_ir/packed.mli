@@ -11,6 +11,8 @@ type instruction = Core.Region.instruction = Const of float | Input of int * int
   | Noise3 of int * int * int * int * int | Fma of int * int * int | Rand_at of int * int
   | Select of int * int * int
   | Checked_mul of projection * int * int | Checked_fma of projection * int * int * int
+  | Array_prepare of int * Flow.Ty.t
+  | Gather of int * int * int * int | Int_gather of int * int
   | Int_const of int | Int_input of int | Int_uniform of int | Int_frame of string | Int_accumulator
   | Int_binary of Flow.Packed_ops.integer * int * int
   | Int_compare of Flow.Packed_ops.comparison * int * int | Int_abs of int

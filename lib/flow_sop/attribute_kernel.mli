@@ -34,6 +34,12 @@ val write_selected : grain:int -> owner:Rdk.Attribute.owner -> kind:string -> st
     missing or differently typed storage uses the explicit finite default row.
     Input and selection cardinality, types and finite computed values are checked. *)
 
+val write_constant_source : grain:int -> owner:Rdk.Attribute.owner -> kind:string -> string ->
+  ?selection:Flow.Eval.value -> ?default:Flow.Eval.value -> Flow.Eval.value -> Rdk.Geometry.t ->
+  (Rdk.Geometry.t option, Flow.Diagnostic.t) result
+(** Consume validated constant-array metadata without dense intermediate storage.
+    Other values return [None] and retain the ordinary writer path. *)
+
 val prepare : ?profile:Flow_ir.Profile.t -> ?strict:bool -> ?approx:Flow.Workspace.Paths.t -> ?sink:Flow_ir.sink ->
   sources:int list -> Sop.Node.t list -> Flow.Eval.value ->
   (Flow_ir.Executor.program, Flow.Diagnostic.t) result
