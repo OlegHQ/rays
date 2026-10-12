@@ -2380,3 +2380,48 @@ Log: `/tmp/rays-set-color-inline-mask-bench.log`.
 | Detail | 1 | vec4 | all | 4 | 0.000028 | 0.000039 | 1.402 | 10448 | 27976 |
 | Detail | 1 | wrong_float | all | 1 | 0.000023 | 0.000024 | 1.052 | 10216 | 27088 |
 | Detail | 1 | wrong_float | all | 4 | 0.000027 | 0.000038 | 1.416 | 10448 | 27976 |
+
+### Exact integer comparisons use native operand types (shared prerequisite)
+
+`Packed_ops.comparison_apply` now annotates its two operands as `int`, matching
+its existing interface. This changes neither the signed 63-bit comparison
+contract nor its Op/Packed callers. Apple M1 disassembly before the annotation
+shows every comparison case calling the polymorphic C comparison through
+`caml_c_call`; afterwards all five cases use direct signed ARM `cmp`/`cset`
+and return, without that C call. Assembly evidence:
+`/tmp/rays-point-jitter-guard-cache-assembly.txt` and
+`/tmp/rays-int-comparison-annotated-assembly.txt`.
+
+Focused requests 11815 and 89572 ran `@lib/flow/runtest
+@lib/flow_ir/runtest @lib/flow_sop/point_jitter_draft
+_build/default/lib/flow_sop/test_point_jitter.exe`. Flow, the 1,952-case scalar
+Core census, numeric packed/gather proofs and the full Point Jitter recipe
+passed. The aggregate exited 1 on the concurrent Text leaf work: first a
+stale zero-region assertion, then empty Cartesian Text source laziness and
+bulk Text result handling. These failures are retained in
+`/tmp/rays-point-jitter-int-comparison-focused.log` and
+`/tmp/rays-point-jitter-int-comparison-focused2.log`. Final retry 94549 exited
+0 for the same command after the Text fixes
+(`/tmp/rays-point-jitter-int-comparison-focused3.log`), including exact
+signed-integer boundaries, guarded execution, gather, Text leaves and the full
+Point Jitter native/reference/domain/grain/error recipe. No public API or
+mirror changed.
+
+Quiet request 30465 exited 0 after the native/reference/strict preflights,
+using the annotated executable linked by 89572. It uses the same protocol as
+the post-guard-cache baseline 74683: Apple M1, OCaml 5.3.0 dev profile, one
+million real grid points and 998,001 quads, grain 4096, median of three fresh
+cold-session cooks, domains 1/4. Four-domain allocations cover only the
+initial domain. Log: `/tmp/rays-point-jitter-int-comparison-bench-first.log`.
+
+| Mode | Domains | Baseline Lisp seconds | Native seconds | Annotated Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| defaults | 1 | 0.579217 | 0.020690 | 0.548117 | **26.492×** | 72015704 | 617593168 |
+| defaults | 4 | 0.243064 | 0.006940 | 0.229277 | **33.036×** | 36279960 | 363795592 |
+| selected optional inputs | 1 | 0.697501 | 0.025340 | 0.671244 | **26.489×** | 48016440 | 732849120 |
+| selected optional inputs | 4 | 0.288948 | 0.007334 | 0.271113 | **36.967×** | 30171856 | 405743008 |
+
+Whole Lisp time falls about 3.8–6.2% against the previous table. Allocation
+stays close to that table, including its retained selected-case regression;
+one-domain counts rise by approximately 190 KB per cook. All four unchanged
+2× gates fail. No Point Jitter registration or native removal is claimed.

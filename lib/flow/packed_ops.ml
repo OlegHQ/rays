@@ -43,7 +43,7 @@ let integer_apply operation a b =
     | Iand -> a land b | Ior -> a lor b | Ixor -> a lxor b
     | Ishl -> a lsl b | Ishr -> a lsr b
   with Division_by_zero -> Value.fail "E_RANGE" "Integer division by zero."
-let comparison_apply operation a b = match operation with
+let comparison_apply operation (a : int) (b : int) = match operation with
   | Ilt -> a<b | Ile -> a<=b | Igt -> a>b | Ige -> a>=b | Ieq -> a=b
 let rand_at seed index =
   let value=seed lxor ((index+0x11b54a32d192ed03)*0x1e3779b97f4a7c15) in
