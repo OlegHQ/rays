@@ -16,7 +16,8 @@ let parameter_gesture operation level id values =
    the new volatile nodes. *)
 let install value doc ~label ~merge =
   let level = Document.resolve_level doc value.level in
-  let value' = { value with doc; level; workspace = unrestore value.doc doc value.workspace } in
+  let value' = { value with doc; level; lisp_vocab = vocabulary_for value doc;
+    workspace = unrestore value.doc doc value.workspace } in
   Cook.set_volatile value.cook (Flow_sop.Lower.is_volatile (snd doc.workspace));
   { value' with history = commit ~label ~merge doc value.history;
     selection = if level = value.level then value.selection else Selection.empty }

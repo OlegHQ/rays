@@ -1,0 +1,2 @@
+; Shared node helpers belong here. Individual node bodies live beside this file.
+(workspace sop_nodes)

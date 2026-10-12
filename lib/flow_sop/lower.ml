@@ -16,6 +16,7 @@ type graph = {
 }
 type t = {
   graphs : graph list;
+  factories : Edit.factory list;
   compiled_ids : int Instance_path.Map.t;
   sites : Workspace.path list;
   compiled : int Network.Int_map.t;
@@ -113,15 +114,28 @@ let at_zero value =
   if E.is_live value then ok (E.force value ~live:(Frame_input.at_time (0.))) else value
 
 let is_zone kind = kind = "zone/points" || kind = "zone/pieces"
-let geo_of args = List.filter_map (function _, E.Deferred (ty, j) when Ty.is_cooked ty -> Some j | _ -> None) args
+let geo_of args =
+  let rec sources = function
+    | E.Deferred (ty, j) when Ty.is_cooked ty -> [j]
+    | E.List values -> Array.to_list values |> List.concat_map sources
+    | _ -> [] in
+  List.concat_map (fun (_,value) -> sources value) args
 
 let is_volatile lowered id = Network.Int_map.mem id lowered.volatile
+
+let same_function a b = a == b ||
+  (E.Private.function_id a = E.Private.function_id b
+   && E.Private.function_origin a = E.Private.function_origin b
+   && E.Private.function_scope a = E.Private.function_scope b
+   && E.Private.function_name a = E.Private.function_name b
+   && List.equal (fun (an,av) (bn,bv) -> an=bn && av==bv)
+     (E.Private.function_bindings a) (E.Private.function_bindings b))
 
 let objects lowered = List.filter_map (fun (graph : graph) ->
   Option.map (fun root -> graph.instance, graph.network, root) graph.root)
   lowered.graphs
 
-let of_checked ~factories ?(reference = false) ?(compiled_ids = Instance_path.Map.empty)
+let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(kernel_bindings = []) ?(compiled_ids = Instance_path.Map.empty)
     ?(sites = []) ?inputs checked =
   Phase_timer.measure Lower (fun () ->
   try
@@ -140,8 +154,16 @@ let of_checked ~factories ?(reference = false) ?(compiled_ids = Instance_path.Ma
        lazy so ordinary catalog edits retain their existing pipeline counts.
        ponytail: the whole source invalidates kernels; narrow to body/defn cones
        if unrelated structural edits measurably recook them. *)
-    let kernel_source = lazy (Digest.string (fst (Lisp.print checked.source))) in
+    let kernel_source = lazy (Digest.string (fst (Lisp.print (checked.source @ checked.macros @
+      List.map (fun (g : Workspace.graph) -> g.form) checked.defs @
+      List.map (fun (d : Workspace.node_definition) -> d.body.form) checked.nodes)))) in
+    let attribute_node ?state ?elems ~name ~values ~sources inputs =
+      if strict_body then ignore (ok (Attribute_kernel.prepare ~strict:true ~sources inputs values));
+      Attribute_kernel.node ?state ?elems ~strict:strict_body ~reference ~profile
+        ~source:(Lazy.force kernel_source) ~name ~values ~sources inputs in
     let plan = evaluated.plan in
+    let external_kernel fn = List.find_map (fun (candidate,source) ->
+      if same_function candidate fn then Some source else None) kernel_bindings in
     let image_sites = Array.map (fun (node : E.node) ->
       if node.kind = "image/map" then Option.join
         (Hashtbl.find_opt image_origins (node.inst, node.site, node.iter)) else None) plan.nodes in
@@ -182,8 +204,12 @@ let of_checked ~factories ?(reference = false) ?(compiled_ids = Instance_path.Ma
         Option.to_list root @ List.filter (fun id -> Some id <> root)
           (Attribute_kernel.sources (List.assoc "values" n.args))
       else let direct = geo_of n.args in
-        direct @ (List.concat_map (function
-          | _, (E.Fn _ as value) -> Attribute_kernel.sources value | _ -> []) n.args
+        let rec captures = function
+          | E.Fn fn as value -> (match external_kernel fn with
+              |Some source->[source]|None->Attribute_kernel.sources value)
+          | E.List values -> Array.to_list values |> List.concat_map captures
+          | _ -> [] in
+        direct @ (List.concat_map (fun (_,value) -> captures value) n.args
           |> List.sort_uniq Int.compare |> List.filter (fun id -> not (List.mem id direct)))
     and zinfo (n : E.node) = match Hashtbl.find_opt zinfos n.id with
       | Some z -> z
@@ -218,10 +244,191 @@ let of_checked ~factories ?(reference = false) ?(compiled_ids = Instance_path.Ma
       | None ->
           let parameters = ok (Port.parameters (Edit.factory_fields factory)) in
           Hashtbl.add params_cache key parameters; parameters in
+    let lisp_factory ?(functions = []) (definition : Workspace.node_definition) =
+      let rec function_elements = function
+        | E.Fn fn -> [fn]
+        | E.List values -> Array.to_list values |> List.concat_map function_elements
+        | _ -> [] in
+      let functions = List.filter_map (fun (slot : Check.slot) ->
+        let values = List.filter_map (fun (name,value) -> if name=slot.name then Some value else None) functions
+          |> List.concat_map function_elements |> List.map (fun fn -> E.Fn fn) in
+        match values with
+        | [] -> None
+        | [value] when not slot.rest -> Some (slot.name,value)
+        | _ -> Some (slot.name,E.List (Array.of_list values))) definition.slots in
+      let key = String.sub definition.kind.qualified 4
+        (String.length definition.kind.qualified - 4) in
+      let build bindings ~label ~context inputs parameters =
+        let make_capture_factories aliases = List.mapi (fun index input ->
+          let key = "lisp_capture_" ^ string_of_int index in
+          let factory = Edit.factory ~key ~label:key ~category:["Flow"] ~arity:0
+            (fun _ -> Sop.Node.Private.make ~operation:key ~version:1
+              ~parameters:(string_of_int (Sop.Node.id input)) ~cook_mode:Sop.Node.Generator
+              ~dependencies:Sop.Context.Dependencies.static ~inputs:[||]
+              (fun ~node_id:_ _ _ -> Result.map (fun payload ->
+                let payload = match payload, List.assoc_opt index aliases with
+                  | Sop.Payload.Kernel kernel, Some sources ->
+                      Sop.Payload.Kernel (Sop.Kernel.Private.remap_geometry_captures ~sources kernel)
+                  | _ -> payload in
+                Sop.Node.Private.{payload;diagnostics=[];instances=None}) (Lisp_node.input index))) in
+          key, factory) inputs in
+        let capture_factories = make_capture_factories [] in
+        let body = Context_kernel.specialize ~label ~context definition.body in
+        let body = {body with inputs=List.map (fun (name, ty, default) ->
+          let default = match List.assoc_opt name bindings with
+            | None -> default
+            | Some indices ->
+                let element_ty = match ty with Ty.List element -> element | _ -> ty in
+                let capture index = let key,_=List.nth capture_factories index in
+                  Workspace.{path=None;ty=element_ty;form=Syntax.make (List []);
+                    node=Call {kind="sop/" ^ key;
+                      ctx=(if element_ty=Ty.image then Context.image else Context.sop);args=[]}} in
+                let node = match ty,indices with
+                  | Ty.List _, _ -> Workspace.List_lit (List.map capture indices)
+                  | _, [index] -> (capture index).node
+                  | _, [] -> Workspace.Nil
+                  | _ -> fail "E_LOWER" "A fixed Lisp slot has several inputs" in
+                Some Workspace.{path=None;ty;form=Syntax.make (List []);node} in
+          name, ty, default) body.inputs} in
+        let forwarded = List.concat_map (fun (name,value) ->
+          let fns = function_elements value and indices = Option.value ~default:[] (List.assoc_opt name bindings) in
+          if List.compare_lengths fns indices <> 0 then fail "E_LOWER" "Callable slots do not match their cooked inputs";
+          List.mapi (fun offset (fn,index) ->
+            Printf.sprintf "lisp_kernel_%s_%d" name offset,fn,index) (List.combine fns indices)) functions in
+        let geometry_captures = List.concat_map (fun (_,fn,index) ->
+          Attribute_kernel.sources (E.Fn fn) |> List.map (fun source ->
+            let key = Printf.sprintf "lisp_capture_geometry_%d_%d" index source in
+            let factory = Edit.factory ~key ~label:key ~category:["Flow"] ~arity:0
+              (fun _ -> Sop.Node.Private.make_geometry ~operation:key ~version:1
+                ~parameters:(string_of_int (Sop.Node.id (List.nth inputs index)))
+                ~cook_mode:Sop.Node.Generator ~dependencies:Sop.Context.Dependencies.static
+                ~inputs:[||] (fun ~node_id:_ _ _ ->
+                  Result.bind (Lisp_node.input index) (fun payload ->
+                  Result.bind (Sop.Payload.kernel payload) (fun kernel ->
+                    match Sop.Kernel.Private.geometry_capture kernel source with
+                    | Some geometry -> Ok Sop.Node.Private.{geometry;diagnostics=[];instances=None}
+                    | None -> Error (Sop.Diagnostic.error ~code:"E_DATA_SOURCE"
+                        "A forwarded function geometry capture is unavailable"))))) in
+            key, source, index, factory)) forwarded in
+        let body = {body with inputs=List.map (fun (name,_,index) ->
+          let key,_=List.nth capture_factories index in
+          name,Ty.geometry,Some Workspace.{path=None;ty=Ty.geometry;form=Syntax.make (List []);
+            node=Call {kind="sop/" ^ key;ctx=Context.sop;args=[]}}) forwarded @
+          List.map (fun (name,_,_,_) -> name,Ty.geometry,
+            Some Workspace.{path=None;ty=Ty.geometry;form=Syntax.make (List []);
+              node=Call {kind="sop/" ^ name;ctx=Context.sop;args=[]}}) geometry_captures @ body.inputs} in
+        let validations = List.mapi (fun index (predicate, _, _) ->
+          {body with name="lisp_validate_" ^ string_of_int index;
+            context=Context.value;body=predicate}) definition.validations in
+        let nested = {checked with graphs=body::validations;
+          defs=List.map (Context_kernel.specialize ~label ~context) checked.defs;
+          nodes=List.filter (fun (d : Workspace.node_definition) ->
+            d.kind.qualified <> definition.kind.qualified) checked.nodes} in
+        let overrides = List.map (fun (g : Workspace.graph) -> g.name,
+          List.filter (fun (name, _) -> List.exists (fun (input,_,_) -> input=name) g.inputs)
+            (parameters @ functions))
+          nested.graphs in
+        let validated = ok (E.static ~inputs:(List.tl overrides)
+          {nested with graphs=validations}) in
+        List.iteri (fun index (_, code, message) ->
+          match List.assoc ("lisp_validate_" ^ string_of_int index) validated.results with
+          | E.Bool true -> ()
+          | E.Bool false -> invalid_arg (code ^ ": " ^ message)
+          | _ -> invalid_arg "A Lisp node validation must return bool") definition.validations;
+        let body_overrides, kernel_bindings, aliases = if forwarded=[] then List.hd overrides, [], [] else
+          let forwarded_evaluation = ok (E.static ~inputs:[List.hd overrides] {nested with graphs=[body]}) in
+          let marker name = match List.assoc name forwarded_evaluation.plan.instances.(0).inputs with
+            | E.Deferred (_,source) -> source
+            | _ -> fail "E_LOWER" "A forwarded kernel needs a cooked source" in
+          let remapped = List.map (fun (name,fn,index) ->
+            let sources = List.filter_map (fun (name,source,slot,_) ->
+              if slot=index then Some (source, marker name) else None) geometry_captures in
+            name, E.Private.remap_function_geometry ~sources fn, marker name, index, sources) forwarded in
+          let functions = List.map (fun (name,value) -> name,
+            let remap offset fn = match List.find_opt (fun (marker,_,_,_,_) ->
+              marker=Printf.sprintf "lisp_kernel_%s_%d" name offset) remapped with
+              | Some (_,fn,_,_,_) -> E.Fn fn | None -> E.Fn fn in
+            match value with
+            | E.Fn fn -> remap 0 fn
+            | E.List _ -> E.List (Array.of_list (List.mapi remap (function_elements value)))
+            | _ -> value) functions in
+          (body.name, List.filter (fun (name,_) ->
+             List.exists (fun (input,_,_) -> name=input) body.inputs) (parameters @ functions)),
+          List.map (fun (_,fn,source,_,_) -> fn,source) remapped,
+          List.map (fun (_,_,_,index,sources) -> index,sources) remapped in
+        let capture_factories = make_capture_factories aliases in
+        let nested = ok (lower_checked ~reference ~strict_body:true ~kernel_bindings
+          ~factories:(List.map snd capture_factories @ List.map (fun (_,_,_,factory) -> factory) geometry_captures @ factories)
+          ~inputs:[body_overrides] {nested with graphs=[body]}) in
+        let graph = match nested.graphs with
+          | [graph] -> graph | _ -> fail "E_LOWER" "A Lisp node body needs one SOP graph" in
+        let root = match graph.root with Some root -> root
+          | None -> fail "E_LOWER" "A Lisp node body must return geometry" in
+        let compiled = edit (Edit.compile_node graph.network.geometry ~node_id:root) in
+        let dependencies = Sop.Graph.dependencies compiled in
+        let dependencies = if Context_kernel.depends ~inputs:parameters ~defs:checked.defs definition.body then
+          Sop.Context.Dependencies.union dependencies (Sop.Context.Dependencies.one Seed)
+          else dependencies in
+        let owned = Sop.Graph.inspect compiled |> List.filter (fun (node : Sop.Graph.info) ->
+          not (String.starts_with ~prefix:"lisp_capture_" node.operation)) in
+        let preserved = List.for_all (fun (node : Sop.Graph.info) ->
+          node.facts.topology=Sop.Node.Preserved) owned in
+        let input_count = List.length inputs in
+        let facts = Sop.Node.{
+          cook_mode=(if input_count=0 then Generator else if preserved && input_count=1
+            then Duplicate_input 0 else Generic);
+          elementwise=(if preserved then (Sop.Node.facts compiled).elementwise else None);
+          reads=List.concat_map (fun (node : Sop.Graph.info) -> node.facts.reads) owned
+            |> List.sort_uniq String.compare;
+          writes=List.concat_map (fun (node : Sop.Graph.info) -> node.facts.writes) owned
+            |> List.sort_uniq String.compare;
+          topology=(if preserved then Preserved else Changed);
+          exact=List.for_all (fun (node : Sop.Graph.info) -> node.facts.exact) owned} in
+        let body context =
+          let lane = Value_lane.create () in
+          Result.map_error (fun (d : Diagnostic.t) -> Sop.Diagnostic.error ~code:d.code d.message)
+            (Result.bind (Value_lane.resolve ~live:(Sop.Context.input context) lane
+              ~time:(Sop.Context.time context) graph.network) (fun resolved ->
+              Result.map_error (Diagnostic.error ~code:"E_LOWER")
+                (Edit.compile_node resolved.geometry ~node_id:root))) in
+        body, dependencies, facts in
+      let category = if definition.category=[] then ["Custom"] else definition.category in
+      let construct inputs =
+          let next = ref 0 in
+          let connected = List.mapi (fun slot input ->
+            slot, Option.map (fun _ -> let index = !next in incr next; index) input) inputs in
+          let bindings = List.mapi (fun slot (s : Check.slot) -> s.name,
+            List.filter_map (fun (index, input) ->
+              if index=slot || (s.rest && index>=slot) then input else None) connected)
+            definition.slots in
+          Lisp_node.node ~unbound_function:(List.exists
+              (fun (slot : Check.slot) -> match slot.ty with Some (Ty.Fn _) ->
+                not (List.mem_assoc slot.name functions) && (slot.required ||
+                  Option.value ~default:[] (List.assoc_opt slot.name bindings) <> []) | _ -> false)
+              definition.slots)
+            ~qualified:definition.kind.qualified ~label:definition.label
+            ~fields:definition.fields ~source:(Lazy.force kernel_source) ~build:(build bindings)
+            (List.filter_map Fun.id inputs) in
+      if definition.slots=[] then
+        Edit.factory ~key ~label:definition.label ~category ~fields:definition.fields ~arity:0
+          (fun _ -> construct [])
+      else Edit.factory_slots ~key ~label:definition.label ~category
+        ~slots:(List.map (fun (s : Check.slot) -> s.name) definition.slots)
+        ~keyword_inputs:definition.keyword_inputs
+        ~fields:definition.fields
+        ~input_types:(List.map (fun (s : Check.slot) ->
+          Ty.to_string (Workspace.slot_ty ~slot:s definition.kind)) definition.slots)
+        ~inputs:(List.map (fun (s : Check.slot) -> match s.required,s.rest with
+          |true,false->Edit.Required|false,false->Optional|true,true->Rest|false,true->Optional_rest)
+          definition.slots)
+        construct in
+    let lisp_factories = List.map (fun definition -> lisp_factory definition) checked.nodes in
     let find_factory key = match List.find_opt (fun factory ->
         Edit.factory_key factory = key) factories with
       | Some factory -> factory
-      | None -> fail "E_LOWER" ("Linked catalog has no " ^ key) in
+      | None -> match List.find_opt (fun factory -> Edit.factory_key factory=key) lisp_factories with
+          | Some factory -> factory
+          | None -> fail "E_LOWER" ("Linked catalog has no " ^ key) in
     let pending = ref [] and provenance = ref Network.Int_map.empty and tags = ref 0
     and zones = ref [] in
     let prepared = Hashtbl.create 256 in
@@ -269,10 +476,23 @@ let of_checked ~factories ?(reference = false) ?(compiled_ids = Instance_path.Ma
                   | E.No_geo -> -1 :: deps node | _ -> deps node in
                 let factory = Edit.factory ~key:"flow.with_attr" ~label:"Write attribute"
                   ~category:["Flow"] ~arity:(List.length sources)
-                  (Attribute_kernel.node ~reference ~profile ~source:(Lazy.force kernel_source) ~name ~values ~sources) in
+                  (attribute_node ~name ~values ~sources) in
                 {cid; factory; arity = List.length sources; changes = []; dynamic = []; zone = None; kernels = [];
                   slots = List.filter_map (fun (i, source) -> if source < 0 then None else Some (i, source))
                     (List.mapi (fun i source -> i, source) sources)}
+            | "sop/delete_attr" ->
+                let name = match List.assoc "attribute" args with
+                  | E.Text name -> name | _ -> fail "E_ATTR_NAME" "An attribute pattern must be text" in
+                let owner = match List.assoc_opt "owner" args with
+                  | None -> "point" | Some (E.Text owner) -> owner
+                  | Some _ -> fail "E_ATTR_OWNER" "An attribute owner must be text" in
+                let sources = geo_of args in
+                let factory = Edit.factory ~key:"flow.delete_attr" ~label:"Delete attribute"
+                  ~category:["Flow"] ~arity:1
+                  (function [input] -> Attribute_metadata.delete ~owner ~pattern:name input
+                    | _ -> invalid_arg "Attribute deletion needs one geometry") in
+                {cid;factory;arity=1;changes=[];dynamic=[];zone=None;kernels=[];
+                  slots=List.mapi (fun i source -> i,source) sources}
             | "sop/merge" ->
                 let sources = geo_of args in
                 let base = !tags in
@@ -347,7 +567,12 @@ let of_checked ~factories ?(reference = false) ?(compiled_ids = Instance_path.Ma
                   | ["sop"; key] -> key
                   | ["image"; "noise"] -> "image_noise"
                   | _ -> fail "E_LOWER" ("Cannot lower " ^ kind) in
-                let factory = if key = "image_noise" then Sop.Image_nodes.noise_factory else find_factory key in
+                let factory = if key = "image_noise" then Sop.Image_nodes.noise_factory
+                  else match List.find_opt (fun (d : Workspace.node_definition) ->
+                    d.kind.qualified = kind) checked.nodes with
+                    | Some definition -> lisp_factory
+                        ~functions:args definition
+                    | None -> find_factory key in
                 let names = Edit.factory_slot_names factory
                 and parameters = parameters factory in
                 let rest = List.find_index (function Edit.Rest | Optional_rest -> true | _ -> false)
@@ -355,26 +580,34 @@ let of_checked ~factories ?(reference = false) ?(compiled_ids = Instance_path.Ma
                 let arity = ref (List.length names) in
                 let next_rest = ref (Option.value ~default:0 rest) in
                 let slots = ref [] and changes = ref [] and kernels = ref [] in
-                let rec add_rest = function
+                let add_function index declared_index name fn =
+                  match external_kernel fn with
+                  | Some source -> slots := (index,source) :: !slots
+                  | None ->
+                      let signature = match Ty.of_string (List.nth (Edit.factory_input_types factory) declared_index) with
+                        | Some (Ty.Fn (Some signature)) -> signature
+                        | _ -> fail "E_LOWER" ("Input " ^ name ^ " does not declare a function signature") in
+                      let cid = compiled_id {node with site = node.site @ [Printf.sprintf "~kernel:%s:%d" name index]} in
+                      kernels := {index; cid; signature; fn;
+                        identity = Sop.Node.Private.fresh_id ();
+                        sources = Attribute_kernel.sources (E.Fn fn)} :: !kernels in
+                let rec add_rest name = function
                   | E.No_geo -> ()
                   | E.Deferred (ty, id) when Ty.is_cooked ty ->
                       slots := (!next_rest,id) :: !slots;
                       incr next_rest; arity := max !arity !next_rest
-                  | E.List values -> Array.iter add_rest values
-                  | _ -> fail "E_LOWER" "Repeated inputs need geometry" in
+                  | E.Fn fn ->
+                      add_function !next_rest (Option.get rest) name fn;
+                      incr next_rest; arity := max !arity !next_rest
+                  | E.List values -> Array.iter (add_rest name) values
+                  | _ -> fail "E_LOWER" "Repeated inputs need cooked values or functions" in
                 List.iter (fun (name, value) ->
                   match List.find_index (( = ) name) names, value with
-                  | Some index, value when Some index = rest -> add_rest value
+                  | Some index, value when Some index = rest -> add_rest name value
                   | Some _, E.No_geo -> ()
                   | Some index, E.Deferred (ty, id) when Ty.is_cooked ty -> slots := (index, id) :: !slots
                   | Some index, E.Fn fn ->
-                      let signature = match Ty.of_string (List.nth (Edit.factory_input_types factory) index) with
-                        | Some (Ty.Fn (Some signature)) -> signature
-                        | _ -> fail "E_LOWER" ("Input " ^ name ^ " does not declare a function signature") in
-                      let cid = compiled_id {node with site = node.site @ ["~kernel:" ^ name]} in
-                      kernels := {index; cid; signature; fn;
-                        identity = Sop.Node.Private.fresh_id ();
-                        sources = Attribute_kernel.sources (E.Fn fn)} :: !kernels
+                      add_function index index name fn
                   | Some _, _ -> fail "E_LOWER" ("Slot " ^ name ^ " needs geometry")
                   | None, value ->
                       let parameter = ok (Port.find_parameter parameters name) in
@@ -456,7 +689,7 @@ let of_checked ~factories ?(reference = false) ?(compiled_ids = Instance_path.Ma
           | None when n.kind = "sop/with_attr" && List.assoc "geometry" n.args <> E.No_geo ->
               let name = match List.assoc "attribute" n.args with
                 | E.Text name -> name | _ -> fail "E_LOWER" "Attribute name must be static text" in
-              Attribute_kernel.node ?state ~reference ~profile ~elems:outer ~source:(Lazy.force kernel_source) ~name
+              attribute_node ?state ~elems:outer ~name
                 ~values:(List.assoc "values" n.args) ~sources:(deps n)
                 (List.filter_map Fun.id options)
           | None -> edit (Edit.instantiate_optional p.factory options) in
@@ -560,7 +793,7 @@ let of_checked ~factories ?(reference = false) ?(compiled_ids = Instance_path.Ma
             |Some(Flow_ir.Executor.Gpu _)->assert false in
           if selected=None && not(E.state_dependent values) then Ok node else
           Ok(Sop.Node.Private.adopt_identity ~source:node
-            (Attribute_kernel.node ~reference ~profile ~state:(E.fork_state state) ~source:(Lazy.force kernel_source) ~name
+            (attribute_node ~state:(E.fork_state state) ~name
               ~values ~sources:(deps n) (Sop.Node.inputs node))))) nodes)
         frame_nodes plan.nodes in
       let frame_nodes=Array.fold_left(fun nodes (n:E.node)->
@@ -660,16 +893,19 @@ let of_checked ~factories ?(reference = false) ?(compiled_ids = Instance_path.Ma
                 (make_zone ~state:(E.fork_state state) ~outer:[] z (Sop.Node.Private.input_array node))))
               network.frame_nodes in
           Network.with_frame_nodes frames network, root) outer in
-    Ok {graphs; compiled_ids = !ids; sites = List.rev !site_list;
+    Ok {graphs; factories=lisp_factories; compiled_ids = !ids; sites = List.rev !site_list;
         compiled = compiled_context;
         pending = List.rev !pending; provenance = !provenance; zones = List.rev !zones;
         volatile = !volatile_nodes; plan; image_sites; states = evaluated.states; evaluated;
         approx = checked.approx; approx_reasons = checked.approx_reasons; profile; preview}
   with Fail diagnostic -> Error diagnostic)
 
+let of_checked ~factories ?reference ?compiled_ids ?sites ?inputs checked =
+  lower_checked ~factories ?reference ?compiled_ids ?sites ?inputs checked
+
 let workspace ~factories ?extra ?reference ?compiled_ids ?sites ?inputs source =
   Result.bind (Catalog.of_factories ~version:Manifest.version ?extra factories) (fun catalog ->
-    match Workspace.check ~ops:Operators.all catalog source with
+    match Catalog.check_workspace ~ops:Operators.all catalog source with
     | Some checked, _ -> of_checked ~factories ?reference ?compiled_ids ?sites ?inputs checked
     | None, diagnostics -> Error (match List.find_opt (fun (d : Diagnostic.t) ->
         d.severity = Diagnostic.Error) diagnostics with

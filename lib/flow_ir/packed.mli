@@ -55,14 +55,17 @@ val site : t -> int * Flow.Workspace.path * int list
 val force : ?state:Flow.Eval.state -> ?elems:(string * Flow.Eval.value) list ->
   ?resolve:(Flow.Eval.value -> (Flow.Eval.value, Flow.Diagnostic.t) result) ->
   ?measure:((unit -> float) * (t -> seconds:float -> reference:bool -> unit)) ->
+  ?strict:bool ->
   t -> live:Flow.Eval.live -> (Flow.Eval.value, Flow.Diagnostic.t) result
 val force_all : ?state:Flow.Eval.state -> ?elems:(string * Flow.Eval.value) list ->
   ?resolve:(Flow.Eval.value -> (Flow.Eval.value, Flow.Diagnostic.t) result) ->
   ?measure:((unit -> float) * (t -> seconds:float -> reference:bool -> unit)) ->
+  ?strict:bool ->
   t -> live:Flow.Eval.live -> (Flow.Eval.value list, Flow.Diagnostic.t) result
 (** One packed array per output, in output order. A program with several outputs
     only collects and has no reference fallback; [force] is the single-output
-    accessor and refuses such a program. *)
+    accessor and refuses such a program. [strict:true] returns kernel errors
+    directly instead of rerunning the reference interpreter. *)
 
 val reference : ?state:Flow.Eval.state -> ?elems:(string * Flow.Eval.value) list ->
   ?resolve:(Flow.Eval.value -> (Flow.Eval.value, Flow.Diagnostic.t) result) ->
@@ -93,3 +96,17 @@ module Private : sig
     ?measure:((unit -> float) * (t -> seconds:float -> reference:bool -> unit)) ->
     t -> live:Flow.Eval.live -> (inputs, Flow.Diagnostic.t) result
 end
+
+type column = {data:float array;offset:int;stride:int}
+
+val force_into : ?state:Flow.Eval.state -> ?elems:(string * Flow.Eval.value) list ->
+  ?resolve:(Flow.Eval.value -> (Flow.Eval.value,Flow.Diagnostic.t) result) ->
+  ?measure:((unit -> float) * (t -> seconds:float -> reference:bool -> unit)) ->
+  ?strict:bool ->
+  column_source:(Flow.Eval.residual -> Flow.Workspace.term -> (column array option,Flow.Diagnostic.t) result) ->
+  count:int -> outputs:float array option array array -> t -> live:Flow.Eval.live -> (unit,Flow.Diagnostic.t) result
+(** Execute a Collect region into caller-owned contiguous output planes.
+    Borrowed source columns retain their offset/stride and are never written.
+    [None] sources use ordinary packed materialization; [None] output lanes skip
+    writes while retaining arithmetic and finite checks. Every plane must have
+    [count] elements, including when all output lanes are skipped. *)

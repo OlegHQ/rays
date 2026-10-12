@@ -437,7 +437,8 @@ let reduce ~carry_changed ~all_ui_visible ~view_state ~carrying ~held_keys ~lead
   (* The open level must still exist after undo or a preset load. *)
   let level = Document.resolve_level doc
       (if Option.is_some loaded then Document.Scene else value.level) in
-  let value' = { value with doc; level; workspace = unrestore value.doc doc result.workspace } in
+  let value' = { value with doc; level; lisp_vocab = vocabulary_for value doc;
+    workspace = unrestore value.doc doc result.workspace } in
   (* the selection keeps the nodes that still exist in the open network *)
   let selection =
     if level <> value.level || Option.is_some loaded then Selection.empty
@@ -664,7 +665,8 @@ let reduce_idle ?select ?preview value actions (frame : Frame.t) =
         (match Doc.syntax_edit ~factories:value.factories value.doc op with
          | Error message -> invalid_arg message
          | Ok doc ->
-             { value with doc; carry = Some { payload = { Carry.kind = "sop"; value = "" }; via = `Keys;
+             { value with doc; lisp_vocab = vocabulary_for value doc;
+               carry = Some { payload = { Carry.kind = "sop"; value = "" }; via = `Keys;
                  original = value.doc; settled = value.cook.Cook.pieces; report = None; targets = None;
                  chosen = None; anchor = None; resting = None; hint = None;
                  preview = Some (Showing { place = Carry.Graph ""; doc; what = "" }) } }) in

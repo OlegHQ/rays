@@ -679,12 +679,40 @@ module Executor = struct
     core : (E.residual * Core_exec.prepared option) list Atomic.t; owner : unit ref;
     count_source : Packed.count_source; profile : Profile.t option; approx:W.Paths.t;
     sink:sink option;mutable gpu_kernel:(Gpu.backend*Packed.t*Gpu.kernel)option }
-  let compile ?profile ?(approx=W.Paths.empty) ?sink ?(count_source = fun _ _ -> None) v =
+  let compile ?profile ?(strict = false) ?(approx=W.Paths.empty) ?sink ?(count_source = fun _ _ -> None) v =
     let b = builder ~count_source W.Paths.empty W.Paths.empty in
     let root = value b (["@value"], []) v in
-    Result.map (fun ir ->
-      {ir; value = v; templates = Atomic.make []; core = Atomic.make []; owner = ref (); count_source; profile;
-        approx;sink;gpu_kernel=None}) (optimize (finish b [|root|]))
+    let rec packed_sources packed =
+      Array.find_map (fun (r, term) -> source r term) (Packed.to_region packed).sources
+    and source r (term : W.term) =
+      let children terms = List.find_map (source r) terms in
+      match term.node with
+      | Hof ((`Map | `Reduce), _) | Loop _ | Op {op = "array/sum"; _} ->
+          (match Packed.compile_result ~count_source r term with
+           | Ok packed -> packed_sources packed
+           | Error _ -> Some term.form.span)
+      | Ref_binding (name, fields) ->
+          let captured = List.fold_left (fun value field -> Option.bind value (function
+            | E.Record fields | Struct (_, _, fields) -> List.assoc_opt field fields
+            | _ -> None)) (List.assoc_opt name (E.Private.residual_view r).bindings) fields in
+          (match captured with Some (E.Residual r) -> source r (E.Private.residual_view r).term | _ -> None)
+      | Op {args; _} | Record args -> children (List.map snd args)
+      | Get (term, _) | Expanded {body = term; _} -> source r term
+      | Bypass call -> Option.bind (W.bypass_input call) (source r)
+      | Let (bindings, result) -> children (result :: List.map snd bindings)
+      | If (a,b,c) -> children [a;b;c]
+      | _ -> None in
+    Result.bind (optimize (finish b [|root|])) (fun ir ->
+      match if strict then Array.find_map (fun node -> match node.kind with
+        | Kernel {body = Reference r; _} | Source (State_previous r) ->
+            Some (E.Private.residual_view r).term.form.span
+        | Kernel {body = Packed_map packed; _} -> packed_sources packed
+        | _ -> None) ir.nodes else None with
+      | Some span ->
+          Error (Flow.Diagnostic.error ~span ~code:"E_KERNEL_FORM"
+            "Numeric node bodies must compile to packed kernels.")
+      | None -> Ok {ir; value = v; templates = Atomic.make []; core = Atomic.make []; owner = ref (); count_source; profile;
+          approx;sink;gpu_kernel=None})
   let graph p = p.ir
   (* One timing per packed group, recorded when the group runs. *)
   let measure ?(ran = ignore) profile = Option.map (fun profile -> profile.Profile.clock,
@@ -693,7 +721,7 @@ module Executor = struct
       let sites = Packed.provenance packed in
       let _, path, iter = Packed.site packed in
       Profile.record profile {owner = path, iter; sites; seconds; tier = if reference then Interp else Cpu_kernel})) profile
-  let force ?state ?elems ?resolve ?(reference = false) program ~live =
+  let force ?state ?elems ?resolve ?(reference = false) ?(strict = false) program ~live =
     let packed_ran = ref false in
     let measure = measure ~ran:(fun () -> packed_ran := true) program.profile in
     let state = match state with Some state -> state | None -> E.create_state () in
@@ -711,9 +739,14 @@ module Executor = struct
                 ignore (Atomic.compare_and_set program.templates cached (p :: take 31 cached))) prepared;
               prepared in
         match prepared with
-        | Some p when not (Option.fold ~none:false ~some:(fun count -> Cost.packed ~count <> Cpu_kernel) (Packed.static_count p)) ->
-            Some (Packed.force ~state ?elems ?resolve ?measure p ~live)
-        | _ -> None in
+        | Some p when strict || not (Option.fold ~none:false ~some:(fun count -> Cost.packed ~count <> Cpu_kernel) (Packed.static_count p)) ->
+            Some (Packed.force ~strict ~state ?elems ?resolve ?measure p ~live)
+        | _ ->
+            (match strict, (E.Private.residual_view r).term.node with
+             | true, (W.Hof ((`Map | `Reduce), _) | W.Loop _ | W.Op {op = "array/sum"; _}) ->
+                 Some (Error (Flow.Diagnostic.error ~code:"E_KERNEL_FORM"
+                   "Numeric node bodies must compile to packed kernels."))
+             | _ -> None) in
       let execute r live =
         let core = try
           let cached = Atomic.get program.core in
@@ -730,17 +763,18 @@ module Executor = struct
           match prepared with
           | None -> None
           | Some p when not (Core_exec.has_regions p) ->
-              let root = Some r in
+              let root = if strict then None else Some r in
               let run live = Core_exec.execute ?root p ~live in
               E.Private.set_core r ~owner:program.owner ?fast:(Core_exec.fast p) run;
               Some (run live)
-          | Some p -> Some (Core_exec.execute ~root:r ~force:(fun packed ->
-              if Option.fold ~none:false ~some:(fun count -> Cost.packed ~count <> Cpu_kernel) (Packed.static_count packed) then
+          | Some p -> Some (Core_exec.execute ?root:(if strict then None else Some r) ~force:(fun packed ->
+              if not strict && Option.fold ~none:false ~some:(fun count -> Cost.packed ~count <> Cpu_kernel) (Packed.static_count packed) then
                 Error (Flow.Diagnostic.error ~code:"E_CORE_REGION" "Region is not placed on the CPU.")
-              else Packed.force ~state ?elems ?resolve ?measure packed ~live) p ~live)
+              else Packed.force ~strict ~state ?elems ?resolve ?measure packed ~live) p ~live)
           with _ -> None in
         match core with Some _ -> core | None -> execute_packed r live in
-      E.Private.force_with_executor ~state ?elems ?resolve ~owner:program.owner ~execute value ~live in
+      E.Private.force_with_executor ~state ?elems ?resolve ~owner:program.owner
+        ~compiled:(not strict) ~execute value ~live in
     let run () = if reference then fallback () else force_with_packed program.value ~live in
     let started = Option.map (fun profile -> profile.Profile.clock ()) program.profile in
     let result = run () in
@@ -758,6 +792,23 @@ module Executor = struct
         seconds = max 0. (profile.clock () -. Option.get started)}
     end) program.profile;
     result
+  let root_packed program =
+    let rec find readback index =
+      let node=program.ir.nodes.(index) in
+      match node.kind with
+      | Kernel {body=Packed_map packed;_} -> Some (packed,readback)
+      | Kernel {body=Readback;_} -> (match node.args with
+          | [{node;_}] -> find true node | _ -> None)
+      | _ -> None in
+    find false program.ir.roots.(0)
+  let packed_root program = Option.map fst (root_packed program)
+  let force_into ?state ?elems ?resolve ?(strict=false) ~column_source ~count ~outputs program ~live =
+    match packed_root program with
+    | Some packed when Packed.elementwise packed ->
+        Result.map (fun () -> Some ()) (Packed.force_into ?state ?elems ?resolve
+          ?measure:(measure program.profile) ~strict ~column_source ~count ~outputs packed ~live)
+    | _ -> Ok None
+
   type displayed=Cpu of E.value | Gpu of Gpu.value
   (* A packed region on the GPU when the backend takes it and measures it cheaper. [cached] and
      [store] are the owner's one-kernel cache; [display] says a GPU array may leave the executor. *)
@@ -800,15 +851,7 @@ module Executor = struct
     let policy=Option.value ~default:(Domain.DLS.get Gpu.current_policy) policy in
     let cpu()=Ok None in
     if reference then cpu()else match Domain.DLS.get Gpu.current with None->cpu()|Some backend->
-    let root=program.ir.nodes.(program.ir.roots.(0))in
-    let packed,readback=match root.kind with
-      |Kernel{body=Packed_map packed;_}->Some packed,false
-      |Kernel{body=Readback;_}->(match root.args with
-        |[{node;_}]->(match program.ir.nodes.(node).kind with
-          |Kernel{body=Packed_map packed;_}->Some packed,true|_->None,false)
-        |_->None,false)
-      |_->None,false in
-    match packed with None->cpu()|Some packed->
+    match root_packed program with None->cpu()|Some (packed,readback)->
       display_packed ?state ?resolve ~backend ~policy ~approx:program.approx
         ~display:(match program.sink with Some(Display _)->true|_->false) ~profile:program.profile
         ~cached:(fun()->program.gpu_kernel) ~store:(fun k->program.gpu_kernel<-Some k)

@@ -216,6 +216,16 @@ let search state p chains counts =
   |> fun rows -> if !hits = 0 then rows @ [ Empty "nothing matches" ] else rows
 
 let rows ?(wide = true) state p =
+  let p = if p.workspace.defs=[] && p.workspace.macros=[] then p else
+    let authored = Hashtbl.create 16 in
+    List.iter (fun (form : S.t) -> match form.node with
+      | S.List ({node=S.Sym "workspace";_}::_::forms) ->
+          List.iter (fun (form : S.t) -> Hashtbl.replace authored form.id ()) forms
+      | _ -> Hashtbl.replace authored form.id ()) p.workspace.source;
+    let workspace = {p.workspace with
+      W.defs=List.filter (fun (definition : W.graph) -> Hashtbl.mem authored definition.form.id) p.workspace.defs;
+      macros=List.filter (fun (form : S.t) -> Hashtbl.mem authored form.id) p.workspace.macros} in
+    {p with workspace} in
   let ws = p.workspace in
   let chains = match p.scope with Some s -> Flow_graph.Probe.chains s | None -> Hashtbl.create 1 in
   let counts = match p.scope, p.records with

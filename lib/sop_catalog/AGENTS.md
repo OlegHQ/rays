@@ -1,19 +1,26 @@
 # lib/sop_catalog rules
 
-A SOP node is declared once. Its `parameters` record with
+A SOP node is declared once, either in OCaml or in Lisp. An OCaml `parameters` record with
 `[@@deriving sop_params, sop_node]` yields the inspector schema, Lisp manifest
-entry and editor factory, next to the cook that reads it. There is no typed
+entry and editor factory, next to the cook that reads it. A Lisp `defnode` in
+`lib/flow_sop/nodes/<key>.rays` is the alternative declaration: its header owns
+the schema and defaults, its body owns the operation, and Flow_sop builds its
+editor factory. Do not keep an OCaml registration for a ported kind; keep the
+RDK kernel as its test oracle through the SOP Lisp migration. There is no typed
 OCaml constructor: Lisp and `Edit_graph.instantiate` are the ways to build a
-node. Defaults come only from the record. Do not add a separate function
+node. Defaults come only from the declaration. Do not add a separate function
 name, argument list, typed default override or argument-presence toggle.
-Declarations live in `lib/sop` (`groups.ml`, `sop_topology.ml`,
+OCaml declarations live in `lib/sop` (`groups.ml`, `sop_topology.ml`,
 `attributes.ml`, `shapes.ml`; `Support` holds shared helpers).
 `Sop.Nodes` exports their factories, and this library registers them as
 `module X = Sop.Nodes.X [@@sop.register]`.
 A parameter-free node uses `type parameters = unit` with the same derivation;
 do not invent a field. Structured kernel arguments are assembled in the cook.
-The
-PPX-generated deterministic manifest is the only node-menu registry. Do not add a parallel hand-written factory list,
+The combined deterministic manifest, generated from PPX factories and embedded
+Lisp declarations, is the node-menu registry. The source embedding reuses
+`tools/lisp/embed.exe`; `Flow_sop.Catalog.check_workspace` loads the library
+definitions, and `Flow_sop.Lower.t.factories` supplies their factories to the
+editor beside the native list. Do not add a parallel hand-written factory list,
 mutable registration initializer, or menu-only parameter defaults. Catalog
 tests must reject duplicate keys, instantiate every registered factory with
 disconnected input placeholders, and prove that the resulting `Node.operation`
@@ -74,7 +81,8 @@ inputs names its slots in their existing order; without the attribute slots are
 `in0`, `in1`, .... Generated factories carry field metadata for the node menu's
 search, and the inspector uses the same schema for pins and vector rows.
 Value operators (`+`, `range`, `value/rand`, ...) are built into `lib/flow`, never here.
-`lib/sop_catalog/flow_manifest.sexp` is generated from the registered factories
+`lib/sop_catalog/flow_manifest.sexp` is generated from the registered OCaml factories,
+embedded Lisp declarations (with `(body lisp)` and checked `(calls ...)`),
 and the scene, World and settings kinds of `Editor_document.Contexts`. Its runtest rule diffs the live catalog; accept an
 intended metadata change with `dune promote`, as for the API manifest.
 `lib/flow`'s tests read this snapshot (`Flow.Check.catalog_of_manifest`); `rays-lisp` checks a

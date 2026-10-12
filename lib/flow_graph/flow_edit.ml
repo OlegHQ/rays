@@ -703,12 +703,12 @@ let macro_op draft ~nodes ~name choices =
     |> List.mapi (fun i (path, _) -> path, choices.(i))
     |> List.filter_map (fun (path, (on, hole)) -> if on then Some (path, hole) else None) }
 
-let check ?ops ?library catalog forms =
+let check ?ops ?library ?checker catalog forms =
   let text, _ = Flow.Lisp.print forms in
   match S.parse text with
   | Error d -> Error d
   | Ok forms ->
-      (match W.check ?ops ?library catalog forms with
+      (match (Option.value checker ~default:(W.check ?ops ?library)) catalog forms with
        | Some ws, _ -> Ok (forms, ws)
        | None, ds ->
            Error (match List.find_opt (fun (d : Flow.Diagnostic.t) -> d.severity = Flow.Diagnostic.Error) ds with
@@ -722,7 +722,7 @@ let refusal = function
   | (Out_of_memory | Sys.Break) as e -> raise e
   | e -> Flow.Diagnostic.error ~code:"E_EDIT" ("The edit failed: " ^ Printexc.to_string e)
 
-let apply_checked ?ops ?library catalog src op =
+let apply_checked ?ops ?library ?checker catalog src op =
   let candidates () =
   let path = match op with
     | Wrap {nodes; loop = If} ->
@@ -746,7 +746,7 @@ let apply_checked ?ops ?library catalog src op =
         | Record fs -> List.map snd fs | Assoc (r,fs) -> r :: List.map snd fs
         | Get (r,_) | Bypass r | Expanded {body = r; _} -> [r]
         | _ -> [] in List.find_map find children in
-    match W.check ?ops ?library catalog src with
+    match (Option.value checker ~default:(W.check ?ops ?library)) catalog src with
     | Some ws, _ -> Option.bind (List.find_map (fun (g : W.graph) -> find g.body) (ws.graphs @ ws.defs))
         branch_default
     | _ -> None) in
@@ -759,7 +759,7 @@ let apply_checked ?ops ?library catalog src op =
         | attempt :: rest ->
             (match attempt () with
              | exception e -> first (if err = None then Some (refusal e) else err) rest
-             | forms -> (match check ?ops ?library catalog forms with
+             | forms -> (match check ?ops ?library ?checker catalog forms with
                  | Ok _ as ok -> ok
                  | Error d -> first (if err = None then Some d else err) rest)) in
       first None candidates

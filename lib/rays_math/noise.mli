@@ -36,11 +36,13 @@ module Private : sig
   val sample3_into :
     t -> first:int -> last:int ->
     ?x_offset:int -> ?y_offset:int -> ?z_offset:int -> ?output_offset:int ->
+    ?x_stride:int -> ?y_stride:int -> ?z_stride:int ->
     ?frequency:float ->
     x:float array -> y:float array -> z:float array -> output:float array -> unit -> unit
   (** Packed [sample3], exactly matching scalar samples. Offsets default to zero
       and permit registers stored in one scratch array. Input/output spans must
       be disjoint, or have identical per-index addresses. Non-finite coordinates
       produce [nan]; callers retain their typed error boundary. [frequency]
-      defaults to 1 and multiplies each coordinate before sampling. *)
+      defaults to 1 and multiplies each coordinate before sampling. Input strides
+      default to 1; larger strides read components from interleaved arrays. *)
 end

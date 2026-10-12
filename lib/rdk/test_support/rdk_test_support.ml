@@ -57,23 +57,23 @@ let same_float_array left right =
      done;
      !same
 
-let equal_storage left right = match Attribute.storage left, Attribute.storage right with
-  | Attribute.Float left, Attribute.Float right -> left = right
+let compare_storage floats left right = match Attribute.storage left, Attribute.storage right with
+  | Attribute.Float left, Attribute.Float right -> floats left right
   | Attribute.Int left, Attribute.Int right -> left = right
   | Attribute.Text left, Attribute.Text right -> left = right
   | Attribute.Float2 left, Attribute.Float2 right ->
       let left = Packed.Float2.Private.view left
       and right = Packed.Float2.Private.view right in
-      left.x = right.x && left.y = right.y
+      floats left.x right.x && floats left.y right.y
   | Attribute.Float3 left, Attribute.Float3 right ->
       let left = Packed.Float3.Private.view left
       and right = Packed.Float3.Private.view right in
-      left.x = right.x && left.y = right.y && left.z = right.z
+      floats left.x right.x && floats left.y right.y && floats left.z right.z
   | Attribute.Float4 left, Attribute.Float4 right ->
       let left = Packed.Float4.Private.view left
       and right = Packed.Float4.Private.view right in
-      left.x = right.x && left.y = right.y && left.z = right.z
-      && left.w = right.w
+      floats left.x right.x && floats left.y right.y && floats left.z right.z
+      && floats left.w right.w
   | Attribute.Int_array left, Attribute.Int_array right ->
       let left = Packed.Int_array.Private.view left
       and right = Packed.Int_array.Private.view right in
@@ -81,8 +81,10 @@ let equal_storage left right = match Attribute.storage left, Attribute.storage r
   | Attribute.Float_array left, Attribute.Float_array right ->
       let left = Packed.Float_array.Private.view left
       and right = Packed.Float_array.Private.view right in
-      left.offsets = right.offsets && left.values = right.values
+      left.offsets = right.offsets && floats left.values right.values
   | _ -> false
+
+let equal_storage left right = compare_storage ( = ) left right
 
 let equal_attribute left right =
   Attribute.owner left = Attribute.owner right
@@ -135,12 +137,12 @@ let equal_edge_group left right =
     !equal
   end
 
-let equal_geometry left right =
+let compare_geometry floats left right =
   let lp = Packed.Float3.Private.view (Geometry.positions left)
   and rp = Packed.Float3.Private.view (Geometry.positions right)
   and lt = Topology.Private.view (Geometry.topology left)
   and rt = Topology.Private.view (Geometry.topology right) in
-  lp.x = rp.x && lp.y = rp.y && lp.z = rp.z
+  floats lp.x rp.x && floats lp.y rp.y && floats lp.z rp.z
   && lt.point_count = rt.point_count
   && lt.vertex_points = rt.vertex_points
   && lt.primitive_offsets = rt.primitive_offsets
@@ -148,11 +150,26 @@ let equal_geometry left right =
   && List.equal (fun left right ->
        Attribute.owner left = Attribute.owner right
        && String.equal (Attribute.name left) (Attribute.name right)
-       && equal_storage left right)
+       && compare_storage floats left right)
        (Geometry.attributes left) (Geometry.attributes right)
   && List.equal equal_group (Geometry.groups left) (Geometry.groups right)
   && List.equal equal_edge_group
        (Geometry.edge_groups left) (Geometry.edge_groups right)
+
+let equal_geometry left right = compare_geometry ( = ) left right
+
+(* ULPs are measured at the larger magnitude, including across binade boundaries.
+   Subnormal spacing is always 2^-1074; signed zero compares equal here, while
+   [geometry_bytes] remains the bit-exact self-consistency gate. *)
+let close_geometry ~ulps left right =
+  if ulps < 0 then invalid_arg "close_geometry: negative ulps";
+  let close left right =
+    left = right || (Float.is_finite left && Float.is_finite right
+      && let _, exponent = Float.frexp (Float.max (abs_float left) (abs_float right)) in
+         let unit = Float.ldexp 1. (max (-1074) (exponent - 53)) in
+         abs_float (left -. right) /. unit <= float_of_int ulps) in
+  compare_geometry (fun left right ->
+    Array.length left = Array.length right && Array.for_all2 close left right) left right
 
 (* Polygon topologies for these fixtures: the builder offers polylines only. *)
 (* Primitives in the order added, polygons and polylines mixed. *)

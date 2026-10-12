@@ -87,14 +87,15 @@ let lower ?(fusion = true) ?(dynamic = false)
     if view.previous then refuse "E_PACKED_STATE" "Previous-state values require reference evaluation.";
     if E.state_dependent (E.Residual residual) then
       refuse "E_PACKED_STATE" "State-dependent kernels require reference evaluation.";
+    let captured_body (f : W.term) =
+      match E.Private.eval_term residual f ~live:(Frame_input.at_time 0.) with
+      | Ok (E.Fn fn) -> (match E.Private.function_body fn with
+          | Some (params, body) -> params, body, E.Private.function_bindings fn
+          | None -> refuse ~at:f "E_PACKED_FUNCTION" "Captured function has no instantiated packed body.")
+      | Error d -> raise (Compile_refused d)
+      | Ok _ -> refuse ~at:f "E_PACKED_FUNCTION" "Captured callable did not resolve to a function." in
     let function_body ?reduction (f : W.term) = match f.node with
-      | W.Fn {capture = Some _; _} ->
-          (match E.Private.eval_term residual f ~live:(Frame_input.at_time 0.) with
-           | Ok (E.Fn fn) -> (match E.Private.function_body fn with
-               | Some (params, body) -> params, body, E.Private.function_bindings fn
-               | None -> refuse ~at:f "E_PACKED_FUNCTION" "Captured function has no instantiated packed body.")
-           | Error d -> raise (Compile_refused d)
-           | Ok _ -> refuse ~at:f "E_PACKED_FUNCTION" "Captured callable did not resolve to a function.")
+      | W.Fn {capture = Some _; _} -> captured_body f
       | W.Fn {params; body; _} -> params, body, view.bindings
       | W.Ref_binding (name, []) ->
           (match List.assoc_opt name view.bindings with
@@ -114,6 +115,7 @@ let lower ?(fusion = true) ?(dynamic = false)
                [W.Name "@accumulator",None;W.Name "@item",None],body,view.bindings
            | _ -> refuse ~at:f "E_PACKED_FUNCTION" "Packed named reduce requires canonical addition.")
       | W.Fn_ref name -> refuse ~at:f "E_PACKED_FUNCTION" ("Function value " ^ name ^ " has no instantiated packed body.")
+      | W.Op {op="first";_} -> captured_body f
       | _ -> refuse ~at:f "E_PACKED_FUNCTION" "Packed kernels require a function with an instantiated body." in
     let params, accumulator, body, sources, bindings, iteration, result, skip = match term.node with
       | W.Hof (`Map, f :: sources) ->
@@ -297,9 +299,8 @@ let lower ?(fusion = true) ?(dynamic = false)
                     name,match expression.constant with Some value->value|None->
                       refuse ~at:t "E_PACKED_CONSTANT" ("Noise configuration " ^ name ^ " must be constant."))
                     (List.tl args) rest in
-                  let integer name default=Option.fold ~none:default ~some:V.int_of
-                    (List.assoc_opt name configuration)in
-                  let seed=integer "seed" 0 and octaves=integer "octaves" 1 in
+                  let seed,octaves=try Operators.noise_settings configuration with
+                    | Flow.Value.Fail (_,message,_) -> refuse ~at:t "E_PACKED_CONSTANT" message in
                   if not (Flow.Packed_ops.supported_noise_octaves octaves) then
                     refuse ~at:t "E_PACKED_CONSTANT" (Printf.sprintf "Packed noise octaves must be 1 to 32, got %d." octaves);
                   [|emit (Noise3 (a.registers.(0), a.registers.(1), a.registers.(2), seed, octaves))|]

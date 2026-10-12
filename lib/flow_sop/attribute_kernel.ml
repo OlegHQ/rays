@@ -33,6 +33,11 @@ let sources value =
   visit value; List.sort_uniq Int.compare !ids
 
 let error code message = Error (Flow.Diagnostic.error ~code message)
+let ranges ~grain count f =
+  let chunks = if count=0 then 0 else (count-1)/grain+1 in
+  Rays_math.Parallel.for_ ~chunk_size:1 ~start:0 ~finish:(chunks-1) (fun chunk ->
+    let first=chunk*grain in f ~first ~last:(min count (first+grain)))
+
 let read name geometry =
   let positions = if name = "P" then Some (G.positions geometry) else
     Option.bind (G.find_attribute ~owner:A.Point name geometry)
@@ -43,11 +48,12 @@ let read name geometry =
       let p = P.Private.view positions in
       let count = G.point_count geometry in
       let values = Array.make (count * 3) 0. in
-      for i = 0 to count - 1 do
-        values.(i * 3) <- p.x.(i);
-        values.(i * 3 + 1) <- p.y.(i);
-        values.(i * 3 + 2) <- p.z.(i)
-      done;
+      ranges ~grain:16_384 count (fun ~first ~last ->
+        for i = first to last - 1 do
+          values.(i * 3) <- p.x.(i);
+          values.(i * 3 + 1) <- p.y.(i);
+          values.(i * 3 + 2) <- p.z.(i)
+        done);
       Ok (E.Vec3_array values)
 
 let resolve ~geometry = function
@@ -65,28 +71,24 @@ let write ~grain name values geometry = match values with
       if Array.length values <> count * 3 then
         error "E_ATTR_COUNT" (Printf.sprintf "%s needs %d point values; got %d."
           name count (Array.length values / 3))
-      else if (let finite = ref true in
-        for i = 0 to Array.length values - 1 do
-          if not (Float.is_finite values.(i)) then finite := false
-        done; not !finite) then
-        error "E_NONFINITE" "Point attributes must be finite."
-      else if name = "P" then Ok (Rdk.Kernel.edit_point_ranges ~grain
-        (fun ~first ~last ~x ~y ~z -> for i = first to last - 1 do
-          x.(i) <- values.(i * 3); y.(i) <- values.(i * 3 + 1); z.(i) <- values.(i * 3 + 2)
-        done) geometry)
       else
+        let finite = Atomic.make true in
         let x = Array.make count 0.
         and y = Array.make count 0.
         and z = Array.make count 0. in
-        for i = 0 to count - 1 do
-          x.(i) <- values.(i * 3);
-          y.(i) <- values.(i * 3 + 1);
-          z.(i) <- values.(i * 3 + 2)
-        done;
-        let storage = P.Private.of_owned_exn ~x ~y ~z in
-        Result.map_error (Flow.Diagnostic.error ~code:"E_ATTR_TYPE")
-          (Result.bind (A.create_owned ~name ~owner:A.Point (A.Float3 storage))
-            (fun attr -> G.with_attribute attr geometry))
+        ranges ~grain count (fun ~first ~last ->
+          for i = first to last - 1 do
+            let vx=values.(i*3) and vy=values.(i*3+1) and vz=values.(i*3+2) in
+            if not (Float.is_finite vx && Float.is_finite vy && Float.is_finite vz) then
+              Atomic.set finite false;
+            x.(i)<-vx; y.(i)<-vy; z.(i)<-vz
+          done);
+        if not (Atomic.get finite) then error "E_NONFINITE" "Point attributes must be finite."
+        else let storage = P.Private.of_owned_exn ~x ~y ~z in
+          Result.map_error (Flow.Diagnostic.error ~code:"E_ATTR_TYPE")
+            (if name="P" then G.with_positions storage geometry else
+              Result.bind (A.create_owned ~name ~owner:A.Point (A.Float3 storage))
+                (fun attr -> G.with_attribute attr geometry))
   | _ -> error "E_ATTR_TYPE" "sop/with_attr takes a packed vec3 array."
 
 let source_origins ~sources inputs =
@@ -116,9 +118,7 @@ let materialized_source source =
     ~inputs:[|source|] (fun ~node_id:_ _ geometries ->
       Ok N.Private.{geometry=geometries.(0);diagnostics=[];instances=None})
 
-let prepare ?profile ?approx ?sink ~sources inputs values =
-  Result.bind (source_origins ~sources inputs) (fun by_source ->
-  let rec captured bindings (term : Flow.Workspace.term) = match term.node with
+let rec captured bindings (term : Flow.Workspace.term) = match term.node with
     | Ref_binding (name, fields) ->
         List.fold_left (fun value field -> Option.bind value (function
           | E.Record fields | Struct (_, _, fields) -> List.assoc_opt field fields | _ -> None))
@@ -126,7 +126,10 @@ let prepare ?profile ?approx ?sink ~sources inputs values =
     | Get (term, field) -> Option.bind (captured bindings term) (function
         | E.Record fields | Struct (_, _, fields) -> List.assoc_opt field fields | _ -> None)
     | Bypass body | Expanded {body; _} -> captured bindings body
-    | _ -> None in
+    | _ -> None
+
+let prepare ?profile ?strict ?approx ?sink ~sources inputs values =
+  Result.bind (source_origins ~sources inputs) (fun by_source ->
   let attribute_source = function
     | E.Struct ("sop/attr", _, args) -> List.assoc_opt "geometry" args | _ -> None in
   let count_source residual (term : Flow.Workspace.term) =
@@ -138,10 +141,82 @@ let prepare ?profile ?approx ?sink ~sources inputs values =
       | E.Deferred (ty, id) when Flow.Ty.is_geometry ty ->
           Option.map (fun origin -> ["@sop-points"; string_of_int origin], []) (List.assoc_opt id by_source)
       | _ -> None) in
-  Flow_ir.Executor.compile ?profile ?approx ?sink ~count_source values)
+  Flow_ir.Executor.compile ?profile ?strict ?approx ?sink ~count_source values)
 
-let node ?state ?(reference = false) ?elems ?profile ~source ~name ~values ~sources inputs =
-  let program = prepare ?profile ~sources inputs values in
+let borrowed_columns ~geometry residual term =
+  let rec value = function
+    | E.Struct ("sop/attr",_,args) ->
+        (match List.assoc_opt "geometry" args,List.assoc_opt "attribute" args with
+         | Some (E.Deferred (ty,id)),Some (E.Text name) when Flow.Ty.is_geometry ty ->
+             (match geometry id with
+              | None -> error "E_DATA_SOURCE" "Attribute source has not been cooked."
+              | Some geometry ->
+                  let storage=if name="P" then Some (G.positions geometry) else
+                    Option.bind (G.find_attribute ~owner:A.Point name geometry)
+                      (A.get (A.key ~name ~owner:A.Point A.float3)) in
+                  (match storage with
+                   | None -> error "E_ATTR_TYPE" ("Point attribute " ^ name ^ " is missing or is not vec3.")
+                   | Some storage ->
+                       let p=P.Private.view storage in
+                       Ok (Some (Array.map (fun data -> Flow_ir.Packed.{data;offset=0;stride=1})
+                         [|p.x;p.y;p.z|]))))
+         | _ -> Ok None)
+    | E.Residual r -> source r (E.Private.residual_view r).term
+    | _ -> Ok None
+  and source residual (term : Flow.Workspace.term) =
+    let bindings=(E.Private.residual_view residual).bindings in
+    match term.node with
+    | Op {op="sop/attr";args;_} ->
+        let argument name=Option.bind (List.assoc_opt name args) (fun t -> match t.Flow.Workspace.node with
+          | Text text -> Some (E.Text text) | _ -> captured bindings t) in
+        (match argument "geometry",argument "attribute" with
+         | Some geometry,Some attribute -> value (E.Struct ("sop/attr",term.ty,
+             ["geometry",geometry;"attribute",attribute]))
+         | _ -> Ok None)
+    | Expanded {body;_} -> source residual body
+    | Bypass body -> (match Flow.Workspace.bypass_input body with
+        Some body -> source residual body | None -> Ok None)
+    | _ -> (match captured bindings term with Some v -> value v | None -> Ok None) in
+  source residual term
+
+let write_planes ?state ?elems ~strict ~resolve ~geometry ~name program target ~live =
+  match Flow_ir.Executor.packed_root program with
+  | Some packed when Flow_ir.Packed.elementwise packed ->
+      let region=Flow_ir.Packed.to_region packed in
+      if Array.length region.outputs<>1 || Array.length region.outputs.(0)<>3 then Ok None else
+      let original=P.Private.view (G.positions target) in
+      let original=[|original.x;original.y;original.z|] in
+      let count=G.point_count target in
+      let column_source=borrowed_columns ~geometry in
+      let unchanged component register =
+        if name<>"P" then false else match region.code.(register) with
+        | Flow_ir.Core.Region.Input (input,_,index) ->
+            let residual,term=region.sources.(input) in
+            (match column_source residual term with
+             | Ok (Some columns) -> let column=columns.(index) in
+                 column.data==original.(component) && column.offset=0 && column.stride=1
+             | _ -> false)
+        | _ -> false in
+      let planes=Array.mapi (fun component register ->
+        if unchanged component register then original.(component) else Array.make count 0.) region.outputs.(0) in
+      let outputs=[|Array.mapi (fun component data ->
+        if data==original.(component) then None else Some data) planes|] in
+      Result.bind (Flow_ir.Executor.force_into ?state ?elems ~strict ~resolve
+        ~column_source ~count ~outputs program ~live) (function
+        | None -> Ok None
+        | Some () ->
+            let storage=P.Private.of_shared_exn ~x:planes.(0) ~y:planes.(1) ~z:planes.(2) in
+            Result.map (fun geometry -> Some geometry)
+              (Result.map_error (Flow.Diagnostic.error ~code:"E_ATTR_TYPE")
+                (if name="P" then G.with_positions storage target else
+                  Result.bind (A.create_owned ~name ~owner:A.Point (A.Float3 storage))
+                    (fun attr -> G.with_attribute attr target))))
+      |> Result.map_error (fun (d:Flow.Diagnostic.t) ->
+          if d.code="E_ARRAY_COUNT" then {d with code="E_ATTR_COUNT"} else d)
+  | _ -> Ok None
+
+let node ?state ?(reference = false) ?(strict = false) ?elems ?profile ~source ~name ~values ~sources inputs =
+  let program = prepare ?profile ~strict ~sources inputs values in
   let parameters = source ^ ";" ^ name ^ ";" ^ Flow.Value.key_of ~residual:E.Private.residual_id values
     ^ Option.fold ~none:"" ~some:(fun bindings -> Flow.Value.key_of
         ~residual:E.Private.residual_id (E.Record bindings)) elems
@@ -153,16 +228,21 @@ let node ?state ?(reference = false) ?elems ?profile ~source ~name ~values ~sour
       else Sop.Context.Dependencies.static)
     ~inputs:(Array.of_list inputs)
     (fun ~node_id:_ context geometries ->
-      let resolve = resolve ~geometry:(fun id -> Option.map (fun index -> geometries.(index))
-        (List.find_index ((=) id) sources)) in
+      let geometry id = Option.map (fun index -> geometries.(index))
+        (List.find_index ((=) id) sources) in
+      let resolve = resolve ~geometry in
       let result = if geometries = [||] then error "E_DATA_SOURCE" "Attribute write needs geometry."
         else if Sop.Context.cancelled context then error "E_CANCELLED" "Attribute kernel cancelled."
         else Result.bind program (fun program ->
-          Result.bind (Flow_ir.Executor.force ?state ?elems ~reference ~resolve program
-            ~live:(Sop.Context.input context))
-            (fun values -> if Sop.Context.cancelled context then
-                error "E_CANCELLED" "Attribute kernel cancelled."
-              else write ~grain:(Sop.Context.grain context) name values geometries.(0))) in
+          let live=Sop.Context.input context in
+          Result.bind (if reference then Ok None else
+            write_planes ?state ?elems ~strict ~resolve ~geometry ~name program geometries.(0) ~live)
+            (fun direct -> if Sop.Context.cancelled context then error "E_CANCELLED" "Attribute kernel cancelled."
+              else match direct with Some geometry -> Ok geometry | None ->
+                Result.bind (Flow_ir.Executor.force ?state ?elems ~reference ~strict ~resolve program ~live)
+                  (fun values -> if Sop.Context.cancelled context then
+                      error "E_CANCELLED" "Attribute kernel cancelled."
+                    else write ~grain:(Sop.Context.grain context) name values geometries.(0)))) in
       Result.map_error (fun (d : Flow.Diagnostic.t) -> Sop.Diagnostic.error ~code:d.code d.message)
         (Result.map (fun geometry -> N.Private.{geometry; diagnostics = []; instances = None}) result)) in
   N.Private.with_facts { (N.facts node) with elementwise = N.Points;

@@ -201,16 +201,16 @@ let check_text ?(ops = Flow_sop.Operators.all) ?(imports = []) ?(inputs = []) ?(
                      let children = List.concat_map (fun f -> match f.S.node with
                        | S.List ({S.node = S.Sym "workspace"; _} :: _ :: children) -> children
                        | _ -> [f]) forms in
-                     if List.for_all (fun f -> List.mem (head f) [Some "graph"; Some "defn"; Some "defmacro"]) children
+                     if List.for_all (fun f -> List.mem (head f) [Some "graph"; Some "defn"; Some "defnode"; Some "defmacro"]) children
                      then Ok (loaded @ [path, children])
-                     else fail "expected graph, defn or defmacro forms."))) (Ok []) paths) in
+                     else fail "expected graph, defn, defnode or defmacro forms."))) (Ok []) paths) in
            Result.bind imported (fun imports ->
            let ws = match ws.S.node with
              | S.List (h :: name :: own) -> {ws with node = S.List (h :: name :: List.concat_map snd imports @ own)}
              | _ -> ws in
            (* Imported parses have independent ids; the composed workspace owns one id space. *)
            let ws = fst (S.renumber 0 ws) in
-           (match Flow.Workspace.check ~ops ~library:fragment catalog [ ws ] with
+           (match Flow_sop.Catalog.check_workspace ~ops ~library:fragment catalog [ ws ] with
             | None, ds -> Error ds
             | Some checked, warnings ->
                 let layout = match List.find_opt (fun f -> head f = Some "layout") forms with
@@ -292,7 +292,9 @@ let edit_unchecked catalog t op =
       | Flow_graph.Flow_edit.Set_arg _ | Set_input_default _ | Set_note _ | Toggle_bypass _ | Set_layout_size _ -> layout
       | _ -> prune_keys checked layout in
     { t with source; checked; layout; literal = None })
-    (Flow_graph.Flow_edit.apply_checked ~ops:t.checked.ops ~library:t.fragment catalog t.source op)
+    (Flow_graph.Flow_edit.apply_checked ~ops:t.checked.ops ~library:t.fragment
+      ~checker:(Flow_sop.Catalog.check_workspace ~ops:t.checked.ops ~library:t.fragment)
+      catalog t.source op)
 
 let edit catalog t op =
   let open Flow_graph.Flow_edit in

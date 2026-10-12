@@ -160,16 +160,34 @@ val optimize : ?target:target -> t -> (t, Flow.Diagnostic.t) result
 
 module Executor : sig
   type program
-  val compile : ?profile:Profile.t -> ?approx:Flow.Workspace.Paths.t -> ?sink:sink ->
+  val compile : ?profile:Profile.t -> ?strict:bool -> ?approx:Flow.Workspace.Paths.t -> ?sink:sink ->
     ?count_source:Packed.count_source -> Flow.Eval.value -> (program, Flow.Diagnostic.t) result
   val graph : program -> t
+
+  val packed_root : program -> Packed.t option
+  (** Packed root, through transparent [exact] readback boundaries. *)
+
   val force : ?state:Flow.Eval.state -> ?elems:(string * Flow.Eval.value) list ->
     ?resolve:(Flow.Eval.value -> (Flow.Eval.value, Flow.Diagnostic.t) result) ->
-    ?reference:bool -> program -> live:Flow.Eval.live ->
+    ?reference:bool -> ?strict:bool -> program -> live:Flow.Eval.live ->
     (Flow.Eval.value, Flow.Diagnostic.t) result
   (** Selected/probed cones use [reference:true]. Unsupported terms keep the
       reference tree walker; supported scalar dataflow uses its operator records.
-      Failures rerun the reference for its precise diagnostic. *)
+      Failures rerun the reference for its precise diagnostic. [strict:true]
+      requires packed numeric bodies at compilation and execution, without
+      cost-based interpreter placement or error fallback. [reference:true]
+      retains the explicit reference oracle. *)
+
+  val force_into : ?state:Flow.Eval.state -> ?elems:(string * Flow.Eval.value) list ->
+    ?resolve:(Flow.Eval.value -> (Flow.Eval.value, Flow.Diagnostic.t) result) ->
+    ?strict:bool ->
+    column_source:(Flow.Eval.residual -> Flow.Workspace.term ->
+      (Packed.column array option, Flow.Diagnostic.t) result) ->
+    count:int -> outputs:float array option array array -> program -> live:Flow.Eval.live ->
+    (unit option, Flow.Diagnostic.t) result
+  (** Execute a collecting packed root into disjoint owned component planes.
+      [None] leaves a scalar or unsupported root on its ordinary execution path.
+      Borrowed inputs remain immutable; omitted output planes are still checked. *)
 
   type displayed=Cpu of Flow.Eval.value | Gpu of Gpu.value
   val try_display : ?state:Flow.Eval.state -> ?resolve:(Flow.Eval.value -> (Flow.Eval.value,Flow.Diagnostic.t)result) ->

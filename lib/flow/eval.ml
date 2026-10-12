@@ -889,7 +889,16 @@ and graph_value ?(rec_ = true) c name over =
   let over = List.map (fun (n, v) ->
     match List.find_opt (fun (m, _, _) -> m = n) g.inputs with
     | Some (_, ty, _) ->
-        if not (Ty.fits (Value.ty_of v) ty) then
+        let rec fits ty v = match ty, v with
+          | Ty.Fn (Some signature), Fn (Closure cl) ->
+              List.compare_lengths signature.params cl.params = 0
+              && List.for_all2 (fun expected (_, actual) ->
+                Option.fold ~none:false ~some:(fun actual -> Ty.fits expected actual) actual)
+                signature.params cl.params
+              && Ty.fits cl.body.ty signature.result
+          | Ty.List element, List values -> Array.for_all (fits element) values
+          | _ -> Ty.fits (Value.ty_of v) ty in
+        if not (fits ty v) then
           failf "E_INPUT_TYPE" "Graph input %s of %s needs %s; got %s." n name
             (Ty.to_string ty) (Ty.to_string (Value.ty_of v));
         (n, coerce_to ty v)
@@ -1147,6 +1156,21 @@ module Private = struct
   let force_with_executor ?state ?elems ?resolve ?owner ?compiled ~execute v ~live =
     force_with ?state ?elems ?resolve ?owner ?compiled ~execute v ~live
   let function_bindings = function Closure cl -> Smap.bindings cl.env | Named _ -> []
+  let remap_function_geometry ~sources fn =
+    let rec value = function
+      | Deferred (ty, id) when Ty.is_geometry ty ->
+          Deferred (ty, Option.value ~default:id (List.assoc_opt id sources))
+      | Fn fn -> Fn (function_value fn)
+      | Residual r -> Residual {r with rid = Atomic.fetch_and_add bulk_ids (-1);
+          renv = Smap.map value r.renv; live = None; core = None}
+      | List values -> List (Array.map value values)
+      | Record fields -> Record (List.map (fun (name, v) -> name, value v) fields)
+      | Struct (name, ty, fields) -> Struct (name, ty, List.map (fun (name, v) -> name, value v) fields)
+      | v -> v
+    and function_value = function
+      | Closure cl -> Closure {cl with env = Smap.map value cl.env}
+      | Named _ as fn -> fn in
+    if sources = [] then fn else function_value fn
   let function_id = function Closure cl -> cl.fid | Named n -> n.fid
   let state_values state = List.map snd (Smap.bindings state.before) @ List.map snd (Smap.bindings state.next)
   let function_body = function Closure cl -> Some (cl.params, cl.body) | Named _ -> None

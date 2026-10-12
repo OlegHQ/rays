@@ -331,7 +331,8 @@ const clamp01 = v => v <= 0 ? 0 : v >= 1 ? 1 : v;
 export function noise3(position, seed, octaves) {
   if (!(isVec(position) && position.length === 3)) err('E_TYPE', 'noise3 takes a vec3 position.');
   for (const c of position) fin('noise3 position', c);
-  const s = seed === undefined ? 0n : intOf(seed), n = octaves === undefined ? 1n : intOf(octaves);
+  const configuration = v => typeof v === 'bigint' ? v : intOf(v);
+  const s = seed === undefined ? 0n : configuration(seed), n = octaves === undefined ? 1n : configuration(octaves);
   if (n < 1n || n > 32n) err('E_NOISE_RANGE', 'Noise octaves are 1 to 32.');
   const p = permutation(s), [x, y, z] = position;
   const sample = f => clamp01((raw3(p, x * f, y * f, z * f) + 1) / 2);
@@ -394,4 +395,95 @@ export function color_parse(v) {
     c = ch.map(byte);
   } else err('E_TYPE', 'A color is hex text, vec3 or (list r g b a).');
   return new Map([['r', c[0]], ['g', c[1]], ['b', c[2]], ['a', c[3]]]);
+}
+
+// Cook-context and geometry metadata host protocol. Geometry stays an immutable
+// Map with an ordered attributes list; canonical positions live outside it.
+export function sop_context_seed(namespace, context) {
+  if (typeof namespace !== 'string' || !namespace.trim()) err('E_SEED_NAMESPACE', 'A context seed namespace must be nonblank.');
+  if (!(context instanceof Map)) err('E_NODE_CONTEXT', 'Context seed is available inside a defnode body.');
+  let identity = 0xcbf29ce484222325n;
+  for (const byte of new TextEncoder().encode(`${namespace}:${context.get('label')}`))
+    identity = BigInt.asUintN(64, (identity ^ BigInt(byte)) * 0x100000001b3n);
+  const mixed = BigInt.asUintN(64, BigInt(context.get('seed')) ^ (identity * 0x9e3779b97f4a7c15n));
+  return BigInt.asIntN(63, mixed ^ (mixed >> 32n));
+}
+
+function attributePattern(source) {
+  const bytes = s => Array.from(new TextEncoder().encode(s), n => String.fromCharCode(n)).join('');
+  const raw = bytes(source), terms = [];
+  const whitespace = c => ' \t\n\r\f'.includes(c);
+  let index = 0;
+  while (index < raw.length) {
+    while (index < raw.length && whitespace(raw[index])) index++;
+    if (index === raw.length) break;
+    let token = '', escaped = false;
+    while (index < raw.length && (escaped || !whitespace(raw[index]))) {
+      const c = raw[index++]; token += c;
+      escaped = !escaped && c === '\\';
+    }
+    if (escaped) err('E_ATTR_PATTERN', 'Attribute_pattern: dangling backslash escape');
+    terms.push(token);
+  }
+  const literal = c => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`;
+  const compiled = terms.map((token, termIndex) => {
+    const fail = message => err('E_ATTR_PATTERN', `Attribute_pattern: term ${termIndex + 1}: ${message}`);
+    const excluded = token.startsWith('^');
+    let i = excluded ? 1 : 0, pattern = '';
+    if (i === token.length) fail('empty exclusion term');
+    while (i < token.length) {
+      const c = token[i++];
+      if (c === '\\') {
+        if (i === token.length) fail('dangling backslash escape');
+        pattern += literal(token[i++]);
+      } else if (c === '*') pattern += '[\\s\\S]*';
+      else if (c === '?') pattern += '[\\s\\S]';
+      else if (c === '[') {
+        let close = i, escaped = false;
+        while (close < token.length) {
+          const ch = token[close];
+          if (!escaped && ch === ']') break;
+          escaped = !escaped && ch === '\\'; close++;
+        }
+        if (close === token.length) fail('unterminated character class');
+        if (close === i) fail('empty character class');
+        const negated = token[i] === '!' || token[i] === '^';
+        if (negated) i++;
+        if (i === close) fail('empty negated character class');
+        let content = '';
+        const character = () => {
+          if (token[i] === '\\') { i++; if (i === close) fail('dangling class escape'); }
+          return token[i++];
+        };
+        while (i < close) {
+          const left = character();
+          if (i + 1 < close && token[i] === '-') {
+            i++; const right = character();
+            if (left.charCodeAt(0) > right.charCodeAt(0)) fail('descending character-class range');
+            content += `${literal(left)}-${literal(right)}`;
+          } else content += literal(left);
+        }
+        pattern += `[${negated ? '^' : ''}${content}]`; i = close + 1;
+      } else pattern += literal(c);
+    }
+    return { excluded, regex: new RegExp(`^(?:${pattern})$`) };
+  });
+  return name => {
+    let selected = compiled.length === 0 || compiled[0].excluded;
+    const text = bytes(name);
+    for (const { excluded, regex } of compiled) if (regex.test(text)) selected = !excluded;
+    return selected;
+  };
+}
+
+export function sop_delete_attr(geometry, pattern, owner = 'point') {
+  if (typeof pattern !== 'string' || !pattern.trim()) err('E_ATTR_NAME', 'An attribute pattern must be nonblank.');
+  const matches = attributePattern(pattern);
+  if (!['point', 'vertex', 'primitive', 'detail'].includes(owner))
+    err('E_ATTR_OWNER', 'Attribute owner is point, vertex, primitive or detail.');
+  if (!(geometry instanceof Map) || !Array.isArray(geometry.get('attributes')))
+    err('E_TYPE', 'Attribute deletion requires geometry.');
+  const attributes = geometry.get('attributes').filter(a => a.get('owner') !== owner || !matches(a.get('name')));
+  if (attributes.length === geometry.get('attributes').length) return geometry;
+  const result = new Map(geometry); result.set('attributes', attributes); return result;
 }

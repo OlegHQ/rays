@@ -305,6 +305,10 @@
  (action (run %{exe:test_main.exe} test_workspace_source)))
 
 (rule
+ (alias test_workspace_vocabulary)
+ (action (run %{exe:test_main.exe} test_workspace_vocabulary)))
+
+(rule
  (alias test_bloom_studio)
  (deps ../sketches/ws_bloom/sketch.rays (glob_files ../specification/workspace/cases/*.lisp))
  (action (run %{exe:test_main.exe} test_bloom_studio)))

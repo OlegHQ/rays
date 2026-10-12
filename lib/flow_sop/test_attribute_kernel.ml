@@ -86,6 +86,44 @@ let () =
   print_endline "XYZ attribute writes: empty/multi-block, signed-zero/domain bytes, ownership and error immutability pass"
 
 let () =
+  List.iter (fun count ->
+    let plane component=Array.init count (fun i ->
+      if (i+component) mod 7=0 then -0. else float_of_int (i+component)*.0.125) in
+    let positions=Packed.Float3.Private.of_owned_exn ~x:(plane 0) ~y:(plane 1) ~z:(plane 2) in
+    let original=Geometry.create ~positions ~topology:(Topology.empty ~point_count:count) () |> get_string_ok in
+    let before=geometry_bytes original in
+    let input=Sop.Node.Private.make_geometry ~operation:"test.borrowed_planes" ~version:1
+      ~parameters:"" ~cook_mode:Sop.Node.Generator ~dependencies:Sop.Context.Dependencies.static ~inputs:[||]
+      (fun ~node_id:_ _ _ -> Ok Sop.Node.Private.{geometry=original;diagnostics=[];instances=None}) in
+    let make name body=
+      let lowered=lower (source (Printf.sprintf "(sop/with_attr g :%s (exact %s))" name body)) in
+      let call=Array.find_opt (fun (n:E.node)->n.kind="sop/with_attr") lowered.plan.nodes |> Option.get in
+      let id=match List.assoc "geometry" call.args with E.Deferred (_,id)->id|_->assert false in
+      Flow_sop.Attribute_kernel.node ~strict:true ~source:body ~name
+        ~values:(List.assoc "values" call.args) ~sources:[id] [input] in
+    let session=session () in
+    Fun.protect ~finally:(fun ()->Session.close session) (fun ()->
+      List.iter (fun domains ->
+        let output=cook session ~domains ~time:0. (make "P" "(map (fn [p] p) (sop/attr g :P))") |> geometry in
+        assert (geometry_bytes output=before);
+        let old=Packed.Float3.Private.view positions and fresh=Packed.Float3.Private.view (Geometry.positions output) in
+        assert (old.x==fresh.x && old.y==fresh.y && old.z==fresh.z);
+        let painted=cook session ~domains ~time:0. (make "Cd" "(map (fn [p] p) (sop/attr g :P))") |> geometry in
+        let copied=Geometry.find_attribute ~owner:Attribute.Point "Cd" painted |> Option.get
+          |> Attribute.get (Attribute.key ~name:"Cd" ~owner:Attribute.Point Attribute.float3) |> Option.get
+          |> Packed.Float3.Private.view in
+        assert (old.x!=copied.x && old.y!=copied.y && old.z!=copied.z);
+        assert (Marshal.to_string [|old.x;old.y;old.z|] [Marshal.No_sharing]
+          =Marshal.to_string [|copied.x;copied.y;copied.z|] [Marshal.No_sharing]);
+        if count>1 then begin
+          let short=make "P" "(map (fn [p q] p) (sop/attr g :P) (array/vec3 1))" in
+          match cook session ~domains ~time:0. short with
+          | Error d -> assert (d.code="E_ATTR_COUNT") | Ok _ -> assert false
+        end;
+        assert (geometry_bytes original=before)) [1;8])) [0;1;32769];
+  print_endline "Borrowed exact planes: omitted-lane counts, shared P, owned attributes and signed-zero/domain bytes pass"
+
+let () =
   let lowered=lower {|(workspace captures
     (graph mesh :context sop [(offset : float 0.015625)]
       (let* [geo (sop/box :consolidate_points true :center [(+ offset (* t 0.015625)) 0 0])

@@ -2,6 +2,24 @@
 
 2026-10-12. Source of truth: this file. It was exported from the planning document the owner approved on that date.
 
+## Recorded decisions for A.0
+
+2026-10-12 implementation baseline: questions 1 and 4 retain the owner's explicit
+answers; questions 2, 3, 5 and 6 use the recommendations already accepted by the
+approved plan. This records that existing authorization, not a new owner answer.
+
+| Question | Decision |
+| --- | --- |
+| 1, float gate | Accept 4 ulp by default for floats and exact integer data; Lisp's unfused arithmetic defines the result. |
+| 2, golden refresh | Allow only per-node changes after its verification gate passes; list every changed golden in that node's commit. |
+| 3, delegation | Allow calls to other node kinds, including OCaml-bodied kinds; record direct calls in the manifest. |
+| 4, OCaml-backed built-ins | Allow the fixed geometry/graph primitives, with JavaScript twins required by their language gates. |
+| 5, kernels after port | Keep the OCaml kernels as test oracles throughout this round. |
+| 6, speed gate | Record both timings at 1,000,000 elements; a Lisp body above 2x the OCaml time blocks its port. |
+
+Evidence, metadata census, incomplete gates and measurements are tracked in
+[`results.md`](results.md). A task remains unchecked until its stated gate passes.
+
 ## Decision and scope
 
 This round moves 128 of the 162 geometry nodes from OCaml bodies to Rays Lisp bodies, in five phases ordered by the language features they need. 31 nodes that depend on exact predicates, spatial indexes, solvers or data-dependent mesh surgery stay OCaml, and 3 are scene wiring with nothing to port.
@@ -315,6 +333,15 @@ Task kinds: **L** adds language, **P** ports nodes with the recipe below, **R** 
 
 ### Phase A: a node can be declared in Lisp
 
+Implementation prerequisite move, 2026-10-12: the complete `noise_displace`
+pilot needs the cook-context seed and deletion of invalidated point/vertex N.
+`sop/context_seed` and the narrow owner/pattern `sop/delete_attr` primitive are
+therefore advanced into A.6. The latter is part of B.6's broader metadata work;
+this move does not complete B.6. Their language, native/Web contract and graph
+gates are tracked with the pilot in `results.md`. Both `height_2d` and
+`normal_3d`, and explicit/context seed selection, remain required; no mode is
+delegated to the old `noise_displace` body or dropped.
+
 | Task | Kind | Depends | Files | What | Gate |
 | --- | --- | --- | --- | --- | --- |
 | A.0 | R |  | this plan | Owner answers the open questions in Risks. Record the answers at the top of `specification/sop-lisp/plan.md`. | Answers recorded |
@@ -568,12 +595,12 @@ Items searched for and not found: a `defnode` or `defsop` form; any catalog node
 
 Tick a task when its gate passes. Record moved or blocked nodes under the task that found them.
 
-- [ ] A.0
-- [ ] A.1
-- [ ] A.2
-- [ ] A.3
-- [ ] A.4
-- [ ] A.5
+- [x] A.0 — existing approved decisions recorded above; evidence in `results.md`.
+- [x] A.1 — helper equality/ULP/integer gates passed; command and coverage in `results.md`.
+- [x] A.2 — typed declaration, metadata/refusal and clash checks passed; evidence in `results.md`.
+- [x] A.3 — public cache identity, parameter/typed slots including optional/rest Fn, strict kernel/exactness and scoped helper context-dependency gates passed; latest evidence in `results.md`.
+- [x] A.4 — embedded sources/catalog/manifest integration and dependency gate passed; promoted digest in `results.md`. Source-boundary regression rerun pending before A.R.
+- [x] A.5 — structural card/inspector/gesture parity and actual menu addition passed; evidence in `results.md`. Source-boundary regression rerun pending before A.R.
 - [ ] A.6
 - [ ] A.R
 - [ ] B.1

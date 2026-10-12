@@ -238,6 +238,10 @@ module Private : sig
   val function_bindings : fn -> (string * value) list
   (** Captured immutable inputs of a function value, for host data dependencies. *)
 
+  val remap_function_geometry : sources:(int * int) list -> fn -> fn
+  (** Remap geometry IDs through closure and residual captures when a host moves
+      a callable between plans. Function identity and authored scope stay intact. *)
+
   val function_id : fn -> int
   (** Immutable hash hint, not equality: specialized closures may share this id. *)
 

@@ -182,14 +182,15 @@ Persisted parameter state belongs to the graph/node layer. The selected-node
 inspector is regenerated from concrete node metadata and never imports an
 independent canvas-wide shadow record.
 
-A SOP node is one declaration: its `parameters` record. With
-`[@@deriving sop_params, sop_node]` it yields the inspector schema, the Lisp
-manifest entry and editor factory. There is no typed OCaml constructor (the
+A SOP node has one declaration: either an OCaml `parameters` record with
+`[@@deriving sop_params, sop_node]`, or a Lisp `defnode` in
+`lib/flow_sop/nodes/<key>.rays`. Both declarations supply the inspector schema,
+Lisp manifest entry and editor factory. There is no typed OCaml constructor (the
 former `Sop.Sop` facade is gone): Lisp (`sop/<key>`) and
 `Edit_graph.instantiate` build nodes, and tests write graphs as Lisp text.
 There is no separate function name, argument list or typed default override.
 Defaults, validation and cache identity therefore
-cannot drift between the API and the editor. Such declarations live in
+cannot drift between the API and the editor. OCaml declarations live in
 `lib/sop` (`groups.ml`, `sop_topology.ml`, `attributes.ml`,
 `shapes.ml`) next to their cooks; `Sop.Nodes` exports their
 factories. Parameter-free nodes declare `type parameters = unit`;
@@ -247,12 +248,12 @@ for reserved names, negative indices and non-zero directions respectively.
 Delete Attributes takes its input and optional reference positionally. Curves
 and Parent edge transport default the root value to Zero, as in Lisp; callers
 that need the former OCaml default pass `Transport_root_hold` explicitly.
-Every node with a Lisp kind is declared this way; custom cooks stay
+Every catalog node uses one of these declarations; custom cooks stay
 hand-written through `Sop.Custom`. A node writes no parameter text of its own: its inspection text and
 cache key are derived from the record. Switch keeps its `a` and `b` ports and
 takes further branches through the optional repeated `inputs` port.
 
-`rays.sop_catalog` registers every node and declares none. A parameter type
+`rays.sop_catalog` registers OCaml-bodied nodes and declares none. A parameter type
 uses `[@@deriving sop_params, sop_node]` together with stable key, runtime
 operation identity, label, category-path, and input-arity attributes. The
 operation defaults to the key; `sop.node_operation` records deliberate aliases.
@@ -273,6 +274,58 @@ list that can omit an implemented catalog node. Constructors delegate geometry
 work to ordinary Sop/RDK operators; controls are never synthesized from
 serialized cache-key strings.
 
+For a Lisp body, the `defnode` header is the declaration. It retains the same
+scalar fields, literal defaults, separate soft/hard ranges, labels, descriptions,
+folders, units, primary flags, impact and vec3 presentation groups as its OCaml
+record. Encoded lists and ramps use text recipes with explicit validation; a
+text kind alone does not supply an encoded decoder. Typed slots retain their
+names, order and required/optional/rest status. Validation predicates run with
+the complete parameter scope before node construction; refused editor writes
+keep the existing node.
+
+```lisp
+(defnode sop/shift :label "Shift" :category ["Deform"]
+  :facts {:elementwise points :reads ["P"] :writes ["P"]
+          :topology preserved :exact true}
+  [(geo : geometry)
+   (distance : float 0.1 :label "Distance" :min -10 :max 10 :primary true)]
+  (sop/with_attr geo :P
+    (exact (map (fn [p] (+ p [distance 0.0 0.0])) (sop/attr geo :P)))))
+```
+
+The Dune source rule embeds the node files through the existing
+`tools/lisp/embed.exe`, sorted by filename. `Flow_sop.Catalog.check_workspace`
+puts these definitions in scope without changing authored form IDs. Catalog
+calls keep their `sop/<key>` identity and project to one graph card; the body is
+internal to that card. Lowering exposes the resulting factories alongside the
+native factories for node menus and inspection. The generated manifest records
+`(body lisp)` and `(calls ...)`; calls come from checked terms, including
+specialized helper functions and macros, rather than a textual name scan.
+Registration rejects a Lisp kind that collides with an OCaml kind.
+Embedded definitions stay in the checked definition tables and outside authored
+workspace source. Saving after a scrub or structural gesture writes the user's
+calls without copying the library into the file. Document gestures use the same
+library-aware checker as loading; editable navigation includes only authored
+definitions. Kernel identity includes checked library bodies, so editing a body
+invalidates the cook even when the authored call is unchanged.
+
+One public Lisp node owns one ordinary session cache entry and schema-derived
+parameter identity. Its internal graph uses the existing `Session` cooker with
+zero retained entries and bytes: per-cook sharing, payload handling, instance
+materialization, diagnostics and cancellation retain their native semantics.
+Internal nodes do not become independent retained entries in the outer session.
+The cook derives read/write/topology facts from the specialized body, so mode
+and parameter changes rebuild the relevant facts. Context dependencies used by
+delegated nodes belong to the public node as well. SOP ownership remains in
+`sop`; the Lisp declaration and lowering stay in `flow_sop`, and `flow` never
+depends on geometry.
+
+A default factory with an unconnected typed function retains its operation and
+parameter schema for catalog and inspector use. Its facts are conservative and
+cooking returns `disconnected_input`. Once the call supplies a checked function,
+lowering derives the actual body facts and qualifies its packed kernel before
+cooking.
+
 Input metadata is a signature, not merely a port count. Fixed descriptors use
 required slots; `[@@sop.node_optional "1,2"]` marks zero-based optional slots
 and makes `sop_node` generate an `Edit_graph.factory_slots` descriptor.
@@ -290,6 +343,10 @@ of serialized types, so commas inside function signatures stay unambiguous.
 inputs as typed Lisp keywords. They
 have no scalar Param field, default or drive. The manifest retains their physical
 input order and keyword names; the catalog validates their Fn/Image types.
+The Lisp declaration spells the same contract as
+`(field : (fn [vec3] float) :keyword true)` or
+`(picture : image :keyword true)`. Such slots are required and cannot repeat;
+they retain their physical input order while appearing as keyword rows in Flow.
 Function bodies and captures belong to the language host, which passes an
 owned `Sop.Kernel` bulk runner through the ordinary payload boundary.
 Sop never depends on Flow or Flow_ir.

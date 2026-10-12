@@ -104,6 +104,12 @@ let rec of_syntax (x : Syntax.t) = match x.node with
         | _ -> None in
       Option.map (fun fs -> Record fs) (go [] items)
   | List [{node = Sym "list"; _}; inner] -> Option.map (fun t -> List t) (of_syntax inner)
+  | List [{node = Sym "fn"; _}; {node = Vec params; _}; result] ->
+      let rec types = function
+        | [] -> Some []
+        | p :: ps -> Option.bind (of_syntax p) (fun p -> Option.map (fun ps -> p :: ps) (types ps)) in
+      Option.bind (types params) (fun params -> Option.map (fun result ->
+        Fn (Some {params; result})) (of_syntax result))
   | List [{node = Sym "array"; _}; inner] ->
       (match of_syntax inner with Some (Float | Vec2 | Vec3 | Vec4 as t) -> Some (Array t) | _ -> None)
   | _ -> None

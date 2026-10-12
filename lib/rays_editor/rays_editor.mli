@@ -353,6 +353,8 @@ module Editor : sig
     (** The [Set_graph] a "New graph" of this context name ([sop], [scene], ...) writes. *)
     val menu_forms : (string * string) list
     (** The language forms of the add menu with the Lisp each is added as. *)
+    val lisp_completions : 'prepared t -> string -> Pxui.Ui.completion list
+    (** Completions from the vocabulary currently used by the workspace text panes. *)
     val image_plan : 'prepared t -> Flow.Eval.plan
     val image_payload : ?state:Flow.Eval.state -> ?live:Frame_input.t ->
       'prepared t -> Flow.Eval.value -> (Sop.Image.t,Flow.Diagnostic.t) result

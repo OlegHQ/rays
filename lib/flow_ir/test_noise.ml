@@ -13,6 +13,17 @@ let () =
   List.iter (fun seed ->
     let noise = N.create seed in
     let reference = Array.init count (fun i -> N.sample3 noise ~x:x.(i) ~y:y.(i) ~z:z.(i)) in
+    let interleaved=Array.init (count*3) (fun i->match i mod 3 with
+      |0->x.(i/3)|1->y.(i/3)|_->z.(i/3)) in
+    let strided=Array.make count 0. in
+    N.Private.sample3_into noise ~first:0 ~last:count
+      ~x:interleaved ~y:interleaved ~z:interleaved ~y_offset:1 ~z_offset:2
+      ~x_stride:3 ~y_stride:3 ~z_stride:3 ~output:strided ();
+    assert (Array.for_all2 bits strided reference);
+    rejects (fun()->N.Private.sample3_into noise ~first:0 ~last:count
+      ~x ~y ~z ~x_stride:0 ~output:strided ());
+    rejects (fun()->N.Private.sample3_into noise ~first:0 ~last:count
+      ~x ~y ~z ~x_stride:max_int ~output:strided ());
     List.iter (fun domains -> P.run ~domains (fun () ->
       let out = Array.make count (-1.) in
       P.for_ ~chunk_size:1 ~start:0 ~finish:2 (fun block ->
@@ -38,9 +49,23 @@ let () =
         ~x:(x.(i) *. frequency) ~y:(y.(i) *. frequency) ~z:(z.(i) *. frequency)))) out)
       [0.; -0.; 0.16; -3.7];
     let out = [| -1. |] in
-    List.iter (fun invalid ->
-      N.Private.sample3_into noise ~first:0 ~last:1 ~x:[|invalid|] ~y:[|0.|] ~z:[|0.|] ~output:out ();
-      assert (Float.is_nan out.(0))) [nan; infinity; neg_infinity];
+    (* Exceptional int_of_float results are unspecified integers, but the
+       permutation indexes stay masked. Every coordinate must still propagate
+       nonfinite data to NaN, through both the z=0 and full 3D paths. *)
+    List.iter (fun z -> List.iter (fun axis ->
+      List.iter (fun (invalid,frequency) ->
+        let coordinates=[|0.37;-1.25;z|] in
+        coordinates.(axis)<-invalid;
+        N.Private.sample3_into noise ~first:0 ~last:1 ~frequency
+          ~x:[|coordinates.(0)|] ~y:[|coordinates.(1)|] ~z:[|coordinates.(2)|] ~output:out ();
+        assert (Float.is_nan out.(0)))
+        [nan,1.;infinity,1.;neg_infinity,1.;Float.max_float,2.;-.Float.max_float,2.]) [0;1;2]) [0.;0.73];
+    List.iter (fun z -> List.iter (fun value -> List.iter (fun axis ->
+      let coordinates=[|0.37;-1.25;z|] in coordinates.(axis)<-value;
+      N.Private.sample3_into noise ~first:0 ~last:1
+        ~x:[|coordinates.(0)|] ~y:[|coordinates.(1)|] ~z:[|coordinates.(2)|] ~output:out ();
+      assert (bits out.(0) (N.sample3 noise ~x:coordinates.(0) ~y:coordinates.(1) ~z:coordinates.(2))))
+      [0;1;2]) [0.;-0.;Float.max_float;-.Float.max_float;1e300;-1e300]) [0.;0.73];
     rejects (fun () -> N.Private.sample3_into noise ~first:(-1) ~last:1 ~x ~y ~z ~output:in_place ());
     rejects (fun () -> N.Private.sample3_into noise ~first:2 ~last:1 ~x ~y ~z ~output:in_place ());
     rejects (fun () -> N.Private.sample3_into noise ~first:0 ~last:count ~x_offset:max_int ~x ~y ~z ~output:in_place ());
@@ -59,6 +84,21 @@ let () =
     | Flow.Value.Float n -> assert (bits n (N.sample3 (N.create 0) ~x:0.37 ~y:(-1.25) ~z:17.4))
     | _ -> assert false) [Flow_ir.Operators.noise3];
   print_endline "Packed noise spans, scalar bits and one/eight-domain parity passed"
+
+let () =
+  let forms=Result.get_ok (Flow.Syntax.parse "(workspace noise_scaling (graph g :context value
+    (let* [tested (map (fn [p] (if (> t 1e308) (noise3 (* p t)) 0.0))
+      (array/vec3 2051 [2.0 3.0 4.0]))] 0.0)))") in
+  let workspace=match Flow.Workspace.check ~ops:Flow_ir.Operators.all {Flow.Check.version=1;kinds=[]} forms with
+    |Some w,ds when not (List.exists (fun (d:Flow.Diagnostic.t)->d.severity=Error) ds)->w
+    |_,ds->failwith (String.concat "\n" (List.map Flow.Diagnostic.to_string ds)) in
+  let evaluation=Result.get_ok (Flow.Eval.static ~record:true workspace) in
+  let value=List.assoc ["g";"tested"] evaluation.records |> List.hd |> snd in
+  let packed=match value with Flow.Eval.Residual r->
+    Flow_ir.Packed.compile r (Flow.Eval.Private.residual_view r).term |> Option.get
+    |_->assert false in
+  assert (Result.is_error (Flow_ir.Packed.force ~strict:true packed ~live:(Frame_input.at_time 1e308)));
+  print_endline "Packed scaled noise retains overflow refusal in a nonselected branch"
 
 let () =
   let noise = Flow_ir.Operators.noise3 in

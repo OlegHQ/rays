@@ -29,6 +29,8 @@ let tests = [
   "test_workspace_view_native", Test_workspace_shell.run_view_native;
   "test_workspace_roots_native", (fun () -> Test_workspace_shell.run_roots_native (); Test_workspace_shell.run_budget_native ());
   "test_workspace_source", Test_workspace_source.run;
+  "test_workspace_vocabulary", (fun () ->
+    Test_workspace_source.run_library_navigation (); Test_workspace_source.run_vocabulary_refresh ());
   "test_bloom_studio", Test_bloom_studio.run;
   "dependency_gate", Dependency_gate.run;
   "sop_render_parity", Sop_render_parity.run;

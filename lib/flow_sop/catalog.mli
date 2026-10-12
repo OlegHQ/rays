@@ -1,4 +1,4 @@
-(** Adapt the one generated SOP factory registry to the context-generic
+(** Adapt native factories and embedded Lisp declarations to the context-generic
     Flow checker/printer descriptor. *)
 
 type descriptor = {
@@ -23,5 +23,18 @@ val descriptor : Sop.Edit_graph.factory -> descriptor
 (** The [sop/] kind of a factory. *)
 
 val of_factories :
-  version:int -> ?extra:descriptor list -> Sop.Edit_graph.factory list ->
+  version:int -> ?extra:descriptor list -> ?nodes:Flow.Defnode.t list -> Sop.Edit_graph.factory list ->
   (Flow.Check.catalog, Flow.Diagnostic.t) result
+
+val sources : unit -> (Flow.Syntax.t list, Flow.Diagnostic.t) result
+(** Embedded node-library definitions, sorted by source filename. *)
+
+val node_definitions : unit -> (Flow.Defnode.t list, Flow.Diagnostic.t) result
+
+val check_workspace :
+  ?ops:Flow.Op.t list -> ?library:bool -> ?sources:Flow.Syntax.t list ->
+  Flow.Check.catalog -> Flow.Syntax.t list ->
+  Flow.Workspace.t option * Flow.Diagnostic.t list
+(** Check with the embedded definitions in scope. Authored form IDs stay intact;
+    library forms receive a disjoint ID space and stay out of [Workspace.source]. [sources] overrides the embedded
+    definitions for callers providing their own node library. *)

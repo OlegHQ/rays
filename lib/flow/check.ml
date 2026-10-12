@@ -138,17 +138,26 @@ let catalog_of_manifest source =
         | _ -> bad form "Unknown field kind in Flow manifest" in
       let field form = match tagged "field" form with
         | name :: label :: folder :: kind :: default :: primary :: vec3 :: tail ->
-            let unit = match tail with
-              | [u] -> (match tagged "unit" u with [text] -> Some (string text) | _ -> None)
-              | _ -> None in
+            let seen=Hashtbl.create 3 in
+            let unit=ref None and description=ref None and impact=ref Param.Cook in
+            List.iter (fun metadata -> match list metadata with
+              | Some [{Syntax.node=Syntax.Sym key;_};value]
+                when List.mem key ["unit";"description";"impact"] && not (Hashtbl.mem seen key) ->
+                  Hashtbl.add seen key ();
+                  (match key with
+                   | "unit" -> unit := Some (string value)
+                   | "description" -> description := Some (string value)
+                   | _ -> impact := (match word value with "cook" -> Param.Cook | "view" -> View | "export" -> Export
+                       | _ -> bad value "Unknown field impact in Flow manifest"))
+              | _ -> bad metadata "Malformed or duplicate field metadata in Flow manifest") tail;
             let default = literal default in
             let vec3 = match tagged "vec3" vec3 with
               | [] -> None | [name; index] -> Some (string name, integer index)
               | _ -> bad vec3 "Malformed Vec3 group in Flow manifest" in
             {Param.name = string name; label = string label;
-              description = None; folder = strings "folder" folder;
-              impact = Param.Cook; primary = bool (one "primary" primary);
-              unit; vec3; kind = kind_view kind; default; current = default}
+              description = !description; folder = strings "folder" folder;
+              impact = !impact; primary = bool (one "primary" primary);
+              unit = !unit; vec3; kind = kind_view kind; default; current = default}
         | _ -> bad form "Malformed field in Flow manifest" in
       let type_name form = match form.Syntax.node with Syntax.Str text -> text | _ -> word form in
       let port_type form = match type_name form with

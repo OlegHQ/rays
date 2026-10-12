@@ -2222,7 +2222,43 @@ let run_context_menus () =
       check (Rays_editor.Timeline.mode (E3.timeline !e) = Paused)
         "the implicit timeline had no context menu at the pointer")
 
-let run () = run_context_menus (); run_expression_chip (); run_nested_inspector (); run_op_inspector (); run_spreadsheet (); run_panels (); run_studio (); run_copy_lisp (); run_hide_and_order (); run_root_section (); run_layouts (); run_compose (); run_ref_picker (); run_result_view (); run_loop_view (); run_geometry_view (); run_panel_states (); run_camera_zoom (); run_cameras (); run_lowering (); run_ops (); run_panel_keys (); run_unbound_panels (); run_values (); run_duplicate_and_view (); run_movers (); run_frame_key (); run_loop_copies (); run_loop_expression (); run_editor (); run_restore (); run_views (); run_instances (); run_host_scene_edit (); run_panel_chain ();
+(* Bypass has no compiled node of its own: the inspector must use the checked
+   Lisp declaration, including a default which has no authored argument row. *)
+let run_lisp_inspector () =
+  let text = {|(workspace lisp_card
+    (defnode sop/local_card :label "Local card" :category ["Test"]
+      [(geo : geometry) (distance : float 0.5 :min -10 :max 10)] geo)
+    (graph g :context sop
+      (let* [src (sop/grid :columns 2 :rows 2) card ^:bypass (sop/local_card src)] card))
+    (graph editor :context editor
+      (ui/workspace (ui/split "horizontal" (ui/graph "g") (ui/inspector)))))|} in
+  let e = ref (editor text) and count = ref 0 in
+  Fun.protect ~finally:(fun () -> E3.close !e) (fun () ->
+    e := Rays_editor.Reduce.select_path !e ["g"; "card"];
+    let step ?(buttons = []) ?(mouse = (450., 300.)) events =
+      incr count; e := E3.update !e (frame ~buttons mouse events !count) in
+    step []; step [];
+    check (E3.Private.inspector_subject !e = Some ["g"; "card"])
+      "Lisp card did not reach the inspector";
+    let ix, iy, _, _ = (E3.panes !e (frame (0., 0.) [] 0)).inspector in
+    let at x = float (ix + 200 + x), float (iy + 186) in
+    step ~mouse:(at 0) ~buttons:[Input.LeftButton]
+      [Event.MousePressed (Input.LeftButton, at 0)];
+    List.iter (fun x -> step ~mouse:(at x) ~buttons:[Input.LeftButton] []) [20; 40; 60; 80];
+    step ~mouse:(at 90) [Event.MouseReleased (Input.LeftButton, at 90)];
+    step [];
+    check (has (source !e) "(sop/local_card src :distance")
+      ("bypassed Lisp node lost its unset inspector parameter: " ^ source !e);
+    step ~mouse:(150., 300.) [Event.MouseMoved (150., 300.)];
+    step ~mouse:(150., 300.)
+      [Event.KeyPressed (Input.KeyChar '/'); Event.KeyPressed (Input.KeyChar 'a')];
+    step ~mouse:(150., 300.) [Event.TextInput "local_card"];
+    step ~mouse:(150., 300.) [Event.KeyPressed Input.Enter];
+    step ~mouse:(150., 300.) [];
+    check (E3.undo_label !e = Some "Add node" && count_of (source !e) "(sop/local_card" = 2)
+      ("local Lisp kind was absent from the add menu: " ^ source !e))
+
+let run () = run_lisp_inspector (); run_context_menus (); run_expression_chip (); run_nested_inspector (); run_op_inspector (); run_spreadsheet (); run_panels (); run_studio (); run_copy_lisp (); run_hide_and_order (); run_root_section (); run_layouts (); run_compose (); run_ref_picker (); run_result_view (); run_loop_view (); run_geometry_view (); run_panel_states (); run_camera_zoom (); run_cameras (); run_lowering (); run_ops (); run_panel_keys (); run_unbound_panels (); run_values (); run_duplicate_and_view (); run_movers (); run_frame_key (); run_loop_copies (); run_loop_expression (); run_editor (); run_restore (); run_views (); run_instances (); run_host_scene_edit (); run_panel_chain ();
   run_undo_under_pane (); run_atomic_frame (); run_undo_and_input (); run_carry_reaches_no_history ()
 
 (* Native VIEW regression over the reported sketch, including its piece renderer and a following

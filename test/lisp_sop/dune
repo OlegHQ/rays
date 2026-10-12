@@ -2,4 +2,10 @@
 ; Procedural nodes through the real lowering. Not a product library.
 (library
  (name lisp_sop)
+ (modules lisp_sop)
  (libraries flow flow_sop editor_document sop_catalog sop rdk rays_math))
+
+(test
+ (name test_workspace_node)
+ (modules test_workspace_node)
+ (libraries lisp_sop sop rdk))

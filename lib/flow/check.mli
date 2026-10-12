@@ -35,6 +35,9 @@ type kind = {
 
 type catalog = { version : int; kinds : kind list }
 
+val parameters_of_fields : Param.field_view list -> parameter list
+(** Inspector fields grouped into the catalog's scalar and vec3 inputs. *)
+
 type term = { node : term_node; ty : Port_type.t option }
 and term_node =
   | Literal of Param.value

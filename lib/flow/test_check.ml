@@ -69,4 +69,19 @@ let () =
      facts "points" "\"P\"" "generic" "(exact false) (exact true)";
      facts "points" "\"P\"" "generic" "";
      valid ^ " " ^ valid];
+  let field_manifest metadata =
+    let kind = "(kind \"sop/test\" (key \"test\") (aliases) (operation \"test\") (label \"Test\") (category)
+      (slots) (fields (field \"amount\" \"Amount\" (folder) (float (soft 0 1) (hard nil nil))
+        (float 0) (primary false) (vec3) " ^ metadata ^ ")) (outputs))" in
+    let kind=Lisp.flat (List.hd (Result.get_ok (Syntax.parse kind))) in
+    "(flow_manifest (version 1) (digest \"" ^ Digest.to_hex (Digest.string ("(version 1)\n(kinds "^kind^")"))
+      ^ "\") (kinds " ^ kind ^ "))" in
+  let catalog,_=Result.get_ok (Check.catalog_of_manifest
+    (field_manifest "(description \"Explanation\") (impact view) (unit \"m\")")) in
+  assert ((List.hd (List.hd catalog.kinds).parameters).unit=Some "m");
+  List.iter (fun metadata -> match Check.catalog_of_manifest (field_manifest metadata) with
+    | Error d -> assert (d.code="E_CATALOG")
+    | Ok _ -> failwith "Accepted malformed parameter metadata")
+    ["(unit \"m\") (unit \"s\")"; "(description \"a\") (description \"b\")";
+     "(impact view) (impact cook)"; "(impact invalid)"; "(description true)"; "(unknown \"x\")"];
   print_endline "Flow checker: kind resolution, kernel facts and the manifest reader pass"

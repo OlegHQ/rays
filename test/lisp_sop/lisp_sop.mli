@@ -14,6 +14,11 @@ val node_result : ?with_:(string * Sop.Node.t) list -> string ->
 val node : ?with_:(string * Sop.Node.t) list -> string -> Sop.Node.t
 (** As {!node_result}; a lowering error fails the test with its message. *)
 
+val workspace_node : ?with_:(string * Sop.Node.t) list -> string -> Sop.Node.t
+(** Compile a complete workspace, including shared definitions, and return the
+    first default SOP graph's result. External nodes work as in {!node_result}.
+    Checking or lowering errors fail the test with their message. *)
+
 val snapshot : Rdk.Geometry.t -> Sop.Node.t
 (** A generator node holding an already built geometry: the one OCaml-only
     source, used through [~with_]. *)

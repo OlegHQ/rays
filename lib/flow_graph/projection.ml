@@ -105,7 +105,9 @@ let same_graph (a : W.t) (b : W.t) name =
     | None -> List.find_opt (fun (g : W.graph) -> name = "def:" ^ g.name || name = g.name) workspace.defs in
   match graph a, graph b with
   | Some x, Some y when a.ops == b.ops && x.context = y.context && S.equal x.form y.form
-      && List.equal S.equal a.macros b.macros ->
+      && List.equal S.equal a.macros b.macros
+      && List.equal (fun (a : W.node_definition) (b : W.node_definition) ->
+        a.kind = b.kind && a.fields = b.fields) a.nodes b.nodes ->
       let rec same (a : W.term) (b : W.term) = a.path = b.path && a.ty = b.ty
         && List.equal same (subterms a) (subterms b) in
       let root = if String.starts_with ~prefix:"def:" name then name
@@ -551,8 +553,10 @@ let bypassable (n : node) =
 let reorderable (n : node) =
   n.zone = None && List.mem n.head [ "list"; "str"; "scene/merge" ]
 
-let of_graph catalog (w : W.t) name =
+let of_graph (catalog : Flow.Check.catalog) (w : W.t) name =
   Flow.Phase_timer.measure Project (fun () ->
+  let catalog = {catalog with Flow.Check.kinds =
+    List.map (fun (node : W.node_definition) -> node.kind) w.nodes @ catalog.kinds} in
   let def = String.starts_with ~prefix:"def:" name in
   let bare = if def then String.sub name 4 (String.length name - 4) else name in
   let g = match List.find_opt (fun (g : W.graph) -> g.name = bare) (if def then w.defs else w.graphs @ w.defs) with

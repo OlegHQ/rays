@@ -114,6 +114,10 @@ let add ?(static = []) prim args =
   r := Printf.sprintf {|{"static":%s,"args":%s,"result":%s}|} (seq Fun.id static)
          (seq json args) (run prim args) :: !r
 
+let add_host name args result =
+  let r=match Hashtbl.find_opt cases name with Some r->r | None->let r=ref [] in Hashtbl.add cases name r;r in
+  r:=Printf.sprintf {|{"static":[],"args":%s,"result":%s}|} (seq json args) result :: !r
+
 let int n = E.Int n and flt_ x = E.Float x and txt s = E.Text s
 let v2 x y = E.Vec2 (x, y) and v3 x y z = E.Vec3 (x, y, z) and v4 x y z w = E.Vec4 (x, y, z, w)
 let rec_ fs = E.Record fs
@@ -289,12 +293,54 @@ let () =
      T.List (T.List T.Int); rt; T.Record []; T.Array T.Float; T.Color];
   List.iter (fun (c, m) -> add ~static:[str c; str m] (C.Fail (c, m)) [])
     [("E_X", "boom"); ("", ""); ("E_UNICODE", "é日\n\"q\"")];
+  (* Geometry host operations have a separate immutable record protocol; they
+     are not frame-core primitives and do not enlarge the 54-entry inventory. *)
+  List.iter (fun seed -> List.iter (fun label ->
+    let context=E.Record ["seed",E.Text (Int64.to_string seed);"label",E.Text label] in
+    let result=Flow_sop.Operators.seed_for ~seed ~namespace:"noise_displace" ~label in
+    add_host "sop/context_seed" [E.Text "noise_displace";context] (json (E.Int result)))
+    ["Noise Displace";"result";"é日";""]) [0L;1L;(-1L);42L;Int64.max_int;Int64.min_int];
+  let geometry =
+    let positions=Rdk.Packed.Float3.Private.of_owned_exn ~x:[|0.;1.;0.|] ~y:[|0.;0.;1.|] ~z:[|0.;0.;0.|] in
+    let topology=Rdk.Topology.polygons_owned ~point_count:3 ~vertex_points:[|0;1;2|] ~primitive_offsets:[|0;3|] |> Result.get_ok in
+    let attributes=List.concat_map (fun (owner,count) -> List.map (fun name ->
+      Rdk.Attribute.create_owned ~name ~owner (Rdk.Attribute.Float (Array.init count float)) |> Result.get_ok)
+      ["N";"Cd";"mask_1";"mask_2";"mask_A";"é";"a b";"a*";"z"])
+      [Rdk.Attribute.Point,3;Vertex,3;Primitive,1;Detail,1] in
+    Rdk.Geometry.create ~positions ~topology ~attributes () |> Result.get_ok in
+  let owner_name=function Rdk.Attribute.Point->"point"|Vertex->"vertex"|Primitive->"primitive"|Detail->"detail" in
+  let geometry_value geometry =
+    let topology=Rdk.Topology.Private.view (Rdk.Geometry.topology geometry) in
+    let positions=Rdk.Packed.Float3.Private.view (Rdk.Geometry.positions geometry) in
+    let positions=Array.init (Array.length positions.x*3) (fun i -> match i mod 3 with
+      |0->positions.x.(i/3)|1->positions.y.(i/3)|_->positions.z.(i/3)) in
+    E.Record ["positions",E.Vec3_array positions;
+      "vertex_points",E.List (Array.map (fun n->E.Int n) topology.vertex_points);
+      "primitive_offsets",E.List (Array.map (fun n->E.Int n) topology.primitive_offsets);
+      "primitive_kinds",E.Text (Bytes.to_string topology.primitive_kinds);
+      "attributes",E.List (Array.of_list (List.map (fun attribute->
+        let values=match Rdk.Attribute.storage attribute with Rdk.Attribute.Float values->values|_->assert false in
+        E.Record ["owner",E.Text (owner_name (Rdk.Attribute.owner attribute));"name",E.Text (Rdk.Attribute.name attribute);
+          "values",E.Float_array values]) (Rdk.Geometry.attributes geometry)))] in
+  let delete=List.find (fun (op:Flow.Op.t)->op.name="sop/delete_attr") Flow_sop.Operators.all in
+  List.iter (fun owner->List.iter (fun pattern->
+    let args=["geometry",E.No_geo;"attribute",E.Text pattern;"owner",E.Text owner] in
+    let result=try
+      delete.check args;
+      let for_owner key=if key=owner then pattern else "" in
+      match Rdk.Attribute_ops.delete ~point_pattern:(for_owner "point") ~vertex_pattern:(for_owner "vertex")
+        ~primitive_pattern:(for_owner "primitive") ~detail_pattern:(for_owner "detail") geometry with
+      |Ok g->json (geometry_value g)
+      |Error e->Printf.sprintf {|{"error":{"code":"E_ATTR_DELETE","message":%s}}|} (str (Rdk.Error.to_string e))
+      with Flow.Value.Fail (code,message,_) -> Printf.sprintf {|{"error":{"code":%s,"message":%s}}|} (str code) (str message) in
+    add_host "sop/delete_attr" [geometry_value geometry;E.Text pattern;E.Text owner] result)
+    ["N";"*";"mask_?";"mask_[1-2]";"mask_[!1]";"^N";"* ^mask_* mask_1";"a\\ b";"a\\*";
+     "?";"??";"[a-z]*";"Cd N";"[";"\\";""]) ["point";"vertex";"primitive";"detail";"invalid"];
   (* write *)
   assert (List.length inventory = 54);
   if not (Sys.file_exists outdir) then Sys.mkdir outdir 0o755;
-  List.iter (fun prim ->
-    let name = C.primitive_name prim in
+  List.iter (fun name ->
     let body = String.concat ",\n" (List.rev !(Hashtbl.find cases name)) in
     Out_channel.with_open_bin (Filename.concat outdir (export name ^ ".json")) (fun oc ->
       Printf.fprintf oc "{\"primitive\":%s,\"export\":%s,\"cases\":[\n%s\n]}\n" (str name) (str (export name)) body))
-    inventory
+    (List.map C.primitive_name inventory @ ["sop/context_seed";"sop/delete_attr"])

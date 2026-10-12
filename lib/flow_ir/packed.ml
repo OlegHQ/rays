@@ -13,6 +13,7 @@ type iteration = Core.Region.iteration = Zip | Product
 type result = Core.Region.result = Collect | Sum of bool | Accumulate of W.term * bool
 type origin = W.path * int list
 type count_source = E.residual -> W.term -> origin option
+type column = {data:float array;offset:int;stride:int}
 type t = { residual : E.residual; term : W.term; sources : (E.residual * W.term) array;
   widths : int array; uniforms : E.value array; code : instruction array;
   dependent : bool array; outputs : int array array; count : int option;
@@ -36,11 +37,17 @@ let of_region (r : Core.Region.t) =
   let ok slot id = id >= 0 && id < slot in
   let operands_ok = ref true in
   Array.iteri (fun slot -> function
+    | Input (input,width,component) ->
+        if input<0 || input>=Array.length r.widths || width<>r.widths.(input)
+          || component<0 || component>=width then operands_ok:=false
     | Binary (_, a, b) -> if not (ok slot a && ok slot b) then operands_ok := false
     | Unary (_, a) -> if not (ok slot a) then operands_ok := false
     | Noise3 (a, b, c, _, _) | Select (a, b, c) -> if not (ok slot a && ok slot b && ok slot c) then operands_ok := false
     | _ -> ()) r.code;
-  if not !operands_ok then invalid "Region instruction reads a register defined later."
+  if Array.length r.widths<>Array.length r.sources
+    || not (Array.for_all (fun width->width>=1 && width<=4) r.widths) then
+    invalid "Region inputs need matching sources and widths from 1 to 4."
+  else if not !operands_ok then invalid "Region instruction reads an invalid input or a register defined later."
   else if Array.length r.code > Flow.Packed_ops.register_limit then
     invalid (Printf.sprintf "Region exceeds %d registers." Flow.Packed_ops.register_limit)
   else if r.outputs = [||] || (Array.length r.outputs > 1 && r.result <> Collect) then
@@ -146,7 +153,7 @@ let ordered_add t =
       !matched
   | _ -> false
 
-let rec force_all ?state ?elems ?resolve ?measure t ~live =
+let rec run_all ?column_source ?plane_outputs ?expected_count ?state ?elems ?resolve ?measure ?(strict = false) t ~live =
   let state = Option.value ~default:(E.create_state ()) state in
   let work () =
     let rec evaluate residual (term : W.term) =
@@ -159,17 +166,40 @@ let rec force_all ?state ?elems ?resolve ?measure t ~live =
       match nested with
       | Some (residual, term) -> evaluate residual term
       | None -> (match compile_impl ~fusion:t.fusion ~dynamic:t.dynamic ~count_source:t.count_source residual term with
-          | Ok program -> force ~state ?elems ?resolve ?measure program ~live
-          | Error _ -> E.Private.eval_term ~state ?elems ?resolve residual term ~live) in
+          | Ok program -> force ~strict ~state ?elems ?resolve ?measure program ~live
+          | Error _ ->
+              (match strict, term.node with
+               | true, (W.Hof ((`Map | `Reduce), _) | Loop _ | Op {op = "array/sum"; _}) ->
+                   Error (Flow.Diagnostic.error ~code:"E_KERNEL_FORM"
+                     "Numeric node bodies must compile to packed kernels.")
+               | _ -> E.Private.eval_term ~state ?elems ?resolve residual term ~live)) in
     let seed = match t.result with
       | Accumulate (seed, _) -> Some (get (E.Private.eval_term ~state ?elems ?resolve t.residual seed ~live))
       | _ -> None in
+    let borrowed=Array.map (fun (residual,term)->match column_source with
+      |None->None|Some source->get (source residual term)) t.sources in
     let inputs = Array.mapi (fun i (residual, term) ->
+      if borrowed.(i)<>None then [||] else
       let value = get (evaluate residual term) in
       match value, t.widths.(i) with
       | E.Float_array xs, 1 | Vec2_array xs, 2 | Vec3_array xs, 3 | Vec4_array xs, 4 -> xs
       | _ -> V.fail "E_ARRAY_TYPE" "Kernel input changed its packed element type.") t.sources in
-    let lengths = Array.mapi (fun i a -> Array.length a / t.widths.(i)) inputs in
+    let columns=Array.mapi (fun i array->match borrowed.(i) with
+      |None->Array.init t.widths.(i) (fun component->{data=array;offset=component;stride=t.widths.(i)})
+      |Some columns->
+          if Array.length columns<>t.widths.(i) then V.fail "E_ARRAY_TYPE" "Borrowed columns changed the packed element width.";
+          columns) inputs in
+    let lengths=Array.mapi (fun i columns->match borrowed.(i) with
+      |None->Array.length inputs.(i)/t.widths.(i)
+      |Some _->
+          let length c=if c.stride<=0 || c.offset<0 || c.offset>Array.length c.data then
+              V.fail "E_ARRAY_RANGE" "Borrowed column offset and stride must describe an in-bounds span."
+            else if c.offset=Array.length c.data then 0 else
+              1+(Array.length c.data-1-c.offset)/c.stride in
+          let count=length columns.(0) in
+          if not (Array.for_all (fun c->length c=count) columns) then
+            V.fail "E_ARRAY_COUNT" "Borrowed components need the same element count.";
+          count) columns in
     let count = if t.iteration = Product && Array.exists ((=) 0) lengths then 0 else
       Array.fold_left (fun a b -> match t.iteration with
       | Zip -> min a b | Product ->
@@ -179,7 +209,7 @@ let rec force_all ?state ?elems ?resolve ?measure t ~live =
     let strides = Array.make (Array.length inputs) 1 in
     if t.iteration = Product && count > 0 then
       for i = Array.length inputs - 2 downto 0 do strides.(i) <- strides.(i + 1) * lengths.(i + 1) done;
-    let uniforms = force_uniforms ~state ?resolve ?measure t ~live in
+    let uniforms = force_uniforms ~strict ~state ?elems ?resolve ?measure t ~live in
     let frame = Array.map (function
       | Frame "t" -> live.Frame_input.t
       | Frame name ->
@@ -204,15 +234,137 @@ let rec force_all ?state ?elems ?resolve ?measure t ~live =
         if skip.(mid) < n then lo := mid + 1 else hi := mid
       done; !lo in
     let kept = count - Array.length skip in
+    Option.iter (fun expected->if kept<>expected then
+      V.fail "E_ARRAY_COUNT" "Column sink count differs from the kernel count.") expected_count;
     let collecting = match t.result with Collect | Accumulate (_, true) -> true | _ -> false in
     if collecting && Array.exists (fun width -> kept > Sys.max_floatarray_length / width) widths then
       V.fail "E_ARRAY_RANGE" "Kernel output exceeds native storage bounds.";
-    let outputs = Array.map (fun width -> Array.make (if collecting then kept * width else 0) 0.) widths in
+    Option.iter (fun planes->
+      if not collecting || t.result<>Collect || Array.length planes<>Array.length widths then
+        V.fail "E_ARRAY_TYPE" "Column sinks require matching Collect outputs.";
+      Array.iteri (fun k components->
+        if Array.length components<>widths.(k) then V.fail "E_ARRAY_TYPE" "Column sink width differs from the output.";
+        Array.iter (Option.iter (fun data->if Array.length data<>kept then
+          V.fail "E_ARRAY_COUNT" "Column sink count differs from the kernel count.")) components) planes) plane_outputs;
+    let outputs = Array.map (fun width -> Array.make (if collecting && plane_outputs=None then kept * width else 0) 0.) widths in
+    let[@inline always] store k component index value=match plane_outputs with
+      |Some planes->(match planes.(k).(component) with Some data->Array.unsafe_set data index value|None->())
+      |None->Array.unsafe_set outputs.(k) (index*widths.(k)+component) value in
+    let[@inline always] load input component index=let column=columns.(input).(component) in
+      Array.unsafe_get column.data (column.offset+index*column.stride) in
     let accumulator = match seed with
       | Some (E.Vec2 _ | Vec3 _ | Vec4 _ as value) -> components value
       | Some v -> Array.make width (V.num v) | None -> Array.make width 0. in
     let initialized = ref (match t.result with Sum zero -> zero | _ -> true) in
     let ordered_add = ordered_add t in
+    let uses=Array.make (Array.length t.code) 0 in
+    let use id=uses.(id)<-uses.(id)+1 in
+    Array.iter (function
+      |Binary (_,a,b)->use a;use b
+      |Unary (_,a)->use a
+      |Noise3 (a,b,c,_,_)|Select (a,b,c)->use a;use b;use c
+      |_->()) t.code;
+    Array.iter (Array.iter use) t.outputs;
+    let omitted=Array.make (Array.length t.code) false in
+    let scale register=match t.code.(register) with
+      |Binary (Mul,a,b) when uses.(register)=1 ->
+          let constant id=match t.code.(id) with Const _|Uniform _|Frame _->true|_->false in
+          if constant b then Some (a,b) else if constant a then Some (b,a) else None
+      |_->None in
+    let noise_scale=Array.map (function
+      |Noise3 (x,y,z,_,_)->(match scale x,scale y,scale z with
+        |Some (a,f),Some (b,g),Some (c,h) when f=g && g=h ->
+            omitted.(x)<-true;omitted.(y)<-true;omitted.(z)<-true;
+            Some (a,b,c,f)
+        |_->None)
+      |_->None) t.code in
+    let collect_product=Array.map (Array.map (fun register->
+      if t.result<>Collect || uses.(register)<>1 then None else
+      match t.code.(register) with
+      |Binary (Add,a,b)->
+          let product base id=match t.code.(id) with
+            |Binary (Mul,x,y) when uses.(id)=1->
+                omitted.(id)<-true;omitted.(register)<-true;Some (base,x,y)
+            |_->None in
+          (match product a b with Some _ as p->p|None->product b a)
+      |_->None)) t.outputs in
+    (* A streaming SSA path for noise followed by scalar scaling and terminal
+       vector products/additions. It depends only on register instructions;
+       other expression graphs keep the block executor below. *)
+    let exception Not_streaming in
+    let streaming=try
+      if t.result<>Collect || t.iteration<>Zip || skip<>[||] then raise Not_streaming;
+      let allowed=Array.map (function Input _|Const _|Uniform _|Frame _->true|_->false) t.code in
+      let input id=match t.code.(id) with Input (source,width,component)->source,width,component
+        |_->raise Not_streaming in
+      let scalar id=match t.code.(id) with Const _|Uniform _|Frame _->id|_->raise Not_streaming in
+      let shared=ref None in
+      let products=Array.mapi (fun k output->Array.mapi (fun component register->
+        let base,a,b=match collect_product.(k).(component) with Some p->p|None->raise Not_streaming in
+        let direction,scale=match t.code.(a),t.code.(b) with
+          |Input _,_->input a,b|_,Input _->input b,a|_->raise Not_streaming in
+        (match !shared with None->shared:=Some scale|Some old when old=scale->()|_->raise Not_streaming);
+        allowed.(register)<-true;
+        (match t.code.(register) with Binary (Add,x,y)->allowed.(if x=base then y else x)<-true|_->raise Not_streaming);
+        input base,direction) output) t.outputs in
+      let scale=match !shared with Some scale->scale|None->raise Not_streaming in
+      let noise,amplitude=match t.code.(scale) with
+        |Binary (Mul,a,b)->(match t.code.(a),t.code.(b) with
+          |Noise3 _,_->a,scalar b|_,Noise3 _->b,scalar a|_->raise Not_streaming)
+        |_->raise Not_streaming in
+      allowed.(scale)<-true;allowed.(noise)<-true;
+      let x,y,z,frequency=match t.code.(noise) with
+        |Noise3 (x,y,z,_,1)->(match noise_scale.(noise) with
+          |Some (a,b,c,f)->allowed.(x)<-true;allowed.(y)<-true;allowed.(z)<-true;
+              input a,input b,input c,Some (scalar f)
+          |None->input x,input y,input z,None)
+        |_->raise Not_streaming in
+      if not (Array.for_all Fun.id allowed) then raise Not_streaming;
+      Some (noise,amplitude,x,y,z,frequency,products)
+    with Not_streaming->None in
+    let scalar_streaming=try
+      if t.result<>Collect || t.iteration<>Zip || skip<>[||] || Option.is_some streaming then raise Not_streaming;
+      let allowed=Array.map (function Input _|Const _|Uniform _|Frame _->true|_->false) t.code in
+      let input id=match t.code.(id) with Input (i,w,c)->i,w,c|_->raise Not_streaming in
+      let scalar id=match t.code.(id) with Const _|Uniform _|Frame _->id|_->raise Not_streaming in
+      let scaled id=match t.code.(id) with
+        |Binary (Mul,a,b)->(match t.code.(a),t.code.(b) with
+          |Input _,_->allowed.(id)<-true;input a,Some (scalar b)
+          |_,Input _->allowed.(id)<-true;input b,Some (scalar a)
+          |_->raise Not_streaming)
+        |Input _->input id,None
+        |_->raise Not_streaming in
+      let shared=ref None in
+      let outputs=Array.map (Array.map (fun id->match t.code.(id) with
+        |Input _->input id,None
+        |Binary (Add,a,b)->
+          let base,expression=match t.code.(a),t.code.(b) with
+            |Input _,_->input a,b|_,Input _->input b,a|_->raise Not_streaming in
+          (match !shared with None->shared:=Some expression|Some old when old=expression->()|_->raise Not_streaming);
+          allowed.(id)<-true;base,Some expression
+        |_->raise Not_streaming)) t.outputs in
+      let root=match !shared with Some id->id|None->raise Not_streaming in
+      let transform,a=match t.code.(root) with
+        |Binary (Mul,a,b)->(match t.code.(a),t.code.(b) with
+          |Binary (Sub,_,_),_->a,scalar b|_,Binary (Sub,_,_)->b,scalar a|_->raise Not_streaming)
+        |_->raise Not_streaming in
+      let gain,bias=match t.code.(transform) with Binary (Sub,a,b)->a,scalar b|_->raise Not_streaming in
+      let noise,g=match t.code.(gain) with
+        |Binary (Mul,a,b)->(match t.code.(a),t.code.(b) with
+          |Noise3 _,_->a,scalar b|_,Noise3 _->b,scalar a|_->raise Not_streaming)
+        |_->raise Not_streaming in
+      allowed.(root)<-true;allowed.(transform)<-true;allowed.(gain)<-true;allowed.(noise)<-true;
+      let x,y,z,f=match t.code.(noise) with
+        |Noise3 (x,y,z,_,1)->
+          let x,f=scaled x and y,h=scaled y in
+          if f<>h then raise Not_streaming;
+          let z=match t.code.(z) with Const z when z=0.->None
+            |_->let z,h=scaled z in if h<>f then raise Not_streaming;Some z in
+          x,y,z,f
+        |_->raise Not_streaming in
+      if not (Array.for_all Fun.id allowed) then raise Not_streaming;
+      Some (noise,x,y,z,f,g,bias,a,outputs)
+    with Not_streaming->None in
     let block_size = 1024 in
     let blocks = if count = 0 then 0 else (count - 1) / block_size + 1 in
     let blocks_per_chunk = 16 in
@@ -249,28 +401,45 @@ let rec force_all ?state ?elems ?resolve ?measure t ~live =
           done
         done
       end else begin
-      let scratch = Array.make (Array.length t.code * block_size) 0. in
+      let scratch = Array.make ((if Option.is_some streaming then (if plane_outputs=None then 1 else 2)
+        else if Option.is_some scalar_streaming then 2 else Array.length t.code) * block_size) 0. in
       let noise_scratch=Rays_math.Noise.Private.create_fbm3_scratch () in
       let tables=Array.map(function Noise3(_,_,_,seed,_)->Some(Operators.noise_table seed)
         |_->None)t.code in
-      let indices = Array.make block_size 0 in
+      let contiguous = t.iteration=Zip && skip=[||] in
+      let indices = if contiguous then [||] else Array.make block_size 0 in
       for block = chunk * blocks_per_chunk to min blocks ((chunk + 1) * blocks_per_chunk) - 1 do
       let start = block * block_size and limit = min count ((block + 1) * block_size) in
-      let skipped = ref (skipped_before start) and length = ref 0 in
-      for i = start to limit - 1 do
-        if !skipped < Array.length skip && skip.(!skipped) = i then incr skipped
-        else begin indices.(!length) <- i; incr length end
-      done;
-      let length = !length and output_start = start - skipped_before start in
+      let length,output_start = if contiguous then limit-start,start else
+        let skipped = ref (skipped_before start) and length = ref 0 in
+        for i = start to limit - 1 do
+          if !skipped < Array.length skip && skip.(!skipped) = i then incr skipped
+          else begin indices.(!length) <- i; incr length end
+        done;
+        !length,start-skipped_before start in
       let execute dependent first last =
       for slot = 0 to Array.length t.code - 1 do
         let instruction = t.code.(slot) in
-        if t.dependent.(slot) = dependent then begin
+        if t.dependent.(slot) = dependent && not omitted.(slot) then begin
         let at = slot * block_size in
         match instruction with
         | Const x -> Array.fill scratch (at + first) (last - first) x
         | Input (input, width, component) ->
             let source = inputs.(input) in
+            if borrowed.(input)<>None then
+              for j=first to last-1 do
+                let i=if contiguous then start+j else if t.iteration=Zip then indices.(j)
+                  else indices.(j)/strides.(input) mod lengths.(input) in
+                Array.unsafe_set scratch (at+j) (load input component i)
+              done
+            else if t.iteration=Zip && skip=[||] then
+              for j=first to last-1 do
+                (* Layouts were checked by [of_region], and Zip's count is the
+                   shortest complete input. These spans are within both arrays. *)
+                Array.unsafe_set scratch (at+j)
+                  (Array.unsafe_get source ((start+j)*width+component))
+              done
+            else
             for j = first to last - 1 do
               let i = if t.iteration = Zip then indices.(j)
                 else indices.(j) / strides.(input) mod lengths.(input) in
@@ -287,20 +456,29 @@ let rec force_all ?state ?elems ?resolve ?measure t ~live =
             done
         | Noise3 (x, y, z, _, octaves) ->
             let noise=Option.get tables.(slot)in
+            let x,y,z,frequency=match noise_scale.(slot) with
+              |Some (x,y,z,f)->x,y,z,scratch.(f*block_size+first)
+              |None->x,y,z,1. in
             if octaves=1 then Rays_math.Noise.Private.sample3_into noise ~first ~last
+              ~frequency
               ~x:scratch ~x_offset:(x * block_size) ~y:scratch ~y_offset:(y * block_size)
               ~z:scratch ~z_offset:(z * block_size) ~output:scratch ~output_offset:at ()
             else for j=first to last-1 do
               scratch.(at+j)<-Rays_math.Noise.Private.fbm3_with_scratch noise_scratch noise
                 ~octaves ~lacunarity:2. ~gain:0.5
-                ~x:scratch.(x*block_size+j) ~y:scratch.(y*block_size+j) ~z:scratch.(z*block_size+j)
-            done
+                ~x:(scratch.(x*block_size+j)*.frequency) ~y:(scratch.(y*block_size+j)*.frequency)
+                ~z:(scratch.(z*block_size+j)*.frequency)
+            done;
+            if noise_scale.(slot)<>None then
+              for j=first to last-1 do
+                if not (Float.is_finite scratch.(at+j)) then raise Nonfinite
+              done
         | Binary (operation, a, b) ->
             let a = a * block_size and b = b * block_size in
             (match operation with
-             | Add -> for j = first to last - 1 do let x = scratch.(a+j) +. scratch.(b+j) in if not (Float.is_finite x) then raise Nonfinite; scratch.(at+j) <- x done
+             | Add -> for j = first to last - 1 do let x = Array.unsafe_get scratch (a+j) +. Array.unsafe_get scratch (b+j) in if not (Float.is_finite x) then raise Nonfinite; Array.unsafe_set scratch (at+j) x done
              | Sub -> for j = first to last - 1 do let x = scratch.(a+j) -. scratch.(b+j) in if not (Float.is_finite x) then raise Nonfinite; scratch.(at+j) <- x done
-             | Mul -> for j = first to last - 1 do let x = scratch.(a+j) *. scratch.(b+j) in if not (Float.is_finite x) then raise Nonfinite; scratch.(at+j) <- x done
+             | Mul -> for j = first to last - 1 do let x = Array.unsafe_get scratch (a+j) *. Array.unsafe_get scratch (b+j) in if not (Float.is_finite x) then raise Nonfinite; Array.unsafe_set scratch (at+j) x done
              | Div -> for j = first to last - 1 do let y = scratch.(b+j) in
                  let x = if y = 0. then 0. else scratch.(a+j) /. y in if not (Float.is_finite x) then raise Nonfinite; scratch.(at+j) <- x done
              | Mod -> for j = first to last - 1 do let y = scratch.(b+j) in
@@ -331,7 +509,188 @@ let rec force_all ?state ?elems ?resolve ?measure t ~live =
              | Not -> for j = first to last - 1 do scratch.(at+j) <- if scratch.(a+j) = 0. then 1. else 0. done)
         end
       done in
+      match streaming with
+      |Some (noise,amplitude,(xi,_,xc),(yi,_,yc),(zi,_,zc),frequency,products)->
+          let scalar id=match t.code.(id) with
+            |Const x->x|Uniform (i,c)->uniforms.(i).(c)|Frame _->frame.(id)|_->assert false in
+          let x=columns.(xi).(xc) and y=columns.(yi).(yc) and z=columns.(zi).(zc) in
+          Rays_math.Noise.Private.sample3_into (Option.get tables.(noise)) ~first:0 ~last:length
+            ~x:x.data ~x_offset:(x.offset+start*x.stride) ~x_stride:x.stride
+            ~y:y.data ~y_offset:(y.offset+start*y.stride) ~y_stride:y.stride
+            ~z:z.data ~z_offset:(z.offset+start*z.stride) ~z_stride:z.stride
+            ~frequency:(Option.fold ~none:1. ~some:scalar frequency) ~output:scratch ();
+          let amplitude=scalar amplitude in
+          for j=0 to length-1 do
+            let noise=scratch.(j) in
+            scratch.(j)<-noise*.amplitude;
+            (* Multiplication cannot make NaN/infinity finite, so this check
+               also rejects every nonfinite noise sample. *)
+            if not (Float.is_finite scratch.(j)) then raise Nonfinite
+          done;
+          Array.iteri (fun k components->
+            let width=Array.length components and output=outputs.(k) in
+            if plane_outputs<>None then
+              Array.iteri (fun component ((bi,_,bc),(di,_,dc))->
+                let {data=base;offset=bo;stride=bs}=columns.(bi).(bc)
+                and {data=direction;offset=doff;stride=ds}=columns.(di).(dc) in
+                let destination=(Option.get plane_outputs).(k).(component) in
+                for j=0 to length-1 do
+                  scratch.(block_size+j)<-Array.unsafe_get direction (doff+(start+j)*ds)*.scratch.(j);
+                  if not (Float.is_finite scratch.(block_size+j)) then raise Nonfinite;
+                  let x=Array.unsafe_get base (bo+(start+j)*bs)+.scratch.(block_size+j) in
+                  if not (Float.is_finite x) then raise Nonfinite;
+                  (match destination with Some data->Array.unsafe_set data (output_start+j) x|None->())
+                done) components
+            else
+            let vector=if width=3 then
+              let (bi,bw,bx),(di,dw,dx)=components.(0)
+              and (bj,bv,by),(dj,dv,dy)=components.(1)
+              and (bk,bu,bz),(dk,du,dz)=components.(2) in
+              if bi=bj && bj=bk && bw=bv && bv=bu && di=dj && dj=dk && dw=dv && dv=du
+              then Some (bi,bw,bx,by,bz,di,dw,dx,dy,dz) else None
+              else None in
+            match vector with
+            |Some (bi,bw,bx,by,bz,di,dw,dx,dy,dz)->
+              let base=inputs.(bi) and direction=inputs.(di) in
+              for j=0 to length-1 do
+                let at=(output_start+j)*3 and b=(start+j)*bw and d=(start+j)*dw
+                and scale=scratch.(j) in
+                Array.unsafe_set output at (Array.unsafe_get direction (d+dx)*.scale);
+                Array.unsafe_set output (at+1) (Array.unsafe_get direction (d+dy)*.scale);
+                Array.unsafe_set output (at+2) (Array.unsafe_get direction (d+dz)*.scale);
+                Array.unsafe_set output at (Array.unsafe_get base (b+bx)+.Array.unsafe_get output at);
+                Array.unsafe_set output (at+1) (Array.unsafe_get base (b+by)+.Array.unsafe_get output (at+1));
+                Array.unsafe_set output (at+2) (Array.unsafe_get base (b+bz)+.Array.unsafe_get output (at+2));
+                (* A nonfinite product remains nonfinite after addition. Checking
+                   the three sums therefore also rejects every invalid product. *)
+                if not (Float.is_finite (Array.unsafe_get output at)
+                  && Float.is_finite (Array.unsafe_get output (at+1))
+                  && Float.is_finite (Array.unsafe_get output (at+2))) then raise Nonfinite
+              done
+            |None->
+            Array.iteri (fun component ((bi,bw,bc),(di,dw,dc))->
+              let base=inputs.(bi) and direction=inputs.(di) in
+              for j=0 to length-1 do
+                let at=(output_start+j)*width+component in
+                Array.unsafe_set output at (Array.unsafe_get direction ((start+j)*dw+dc)*.scratch.(j));
+                if not (Float.is_finite (Array.unsafe_get output at)) then raise Nonfinite;
+                Array.unsafe_set output at (Array.unsafe_get base ((start+j)*bw+bc)+.Array.unsafe_get output at);
+                if not (Float.is_finite (Array.unsafe_get output at)) then raise Nonfinite
+              done) components) products
+      |None when Option.is_some scalar_streaming ->
+          let noise,(xi,_,xc),(yi,_,yc),z,frequency,gain,bias,amplitude,products=Option.get scalar_streaming in
+          let scalar id=match t.code.(id) with
+            |Const x->x|Uniform (i,c)->uniforms.(i).(c)|Frame _->frame.(id)|_->assert false in
+          let x=columns.(xi).(xc) and y=columns.(yi).(yc) in
+          let z,z_offset,z_stride=match z with
+            |Some (i,_,c)->let z=columns.(i).(c) in z.data,z.offset+start*z.stride,z.stride
+            |None->scratch,block_size,1 in
+          Rays_math.Noise.Private.sample3_into (Option.get tables.(noise)) ~first:0 ~last:length
+            ~x:x.data ~x_offset:(x.offset+start*x.stride) ~x_stride:x.stride
+            ~y:y.data ~y_offset:(y.offset+start*y.stride) ~y_stride:y.stride
+            ~z ~z_offset ~z_stride ~frequency:(Option.fold ~none:1. ~some:scalar frequency) ~output:scratch ();
+          let gain=scalar gain and bias=scalar bias and amplitude=scalar amplitude in
+          for j=0 to length-1 do
+            scratch.(j)<-scratch.(j)*.gain;
+            scratch.(j)<-scratch.(j)-.bias;
+            scratch.(j)<-scratch.(j)*.amplitude;
+            (* Mul/Sub/Mul propagate every invalid intermediate to the final
+               scale. Stores retain each separate binary64 rounding. *)
+            if not (Float.is_finite scratch.(j)) then raise Nonfinite
+          done;
+          Array.iteri (fun k components->
+            let width=Array.length components and output=outputs.(k) in
+            if plane_outputs<>None then
+              Array.iteri (fun component ((bi,_,bc),expression)->
+                let {data=base;offset;stride}=columns.(bi).(bc) in
+                let destination=(Option.get plane_outputs).(k).(component) in
+                match expression with
+                |None->for j=0 to length-1 do
+                    let x=Array.unsafe_get base (offset+(start+j)*stride) in
+                    if not (Float.is_finite x) then raise Nonfinite;
+                    (match destination with Some data->Array.unsafe_set data (output_start+j) x|None->())
+                  done
+                |Some _->for j=0 to length-1 do
+                    let x=Array.unsafe_get base (offset+(start+j)*stride)+.scratch.(j) in
+                    if not (Float.is_finite x) then raise Nonfinite;
+                    (match destination with Some data->Array.unsafe_set data (output_start+j) x|None->())
+                  done) components
+            else
+            Array.iteri (fun component ((bi,bw,bc),expression)->
+              let base=inputs.(bi) in
+              match expression with
+              |None->for j=0 to length-1 do
+                  let x=Array.unsafe_get base ((start+j)*bw+bc) in
+                  if not (Float.is_finite x) then raise Nonfinite;
+                  Array.unsafe_set output ((output_start+j)*width+component) x
+                done
+              |Some _->for j=0 to length-1 do
+                  let at=(output_start+j)*width+component in
+                  Array.unsafe_set output at (Array.unsafe_get base ((start+j)*bw+bc)+.scratch.(j));
+                  if not (Float.is_finite (Array.unsafe_get output at)) then raise Nonfinite
+                done) components) products
+      |None->
       execute false 0 length;
+      if t.result=Collect && plane_outputs<>None then
+        Array.iteri (fun k registers->Array.iteri (fun component register->
+          let source=register*block_size in
+          (match collect_product.(k).(component) with
+           |None->()
+           |Some (base,a,b)->
+             let base=base*block_size and a=a*block_size and b=b*block_size in
+             for j=0 to length-1 do
+               scratch.(source+j)<-scratch.(a+j)*.scratch.(b+j);
+               if not (Float.is_finite scratch.(source+j)) then raise Nonfinite;
+               scratch.(source+j)<-scratch.(base+j)+.scratch.(source+j)
+             done);
+          for j=0 to length-1 do
+            let x=scratch.(source+j) in
+            if not (Float.is_finite x) then raise Nonfinite;
+            store k component (output_start+j) x
+          done) registers) t.outputs
+      else if t.result = Collect then
+        Array.iteri (fun k registers ->
+          let output=outputs.(k) in
+          if Array.exists Option.is_some collect_product.(k) then
+            Array.iteri (fun component product->
+              let width=Array.length registers in
+              match product with
+              |Some (base,a,b)->
+                  let base=base*block_size and a=a*block_size and b=b*block_size in
+                  for j=0 to length-1 do
+                    let at=(output_start+j)*width+component in
+                    (* Store the product before adding: the array boundary preserves
+                       its binary64 rounding, including cancellation and signed zero. *)
+                    Array.unsafe_set output at (Array.unsafe_get scratch (a+j)*.Array.unsafe_get scratch (b+j));
+                    if not (Float.is_finite (Array.unsafe_get output at)) then raise Nonfinite;
+                    Array.unsafe_set output at (Array.unsafe_get scratch (base+j)+.Array.unsafe_get output at);
+                    if not (Float.is_finite (Array.unsafe_get output at)) then raise Nonfinite
+                  done
+              |None->let source=registers.(component)*block_size in
+                  for j=0 to length-1 do
+                    let x=scratch.(source+j) in
+                    if not (Float.is_finite x) then raise Nonfinite;
+                    output.((output_start+j)*width+component)<-x
+                  done) collect_product.(k)
+          else if Array.length registers=3 then begin
+            let x=registers.(0)*block_size and y=registers.(1)*block_size
+            and z=registers.(2)*block_size in
+            for j=0 to length-1 do
+              let px=scratch.(x+j) and py=scratch.(y+j) and pz=scratch.(z+j) in
+              if not (Float.is_finite px && Float.is_finite py && Float.is_finite pz) then raise Nonfinite;
+              let at=(output_start+j)*3 in
+              output.(at)<-px;output.(at+1)<-py;output.(at+2)<-pz
+            done
+          end else
+            for component=0 to Array.length registers-1 do
+              let source=registers.(component)*block_size and width=Array.length registers in
+              for j=0 to length-1 do
+                let x=scratch.(source+j) in
+                if not (Float.is_finite x) then raise Nonfinite;
+                output.((output_start+j)*width+component)<-x
+              done
+            done) t.outputs
+      else
       for j = 0 to length - 1 do
         (match t.result with Accumulate _ -> execute true j (j + 1) | _ -> ());
         for k = 0 to Array.length t.outputs - 1 do
@@ -363,7 +722,7 @@ let rec force_all ?state ?elems ?resolve ?measure t ~live =
              ordered first middle; ordered middle last
            end in
          ordered 0 chunks);
-    let value = if collecting then Array.to_list (Array.mapi (fun k output -> match widths.(k) with
+    let value = if plane_outputs<>None then [] else if collecting then Array.to_list (Array.mapi (fun k output -> match widths.(k) with
       | 2 -> E.Vec2_array output | 3 -> E.Vec3_array output | 4 -> E.Vec4_array output
       | _ -> E.Float_array output) outputs)
     else [match t.result, seed with
@@ -383,28 +742,34 @@ let rec force_all ?state ?elems ?resolve ?measure t ~live =
     | V.Fail (code, message, span) -> Error (Flow.Diagnostic.error ?span ~code message)
     | Invalid_argument message -> Error (Flow.Diagnostic.error ~code:"E_KERNEL" ("Kernel needs reference evaluation: " ^ message))
     | Out_of_memory -> Error (Flow.Diagnostic.error ~code:"E_ARRAY_MEMORY" "Frame data exceeds available memory.")) in
-  match result with Ok _ -> result | Error _ when Array.length t.outputs > 1 -> result | Error _ ->
+  match result with Ok _ -> result | Error _ when strict || plane_outputs<>None || Array.length t.outputs > 1 -> result | Error _ ->
     let started = Option.map (fun (clock, _) -> clock ()) measure in
     let result = reference ~state ?elems ?resolve t ~live in
     Option.iter (fun (clock, report) -> report t ~seconds:(max 0. (clock () -. Option.get started)) ~reference:true) measure;
     Result.map (fun value -> [value]) result
 
-and force ?state ?elems ?resolve ?measure t ~live =
-  match force_all ?state ?elems ?resolve ?measure t ~live with
+and force ?state ?elems ?resolve ?measure ?strict t ~live =
+  match run_all ?state ?elems ?resolve ?measure ?strict t ~live with
   | Ok [value] -> Ok value
   | Ok _ -> Error (Flow.Diagnostic.error ~code:"E_KERNEL" "Program has several outputs; use force_all.")
   | Error _ as error -> error
 
-and force_uniforms ~state ?elems ?resolve ?measure t ~live =
+and force_uniforms ?(strict = false) ~state ?elems ?resolve ?measure t ~live =
   let execute residual live =
     match compile_impl ~fusion:t.fusion ~dynamic:t.dynamic ~count_source:t.count_source
       residual (E.Private.residual_view residual).term with
-    | Ok packed -> Some (force ~state ?elems ?resolve ?measure packed ~live)
+    | Ok packed -> Some (force ~strict ~state ?elems ?resolve ?measure packed ~live)
     | Error _ -> None in
   match get (E.Private.force_with_executor ~state ?elems ?resolve ~compiled:false ~execute
     (E.List t.uniforms) ~live) with
   | E.List values -> Array.map components values
   | _ -> assert false
+
+let force_all ?state ?elems ?resolve ?measure ?strict t ~live =
+  run_all ?state ?elems ?resolve ?measure ?strict t ~live
+
+let force_into ?state ?elems ?resolve ?measure ?strict ~column_source ~count ~outputs t ~live =
+  Result.map (fun _->()) (run_all ~column_source ~plane_outputs:outputs ~expected_count:count ?state ?elems ?resolve ?measure ?strict t ~live)
 
 module Private = struct
   let trace = trace

@@ -1,6 +1,6 @@
-(** Inspectable SOP catalog nodes. Every catalog SOP is declared once in
-    [Sop] with its parameter metadata; this library registers the
-    declarations and generates the one deterministic manifest of editor
+(** Inspectable native SOP catalog nodes. This library registers OCaml
+    declarations from [Sop]; [Flow_sop.Catalog] combines them with embedded
+    Lisp [defnode] declarations for the deterministic manifest and editor
     factories. Graphs are built from Rays Lisp or through these factories
     ([Sop.Edit_graph.instantiate]). *)
 

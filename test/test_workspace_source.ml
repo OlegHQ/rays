@@ -437,5 +437,70 @@ let run_library () =
     for count = 2 to 70 do e := E3.update !e (Test_editor_input.frame (450., 300.) [] count) done;
     check (has (Doc.to_text (E3.workspace !e)) "(* x 5)") "bare definition library did not reload")
 
-let run () = run_files (); run_find (); run_editor (); run_external_over_dirty (); run_autosave (); run_start_keywords (); run_imports (); run_library ();
+let run_library_navigation () =
+  let parse text = Flow.Syntax.parse text |> Result.get_ok in
+  let sources = parse {|(defn embedded_helper :context value [(x : float)] (+ x 1))
+    (defmacro embedded_macro [x] `(+ ~x 1))|} in
+  let authored = parse {|(workspace w
+    (defn local_helper :context value [(x : float)] (* x 2))
+    (defmacro local_macro [x] `(* ~x 2))
+    (graph g :context value (embedded_helper (local_helper 1))))|} in
+  let workspace = match Flow_sop.Catalog.check_workspace ~sources catalog authored with
+    | Some workspace, [] -> workspace
+    | _, diagnostics -> fail (String.concat "\n" (List.map Flow.Diagnostic.to_string diagnostics)) in
+  check (List.length workspace.defs=2 && List.length workspace.macros=2)
+    "library helper fixture lost checked definitions";
+  let module N = Rays_editor.Private.Navigator in
+  let params = N.{workspace; active=None; scope=None; records=None; probes=(fun _ -> 0);
+    selected=[]; chips=[]; objects=[]; root_detail=""; layouts=None; notes=[]} in
+  let descriptions state = N.rows state params |> Array.to_list |> List.map N.describe
+    |> String.concat "\n" in
+  let rows = descriptions N.initial in
+  check (has rows "local_helper" && has rows "local_macro") "authored definitions missing from navigation";
+  check (not (has rows "embedded_helper") && not (has rows "embedded_macro"))
+    "embedded helpers exposed as editable navigation rows";
+  check (not (has (descriptions (N.with_query "embedded" N.initial)) "embedded_helper"))
+    "search exposed an embedded helper as an editable definition"
+
+let run_vocabulary_refresh () =
+  let text field = match field with
+    | None -> "(workspace w (graph g :context sop (sop/line)))\n"
+    | Some field -> Printf.sprintf {|(workspace w
+      (defnode sop/vocab_card :label "Vocabulary card" :category ["Test"]
+        [(geo : geometry) (%s : float 0.5)] geo)
+      (graph g :context sop (sop/vocab_card (sop/line) :%s 0.5)))
+|} field field in
+  let dir = directory () in
+  let file = Filename.concat dir "sketch.rays" in
+  write file (text None);
+  let e = ref (editor ~source:(Source.at ~file ~digest:(sha (text None))) (text None))
+  and count = ref 0 in
+  Fun.protect ~finally:(fun () -> E3.close !e; remove_tree dir) (fun () ->
+    let frame () = incr count; Test_editor_input.frame (450., 300.) [] !count in
+    let poll () = for _ = 1 to 65 do e := E3.update !e (frame ()) done in
+    let labels suffix =
+      E3.Private.lisp_completions !e ("(workspace w (graph g :context sop (" ^ suffix)
+      |> List.map (fun (completion : Pxui.Ui.completion) -> completion.label) in
+    let head () = List.mem "sop/vocab_card" (labels "sop/vocab_") in
+    check (not (head ())) "new vocabulary kind existed before declaration";
+    write file (text (Some "distance")); poll ();
+    check (head () && List.mem ":distance" (labels "sop/vocab_card geo :dis"))
+      "reload did not add local kind and parameter completions";
+    e := Rays_editor.Reduce.step !e [Rays_editor.Private.Leader.Undo] (frame ());
+    check (not (head ())) "undo retained removed declaration completion";
+    e := Rays_editor.Reduce.step !e [Rays_editor.Private.Leader.Redo] (frame ());
+    check (head ()) "redo did not restore declaration completion";
+    write file (text (Some "amount")); poll ();
+    check (List.mem ":amount" (labels "sop/vocab_card geo :am")
+      && not (List.mem ":distance" (labels "sop/vocab_card geo :dis")))
+      "schema edit kept old keyword vocabulary";
+    e := Result.get_ok (E3.edit !e (Flow_graph.Flow_edit.Set_arg {
+      node=["g";"@result"]; key=Kw "amount"; sub=[]; value=Flow.Syntax.make (Num "0.75")}));
+    check (head () && List.mem ":amount" (labels "sop/vocab_card geo :am"))
+      "scalar scrub lost declaration vocabulary";
+    e := Rays_editor.Reduce.step !e [Rays_editor.Private.Leader.Undo] (frame ());
+    write file (text None); poll ();
+    check (not (head ())) "reload retained removed local kind completion")
+
+let run () = run_files (); run_find (); run_editor (); run_external_over_dirty (); run_autosave (); run_start_keywords (); run_imports (); run_library (); run_library_navigation (); run_vocabulary_refresh ();
   print_endline "workspace source tests passed"

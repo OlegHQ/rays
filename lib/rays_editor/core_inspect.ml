@@ -24,7 +24,7 @@ let level_key = function
 let catalog value context =
   if context = Flow.Context.scene then Objects.catalog
   else if context = Flow.Context.world then Layers.catalog
-  else if context = Flow.Context.sop then value.factories else []
+  else if context = Flow.Context.sop then value.factories @ (snd value.doc.workspace).factories else []
 
 (* the open level's network; the scene's if the level is gone (every path resolves the level first) *)
 let network value =
@@ -153,6 +153,8 @@ let kind_fields value graph head authored =
   let context = Option.map (fun (g : Flow.Workspace.graph) -> g.context)
     (List.find_opt (fun (g : Flow.Workspace.graph) -> g.name = graph)
       (ws.checked.graphs @ ws.checked.defs)) in
+  let declaration = List.find_opt (fun (node : Flow.Workspace.node_definition) ->
+    node.kind.qualified = head || List.mem head node.kind.aliases) ws.checked.nodes in
   match Lazy.force value.flow_catalog, context with
   | _ when head = "material/standard" ->
       (* a built-in of the workspace, not a catalog kind: its four keywords *)
@@ -170,7 +172,9 @@ let kind_fields value graph head authored =
                (Parameter.Floating_view { soft_min = 0.; soft_max = 1.; hard_min = Some 0.; hard_max = Some 1. });
              field "emission" (Parameter.Text_value "#000000") Parameter.Text_view ]
   | Some catalog, Some context ->
-      (match Flow.Check.resolve_kind catalog context head with
+      (match (match declaration with
+         | Some node when node.kind.context = context -> Ok node.kind
+         | _ -> Flow.Check.resolve_kind catalog context head) with
        | Error _ -> None
        | Ok (k : Flow.Check.kind) ->
            let number (e : S.t) = match e.node with S.Num t -> float_of_string_opt t | _ -> None in
@@ -190,9 +194,13 @@ let kind_fields value graph head authored =
                  | Some { S.node = S.Sym ("true" | "false" as b); _ }, Parameter.Bool_value _ ->
                      Parameter.Bool_value (b = "true")
                  | _ -> default in
-               { Parameter.name; label = (if three then name else p.label); description = None; folder = p.folder;
+               let field = { Parameter.name; label = (if three then name else p.label); description = None; folder = p.folder;
                  impact = Parameter.Cook; primary = false; unit = (if three then None else p.unit);
-                 vec3 = (if three then Some (p.name, i) else None); kind = view; default; current })
+                 vec3 = (if three then Some (p.name, i) else None); kind = view; default; current } in
+               match Option.bind declaration (fun node ->
+                 List.find_opt (fun (field : Parameter.field_view) -> field.name = name) node.fields) with
+               | Some field -> {field with current}
+               | None -> field)
                p.fields) k.parameters))
   | _ -> None
 

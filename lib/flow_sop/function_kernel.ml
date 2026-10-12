@@ -43,12 +43,13 @@ let node ?state ?(reference = false) ?elems ~identity ~signature ~fn ~sources in
         Sop.Context.Dependencies.one Sop.Context.Dependencies.Input
       else Sop.Context.Dependencies.static)
     ~inputs:(Array.of_list inputs) (fun ~node_id:_ _ payloads ->
-      let resolve = Attribute_kernel.resolve ~geometry:(fun id ->
+      let geometry_capture id =
         Option.bind (List.find_index (( = ) id) sources)
-          (fun index -> Result.to_option (Sop.Payload.geometry payloads.(index)))) in
+          (fun index -> Result.to_option (Sop.Payload.geometry payloads.(index))) in
+      let resolve = Attribute_kernel.resolve ~geometry:geometry_capture in
       let prepare columns = Result.map_error host_error (
         Result.bind (E.Private.map_function ~signature fn (List.map value columns)) (fun values ->
-        Result.bind (Attribute_kernel.prepare ~sources inputs values) (fun program ->
+        Result.bind (Attribute_kernel.prepare ~strict:true ~sources inputs values) (fun program ->
           let ir = Flow_ir.Executor.graph program in
           match ir.nodes.(ir.roots.(0)).kind with
           | Flow_ir.Kernel {body = Packed_map packed; _} ->
@@ -57,7 +58,7 @@ let node ?state ?(reference = false) ?elems ~identity ~signature ~fn ~sources in
                   Error (Flow.Diagnostic.error ~code:"E_CANCELLED" "Bulk function cancelled.")
                 else Result.bind (if reference then Flow_ir.Executor.force ?state ?elems ~reference:true ~resolve program
                     ~live:(Sop.Context.input context)
-                  else Flow_ir.Packed.force ?state ?elems ~resolve packed
+                  else Flow_ir.Packed.force ?state ?elems ~strict:true ~resolve packed
                     ~live:(Sop.Context.input context)) (fun value ->
                     if Sop.Context.cancelled context then
                       Error (Flow.Diagnostic.error ~code:"E_CANCELLED" "Bulk function cancelled.")
@@ -72,6 +73,6 @@ let node ?state ?(reference = false) ?elems ~identity ~signature ~fn ~sources in
         (storage (E.Fn fn ::
           (Option.fold ~none:[] ~some:(List.map snd) elems)
           @ (Option.fold ~none:[] ~some:E.Private.state_values state))) payloads in
-      let kernel = K.create ~payload_bytes:bytes prepare in
+      let kernel = K.create ~geometry_capture ~payload_bytes:bytes prepare in
       Ok Sop.Node.Private.{payload = Sop.Payload.Kernel kernel;
         diagnostics = []; instances = None})

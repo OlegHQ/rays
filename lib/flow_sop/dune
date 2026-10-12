@@ -1,9 +1,30 @@
 (library
  (name flow_sop)
  (public_name rays.flow_sop)
- (modules port instance_path curve merge_source network value_lane catalog manifest operators attribute_kernel function_kernel image_kernel lower)
- (private_modules function_kernel merge_source)
+ (modules port instance_path curve merge_source network value_lane catalog manifest operators attribute_kernel attribute_metadata context_kernel function_kernel image_kernel lisp_node node_sources lower)
+ (private_modules function_kernel merge_source lisp_node node_sources attribute_metadata context_kernel)
  (libraries flow flow_ir param sop unix))
+
+(rule
+ (targets node_sources.ml)
+ (deps (glob_files nodes/*.rays))
+ (action (with-stdout-to node_sources.ml
+  (run %{exe:../../tools/lisp/embed.exe} %{deps}))))
+
+(test
+ (name test_node_sources)
+ (modules test_node_sources)
+ (libraries flow_sop flow flow_graph sop rdk))
+
+(test
+ (name test_lisp_node)
+ (modules test_lisp_node)
+ (libraries flow flow_sop sop sop_catalog rdk rdk_test_support lisp_sop))
+
+(test
+ (name test_lisp_projection)
+ (modules test_lisp_projection)
+ (libraries flow flow_sop flow_graph sop sop_catalog rdk lisp_sop))
 
 (test
  (name test_merge_source)

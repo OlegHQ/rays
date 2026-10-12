@@ -740,6 +740,47 @@ kind, by its qualified name or its short name within the graph's context
 (`Flow.Check.resolve_kind`). An unknown head is `E_UNKNOWN_KIND` with a suggestion at edit
 distance 2 or less; a kind of another context is `E_WRONG_CONTEXT`.
 
+`defnode` declares a Lisp-backed SOP catalog kind. Its name is `sop/<name>`;
+it cannot replace an existing OCaml kind or another workspace definition
+(`E_NAME`). Its call remains a catalog call with one card and cook identity.
+The body is checked with the declared input types and must return geometry;
+recursive node dependencies are `E_RECURSION`.
+
+```lisp
+(defnode sop/example :label "Example" :category ["Deform"]
+  :facts {:elementwise points :reads ["P"] :writes ["P"] :topology preserved :exact true}
+  [(geo : geometry)
+   (distance : float 0.1 :label "Distance" :description "Displacement"
+     :folder ["Shape"] :min -10 :max 10 :hard_min -20 :hard_max 20
+     :primary true :unit "m"
+     :validate (< distance 20) :code "E_DISTANCE" :message "Distance is too large")]
+  geo)
+```
+
+An input without a default is a typed slot; `:required false` makes it optional,
+and `:rest true` on the final slot binds a list of its declared element type.
+Function slots use `(fn [vec3] float)` type syntax, and image slots use `image`.
+`:keyword true` exposes a required image or typed function slot as a keyword
+parameter while retaining its position in the physical input signature.
+A parameter has a literal default. Scalar kinds are bool, int, float, text and
+choice (`:choices ["First" "Second"]`); a vec3 default expands to the three
+inspector fields. Encoded and ramp kinds retain a text recipe. All fields retain
+label, description, folder, primary, unit and `:impact cook|view|export` metadata;
+`:vec3 ["group" 0]` retains an existing scalar component's presentation group.
+Numeric soft bounds (`:min`, `:max`) and optional hard bounds (`:hard_min`,
+`:hard_max`, also spelled with hyphens) are separate. Hard bounds validate the
+default and each call; soft bounds warn without clamping. Unknown, duplicate,
+ill-typed or malformed metadata is `E_SHAPE`.
+
+`:validate predicate :code "E_CODE" :message "Reason" on a parameter or the
+node header declares a pure cross-parameter bool predicate, checked in the complete
+input scope and enforced before node construction or parameter edits. Cook-context
+operations such as `sop/context_seed` are refused there with `E_NODE_CONTEXT`,
+including calls through reusable functions. `:facts` accepts elementwise points,
+primitives or irregular, component name vectors for reads and writes, topology
+preserved or changed, and an exact bool. `Workspace.kind_calls` exposes the
+checked body's transitive calls through specialized functions and macros.
+
 `Flow.Op` is the immutable resolution table for built-in operators. Each declaration
 contains its context, signature, output type, choices, value shape, validation, evaluator body
 and menu category. The checker, evaluator (including compiled arithmetic) and editor read that

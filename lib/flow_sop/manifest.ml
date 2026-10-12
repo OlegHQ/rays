@@ -39,14 +39,15 @@ let field (field : Param.field_view) =
           optional number range.hard_max]]
     | Param.Text_view -> group "text" []
     | Param.Choice_view labels -> strings "choice" (Array.to_list labels) in
-  group "field" [quote field.name; quote field.label;
+  group "field" ([quote field.name; quote field.label;
     strings "folder" field.folder; kind; literal field.default;
     group "primary" [string_of_bool field.primary];
     (match field.vec3 with None -> group "vec3" []
      | Some (name, index) -> group "vec3" [quote name; string_of_int index])]
-  |> fun text -> match field.unit with
-    | None -> text
-    | Some unit -> String.sub text 0 (String.length text - 1) ^ " " ^ group "unit" [quote unit] ^ ")"
+    @ List.map (fun unit -> group "unit" [quote unit]) (Option.to_list field.unit)
+    @ List.map (fun text -> group "description" [quote text]) (Option.to_list field.description)
+    @ (match field.impact with Cook -> [] | View -> [group "impact" ["view"]]
+      | Export -> [group "impact" ["export"]]))
 
 let outputs ports = group "outputs" (List.map (fun (name, ty) ->
   let name_ty = String.lowercase_ascii (Flow.Port_type.name ty) in
@@ -64,7 +65,7 @@ let facts (facts : Sop.Node.facts) =
     group "topology" [match facts.topology with Preserved -> "preserved" | Changed -> "changed"];
     group "exact" [string_of_bool facts.exact]]
 
-let entry ?facts:declaration ?(keyword_inputs = []) ~qualified ~key ~operation ~label ~category ~slots ~fields ~result () =
+let entry ?facts:declaration ?(keyword_inputs = []) ?(properties = []) ~qualified ~key ~operation ~label ~category ~slots ~fields ~result () =
   let fields = match fields with
     | [] -> group "fields" []
     | fields -> "(fields\n        " ^
@@ -74,7 +75,7 @@ let entry ?facts:declaration ?(keyword_inputs = []) ~qualified ~key ~operation ~
     group "operation" [quote operation]; group "label" [quote label];
     strings "category" category; group "slots" slots; fields; outputs result]
     @ (if keyword_inputs = [] then [] else [strings "keyword-inputs" keyword_inputs])
-    @ List.map facts (Option.to_list declaration) in
+    @ List.map facts (Option.to_list declaration) @ properties in
   "(kind " ^ quote qualified ^ "\n      " ^ String.concat "\n      " properties ^ ")"
 
 let descriptor ?facts (d : Catalog.descriptor) =
@@ -93,12 +94,43 @@ let descriptor ?facts (d : Catalog.descriptor) =
     ~result:(if String.starts_with ~prefix:"sop/" d.qualified
              then ["geo", Flow.Port_type.Geometry] else []) ()
 
+let lisp_node ~calls (node : Flow.Defnode.t) =
+  let key = Flow.Check.short node.kind.qualified in
+  let slots = List.map (fun (slot : Flow.Check.slot) ->
+    let ty = Flow.Ty.to_string (Flow.Workspace.slot_ty ~slot node.kind) in
+    let parts = [quote slot.name; (match slot.required, slot.rest with
+      | true, false -> "required" | false, false -> "optional"
+      | true, true -> "rest" | false, true -> "optional-rest")] in
+    group "slot" (if ty = "geometry" then parts else parts @
+      [if Flow.Symbol.valid_name ty then ty else quote ty])) node.slots in
+  let declaration = Option.map (fun (f : Flow.Check.kernel_facts) -> Sop.Node.{
+    cook_mode = (if node.slots = [] then Generator else Generic);
+    elementwise = (match f.elementwise with Points -> Points | Primitives -> Primitives | Irregular -> None);
+    reads = f.reads; writes = f.writes;
+    topology = (if f.preserves_topology then Preserved else Changed); exact = f.exact}) node.kind.facts in
+  entry ?facts:declaration ~qualified:node.kind.qualified ~key ~operation:key
+    ~label:node.label ~category:node.category ~slots ~fields:node.fields
+    ~keyword_inputs:node.keyword_inputs
+    ~result:node.kind.outputs
+    ~properties:[group "body" ["lisp"]; strings "calls" calls] ()
+
 (* The digest covers the sop kinds, the catalog the PPX links against; the
    generated scene, world and settings kinds ([extra]) follow them and are outside it. *)
-let generate ?extra factories =
-  Result.map (fun _ ->
+let generate ?extra ?nodes factories =
+  let supplied = Option.is_some nodes in
+  Result.bind (match nodes with Some nodes -> Ok nodes | None -> Catalog.node_definitions ()) (fun nodes ->
+  Result.bind (Catalog.of_factories ~version ?extra ~nodes factories) (fun catalog ->
+  Result.bind (if supplied then Ok (List.map (fun (node : Flow.Defnode.t) -> node.form) nodes)
+    else Catalog.sources ()) (fun sources ->
+  let workspace = Flow.Syntax.parse "(workspace sop_nodes)" |> Result.get_ok in
+  let checked, diagnostics = Catalog.check_workspace ~ops:Operators.all ~library:true ~sources catalog workspace in
+  let checked = match checked with Some checked -> Ok checked | None -> Error (List.hd diagnostics) in
+  Result.map (fun (checked : Flow.Workspace.t) ->
     let kinds = List.map (fun f -> descriptor ~facts:(Sop.Edit_graph.factory_facts f)
-      (Catalog.descriptor f)) factories in
+      (Catalog.descriptor f)) factories @ List.map (fun (node : Flow.Defnode.t) ->
+        let definition = List.find (fun (definition : Flow.Workspace.node_definition) ->
+          definition.kind.qualified = node.kind.qualified) checked.nodes in
+        lisp_node ~calls:(Flow.Workspace.kind_calls definition.body.body) node) nodes in
     let payload = group "version" [string_of_int version] ^ "\n" ^
       group "kinds" kinds in
     let digest = Digest.to_hex (Digest.string payload) in
@@ -107,4 +139,4 @@ let generate ?extra factories =
       "\n  " ^ group "digest" [quote digest] ^
       "\n  (kinds\n    " ^ String.concat "\n    " all ^ "))\n" in
     text, digest)
-    (Catalog.of_factories ~version ?extra factories)
+    checked)))

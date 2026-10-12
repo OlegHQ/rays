@@ -29,7 +29,7 @@ let restore with_ root =
           else Node.Private.rebuild_with_inputs node (Array.of_list rebuilt) in
   go root
 
-let node_result ?(with_ = []) text =
+let workspace_node_result ?(with_ = []) source =
   let image_name name =
     if String.starts_with ~prefix:"image/" name then
       Some (String.sub name 6 (String.length name - 6)) else None in
@@ -48,14 +48,13 @@ let node_result ?(with_ = []) text =
       body = (fun ~live:_ ~node _ -> node ("sop/" ^ factory_key name) []) })
       (image_name name)) with_ in
   let factories = external_factories @ factories in
-  let source = "(workspace w (graph g :context sop " ^ text ^ "))" in
   match Flow.Syntax.parse source with
   | Error d -> Error (Flow.Diagnostic.to_string d)
   | Ok forms ->
       let lowered = Result.bind
         (Flow_sop.Catalog.of_factories ~version:Flow_sop.Manifest.version
           ~extra:Editor_document.Contexts.descriptors factories) (fun catalog ->
-        match Flow.Workspace.check ~ops:(image_ops @ Flow_sop.Operators.all) catalog forms with
+        match Flow_sop.Catalog.check_workspace ~ops:(image_ops @ Flow_sop.Operators.all) catalog forms with
         | Some checked, _ -> Flow_sop.Lower.of_checked ~factories checked
         | None, diagnostics -> Error (Option.value
             ~default:(Flow.Diagnostic.error ~code:"E_LOWER" "Workspace did not check")
@@ -64,12 +63,19 @@ let node_result ?(with_ = []) text =
       match lowered with
       | Error d -> Error (Flow.Diagnostic.to_string d)
       | Ok lowered ->
-          let graph = List.hd lowered.graphs in
-          match graph.root with
-          | None -> Error "the graph has no result"
-          | Some root ->
+          match List.find_opt (fun (graph : Flow_sop.Lower.graph) -> graph.default) lowered.graphs with
+          | None -> Error "the workspace has no SOP graph"
+          | Some {root = None; _} -> Error "the graph has no result"
+          | Some {root = Some root; network; _} ->
               Result.map (restore with_)
-                (Sop.Edit_graph.compile_node graph.network.geometry ~node_id:root)
+                (Sop.Edit_graph.compile_node network.geometry ~node_id:root)
+
+let workspace_node ?with_ text = match workspace_node_result ?with_ text with
+  | Ok node -> node
+  | Error message -> failwith ("Lisp_sop: " ^ message ^ "\n" ^ text)
+
+let node_result ?with_ text =
+  workspace_node_result ?with_ ("(workspace w (graph g :context sop " ^ text ^ "))")
 
 let node ?with_ text = match node_result ?with_ text with
   | Ok node -> node

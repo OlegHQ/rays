@@ -140,20 +140,28 @@ module Private = struct
     done
 
   let sample3_into noise ~first ~last ?(x_offset = 0) ?(y_offset = 0)
-      ?(z_offset = 0) ?(output_offset = 0) ?(frequency = 1.) ~x ~y ~z ~output () =
-    let valid array offset = offset >= 0 && last <= Array.length array
-      && offset <= Array.length array - last in
-    let disjoint input offset = input != output || offset = output_offset
-      || offset + last <= output_offset + first || output_offset + last <= offset + first in
-    if first < 0 || last < first || not (valid x x_offset && valid y y_offset
-      && valid z z_offset && valid output output_offset)
-      || not (disjoint x x_offset && disjoint y y_offset && disjoint z z_offset)
+      ?(z_offset = 0) ?(output_offset = 0) ?(x_stride = 1) ?(y_stride = 1)
+      ?(z_stride = 1) ?(frequency = 1.) ~x ~y ~z ~output () =
+    let valid array offset stride = offset >= 0 && stride > 0
+      && offset <= Array.length array
+      && (last=0 || (offset<Array.length array
+        && last-1 <= (Array.length array-1-offset)/stride)) in
+    let disjoint input offset stride = input != output
+      || (stride=1 && offset=output_offset)
+      || first=last || offset+(last-1)*stride < output_offset+first
+      || output_offset+last <= offset+first*stride in
+    if first < 0 || last < first || not (valid x x_offset x_stride && valid y y_offset y_stride
+      && valid z z_offset z_stride && valid output output_offset 1)
+      || not (disjoint x x_offset x_stride && disjoint y y_offset y_stride && disjoint z z_offset z_stride)
     then invalid_arg "Noise.Private.sample3_into: invalid or overlapping spans";
     for index = first to last - 1 do
-      let sx = x.(x_offset + index) *. frequency and sy = y.(y_offset + index) *. frequency
-      and sz = z.(z_offset + index) *. frequency in
+      let sx = x.(x_offset + index*x_stride) *. frequency and sy = y.(y_offset + index*y_stride) *. frequency
+      and sz = z.(z_offset + index*z_stride) *. frequency in
+      (* floor subtraction and fade/lerp propagate nonfinite coordinates to
+         NaN. int_of_float's unspecified integer is masked before indexing;
+         the caller checks the sample, so coordinate scans are redundant. *)
       output.(output_offset + index) <-
-        if Float.is_finite sx && Float.is_finite sy && Float.is_finite sz
-        then clamp01 ((raw3 noise ~x:sx ~y:sy ~z:sz +. 1.) /. 2.) else Float.nan
+        clamp01 (((if sz=0. then raw2 noise ~x:sx ~y:sy
+          else raw3 noise ~x:sx ~y:sy ~z:sz) +. 1.) /. 2.)
     done
 end

@@ -20,7 +20,7 @@
 (executable
  (name core_fixtures)
  (modules core_fixtures)
- (libraries flow flow_ir frame_input))
+ (libraries flow flow_ir frame_input flow_sop rdk))
 
 (executable
  (name bench_gpu)

@@ -82,8 +82,7 @@ let create ?settings ?(keymap = Leader.keymap)
         scope_key = None; edit_phases = Flow.Phase_timer.empty; select_later = []; open_import = None; pane_graph = None; back = [];
         flow_catalog = lazy (Result.to_option (Editor_document.Contexts.catalog
           ~version:Flow_sop.Manifest.version factories));
-        lisp_vocab = lazy (Lisp_text.vocab ~ops:(fst doc.workspace).checked.ops
-          (List.map Flow_sop.Catalog.descriptor factories @ Editor_document.Contexts.descriptors));
+        lisp_vocab = vocabulary factories doc;
         tree = Pxui_shell.Tree.create (); outline = Navigator.initial; held_keys = [];
         ui = (let ui = Pxui.Ui.create () in Pxui.Ui.set_font_size ui (default_text_size ()); ui); workspace;
         timeline = Timeline.create (); live_frame = Frame_input.at_time 0.; cook;

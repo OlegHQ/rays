@@ -6,7 +6,8 @@ let noise_table seed =
   |None->let table=Rays_math.Noise.create seed in
       cache:=(seed,table)::List.filteri(fun i _->i<15)!cache;table
 let noise_settings args =
-  let integer key default = Option.fold ~none:default ~some:Flow.Value.int_of (List.assoc_opt key args) in
+  let integer key default = Option.fold ~none:default ~some:(function
+    | Flow.Value.Int n -> n | value -> Flow.Value.int_of value) (List.assoc_opt key args) in
   let seed=integer "seed" 0 and octaves=integer "octaves" 1 in
   if octaves<1 || octaves>32 then Flow.Value.fail "E_NOISE_RANGE" "Noise octaves are 1 to 32.";
   seed,octaves

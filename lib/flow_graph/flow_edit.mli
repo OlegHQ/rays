@@ -185,11 +185,14 @@ val gesture : op -> string option
 val apply_checked :
   ?ops:Flow.Op.t list ->
   ?library:bool ->
+  ?checker:(Flow.Check.catalog -> Flow.Syntax.t list ->
+    Flow.Workspace.t option * Flow.Diagnostic.t list) ->
   Flow.Check.catalog -> Flow.Syntax.t list -> op ->
   (Flow.Syntax.t list * Flow.Workspace.t, Flow.Diagnostic.t) result
 (** The rewritten source (printed and parsed again) and its check.  An op that
     has alternatives ([Wrap]) tries them in order and reports the first
-    diagnostic when none checks. *)
+    diagnostic when none checks. [checker] supplies a host's library-aware
+    checker for both branch-default discovery and rewritten candidates. *)
 
 val apply :
   Flow.Check.catalog -> Flow.Syntax.t list -> op ->

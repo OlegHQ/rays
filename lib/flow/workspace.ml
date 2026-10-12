@@ -43,6 +43,35 @@ and node =
 type graph = { name : string; context : context;
   inputs : (string * Ty.t * term option) list; body : term; form : S.t }
 
+type node_definition = {
+  kind : Check.kind; slots : Check.slot list; keyword_inputs : string list;
+  fields : Param.field_view list; label : string;
+  category : string list; description : string option; body : graph;
+  validations : (term * string * string) list;
+}
+
+let called_names ~include_ops root =
+  let rec calls (t:term) = match t.node with
+    | Call {kind;args;_} -> kind :: fields args
+    | Op {op;args;_} -> (if include_ops then [op] else []) @ fields args
+    | Record args -> fields args
+    | Call_fn {args;body;_} -> List.concat_map calls args @ Option.fold ~none:[] ~some:calls body
+    | Graph_ref {inputs;_} -> fields inputs
+    | Let (bindings,body) -> List.concat_map (fun (_,v) -> calls v) bindings @ calls body
+    | State {init;step;_} -> calls init @ calls step
+    | Loop {accs;clauses;body;_} -> List.concat_map (fun (_,v) -> calls v) (accs@clauses) @ calls body
+    | If (a,b,c) -> calls a @ calls b @ calls c
+    | Cond (arms,default) -> List.concat_map (fun (a,b) -> calls a @ calls b) arms @ calls default
+    | Case (scrutinee,arms,default) -> calls scrutinee @ List.concat_map (fun (_,v) -> calls v) arms @ calls default
+    | Fn {body;capture;_} -> calls body @ Option.fold ~none:[] ~some:calls capture
+    | Hof (_,args) | Vec args | List_lit args | Str args | List_op (_,args) -> List.concat_map calls args
+    | Get (value,_) | Bypass value | Expanded {body=value;_} -> calls value
+    | Assoc (value,args) -> calls value @ fields args
+    | Lit _ | Text _ | Nil | Time | Ref_binding _ | Fn_ref _ -> []
+  and fields args = List.concat_map (fun (_,v) -> calls v) args in
+  List.sort_uniq String.compare (calls root)
+let kind_calls root = called_names ~include_ops:false root
+
 let bypass_input term =
   let entries=match term.node with
     | Call {args;_} | Op {args;_} -> List.map snd args
@@ -59,7 +88,7 @@ let bypass_input term =
             t.form.id=input.id && t.form.span=input.span) entries)
   | _ -> List.nth_opt entries 0
 type packed_form = Candidate of Paths.t | Refused of Diagnostic.t list
-type t = { name : string; graphs : graph list; defs : graph list; macros : S.t list;
+type t = { name : string; graphs : graph list; defs : graph list; nodes : node_definition list; macros : S.t list;
   source : S.t list; live : Paths.t; invariant : Paths.t; approx : Paths.t;
   packed : (path * packed_form) list; packed_roots : (S.t * path) list;
   approx_reasons : (path * Diagnostic.t list) list;
@@ -72,7 +101,7 @@ let max_call_depth = 64
 
 (* ---- names ---- *)
 
-let special = [ "workspace"; "graph"; "defn"; "defmacro"; "let*"; "ref"; "for"; "fold";
+let special = [ "workspace"; "graph"; "defn"; "defnode"; "defmacro"; "let*"; "ref"; "for"; "fold";
   "scan"; "sum"; "state"; "if"; "values"; "fn"; "cond"; "case"; "list"; "concat"; "str"; "get";
   "assoc"; "map"; "filter"; "reduce"; "sort-by"; "quote"; "quasiquote"; "unquote";
   "unquote-splicing" ]
@@ -210,6 +239,10 @@ let slot_ty ?slot (k : Check.kind) = match Option.bind slot (fun (s : Check.slot
   | None -> match k.qualified with
   | "scene/world" -> Ty.world | "scene/root" -> Ty.scene
   | _ -> if k.context = Context.scene then Ty.geometry else Context.result k.context
+let rec positional_slot slots index = match slots with
+  | [] -> None
+  | (slot : Check.slot) :: rest ->
+      if index=0 || slot.rest then Some slot else positional_slot rest (index-1)
 (* ponytail: the catalog has no group markers yet; a `group` parameter reads a group and
    `name` on a `sop/group_*` kind writes one. *)
 let group_reader (p : Check.parameter) = p.name = "group"
@@ -366,13 +399,16 @@ let check ?(ops = []) ?(library = false) catalog forms =
   let gsigs : (string, signature) Hashtbl.t = Hashtbl.create 8 in
   let macro_tbl : (string, S.t) Hashtbl.t = Hashtbl.create 8 in
   let macro_forms = ref [] in
+  let node_sources : (string, Defnode.t) Hashtbl.t = Hashtbl.create 8 in
+  let node_terms = ref [] in
   let kind_memo = Hashtbl.create 64 in
   let kind_of ctx head =
     let key = (context_name ctx, head) in
     match Hashtbl.find_opt kind_memo key with
     | Some r -> r
     | None ->
-        let r = Check.resolve_kind catalog ctx head in
+        let kinds = Hashtbl.fold (fun _ (d:Defnode.t) kinds -> d.kind :: kinds) node_sources catalog.Check.kinds in
+        let r = Check.resolve_kind {catalog with kinds} ctx head in
         Hashtbl.add kind_memo key r; r in
   let resolve_head cx s = match Hashtbl.find_opt sigs s with
     | Some d -> `Def d
@@ -1026,7 +1062,16 @@ let check ?(ops = []) ?(library = false) catalog forms =
 
   and call_value cx x (f : v) (args : arg list) : term * v =
     match f.fn with
-    | None -> (tm x Ty.Any Nil, { (derive Ty.Any (f :: List.map (fun a -> a.av) args)) with fn = None })
+    | None ->
+        let ty = match f.ty with
+          | Ty.Fn (Some signature) ->
+              if List.compare_lengths args signature.params <> 0 then
+                err x "E_ARITY" "Function argument count differs from its declared signature."
+              else List.iter2 (fun argument ty -> ignore (need argument "Function input" ty))
+                args signature.params;
+              signature.result
+          | _ -> Ty.Any in
+        (tm x ty Nil, { (derive ty (f :: List.map (fun a -> a.av) args)) with fn = None })
     | Some (Closure c) -> call_closure cx x c args
     | Some (Def_fn n) -> apply_def cx x (Hashtbl.find sigs n) args
     | Some (Op_fn n) -> apply_op cx x (Option.get (find_op n cx.ctx)) args
@@ -1170,17 +1215,23 @@ let check ?(ops = []) ?(library = false) catalog forms =
     | _ -> bad x "E_ARGS" "ref takes a graph name, then :input value pairs."
 
   and args_of cx fn_slot (forms : S.t list) : arg list =
+    let read_fn form = match form.S.node with
+      | S.List ({node=S.Sym "list";_}::elements) ->
+          let entries=List.map (fn_arg cx) elements in
+          (tm form (Ty.List (Ty.Fn None)) (List_lit (List.map fst entries)),
+            {(derive (Ty.List (Ty.Fn None)) (List.map snd entries)) with len=Some (List.length entries)})
+      | _ -> fn_arg cx form in
     let rec go i acc = function
       | [] -> List.rev acc
       | ({ S.node = S.Kw k; _ } as kf) :: value :: rest ->
           let (t, v) = if fn_slot None (Some k) && S.head value <> Some "fn"
-            then fn_arg cx value else input cx (":" ^ k) value in
+            then read_fn value else input cx (":" ^ k) value in
           go i ({ key = Some k; aform = kf; aterm = t; av = v } :: acc) rest
       | ({ S.node = S.Kw k; _ } as kf) :: [] ->
           err kf "E_MISSING_VALUE" (Printf.sprintf ":%s has no value" k); List.rev acc
       | y :: rest ->
           let (t, v) = if fn_slot (Some i) None && S.head y <> Some "fn"
-            then fn_arg cx y else input cx (string_of_int i) y in
+            then read_fn y else input cx (string_of_int i) y in
           go (i + 1) ({ key = None; aform = y; aterm = t; av = v } :: acc) rest in
     go 0 [] forms
 
@@ -1202,7 +1253,7 @@ let check ?(ops = []) ?(library = false) catalog forms =
     | "map" | "filter" | "reduce" | "sort-by" -> hof cx x name args
     | "quote" | "quasiquote" | "unquote" | "unquote-splicing" ->
         bad x "E_QUOTE" (Printf.sprintf "%s belongs in a defmacro template (`…)." name)
-    | "workspace" | "graph" | "defn" | "defmacro" ->
+    | "workspace" | "graph" | "defn" | "defnode" | "defmacro" ->
         bad x "E_FORM" (Printf.sprintf "%s is a top-level form of a workspace." name)
     | _ ->
         let local = Smap.find_opt name cx.env in
@@ -1261,12 +1312,21 @@ let check ?(ops = []) ?(library = false) catalog forms =
                     match ty with Some (Ty.Fn _) -> true | _ -> false in
                   apply_op cx x o (args_of cx fn_slot (S.attribute_args o.name args))
               | `Kind k ->
-                  let fn_slot _ key = Option.fold ~none:false ~some:(fun name ->
-                    List.exists (fun (p : Check.parameter) -> p.name = name &&
-                      (match p.ty with Some (Port_type.Fn _) -> true | _ -> false)) k.parameters) key in
+                  let fn_slot pos key =
+                    let slot = match pos,key with
+                      | Some i,_ -> positional_slot k.slots i
+                      | _,Some name -> List.find_opt (fun (s:Check.slot) -> s.name=name) k.slots
+                      | _ -> None in
+                    Option.fold ~none:false ~some:(fun (s:Check.slot) ->
+                      match s.ty with Some (Ty.Fn _) -> true | _ -> false) slot
+                    || Option.fold ~none:false ~some:(fun name ->
+                      List.exists (fun (p : Check.parameter) -> p.name = name &&
+                        (match p.ty with Some (Port_type.Fn _) -> true | _ -> false)) k.parameters) key in
                   apply_kind cx x k (args_of cx fn_slot args)))
 
   and apply_op ?(skip = []) cx x (o : Op.t) (args : arg list) : term * v =
+    if o.name="sop/context_seed" && not cx.in_def then
+      err x "E_NODE_CONTEXT" "Context seed is available inside a defnode body.";
     let position = ref 0 in
     let args = List.map (fun a ->
       let ty = match a.key with
@@ -1385,6 +1445,12 @@ let check ?(ops = []) ?(library = false) catalog forms =
     let num_of a = match a.aterm.node with
       | Lit (Param.Int_value n) -> Some (float_of_int n) | Lit (Param.Float_value f) -> Some f | _ -> None in
     match o.name with
+    | "sop/context_seed" ->
+        (match pos with
+         |[a]->(match a.aterm.node with
+           |Text namespace when String.trim namespace<>""->()
+           |_->err a.aform "E_SEED_NAMESPACE" "Context seed requires a literal nonblank namespace.")
+         |_->())
     | "image/map" ->
         List.iter (fun a -> match a.av.ty with
           | Ty.Fn (Some {params=[Ty.Vec2];result=Ty.Vec4}) | Ty.Fn None | Ty.Any -> ()
@@ -1447,6 +1513,15 @@ let check ?(ops = []) ?(library = false) catalog forms =
   and validate p a = validate_parameter ~ty:a.av.ty (fun sev code msg -> add sev a.aform code msg) p a.aterm
 
   and instantiate_fn ?(coerce_params=true) cx (a : arg) (signature : Ty.fn_signature) =
+    match a.aterm.node with
+    | List_lit entries ->
+        let entries=List.map (fun (term:term) ->
+          let aterm,av=fn_arg cx term.form in
+          instantiate_fn ~coerce_params cx {a with aterm;av} signature) entries in
+        let ty=Ty.List (Ty.Fn (Some signature)) in
+        {a with aterm={a.aterm with ty;node=List_lit (List.map (fun a->a.aterm) entries)};
+          av={(derive ty (List.map (fun a->a.av) entries)) with len=Some (List.length entries)}}
+    | _ ->
     if a.av.fn = None then a else
     let names = List.mapi (fun i _ -> "__flow_port_" ^ string_of_int i) signature.params in
     let inputs = List.map2 (fun name ty ->
@@ -1480,7 +1555,14 @@ let check ?(ops = []) ?(library = false) catalog forms =
         approx_sources = Paths.union a.av.approx_sources rv.approx_sources} }
 
   and apply_kind cx x (k : Check.kind) (args : arg list) : term * v =
-    let args = List.map (fun a -> match a.key with
+    let position = ref 0 in
+    let args = List.map (fun a ->
+      let slot = match a.key with
+        | Some name -> List.find_opt (fun (s:Check.slot) -> s.name=name) k.slots
+        | None -> let i= !position in incr position; positional_slot k.slots i in
+      match Option.bind slot (fun (s:Check.slot) -> s.ty) with
+      | Some (Ty.Fn (Some signature)) -> instantiate_fn cx a signature
+      | _ -> match a.key with
       | Some name -> (match List.find_opt (fun (p : Check.parameter) -> p.name = name) k.parameters with
           | Some {ty = Some (Port_type.Fn signature); _} -> instantiate_fn cx a signature
           | _ -> a)
@@ -1748,13 +1830,19 @@ let check ?(ops = []) ?(library = false) catalog forms =
     unknown_meta ws [ "allow-warnings" ];
     List.iter (fun f -> unknown_meta f []) children;
     List.iter (fun (f : S.t) -> match f.node with
-      | S.List ({ S.node = S.Sym (("graph" | "defn" | "defmacro") as head); _ } :: { S.node = S.Sym n; _ } :: _) ->
-          if not (Macro.valid_name n) || reserved n || Hashtbl.mem names n
+      | S.List ({ S.node = S.Sym (("graph" | "defn" | "defnode" | "defmacro") as head); _ } :: { S.node = S.Sym n; _ } :: _) ->
+          if (if head="defnode" then not (Defnode.valid_name n) else not (Macro.valid_name n))
+             || reserved n || Hashtbl.mem names n
+             || (head="defnode" && List.exists (fun (k:Check.kind) -> k.qualified=n || List.mem n k.aliases) catalog.kinds)
              || (match find_op n Context.value with Some o -> o.name = n | None -> false) then
             err f "E_NAME" (Printf.sprintf "Invalid, reserved or duplicate name: %s." n)
           else (Hashtbl.add names n (); items := (head, n, f) :: !items)
-      | _ -> err f "E_FORM" "Workspace children are graph, defn and defmacro forms.") children;
+      | _ -> err f "E_FORM" "Workspace children are graph, defn, defnode and defmacro forms.") children;
     let items = List.rev !items in
+    List.iter (fun (head,n,f) -> if head="defnode" then match Defnode.parse f with
+      | Ok d -> Hashtbl.replace node_sources n d
+      | Error d -> diags := d :: !diags) items;
+    Hashtbl.clear kind_memo;
     List.iter (fun (head, n, (f : S.t)) ->
       if head = "defmacro" then begin
         diags := List.rev_append (Macro.check ~known f) !diags;
@@ -1763,7 +1851,7 @@ let check ?(ops = []) ?(library = false) catalog forms =
         | Error _ -> ()
       end) items;
     let graph_order = ref [] and def_order = ref [] in
-    List.iter (fun (head, n, f) -> if head <> "defmacro" then
+    List.iter (fun (head, n, f) -> if head <> "defmacro" && head <> "defnode" then
       match parse_sig head n f with
       | Some sg ->
           if head = "graph" then (Hashtbl.replace gsigs n sg; graph_order := n :: !graph_order)
@@ -1779,6 +1867,35 @@ let check ?(ops = []) ?(library = false) catalog forms =
         (pn, ty, Option.map fst (def_default d pn))) d.sparams in
       let (bt, _) = body cx d.sbody in
       Hashtbl.replace def_terms n { name = n; context = d.sctx; inputs; body = bt; form = d.sform }) def_order;
+    List.iter (fun (head,n,_) -> if head="defnode" then
+      Option.iter (fun (d:Defnode.t) ->
+        let env=List.fold_left (fun env (pn,ty,_) -> Smap.add pn (leaf ty) env) Smap.empty d.inputs in
+        let cx={env;ctx=Context.sop;scope=n;path=["node:"^n];in_def=true;stack=[n];depth=0;zone=0;zbody=false} in
+        let inputs=List.map (fun (pn,ty,df) ->
+          let dt=Option.map (fun df -> let t,v=infer {cx with env=Smap.empty;path=cx.path@[":"^pn]} df in
+            if not (Ty.fits v.ty ty) then err df "E_TYPE" ("Invalid default for "^pn^"."); t) df in pn,ty,dt) d.inputs in
+        let bt,bv=body cx d.body in
+        if not (Ty.fits bv.ty Ty.geometry) then err d.body "E_TYPE" (n^" must return geometry.");
+        let validations=List.map (fun (v:Defnode.validation) ->
+          let t,value=infer cx v.predicate in
+          if List.mem "sop/context_seed" (called_names ~include_ops:true t) then
+            err v.predicate "E_NODE_CONTEXT" "A validation checks parameters; context seed is available inside the body.";
+          if value.ty<>Ty.Bool then err v.predicate "E_TYPE" "A validation predicate returns bool.";
+          t,v.code,v.message) d.validations in
+        node_terms := {kind=d.kind;slots=d.slots;keyword_inputs=d.keyword_inputs;fields=d.fields;label=d.label;category=d.category;description=d.description;
+          body={name=n;context=Context.sop;inputs;body=bt;form=d.form};validations} :: !node_terms)
+        (Hashtbl.find_opt node_sources n)) items;
+    let visited=Hashtbl.create (List.length !node_terms) in
+    let rec acyclic stack (d:node_definition) =
+      if List.mem d.kind.qualified stack then
+        err d.body.form "E_RECURSION" ("Recursive node call: " ^ String.concat " → " (List.rev (d.kind.qualified::stack)))
+      else if not (Hashtbl.mem visited d.kind.qualified) then begin
+        List.iter (fun name ->
+        Option.iter (acyclic (d.kind.qualified::stack))
+          (List.find_opt (fun (n:node_definition) -> n.kind.qualified=name) !node_terms)) (kind_calls d.body.body);
+        Hashtbl.add visited d.kind.qualified ()
+      end in
+    List.iter (acyclic []) !node_terms;
     List.iter (fun n -> ignore (graph_info (Hashtbl.find gsigs n).sform n)) graph_order;
     if not library && graph_order = [] && not (List.exists (fun (h, _, _) -> h = "graph") items) then
       err ws "E_NO_GRAPH" "A workspace needs at least one graph.";
@@ -1815,7 +1932,7 @@ let check ?(ops = []) ?(library = false) catalog forms =
       let approx_reasons = List.map (fun (path, classification) -> path, match classification with
         | Refused reasons -> reasons
         | Candidate _ -> [Diagnostic.error ~code:"E_PACKED_PENDING" "Actual producer captures have not been qualified."]) packed in
-      (Some { name = wname; graphs = get graph_terms go; defs = get def_terms dos;
+      (Some { name = wname; graphs = get graph_terms go; defs = get def_terms dos; nodes=List.rev !node_terms;
               macros = List.rev !macro_forms; source = forms; live = !live; invariant = !invariant; approx = Paths.empty;
               packed; packed_roots; approx_reasons;
                 kind_fns = !kind_fns; ops },

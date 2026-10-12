@@ -35,6 +35,8 @@ module Editor = struct
     let inspector_subject value=Core.inspector_subject value.Environment.core
     let new_graph value context=snd (Core.new_graph value.Environment.core context)
     let menu_forms = List.map (fun (_, form, text, _) -> form, text) Core.forms
+    let lisp_completions value text =
+      Lisp_text.complete (Lazy.force value.Environment.core.lisp_vocab) text (String.length text)
     let image_render_stats value=Workspace_images.render_stats value.Environment.host.images
     let canvas_scenes value=List.map (fun (_,(p:Environment.canvas_picture))->p.scene) value.Environment.canvases
     let image_gpu_stats value=Workspace_gpu.image_stats value.Environment.host.gpu

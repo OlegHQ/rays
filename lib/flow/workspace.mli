@@ -86,6 +86,25 @@ type graph = {
   form : Syntax.t;
 }
 
+type node_definition = {
+  kind : Check.kind;
+  slots : Check.slot list;  (** complete physical input order *)
+  keyword_inputs : string list;
+  fields : Param.field_view list;
+  label : string;
+  category : string list;
+  description : string option;
+  body : graph;
+  validations : (term * string * string) list;
+}
+(** A Lisp catalog declaration. Calls retain [Call] identity; its body is
+    checked once using the declared input types. Validation predicates run
+    against parameter values before cooking. *)
+
+val kind_calls : term -> string list
+(** Unique catalog calls reachable in a checked term, including specialized
+    function and macro bodies. Used for node dependency metadata. *)
+
 val bypass_input : term -> term option
 (** Resolve the first authored positional input against checked arguments, which
     may be in declaration order. Shared by checking, evaluation and lowering. *)
@@ -98,6 +117,7 @@ type t = {
   name : string;
   graphs : graph list;
   defs : graph list;  (** [defn]s *)
+  nodes : node_definition list;  (** [defnode]s *)
   macros : Syntax.t list;  (** the [defmacro] forms *)
   source : Syntax.t list;
   live : Paths.t;

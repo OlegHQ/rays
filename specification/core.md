@@ -877,6 +877,8 @@ operation. A user function/macro row is not a new runtime primitive.
 | `sop/box` | refused on web | A geometry factory in a definition counted by the census, outside the 2D target. |
 | `sop/merge` | refused on web | Native geometry composition; not a numeric sequence operation. |
 | `sop/transform` | refused on web | Native geometry transform; not a drawing view transform. |
+| `sop/delete_attr` | intrinsic | Geometry metadata deletion by owner and Houdini-style name pattern. The host protocol is an immutable geometry record with ordered attribute records carrying owner, name and payload. Native uses `Rdk.Attribute_ops.delete`; the JavaScript twin preserves topology, positions, ordering and unselected payloads. Outside the current 2D export scope. |
+| `sop/context_seed` | intrinsic | A defnode body cook-context constant, specialized before core lowering. Its literal namespace and node label are UTF-8 FNV-1a hashed into 64 bits, multiplied by `0x9e3779b97f4a7c15`, xor-ed with the context seed, then xor-ed with the unsigned upper 32 bits and truncated to a signed native 63-bit int. Fixtures pass the implicit context as a record of decimal seed text and label; use outside a body or in a pure parameter validator is `E_NODE_CONTEXT`. |
 | `sop/uv_sphere` | refused on web | Native geometry factory. |
 | `split-level` | compiler rule | Inline checked definition: packed slices/concatenation, nested maps, `value/rand`, arithmetic and numeric branches. |
 | `sqrt` | primitive | `sqrt` |

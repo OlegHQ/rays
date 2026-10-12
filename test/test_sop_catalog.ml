@@ -2,6 +2,18 @@ open Rays
 open Sop
 open Test_support
 
+let registered_factories = lazy (
+  let native = Sop_catalog.Editor.factories in
+  let catalog = Flow_sop.Catalog.of_factories ~version:Flow_sop.Manifest.version native
+    |> Result.get_ok in
+  let source = Flow.Syntax.parse "(workspace registered_nodes)" |> Result.get_ok in
+  let workspace = match Flow_sop.Catalog.check_workspace ~library:true
+      ~ops:Flow_sop.Operators.all catalog source with
+    | Some workspace, [] -> workspace
+    | _, diagnostics -> fail (String.concat "\n" (List.map Flow.Diagnostic.to_string diagnostics)) in
+  let lowered = Flow_sop.Lower.of_checked ~factories:native workspace |> Result.get_ok in
+  native @ lowered.factories)
+
 let check_metadata factory node =
   let key = Edit_graph.factory_key factory in
   let fields = Node.parameter_fields node in
@@ -65,7 +77,7 @@ let gallery_grid_warning () =
 
 let catalog_node key inputs changes =
   let factory = List.find (fun factory -> Edit_graph.factory_key factory = key)
-      Sop_catalog.Editor.factories in
+      (Lazy.force registered_factories) in
   match Result.bind (Edit_graph.instantiate_optional factory inputs)
       (fun node -> Node.apply_parameters node changes) with
   | Ok (node, _) -> node
@@ -461,10 +473,10 @@ let run ?(exhaustive = false) () =
     "rewiring Switch labels must retain its integer selection and parameter key";
   Session.close session;
   let factory_keys = List.map Edit_graph.factory_key
-      Sop_catalog.Editor.factories in
+      (Lazy.force registered_factories) in
   check (List.length factory_keys = 162
       && List.length (List.sort_uniq String.compare factory_keys) = 162)
-    "PPX SOP manifest has a missing or duplicate factory key";
+    "combined SOP registry has a missing or duplicate factory key";
   check (List.mem "material" factory_keys) "SOP editor catalog is missing material";
   check (not (List.mem "delete_attribute" factory_keys))
     "duplicate Delete Attribute factory remains registered";
@@ -608,7 +620,7 @@ let run ?(exhaustive = false) () =
               match children "kind" kind with
               | {node = Str name; _} :: _ -> name
               | _ -> fail "Malformed Flow manifest kind") in
-            check (List.length keys = List.length Sop_catalog.Editor.factories)
+            check (List.length keys = List.length (Lazy.force registered_factories))
               "Flow manifest omitted kinds";
             List.iter (fun key -> check (List.mem ("sop/" ^ key) keys)
               ("Flow manifest omitted SOP " ^ key)) factory_keys
@@ -634,7 +646,7 @@ let run ?(exhaustive = false) () =
     | Error message -> fail (Printf.sprintf
         "registered SOP %s could not be constructed: %s"
         (Edit_graph.factory_key factory) message))
-    Sop_catalog.Editor.factories;
+    (Lazy.force registered_factories);
   check (!vector_groups = 104) "catalog vector inventory changed";
   (* Every cook-impact schema field of every registered SOP participates in
      the cache identity: perturbing any single field changes the node's
@@ -701,7 +713,7 @@ let run ?(exhaustive = false) () =
                     "changing %s.%s did not change its cache key" key
                     view.name))
       (Node.parameter_fields node))
-    Sop_catalog.Editor.factories;
+    (Lazy.force registered_factories);
   Printf.printf "catalog cache-key perturbation: %d fields changed, %d rejected\n"
     !perturbed_fields !rejected_fields;
   check (!perturbed_fields > 10 * !rejected_fields)

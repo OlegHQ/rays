@@ -1,6 +1,6 @@
 (** Lowering of a checked workspace to SOP networks.
 
-    {!workspace} checks the source ({!Flow.Workspace.check}), evaluates every
+    {!workspace} checks the source ({!Catalog.check_workspace}), evaluates every
     non-geometry term ({!Flow.Eval.static}) and turns the geometry plan into
     one {!Network.t} per evaluation of a [sop] graph: each top-level graph with
     its default inputs and each distinct [(ref g ...)] override tuple
@@ -76,6 +76,9 @@ type graph = {
 
 type t = {
   graphs : graph list;  (** one per [sop] instance, in plan order *)
+  factories : Sop.Edit_graph.factory list;
+  (** Factories owned by this workspace's checked Lisp declarations, including
+      embedded node sources. These use the same schema as their graph cards. *)
   compiled_ids : int Instance_path.Map.t;
   sites : Flow.Workspace.path list;
   compiled : int Network.Int_map.t;  (** plan node id -> compiled id *)

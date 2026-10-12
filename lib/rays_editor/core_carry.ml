@@ -199,7 +199,8 @@ let carry_step value ~text_focus (frame : Frame.t) =
           else begin
             Cook.set_volatile value.cook (Flow_sop.Lower.is_volatile (snd shown.workspace));
             let level = Document.resolve_level shown value.level in
-            { value with doc = shown; level; workspace = unrestore value.doc shown value.workspace },
+            { value with doc = shown; level; lisp_vocab = vocabulary_for value shown;
+              workspace = unrestore value.doc shown value.workspace },
             taken, true
           end
         end

@@ -19,7 +19,53 @@ let descriptor factory = {
 
 let context_of = Flow.Context.of_qualified
 
-let of_factories ~version ?(extra = []) factories =
+let embedded_sources = lazy (
+  List.fold_left (fun result (file, text) -> Result.bind result (fun loaded ->
+    Result.bind (Flow.Syntax.parse text) (fun forms ->
+      let forms = List.concat_map (fun (form : Flow.Syntax.t) -> match form.node with
+        | Flow.Syntax.List ({node = Flow.Syntax.Sym "workspace"; _} :: _ :: children) -> children
+        | _ -> [form]) forms in
+      match List.find_opt (fun form -> not (List.mem (Flow.Syntax.head form)
+        [Some "defnode"; Some "defn"; Some "defmacro"])) forms with
+      | Some form -> Error (Flow.Diagnostic.error ~span:form.span ~code:"E_FORM"
+          (file ^ ": node sources contain only defnode, defn and defmacro forms"))
+      | None -> Ok (loaded @ forms)))) (Ok []) Node_sources.files)
+
+let sources () = Lazy.force embedded_sources
+
+let definitions_of_sources forms =
+  List.fold_left (fun result form -> Result.bind result (fun nodes ->
+    if Flow.Syntax.head form <> Some "defnode" then Ok nodes
+    else Result.map (fun node -> node :: nodes) (Flow.Defnode.parse form))) (Ok []) forms
+  |> Result.map List.rev
+
+let node_definitions () = Result.bind (sources ()) definitions_of_sources
+
+let check_workspace ?ops ?library ?sources:override catalog forms =
+  let sources = match override with Some sources -> Ok sources | None -> sources () in
+  match Result.bind sources (fun sources ->
+    Result.map (fun nodes -> sources, nodes) (definitions_of_sources sources)) with
+  | Error diagnostic -> None, [diagnostic]
+  | Ok ([], _) -> Flow.Workspace.check ?ops ?library catalog forms
+  | Ok (sources, nodes) ->
+      let authored = forms in
+      let rec next_id (form : Flow.Syntax.t) = List.fold_left (fun highest child ->
+        max highest (next_id child)) (form.id + 1) (Flow.Syntax.children form) in
+      let first = List.fold_left (fun highest form -> max highest (next_id form)) 0 forms in
+      let sources, _ = List.fold_left (fun (reversed, next) source ->
+        let source, next = Flow.Syntax.renumber next source in source :: reversed, next)
+        ([], first) sources in
+      let sources = List.rev sources in
+      let forms = List.map (fun (form : Flow.Syntax.t) -> match form.node with
+        | Flow.Syntax.List (({node = Flow.Syntax.Sym "workspace"; _} as head) :: name :: children) ->
+            {form with node = Flow.Syntax.List (head :: name :: sources @ children)}
+        | _ -> form) forms in
+      let catalog = {catalog with Flow.Check.kinds = List.filter (fun (kind : Flow.Check.kind) ->
+        not (List.exists (fun (node : Flow.Defnode.t) -> node.kind.qualified = kind.qualified) nodes)) catalog.Flow.Check.kinds} in
+      let workspace, diagnostics = Flow.Workspace.check ?ops ?library catalog forms in
+      Option.map (fun (workspace : Flow.Workspace.t) -> {workspace with source=authored}) workspace, diagnostics
+
+let of_factories ~version ?(extra = []) ?nodes factories =
   let declarations = Hashtbl.create (List.length factories) in
   List.iter (fun factory ->
     let facts = Edit.factory_facts factory in
@@ -87,4 +133,13 @@ let of_factories ~version ?(extra = []) factories =
               context; slots; parameters = parameters @ keywords; outputs;
               facts = Hashtbl.find_opt declarations entry.qualified} :: reversed) rest)
         end in
-  build [] (List.map descriptor factories @ extra)
+  Result.bind (build [] (List.map descriptor factories @ extra)) (fun catalog ->
+    Result.bind (match nodes with Some nodes -> Ok nodes | None -> node_definitions ()) (fun nodes ->
+      let rec append catalog = function
+        | [] -> Ok catalog
+        | (node : Flow.Defnode.t) :: rest ->
+            if List.exists (fun (kind : Flow.Check.kind) -> kind.qualified = node.kind.qualified
+                || List.mem node.kind.qualified kind.aliases) catalog.Flow.Check.kinds then
+              Error (Flow.Diagnostic.error ~code:"E_CATALOG" ("Duplicate kind " ^ node.kind.qualified))
+            else append {catalog with kinds = catalog.kinds @ [node.kind]} rest in
+      append catalog nodes))
