@@ -198,6 +198,7 @@ let range_type args = match List.find_opt (fun (name,_,_) -> name="type") args w
   | Some (_,_,Some (Param.Text_value "float")) -> Ty.Array Ty.Float
   | _ -> fail "E_ARRAY_TYPE" "Array range type is the literal int or float."
 module Private = struct
+  let array_count = array_count
   type reduction = Sum | Minimum | Maximum
   let reduction_name = function Sum -> "sum" | Minimum -> "min" | Maximum -> "max"
   (* ponytail: global reductions scan sequentially; add qualified block extrema

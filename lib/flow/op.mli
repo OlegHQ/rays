@@ -58,6 +58,10 @@ val validate : t list -> Diagnostic.t option
 val max_iterations : int
 
 module Private : sig
+  val array_count : ?limit:int -> string -> ('f, 'r) Value.t -> int
+  (** Checked array length shared by storage allocation and compiled source
+      views that do not materialize their arrays. *)
+
   type reduction = Sum | Minimum | Maximum
   val reduce_array :
     ?rows:(start:int -> finish:int -> (int -> unit) -> unit) -> reduction ->

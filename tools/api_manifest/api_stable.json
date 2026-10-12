@@ -303,11 +303,12 @@
         "val validate : t list -> Diagnostic.t option",
         "val max_iterations : int",
         "module Private : sig",
+        "val array_count : ? limit : int -> string -> ( 'f , 'r ) Value.t -> int",
         "type reduction = Sum | Minimum | Maximum",
         "val reduce_array : ? rows : ( start : int -> finish : int -> ( int -> unit ) -> unit ) -> reduction -> ? offsets : ( 'f , 'r ) Value.t -> ( 'f , 'r ) Value.t -> ( 'f , 'r ) Value.t",
         "end"
       ],
-      "api_sha256": "b0bb29494fd110cea44b2cad9e61a2a786ee71aff67e873538ea067239966691",
+      "api_sha256": "a9c7616bdc9c39af9f531461d0777a9e46abd650a2064b0a4a4843f962a16a8f",
       "excluded_legacy_symbols": [],
       "library": "flow",
       "module": "Op",
