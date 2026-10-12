@@ -146,6 +146,8 @@ let () =
         assert (reason.code = emitted.code && reason.message = emitted.message)
     | _ -> assert false)
     ["(sum [x (array/range 1024)] (+ x t))";
+     "(map (fn [x] (get (float/mul_checked x t) :value)) (array/range 1024))";
+     "(map (fn [x] (if (get (float/fma_checked x t 1.0) :valid) x 0.0)) (array/range 1024))";
      "(for [x (array/range 32) y (array/range 32)] (+ (+ x y) t))";
      "(for [x (array/range 1024)] :skip [0] (+ x t))"];
   let uniform=Test_program.ok(Flow_gpu.Emit.kernel(Test_program.compile "(map (fn [x] t) (array/range 1024))"))in

@@ -90,6 +90,7 @@ let kernel program = try
       | Accumulator _ -> assert false
       | Binary (op,a,b) -> binary op (register a) (register b)
       | Unary (op,a) -> unary op (register a)
+      | Checked_mul _ | Checked_fma _ -> fail "Checked arithmetic requires binary64 overflow status."
       | Select (condition,yes,no) -> Printf.sprintf "(%s!=0.0f?%s:%s)" (register condition) (register yes) (register no)
       | Noise3 (x,y,z,seed,octaves) -> Printf.sprintf "fbm(float3(%s,%s,%s),%d,table+%d)"
           (register x) (register y) (register z) octaves (table seed)

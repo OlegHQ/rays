@@ -12,6 +12,8 @@ let rec same (a : E.value) (b : E.value) = match a,b with
 let cases = [
   "text/repr","(text/repr (str \"é日本😀\\t\\n\\\\\\\"\" t))";
   "fma","(fma t 0.9999999999999998 -1.)";
+  "float/mul_checked","(float/mul_checked t 1.7976931348623157e308)";
+  "float/fma_checked","(float/fma_checked t 1.7976931348623157e308 -1.7976931348623157e308)";
   "array/vec4","(array/nth (array/vec4 4 [t 1 2 3]) 2)";
   "text/table_decode","(text/table_decode (if (> t 0.) \"a\\t猫\\n\" \"\"))";
   "text/table_encode","(text/table_encode (list (list (if (> t 0.) \"猫\\n\" \"a\\t\") \"\\\\\")))";

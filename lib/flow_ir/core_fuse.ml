@@ -53,6 +53,8 @@ let builder () =
         | Noise3 (a, b, c, seed, octaves) -> Noise3 (at a, at b, at c, seed, octaves)
         | Rand_at(seed,index) -> Rand_at(at seed,at index)
         | Fma(a,b,c) -> Fma(at a,at b,at c)
+        | Checked_mul(p,a,b) -> Checked_mul(p,at a,at b)
+        | Checked_fma(p,a,b,c) -> Checked_fma(p,at a,at b,at c)
         | Select (a, b, c) -> Select (at a, at b, at c)
         | Int_select (a,b,c) -> Int_select(at a,at b,at c)
         | Guarded (guards,body) ->

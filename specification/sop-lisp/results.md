@@ -1646,3 +1646,26 @@ rows remain above the strict 2x speed gate (maximum 10.377x). The other 24 rows
 pass that table; earlier failures are retained. Set Color remains unregistered
 and the ledger stays six complete ports out of 128. The measured constructor
 and selected writer loops remain the next performance work.
+
+### Checked scalar arithmetic implementation
+
+`float/mul_checked` and `float/fma_checked` are generic pure Lisp operators
+returning `{value: float, valid: bool}`. Finite results retain exact bits;
+overflow returns positive zero and false. Invalid inputs still refuse.
+Ordinary multiplication and FMA keep their existing behavior. The compiler
+uses ordinary record fields and guarded scalar result/status projections,
+with no new Value representation or SOP callback. Metal/WGSL explicitly refuse
+this binary64 status contract. Both CPU banks and JavaScript implement it.
+
+The design and complete focused evidence are in
+[`checked-arithmetic-design.md`](checked-arithmetic-design.md). Final request
+`83484` exited 0 for `@check`, Flow/Graph/IR/GPU/Web/tool Lisp tests and the
+dependency gate, including 32,769 byte-exact reference/Core/strict CPU one/eight
+and JavaScript rows, scalar/native primitive census, lazy invalid branches,
+malformed public-region inputs, captured helpers and graph edits. API review
+accepted exactly the three intended interface changes in `c5521938`; the
+API confirmation request exited 0 after promotion.
+
+Point Jitter can now express native arithmetic validation and error sequencing
+in its Lisp body. Its whole-node semantic and speed gates still have to pass;
+no new SOP registration or whole-node completion is claimed here.

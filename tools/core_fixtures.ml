@@ -39,7 +39,7 @@ let inventory = [
   Sequence_length; Sequence_get; Sequence_build; Sequence_slice; Sequence_concat;
   Array_reduce Minimum; Array_reduce Maximum; Array_segment Sum; Array_segment Minimum; Array_segment Maximum;
   Array_range; Array_int; Array_text; Array_float; Array_vec3; Array_vec4; Array_nth; Array_count; Array_slice; Array_concat;
-  Rand; Rand_at; Fma; Noise3; Color_parse; Color_byte Clamped; Coerce T.Any; Truthy; Error; Fail ("", "") ]
+  Rand; Rand_at; Fma; Checked_mul; Checked_fma; Noise3; Color_parse; Color_byte Clamped; Coerce T.Any; Truthy; Error; Fail ("", "") ]
 
 let export name = match name with
   | "+" -> "add" | "-" -> "sub" | "*" -> "mul" | "/" -> "div" | "<" -> "lt" | "<=" -> "le"
@@ -99,7 +99,7 @@ let arg_name prim i = match prim, i with
   | Text_table_decode, _ -> "text" | Text_table_encode, _ -> "rows"
   | Array_reduce _, _ -> "array"
   | Rand_at, 0 -> "seed" | Rand_at, _ -> "index"
-  | Fma, _ -> [|"a";"b";"c"|].(i)
+  | Fma, _ | Checked_fma, _ | Checked_mul, _ -> [|"a";"b";"c"|].(i)
   | Error, 0 -> "code" | Error, 1 -> "message" | Error, _ -> "cause"
   | Array_segment _, _ -> if i=0 then "values" else "offsets"
   | Array_nth, _ -> if i = 0 then "array" else "index"
@@ -362,6 +362,19 @@ let () =
     [Float.min_float;0.5;0.];[Int64.float_of_bits 1L;0.5;0.];
     [infinity;0.;1.];[1.;nan;0.];[1.;1.;neg_infinity]]);
   add C.Fma [txt "bad";flt_ 1.;flt_ 0.];
+  List.iter(fun(a,b,c)->
+    add C.Checked_mul[flt_ a;flt_ b];
+    add C.Checked_fma[flt_ a;flt_ b;flt_ c]) [
+      Float.max_float,2.,0.;Float.max_float,2.,-.Float.max_float;
+      Float.max_float,2.,Float.max_float;
+      1.+.2.**(-27.),1.-.2.**(-27.),-1.;
+      -0.,1.,-0.;0.,-1.,0.;Int64.float_of_bits 1L,0.5,0.;
+      -.Int64.float_of_bits 1L,0.5,-0.;0.37,0.83,0.19];
+  List.iter(fun bad->
+    List.iter(fun(a,b)->add C.Checked_mul[a;b])[bad,flt_ 1.;flt_ 1.,bad];
+    List.iter(fun(a,b,c)->add C.Checked_fma[a;b;c])
+      [bad,flt_ 1.,flt_ 0.;flt_ 1.,bad,flt_ 0.;flt_ 1.,flt_ 1.,bad])
+    [flt_ nan;flt_ infinity;flt_ neg_infinity;txt "bad";v3 1. 2. 3.];
   List.iter(fun seed->List.iter(fun index->add C.Rand_at[int seed;int index])
     [min_int;min_int+1;-(1 lsl 53)-1;0;1;(1 lsl 53)+1;max_int])
     [min_int;min_int+1;0;1;42;max_int];
@@ -856,7 +869,7 @@ let () =
   List.iter(fun name->add_host "sop/delete_edge" [geometry_value metadata_geometry;E.Text name]
     (json(geometry_value(Rdk.Geometry.without_edge_group name metadata_geometry)))) ["wall_a";"missing";"*";""];
   (* write *)
-  assert (List.length inventory = 88);
+  assert (List.length inventory = 90);
   if not (Sys.file_exists outdir) then Sys.mkdir outdir 0o755;
   List.iter (fun name ->
     let body = String.concat ",\n" (List.rev !(Hashtbl.find cases name)) in

@@ -4,6 +4,20 @@ let catalog = {Check.version = 1; kinds = []}
 let ok = function Ok x -> x | Error d -> failwith (Diagnostic.to_string d)
 
 let () =
+  List.iter(fun(name,args,index)->
+    let source=ok(Syntax.parse("(workspace checked (graph g :context value (let* [status ("^name^" "^args^")] status.value)))")) in
+    let workspace=match Workspace.check catalog source with Some w,[]->w|_,ds->
+      failwith(String.concat "; "(List.map Diagnostic.to_string ds)) in
+    let pane=Projection.of_graph catalog workspace "g" in
+    let card=Option.get(Projection.find pane["g";"status"]) in
+    assert(card.ty=Ty.Record["value",Ty.Float;"valid",Ty.Bool]);
+    let _,edited=ok(Flow_edit.apply_checked catalog source
+      (Set_arg{node=card.path;key=Pos index;sub=[];value=Syntax.make(Num "4.0")})) in
+    let result=List.assoc "g" (ok(Eval.run ~time:2. edited)).results in
+    assert(result=Eval.Float 8.))
+    ["float/mul_checked","t 2.0",1;"float/fma_checked","t 2.0 1.0",2]
+
+let () =
   let source = ok (Syntax.parse
     "(workspace integers (graph g :context host (let* [v (array/int 1)] v)))") in
   let workspace = match Workspace.check catalog source with Some w, [] -> w | _ -> assert false in

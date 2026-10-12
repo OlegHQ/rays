@@ -81,8 +81,7 @@ function fmaDecode(x) {
   return {negative: !!(b >> 63n), n: exponent ? fraction | (1n << 52n) : fraction,
     e: exponent ? exponent - 1075 : -1074};
 }
-export function fma(a, b, c) {
-  a = fin('fma', num(a)); b = fin('fma', num(b)); c = fin('fma', num(c));
+function fused(a, b, c) {
   const aa = fmaDecode(a), bb = fmaDecode(b), cc = fmaDecode(c);
   const negative = aa.negative !== bb.negative, pe = aa.e + bb.e, e = Math.min(pe, cc.e);
   let n = aa.n * bb.n << BigInt(pe - e);
@@ -99,7 +98,21 @@ export function fma(a, b, c) {
     rounded = q + (remainder > half || (remainder === half && (q & 1n)) ? 1n : 0n);
   } else rounded = n << BigInt(-shift);
   const value = Number(rounded) * 2 ** quantum;
-  return fin('fma', sign ? -value : value);
+  return sign ? -value : value;
+}
+export function fma(a, b, c) {
+  a = fin('fma', num(a)); b = fin('fma', num(b)); c = fin('fma', num(c));
+  return fin('fma', fused(a, b, c));
+}
+const checkedArithmetic = value => new Map([['value', Number.isFinite(value) ? value : 0],
+  ['valid', Number.isFinite(value)]]);
+export function float_mul_checked(a, b) {
+  a = fin('float/mul_checked', num(a)); b = fin('float/mul_checked', num(b));
+  return checkedArithmetic(a * b);
+}
+export function float_fma_checked(a, b, c) {
+  a = fin('float/fma_checked', num(a)); b = fin('float/fma_checked', num(b)); c = fin('float/fma_checked', num(c));
+  return checkedArithmetic(fused(a, b, c));
 }
 export const sqrt = x => Math.sqrt(Math.abs(num(x)));
 export const exp = x => fin('exp', Math.exp(num(x)));

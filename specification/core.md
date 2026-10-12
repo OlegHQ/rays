@@ -6,7 +6,7 @@ checked workspace and the tree walker remain the language contract and the
 native exactness oracle. A target prints or executes this core; it does not
 walk `Workspace.term`, expand macros, or interpret Lisp operator names.
 
-The frame primitive inventory below has **88 entries**. Region instruction
+The frame primitive inventory below has **90 entries**. Region instruction
 constructors, structured control, drawing statements and host intrinsics are
 listed separately: none is a hidden primitive in a target's numeric runtime.
 The P0.R review must confirm this inventory before product implementation.
@@ -286,10 +286,11 @@ unlisted calls in `prims.js`.
 | `value/rand`, `noise3`, `color/parse`, `color/byte` | 4 | The deterministic keyed hash, seeded Perlin/fBm sample, source drawing-color decoding, and channel conversion. Static noise permutations become data; dynamic-seed caches are bounded to 16 entries. Color conversion preserves native byte quantization. |
 | `rand/at` | 1 | Two exact signed63 integers, seed and index, to a Float with the exact `Rand.float_at` keyed-hash bits. No floating conversion precedes hashing. The independently authored `rand_at` Lisp arithmetic helper remains an oracle, rather than a compiler-recognized name. |
 | `fma` | 1 | Explicit scalar binary64 fused multiply-add: the exact product and sum round once, matching `Float.fma` including signed zero, subnormals and finite overflow cancellation. Nonfinite inputs or final output fail with `E_NONFINITE`; an overflowing intermediate product alone is allowed. JavaScript computes the exact significands with BigInt and rounds to nearest, ties to even. This primitive does not contract ordinary `*` and `+`. GPU targets refuse it when exact binary64 single rounding is unavailable. |
+| `float/mul_checked`, `float/fma_checked` | 2 | Finite scalar inputs produce an ordered record `{:value float :valid bool}`. Finite results preserve exact binary64 bits, including signed zero; overflowing results produce positive zero and false. Multiplication rounds separately; FMA rounds once and permits finite cancellation of an overflowing exact product. Invalid inputs retain `E_NONFINITE`. No nonfinite value is published, and ordinary `*`/`fma` retain their errors. GPU targets refuse binary64 overflow-status instructions. |
 | `error` | 1 | Text code and text message, with optional `:cause` Text, produce an authored diagnostic preserving all three exactly. Its checked result is `Any`, allowing an error branch to join a typed successful branch. Structured Core retains dynamic text arguments; literal/captured constant text in numeric packed bodies uses `Raise`, while unresolved dynamic messages or causes refuse packed qualification. Untaken branches and empty collections do not raise. Wrong argument storage is `E_TYPE`. |
 | `coerce`, `truthy`, `fail` | 3 | Explicit checked source-value coercion, condition truth conversion, and a diagnostic with a code, message and source span. Coercion preserves record order and list element joins. |
 
-Total: 8 + 1 + 12 + 5 + 8 + 10 + 5 + 3 + 1 + 2 + 1 + 2 + 5 + 10 + 5 + 4 + 1 + 1 + 1 + 3 = **88**.
+Total: 8 + 1 + 12 + 5 + 8 + 10 + 5 + 3 + 1 + 2 + 1 + 2 + 5 + 10 + 5 + 4 + 1 + 1 + 2 + 1 + 3 = **90**.
 `array/sum` remains an ordered typed reduction in structured Core, using exact
 wrapping integer addition for integer arrays; its JavaScript twin is checked
 alongside the intrinsic inventory without adding a Core primitive.
@@ -750,6 +751,7 @@ new collection of shader operations:
 | `Unary(op,a)` | A unary leaf over a prior scalar slot. |
 | `Noise3(x,y,z,seed,octaves)` | A seeded numeric sample; seed and octaves satisfy packed qualification. |
 | `Fma(a,b,c)` | Explicit binary64 single-rounding multiply-add of three numeric registers. Input conversion is explicit where needed; untaken guarded instructions do not execute. CPU and JavaScript match `Float.fma` bits; GPU qualification refuses unavailable binary64 arithmetic. Ordinary multiply/add instructions retain their separate rounding. |
+| `Checked_mul(projection,a,b)`, `Checked_fma(projection,a,b,c)` | `Value` emits the finite binary64 result or positive zero; `Valid` emits exactly one or zero. Compiler-only record fields connect the two registers. Both projections use existing guards, so untaken branches do not execute. No nonfinite register is published. The single-destination representation computes each projection separately; duplicate FMA work is a measured optimization candidate, not a speed claim. GPU targets refuse these instructions. |
 | `Rand_at(seed,index)` | Exact signed63 integer registers to the native `Rand.float_at` Float result. CPU and emitted JavaScript retain all integer bits; GPU qualification refuses this instruction explicitly. |
 | `Select(condition,yes,no)` | Selects by condition unequal to zero; branch instructions carry their execution guards. |
 | `Guarded(conditions,instruction)` | Executes the instruction and its finite checks only when every condition selects this branch. Metal and WGSL declare the result outside the conditional and assign it inside, so later selections retain the same lazy behavior. An unselected overflow is unevaluated; `min` and `max` still evaluate both arguments. |
@@ -963,6 +965,8 @@ operation. A user function/macro row is not a new runtime primitive.
 | `inside` | compiler rule | Inline checked definition: component reads, `>=`, `<`, `+`, `and`. |
 | `int` | primitive | `int` |
 | `float` | primitive | `float` |
+| `float/mul_checked` | primitive | Finite scalar value/status record, separately rounded product. |
+| `float/fma_checked` | primitive | Finite scalar value/status record, explicit single rounding. |
 | `int/and` | primitive | `int/and` |
 | `int/div` | primitive | `int/div` |
 | `int/mod` | primitive | `int/mod` |

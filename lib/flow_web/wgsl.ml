@@ -139,6 +139,7 @@ let kernel ?(image = false) program = try
       | Accumulator _ -> assert false
       | Binary (op,a,b) -> binary op (register a) (register b)
       | Unary (op,a) -> unary op (register a)
+      | Checked_mul _ | Checked_fma _ -> fail "Checked arithmetic requires binary64 overflow status."
       | Select (condition,yes,no) -> Printf.sprintf "select(%s, %s, %s != 0.0)" (register no) (register yes) (register condition)
       | Noise3 (x,y,z,seed,octaves) -> Printf.sprintf "wfbm(vec3<f32>(%s, %s, %s), %d, %d)"
           (register x) (register y) (register z) octaves (table seed)

@@ -6,12 +6,14 @@ module Ty = Flow.Ty
 type binary = Flow.Packed_ops.binary = Add | Sub | Mul | Div | Mod | Pow | Min | Max | Lt | Le | Gt | Ge | Eq | And | Or | Atan2 | Hypot
 type unary = Flow.Packed_ops.unary = Sin | Cos | Sqrt | Abs | Not | Tan | Asin | Acos | Exp | Log | Sign
 type conversion = Core.Region.conversion = To_float | Truncate | Floor | Ceil | Round | Coerce_int | Integer_result of string
+type projection = Core.Region.projection = Value | Valid
 type instruction = Core.Region.instruction = Const of float | Input of int * int * int
   | Uniform of int * int | Frame of string | Accumulator of int
   | Binary of binary * int * int | Unary of unary * int | Noise3 of int * int * int * int * int
   | Fma of int * int * int
   | Rand_at of int * int
   | Select of int * int * int
+  | Checked_mul of projection * int * int | Checked_fma of projection * int * int * int
   | Int_const of int | Int_input of int | Int_uniform of int | Int_frame of string | Int_accumulator
   | Int_binary of Flow.Packed_ops.integer * int * int
   | Int_compare of Flow.Packed_ops.comparison * int * int | Int_abs of int
@@ -31,9 +33,9 @@ type t = { residual : E.residual; term : W.term; sources : (E.residual * W.term)
   count_source : count_source; origin : origin option;
   sites : (int * W.path * int list) list }
 let rec operands = function
-  | Binary (_,a,b) | Int_binary (_,a,b) | Int_compare (_,a,b) | Rand_at (a,b) -> [a;b]
+  | Binary (_,a,b) | Int_binary (_,a,b) | Int_compare (_,a,b) | Rand_at (a,b) | Checked_mul(_,a,b) -> [a;b]
   | Unary (_,a) | Int_abs a | Convert (_,a) -> [a]
-  | Noise3 (a,b,c,_,_) | Fma (a,b,c) | Select (a,b,c) | Int_select (a,b,c) -> [a;b;c]
+  | Noise3 (a,b,c,_,_) | Fma (a,b,c) | Select (a,b,c) | Int_select (a,b,c) | Checked_fma(_,a,b,c) -> [a;b;c]
   | Guarded (guards,body) -> List.map fst guards @ operands body
   | _ -> []
 
@@ -68,6 +70,9 @@ let unary_apply op x = match op with
   | Sin->sin x | Cos->cos x | Sqrt->sqrt (Float.abs x) | Abs->Float.abs x
   | Not->if x=0. then 1. else 0. | Tan->tan x | Asin->asin x | Acos->acos x
   | Exp->exp x | Log->log x | Sign->if x>0. then 1. else if x<0. then -1. else x
+let checked_projection projection value =
+  let valid=Float.is_finite value in
+  match projection with Value -> if valid then value else 0. | Valid -> if valid then 1. else 0.
 let convert_int op x = match op with
   | Truncate->V.to_int "int" (Float.trunc x) | Floor->V.to_int "floor" (Float.floor x)
   | Ceil->V.to_int "ceil" (Float.ceil x) | Round->V.to_int "round" (Float.round x)
@@ -143,6 +148,7 @@ let finite_checks t =
      introduce a nonfinite result; their operands are checked at their source. *)
   Array.map (fun instruction -> match unguarded instruction with
     | Const _ | Select _ | Unary ((Abs | Sqrt | Not), _)
+    | Checked_mul _ | Checked_fma _
     | Binary ((Min | Max | Lt | Le | Gt | Ge | Eq | And | Or), _, _) -> false
     | _ -> true) t.code
 
@@ -154,6 +160,8 @@ let gpu_refusals t =
     refuse "Hypot requires the CPU binary64 implementation.";
   if Array.exists (fun instruction -> match unguarded instruction with Fma _ -> true | _ -> false) t.code then
     refuse "FMA requires exact single-rounding binary64 arithmetic.";
+  if Array.exists (fun instruction -> match unguarded instruction with Checked_mul _ | Checked_fma _ -> true | _ -> false) t.code then
+    refuse "Checked arithmetic requires binary64 overflow status.";
   if t.result <> Collect || not (zipped t) || t.skip <> [||] then
     refuse "GPU kernels require Collect with Zip iteration and no skipped elements.";
   if Array.exists (fun instruction -> match unguarded instruction with Accumulator _ | Int_accumulator -> true | _ -> false) t.code then
@@ -374,6 +382,12 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
         | Select(c,a,b)->for j=first to last-1 do floats.(at+j)<-finite(numeric(if numeric c j<>0. then a else b)j) done
         | Binary(op,a,b)->for j=first to last-1 do floats.(at+j)<-finite(binary_apply op (numeric a j)(numeric b j)) done
         | Fma(a,b,c)->for j=first to last-1 do floats.(at+j)<-finite(Float.fma (numeric a j)(numeric b j)(numeric c j)) done
+        | Checked_mul(p,a,b)->for j=first to last-1 do
+            let a=finite(numeric a j) and b=finite(numeric b j) in
+            floats.(at+j)<-checked_projection p (Sys.opaque_identity(a *. b)) done
+        | Checked_fma(p,a,b,c)->for j=first to last-1 do
+            let a=finite(numeric a j) and b=finite(numeric b j) and c=finite(numeric c j) in
+            floats.(at+j)<-checked_projection p (Float.fma a b c) done
         | Rand_at(seed,index)->let seed=seed*block_size and index=index*block_size in
             for j=first to last-1 do floats.(at+j)<-Flow.Packed_ops.rand_at
               integer.(seed+j) integer.(index+j) done
@@ -868,6 +882,20 @@ let rec run_all ?column_source ?plane_outputs ?expected_count ?state ?elems ?res
               let value=Float.fma scratch.(a+j) scratch.(b+j) scratch.(c+j) in
               if not(Float.is_finite value)then raise Nonfinite;
               scratch.(at+j)<-value
+            done
+        | Checked_mul(p,a,b) ->
+            let a=a*block_size and b=b*block_size in
+            for j=first to last-1 do
+              let a=scratch.(a+j) and b=scratch.(b+j) in
+              if not(Float.is_finite a && Float.is_finite b)then raise Nonfinite;
+              scratch.(at+j)<-checked_projection p (Sys.opaque_identity(a *. b))
+            done
+        | Checked_fma(p,a,b,c) ->
+            let a=a*block_size and b=b*block_size and c=c*block_size in
+            for j=first to last-1 do
+              let a=scratch.(a+j) and b=scratch.(b+j) and c=scratch.(c+j) in
+              if not(Float.is_finite a && Float.is_finite b && Float.is_finite c)then raise Nonfinite;
+              scratch.(at+j)<-checked_projection p (Float.fma a b c)
             done
         | Unary (operation, a) ->
             let a = a * block_size in

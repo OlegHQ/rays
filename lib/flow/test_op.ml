@@ -47,7 +47,7 @@ let check (o : Op.t) args =
   with Value.Fail (code, msg, _) -> failwith (o.name ^ ": " ^ code ^ ": " ^ msg)
 
 let () =
-  assert (List.length Op.all = 151);
+  assert (List.length Op.all = 153);
   let repr=Option.get(Op.find "text/repr" Context.value) in
   List.iter(fun text -> assert(check repr ["text",Text text]=Text(Printf.sprintf "%S" text)))
     [String.init 256 Char.chr;"";"é日本😀\000\b\t\n\r\\\""];

@@ -198,7 +198,8 @@ let rec packed_body ~ops (term : term) =
        | Some (Dot | Cross) -> List.length args = 2
            && List.for_all (fun (_, (t : term)) -> t.ty = Ty.Vec3 && body t) args
        | Some Exact -> (match args with [_, t] -> body t | _ -> false)
-       | Some Fma -> List.length args = 3 && List.for_all (fun (_, t) -> body t) args
+       | Some (Fma | Checked_fma) -> List.length args = 3 && List.for_all (fun (_, t) -> body t) args
+       | Some Checked_mul -> List.length args = 2 && List.for_all (fun (_, t) -> body t) args
        | Some (Binary _ | Integer _ | Integer_compare _ | Rand_at) -> List.length args = 2 && List.for_all (fun (_, t) -> body t) args
        | Some (Unary _ | Convert _) -> List.length args = 1 && List.for_all (fun (_, t) -> body t) args
        | Some Constant_only | None -> false)

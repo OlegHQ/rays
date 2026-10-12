@@ -17,6 +17,8 @@ let rec instruction : P.instruction -> string = function
       |Tan->"Tan"|Asin->"Asin"|Acos->"Acos"|Exp->"Exp"|Log->"Log"|Sign->"Sign")) a
   | Noise3 (x, y, z, seed, octaves) -> Printf.sprintf "Noise3 %d %d %d seed=%d octaves=%d" x y z seed octaves
   | Fma (a,b,c) -> Printf.sprintf "Fma %d %d %d" a b c
+  | Checked_mul(p,a,b) -> Printf.sprintf "Checked_mul %s %d %d" (match p with Value->"value"|Valid->"valid") a b
+  | Checked_fma(p,a,b,c) -> Printf.sprintf "Checked_fma %s %d %d %d" (match p with Value->"value"|Valid->"valid") a b c
   | Rand_at (seed, index) -> Printf.sprintf "Rand_at %d %d" seed index
   | Select (c, a, b) -> Printf.sprintf "Select %d %d %d" c a b
   | Int_const n->Printf.sprintf "Int_const %d" n

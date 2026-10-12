@@ -175,7 +175,11 @@ let lower ?(fusion = true) ?(dynamic = false)
           Hashtbl.add integer_registers id (Core.Region.integer_register instruction);
           Hashtbl.add shared key id;
           id in
-    let literal ?(at = term) v =
+    let rec literal ?(at = term) v =
+      match v with
+      | E.Record fields -> {registers=[||];constant=Some v;
+          fields=List.map(fun(name,value)->name,literal ~at value)fields}
+      | _ ->
       let registers = match v with
         | E.Int _ -> [||] (* Emit a constant only after its integer/float use is known. *)
         | Float _ | Bool _ | Vec2 _ | Vec3 _ | Vec4 _ -> Array.map (fun f -> emit (Const f)) (components v)
@@ -398,6 +402,17 @@ let lower ?(fusion = true) ?(dynamic = false)
               (List.map2 (fun (name, _) e -> name, Option.get e.constant) args expressions))
           else if declaration.live && args = [] && List.mem t.ty [Ty.Float; Ty.Int; Ty.Bool] then
             {registers = [|emit (if t.ty=Ty.Int then Int_frame declaration.name else Frame declaration.name)|]; constant = None;fields=[]}
+          else if kind=Flow.Op.Checked_mul || kind=Flow.Op.Checked_fma then begin
+            (* ponytail: one destination per instruction computes both projections
+               separately; co-compute pairs only if duplicate arithmetic measures hot. *)
+            let arguments=List.map as_float expressions in
+            let instruction projection=match kind,arguments with
+              | Flow.Op.Checked_mul,[a;b] -> Checked_mul(projection,a.registers.(0),b.registers.(0))
+              | Flow.Op.Checked_fma,[a;b;c] -> Checked_fma(projection,a.registers.(0),b.registers.(0),c.registers.(0))
+              | _ -> refuse ~at:t "E_PACKED_OPERATOR" "Checked arithmetic needs scalar arguments." in
+            let field projection={registers=[|emit(instruction projection)|];constant=None;fields=[]} in
+            {registers=[||];constant=None;fields=["value",field Value;"valid",field Valid]}
+          end
           else begin
             let width = List.fold_left (fun n e -> max n (Array.length e.registers)) 1 expressions in
             let registers = match kind, expressions with

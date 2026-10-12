@@ -1300,6 +1300,17 @@ arrays for parity checks and profiling. Unsupported bodies
 remain interpreted. Standalone probes default to the reference walker. The editor
 supplies exact CPU compilation for live values and packed inputs, retaining at
 most 64 prepared programs by physical residual identity across live frames.
+`float/mul_checked` and `float/fma_checked` take finite scalar inputs and return
+`{:value float :valid bool}`. Finite results retain their binary64 bits, including
+signed zero; overflow returns positive zero and false, allowing authored Lisp to
+report its own diagnostic after an ordered status reduction. Multiplication
+rounds separately and explicit FMA rounds once, including finite cancellation
+of an overflowing exact product. No nonfinite value is published. Ordinary `*`
+and `fma` retain their existing nonfinite errors. Both operations are ordinary
+projected cards with directly editable scalar arguments. Within a numeric body,
+their record fields lower to finite value/status registers under the same lazy
+branch guards. GPU targets refuse their binary64 overflow-status instructions;
+native/reference/CPU and the JavaScript compiler target share the contract.
 The typed CPU runner consumes an integer `array/range` source as checked
 zero-based indices without allocating its input array. Captured range aliases
 share this path. Its count is evaluated and validated in source order before

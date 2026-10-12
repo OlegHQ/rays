@@ -164,6 +164,8 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
     | "text/blank?" -> Some Text_blank | "text/trim" -> Some Text_trim | "text/lower" -> Some Text_lower | "text/repr" -> Some Text_repr
     | "error" -> Some Error
     | "fma" -> Some Fma
+    | "float/mul_checked" -> Some Checked_mul
+    | "float/fma_checked" -> Some Checked_fma
     | "text/table_decode" -> Some Text_table_decode
     | "text/table_encode" -> Some Text_table_encode
     | "array/min" -> Some (Array_reduce Minimum) | "array/max" -> Some (Array_reduce Maximum)

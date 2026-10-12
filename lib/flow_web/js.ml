@@ -109,8 +109,10 @@ let region program =
     add "  const fail = (code, message, cause) => { const e = new Error(message); e.code = code; if (cause !== undefined) e.cause = cause; throw e; };\n"
   else add "  const fail = (code, message) => { const e = new Error(message); e.code = code; throw e; };\n";
   add "  const wrap = x => BigInt.asIntN(63, x);\n";
-  if Array.exists (fun instruction -> match unguarded instruction with P.Fma _ -> true | _ -> false) view.code then
+  if Array.exists (fun instruction -> match unguarded instruction with P.Fma _ | Checked_fma _ -> true | _ -> false) view.code then
     add "%s" fused;
+  if Array.exists(fun instruction->match unguarded instruction with P.Checked_mul _ | Checked_fma _ -> true | _ -> false)view.code then
+    add "  const checked = (valid, value) => Number.isFinite(value) ? (valid ? 1 : value) : 0;\n";
   if Array.exists(fun instruction->match unguarded instruction with P.Rand_at _->true|_->false)view.code then
     add "  const randAt = (seed, index) => { let x = wrap(seed ^ wrap(wrap(index + 0x11b54a32d192ed03n) * 0x1e3779b97f4a7c15n)); x = wrap(x ^ (BigInt.asUintN(63, x) >> 30n)); x = wrap(x * 0x3f58476d1ce4e5b9n); x = wrap(x ^ (BigInt.asUintN(63, x) >> 27n)); x = wrap(x * 0x14d049bb133111ebn); x = wrap(x ^ (BigInt.asUintN(63, x) >> 31n)); return Number(BigInt.asUintN(63, x) >> 10n) / 9007199254740992; };\n";
   add "  const convert = (name, x) => Number.isFinite(x) && Math.abs(x) < 4e18 ? BigInt(Math.trunc(x)) : fail('E_NONFINITE', name + ' produced a nonfinite value.');\n";
@@ -154,6 +156,8 @@ let region program =
       | Noise3 (x, y, z, seed, octaves) -> Printf.sprintf "fbm(table%d, %s, %s, %s, %d)" seed
           (numeric x) (numeric y) (numeric z) octaves
       | Fma (a,b,c) -> Printf.sprintf "fused(%s, %s, %s)" (numeric a) (numeric b) (numeric c)
+      | Checked_mul(p,a,b) -> Printf.sprintf "checked(%b, %s * %s)" (p=P.Valid) (numeric a) (numeric b)
+      | Checked_fma(p,a,b,c) -> Printf.sprintf "checked(%b, fused(%s, %s, %s))" (p=P.Valid) (numeric a) (numeric b) (numeric c)
       | Rand_at(seed,index) -> Printf.sprintf "randAt(%s, %s)" (register seed) (register index)
       | Int_const n->string_of_int n^"n" | Int_input i->Printf.sprintf "in%d[j%d]" i i
       | Int_uniform i->Printf.sprintf "uniforms[%d][0]" i | Int_accumulator->"st[0]"
@@ -182,6 +186,10 @@ let region program =
     let guard=String.concat " && "(List.map(fun(r,yes)->numeric r^(if yes then " !== 0" else " === 0"))guards)in
     add "    let r%d;\n" slot;
     if guards<>[] then add "    if (%s) {\n" guard;
+    (match body with
+     | Checked_mul(_,a,b) -> add "    if (!(Number.isFinite(%s) && Number.isFinite(%s))) return 1;\n" (numeric a) (numeric b)
+     | Checked_fma(_,a,b,c) -> add "    if (!(Number.isFinite(%s) && Number.isFinite(%s) && Number.isFinite(%s))) return 1;\n" (numeric a) (numeric b) (numeric c)
+     | _ -> ());
     add "    r%d = %s;\n" slot (expression slot body);
     if not(R.integer_register body) && checks.(slot) then add "    if (!Number.isFinite(r%d)) return 1;\n" slot;
     if guards<>[] then add "    }\n") view.code;
@@ -269,7 +277,8 @@ let signature : C.primitive -> string list option = function
   | Noise3 -> Some ["position"; "seed"; "octaves"]
   | Rand_at -> Some ["seed";"index"]
   | Error -> Some ["code";"message";"cause"]
-  | Fma -> Some ["a";"b";"c"]
+  | Fma | Checked_fma -> Some ["a";"b";"c"]
+  | Checked_mul -> Some ["a";"b"]
   | Fail _ | Fail_diagnostic _ -> Some []
   | Text_concat | Sequence_concat | Rand | Color_parse -> None
 

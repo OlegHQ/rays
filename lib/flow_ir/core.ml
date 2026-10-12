@@ -19,7 +19,7 @@ type primitive =
   | Sequence_length | Sequence_get | Sequence_build | Sequence_slice | Sequence_concat
   | Array_range | Array_int | Array_text | Array_float | Array_vec3 | Array_vec4 | Array_nth | Array_count | Array_slice | Array_concat
   | Array_reduce of Flow.Op.Private.reduction | Array_segment of Flow.Op.Private.reduction
-  | Rand | Rand_at | Fma | Noise3 | Color_parse | Color_byte of byte_mode
+  | Rand | Rand_at | Fma | Checked_mul | Checked_fma | Noise3 | Color_parse | Color_byte of byte_mode
   | Coerce of Flow.Ty.t | Truthy | Error | Fail of string * string | Fail_diagnostic of Flow.Diagnostic.t
 
 type frame_field = Time | Dt | Index | Tick | Width | Height | Pointer_x | Pointer_y | Input
@@ -79,12 +79,14 @@ type state_slot = {
   plane : [ `Frame | `Host ]; ty : Flow.Ty.t;
 }
 module Region = struct
+  type projection = Value | Valid
   type conversion = Flow.Packed_ops.conversion = To_float | Truncate | Floor | Ceil | Round | Coerce_int | Integer_result of string
   type instruction =
     | Const of float | Input of int * int * int
     | Uniform of int * int | Frame of string | Accumulator of int
     | Binary of Flow.Packed_ops.binary * int * int | Unary of Flow.Packed_ops.unary * int
     | Noise3 of int * int * int * int * int | Fma of int * int * int | Rand_at of int * int | Select of int * int * int
+    | Checked_mul of projection * int * int | Checked_fma of projection * int * int * int
     | Int_const of int | Int_input of int | Int_uniform of int | Int_frame of string | Int_accumulator
     | Int_binary of Flow.Packed_ops.integer * int * int
     | Int_compare of Flow.Packed_ops.comparison * int * int | Int_abs of int
@@ -98,9 +100,9 @@ module Region = struct
     | Guarded (_,instruction) -> integer_register instruction
     | _ -> false
   let rec operands = function
-    | Binary (_,a,b) | Int_binary (_,a,b) | Int_compare (_,a,b) | Rand_at(a,b) -> [a;b]
+    | Binary (_,a,b) | Int_binary (_,a,b) | Int_compare (_,a,b) | Rand_at(a,b) | Checked_mul(_,a,b) -> [a;b]
     | Unary (_,a) | Int_abs a | Convert (_,a) -> [a]
-    | Noise3 (a,b,c,_,_) | Fma(a,b,c) | Select (a,b,c) | Int_select (a,b,c) -> [a;b;c]
+    | Noise3 (a,b,c,_,_) | Fma(a,b,c) | Select (a,b,c) | Int_select (a,b,c) | Checked_fma(_,a,b,c) -> [a;b;c]
     | Guarded (guards,instruction) -> List.map fst guards @ operands instruction
     | _ -> []
   type iteration = Zip | Product
@@ -153,6 +155,7 @@ let primitive_name = function
   | Array_text -> "array/text"
   | Array_nth -> "array/nth" | Array_count -> "array/count" | Array_slice -> "array/slice" | Array_concat -> "array/concat"
   | Rand -> "value/rand" | Rand_at -> "rand/at" | Fma -> "fma" | Noise3 -> "noise3" | Color_parse -> "color/parse" | Color_byte _ -> "color/byte"
+  | Checked_mul -> "float/mul_checked" | Checked_fma -> "float/fma_checked"
   | Coerce _ -> "coerce" | Truthy -> "truthy" | Error -> "error" | Fail _ | Fail_diagnostic _ -> "fail"
 
 let frame_name = function
@@ -296,6 +299,8 @@ let pp fmt p =
        | Noise3 (x, y, z, seed, octaves) -> out "noise3(r%d r%d r%d seed=%d octaves=%d)" x y z seed octaves
        | Rand_at(seed,index) -> out "rand_at(r%d r%d)" seed index
        | Fma(a,b,c) -> out "fma(r%d r%d r%d)" a b c
+       | Checked_mul(p,a,b) -> out "mul_checked.%s(r%d r%d)" (match p with Value->"value"|Valid->"valid") a b
+       | Checked_fma(p,a,b,c) -> out "fma_checked.%s(r%d r%d r%d)" (match p with Value->"value"|Valid->"valid") a b c
        | Select (c, a, b) | Int_select (c,a,b) -> out "select(r%d r%d r%d)" c a b
        | Int_const n -> out "int:%d" n | Int_input i -> out "input:int[%d]" i
        | Int_uniform i -> out "uniform:int[%d]" i | Int_accumulator -> out "accumulator:int"

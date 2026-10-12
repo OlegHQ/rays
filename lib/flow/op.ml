@@ -8,7 +8,7 @@ type arithmetic = { apply : 'f 'r. ('f, 'r) Value.t -> ('f, 'r) Value.t -> ('f, 
 type packed_kind = Binary of Packed_ops.binary | Unary of Packed_ops.unary
   | Integer of Packed_ops.integer | Integer_compare of Packed_ops.comparison
   | Convert of Packed_ops.conversion
-  | Noise3 | Fma | Rand_at | Length | Dot | Cross | Normalize | Exact | Frame | Constant_only
+  | Noise3 | Fma | Checked_mul | Checked_fma | Rand_at | Length | Dot | Cross | Normalize | Exact | Frame | Constant_only
 type t = {
   name : string; ctx : Context.t; signature : signature;
   out : Ty.t list -> Ty.t;
@@ -495,6 +495,21 @@ let all = frame @ arrays @ reductions @ draw @ host @ integers @ images @ [
       let input n=fin name(num(List.assoc n args)) in
       let a=input "a" and b=input "b" and c=input "c" in
       Float(fin name(Float.fma a b c))};
+  mk ~category:"Math" "float/mul_checked" ["a",Ty.Float;"b",Ty.Float]
+    (fun _ -> Ty.Record ["value",Ty.Float;"valid",Ty.Bool])
+    {run=fun ~name ~node:_ args ->
+      let a=fin name(num(List.assoc "a" args)) and b=fin name(num(List.assoc "b" args)) in
+      let value=Sys.opaque_identity(a *. b) in
+      let valid=Float.is_finite value in
+      Record ["value",Float(if valid then value else 0.);"valid",Bool valid]};
+  mk ~category:"Math" "float/fma_checked" ["a",Ty.Float;"b",Ty.Float;"c",Ty.Float]
+    (fun _ -> Ty.Record ["value",Ty.Float;"valid",Ty.Bool])
+    {run=fun ~name ~node:_ args ->
+      let input key=fin name(num(List.assoc key args)) in
+      let a=input "a" and b=input "b" and c=input "c" in
+      let value=Float.fma a b c in
+      let valid=Float.is_finite value in
+      Record ["value",Float(if valid then value else 0.);"valid",Bool valid]};
   mk ~category:"Random" "rand/at" ["seed",Ty.Int;"index",Ty.Int] (fun _->Ty.Float)
     {run=fun ~name:_ ~node:_ args -> match List.assoc "seed" args,List.assoc "index" args with
       | Int seed,Int index -> Float(Packed_ops.rand_at seed index)
@@ -795,6 +810,8 @@ let packed_kind op =
     | _ when op.name = "cross" -> Some Cross
     | _ when op.name = "normalize" -> Some Normalize
     | _ when op.name = "fma" -> Some Fma
+    | _ when op.name = "float/mul_checked" -> Some Checked_mul
+    | _ when op.name = "float/fma_checked" -> Some Checked_fma
     | _ when op.name = "rand/at" -> Some Rand_at
     | _ when op.name = "exact" -> Some Exact
     | _ when op.live -> Some Frame
