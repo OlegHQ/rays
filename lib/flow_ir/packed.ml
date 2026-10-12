@@ -549,6 +549,49 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
         | Int_select(c,a,b)->let a=a*block_size and b=b*block_size in
             for j=first to last-1 do integer.(at+j)<-integer.((if numeric c j<>0. then a else b)+j) done
         | Select(c,a,b)->for j=first to last-1 do floats.(at+j)<-finite(numeric(if numeric c j<>0. then a else b)j) done
+        | Binary(op,a,b) when not banks.(a) && not banks.(b)->
+            let a=a*block_size and b=b*block_size in
+            (match op with
+            | Add->for j=first to last-1 do floats.(at+j)<-finite(floats.(a+j)+.floats.(b+j)) done
+            | Sub->for j=first to last-1 do floats.(at+j)<-finite(floats.(a+j)-.floats.(b+j)) done
+            | Mul->for j=first to last-1 do floats.(at+j)<-finite(floats.(a+j)*.floats.(b+j)) done
+            | Div->for j=first to last-1 do let y=floats.(b+j) in
+                floats.(at+j)<-finite(if y=0. then 0. else floats.(a+j)/.y) done
+            | Mod->for j=first to last-1 do let y=floats.(b+j) in
+                floats.(at+j)<-finite(if y=0. then 0. else Float.rem(Float.rem floats.(a+j) y+.y)y) done
+            | Pow->for j=first to last-1 do floats.(at+j)<-finite(Float.pow(Float.abs floats.(a+j))floats.(b+j)) done
+            | Min->for j=first to last-1 do floats.(at+j)<-finite(Float.min floats.(a+j)floats.(b+j)) done
+            | Max->for j=first to last-1 do floats.(at+j)<-finite(Float.max floats.(a+j)floats.(b+j)) done
+            | Atan2->for j=first to last-1 do floats.(at+j)<-finite(Float.atan2 floats.(a+j)floats.(b+j)) done
+            | Hypot->for j=first to last-1 do floats.(at+j)<-finite(Float.hypot floats.(a+j)floats.(b+j)) done
+            | Lt->for j=first to last-1 do floats.(at+j)<-(if floats.(a+j)<floats.(b+j) then 1. else 0.) done
+            | Le->for j=first to last-1 do floats.(at+j)<-(if floats.(a+j)<=floats.(b+j) then 1. else 0.) done
+            | Gt->for j=first to last-1 do floats.(at+j)<-(if floats.(a+j)>floats.(b+j) then 1. else 0.) done
+            | Ge->for j=first to last-1 do floats.(at+j)<-(if floats.(a+j)>=floats.(b+j) then 1. else 0.) done
+            | Eq->for j=first to last-1 do floats.(at+j)<-(if floats.(a+j)=floats.(b+j) then 1. else 0.) done
+            | And->for j=first to last-1 do floats.(at+j)<-(if floats.(a+j)<>0. && floats.(b+j)<>0. then 1. else 0.) done
+            | Or->for j=first to last-1 do floats.(at+j)<-(if floats.(a+j)<>0. || floats.(b+j)<>0. then 1. else 0.) done)
+        | Fma(a,b,c) when not banks.(a) && not banks.(b) && not banks.(c)->
+            let a=a*block_size and b=b*block_size and c=c*block_size in
+            for j=first to last-1 do floats.(at+j)<-finite(Float.fma floats.(a+j)floats.(b+j)floats.(c+j)) done
+        | Checked_mul(p,a,b) when not banks.(a) && not banks.(b)->
+            let a=a*block_size and b=b*block_size in
+            (match p with
+            |Value->for j=first to last-1 do
+                let a=finite floats.(a+j) and b=finite floats.(b+j) in
+                floats.(at+j)<-checked_projection Value (Sys.opaque_identity(a*.b)) done
+            |Valid->for j=first to last-1 do
+                let a=finite floats.(a+j) and b=finite floats.(b+j) in
+                floats.(at+j)<-checked_projection Valid (Sys.opaque_identity(a*.b)) done)
+        | Checked_fma(p,a,b,c) when not banks.(a) && not banks.(b) && not banks.(c)->
+            let a=a*block_size and b=b*block_size and c=c*block_size in
+            (match p with
+            |Value->for j=first to last-1 do
+                let a=finite floats.(a+j) and b=finite floats.(b+j) and c=finite floats.(c+j) in
+                floats.(at+j)<-checked_projection Value (Float.fma a b c) done
+            |Valid->for j=first to last-1 do
+                let a=finite floats.(a+j) and b=finite floats.(b+j) and c=finite floats.(c+j) in
+                floats.(at+j)<-checked_projection Valid (Float.fma a b c) done)
         | Binary(op,a,b)->for j=first to last-1 do floats.(at+j)<-finite(binary_apply op (numeric a j)(numeric b j)) done
         | Fma(a,b,c)->for j=first to last-1 do floats.(at+j)<-finite(Float.fma (numeric a j)(numeric b j)(numeric c j)) done
         | Checked_mul(p,a,b)->for j=first to last-1 do

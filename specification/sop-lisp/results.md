@@ -2885,3 +2885,52 @@ the evidence document. These measurements do not qualify Name From Groups
 or any other whole SOP. C.2's language checks are complete; the whole-node
 2× gate and B.13/B.14 remain open. This acceptance excludes the independently
 measured 43-line Float-span optimization in `Packed.run_typed`.
+
+### Typed Float operands dispatch once per active span (shared prerequisite)
+
+The typed CPU runner adds 43 lines specializing Float-bank Binary, Fma,
+Checked_mul and Checked_fma instructions before their existing generic cases.
+It chooses banks, operator and checked projection once per active span, then
+loads the Float register array directly with precomputed operand offsets.
+Mixed-bank cases remain unchanged. Guards, their lazy span cache, gather's
+lane-major ordering, Text storage, folds and scans retain their existing
+execution. Checked multiplication retains `Sys.opaque_identity` and its
+separate rounding; FMA remains the explicit single-rounded operation.
+
+Focused request 58211 exited 0 for `@lib/flow/runtest
+@lib/flow_ir/runtest @lib/flow_web/runtest @lib/flow_sop/runtest
+@lib/flow_sop/point_jitter_draft
+_build/default/lib/flow_sop/test_point_jitter.exe`
+(`/tmp/rays-point-jitter-float-spans-focused.log`). Existing tests cover mixed
+FMA banks, checked native/reference/JavaScript bits, 32,769-element checked
+projections, overflow followed by zero, lazy selected and untaken errors,
+signed zero, exact integers, gather, Text, folds and domain identity. The full
+Point Jitter native 4-ULP, strict/reference, domain/grain, immutable payload,
+normal retention, parameter/cache and exact cause recipe passes.
+
+ARM object evidence is retained in
+`/tmp/rays-point-jitter-float-span-assembly.txt`. The direct Mul loop at
+`0x9f98` loads two Float operands, multiplies, validates and stores without
+per-lane bank selection or an operator jump. The checked product at `0xbfac`
+still allocates its deliberate 16-byte opaque box before FMUL/store/reload;
+this wave does not claim to remove that remaining cost.
+
+Quiet same-protocol first-four request 90069 exited 0 after all preflights,
+using the binary linked by 58211. Apple M1, OCaml 5.3.0 dev profile, one
+million real grid points and 998,001 quads, grain 4096, median of three fresh
+cold-session cooks, domains 1/4. Four-domain allocations cover only the
+initial domain. Log: `/tmp/rays-point-jitter-float-spans-bench-first.log`.
+The previous column is the retained Int-annotation table 30465.
+
+| Mode | Domains | Previous Lisp seconds | Native seconds | Float-span Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| defaults | 1 | 0.548117 | 0.020986 | 0.493282 | **23.505×** | 72015704 | 617676688 |
+| defaults | 4 | 0.229277 | 0.009415 | 0.215462 | **22.885×** | 39436688 | 360730456 |
+| selected optional inputs | 1 | 0.671244 | 0.025912 | 0.674611 | **26.035×** | 48016440 | 732932640 |
+| selected optional inputs | 4 | 0.271113 | 0.007448 | 0.267212 | **35.877×** | 30072912 | 412091568 |
+
+The default Lisp times fall about 10.0% and 6.0%. Selected optional times
+change by +0.5% and −1.4%; the prior allocation regression remains. All four
+unchanged 2× gates still fail. This is a shared execution improvement with
+measured limits, not acceptance of a Point Jitter port. No registration or
+native removal is claimed, and no unchanged-code repeat replaces this table.
