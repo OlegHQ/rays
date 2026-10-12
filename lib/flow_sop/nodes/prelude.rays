@@ -1,5 +1,14 @@
 ; Shared value helpers. Matrices are row-major records and multiply column vectors.
 (workspace sop_nodes
+  (defmacro setter_constant [geo owner name type constructor value]
+    `(if (equal? ~owner "Point")
+       (sop/with_attr ~geo ~name (~constructor (sop/count ~geo :points) ~value) :owner "point" :type ~type)
+       (if (equal? ~owner "Vertex")
+         (sop/with_attr ~geo ~name (~constructor (sop/count ~geo :vertices) ~value) :owner "vertex" :type ~type)
+         (if (equal? ~owner "Primitive")
+           (sop/with_attr ~geo ~name (~constructor (sop/count ~geo :primitives) ~value) :owner "primitive" :type ~type)
+           (sop/with_attr ~geo ~name (~constructor 1 ~value) :owner "detail" :type ~type)))))
+
   ; Integer floor/ceil keep their existing contract. Guard the eager conversion
   ; branch and preserve signed zero, including ceil of a small negative value.
   (defn float_floor :context value [(value : float)]

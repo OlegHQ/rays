@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "ef85cfb9f1560f4b8d7456cbcf6af521")
+  (digest "4c26f747931acd48875866372f08160d")
   (kinds
     (kind "sop/box"
       (key "box")
@@ -3223,19 +3223,6 @@
         (field "text_prefix" "Text prefix" (folder "Output") (text) (text "piece") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/set_float"
-      (key "set_float")
-      (aliases)
-      (operation "set_float")
-      (label "Set Float")
-      (category "Attribute" "Set")
-      (slots (slot "in0" required))
-      (fields
-        (field "owner" "Owner" (folder) (choice "Point" "Vertex" "Primitive" "Detail") (choice "Point") (primary false) (vec3))
-        (field "name" "Attribute" (folder) (text) (text "value") (primary false) (vec3))
-        (field "value" "Value" (folder) (float (soft -10 10) (hard nil nil)) (float 0) (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/set_int"
       (key "set_int")
       (aliases)
@@ -3501,6 +3488,20 @@
         (field "frequency" "Frequency" (folder) (float (soft 0 20) (hard 0 nil)) (float 1) (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode generic) (elementwise points) (reads "P" "N") (writes "P" "N") (topology preserved) (exact false))
+      (body lisp)
+      (calls))
+    (kind "sop/set_float"
+      (key "set_float")
+      (aliases)
+      (operation "set_float")
+      (label "Set Float")
+      (category "Attribute" "Set")
+      (slots (slot "in0" required))
+      (fields
+        (field "owner" "Owner" (folder) (choice "Point" "Vertex" "Primitive" "Detail") (choice "Point") (primary false) (vec3))
+        (field "name" "Attribute" (folder) (text) (text "value") (primary false) (vec3))
+        (field "value" "Value" (folder) (float (soft -10 10) (hard nil nil)) (float 0) (primary false) (vec3)))
+      (outputs (output "geo" geometry))
       (body lisp)
       (calls))
     (kind "scene/geometry"

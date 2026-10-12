@@ -262,4 +262,121 @@ let benchmark () =
       Printf.printf "Packed isolated domains=%d registers=%d seconds=%.6f\n%!" domains
         (Array.length (Flow_ir.Packed.Private.view packed).code) (Unix.gettimeofday ()-.start)) !packed) [1;4]) ["normal_3d";"height_2d"]
 
-let ()=if Array.exists ((=) "--bench") Sys.argv then benchmark () else noise_displace ()
+let setter_port key =
+  let all_keys=["set_float";"set_int";"set_vector";"set_orient"] in
+  let keys=[key] in
+  let native_factory=function
+    |"set_float"->Sop.Nodes.Set_float.factory |"set_int"->Sop.Nodes.Set_int.factory
+    |"set_vector"->Sop.Nodes.Set_vector.factory |"set_orient"->Sop.Nodes.Set_orient.factory
+    |_->assert false in
+  let sources=Flow_sop.Catalog.sources() |> flow_ok in
+  let authored ~reference input key keywords =
+    let input_factory=Sop.Edit_graph.factory ~key:"setter_port_input" ~label:"Setter input"
+      ~category:["Test"] ~arity:0(fun _->input) in
+    let factories=input_factory::List.filter(fun factory->
+      not(List.mem(Sop.Edit_graph.factory_key factory)all_keys))Sop_catalog.Editor.factories in
+    let catalog=Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version factories |> flow_ok in
+    let forms=Flow.Syntax.parse(Printf.sprintf
+      "(workspace setter_port (graph g :context sop (sop/%s (sop/setter_port_input) %s)))" key keywords) |> flow_ok in
+    let checked=match Flow_sop.Catalog.check_workspace ~sources ~ops:Flow_sop.Operators.all catalog forms with
+      |Some workspace,diagnostics when not(List.exists(fun(d:Flow.Diagnostic.t)->d.severity=Error)diagnostics)->workspace
+      |_,diagnostics->fail(String.concat "\n"(List.map Flow.Diagnostic.to_string diagnostics)) in
+    let lowered=Flow_sop.Lower.of_checked ~reference ~factories checked |> flow_ok in
+    let actual=List.find(fun factory->Sop.Edit_graph.factory_key factory=key)lowered.factories in
+    check(Flow_sop.Catalog.descriptor actual=Flow_sop.Catalog.descriptor(native_factory key))
+      (key^": native factory descriptor differs");
+    let graph=List.hd lowered.graphs in
+    Sop.Edit_graph.compile_node graph.network.geometry ~node_id:(Option.get graph.root) |> get_string_ok in
+  let native input key changes =
+    let initial=Sop.Edit_graph.instantiate(native_factory key)[input] |> get_string_ok in
+    fst(N.apply_parameters initial changes |> get_string_ok) in
+  let cases=List.map(fun key->key,"",[])keys
+    @List.concat_map(fun owner->
+      let prefix=Printf.sprintf ":owner %S " owner and change="owner",P.Choice_value owner in
+      ["set_float",prefix^":name \"new float\" :value -2.5",
+         [change;"name",P.Text_value "new float";"value",P.Float_value(-2.5)];
+       "set_int",prefix^":name \"id\" :value 4611686018427387903",
+         [change;"name",P.Text_value "id";"value",P.Int_value max_int];
+       "set_vector",prefix^":value [2 -3 0.5]",
+         [change;"x",P.Float_value 2.;"y",P.Float_value(-3.);"z",P.Float_value 0.5]])
+       ["Point";"Vertex";"Primitive";"Detail"]
+    @["set_orient",":w 0",["w",P.Float_value 0.];
+      "set_orient",":x 1 :y 2 :z 3 :w -4",
+        ["x",P.Float_value 1.;"y",P.Float_value 2.;"z",P.Float_value 3.;"w",P.Float_value(-4.)];
+      "set_orient",":x 1e308",["x",P.Float_value 1e308]]
+    |>List.filter(fun(candidate,_,_)->candidate=key) in
+  let grid=Plane_generators.grid ~connectivity:Grid_quads ~columns:64 ~rows:64 ~size:8.() |> get_ok |> payload in
+  List.iter(fun geometry->
+    let input=Lisp_sop.snapshot geometry and before=geometry_bytes geometry in
+    List.iter(fun(key,keywords,changes)->
+      let actual=authored ~reference:false input key keywords
+      and walked=authored ~reference:true input key keywords and expected=native input key changes in
+      check(N.operation actual=N.operation expected && N.version actual=N.version expected
+        && N.label actual=N.label expected && N.parameter_fields actual=N.parameter_fields expected
+        && N.parameter_key actual=N.parameter_key expected)(key^": node identity/schema differs");
+      let s=session() in
+      Fun.protect ~finally:(fun()->Sop.Session.close s)(fun()->
+        let baseline=cooked s(context 1 97)actual in
+        check(close_geometry ~ulps:4 baseline(cooked s(context 1 97)expected))(key^": native oracle differs");
+        check(geometry_bytes baseline=geometry_bytes(cooked s(context 1 97)walked))(key^": reference bytes differ");
+        List.iter(fun domains->List.iter(fun grain->Sop.Session.clear s;
+          check(geometry_bytes baseline=geometry_bytes(cooked s(context domains grain)actual))
+            (key^": worker/grain bytes differ"))[1;97;4096])[1;4;8]);
+      check(before=geometry_bytes geometry)(key^": input mutated"))cases)
+    [payload(points 0);payload(points 1);grid;mixed();payload(points 32769)];
+  let input=Lisp_sop.snapshot(mixed()) in
+  List.iter(fun key->
+    let initial=authored ~reference:false input key "" and oracle=native input key [] in
+    List.iter(fun(field:P.field_view)->
+      let value=match field.current with
+        |P.Choice_value _->P.Choice_value "Vertex" |Text_value _->Text_value "edited"
+        |Int_value value->Int_value(value+7) |Float_value value->Float_value(value+.0.25)
+        |Bool_value _->assert false in
+      let actual=fst(N.apply_parameters initial[field.name,value] |> get_string_ok)
+      and expected=fst(N.apply_parameters oracle[field.name,value] |> get_string_ok) in
+      check(N.parameter_key actual=N.parameter_key expected)(key^": edited cache key differs");
+      let s=session() in Fun.protect ~finally:(fun()->Sop.Session.close s)(fun()->
+        ignore(cooked s(context 1 97)initial);let before=Sop.Session.stats s in
+        let result=cooked s(context 1 97)actual in let after=Sop.Session.stats s in
+        check(after.misses=before.misses+1)(key^": edited public miss count differs");
+        ignore(cooked s(context 1 97)actual);let warm=Sop.Session.stats s in
+        check(warm.misses=after.misses && warm.hits>after.hits)(key^": warm cache missed");
+        check(close_geometry ~ulps:4 result(cooked s(context 1 97)expected))(key^": edited oracle differs")))
+      (N.parameter_fields initial))keys;
+  List.iter(fun(key,changes)->
+    let actual=authored ~reference:false input key "" and expected=native input key [] in
+    let apply node=match N.apply_parameters node changes with Error message->Error message|Ok _->Ok() in
+    let observed=apply actual in
+    check(observed=apply expected && Result.is_error observed)(key^": rejected edit differs"))
+    (List.filter(fun(candidate,_)->candidate=key)
+    (List.concat_map(fun key->[key,["name",P.Text_value " \t\n"];key,["name",P.Text_value "P"]])
+       ["set_float";"set_int";"set_vector"]
+     @["set_orient",["x",P.Float_value infinity]]));
+  let initial=authored ~reference:false input key "" and expected=native input key [] in
+  List.iter(fun(field:P.field_view)->match field.current with
+    |P.Float_value _->List.iter(fun value->
+        let apply node=match N.apply_parameters node[field.name,P.Float_value value] with
+          |Error message->Error message |Ok _->Ok() in
+        let observed=apply initial in
+        check(observed=apply expected && Result.is_error observed)(key^": nonfinite edit differs"))
+        [nan;infinity;neg_infinity]
+    |_->())(N.parameter_fields initial);
+  let factories=List.map native_factory all_keys @ List.filter(fun factory->
+    not(List.mem(Sop.Edit_graph.factory_key factory)all_keys))Sop_catalog.Editor.factories in
+  let catalog=Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version factories |> flow_ok in
+  List.iter(fun argument->
+    let forms=Flow.Syntax.parse(Printf.sprintf
+      "(workspace invalid_setter (graph g :context sop (sop/%s %s)))" key argument) |> flow_ok in
+    let errors(workspace,diagnostics)=
+      check(workspace=None)(key^": wrongly typed geometry accepted");
+      List.filter_map(fun(d:Flow.Diagnostic.t)->if d.severity=Error then Some d.code else None)diagnostics in
+    let native_errors=errors(Flow.Workspace.check ~ops:Flow_sop.Operators.all catalog forms)
+    and actual_errors=errors(Flow_sop.Catalog.check_workspace ~sources ~ops:Flow_sop.Operators.all catalog forms) in
+    check(actual_errors=native_errors && List.mem "E_TYPE" actual_errors)(key^": geometry refusal code differs"))
+    ["17";"(image/noise :width 1 :height 1)"];
+  print_endline(key^": whole native/reference/schema/cache/domain/grain/refusal recipe passed")
+
+let set_float ()=setter_port "set_float"
+
+let ()=if Array.exists ((=) "--bench") Sys.argv then benchmark ()
+  else (noise_displace ();set_float ())

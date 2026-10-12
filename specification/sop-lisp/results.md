@@ -534,8 +534,8 @@ OCAML
 
 ## Port and measurement ledger
 
-One of the 128 target nodes has completed its full Verification gate: the
-complete `noise_displace` pilot. The remaining 127 ports are still required.
+Two of the 128 target nodes have completed their full Verification gates:
+`noise_displace` and `set_float`. The remaining 126 ports are still required.
 Do not fill timings, run counts, render parity or domain equality from estimates.
 Each accepted row must cite the command and fixture, machine/domain setup,
 OCaml/Lisp times and validation result before its plan checkbox is marked.
@@ -543,6 +543,7 @@ OCaml/Lisp times and validation result before its plan checkbox is marked.
 | Node | CPU oracle gate | 1/8 domains | Cache/refusals/UI | Native goldens | OCaml/Lisp time at 1,000,000 | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | `noise_displace` pilot | Final pilot and legacy node gate 45407 passed at 4 ULP | 48781 passed, byte-exact strict reference | Schema/cache/refusals and real source/save/editor gates passed; label regression 45407 passed | Final 33890 passed; render fixtures unchanged; ml.t catalog digest expectation refreshed | Both modes 1/4 domains below 2×; table below | Complete in this port commit; A.6 and A.R passed |
+| `set_float` | Authoritative all-owner native oracle 19797 and production 24674 passed | Exact strict/reference at 1/4/8 domains, grains 1/97/4096 | Factory/schema, every physical edit, public cache misses/hits, graph/inspector and refusals passed | 62289 passed; render fixtures unchanged; ml.t catalog digest only | Native/Lisp 0.000527/0.000175 s at 1 domain, 0.000212/0.000229 s at 4 domains; production table below | Complete in its separate port commit; B.11 remains incomplete |
 
 ## Moves and blocked modes
 
@@ -1068,3 +1069,52 @@ speed gate:
 Log: `/tmp/rays-transform-repeat-bench.log`. Remaining materialized CSR
 arguments are rebuilt through a checked host-call graph and copied into
 owned storage. Further shared work is required; Set Transform is unregistered.
+
+### Set Float production port
+
+After foundation commit `b0323372`, Set Float moved into the embedded
+`nodes/set_float.rays` declaration. The existing `setter_constant` macro moved
+once from the remaining setter draft into the prelude. The native catalog
+registration was removed; `Sop.Nodes.Set_float.factory` remains the independent
+oracle. Set Integer, Set Vector, Set Orient, Set Color and Set Transform are
+still pending, so B.11 remains unchecked.
+
+The authoritative `set_float` function in `lib/sop/test_lisp_ports.ml` passed
+request 19797 before removing the native registration. It checks all four
+owners, defaults and non-default parameters, empty/single/4,225-point grid,
+mixed polygon/polyline and 32,769-point inputs, full factory/runtime metadata,
+native 4-ULP geometry, exact reference/strict bytes, domains 1/4/8 at grains
+1/97/4096, unchanged inputs, every physical parameter's cache identity and
+non-finite/wrong-input/blank-name/canonical-P refusals.
+
+Reviewed manifest digest `4c26f747931acd48875866372f08160d` preserves the
+key, operation, aliases, label, category, slot and complete field metadata.
+The entry moves into Lisp declaration order, replaces native facts with the
+Lisp body/calls markers, and is the only kind changed. The generated-source
+expectation `tools/lisp/test/ml.t` changes only its catalog digest to
+`c285ced779a95de5fbc8a2f859be667ef2f39a74b659fea9f34cb81615a3aab7`.
+Render fixtures remain unchanged.
+
+Production focused request 24674 exited 0 for `@lib/sop/runtest`,
+`@lib/flow_sop/runtest`, `@lib/sop_catalog/runtest` and
+`@test/dependency_gate`. Its earlier run 18780 passed the production oracle
+but failed a new group-test fixture's bare `any` literal; that fixture was
+corrected without changing runtime behavior. Native request 62289 exited 0
+for `@runtest-native`, including 23 SOP graphs with byte-identical one/four
+domain PNGs. Generated-source request 63796 exited 0 for
+`@tools/lisp/test/runtest` after accepting the digest-only expectation above.
+
+Quiet production timing exited 0: `opam exec -- ./test_setters.exe
+--bench-float` from `_build/default/lib/flow_sop`, log
+`/tmp/rays-set-float-production-bench.log`. This uses the embedded declaration
+with no Set Float body in the pending draft. Apple M1, OCaml 5.3.0,
+1,000,000 points, grain 4096, median of three fresh-session cold cooks:
+
+| Domains | Native seconds | Lisp seconds | Ratio | Native allocated bytes | Lisp allocated bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.000527 | 0.000175 | 0.332 | 8,006,952 | 8,025,520 |
+| 4 | 0.000212 | 0.000229 | 1.080 | 8,007,184 | 8,025,752 |
+
+Four-domain allocation records the initial domain only. Both cold-cook ratios
+pass the unchanged 2× gate. The Set Float port is complete in its separate
+source commit; B.11 remains incomplete.

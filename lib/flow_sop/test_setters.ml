@@ -1,4 +1,4 @@
-(* Unregistered draft oracle: wire as one sop-library test after prerequisites land. *)
+(* Whole setter checks for embedded ports and the remaining unregistered drafts. *)
 open Rdk
 open Rdk_test_support
 module N = Sop.Node
@@ -251,5 +251,6 @@ let projection ()=
   print_endline"setter draft: four passing setters native card/inspector parity and every physical field direct graph gesture"
 
 let ()=if Array.exists((=)"--bench-transform")Sys.argv then benchmark ~only:"set_transform"()
+  else if Array.exists((=)"--bench-float")Sys.argv then benchmark ~only:"set_float"()
   else if Array.exists((=)"--bench")Sys.argv then benchmark()
   else if Array.exists((=)"--trace")Sys.argv then trace_transform() else (verify();parameter_edits();invalid_parameters();projection())
