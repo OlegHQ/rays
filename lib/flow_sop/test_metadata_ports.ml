@@ -447,6 +447,118 @@ let rename_attributes_projection () =
   metadata_projection "rename_attributes"
     ["rules",P.Text_value(table[[" ANY ";"old_*";"new_*";" OVERWRITE "]])]
 
+let group_rename_fixture () =
+  let geometry=fixture() in
+  let geometry=List.fold_left(fun geometry(owner,count,source,selected,target)->
+    Geometry.with_group(Group.ordered ~owner ~name:"old" ~length:count source|>get_string_ok)geometry|>get_string_ok
+    |>fun geometry->Geometry.with_group(Group.ordered ~owner ~name:"target" ~length:count target|>get_string_ok)geometry|>get_string_ok
+    |>fun geometry->Geometry.with_group(Group.init ~owner ~name:"unordered" count selected)geometry|>get_string_ok)
+    geometry [Group.Point,6,[|4;1;3|],(fun i->i mod 2=0),[|2;4|];
+      Vertex,7,[|6;0|],(fun i->i mod 2=0),[|0;4|];
+      Primitive,2,[|1|],(fun i->i=1),[|0|]] in
+  let topology=Geometry.topology geometry in let index=Topology_index.create topology in
+  let geometry=List.fold_left(fun geometry(name,selected)->Geometry.with_edge_group
+    (Edge_group.init ~topology ~index ~name selected)geometry|>get_string_ok)
+    geometry ["old",(fun i->i<2);"target",(fun i->i=1||i=2)] in
+  List.fold_left(fun geometry name->
+    Geometry.with_group(Group.ordered ~owner:Point ~name ~length:6[|4;1|]|>get_string_ok)geometry|>get_string_ok)
+    geometry ["é猫";"a-b";"back\\slash";"a b";"[x]";"*"]
+
+let group_rename_cases =
+  []::List.concat_map(fun owner->List.concat_map(fun policy->
+    List.map(fun(pattern,replacement)->[[owner;pattern;replacement;policy]])
+      ["old_*","new_*";"old","target";"unordered","target";"old","old";
+       "missing","new";"old","\\ ";"[","new";"\\","new";
+       "old*","new";"old","new*"])
+    ["skip";"error";"overwrite";"union"])["point";"vertex";"primitive";"edge";" ANY ";"*"]@
+    [[["any";"old_*";"mid_*";"union"];["any";"mid_*";"new_*";"overwrite"]];
+     [["any";"old";"target";"union"];["any";"unordered";"target";"union"]];
+     [["any";"old";"target";"overwrite"];["any";"target";"new";"overwrite"]];
+     [["point";"old";"target";"error"];["edge";"[";"new";"skip"]];
+     [["edge";"[";"new";"skip"];["point";"old";"target";"error"]]]@
+    List.map(fun pattern->[["point";pattern;"renamed";"skip"]])
+      ["é猫";"a-b";"back\\\\slash";"a\\ b";"\\[x\\]";"\\*"]
+
+let group_rename_exact () =
+  let key="group_rename" and base=group_rename_fixture() in
+  let positions=Packed.Float3.Private.view(Geometry.positions base) in
+  let x=Array.copy positions.x in x.(0)<-nan;x.(1)<-infinity;x.(2)<-neg_infinity;
+  let raw=Geometry.with_positions(Packed.Float3.of_owned ~x ~y:(Array.copy positions.y)
+    ~z:(Array.copy positions.z)|>get_string_ok)base|>get_string_ok in
+  let raw=Geometry.with_attribute(Attribute.create_owned ~owner:Point ~name:"raw"
+    (Float[|nan;infinity;neg_infinity;-0.;0.;1.|])|>get_string_ok)raw|>get_string_ok in
+  List.iter(fun geometry->let before=geometry_bytes geometry and input=Lisp_sop.snapshot geometry in
+    List.iter(fun rows->let keywords,changes=rules rows in
+      let actual=node ~reference:false input key keywords and walked=node ~reference:true input key keywords
+      and expected=native input key changes in
+      check(N.operation actual=N.operation expected && N.version actual=N.version expected
+        && N.label actual=N.label expected && N.parameter_fields actual=N.parameter_fields expected
+        && N.parameter_key actual=N.parameter_key expected)"Group Rename native identity/schema/key";
+      let session=Sop.Session.create ~max_entries:32 ~max_payload_bytes:64_000_000|>get_string_ok in
+      Fun.protect ~finally:(fun()->Sop.Session.close session)(fun()->
+        let baseline=cook session 1 97 expected in
+        List.iter(fun domains->List.iter(fun grain->Sop.Session.clear session;
+          let observed=cook session domains grain actual in
+          check(same baseline observed)("Group Rename ordered native bytes/cause "^keywords^
+            "\nNative "^describe baseline^"\nLisp "^describe observed);
+          check(same baseline(cook session domains grain walked))"Group Rename strict/reference bytes/cause")
+          [1;97;4096])[1;4;8]))group_rename_cases;
+    check(before=geometry_bytes geometry)"Group Rename input mutation")
+    [points 0;points 1;grid();base;raw;points 32769];
+  let input=Lisp_sop.snapshot base in
+  let actual=node ~reference:false input key "" and expected=native input key [] in
+  List.iter(fun raw->let apply node=match N.apply_parameters node["rules",P.Text_value raw]with
+      |Error message->Error message|Ok _->Ok() in
+    check(apply actual=apply expected && Result.is_error(apply actual))"Group Rename encoded constructor refusal")
+    ["point";"point\twrong\\q";"point\twrong\\";
+      table[["BADé猫\"";"*";"*";"union"]];table[["point";"*";"*";"BADé猫\""]];
+      table[["point";"old";"target";"error"];["BADé猫\"";"old";"new";"skip"]]];
+  List.iter(fun value->let apply node=match N.apply_parameters node["rules",value]with
+      |Error message->Error message|Ok _->Ok() in
+    check(apply actual=apply expected && Result.is_error(apply actual))"Group Rename wrong parameter refusal")
+    [P.Bool_value true;P.Int_value 17;P.Float_value nan;P.Float_value infinity];
+  let native_catalog=Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version
+    (factory key::factories input input)|>flow_ok
+  and catalog=Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version
+    (factories input input)|>flow_ok in
+  List.iter(fun expression->let forms=Flow.Syntax.parse(Printf.sprintf
+      "(workspace invalid (graph g :context sop (sop/group_rename %s)))"expression)|>flow_ok in
+    let errors=function None,ds->List.filter_map(fun(d:Flow.Diagnostic.t)->if d.severity=Error then Some d.code else None)ds
+      |_->fail "Group Rename wrong input accepted" in
+    let expected=errors(Flow.Workspace.check ~ops:Flow_sop.Operators.all native_catalog forms)
+    and actual=errors(Flow_sop.Catalog.check_workspace ~sources ~ops:Flow_sop.Operators.all catalog forms) in
+    check(actual=expected && List.mem "E_TYPE" actual)"Group Rename wrong input error code")
+    ["17";"(image/noise :width 1 :height 1)"];
+  List.iter(fun rows->let value=P.Text_value(table rows) in
+    check(Result.is_ok(N.apply_parameters actual["rules",value])
+      && Result.is_ok(N.apply_parameters expected["rules",value]))
+      "Group Rename glob failure must remain a cook refusal")
+    [[["point";"[";"new";"union"]];[["edge";"\\";"new";"error"]]];
+  let changes=["rules",P.Text_value(table[[" ANY ";"old";"target";" UNION "]])] in
+  let edited=fst(N.apply_parameters actual changes|>get_string_ok)
+  and oracle=fst(N.apply_parameters expected changes|>get_string_ok) in
+  check(N.parameter_fields edited=N.parameter_fields oracle && N.parameter_key edited=N.parameter_key oracle)
+    "Group Rename canonical edit schema/key";
+  let session=Sop.Session.create ~max_entries:32 ~max_payload_bytes:64_000_000|>get_string_ok in
+  Fun.protect ~finally:(fun()->Sop.Session.close session)(fun()->
+    ignore(cook session 1 97 actual);let before=Sop.Session.stats session in
+    let observed=cook session 1 97 edited in let after=Sop.Session.stats session in
+    check(after.misses=before.misses+1 && same observed(cook session 1 97 oracle))
+      "Group Rename one public edit miss and native bytes";
+    (match observed with Error _->assert false|Ok geometry->
+      check(Group.ordered_elements(Option.get(Geometry.find_group ~owner:Point "target" geometry))=Some[|2;4;1;3|])
+        "Group Rename union uses destination-first explicit order");
+    let before=Sop.Session.stats session in ignore(cook session 1 97 edited);let after=Sop.Session.stats session in
+    check(after.misses=before.misses && after.hits>before.hits)"Group Rename warm hit";
+    List.iter(fun label->let relabeled=N.relabel label edited in
+      check(N.id relabeled=N.id edited && N.parameter_key relabeled=N.parameter_key edited
+        && same observed(cook session 1 97 relabeled))"Group Rename relabel identity/cook") ["Renamed";"é猫"]);
+  print_endline "Group Rename all owner/policy/ordered union/edge/raw/error/schema/cache/domain proof"
+
+let group_rename_projection () =
+  metadata_projection "group_rename"
+    ["rules",P.Text_value(table[[" POINTS ";"old_points";"target";" UNION "]])]
+
 let delete_attributes_projection () =
   let module S=Flow.Syntax in
   let module Projection=Flow_graph.Projection in
@@ -538,6 +650,51 @@ let rename_attributes_benchmark () =
       and time,bytes=cold_sample ~batch:1000 ~domains actual in
       Printf.printf "rename_attributes points=1000000 quads=998001 attributes=12 mode=%s domains=%d grain=4096 cold_sessions=1000 native=%.9f lisp=%.9f ratio=%.3f native_bytes=%.0f lisp_bytes=%.0f\n%!"
         label domains native_time time(time/.native_time)native_bytes bytes)[1;4])configs
+
+let group_rename_benchmark () =
+  let geometry=Plane_generators.grid ~connectivity:Grid_quads ~columns:999 ~rows:999 ~size:8.()|>get_ok in
+  check(Geometry.point_count geometry=1_000_000)"Group Rename million-point quad grid";
+  let geometry=List.fold_left(fun geometry(owner,count)->
+    List.fold_left(fun geometry(name,phase)->Geometry.with_group
+      (Group.init ~owner ~name count(fun i->i mod 3=phase))geometry|>get_string_ok)
+      geometry ["old_a",0;"old_b",1;"target",2])geometry
+    [Group.Point,Geometry.point_count geometry;Vertex,Geometry.vertex_count geometry;Primitive,Geometry.primitive_count geometry] in
+  let geometry=List.fold_left(fun geometry(owner,count)->
+    List.fold_left(fun geometry(name,phase)->let length=max 0 ((count+2-phase)/3) in
+      let order=Array.init length(fun i->phase+3*(length-1-i)) in
+      Geometry.with_group(Group.ordered ~owner ~name ~length:count order|>get_string_ok)geometry|>get_string_ok)
+      geometry ["ordered_a",0;"ordered_target",2])geometry
+    [Group.Point,Geometry.point_count geometry;Vertex,Geometry.vertex_count geometry;Primitive,Geometry.primitive_count geometry] in
+  let topology=Geometry.topology geometry in let index=Topology_index.create topology in
+  let geometry=List.fold_left(fun geometry(name,phase)->Geometry.with_edge_group
+    (Edge_group.init ~topology ~index ~name(fun i->i mod 3=phase))geometry|>get_string_ok)
+    geometry ["old_a",0;"old_b",1;"target",2] in
+  let input=Lisp_sop.snapshot geometry in
+  let configs=["default",[];"missing",[["any";"missing";"new";"skip"]];
+    "same",[["any";"old_*";"old_*";"union"]]]@
+    List.concat_map(fun owner->List.map(fun policy->owner^"_"^policy,[[owner;"old_a";"target";policy]])
+      ["skip";"error";"overwrite";"union"])["point";"vertex";"primitive";"edge";"any"]@
+    List.map(fun owner->owner^"_wildcard",[[owner;"old_*";"new_*";"skip"]])
+      ["point";"vertex";"primitive";"edge";"any"]@
+    ["successive",[["any";"old_*";"mid_*";"skip"];["any";"mid_*";"new_*";"overwrite"]];
+     "union_chain",[["any";"old_a";"target";"union"];["any";"old_b";"target";"union"]]]@
+    List.map(fun owner->owner^"_ordered_union",[[owner;"ordered_a";"ordered_target";"union"]])
+      ["point";"vertex";"primitive";"any"] in
+  List.iter(fun(label,rows)->let keywords,changes=rules rows in
+    let actual=node ~reference:false input "group_rename" keywords
+    and walked=node ~reference:true input "group_rename" keywords
+    and expected=native input "group_rename" changes in
+    List.iter(fun domains->let session=Sop.Session.create ~max_entries:32 ~max_payload_bytes:512_000_000|>get_string_ok in
+      Fun.protect ~finally:(fun()->Sop.Session.close session)(fun()->
+        let baseline=cook session domains 4096 expected in
+        check(same baseline(cook session domains 4096 actual) && same baseline(cook session domains 4096 walked))
+          ("Group Rename million-point native/reference preflight "^label));
+      let batch=if List.exists(function [_;pattern;replacement;"union"]->pattern<>replacement|_->false)rows
+        then 1 else 1000 in
+      let native_time,native_bytes=cold_sample ~batch ~domains expected
+      and time,bytes=cold_sample ~batch ~domains actual in
+      Printf.printf "group_rename points=1000000 quads=998001 groups=18 mode=%s domains=%d grain=4096 cold_sessions=%d native=%.9f lisp=%.9f ratio=%.3f native_bytes=%.0f lisp_bytes=%.0f\n%!"
+        label domains batch native_time time(time/.native_time)native_bytes bytes)[1;4])configs
 
 let delete_attributes_benchmark () =
   let geometry=Plane_generators.grid ~connectivity:Grid_quads ~columns:999 ~rows:999 ~size:8.()|>get_ok in
@@ -646,12 +803,14 @@ let edges ()=List.iter(fun key->edge_exact key;edge_projection key)["delete_edge
 let ()=if Array.exists((=)"--bench-edge")Sys.argv then edge_benchmark "delete_edge_group"
   else if Array.exists((=)"--bench-delete-attributes")Sys.argv then delete_attributes_benchmark()
   else if Array.exists((=)"--bench-group-delete")Sys.argv then group_delete_benchmark()
+  else if Array.exists((=)"--bench-group-rename")Sys.argv then group_rename_benchmark()
+  else if Array.exists((=)"--group-rename")Sys.argv then (group_rename_exact();group_rename_projection())
   else if Array.exists((=)"--group-delete")Sys.argv then (group_delete_exact();group_delete_projection())
   else if Array.exists((=)"--bench-rename-attributes")Sys.argv then rename_attributes_benchmark()
   else if Array.exists((=)"--rename-attributes")Sys.argv then (rename_attributes_exact();rename_attributes_projection())
   else if Array.exists((=)"--bench-rename-edge")Sys.argv then edge_benchmark "rename_edge_group"
   else if Array.exists((=)"--bench-rename-edge-batch")Sys.argv then edge_benchmark ~batch:1000 "rename_edge_group"
-  else if Array.exists((=)"--edge")Sys.argv then (delete_attributes_projection();rename_attributes_projection();group_delete_projection();edges())
+  else if Array.exists((=)"--edge")Sys.argv then (delete_attributes_projection();rename_attributes_projection();group_delete_projection();group_rename_projection();edges())
   else if Array.exists((=)"--huge")Sys.argv then large_rules 100001
   else if Array.exists((=)"--large")Sys.argv then large_rules 5001
   else(declaration_metadata();verify();edits();invalid_parameters();reference_input();delete_attributes_projection();edges())

@@ -110,6 +110,11 @@
  (action (run %{exe:test_metadata_ports.exe} --group-delete)))
 
 (rule
+ (alias group_rename_draft)
+ (deps nodes/metadata.pending)
+ (action (run %{exe:test_metadata_ports.exe} --group-rename)))
+
+(rule
  (alias metadata_ports_large)
  (deps nodes/metadata.pending)
  (action (run %{exe:test_metadata_ports.exe} --large)))

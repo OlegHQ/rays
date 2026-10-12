@@ -1,0 +1,30 @@
+(workspace group_rename_node
+(defn group_rename_owner :context value [(raw : text)]
+  (let* [token (text/lower (text/trim raw))]
+    (case token
+      "point" "point" "points" "point"
+      "vertex" "vertex" "vertices" "vertex"
+      "primitive" "primitive" "primitives" "primitive"
+      "edge" "edge" "edges" "edge" "any" "any" "*" "any"
+      :else (error "E_PARAM" (str "unknown group owner " (text/repr token))))))
+
+(defn group_rename_conflict :context value [(raw : text)]
+  (let* [token (text/lower (text/trim raw))]
+    (case token "skip" "skip" "error" "error" "overwrite" "overwrite" "union" "union"
+      :else (error "E_PARAM" (str "unknown group rename conflict " (text/repr token))))))
+
+(defn group_rename_normalize :context value [(raw : text)]
+  (text/table_encode (map (fn [(row : (list text))]
+    (if (= (count row) 4)
+      (list (group_rename_owner (nth row 0)) (nth row 1) (nth row 2)
+        (group_rename_conflict (nth row 3)))
+      (error "E_PARAM" (str "Group Rename rule needs owner, pattern, replacement, and conflict; got " (count row) " columns"))))
+    (text/table_decode raw))))
+
+(defnode sop/group_rename :label "Group Rename" :category ["Group" "Edit"]
+  [(in0 : geometry)
+   (rules : text "" :label "Rules (owner, pattern, replacement, conflict)" :kind encoded
+     :normalize group_rename_normalize)]
+  (reduce (fn [geometry row]
+    (sop/rename_group geometry (nth row 1) (nth row 2) :owner (nth row 0) :conflict (nth row 3))) in0 (text/table_decode rules)))
+)

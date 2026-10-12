@@ -3299,3 +3299,126 @@ allocation increase of 30888 B is retained; no allocation-free claim is made.
 Both 2× gates still fail. Full measured profile/caveats and before/after
 evidence are in `text-gather-validation.md`; no whole node is counted.
 Log: `/tmp/rays-text-one-lane-fill-bench.log`.
+## Group Rename whole recipe and candidate performance
+
+Focused request **78499** exited 0 including `@lib/flow_sop/group_rename_draft`.
+The draft uses the generic `sop/rename_group` operation and an ordered geometry
+reduce, without a node-specific runtime callback. Native/reference/strict
+results agree byte for byte, including error code/message/cause, over empty,
+one, real 4225-point quad grid, mixed polygon/polyline, raw nonfinite payload,
+and 32769-point inputs at domains 1/4/8 and grains 1/97/4096. Coverage includes
+Point/Vertex/Primitive/Edge/Any, all skip/error/overwrite/union policies,
+destination-first explicit union order, wildcard and successive snapshots,
+escaped UTF8/backslash/space/bracket/star names, eager table/owner/conflict
+refusals, cooked malformed rewrite and first-error precedence, immutable
+inputs, native schema/identity/key, parameter edit/miss/hit/relabel behavior,
+full descriptor/card/inspector projection, direct edits and bypass.
+
+Quiet request **88378** exited 0 on the executable validated by 78499. Machine:
+Apple M1 arm64, OCaml 5.3.0, Dune dev profile; no competing builds or timings.
+Input is a real 1,000,000-point / 998,001-quad grid with 18 ordinary/edge groups,
+including explicitly reverse-ordered membership. Each of the 68 rows first
+checks large-input native/reference/strict bytes/errors. Wall time below is
+the median of three whole-cook samples at grain 4096. Predetermined metadata
+paths amortize each sample over 1000 fresh cold sessions; genuine dense union
+paths use one fresh cold session to avoid retaining 1000 multi-million-element
+ordered outputs. Session creation, node construction, preflight serialization,
+and collection before a sample are outside the timer. Allocations are
+`Gc.allocated_bytes` on the initial domain, not whole-process domain-4 totals.
+All original measured rows are retained; the unchanged 2x gate passes all 68,
+with the worst row `edge_skip` domain 1 at 1.856x. Raw output:
+`/tmp/rays-group-rename-bench-before.log`.
+
+| Mode | Domains | Cold sessions/sample | Native us | Lisp us | Ratio | Native bytes/cook | Lisp bytes/cook |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| default | 1 | 1000 | 5.903 | 7.954 | 1.347 | 16056 | 22192 |
+| default | 4 | 1000 | 7.150 | 9.726 | 1.360 | 16288 | 22424 |
+| missing | 1 | 1000 | 8.001 | 10.593 | 1.324 | 25672 | 35832 |
+| missing | 4 | 1000 | 7.688 | 10.660 | 1.387 | 25904 | 36064 |
+| same | 1 | 1000 | 12.138 | 14.740 | 1.214 | 32960 | 43136 |
+| same | 4 | 1000 | 10.919 | 14.484 | 1.326 | 33192 | 43368 |
+| point_skip | 1 | 1000 | 9.137 | 10.470 | 1.146 | 22512 | 32688 |
+| point_skip | 4 | 1000 | 7.622 | 10.858 | 1.425 | 22744 | 32920 |
+| point_error | 1 | 1000 | 7.923 | 7.818 | 0.987 | 19336 | 27112 |
+| point_error | 4 | 1000 | 7.299 | 9.935 | 1.361 | 19568 | 27344 |
+| point_overwrite | 1 | 1000 | 10.438 | 11.632 | 1.114 | 26624 | 36720 |
+| point_overwrite | 4 | 1000 | 9.496 | 12.891 | 1.357 | 26856 | 36952 |
+| point_union | 1 | 1 | 414.133 | 450.134 | 1.087 | 152192 | 162272 |
+| point_union | 4 | 1 | 238.895 | 169.039 | 0.708 | 160264 | 168608 |
+| vertex_skip | 1 | 1000 | 8.748 | 11.029 | 1.261 | 22512 | 32688 |
+| vertex_skip | 4 | 1000 | 10.256 | 12.162 | 1.186 | 22744 | 32920 |
+| vertex_error | 1 | 1000 | 7.125 | 8.774 | 1.231 | 19336 | 27120 |
+| vertex_error | 4 | 1000 | 7.296 | 8.486 | 1.163 | 19568 | 27352 |
+| vertex_overwrite | 1 | 1000 | 9.797 | 11.663 | 1.190 | 26624 | 36736 |
+| vertex_overwrite | 4 | 1000 | 9.054 | 11.610 | 1.282 | 26856 | 36968 |
+| vertex_union | 1 | 1 | 1539.946 | 1613.140 | 1.048 | 526192 | 536280 |
+| vertex_union | 4 | 1 | 694.036 | 556.946 | 0.802 | 555120 | 559488 |
+| primitive_skip | 1 | 1000 | 9.835 | 11.436 | 1.163 | 22528 | 32712 |
+| primitive_skip | 4 | 1000 | 9.517 | 10.954 | 1.151 | 22760 | 32944 |
+| primitive_error | 1 | 1000 | 6.679 | 8.427 | 1.262 | 19528 | 27320 |
+| primitive_error | 4 | 1000 | 6.636 | 9.280 | 1.398 | 19760 | 27552 |
+| primitive_overwrite | 1 | 1000 | 12.405 | 18.149 | 1.463 | 26640 | 36752 |
+| primitive_overwrite | 4 | 1000 | 10.481 | 11.993 | 1.144 | 26872 | 36984 |
+| primitive_union | 1 | 1 | 437.021 | 454.903 | 1.041 | 151952 | 162048 |
+| primitive_union | 4 | 1 | 189.066 | 190.020 | 1.005 | 159784 | 170544 |
+| edge_skip | 1 | 1000 | 7.595 | 14.095 | 1.856 | 21936 | 32112 |
+| edge_skip | 4 | 1000 | 7.938 | 10.736 | 1.352 | 22168 | 32344 |
+| edge_error | 1 | 1000 | 6.559 | 7.977 | 1.216 | 19336 | 27112 |
+| edge_error | 4 | 1000 | 6.404 | 8.933 | 1.395 | 19568 | 27344 |
+| edge_overwrite | 1 | 1000 | 10.182 | 12.028 | 1.181 | 26088 | 36200 |
+| edge_overwrite | 4 | 1000 | 10.829 | 12.871 | 1.189 | 26320 | 36432 |
+| edge_union | 1 | 1 | 875.950 | 771.046 | 0.880 | 276344 | 286448 |
+| edge_union | 4 | 1 | 320.911 | 368.118 | 1.147 | 289488 | 302552 |
+| any_skip | 1 | 1000 | 12.747 | 10.796 | 0.847 | 27056 | 37232 |
+| any_skip | 4 | 1000 | 8.969 | 10.894 | 1.215 | 27288 | 37464 |
+| any_error | 1 | 1000 | 7.209 | 8.147 | 1.130 | 19336 | 27112 |
+| any_error | 4 | 1000 | 7.082 | 8.059 | 1.138 | 19568 | 27344 |
+| any_overwrite | 1 | 1000 | 11.218 | 12.717 | 1.134 | 30192 | 40016 |
+| any_overwrite | 4 | 1000 | 10.848 | 13.815 | 1.274 | 30424 | 40248 |
+| any_union | 1 | 1 | 3103.018 | 2983.093 | 0.961 | 1030536 | 1040352 |
+| any_union | 4 | 1 | 1069.069 | 1205.206 | 1.127 | 1082656 | 1095808 |
+| point_wildcard | 1 | 1000 | 10.255 | 13.181 | 1.285 | 27776 | 37952 |
+| point_wildcard | 4 | 1000 | 10.473 | 13.644 | 1.303 | 28008 | 38184 |
+| vertex_wildcard | 1 | 1000 | 11.447 | 12.362 | 1.080 | 27776 | 37952 |
+| vertex_wildcard | 4 | 1000 | 12.339 | 16.651 | 1.349 | 28008 | 38184 |
+| primitive_wildcard | 1 | 1000 | 11.397 | 12.099 | 1.062 | 27792 | 37976 |
+| primitive_wildcard | 4 | 1000 | 11.598 | 14.214 | 1.226 | 28024 | 38208 |
+| edge_wildcard | 1 | 1000 | 10.272 | 13.237 | 1.289 | 27104 | 37280 |
+| edge_wildcard | 4 | 1000 | 10.367 | 12.642 | 1.219 | 27336 | 37512 |
+| any_wildcard | 1 | 1000 | 12.375 | 15.732 | 1.271 | 34352 | 44512 |
+| any_wildcard | 4 | 1000 | 12.754 | 15.008 | 1.177 | 34584 | 44744 |
+| successive | 1 | 1000 | 16.050 | 21.640 | 1.348 | 48112 | 71312 |
+| successive | 4 | 1000 | 16.890 | 22.783 | 1.349 | 48344 | 71544 |
+| union_chain | 1 | 1 | 6095.171 | 6241.083 | 1.024 | 2039208 | 2059280 |
+| union_chain | 4 | 1 | 2242.088 | 2723.932 | 1.215 | 2122528 | 2190376 |
+| point_ordered_union | 1 | 1 | 4645.109 | 4638.910 | 0.999 | 5612312 | 5622440 |
+| point_ordered_union | 4 | 1 | 4546.881 | 4131.079 | 0.909 | 5619624 | 5630608 |
+| vertex_ordered_union | 1 | 1 | 17199.039 | 17543.077 | 1.020 | 22317664 | 22327808 |
+| vertex_ordered_union | 4 | 1 | 16810.179 | 16901.016 | 1.005 | 22360472 | 22361200 |
+| primitive_ordered_union | 1 | 1 | 4547.834 | 4504.919 | 0.991 | 5601152 | 5611296 |
+| primitive_ordered_union | 4 | 1 | 4360.914 | 4332.066 | 0.993 | 5608024 | 5615040 |
+| any_ordered_union | 1 | 1 | 26432.991 | 26714.087 | 1.011 | 33478024 | 33487952 |
+| any_ordered_union | 4 | 1 | 25874.853 | 24825.096 | 0.959 | 33528112 | 33528712 |
+
+
+Production integration now uses `nodes/group_rename.rays`, with unique helper
+names and the original native header; rewrite errors remain at cook time.
+Its native catalog registration and pending declaration were removed. Focused
+request 7842 passed the complete SOP recipe, Flow_sop, candidate projection
+and dependency checks; its only difference was the reviewed catalog manifest.
+The manifest digest is `aaa406af3e1f7aed181887624251eda1`, preserving the node
+key, operation, category, label, required slot, field schema/default and output.
+
+Native integration request 28274 passed the whole-node recipes (including
+Rename Attributes, Group Delete and Group Rename), native/editor/GPU rendering,
+workspace, catalog, public API and dependency checks. Its only failure was the
+expected CLI catalog hash; the observed hash
+`ce0b4c3fc10c5efdacd72afc7ed84886e560c092974c7f69ed518e7627c6ffde`
+was recorded in `tools/lisp/test/ml.t`. Request 23005 then exited 0 for the same
+full alias set, reusing successful unchanged checks. Logs are
+`/tmp/rays-group-rename-native-integration.log` and
+`/tmp/rays-group-rename-native-integration2.log`. No render fixtures or public
+API changed. Group Rename is whole port **12/128 (9.375%)**; 116 remain.
+B.12 stays open until Swap Attributes completes. The earlier unexplained
+Rename Attributes failure remains recorded under Group Delete for phase review;
+this integration passed with the mismatch diagnostics enabled.

@@ -587,6 +587,55 @@ let group_delete () =
     ~extra_geometries:[extra] ~cases ~initial_changes:[]
     ~edit:["rules",P.Text_value(encoded[["points";"alternating"]])] ()
 
+let group_rename () =
+  let geometry=List.fold_left(fun geometry(owner,count)->
+    let array value=Array.make count value in
+    let float_csr=Packed.Float_array.create_owned ~offsets:(Array.init(count+1)(fun i->i*2))
+      ~values:(Array.make(count*2)(-0.))|>get_string_ok
+    and int_csr=Packed.Int_array.create_owned ~offsets:(Array.init(count+1)(fun i->i*2))
+      ~values:(Array.make(count*2)max_int)|>get_string_ok in
+    List.fold_left(fun geometry(name,storage)->Geometry.with_attribute
+      (Attribute.create_owned ~owner ~name storage|>get_string_ok)geometry|>get_string_ok)geometry
+      ["old_float",Attribute.Float(array(-0.));"old_int",Int(array max_int);
+       "old_vec2",Float2(Packed.Float2.of_owned ~x:(array(-0.))~y:(array 2.)|>get_string_ok);
+       "old_vec3",Float3(Packed.Float3.of_owned ~x:(array 1.)~y:(array(-0.))~z:(array 3.)|>get_string_ok);
+       "old_vec4",Float4(Packed.Float4.of_owned ~x:(array(-0.))~y:(array 2.)~z:(array 3.)~w:(array 4.)|>get_string_ok);
+       "old_text",Text(array "猫\t😀");"old_float_array",Float_array float_csr;"old_int_array",Int_array int_csr])
+    (mixed())[Attribute.Point,6;Vertex,7;Primitive,2;Detail,1] in
+  let extra=List.fold_left(fun geometry(owner,count,source,target)->
+    Geometry.with_group(Group.ordered ~owner ~name:"old" ~length:count source|>get_string_ok)geometry|>get_string_ok
+    |>fun geometry->Geometry.with_group(Group.ordered ~owner ~name:"target" ~length:count target|>get_string_ok)geometry|>get_string_ok)
+    geometry [Group.Point,6,[|4;1;3|],[|2;4|];Vertex,7,[|6;0|],[|0;4|];Primitive,2,[|1|],[|0|]] in
+  let topology=Geometry.topology extra in let index=Topology_index.create topology in
+  let extra=List.fold_left(fun geometry(name,selected)->Geometry.with_edge_group
+    (Edge_group.init ~topology ~index ~name selected)geometry|>get_string_ok)
+    extra ["old",(fun i->i<2);"target",(fun i->i=1||i=2)] in
+  let extra=List.fold_left(fun geometry name->Geometry.with_group
+    (Group.ordered ~owner:Point ~name ~length:6[|4;1|]|>get_string_ok)geometry|>get_string_ok)
+    extra ["é猫";"a-b";"back\\slash";"a b";"[x]";"*"] in
+  let positions=Packed.Float3.Private.view(Geometry.positions extra) in
+  let x=Array.copy positions.x in x.(0)<-nan;x.(1)<-infinity;x.(2)<-neg_infinity;
+  let raw=Geometry.with_positions(Packed.Float3.of_owned ~x ~y:(Array.copy positions.y)
+    ~z:(Array.copy positions.z)|>get_string_ok)extra|>get_string_ok in
+  let raw=Geometry.with_attribute(Attribute.create_owned ~owner:Point ~name:"raw_float"
+    (Float[|nan;infinity;neg_infinity;-0.;0.;1.|])|>get_string_ok)raw|>get_string_ok in
+  let rows=[]::List.concat_map(fun owner->List.concat_map(fun policy->
+    List.map(fun(pattern,replacement)->[[owner;pattern;replacement;policy]])
+      ["old","target";"old","old";"missing","new";"old","\\ ";
+       "old*","new*";"[","new";"\\","new";"*","new";
+       "alternating","renamed";"corners","renamed";"polygon","renamed";"selected_edges","renamed"])
+    ["skip";"error";"overwrite";"union"])["point";"vertex";"primitive";"edge";" ANY ";"*"]@
+    [[["any";"old";"target";"union"];["any";"target";"renamed";"overwrite"]];
+     [["point";"old";"target";"error"];["edge";"[";"new";"skip"]];
+     [["edge";"[";"new";"skip"];["point";"old";"target";"error"]]]@
+    List.map(fun pattern->[["point";pattern;"renamed";"skip"]])
+      ["é猫";"a-b";"back\\\\slash";"a\\ b";"\\[x\\]";"\\*"] in
+  let cases=List.map(fun rows->let encoded=Param.String_table.encode rows in
+    ":rules "^Flow.Lisp.flat(Flow.Syntax.make(Str encoded)),["rules",P.Text_value encoded])rows in
+  metadata_port ~key:"group_rename" ~native_factory:Sop.Nodes.Group_rename.factory ~cases
+    ~extra_geometries:[extra;raw] ~initial_changes:[]
+    ~edit:["rules",P.Text_value(Param.String_table.encode[[" POINTS ";"alternating";"selected";" UNION "]])] ()
+
 let ()=if Array.exists ((=) "--bench") Sys.argv then benchmark ()
   else if Array.exists ((=) "--rename-attributes") Sys.argv then rename_attributes ()
-  else (noise_displace ();set_float ();set_int ();set_vector ();set_orient ();set_transform ();delete_edge_group ();rename_edge_group ();delete_attributes ();rename_attributes ();group_delete ())
+  else (noise_displace ();set_float ();set_int ();set_vector ();set_orient ();set_transform ();delete_edge_group ();rename_edge_group ();delete_attributes ();rename_attributes ();group_delete ();group_rename ())

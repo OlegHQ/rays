@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "2420a90dc3d2ca7e3240d62d51bfc657")
+  (digest "aaa406af3e1f7aed181887624251eda1")
   (kinds
     (kind "sop/box"
       (key "box")
@@ -2131,17 +2131,6 @@
         (field "conflict" "Conflict" (folder) (choice "Skip" "Error" "Overwrite" "Union") (choice "Overwrite") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/group_rename"
-      (key "group_rename")
-      (aliases)
-      (operation "group_rename")
-      (label "Group Rename")
-      (category "Group" "Edit")
-      (slots (slot "in0" required))
-      (fields
-        (field "rules" "Rules (owner, pattern, replacement, conflict)" (folder) (text) (text "") (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/group_copy"
       (key "group_copy")
       (aliases)
@@ -3382,6 +3371,18 @@
       (fields
         (field "rules" "Rules (owner, pattern)" (folder) (text) (text "") (primary false) (vec3))
         (field "delete_unused" "Delete unused groups" (folder) (bool) (bool false) (primary false) (vec3)))
+      (outputs (output "geo" geometry))
+      (body lisp)
+      (calls))
+    (kind "sop/group_rename"
+      (key "group_rename")
+      (aliases)
+      (operation "group_rename")
+      (label "Group Rename")
+      (category "Group" "Edit")
+      (slots (slot "in0" required))
+      (fields
+        (field "rules" "Rules (owner, pattern, replacement, conflict)" (folder) (text) (text "") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (body lisp)
       (calls))
