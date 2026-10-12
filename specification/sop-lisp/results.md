@@ -1385,3 +1385,42 @@ cold sessions, still fails the one-domain 2× port gate. Quiet log
 This run includes the separately checked prepared-body reuse. Four-domain
 allocations record the initial domain only. Source range arrays still
 materialize; Set Transform remains pending and no gate is relaxed.
+
+### Checked implicit integer ranges
+
+The typed Packed runner consumes canonical integer `array/range` sources as
+zero-based index views. Existing captured residual aliases are unwrapped;
+count expressions execute in source order and use the existing shared
+`Op.Private.array_count` validation. Other sources still materialize normally.
+The general integer block loader, constant scaling and Cartesian row
+projection consume these views; skipped, guarded and Product indices keep
+their original semantics. No new value type, instruction or node callback
+was introduced. The reviewed checked-length API snapshot is `d16c5f3c`;
+its post-promotion API confirmation exited 0.
+
+Focused request 89458 exited 0 for `@lib/flow_ir/runtest`
+`@lib/flow_sop/runtest` and the setter executable. New exact reference/native
+and 1/4/8-domain cases cover captured/changing counts, empty ranges,
+Cartesian and guarded indices, skipped rows, negative and over-limit counts.
+Existing mixed borrowed columns, sinks, producer errors, ordered folds and
+state rollback checks remain green. This run also includes the separate
+explicit-FMA helper wave and Transform's 16-field gesture/refusal extension.
+Log: `/tmp/rays-int-range-view-focused.log`.
+
+Quiet same-machine/fixture/median-three benchmarks exited 0. Apple M1,
+OCaml 5.3.0, one million rows, grain 4096, fresh cold sessions for the
+whole-node cook. Logs: `/tmp/rays-int-range-scale-bench.log` and
+`/tmp/rays-transform-int-range-bench.log`.
+
+| Program | Domains | Native seconds | Lisp/Packed seconds | Ratio | Native allocated bytes | Lisp/Packed allocated bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Int scale 16 | 1 | 0.003299 | 0.002475 | 0.750 | 8,000,120 | 8,008,888 |
+| Int scale 16 | 4 | 0.003239 | 0.001001 | 0.309 | 8,000,120 | 8,060,200 |
+| Set Transform | 1 | 0.015546 | 0.017142 | 1.103 | 136,007,824 | 136,042,464 |
+| Set Transform | 4 | 0.014676 | 0.009766 | 0.665 | 136,013,080 | 136,141,560 |
+
+Both whole-node ratios pass the unchanged 2× gate. Removing two intermediate
+range arrays eliminates approximately 16 MB from the real cook compared to
+the preceding table. Four-domain allocations record the initial domain only.
+This is compiler evidence; Set Transform stays pending until its production
+switch, manifest/CLI and final native gates pass.

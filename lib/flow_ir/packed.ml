@@ -205,15 +205,32 @@ let borrowed_count width columns =
     V.fail "E_ARRAY_COUNT" "Borrowed components need the same element count.";
   count
 
+let rec integer_range residual (term : W.term) = match term.node with
+  | W.Ref_binding(name,[]) ->
+      (match List.assoc_opt name (E.Private.residual_view residual).bindings with
+       | Some(E.Residual nested) -> integer_range nested (E.Private.residual_view nested).term
+       | _ -> None)
+  | W.Op {op="array/range";args;skip=[]} when term.ty=Ty.Array Ty.Int ->
+      (match List.assoc_opt "type" args,List.assoc_opt "count" args with
+       | Some {node=(W.Text "int" | Lit(Param.Text_value "int"));_},Some count -> Some(residual,count)
+       | _ -> None)
+  | _ -> None
+
 let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~seed t ~live =
   let borrowed=Array.make (Array.length t.sources) None in
+  let ranges=Array.make (Array.length t.sources) None in
   let inputs=Array.mapi (fun i (r,term)->
     borrowed.(i)<-(match column_source,term.W.ty with
       |Some source,Ty.Array (Ty.Float|Vec2|Vec3|Vec4)->get(source r term)
       |_->None);
-    if borrowed.(i)=None then evaluate r term else E.No_geo) t.sources in
-  let lengths=Array.mapi(fun i value->match borrowed.(i)with
-    |None->V.array_length value|Some columns->borrowed_count t.widths.(i) columns)inputs in
+    if borrowed.(i)<>None then E.No_geo else match integer_range r term with
+    | Some(r,count) ->
+        ranges.(i)<-Some(Flow.Op.Private.array_count ~limit:Sys.max_array_length
+          "array/range" (evaluate r count)); E.No_geo
+    | None -> evaluate r term) t.sources in
+  let lengths=Array.mapi(fun i value->match ranges.(i),borrowed.(i)with
+    |Some count,_->count|None,None->V.array_length value
+    |None,Some columns->borrowed_count t.widths.(i) columns)inputs in
   let count=if inputs=[||] then 0 else if t.iteration=Product && Array.exists ((=)0) lengths then 0 else
     Array.fold_left (fun n length->match t.iteration with Zip->min n length | Product->
       if length<>0 && n>max_int/length then V.fail "E_ARRAY_RANGE" "Kernel iteration count exceeds native bounds.";
@@ -304,13 +321,15 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
         | Raise(_,code,message,cause)->if first<last then V.raise_diagnostic(Flow.Diagnostic.error ?cause ~code message)
         | Int_const n->Array.fill integer (at+first) (last-first) n
         | Const x->if first<last then Array.fill floats (at+first) (last-first) (finite x)
-        | Int_input i when contiguous->(match inputs.(i) with
-            |E.Int_array data->Array.blit data (start+first) integer (at+first) (last-first)
-            |value->for j=first to last-1 do integer.(at+j)<-(match V.array_get value (start+j) with
+        | Int_input i when contiguous->(match ranges.(i),inputs.(i) with
+            |Some _,_->for j=first to last-1 do integer.(at+j)<-start+j done
+            |None,E.Int_array data->Array.blit data (start+first) integer (at+first) (last-first)
+            |None,value->for j=first to last-1 do integer.(at+j)<-(match V.array_get value (start+j) with
                 |E.Int n->n|_->V.fail "E_ARRAY_TYPE" "Kernel input changed its packed element type.") done)
-        | Int_input i->for j=first to last-1 do integer.(at+j)<-(match inputs.(i)with
-            |E.Int_array data->data.(source j i)
-            |value->(match V.array_get value (source j i)with E.Int n->n
+        | Int_input i->for j=first to last-1 do integer.(at+j)<-(match ranges.(i),inputs.(i)with
+            |Some _,_->source j i
+            |None,E.Int_array data->data.(source j i)
+            |None,value->(match V.array_get value (source j i)with E.Int n->n
               |_->V.fail "E_ARRAY_TYPE" "Kernel input changed its packed element type.")) done
         | Input(i,width,component)->
             let load data = for j=first to last-1 do
@@ -413,24 +432,26 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
         if t.result<>Collect then initialized:=true
       done
     done in
-  (* A Cartesian projection repeats one checked row. The unused outer input
-     must be concrete integers, so removing its loads cannot hide a type or
-     finite-value error. All other instruction programs use the block loop. *)
+  (* A Cartesian projection repeats one checked row. Its unused outer input
+     is concrete integers or a checked range; removing those loads cannot hide
+     a type or finite-value error. Other programs use the block loop. *)
   let repeated_row = match t.iteration,t.result,skip,inputs,t.code,t.outputs with
-    | Product,Collect,[||],[|E.Int_array outer;E.Float_array row|],
+    | Product,Collect,[||],[|outer;E.Float_array row|],
         [|Int_input 0;Input(1,1,0)|],[|[|1|]|]
-    | Product,Collect,[||],[|E.Int_array outer;E.Float_array row|],
-        [|Input(1,1,0);Int_input 0|],[|[|0|]|] -> Some(outer,row)
+    | Product,Collect,[||],[|outer;E.Float_array row|],
+        [|Input(1,1,0);Int_input 0|],[|[|0|]|]
+        when (match ranges.(0),outer with Some _,_|None,E.Int_array _->true|_->false) -> Some(lengths.(0),row)
     | _ -> None in
   (* Exact integer scaling needs one pass and no temporary register banks. *)
   let scaled_column=match t.iteration,t.result,skip,inputs,t.code,t.outputs,outputs with
-    |Zip,Collect,[||],[|E.Int_array input|],
+    |Zip,Collect,[||],[|input|],
        ([|Int_input 0;Int_const factor;Int_binary(Imul,0,1)|]
        |[|Int_const factor;Int_input 0;Int_binary(Imul,0,1)|]),
-       [|[|2|]|],[|E.Int_array output|]->Some(input,factor,output)
+       [|[|2|]|],[|E.Int_array output|]
+       when (match ranges.(0),input with Some _,_|None,E.Int_array _->true|_->false)->Some(input,factor,output)
     |_->None in
   (match repeated_row with
-  | Some(outer,row) ->
+  | Some(outer_count,row) ->
       if count>0 then begin
         Array.iter(fun x->if not(Float.is_finite x) then
           V.fail "E_NONFINITE" "packed produced a nonfinite value.")row;
@@ -439,13 +460,15 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
           |None,E.Float_array data->Some data
           |_->assert false in
         Option.iter(fun data->Rays_math.Parallel.for_ ~chunk_size:4096
-          ~start:0 ~finish:(Array.length outer-1)
+          ~start:0 ~finish:(outer_count-1)
           (fun i->Array.blit row 0 data (i*Array.length row) (Array.length row)))output
       end
   | None ->
   (match scaled_column with
-  |Some(input,factor,output)->Rays_math.Parallel.for_ ~chunk_size:4096 ~start:0 ~finish:(count-1)
+  |Some(E.Int_array input,factor,output)->Rays_math.Parallel.for_ ~chunk_size:4096 ~start:0 ~finish:(count-1)
       (fun i->output.(i)<-input.(i)*factor)
+  |Some(_,factor,output)->Rays_math.Parallel.for_ ~chunk_size:4096 ~start:0 ~finish:(count-1)
+      (fun i->output.(i)<-i*factor)
   |None->if t.result=Collect && Array.for_all concrete t.uniforms && count>=4096 then
       Rays_math.Parallel.for_ ~chunk_size:1 ~start:0 ~finish:(chunks-1) chunk
     else for i=0 to chunks-1 do chunk i done));

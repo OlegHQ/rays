@@ -172,6 +172,23 @@ let () =
 let () =
   let trace = !I.Packed.Private.trace in
   I.Packed.Private.trace := ignore;
+  List.iter(fun body->let packed=Test_program.compile ~fusion:false body in
+    List.iter(fun time->let live=Frame_input.at_time time in
+      List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+        assert(same(I.Packed.force ~strict:true packed ~live)(I.Packed.reference packed ~live))))[1;4;8])
+      [0.;1.;2.])
+    ["(map (fn [x] (int/add x (int t))) (array/range (int/add 32769 (int t)) :type int))";
+     "(let* [n (int/add 32769 (int t)) xs (array/range n :type int)] (map (fn [x] (int/sub x (int t))) xs))";
+     "(for [x (array/range (int/add 1025 (int t)) :type int) y (array/range 3 :type int)] (int/add (int/mul x 3) y))";
+     "(map (fn [x] (if (< x 2) (int/sub 0 x) (int/add x 7))) (array/range (int t) :type int))";
+     "(map (fn [x] (int/add x 1)) (array/range (int/add -1 (int t)) :type int))";
+     Printf.sprintf "(map (fn [x] (int/add x 1)) (array/range (int/add %d (int t)) :type int))" (Sys.max_array_length+1)];
+  I.Packed.Private.trace:=trace;
+  print_endline "Integer range views: captured counts, Cartesian/guarded indices, empty/changing frames and range diagnostics match reference at one/four/eight domains"
+
+let () =
+  let trace = !I.Packed.Private.trace in
+  I.Packed.Private.trace := ignore;
   List.iter(fun count->List.iter(fun factor->List.iter(fun reverse->
     let operation=Printf.sprintf (if reverse then "(int/mul %d x)" else "(int/mul x %d)") factor in
     let packed=Test_program.compile(Printf.sprintf

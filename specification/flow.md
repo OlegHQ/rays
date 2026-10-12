@@ -1300,6 +1300,11 @@ arrays for parity checks and profiling. Unsupported bodies
 remain interpreted. Standalone probes default to the reference walker. The editor
 supplies exact CPU compilation for live values and packed inputs, retaining at
 most 64 prepared programs by physical residual identity across live frames.
+The typed CPU runner consumes an integer `array/range` source as checked
+zero-based indices without allocating its input array. Captured range aliases
+share this path. Its count is evaluated and validated in source order before
+dispatch; Cartesian and skipped indices retain their ordinary meaning. Other
+source expressions still run in full, including errors in unused elements.
 Replacing the recorded workspace evaluation invalidates that cache; values and
 forked state belong to each probe snapshot. The IR retains lexical provenance, cardinality origins,
 frame/event rates and exact/approximate precision. Its placement pass refuses
