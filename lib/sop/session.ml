@@ -107,8 +107,8 @@ let create ~max_entries ~max_payload_bytes =
 let insert session key entry =
   (match session.journal with None -> () | Some events ->
     session.journal <- Some (Write (None, key, entry) :: events));
-  let components = Payload.payload_components entry.output.payload in
   if session.max_entries > 0 then begin
+    let components = Payload.payload_components entry.output.payload in
     let payload = session.payload in
     List.iter (fun (id, bytes) ->
       match Hashtbl.find_opt payload.refs id with
@@ -591,9 +591,12 @@ and evaluate_uncached memo session context node =
         let geometries = Array.map snd outputs in
         let input_diagnostics = Array.fold_left (fun diagnostics (output,_) ->
           output.diagnostics::diagnostics) [] outputs in
-        let key = cache_key node context geometries in
+        (* Zero-entry sessions need only the per-cook memo. Speculative worker
+           journals still need semantic keys for ordered parent replay. *)
+        let cache_active = session.max_entries > 0 || Option.is_some session.journal in
+        let key = if cache_active then cache_key node context geometries else "" in
         let volatile = session.volatile (Node.id node) in
-        match lookup session ~volatile node key with
+        match (if cache_active then lookup session ~volatile node key else None) with
         | Some entry ->
             (match node_result (fun () -> Ok (refresh geometries input_diagnostics entry)) with
             | Error error -> Error (Diagnostic.prepend_trace (Node.trace node) error)
@@ -632,8 +635,9 @@ and evaluate_uncached memo session context node =
                   instances = cooked.instances } in
                 let entry = {output; components = []; local_diagnostics = cooked.diagnostics;
                   delta} in
-                if volatile then store_volatile session node key entry
-                else insert session key entry;
+                if cache_active then
+                  (if volatile then store_volatile session node key entry
+                   else insert session key entry);
                 Ok output
 
 let deduplicate diagnostics =

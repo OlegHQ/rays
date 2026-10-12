@@ -318,6 +318,9 @@ parameter identity. Its internal graph uses the existing `Session` cooker with
 zero retained entries and bytes: per-cook sharing, payload handling, instance
 materialization, diagnostics and cancellation retain their native semantics.
 Internal nodes do not become independent retained entries in the outer session.
+An unjournaled zero-entry session omits unused persistent cache keys and
+lookups; its per-cook memo and fact checks remain active. Speculative worker
+journals retain semantic keys for ordered parent replay.
 The cook derives read/write/topology facts from the specialized body, so mode
 and parameter changes rebuild the relevant facts. Context dependencies used by
 delegated nodes belong to the public node as well. SOP ownership remains in

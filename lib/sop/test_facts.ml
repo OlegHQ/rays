@@ -154,10 +154,10 @@ let test_write_footprint () =
     "writer did not preserve its computed attribute";
   Session.close evaluator
 
-let test_refusals () =
+let test_refusals ?(entries=64) () =
   let geometry = fixture () in
   let node transform = counted (Lisp_sop.snapshot (geometry)) (ref 0) ["P"] [] transform in
-  let evaluator = session () in
+  let evaluator = session ~entries () in
   let rejects node = match Session.cook evaluator ~context:(context 1) node with
     | Error error -> check (error.code = "E_NODE_FACTS" && List.exists
         (fun trace -> trace.Diagnostic.node_id = Node.id node) error.trace)
@@ -344,6 +344,7 @@ let () =
   test_dependencies ();
   test_write_footprint ();
   test_refusals ();
+  test_refusals ~entries:0 ();
   test_declarations ();
   test_normals_order_and_diagnostics ();
   test_payload_budget ();

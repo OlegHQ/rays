@@ -3444,3 +3444,52 @@ improved approximately 16.4%/17.7%; allocation changes were +48 B/-88 B.
 Both unchanged 2× gates remain unmet and no Text port is counted. Full protocol,
 complete rows and retained failures are in `text-gather-validation.md`;
 log `/tmp/rays-text-total-prefix-bench.log`.
+
+### Unjournaled zero-retention sessions omit persistent cache work
+
+The internal Lisp cooker retains no entries. Its ordinary, unjournaled path
+now skips persistent key construction, lookup, insertion and the insertion-only
+payload-component census. The per-cook memo, volatile predicate, miss counters,
+input/result identities, delta/fact checks, cancellation and diagnostics retain
+their existing behavior. A speculative worker with a journal still constructs
+real keys and records cache reads/writes for ordered parent replay; positive
+entry capacity with a zero byte budget also retains the existing cache path.
+The two eager domain-default calls remain unchanged, so the native denominator
+has not been optimized in this measurement.
+
+Focused launcher **1345 exited 0**:
+`opam exec -- _build/default/tools/check.exe @lib/sop/runtest @lib/flow_sop/runtest @lib/flow_sop/set_color_draft @test/dependency_gate`.
+New regressions exercise zero-retention shared-DAG memoization, ordinary and
+volatile parallel journals, reused physical IDs, packed-instance materialization,
+post-cook cancellation and selective fact refusals. Existing retained-cache,
+branch transaction, ownership, exact domain, typed error and authoritative
+whole-port oracles passed. Color's existing raw 72 cases, all-owner/storage,
+strict/reference, schema/cache and graph gestures also passed.
+Log: `/tmp/rays-zero-retention-focused.log`.
+
+Quiet **7462 exited 0** on the freshly linked executable:
+`opam exec -- ./test_set_color.exe --bench-detail-batch`
+from `_build/default/lib/flow_sop`. Apple M1, OCaml 5.3.0 dev profile; unchanged
+million-point input and grain 4096; all six predetermined Detail configurations;
+native-byte preflight; median three samples of 1000 fresh cold sessions. Session
+creation/closing and major GC are outside the timer; context construction and
+cook are inside. Allocation is measured on the initial domain. The gate uses
+unrounded `Lisp time <= 2 * Native time` and all six flags are **PASS**.
+
+| Existing Cd | Domains | Native s | Lisp s | Ratio | Native B | Lisp B | Gate |
+|---|---:|---:|---:|---:|---:|---:|---|
+| absent | 1 | 0.000004736900 | 0.000007426977 | 1.567898128 | 9960 | 21488 | PASS |
+| absent | 4 | 0.000004714966 | 0.000007430077 | 1.575849515 | 10192 | 21720 | PASS |
+| vec4 | 1 | 0.000004625797 | 0.000007817030 | 1.689877332 | 10120 | 22056 | PASS |
+| vec4 | 4 | 0.000004823208 | 0.000008419991 | 1.745724172 | 10352 | 22288 | PASS |
+| wrong float | 1 | 0.000004899979 | 0.000007411003 | 1.512456209 | 10120 | 22056 | PASS |
+| wrong float | 4 | 0.000004745007 | 0.000007992983 | 1.684504070 | 10352 | 22288 | PASS |
+
+Complete log: `/tmp/rays-set-color-zero-retention-detail-bench.log`.
+All earlier six-row failures and the rounded boundary result remain above.
+This shared optimization changes only `lib/sop/session.ml`, with regular checks
+in `test_parallel_branches.ml` and `test_facts.ml`, and the internal-session
+contract in `specification/sop.md`; no public API changed. Set Color remains
+unregistered pending its complete current-runtime performance table and whole
+production/native oracle gates. No 4-ULP thresholds, exact byte comparisons,
+render goldens or target counts changed.

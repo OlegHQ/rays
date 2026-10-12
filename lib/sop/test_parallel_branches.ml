@@ -73,6 +73,10 @@ let run () =
       (node ~inputs:[|new_a;later|] "eviction_join" geometry) in
   check (fanouts=1) "eviction regression did not exercise a parallel transaction";
   ignore(exact ~entries:0 root);
+  Atomic.set shared_calls 0;
+  ignore(exact ~entries:0 (node ~inputs:[|left;right|] "zero_shared_join" geometry));
+  check (Atomic.get shared_calls=2) "zero-retention shared prefix cooked more than once";
+  ignore(exact ~entries:0 ~prepare:(fun s -> Session.set_volatile s (fun _ -> true)) root);
   ignore(exact ~prepare:(fun s -> Session.set_volatile s (fun _ -> true)) root);
 
   let cached=session () in
@@ -84,6 +88,7 @@ let run () =
   Session.close cached;
   let reused=Node.Private.restore_id (Node.id a) b |> ok in
   ignore(exact(node ~inputs:[|a;reused|] "reused_id_join" geometry));
+  ignore(exact ~entries:0 (node ~inputs:[|a;reused|] "zero_reused_id_join" geometry));
 
   let learned=session () in
   let slow label=node ~run:(fun _ -> Unix.sleepf 0.004) label geometry in
@@ -201,6 +206,16 @@ let run () =
     "shared packed materialization changed branch bytes";
   check (counters one=counters eight) "materialization replay changed cache accounting";
   Session.close one;Session.close eight;
+  ignore(exact ~entries:0 graph);
+
+  let cancel=Context.Cancel.create () in
+  let cancelled=node ~run:(fun _ -> Context.Cancel.cancel cancel) "zero_cancel" geometry in
+  let uncached=session ~entries:0 () in
+  (match Session.cook uncached ~context:(Context.create ~domains:8 ~cancel () |> ok) cancelled with
+   | Error error -> check (error.code="cancelled") "zero-retention cook lost cancellation"
+   | Ok _ -> fail "zero-retention cancelled cook succeeded");
+  check (Session.Private.cache_keys uncached=[]) "zero-retention cancellation retained a key";
+  Session.close uncached;
 
   let common=Lisp_sop.node {|(sop/grid :columns 9 :rows 9)|} in
   let zone=Zone.node ~kind:Zone.Points ~source_attribute:"source" ~source_base:0
