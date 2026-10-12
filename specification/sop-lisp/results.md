@@ -1688,3 +1688,28 @@ median-three Set Color table (request 73970) still failed 54 grouped rows,
 with maximum ratio 8.542. Set Color stays unregistered; the port ledger remains
 six of 128. Commands and the complete table are retained in the Set Color
 section above.
+
+### Shared selected writer copies then overlays
+
+The numeric selected writer now initializes output planes with `Array.copy`
+of matching old storage, or `Array.make` of each default component, then
+patches only selected rows. Type/count/mask/finite validation still precedes
+installation. Untouched raw NaN, infinity and signed-zero bits remain exact;
+selected output planes are independent of the input. This is the shared
+writer used by direct, deferred and Core host paths, not a Set Color callback.
+
+Focused request 96907 exited 0 for `@lib/flow_sop/runtest` and
+`@lib/flow_sop/set_color_draft` (`/tmp/rays-selected-copy-overlay.log`). It
+covers numeric kinds and owners, canonical P, invalid inputs, authored source
+order, live/cancellation and domain/grain parity, including all 72 Set Color
+raw-component cases. At 65,538 Vertex elements the single-domain bounded
+whole cook took 0.001537 seconds/4,747,880 allocated bytes, versus the preceding
+bulk-constructor snapshot's 0.002053 seconds/4,747,928 bytes. Stage timings are
+single samples; the complete table is the performance gate.
+
+The complete median-three, million-point Set Color table, request 83150,
+exited 0 (`/tmp/rays-set-color-copy-overlay-bench.log`). All 54 grouped rows
+still exceed 2x, plus one Detail row: wrong-float Cd at four domains is 2.359x
+(0.000028 native/0.000066 Lisp seconds). Maximum ratio across all 78 rows is
+5.676x. Grouped allocation remains about 72 MB. Full rows are retained above;
+Set Color stays unregistered and the ledger remains six of 128 ports.

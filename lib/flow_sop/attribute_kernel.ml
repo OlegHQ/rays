@@ -402,13 +402,13 @@ let write_selected ~grain ~owner ~kind name ~values ~selection ~default geometry
       else
         let old=Option.bind(storage ~owner ~name geometry)(fun storage->
           if storage_kind storage=kind then columns storage else None) in
-        let planes=Array.init width(fun _->Array.make count 0.) in
+        let planes=match old with
+          |Some old->Array.map Array.copy old
+          |None->Array.map(Array.make count)default in
         ranges ~grain count(fun ~first ~last->
           for i=first to last-1 do
-            for c=0 to width-1 do
-              planes.(c).(i)<-if selection.(i)=1 then values.(i*width+c)
-                else match old with Some old->old.(c).(i)|None->default.(c)
-            done
+            if selection.(i)=1 then
+              for c=0 to width-1 do planes.(c).(i)<-values.(i*width+c) done
           done);
         install ~owner ~kind name planes geometry
   |_->error "E_ATTR_TYPE" "Selected writes require numeric arrays, an integer selection and a matching default value."
