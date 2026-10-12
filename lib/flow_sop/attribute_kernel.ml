@@ -428,12 +428,16 @@ let write_selected ~grain ~owner ~kind name ~values ~selection ~default geometry
       else if not(finite values && finite default) then
         error "E_NONFINITE" "Attribute values must be finite."
       else
+        let all_selected=constant_count<>None &&
+          (let i=ref 0 in
+           while !i<count && selection.(!i)=1 do incr i done;
+           !i=count) in
         let old=Option.bind(storage ~owner ~name geometry)(fun storage->
           if storage_kind storage=kind then columns storage else None) in
-        let planes=match old with
+        let planes=if all_selected then Array.map(Array.make count)values else match old with
           |Some old->Array.map Array.copy old
           |None->Array.map(Array.make count)default in
-        ranges ~grain count(fun ~first ~last->
+        if not all_selected then ranges ~grain count(fun ~first ~last->
           for i=first to last-1 do
             if selection.(i)=1 then begin
               let row=if constant_count=None then i*width else 0 in

@@ -2575,3 +2575,146 @@ retained. Log: `/tmp/rays-set-color-row-index-bench.log`.
 | Detail | 1 | vec4 | all | 4 | 0.000046 | 0.000037 | 0.803 | 10448 | 27976 |
 | Detail | 1 | wrong_float | all | 1 | 0.000022 | 0.000032 | 1.457 | 10216 | 27088 |
 | Detail | 1 | wrong_float | all | 4 | 0.000017 | 0.000025 | 1.444 | 10448 | 27976 |
+
+### Full constant selections allocate their final planes directly
+
+After existing type, cardinality, mask and finite/default validation, the
+shared selected writer checks whether a validated constant descriptor has
+an all-one selection. It allocates fresh final planes with `Array.make`,
+skipping the copied/defaulted planes and subsequent overlay. Dense and
+partial-mask values retain the existing path. The mask scan stops at its
+first zero. Empty selections retain the existing zero-count semantics; no
+API, authored evaluation order, error priority or SOP-specific callback is
+added.
+
+Focused **13423** exited 0 for `@lib/flow_sop/runtest` and
+`@lib/flow_sop/set_color_draft`. Regular descriptor tests now cover all-zero,
+all-one and alternating masks at counts 0/1/32769, domains 1/4/8, signed
+zero and tiny values, immutable input and exact dense-writer bytes. A full
+mask still rejects a NaN default, including at zero count. Existing
+all-owner/raw-NaN storage, strict/reference, invalid type/count/mask,
+cancellation, schema/cache and native card/inspector gesture tests remain
+green, including all 72 selected/unselected raw Cd cases. Log:
+`/tmp/rays-selected-constant-full-focused.log`. `git diff --check` passes.
+
+Quiet whole-node table **41252** exited 0 on the fresh **13423** binary.
+The unchanged 78 configurations use median three fresh cold Session cooks,
+one/four domains, grain 4096, a million ordinary-owner elements and one
+Detail element on a million-point input. Other agents held CPU validation
+and timings throughout. All **72 ordinary cases pass**, maximum **1.784×**
+(Point/absent/selected/one-domain). Detail/vec4/one-domain remains a failed
+microcase at 23/52 microseconds, **2.281×**; the complete table and every
+earlier failure remain retained below. The unchanged 2× gate is not claimed
+from this table. Set Color remains unregistered pending the predetermined
+all-six Detail amortized measurement and whole production gates. Log:
+`/tmp/rays-set-color-constant-full-bench.log`.
+
+| Owner | Elements | Cd | Group | Domains | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---|---:|---|---|---:|---:|---:|---:|---:|---:|
+| Point | 1000000 | absent | all | 1 | 0.001143 | 0.000625 | 0.547 | 32010016 | 32032200 |
+| Point | 1000000 | absent | all | 4 | 0.001330 | 0.000640 | 0.481 | 32015272 | 32032432 |
+| Point | 1000000 | absent | selected | 1 | 0.003747 | 0.006683 | 1.784 | 32010432 | 40030272 |
+| Point | 1000000 | absent | selected | 4 | 0.004068 | 0.004569 | 1.123 | 32010664 | 40076608 |
+| Point | 1000000 | absent | full | 1 | 0.004889 | 0.004653 | 0.952 | 32010424 | 40030208 |
+| Point | 1000000 | absent | full | 4 | 0.004794 | 0.004623 | 0.964 | 32010656 | 40030376 |
+| Point | 1000000 | absent | empty | 1 | 0.002903 | 0.003288 | 1.133 | 32010424 | 40030328 |
+| Point | 1000000 | absent | empty | 4 | 0.003066 | 0.002967 | 0.968 | 32010656 | 40105576 |
+| Point | 1000000 | vec4 | all | 1 | 0.001288 | 0.000713 | 0.554 | 32010168 | 32033504 |
+| Point | 1000000 | vec4 | all | 4 | 0.001355 | 0.000648 | 0.478 | 32010400 | 32033736 |
+| Point | 1000000 | vec4 | selected | 1 | 0.004525 | 0.007113 | 1.572 | 32010776 | 40030544 |
+| Point | 1000000 | vec4 | selected | 4 | 0.004269 | 0.005078 | 1.189 | 32011008 | 40077800 |
+| Point | 1000000 | vec4 | full | 1 | 0.005281 | 0.004638 | 0.878 | 32010768 | 40030520 |
+| Point | 1000000 | vec4 | full | 4 | 0.005345 | 0.004666 | 0.873 | 32011000 | 40030752 |
+| Point | 1000000 | vec4 | empty | 1 | 0.003641 | 0.003742 | 1.028 | 32010768 | 40030536 |
+| Point | 1000000 | vec4 | empty | 4 | 0.004048 | 0.003246 | 0.802 | 32011000 | 40083232 |
+| Point | 1000000 | wrong_float | all | 1 | 0.001216 | 0.000650 | 0.535 | 32010168 | 32033504 |
+| Point | 1000000 | wrong_float | all | 4 | 0.001350 | 0.000696 | 0.516 | 32010400 | 32033736 |
+| Point | 1000000 | wrong_float | selected | 1 | 0.003959 | 0.006869 | 1.735 | 32010600 | 40030552 |
+| Point | 1000000 | wrong_float | selected | 4 | 0.003911 | 0.004893 | 1.251 | 32010832 | 40078576 |
+| Point | 1000000 | wrong_float | full | 1 | 0.004833 | 0.004713 | 0.975 | 32010592 | 40030424 |
+| Point | 1000000 | wrong_float | full | 4 | 0.004850 | 0.004614 | 0.951 | 32010824 | 40030656 |
+| Point | 1000000 | wrong_float | empty | 1 | 0.002884 | 0.003228 | 1.119 | 32010592 | 40030608 |
+| Point | 1000000 | wrong_float | empty | 4 | 0.002871 | 0.002662 | 0.927 | 32010824 | 40083864 |
+| Vertex | 1000000 | absent | all | 1 | 0.001227 | 0.000675 | 0.550 | 32010024 | 32045944 |
+| Vertex | 1000000 | absent | all | 4 | 0.001229 | 0.000661 | 0.538 | 32010256 | 32032440 |
+| Vertex | 1000000 | absent | selected | 1 | 0.003774 | 0.006684 | 1.771 | 32010440 | 40030272 |
+| Vertex | 1000000 | absent | selected | 4 | 0.003939 | 0.004561 | 1.158 | 32010672 | 40078120 |
+| Vertex | 1000000 | absent | full | 1 | 0.004814 | 0.004609 | 0.957 | 32010424 | 40030208 |
+| Vertex | 1000000 | absent | full | 4 | 0.004812 | 0.004666 | 0.970 | 32010656 | 40030376 |
+| Vertex | 1000000 | absent | empty | 1 | 0.002856 | 0.003063 | 1.072 | 32010432 | 40030264 |
+| Vertex | 1000000 | absent | empty | 4 | 0.002847 | 0.002636 | 0.926 | 32010664 | 40083096 |
+| Vertex | 1000000 | vec4 | all | 1 | 0.001224 | 0.000751 | 0.614 | 32010176 | 32047256 |
+| Vertex | 1000000 | vec4 | all | 4 | 0.001258 | 0.000686 | 0.545 | 32010408 | 32033752 |
+| Vertex | 1000000 | vec4 | selected | 1 | 0.004703 | 0.007393 | 1.572 | 32010784 | 40030544 |
+| Vertex | 1000000 | vec4 | selected | 4 | 0.004439 | 0.005718 | 1.288 | 32011016 | 40035528 |
+| Vertex | 1000000 | vec4 | full | 1 | 0.005614 | 0.004677 | 0.833 | 32010768 | 40030520 |
+| Vertex | 1000000 | vec4 | full | 4 | 0.005356 | 0.004684 | 0.875 | 32011000 | 40030752 |
+| Vertex | 1000000 | vec4 | empty | 1 | 0.003377 | 0.003497 | 1.036 | 32010776 | 40030536 |
+| Vertex | 1000000 | vec4 | empty | 4 | 0.003382 | 0.003217 | 0.951 | 32011008 | 40082360 |
+| Vertex | 1000000 | wrong_float | all | 1 | 0.001229 | 0.000655 | 0.533 | 32010176 | 32047256 |
+| Vertex | 1000000 | wrong_float | all | 4 | 0.001202 | 0.000723 | 0.601 | 32010408 | 32033752 |
+| Vertex | 1000000 | wrong_float | selected | 1 | 0.003807 | 0.006685 | 1.756 | 32010608 | 40030552 |
+| Vertex | 1000000 | wrong_float | selected | 4 | 0.003740 | 0.004539 | 1.214 | 32010840 | 40078200 |
+| Vertex | 1000000 | wrong_float | full | 1 | 0.004999 | 0.004789 | 0.958 | 32010592 | 40030424 |
+| Vertex | 1000000 | wrong_float | full | 4 | 0.004930 | 0.004628 | 0.939 | 32010824 | 40030656 |
+| Vertex | 1000000 | wrong_float | empty | 1 | 0.002911 | 0.003240 | 1.113 | 32010600 | 40030608 |
+| Vertex | 1000000 | wrong_float | empty | 4 | 0.002949 | 0.002846 | 0.965 | 32010832 | 40083280 |
+| Primitive | 1000000 | absent | all | 1 | 0.001241 | 0.000671 | 0.541 | 32010040 | 32032240 |
+| Primitive | 1000000 | absent | all | 4 | 0.001151 | 0.000666 | 0.579 | 32010272 | 32032472 |
+| Primitive | 1000000 | absent | selected | 1 | 0.003750 | 0.006684 | 1.782 | 32010456 | 40030296 |
+| Primitive | 1000000 | absent | selected | 4 | 0.003755 | 0.004640 | 1.236 | 32010688 | 40077160 |
+| Primitive | 1000000 | absent | full | 1 | 0.005150 | 0.004764 | 0.925 | 32010432 | 40030152 |
+| Primitive | 1000000 | absent | full | 4 | 0.004870 | 0.004613 | 0.947 | 32010664 | 40030384 |
+| Primitive | 1000000 | absent | empty | 1 | 0.003189 | 0.003233 | 1.014 | 32010440 | 40030336 |
+| Primitive | 1000000 | absent | empty | 4 | 0.002932 | 0.002857 | 0.974 | 32010672 | 40090960 |
+| Primitive | 1000000 | vec4 | all | 1 | 0.001238 | 0.000670 | 0.541 | 32010200 | 32033560 |
+| Primitive | 1000000 | vec4 | all | 4 | 0.001178 | 0.000766 | 0.650 | 32010432 | 32033792 |
+| Primitive | 1000000 | vec4 | selected | 1 | 0.004391 | 0.007217 | 1.644 | 32010808 | 40030576 |
+| Primitive | 1000000 | vec4 | selected | 4 | 0.004366 | 0.005162 | 1.182 | 32011040 | 40077704 |
+| Primitive | 1000000 | vec4 | full | 1 | 0.005346 | 0.004661 | 0.872 | 32010784 | 40030600 |
+| Primitive | 1000000 | vec4 | full | 4 | 0.005320 | 0.004602 | 0.865 | 32011016 | 40030768 |
+| Primitive | 1000000 | vec4 | empty | 1 | 0.003381 | 0.003579 | 1.059 | 32010792 | 40030616 |
+| Primitive | 1000000 | vec4 | empty | 4 | 0.003407 | 0.003170 | 0.930 | 32011024 | 40083456 |
+| Primitive | 1000000 | wrong_float | all | 1 | 0.001189 | 0.000649 | 0.546 | 32010200 | 32047296 |
+| Primitive | 1000000 | wrong_float | all | 4 | 0.001153 | 0.000677 | 0.587 | 32010432 | 32033792 |
+| Primitive | 1000000 | wrong_float | selected | 1 | 0.003789 | 0.006588 | 1.739 | 32010632 | 40030584 |
+| Primitive | 1000000 | wrong_float | selected | 4 | 0.003711 | 0.004696 | 1.265 | 32010864 | 40084000 |
+| Primitive | 1000000 | wrong_float | full | 1 | 0.004938 | 0.004611 | 0.934 | 32010608 | 40030440 |
+| Primitive | 1000000 | wrong_float | full | 4 | 0.004910 | 0.004613 | 0.939 | 32010840 | 40030672 |
+| Primitive | 1000000 | wrong_float | empty | 1 | 0.002901 | 0.003301 | 1.138 | 32010616 | 40030560 |
+| Primitive | 1000000 | wrong_float | empty | 4 | 0.002912 | 0.002725 | 0.936 | 32010848 | 40085080 |
+| Detail | 1 | absent | all | 1 | 0.000023 | 0.000033 | 1.433 | 10064 | 26360 |
+| Detail | 1 | absent | all | 4 | 0.000020 | 0.000025 | 1.250 | 10296 | 27248 |
+| Detail | 1 | vec4 | all | 1 | 0.000023 | 0.000052 | 2.281 | 10216 | 27088 |
+| Detail | 1 | vec4 | all | 4 | 0.000031 | 0.000041 | 1.323 | 10448 | 27976 |
+| Detail | 1 | wrong_float | all | 1 | 0.000017 | 0.000027 | 1.569 | 10216 | 27088 |
+| Detail | 1 | wrong_float | all | 4 | 0.000021 | 0.000036 | 1.716 | 10448 | 27976 |
+
+The predetermined timer-resolution correction measures **all six** Detail
+configurations (absent/matching Float4/wrong Float Cd, one/four domains),
+not just the failed microcase. The protocol uses **1,000 fresh cold Sessions
+per sample and median three samples** on the same million-point input and
+grain 4096. Session creation/closure and major GC are outside the timer;
+context creation and cook stay inside. Each configuration first checks
+exact native geometry bytes outside timing. Fresh harness/semantic relink
+**54249** exited 0, followed by quiet **92958**, exit 0, with other agents
+holding all builds/timings. Logs: `/tmp/rays-set-color-detail-batch-focused.log`,
+`/tmp/rays-set-color-detail-batch-bench.log`. Allocation is per cold cook,
+initial-domain only. The earlier 78-row table including the 2.281× failure
+remains above.
+
+| Cd | Domains | Cold Sessions/sample | Native seconds/cook | Lisp seconds/cook | Ratio | Native bytes/cook | Lisp bytes/cook |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| absent | 1 | 1000 | 0.000004695 | 0.000008615 | 1.835 | 9960 | 26256 |
+| absent | 4 | 1000 | 0.000004652 | 0.000009084 | 1.953 | 10192 | 27144 |
+| vec4 | 1 | 1000 | 0.000004715 | 0.000008854 | 1.878 | 10120 | 26992 |
+| vec4 | 4 | 1000 | 0.000006077 | 0.000009346 | 1.538 | 10352 | 27880 |
+| wrong_float | 1 | 1000 | 0.000004654 | 0.000009373 | 2.014 | 10120 | 26992 |
+| wrong_float | 4 | 1000 | 0.000004690 | 0.000009231 | 1.968 | 10352 | 27880 |
+
+**The whole speed gate remains unmet**: Detail/wrong Float/one-domain is
+4.654/9.373 microseconds per cold cook, **2.014×**. All six predetermined
+rows and all prior failed tables are retained; no case was removed or
+repeated to obtain a passing result. Set Color remains unregistered and
+B.11 incomplete. The shared all-one constant optimization has semantic
+proof independently of this remaining whole-node speed failure.

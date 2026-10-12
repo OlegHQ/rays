@@ -1354,6 +1354,13 @@ let () =
     List.iter(fun(kind,fill)->
       let name="array/"^kind in
       let marker=Flow.Op.Private.constant_array_descriptor name ["count",E.Int count;"value",fill] in
+      if kind="float" then begin
+        let selection=E.Int_array(Array.make count 1) in
+        (match Flow_sop.Attribute_kernel.write_selected ~grain:97 ~owner:Attribute.Point ~kind "constant"
+          ~values:marker ~selection ~default:(E.Float nan)original with
+         |Error d->assert(d.code="E_NONFINITE")|Ok _->assert false);
+        assert(geometry_bytes original=before)
+      end;
       let dense=(Option.get(Flow.Op.find name Flow.Context.value)).body ~live:(Frame_input.at_time 0.)
         ~node:(fun _ _->assert false)["count",E.Int count;"value",fill] in
       let resolved=Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->None)marker|>flow_ok in
@@ -1364,12 +1371,14 @@ let () =
         let expected=Flow_sop.Attribute_kernel.write ~grain:97 ~owner:Attribute.Point ~kind "constant" dense original|>flow_ok in
         assert(geometry_bytes actual=geometry_bytes expected);
         if List.mem kind["float";"vec3";"vec4"]then begin
-          let selection=E.Int_array(Array.init count(fun i->i mod 2)) in
+          List.iter(fun select->
+          let selection=E.Int_array(Array.init count select) in
           let actual=Flow_sop.Attribute_kernel.write_constant_source ~grain:97 ~owner:Attribute.Point ~kind "constant"
             ~selection ~default:fill marker original|>flow_ok|>Option.get in
           let expected=Flow_sop.Attribute_kernel.write_selected ~grain:97 ~owner:Attribute.Point ~kind "constant"
             ~selection ~default:fill ~values:dense original|>flow_ok in
-          assert(geometry_bytes actual=geometry_bytes expected)
+          assert(geometry_bytes actual=geometry_bytes expected))
+            [(fun _->0);(fun _->1);(fun i->i mod 2)]
         end;
         assert(geometry_bytes original=before))) [1;4;8])
       ["float",E.Float(-0.);"vec3",Vec3(-0.,1.,Float.next_after 0. 1.);
