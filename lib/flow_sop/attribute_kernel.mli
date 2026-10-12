@@ -26,6 +26,14 @@ val write : grain:int -> owner:Rdk.Attribute.owner -> kind:string -> string ->
 (** Write concrete typed arrays into fresh owned storage, checking owner count,
     storage layout and finite numeric values. *)
 
+val write_selected : grain:int -> owner:Rdk.Attribute.owner -> kind:string -> string ->
+  values:Flow.Eval.value -> selection:Flow.Eval.value -> default:Flow.Eval.value ->
+  Rdk.Geometry.t -> (Rdk.Geometry.t, Flow.Diagnostic.t) result
+(** Write finite numeric replacements at a zero/one integer selection. Unselected
+    rows retain matching immutable native storage, including nonfinite bytes;
+    missing or differently typed storage uses the explicit finite default row.
+    Input and selection cardinality, types and finite computed values are checked. *)
+
 val prepare : ?profile:Flow_ir.Profile.t -> ?strict:bool -> ?approx:Flow.Workspace.Paths.t -> ?sink:Flow_ir.sink ->
   sources:int list -> Sop.Node.t list -> Flow.Eval.value ->
   (Flow_ir.Executor.program, Flow.Diagnostic.t) result
@@ -36,6 +44,7 @@ val prepare : ?profile:Flow_ir.Profile.t -> ?strict:bool -> ?approx:Flow.Workspa
 val node : ?state:Flow.Eval.state -> ?reference:bool -> ?strict:bool ->
   ?elems:(string * Flow.Eval.value) list ->
   ?profile:Flow_ir.Profile.t ->
+  ?selection:Flow.Eval.value -> ?default:Flow.Eval.value ->
   ?owner:Rdk.Attribute.owner -> ?kind:string ->
   source:string -> name:string -> values:Flow.Eval.value -> sources:int list ->
   Sop.Node.t list -> Sop.Node.t

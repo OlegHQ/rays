@@ -376,6 +376,39 @@ let write_storage ~owned_fields ~grain ~owner ~kind name values geometry =
 let write ~grain ~owner ~kind name values geometry =
   write_storage ~owned_fields:[] ~grain ~owner ~kind name values geometry
 
+let write_selected ~grain ~owner ~kind name ~values ~selection ~default geometry =
+  let width=width kind and count=owner_count geometry owner in
+  let values=match kind,values with
+    |"float",E.Float_array data|"vec2",E.Vec2_array data|"vec3",E.Vec3_array data|"vec4",E.Vec4_array data->Some data
+    |_->None in
+  let default=match kind,default with
+    |"float",E.Float x->Some[|x|]|"float",E.Int x->Some[|float x|]
+    |"vec2",E.Vec2(x,y)->Some[|x;y|]|"vec3",E.Vec3(x,y,z)->Some[|x;y;z|]
+    |"vec4",E.Vec4(x,y,z,w)->Some[|x;y;z;w|]|_->None in
+  match values,selection,default with
+  |Some values,E.Int_array selection,Some default->
+      if count>Sys.max_floatarray_length/width || Array.length values/width<>count || Array.length values mod width<>0 then
+        error "E_ATTR_COUNT" (Printf.sprintf "%s needs %d %s values; got %d."
+          name count (owner_name owner) (Array.length values/width))
+      else if Array.length selection<>count then error "E_ATTR_COUNT" "Attribute selection count differs from owner count."
+      else if Array.exists(fun value->value<>0 && value<>1)selection then
+        error "E_ATTR_SELECTION" "Attribute selection must contain only zero or one."
+      else if not(Array.for_all Float.is_finite values && Array.for_all Float.is_finite default) then
+        error "E_NONFINITE" "Attribute values must be finite."
+      else
+        let old=Option.bind(storage ~owner ~name geometry)(fun storage->
+          if storage_kind storage=kind then columns storage else None) in
+        let planes=Array.init width(fun _->Array.make count 0.) in
+        ranges ~grain count(fun ~first ~last->
+          for i=first to last-1 do
+            for c=0 to width-1 do
+              planes.(c).(i)<-if selection.(i)=1 then values.(i*width+c)
+                else match old with Some old->old.(c).(i)|None->default.(c)
+            done
+          done);
+        install ~owner ~kind name planes geometry
+  |_->error "E_ATTR_TYPE" "Selected writes require numeric arrays, an integer selection and a matching default value."
+
 (* Strict Collect regions allocate and finite-check their result arrays on every
    force. Captured arrays, host sources and other structured expressions retain
    the ordinary copied-storage boundary. *)
@@ -587,18 +620,22 @@ let write_constant ?state ?elems ~resolve ~owner ~kind ~name prepared target ~li
                      Result.map Option.some result))
              |_->Ok None)
 
-let node ?state ?(reference = false) ?(strict = false) ?elems ?profile ?(owner=A.Point) ?(kind="vec3") ~source ~name ~values ~sources inputs =
-  let program = prepare ?profile ~strict ~sources inputs values in
+let node ?state ?(reference = false) ?(strict = false) ?elems ?profile ?selection ?default ?(owner=A.Point) ?(kind="vec3") ~source ~name ~values ~sources inputs =
+  let selected=selection<>None || default<>None in
+  let data=if not selected then values else E.Record(["values",values] @
+    Option.to_list(Option.map(fun value->"selection",value)selection) @
+    Option.to_list(Option.map(fun value->"default",value)default)) in
+  let program = prepare ?profile ~strict ~sources inputs data in
   let owned_fields=if strict && not reference && List.mem kind ["float_array";"int_array"] then
     Result.fold ~ok:fresh_csr_fields ~error:(fun _->[]) program else [] in
-  let constant = if reference then None else prepare_constant ~kind values in
-  let parameters = source ^ ";" ^ owner_name owner ^ ";" ^ kind ^ ";" ^ name ^ ";" ^ Flow.Value.key_of ~residual:E.Private.residual_id values
+  let constant = if reference || selected then None else prepare_constant ~kind values in
+  let parameters = source ^ ";" ^ owner_name owner ^ ";" ^ kind ^ ";" ^ name ^ ";" ^ Flow.Value.key_of ~residual:E.Private.residual_id data
     ^ Option.fold ~none:"" ~some:(fun bindings -> Flow.Value.key_of
         ~residual:E.Private.residual_id (E.Record bindings)) elems
     ^ Option.fold ~none:"" ~some:E.state_stamp state in
   let node = N.Private.make_geometry ~label:("Write " ^ name) ~operation:"flow.with_attr" ~version:1
     ~parameters ~cook_mode:(N.Duplicate_input 0)
-    ~dependencies:(if E.frame_dependent values then
+    ~dependencies:(if E.frame_dependent data then
         Sop.Context.Dependencies.one Sop.Context.Dependencies.Input
       else Sop.Context.Dependencies.static)
     ~inputs:(Array.of_list inputs)
@@ -610,7 +647,15 @@ let node ?state ?(reference = false) ?(strict = false) ?elems ?profile ?(owner=A
         else if Sop.Context.cancelled context then error "E_CANCELLED" "Attribute kernel cancelled."
         else Result.bind program (fun program ->
           let live=Sop.Context.input context in
-          Result.bind (write_source ~geometry ~owner ~kind name values geometries.(0)) (fun borrowed ->
+          if selected then
+            Result.bind(Flow_ir.Executor.force ?state ?elems ~reference ~strict ~resolve program ~live)(function
+              |E.Record fields->(match List.assoc_opt "values" fields,List.assoc_opt "selection" fields,List.assoc_opt "default" fields with
+                |Some values,Some selection,Some default->
+                    if Sop.Context.cancelled context then error "E_CANCELLED" "Attribute kernel cancelled." else
+                    write_selected ~grain:(Sop.Context.grain context) ~owner ~kind name ~values ~selection ~default geometries.(0)
+                |_->error "E_ATTR_SELECTION" "Selected writes require both selection and default.")
+              |_->error "E_ATTR_TYPE" "Selected write data must be a record.")
+          else Result.bind (write_source ~geometry ~owner ~kind name values geometries.(0)) (fun borrowed ->
           Result.bind (match borrowed with Some _ -> Ok borrowed | None -> if reference then Ok None else
             Result.bind(write_constant ?state ?elems ~resolve ~owner ~kind ~name constant geometries.(0) ~live)
               (function Some geometry->Ok(Some geometry)|None->
@@ -624,4 +669,4 @@ let node ?state ?(reference = false) ?(strict = false) ?elems ?profile ?(owner=A
       Result.map_error (fun (d : Flow.Diagnostic.t) -> Sop.Diagnostic.error ?cause:d.cause ~code:d.code d.message)
         (Result.map (fun geometry -> N.Private.{geometry; diagnostics = []; instances = None}) result)) in
   N.Private.with_facts { (N.facts node) with elementwise = (match owner with A.Point->N.Points|Primitive->Primitives|_->None);
-    topology = N.Preserved; reads = reads values; writes = [name] } node
+    topology = N.Preserved; reads = (if selected then List.sort_uniq String.compare(name::reads data) else reads data); writes = [name] } node

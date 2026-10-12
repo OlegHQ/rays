@@ -1047,10 +1047,11 @@
         "val materialized_source : Sop.Node.t -> Sop.Node.t",
         "val write_source : geometry : ( int -> Rdk.Geometry.t option ) -> owner : Rdk.Attribute.owner -> kind : string -> string -> Flow.Eval.value -> Rdk.Geometry.t -> ( Rdk.Geometry.t option , Flow.Diagnostic.t ) result",
         "val write : grain : int -> owner : Rdk.Attribute.owner -> kind : string -> string -> Flow.Eval.value -> Rdk.Geometry.t -> ( Rdk.Geometry.t , Flow.Diagnostic.t ) result",
+        "val write_selected : grain : int -> owner : Rdk.Attribute.owner -> kind : string -> string -> values : Flow.Eval.value -> selection : Flow.Eval.value -> default : Flow.Eval.value -> Rdk.Geometry.t -> ( Rdk.Geometry.t , Flow.Diagnostic.t ) result",
         "val prepare : ? profile : Flow_ir.Profile.t -> ? strict : bool -> ? approx : Flow.Workspace.Paths.t -> ? sink : Flow_ir.sink -> sources : int list -> Sop.Node.t list -> Flow.Eval.value -> ( Flow_ir.Executor.program , Flow.Diagnostic.t ) result",
-        "val node : ? state : Flow.Eval.state -> ? reference : bool -> ? strict : bool -> ? elems : ( string * Flow.Eval.value ) list -> ? profile : Flow_ir.Profile.t -> ? owner : Rdk.Attribute.owner -> ? kind : string -> source : string -> name : string -> values : Flow.Eval.value -> sources : int list -> Sop.Node.t list -> Sop.Node.t"
+        "val node : ? state : Flow.Eval.state -> ? reference : bool -> ? strict : bool -> ? elems : ( string * Flow.Eval.value ) list -> ? profile : Flow_ir.Profile.t -> ? selection : Flow.Eval.value -> ? default : Flow.Eval.value -> ? owner : Rdk.Attribute.owner -> ? kind : string -> source : string -> name : string -> values : Flow.Eval.value -> sources : int list -> Sop.Node.t list -> Sop.Node.t"
       ],
-      "api_sha256": "0e35d0009977681864b47c8c4409484b684af98425afa874fd046852a3a784ff",
+      "api_sha256": "3564afa4cc016d4b0f57bd9ed0b048bed8bafc15d9b0a4a18ca8167edf5a7bd3",
       "excluded_legacy_symbols": [],
       "library": "flow_sop",
       "module": "Attribute_kernel",
