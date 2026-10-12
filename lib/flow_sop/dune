@@ -72,7 +72,6 @@
 (test
  (name test_setters)
  (modules test_setters)
- (deps nodes/setters.pending)
  (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop unix))
 
 (executable

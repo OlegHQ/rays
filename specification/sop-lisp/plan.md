@@ -676,7 +676,7 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 ### Completed whole-node ports
 
 Each checked node passed the full Verification recipe and has its own source
-commit. Evidence and timings are in `results.md`. The other 123 inventory
+commit. Evidence and timings are in `results.md`. The other 122 inventory
 nodes remain required; grouped phase milestones stay unchecked until every
 node in that group has passed.
 
@@ -684,4 +684,5 @@ node in that group has passed.
 - [x] `set_float` — B.11, all owners.
 - [x] `set_int` — B.11, all owners.
 - [x] `set_vector` — B.11, all owners.
-- [x] `set_orient` — B.11, native quaternion parity; B.11's other two ports remain open.
+- [x] `set_orient` — B.11, native quaternion parity.
+- [x] `set_transform` — B.11, all 16 matrix fields; Set Color remains open.

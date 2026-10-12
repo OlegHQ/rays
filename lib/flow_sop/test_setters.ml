@@ -1,13 +1,10 @@
-(* Whole setter checks for embedded ports and the remaining unregistered drafts. *)
+(* Whole setter checks for embedded ports. *)
 open Rdk
 open Rdk_test_support
 module N = Sop.Node
 module P = Param
 let checked = function Ok value -> value | Error diagnostic -> fail (Flow.Diagnostic.to_string diagnostic)
-let source = In_channel.with_open_bin "nodes/setters.pending" In_channel.input_all |> Flow.Syntax.parse |> checked
-  |> List.concat_map(fun form->match form.Flow.Syntax.node with
-    |List(_::_::children)when Flow.Syntax.head form=Some "workspace"->children|_->[form])
-let sources = (Flow_sop.Catalog.sources () |> checked) @ source
+let sources = Flow_sop.Catalog.sources () |> checked
 let keys = ["set_float";"set_int";"set_vector";"set_orient";"set_transform"]
 let native_factory = function
   |"set_float" -> Sop.Nodes.Set_float.factory |"set_int" -> Sop.Nodes.Set_int.factory
@@ -127,11 +124,16 @@ let invalid_parameters ()=
     check(N.parameter_key actual=N.parameter_key oracle)(key^": failed edit changed initial parameter key"))
     (List.concat_map(fun key->[key,["name",P.Text_value " \t\n"];key,["name",P.Text_value "P"]])
        ["set_float";"set_int";"set_vector"]
-     @["set_transform",["m30",P.Float_value(Float.next_after 1e-12 infinity)];
-       "set_transform",["m31",P.Float_value(-1e-11)];
+     @List.concat_map(fun name->List.map(fun value->"set_transform",[name,P.Float_value value])
+         [Float.next_after 1e-12 infinity;Float.next_after (-1e-12) neg_infinity]) ["m30";"m31";"m32"]
+     @["set_transform",["m33",P.Float_value(Float.next_after (1.+.1e-12) infinity)];
+       "set_transform",["m33",P.Float_value(Float.next_after (1.-.1e-12) neg_infinity)];
        "set_transform",["m32",P.Float_value 1.];
        "set_transform",["m33",P.Float_value 1.01];
-       "set_orient",["x",P.Float_value infinity]]);
+       "set_orient",["x",P.Float_value infinity]]
+     @List.concat_map(fun(field:P.field_view)->List.map(fun value->
+         "set_transform",[field.name,P.Float_value value]) [nan;infinity;neg_infinity])
+       (N.parameter_fields(native input "set_transform" [])));
   print_endline "setter draft: empty/P names, affine boundaries and nonfinite parameter errors match native atomically"
 
 let benchmark ?only () =
@@ -225,7 +227,9 @@ let projection ()=
         |P.Choice_value _->P.Choice_value "Vertex",S.Str "Vertex"
         |Text_value _->P.Text_value "edited",S.Str "edited"
         |Int_value value->P.Int_value(value+7),S.Num(string_of_int(value+7))
-        |Float_value value->P.Float_value(value+.0.25),S.Num(Printf.sprintf"%.17g"(value+.0.25))
+        |Float_value value->
+            let value=value+.(if List.mem field.name ["m30";"m31";"m32";"m33"]then 1e-13 else 0.25) in
+            P.Float_value value,S.Num(Printf.sprintf"%.17g"value)
         |Bool_value _->assert false in
       (* Inspector vector edits write the complete value, including the two
          untouched defaults, when that keyword is absent from the source. *)
@@ -247,8 +251,8 @@ let projection ()=
           (key^": graph gesture cook "^field.name))) (N.parameter_fields oracle);
     let _,bypassed=Edit.apply_checked ~checker catalog authored(Toggle_bypass{node=actual_card.path})|>checked in
     check((card catalog bypassed).bypass)(key^": bypass graph gesture"))
-    ["set_float";"set_int";"set_vector";"set_orient"];
-  print_endline"setter draft: four passing setters native card/inspector parity and every physical field direct graph gesture"
+    keys;
+  print_endline"setter draft: five setters native card/inspector parity and every physical field direct graph gesture"
 
 let ()=if Array.exists((=)"--bench-transform")Sys.argv then benchmark ~only:"set_transform"()
   else if Array.exists((=)"--bench-float")Sys.argv then benchmark ~only:"set_float"()

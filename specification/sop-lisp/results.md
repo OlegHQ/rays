@@ -1451,3 +1451,58 @@ range arrays eliminates approximately 16 MB from the real cook compared to
 the preceding table. Four-domain allocations record the initial domain only.
 This is compiler evidence; Set Transform stays pending until its production
 switch, manifest/CLI and final native gates pass.
+
+### Set Transform production port
+
+Candidate request 87291 exited 0 for the authoritative `set_transform`
+recipe with explicit pending declarations and unchanged native registration.
+The source became `nodes/set_transform.rays` together with native unregister;
+its body is unchanged. The completed five-setter draft file and its test
+loader/dependency were removed. Tests now use the actual embedded library;
+`Sop.Nodes.Set_transform.factory` remains the independent native oracle.
+Actual embedded production oracle request 2683 also exited 0.
+
+The recipe checks defaults and shear/translation, empty/single/4,225-point
+grid/mixed/32,769-point geometry, exact attribute storage/topology/groups,
+native 4-ULP geometry and exact strict/reference and 1/4/8-domain bytes at
+grains 1/97/4096. Every physical matrix field has native schema/cache keys,
+one public miss after edits and warm hits. Affine last-row edits stay valid
+at `1e-13`; both signs outside the `1e-12` tolerance and NaN/±Inf in all
+16 fields preserve native refusal diagnostics. The native graph/inspector
+and all 16 direct gestures passed executable check 93670 after build 21739.
+All production gates pass; B.11 stays unchecked while Set Color remains
+incomplete.
+
+Read-only manifest review 32749 and its scoped promotion preserve all
+16 fields, defaults, labels, ranges, Matrix row folders, slot and operation.
+Only declaration order, native facts and Lisp body/calls markers change;
+the digest is `49f47151c9ab6a78486b97f3fccfa096`. The rebuilt CLI confirms
+catalog hash `352bbc356f6f9db5251ed5a9f579f8f5c529025c90c3903ee183048994fcb771`;
+`tools/lisp/test/ml.t` changes only that generated-source expectation line.
+The shared FMA aggregate's initial expected catalog/CLI differences were
+these pending node snapshots; no math or rendered golden was refreshed.
+The settled shared foundation is `650c026c`; its final combined request
+54530 exited 0 and kept the Transform snapshots outside that commit.
+Production request 44563 exited 0 for `@lib/sop/runtest`
+`@lib/flow_sop/runtest @lib/sop_catalog/runtest`
+`@tools/api_manifest/runtest @test/dependency_gate @tools/lisp/test/runtest`.
+The actual node recipe, five-setter graph/inspector tests, catalog, CLI,
+public API and dependency checks pass together; the combined native/Lisp
+facts census checks 16 registered Preserved nodes at one/eight domains.
+Native request 55836 exited 0, including exact PNGs for 23 SOP graphs at
+one/four domains. No rendered golden changed.
+
+`opam exec -- ./test_setters.exe --bench-transform` from
+`_build/default/lib/flow_sop` exited 0 after the production switch.
+Apple M1, OCaml 5.3.0, 1,000,000 points, grain 4096, median of three
+fresh-session cold cooks, matrix shear `m01=-2` and translation `m03=4`:
+
+| Domains | Native seconds | Lisp seconds | Ratio | Native allocated bytes | Lisp allocated bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.015957 | 0.016405 | 1.028 | 136,007,824 | 136,097,008 |
+| 4 | 0.015009 | 0.009595 | 0.639 | 136,008,056 | 136,143,576 |
+
+Four-domain allocations record the initial domain only. Both ratios pass
+the unchanged 2× gate. The complete production log is
+`/tmp/rays-set-transform-production-bench.log`; earlier failing shared
+compiler measurements remain above as evidence of the optimization.

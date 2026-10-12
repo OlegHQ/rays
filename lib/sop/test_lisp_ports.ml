@@ -263,11 +263,12 @@ let benchmark () =
         (Array.length (Flow_ir.Packed.Private.view packed).code) (Unix.gettimeofday ()-.start)) !packed) [1;4]) ["normal_3d";"height_2d"]
 
 let setter_port key =
-  let all_keys=["set_float";"set_int";"set_vector";"set_orient"] in
+  let all_keys=["set_float";"set_int";"set_vector";"set_orient";"set_transform"] in
   let keys=[key] in
   let native_factory=function
     |"set_float"->Sop.Nodes.Set_float.factory |"set_int"->Sop.Nodes.Set_int.factory
     |"set_vector"->Sop.Nodes.Set_vector.factory |"set_orient"->Sop.Nodes.Set_orient.factory
+    |"set_transform"->Sop.Nodes.Set_transform.factory
     |_->assert false in
   let sources=Flow_sop.Catalog.sources() |> flow_ok in
   let authored ~reference input key keywords =
@@ -303,7 +304,8 @@ let setter_port key =
     @["set_orient",":w 0",["w",P.Float_value 0.];
       "set_orient",":x 1 :y 2 :z 3 :w -4",
         ["x",P.Float_value 1.;"y",P.Float_value 2.;"z",P.Float_value 3.;"w",P.Float_value(-4.)];
-      "set_orient",":x 1e308",["x",P.Float_value 1e308]]
+      "set_orient",":x 1e308",["x",P.Float_value 1e308];
+      "set_transform",":m01 -2 :m03 4",["m01",P.Float_value(-2.);"m03",P.Float_value 4.]]
     |>List.filter(fun(candidate,_,_)->candidate=key) in
   let grid=Plane_generators.grid ~connectivity:Grid_quads ~columns:64 ~rows:64 ~size:8.() |> get_ok |> payload in
   List.iter(fun geometry->
@@ -330,7 +332,8 @@ let setter_port key =
     List.iter(fun(field:P.field_view)->
       let value=match field.current with
         |P.Choice_value _->P.Choice_value "Vertex" |Text_value _->Text_value "edited"
-        |Int_value value->Int_value(value+7) |Float_value value->Float_value(value+.0.25)
+        |Int_value value->Int_value(value+7)
+        |Float_value value->Float_value(value+.(if List.mem field.name ["m30";"m31";"m32";"m33"]then 1e-13 else 0.25))
         |Bool_value _->assert false in
       let actual=fst(N.apply_parameters initial[field.name,value] |> get_string_ok)
       and expected=fst(N.apply_parameters oracle[field.name,value] |> get_string_ok) in
@@ -351,7 +354,11 @@ let setter_port key =
     (List.filter(fun(candidate,_)->candidate=key)
     (List.concat_map(fun key->[key,["name",P.Text_value " \t\n"];key,["name",P.Text_value "P"]])
        ["set_float";"set_int";"set_vector"]
-     @["set_orient",["x",P.Float_value infinity]]));
+     @["set_orient",["x",P.Float_value infinity]]
+     @List.concat_map(fun name->List.map(fun value->"set_transform",[name,P.Float_value value])
+         [Float.next_after 1e-12 infinity;Float.next_after (-1e-12) neg_infinity]) ["m30";"m31";"m32"]
+     @["set_transform",["m33",P.Float_value(Float.next_after (1.+.1e-12) infinity)];
+       "set_transform",["m33",P.Float_value(Float.next_after (1.-.1e-12) neg_infinity)]]));
   let initial=authored ~reference:false input key "" and expected=native input key [] in
   List.iter(fun(field:P.field_view)->match field.current with
     |P.Float_value _->List.iter(fun value->
@@ -384,5 +391,7 @@ let set_vector ()=setter_port "set_vector"
 
 let set_orient ()=setter_port "set_orient"
 
+let set_transform ()=setter_port "set_transform"
+
 let ()=if Array.exists ((=) "--bench") Sys.argv then benchmark ()
-  else (noise_displace ();set_float ();set_int ();set_vector ();set_orient ())
+  else (noise_displace ();set_float ();set_int ();set_vector ();set_orient ();set_transform ())
