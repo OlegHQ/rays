@@ -628,7 +628,11 @@ let node ?state ?(reference = false) ?(strict = false) ?elems ?profile ?selectio
   let program = prepare ?profile ~strict ~sources inputs data in
   let owned_fields=if strict && not reference && List.mem kind ["float_array";"int_array"] then
     Result.fold ~ok:fresh_csr_fields ~error:(fun _->[]) program else [] in
-  let constant = if reference || selected then None else prepare_constant ~kind values in
+  let constant = if reference then None else prepare_constant ~kind values in
+  let selected_constant = match selected,constant,selection,default with
+    |true,Some constructor,Some selection,Some default->
+        Some(constructor,prepare ~strict ~sources inputs (E.Record["selection",selection;"default",default]))
+    |_->None in
   let parameters = source ^ ";" ^ owner_name owner ^ ";" ^ kind ^ ";" ^ name ^ ";" ^ Flow.Value.key_of ~residual:E.Private.residual_id data
     ^ Option.fold ~none:"" ~some:(fun bindings -> Flow.Value.key_of
         ~residual:E.Private.residual_id (E.Record bindings)) elems
@@ -648,7 +652,23 @@ let node ?state ?(reference = false) ?(strict = false) ?elems ?profile ?selectio
         else Result.bind program (fun program ->
           let live=Sop.Context.input context in
           if selected then
-            Result.bind(Flow_ir.Executor.force ?state ?elems ~reference ~strict ~resolve program ~live)(function
+            let force program=Flow_ir.Executor.force ?state ?elems ~reference ~strict ~resolve program ~live in
+            let fields=match selected_constant with
+              |None->force program
+              |Some((op,count,value),rest)->
+                  Result.bind(force count)(fun count->
+                    Result.bind(match value with None->Ok []|Some value->Result.map(fun value->["value",value])(force value))
+                      (fun value->
+                        (* Reuse the declared constructor's count, empty-fill and
+                           finite checks before evaluating later write arguments. *)
+                        let values=try Ok(op.Flow.Op.body ~live ~node:(fun _ _->assert false) (("count",count)::value))
+                          with Flow.Value.Fail(code,message,_)->error code message
+                            |Flow.Value.Diagnostic_fail d->Error d in
+                        Result.bind values(fun values->Result.bind rest(fun rest->
+                          Result.bind(force rest)(function
+                            |E.Record fields->Ok(E.Record(("values",values)::fields))
+                            |_->error "E_ATTR_TYPE" "Selected write data must be a record."))))) in
+            Result.bind fields(function
               |E.Record fields->(match List.assoc_opt "values" fields,List.assoc_opt "selection" fields,List.assoc_opt "default" fields with
                 |Some values,Some selection,Some default->
                     if Sop.Context.cancelled context then error "E_CANCELLED" "Attribute kernel cancelled." else

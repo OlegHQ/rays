@@ -1545,6 +1545,19 @@ nonfinite values already present in native geometry. A numeric map or other
 computed array remains checked and writes owned storage; it cannot use this
 transfer path to bypass nonfinite validation.
 
+`sop/with_attr` also accepts paired `:selection` and `:default` keywords for
+Float/Vec2/Vec3/Vec4 attributes. The selection is an owner-sized integer array
+containing only zero or one; the explicit default is one finite value of the
+attribute's element type. Computed replacement arrays remain finite and match
+the owner count. Selected rows receive their replacement values. Unselected
+rows preserve matching native attribute storage exactly, including existing
+nonfinite bytes; missing or differently typed storage uses the default row.
+The writer allocates fresh output and never mutates the old storage. Invalid
+selection bits report `E_ATTR_SELECTION`; mismatched counts report
+`E_ATTR_COUNT`. Selection/default sources and frame/state captures participate
+in cooking and cache dependencies. Both keyword rows are editable on the
+ordinary attribute writer card; omitting both retains the full-write contract.
+
 Strict compiled Collect regions allocate and validate fresh result arrays.
 CSR writes can adopt those fresh offsets and values without copying them
 again. Captured arrays retain the copied-storage boundary, and CSR layout and

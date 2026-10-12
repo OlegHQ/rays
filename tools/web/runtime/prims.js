@@ -1024,13 +1024,49 @@ export function sop_attr_checked(geometry, name, owner = 'point', type = 'vec3')
   }
   return new Map([['values', values], ['valid', new PArray(1, valid)]]);
 }
-export function sop_with_attr(geometry, name, owner, type, values) {
+function installAttribute(geometry, name, owner, type, width, values) {
+  const result = new Map(geometry), copied = copyAttribute(values);
+  if (owner === 'point' && name === 'P') {
+    if (type !== 'vec3') err('E_ATTR_TYPE', width ? 'Canonical point P requires vec3 storage.'
+      : 'Geometry.with_attribute: use with_positions to replace canonical P');
+    result.set('positions', copied);
+  } else {
+    const attributes = geometry.get('attributes').slice();
+    const attribute = new Map([['owner', owner], ['name', name], ['type', type], ['values', copied]]);
+    const index = attributes.findIndex(a => a.get('owner') === owner && a.get('name') === name);
+    if (index < 0) attributes.push(attribute); else attributes[index] = attribute;
+    result.set('attributes', attributes);
+  }
+  return result;
+}
+export function sop_with_attr(geometry, name, owner, type, values, selection, defaultValue) {
   attributeArgs(name, owner, type);
   const count = owner === 'point' ? length(geometry.get('positions'))
     : owner === 'vertex' ? geometry.get('vertex_points').length
     : owner === 'primitive' ? geometry.get('primitive_offsets').length - 1 : 1;
   const integer = value => value instanceof PArray && value.width === 1 && value.data instanceof BigInt64Array;
   const width = { float: 1, vec2: 2, vec3: 3, vec4: 4 }[type];
+  if (selection !== undefined || defaultValue !== undefined) {
+    if (selection === undefined || defaultValue === undefined)
+      err('E_ATTR_SELECTION', 'Selected writes require both selection and default.');
+    const defaults = width === 1 && ['number', 'bigint'].includes(typeof defaultValue) ? [Number(defaultValue)]
+      : width > 1 && isVec(defaultValue) && defaultValue.length === width ? defaultValue : null;
+    if (!width || !(values instanceof PArray) || values.width !== width || !(values.data instanceof Float64Array)
+        || !integer(selection) || !defaults)
+      err('E_ATTR_TYPE', 'Selected writes require numeric arrays, an integer selection and a matching default value.');
+    if (values.data.length !== count * width)
+      err('E_ATTR_COUNT', `${name} needs ${count} ${owner} values; got ${Math.floor(values.data.length / width)}.`);
+    if (selection.data.length !== count) err('E_ATTR_COUNT', 'Attribute selection count differs from owner count.');
+    if (selection.data.some(x => x !== 0n && x !== 1n))
+      err('E_ATTR_SELECTION', 'Attribute selection must contain only zero or one.');
+    if (!values.data.every(Number.isFinite) || !defaults.every(Number.isFinite))
+      err('E_NONFINITE', 'Attribute values must be finite.');
+    const old = attributeStorage(geometry, name, owner), data = new Float64Array(count * width);
+    for (let i = 0; i < count; i++)
+      for (let c = 0; c < width; c++) data[i * width + c] = selection.data[i] === 1n ? values.data[i * width + c]
+        : old?.get('type') === type ? old.get('values').data[i * width + c] : defaults[c];
+    return installAttribute(geometry, name, owner, type, width, new PArray(width, data));
+  }
   if (type === 'int' && integer(values)) {
     if (values.data.length !== count) err('E_ATTR_COUNT', 'Integer attribute count differs from owner count.');
   } else if (type === 'text' && values instanceof TextArray) {
@@ -1055,19 +1091,7 @@ export function sop_with_attr(geometry, name, owner, type, values) {
       err('E_ATTR_COUNT', `${name} needs ${count} ${owner} values; got ${Math.floor(values.data.length / width)}.`);
     if (!values.data.every(Number.isFinite)) err('E_NONFINITE', 'Attribute values must be finite.');
   } else err('E_ATTR_TYPE', `sop/with_attr requires ${type} storage.`);
-  const result = new Map(geometry), copied = copyAttribute(values);
-  if (owner === 'point' && name === 'P') {
-    if (type !== 'vec3') err('E_ATTR_TYPE', width ? 'Canonical point P requires vec3 storage.'
-      : 'Geometry.with_attribute: use with_positions to replace canonical P');
-    result.set('positions', copied);
-  } else {
-    const attributes = geometry.get('attributes').slice();
-    const attribute = new Map([['owner', owner], ['name', name], ['type', type], ['values', copied]]);
-    const index = attributes.findIndex(a => a.get('owner') === owner && a.get('name') === name);
-    if (index < 0) attributes.push(attribute); else attributes[index] = attribute;
-    result.set('attributes', attributes);
-  }
-  return result;
+  return installAttribute(geometry, name, owner, type, width, values);
 }
 
 // Cooked topology host protocol; edge order is first outgoing-corner occurrence.

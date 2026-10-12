@@ -52,6 +52,28 @@ for (const [type, width] of [['float', 1], ['vec2', 2], ['vec3', 3], ['vec4', 4]
   }
 }
 
+for (const [type, width] of [['float', 1], ['vec2', 2], ['vec3', 3], ['vec4', 4]]) {
+  const data = Float64Array.from({length: width * 3}, (_, i) => i % width === 0 ? -0 : Infinity);
+  data[width - 1] = NaN;
+  const input = new Map([['positions', new PArray(3, new Float64Array(9))],
+    ['attributes', [new Map([['owner', 'point'], ['name', 'raw'], ['type', type], ['values', new PArray(width, data)]])]]]);
+  const values = new PArray(width, Float64Array.from({length: width * 3}, (_, i) => i % width === 0 ? -0 : Number.MIN_VALUE));
+  const selection = new PArray(1, BigInt64Array.from([0n, 1n, 0n]));
+  const fallback = width === 1 ? -0 : Float64Array.from({length: width}, () => -0);
+  const output = prims.sop_with_attr(input, 'raw', 'point', type, values, selection, fallback);
+  const result = output.get('attributes').find(a => a.get('name') === 'raw').get('values').data;
+  for (let i = 0; i < result.length; i++)
+    if (!Object.is(result[i], i >= width && i < 2 * width ? values.data[i] : data[i]))
+      throw new Error('sop_with_attr: exact selected or untouched bits mismatch');
+  result.fill(99);
+  if (!Object.is(data[width - 1], NaN) || !Object.is(values.data[0], -0) || selection.data[0] !== 0n)
+    throw new Error('sop_with_attr: selected write mutated inputs');
+  const missing = prims.sop_with_attr(new Map([['positions', input.get('positions')], ['attributes', []]]), 'raw', 'point', type, values, selection, fallback);
+  const fresh = missing.get('attributes')[0].get('values').data;
+  if (!Object.is(fresh[0], -0) || !Object.is(fresh[width], -0))
+    throw new Error('sop_with_attr: selected default or fill lost negative zero');
+}
+
 // ---- decoding the JSON encoding of core_fixtures.ml ----
 const decodeFloat = v => {
   if (typeof v === 'number') return v;

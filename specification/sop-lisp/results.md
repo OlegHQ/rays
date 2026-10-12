@@ -1560,3 +1560,48 @@ Log: `/tmp/rays-checked-attribute-host-contract2.log`. The preceding host-contra
 request 59880 also exited 0; request60554 adds the exact JavaScript bit checks.
 Checked arithmetic and the selected raw-byte-preserving writer are still
 required before Point Jitter or grouped Set Color can pass their whole gates.
+
+### Selected numeric attribute writer Lisp and host contract
+
+The separately reviewed API commit `b9abd271` supplies the generic immutable
+selected writer. The Lisp `sop/with_attr` now exposes paired `:selection` and
+`:default` rows for Float/Vec2/Vec3/Vec4 storage. Source discovery, frame/state
+captures and read facts cover all three write arguments. Matching untouched
+native rows retain exact bytes, including NaN payloads, infinities and signed
+zero; absent or differently typed storage uses the explicit finite default.
+Computed values remain finite checked, even when their selection bit is zero.
+This is a general write boundary, with no Set Color or Point Jitter callback.
+
+The shared regression exercises all numeric types and owners, empty and
+multi-block writes, full/empty/alternating masks, wrong/missing storage,
+invalid counts/bits/defaults, input immutability, captured foreign geometry
+masks, changing live selections/defaults, and typed graph edits. A canonical
+point-P regression replaces a NaN row while preserving untouched infinity,
+signed zero and small finite values at one/eight domains in strict/reference
+execution. Constant constructors retain their declared count, unused empty-fill
+and producer error behavior before later selection arguments are forced.
+The strict writer reuses its existing constant-constructor preparation when
+that constructor is directly visible; reference execution retains its ordinary
+path.
+
+JavaScript implements the same selected host write. The existing Core fixture
+sweep now includes selected writes over raw native nonfinite storage, matching
+and missing targets, all owner/type pairs, mask count/bit failures and
+nonfinite defaults. Additional exact-bit checks preserve negative zero,
+subnormals and untouched nonfinite rows, and verify independent outputs.
+The normative primitive census and Flow writer contract describe the keywords.
+
+Validation: shared launcher session `43289` exited 0 for
+`@lib/flow_sop/runtest @tools/lisp/test/runtest @lib/flow_web/runtest
+@tools/api_manifest/runtest @test/dependency_gate`
+(`/tmp/rays-selected-constant-second.log`). After the canonical-P regression,
+session `58380` exited 0 for `@lib/flow_sop/runtest`
+(`/tmp/rays-selected-positions-final2.log`). The Set Color draft alias, freshly
+relinked in `81739`, independently passed its 72 raw-Cd cases, metadata,
+errors, cache and graph gates.
+
+This completes a shared language boundary, not another whole-node port.
+Set Color remains unregistered: its actual grouped body still bypasses the
+visible constant-constructor shortcut and retains the large allocation in a
+fresh bounded diagnostic. Its failed full 78-row tables remain above, and
+performance tracing continues. Completion stays six of 128 target nodes.

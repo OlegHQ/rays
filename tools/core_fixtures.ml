@@ -551,6 +551,12 @@ let () =
     Result.bind(resolve(E.Source("sop/attr_checked",T.Any,args@["component",E.Text"values"]))) (fun values->
       Result.map(fun valid->E.Record["values",values;"valid",valid])
         (resolve(E.Source("sop/attr_checked",T.Array T.Int,args@["component",E.Text"valid"])))) in
+  let selected_write geometry name owner kind values selection default =
+    (op "sop/with_attr").check ["geometry",E.No_geo;"attribute",E.Text name;
+      "owner",E.Text owner;"type",E.Text kind;"values",values;"selection",selection;"default",default];
+    Result.bind(Flow_sop.Attribute_kernel.owner owner)(fun owner->
+      Result.map geometry_value(Flow_sop.Attribute_kernel.write_selected ~grain:97 ~owner ~kind name
+        ~values ~selection ~default geometry)) in
   List.iter(fun(owner,count)->List.iter(fun kind->
     let floats width=Array.init(count*width)(fun i->if i mod 2=0 then -0. else float i+.0.25) in
     let values=match kind with
@@ -607,7 +613,22 @@ let () =
         let bad_geometry=Rdk.Geometry.with_attribute
           (Rdk.Attribute.create_owned ~owner:owner_enum ~name:"typed" storage|>Result.get_ok)geometry|>Result.get_ok in
         add_host "sop/attr_checked" [geometry_value bad_geometry;E.Text"typed";E.Text owner;E.Text kind]
-          (host_result(fun()->checked_read bad_geometry "typed" owner kind))) [nan;infinity;neg_infinity];
+          (host_result(fun()->checked_read bad_geometry "typed" owner kind));
+        let replacements=Array.init(count*width)(fun i->if i mod width=0 then -0. else float(i mod width)+.0.25) in
+        let replacements=match width with 1->E.Float_array replacements|2->Vec2_array replacements|3->Vec3_array replacements|_->Vec4_array replacements in
+        let default=match width with 1->E.Float 0.75|2->Vec2(0.75,1.75)|3->Vec3(0.75,1.75,2.75)|_->Vec4(0.75,1.75,2.75,3.75) in
+        List.iter(fun geo->List.iter(fun bits->
+          let mask=E.Int_array(Array.init count bits) in
+          add_host "sop/with_attr" [geometry_value geo;E.Text"typed";E.Text owner;E.Text kind;replacements;mask;default]
+            (host_result(fun()->selected_write geo "typed" owner kind replacements mask default)))
+          [(fun _->0);(fun _->1);(fun i->i mod 2)]) [bad_geometry;geometry];
+        List.iter(fun mask->add_host "sop/with_attr"
+          [geometry_value bad_geometry;E.Text"typed";E.Text owner;E.Text kind;replacements;mask;default]
+          (host_result(fun()->selected_write bad_geometry "typed" owner kind replacements mask default)))
+          [E.Int_array(Array.make(count+1)0);E.Int_array(Array.make count 2)];
+        let nonfinite=match width with 1->E.Float nan|2->Vec2(nan,1.)|3->Vec3(nan,1.,1.)|_->Vec4(nan,1.,1.,1.) in
+        add_host "sop/with_attr" [geometry_value bad_geometry;E.Text"typed";E.Text owner;E.Text kind;replacements;E.Int_array(Array.make count 0);nonfinite]
+          (host_result(fun()->selected_write bad_geometry "typed" owner kind replacements(E.Int_array(Array.make count 0))nonfinite))) [nan;infinity;neg_infinity];
     List.iter(fun name->List.iter(fun requested->
       add_host "sop/has_attr" ([geometry_value typed;E.Text name;E.Text owner]
         @(if requested="" then [] else [E.Text requested]))

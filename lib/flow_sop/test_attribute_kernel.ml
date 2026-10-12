@@ -38,6 +38,138 @@ let stages program = Array.fold_left (fun count (node : Flow_ir.node) -> match n
   | _ -> count) 0 (Flow_ir.Executor.graph program).nodes
 
 let () =
+  let pack width planes=match width with
+    |1->Attribute.Float planes.(0)
+    |2->Float2(Packed.Float2.of_owned ~x:planes.(0) ~y:planes.(1)|>get_string_ok)
+    |3->Float3(Packed.Float3.Private.of_owned_exn ~x:planes.(0) ~y:planes.(1) ~z:planes.(2))
+    |_->Float4(Packed.Float4.of_owned ~x:planes.(0) ~y:planes.(1) ~z:planes.(2) ~w:planes.(3)|>get_string_ok) in
+  let array width values=match width with 1->E.Float_array values|2->Vec2_array values|3->Vec3_array values|_->Vec4_array values
+  and row width values=match width with 1->E.Float values.(0)|2->Vec2(values.(0),values.(1))
+    |3->Vec3(values.(0),values.(1),values.(2))|_->Vec4(values.(0),values.(1),values.(2),values.(3)) in
+  List.iter(fun count->
+    let base=Line_geometry.points(Array.init count(fun i->float i,0.,0.)) in
+    let base=if count=6 then Geometry.create ~positions:(Geometry.positions base)
+      ~topology:(Topology.polygons_owned ~point_count:6 ~vertex_points:[|0;1;2;3;4;5|] ~primitive_offsets:[|0;3;6|]|>get_string_ok)()
+        |>get_string_ok else base in
+    let owners=if count=6 then [Attribute.Point,"point",6;Vertex,"vertex",6;Primitive,"primitive",2;Detail,"detail",1]
+      else [Attribute.Point,"point",count] in
+    List.iter(fun(owner,owner_name,count)->List.iter(fun(kind,width)->
+      let replacements=Array.init(count*width)(fun i->if i mod width=0 then -0. else float(i mod width)+.0.25)
+      and defaults=Array.init width(fun i->float i+.0.75) in
+      let values=array width replacements and default=row width defaults in
+      let old=Array.init width(fun c->Array.init count(fun i->
+        if c=width-1 then [|Int64.float_of_bits 0x7ff8000000001234L;infinity;neg_infinity;-0.|].(i mod 4)
+        else float i+.float c)) in
+      List.iter(fun mode->
+        let original=if mode="absent" then base else Geometry.with_attribute
+          (Attribute.create_owned ~owner ~name:"selected" (if mode="wrong" then Int(Array.make count 7) else pack width old)|>get_string_ok)base|>get_string_ok in
+        let before=geometry_bytes original in
+        List.iter(fun select->
+          let mask=Array.init count select in
+          let expected=Array.init width(fun c->Array.init count(fun i->
+            if mask.(i)=1 then replacements.(i*width+c) else if mode="matching" then old.(c).(i) else defaults.(c))) in
+          let expected=Geometry.with_attribute(Attribute.create_owned ~owner ~name:"selected"(pack width expected)|>get_string_ok)original|>get_string_ok in
+          List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+            let output=Flow_sop.Attribute_kernel.write_selected ~grain:97 ~owner ~kind "selected"
+              ~values ~selection:(E.Int_array mask) ~default original|>flow_ok in
+            assert(geometry_bytes output=geometry_bytes expected);
+            assert(geometry_bytes original=before))) [1;8];
+          if count<=6 then begin
+            let literal=if width=1 then string_of_float defaults.(0) else
+              "["^String.concat " "(Array.to_list(Array.map string_of_float defaults))^"]" in
+            let values_literal=if width=1 then "-0.0" else "["^String.concat " "(List.init width(fun c->if c=0 then "-0.0" else string_of_float(float c+.0.25)))^"]" in
+            let mask_literal="(array/int "^string_of_int count^" "^string_of_int(select 0)^")" in
+            if count=0 || Array.for_all((=)(select 0))mask then
+              List.iter(fun wrapped->List.iter(fun reference->
+                let replacement=if kind="vec2" then Printf.sprintf
+                  "(exact (map (fn [(i : int)] %s) (array/int %d 0)))" values_literal count
+                  else Printf.sprintf "(array/%s %d %s)" kind count values_literal in
+                let expression=Printf.sprintf "(sop/with_attr geo :selected %s :owner %s :type %s :selection %s :default %s)"
+                  replacement owner_name kind mask_literal literal in
+                let text=if wrapped then "(workspace selected_writer (defnode sop/selected_writer [(geo : geometry)] "^expression^
+                  ") (graph g :context sop (sop/selected_writer (sop/ext_source))))"
+                  else "(workspace selected_writer (graph g :context sop (let* [geo (sop/ext_source)] "^expression^")))" in
+                let input=Lisp_sop.snapshot original in
+                let factory=Edit.factory ~key:"ext_source" ~label:"Source" ~category:["Test"] ~arity:0(fun _->input) in
+                let node=L.workspace ~reference ~factories:(factory::factories)(Flow.Syntax.parse text|>flow_ok)|>flow_ok|>compiled in
+                let session=session() in
+                Fun.protect ~finally:(fun()->Session.close session)(fun()->
+                  assert(geometry_bytes(cook session ~domains:1 ~time:0. node|>geometry)=geometry_bytes expected))) [false;true]) [false;true]
+          end)[(fun _->0);(fun _->1);(fun i->i mod 2)];
+        let invalid selection default values code=
+          (match Flow_sop.Attribute_kernel.write_selected ~grain:97 ~owner ~kind "selected" ~selection ~default ~values original with
+           |Error d->assert(d.code=code)|Ok _->assert false);
+          assert(geometry_bytes original=before) in
+        invalid(E.Int_array(Array.make(count+1)0))default values "E_ATTR_COUNT";
+        invalid(E.Int_array(Array.make count 0))(E.Text "wrong")values "E_ATTR_TYPE";
+        if count>0 then begin
+          invalid(E.Int_array(Array.make count 2))default values "E_ATTR_SELECTION";
+          let bad=Array.copy replacements in bad.(0)<-nan;
+          invalid(E.Int_array(Array.make count 0))default(array width bad)"E_NONFINITE"
+        end)["absent";"wrong";"matching"])
+      ["float",1;"vec2",2;"vec3",3;"vec4",4])owners)[0;6;32769];
+  print_endline "Selected attribute writes: all numeric owners, native nonfinite untouched bytes, explicit defaults, strict/reference and one/eight-domain ownership/refusals pass"
+
+let () =
+  let original=Line_geometry.points[|0.,0.,0.;1.,0.,0.;2.,0.,0.;3.,0.,0.;4.,0.,0.;5.,0.,0.|] in
+  let group=Group.init ~owner:Group.Point ~name:"chosen" 6(fun i->i mod 2=0) in
+  let mask_geometry=Geometry.with_group group original|>get_string_ok in
+  let text={|(workspace live_selected
+    (defnode sop/live_selected [(geo : geometry) (mask_geo : geometry)]
+      (sop/with_attr geo :live (array/float (sop/count geo :points) 1.5) :type float
+        :selection (exact (map (fn [(x : int)] (if (> t 0) x (int/sub 1 x)))
+          (sop/group mask_geo :name "chosen"))) :default (+ 0.25 (* t 0.125))))
+    (graph g :context sop (sop/live_selected (sop/ext_input) (sop/ext_mask))))|} in
+  let input=Lisp_sop.snapshot original and mask=Lisp_sop.snapshot mask_geometry in
+  let factories=Edit.factory ~key:"ext_input" ~label:"Input" ~category:["Test"] ~arity:0(fun _->input)::
+    Edit.factory ~key:"ext_mask" ~label:"Mask" ~category:["Test"] ~arity:0(fun _->mask)::factories in
+  List.iter(fun reference->
+    let node=L.workspace ~reference ~factories(Flow.Syntax.parse text|>flow_ok)|>flow_ok|>compiled in
+    let session=session() in
+    Fun.protect ~finally:(fun()->Session.close session)(fun()->List.iter(fun time->List.iter(fun domains->
+      let expected=Geometry.with_attribute(Attribute.create_owned ~owner:Point ~name:"live"
+        (Float(Array.init 6(fun i->if (i mod 2=0)=(time>0.) then 1.5 else 0.25+.time*.0.125)))|>get_string_ok)original|>get_string_ok in
+      assert(geometry_bytes(cook session ~domains ~time node|>geometry)=geometry_bytes expected)) [1;8]) [-1.;1.;2.;-1.])) [false;true];
+  let checker=Flow_sop.Catalog.check_workspace ~ops:Flow_sop.Operators.all in
+  let forms=Flow.Syntax.parse{|(workspace selected_projection (graph g :context sop
+    (let* [geo (sop/line) mask (array/int 2 1)
+      result (sop/with_attr :selection mask :default -0.0 geo :weight (array/float 2 1.0) :type float)] result)))|}|>flow_ok in
+  let workspace=match checker catalog forms with Some w,[]->w|_,ds->failwith(String.concat "; "(List.map Flow.Diagnostic.to_string ds)) in
+  let card workspace=Flow_graph.Projection.find(Flow_graph.Projection.of_graph catalog workspace "g")["g";"result"]|>Option.get in
+  assert((card workspace).ty=Flow.Ty.geometry);
+  List.iter(fun(key,value)->ignore(Flow_graph.Flow_edit.apply_checked ~checker catalog forms
+    (Set_arg{node=["g";"result"];key;sub=[];value=Flow.Syntax.make value})|>flow_ok))
+    [Kw "default",Flow.Syntax.Num "0.5";Kw "selection",Sym "mask"];
+  List.iter(fun suffix->
+    let source="(workspace bad_selection (graph g :context sop (sop/with_attr (sop/line) :weight (array/float 2 1.0) :type float "^suffix^")))" in
+    let _,ds=checker catalog(Flow.Syntax.parse source|>flow_ok) in
+    assert(List.exists(fun(d:Flow.Diagnostic.t)->d.code="E_ATTR_SELECTION" || d.code="E_ATTR_TYPE")ds))
+    [":selection (array/int 2 1)";":default 1.0";":selection (array/int 2 1) :default \"wrong\""];
+  print_endline "Selected writer: captured geometry masks, changing live defaults/selection and paired typed graph gestures pass"
+
+let () =
+  let original=Line_geometry.points[|Int64.float_of_bits 0x7ff8000000001234L,0.,0.;
+    infinity,neg_infinity,-0.;-0.,0.,Float.min_float|] in
+  let original=Geometry.with_group(Group.init ~owner:Point ~name:"chosen" 3((=)0))original|>get_string_ok in
+  let before=geometry_bytes original and positions=Packed.Float3.Private.view(Geometry.positions original) in
+  let x=Array.copy positions.x and y=Array.copy positions.y and z=Array.copy positions.z in
+  x.(0)<- -0.;y.(0)<-0.5;z.(0)<-Float.min_float;
+  let expected=Geometry.with_positions(Packed.Float3.Private.of_owned_exn ~x ~y ~z)original|>get_string_ok|>geometry_bytes in
+  let input=Lisp_sop.snapshot original in
+  let factories=Edit.factory ~key:"ext_raw_positions" ~label:"Raw positions" ~category:["Test"] ~arity:0(fun _->input)::factories in
+  let forms=Flow.Syntax.parse{|(workspace selected_positions
+    (defnode sop/selected_positions [(geo : geometry)]
+      (sop/with_attr geo :P (array/vec3 (sop/count geo :points) [-0.0 0.5 2.2250738585072014e-308])
+        :selection (sop/group geo :name "chosen") :default [0.0 0.0 0.0]))
+    (graph g :context sop (sop/selected_positions (sop/ext_raw_positions))))|}|>flow_ok in
+  List.iter(fun reference->let node=L.workspace ~reference ~factories forms|>flow_ok|>compiled in
+    let session=session() in
+    Fun.protect ~finally:(fun()->Session.close session)(fun()->List.iter(fun domains->
+      assert(geometry_bytes(cook session ~domains ~time:0. node|>geometry)=expected);
+      assert(geometry_bytes original=before);Session.clear session)[1;8]))[false;true];
+  print_endline "Selected canonical P: overwritten NaN and untouched infinity/signed-zero bytes match native positions without mutating input"
+
+let () =
   let evaluate body =
     let forms=Flow.Syntax.parse ("(workspace checked_attribute (graph g :context sop [(geo : geometry nil)] "^
       "(let* [tested "^body^"] geo)))") |>flow_ok in
@@ -245,14 +377,18 @@ let () =
     let before=geometry_bytes original and input=Lisp_sop.snapshot original in
     List.iter(fun(kind,body)->
       let forms=Flow.Syntax.parse(Printf.sprintf
-        "(workspace fills (graph g :context sop [(geo : geometry nil)] (let* [data %s] geo)))" body) |>flow_ok in
+        "(workspace fills (graph g :context sop [(geo : geometry nil)] (let* [data %s mask (array/int (sop/count geo :points) (int (/ 1 (- t 2))))] geo)))" body) |>flow_ok in
       let checked=match Flow.Workspace.check ~ops:Flow_sop.Operators.all Flow.Check.{version=1;kinds=[]}forms with
         |Some checked,[]->checked|_,diagnostics->fail(String.concat "; "(List.map Flow.Diagnostic.to_string diagnostics)) in
       let evaluation=E.static ~record:true ~inputs:["g",["geo",E.Deferred(Flow.Ty.geometry,7)]]checked |>flow_ok in
       let values=List.assoc["g";"data"]evaluation.records |>List.hd |>snd in
-      let node reference=Flow_sop.Attribute_kernel.node ~strict:true ~reference ~kind
+      let mask=List.assoc["g";"mask"]evaluation.records |>List.hd |>snd in
+      let default=match kind with "vec3"->E.Vec3(-0.,0.,0.)|"vec4"->E.Vec4(-0.,0.,0.,0.)|_->E.Float(-0.) in
+      let node selected reference=Flow_sop.Attribute_kernel.node ~strict:true ~reference ~kind
+        ?selection:(if selected then Some mask else None) ?default:(if selected then Some default else None)
         ~source:"constant-fill-proof" ~name:"fill" ~values ~sources:[7][input] in
-      let direct=node false and reference=node true in
+      List.iter(fun selected->
+      let direct=node selected false and reference=node selected true in
       List.iter(fun time->List.iter(fun domains->let session=session() in
         Fun.protect ~finally:(fun()->Session.close session)(fun()->
           let actual=cook session ~domains ~time direct and expected=cook session ~domains ~time reference in
@@ -260,7 +396,8 @@ let () =
             |Ok a,Ok b->geometry_bytes(Result.get_ok(Sop.Payload.geometry a.payload))=
               geometry_bytes(Result.get_ok(Sop.Payload.geometry b.payload))
             |Error a,Error b->a.code=b.code && a.message=b.message|_->false)
-            "Constant constructor direct/reference result or error differs")) [1;8]) [0.;2.;3.5];
+            "Constant constructor direct/reference result or error differs")) [1;8]) [0.;2.;3.5])
+        (if List.mem kind ["float";"vec3";"vec4"] then [false;true] else [false]);
       check(before=geometry_bytes original) "Constant constructor mutated input")
       (List.concat_map(fun(kind,body)->[kind,body;kind,"(let* [filled "^body^"] (exact filled))"])
       ["float","(array/float (sop/count geo :points) (sqrt (- 1 t)))";
@@ -1118,7 +1255,7 @@ let () =
     | Some w, [] -> w | _ -> assert false in
   let pane = Flow_graph.Projection.of_graph catalog ws "g" in
   let result = Flow_graph.Projection.find pane ["g";"result"] |> Option.get in
-  assert (List.map (fun (r : Flow_graph.Projection.row) -> r.label) result.rows = ["geometry";"attribute";"values";"owner";"type"]);
+  assert (List.map (fun (r : Flow_graph.Projection.row) -> r.label) result.rows = ["geometry";"attribute";"values";"owner";"type";"selection";"default"]);
   let fn = List.find (fun (node : Flow_graph.Projection.node) ->
     Option.fold ~none:false ~some:(fun (zone : Flow_graph.Projection.zone) -> zone.kind = Fn) node.zone)
       pane.nodes in

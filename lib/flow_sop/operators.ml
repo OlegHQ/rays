@@ -52,13 +52,27 @@ let attr_checked : Flow.Op.t = {
 }
 let with_attr : Flow.Op.t = {
   attr with name = "sop/with_attr";
-  signature = {attr.signature with pos = attr.signature.pos @ ["values", Flow.Ty.Any]};
+  signature = {attr.signature with pos = attr.signature.pos @ ["values", Flow.Ty.Any];
+    kw=attr.signature.kw@["selection",Flow.Ty.Array Flow.Ty.Int;"default",Flow.Ty.Any]};
   out = (fun _ -> Flow.Ty.geometry); out_args=Some(fun args->
     let ty=attribute_type args in
+    let present name=List.exists(fun(key,_,_)->key=name)args in
+    if present "selection"<>present "default" then
+      Flow.Value.fail "E_ATTR_SELECTION" "Selected writes require both selection and default.";
+    if present "selection" then begin
+      ignore(checked_attribute_type args);
+      let expected=Option.get(Flow.Ty.elem ty) in
+      Option.iter(fun(_,actual,_)->if not(Flow.Ty.fits actual expected)then
+        Flow.Value.fail "E_ATTR_TYPE" ("Attribute default requires "^Flow.Ty.to_string expected^"."))
+        (List.find_opt(fun(name,_,_)->name="default")args)
+    end;
     Option.iter(fun(_,actual,_)->if not(Flow.Ty.fits actual ty)then
       Flow.Value.fail "E_ATTR_TYPE" ("Attribute values require "^Flow.Ty.to_string ty^"."))
       (List.find_opt(fun(name,_,_)->name="values")args);
     Flow.Ty.geometry); shape = Flow.Op.Scalar;
+  check=(fun args->validate_args args;
+    if List.mem_assoc "selection" args<>List.mem_assoc "default" args then
+      Flow.Value.fail "E_ATTR_SELECTION" "Selected writes require both selection and default.");
   body = (fun ~live:_ ~node args -> node "sop/with_attr" args);
 }
 let has_attr : Flow.Op.t = {

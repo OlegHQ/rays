@@ -257,13 +257,22 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
                     |Record fields->(match List.assoc_opt "offsets" fields,List.assoc_opt "values" fields with
                         |Some(E.Int_array _),Some(E.Float_array _|Int_array _)->true|_->false)
                     |_->false in
-                  Result.bind(Attribute_kernel.write_source ~geometry ~owner ~kind name values target)(fun result->
-                  let result=match result with Some _->Ok result|None when materialized->
+                  let selection=List.assoc_opt "selection" args and default=List.assoc_opt "default" args in
+                  Result.bind(if selection<>None || default<>None then Ok None else
+                    Attribute_kernel.write_source ~geometry ~owner ~kind name values target)(fun result->
+                  let selected_materialized=match selection,default with
+                    |None,None->true|Some(E.Int_array _),Some(E.Float _|Int _|Vec2 _|Vec3 _|Vec4 _)->true|_->false in
+                  let result=match result with Some _->Ok result|None when materialized && selected_materialized->
                     (* The former checked-call input boundary validated before
                        the writer checked destination cardinality. *)
                     Flow.Value.validate values;
-                    Result.map Option.some(Attribute_kernel.write ~grain:(Sop.Context.grain context)
-                      ~owner ~kind name values target)
+                    Result.map Option.some(match selection,default with
+                      |None,None->Attribute_kernel.write ~grain:(Sop.Context.grain context) ~owner ~kind name values target
+                      |Some selection,Some default->
+                          Flow.Value.validate selection;Flow.Value.validate default;
+                          Attribute_kernel.write_selected ~grain:(Sop.Context.grain context) ~owner ~kind name
+                            ~values ~selection ~default target
+                      |_->error "E_ATTR_SELECTION" "Selected writes require both selection and default.")
                     |None->Ok None in
                   Result.bind result(fun result->if Sop.Context.cancelled context then
                       error "E_CANCELLED" "Attribute kernel cancelled." else
@@ -322,11 +331,13 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
             (Result.map(fun(output:Sop.Session.output)->Sop.Node.Private.{payload=output.payload;
               diagnostics=output.diagnostics;instances=output.instances})result))) in
       Sop.Node.Private.with_facts {(Sop.Node.facts node) with reads=["*"];writes=["*"]} node in
-    let attribute_node ?state ?elems ?(owner=Rdk.Attribute.Point) ?(kind="vec3") ~name ~values ~sources inputs =
+    let attribute_node ?state ?elems ?selection ?default ?(owner=Rdk.Attribute.Point) ?(kind="vec3") ~name ~values ~sources inputs =
       if strict_body then ignore (ok (Attribute_kernel.prepare ~strict:true ~sources inputs values));
-      Attribute_kernel.node ?state ?elems ~strict:strict_body ~reference ~profile ~owner ~kind
+      Attribute_kernel.node ?state ?elems ?selection ?default ~strict:strict_body ~reference ~profile ~owner ~kind
         ~source:(Lazy.force kernel_source) ~name ~values ~sources inputs in
     let group_data args = E.Record(List.filter(fun(name,_)->name="values"||name="order")args) in
+    let attribute_data args=if not(List.mem_assoc "selection" args || List.mem_assoc "default" args) then List.assoc "values" args
+      else E.Record(List.filter(fun(name,_)->name="values"||name="selection"||name="default")args) in
     let group_node ?state ?elems ~args ~sources inputs =
       let text key default = match List.assoc_opt key args with
         | None -> default | Some(E.Text text) -> text | _ -> fail "E_GROUP_TYPE" ("Group "^key^" must be static text") in
@@ -404,7 +415,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
         let root = match geometry with E.Deferred (_, id) -> Some id | E.No_geo -> None
           | _ -> fail "E_LOWER" "Attribute write without geometry" in
         Option.to_list root @ List.filter (fun id -> Some id <> root)
-          (Attribute_kernel.sources (if n.kind="sop/with_group" then group_data n.args else List.assoc "values" n.args))
+          (Attribute_kernel.sources (if n.kind="sop/with_group" then group_data n.args else attribute_data n.args))
       else let direct = geo_of n.args in
         let rec captures = function
           | E.Fn fn as value -> (match external_kernel fn with
@@ -745,7 +756,8 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
                   | E.No_geo -> -1 :: deps node | _ -> deps node in
                 let factory = Edit.factory ~key:"flow.with_attr" ~label:"Write attribute"
                   ~category:["Flow"] ~arity:(List.length sources)
-                  (attribute_node ~owner ~kind ~name ~values ~sources) in
+                  (attribute_node ?selection:(List.assoc_opt "selection" args) ?default:(List.assoc_opt "default" args)
+                    ~owner ~kind ~name ~values ~sources) in
                 {cid; factory; arity = List.length sources; changes = []; dynamic = []; zone = None; kernels = [];
                   slots = List.filter_map (fun (i, source) -> if source < 0 then None else Some (i, source))
                     (List.mapi (fun i source -> i, source) sources)}
@@ -959,7 +971,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
               let name = match List.assoc "attribute" n.args with
                 | E.Text name -> name | _ -> fail "E_LOWER" "Attribute name must be static text" in
               let owner,kind=attribute_options n.args in
-              attribute_node ?state ~elems:outer ~owner ~kind ~name
+              attribute_node ?state ~elems:outer ?selection:(List.assoc_opt "selection" n.args) ?default:(List.assoc_opt "default" n.args) ~owner ~kind ~name
                 ~values:(List.assoc "values" n.args) ~sources:(deps n)
                 (List.filter_map Fun.id options)
           | None when n.kind="sop/with_group" ->
@@ -978,7 +990,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
       List.iter (fun id ->
         let n = plan.nodes.(id) in
         if n.kind = "zone/element" || is_zone n.kind || (prepare n).dynamic <> []
-           || (n.kind = "sop/with_attr" && E.is_live (List.assoc "values" n.args))
+           || (n.kind = "sop/with_attr" && E.is_live (attribute_data n.args))
            || (n.kind="sop/with_group" && E.is_live(group_data n.args))
            (* ponytail: all function inputs vary in a zone; narrow to actual
               element captures if rebuilding constant functions becomes costly. *)
@@ -1060,7 +1072,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
           let eligible = Attribute_kernel.sources values=[] &&
             (match ir.nodes.(ir.roots.(0)).kind with
              |Flow_ir.Kernel {body=(Packed_map _ | Readback);_}->true |_->false) in
-          if not eligible && not(E.state_dependent values) then nodes else
+          if not eligible && not(E.state_dependent(attribute_data n.args)) then nodes else
           Network.Int_map.add compiled.(n.id) (fun ~network:_ state live node ->
           let name = match List.assoc "attribute" n.args with E.Text name -> name | _ -> assert false in
           (* Only input-independent producers can materialize before SOP cooking.
@@ -1071,10 +1083,10 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
             |Some(Flow_ir.Executor.Cpu value)->value
             |None->values
             |Some(Flow_ir.Executor.Gpu _)->assert false in
-          if selected=None && not(E.state_dependent values) then Ok node else
+          if selected=None && not(E.state_dependent(attribute_data n.args)) then Ok node else
           Ok(Sop.Node.Private.adopt_identity ~source:node
             (let owner,kind=attribute_options n.args in
-             attribute_node ~state:(E.fork_state state) ~owner ~kind ~name
+             attribute_node ~state:(E.fork_state state) ?selection:(List.assoc_opt "selection" n.args) ?default:(List.assoc_opt "default" n.args) ~owner ~kind ~name
               ~values ~sources:(deps n) (Sop.Node.inputs node))))) nodes)
         frame_nodes plan.nodes in
       let frame_nodes=Array.fold_left(fun nodes (n:E.node)->

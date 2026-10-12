@@ -246,7 +246,7 @@ let attribute_args head args =
   let positional=attribute || head="sop/count" in
   if not positional && not group && not attribute_metadata && not group_metadata && head<>"array/range" then args else
   let rec selectors position=function
-    |({node=Kw("owner"|"type");_}as key)::value::rest->key::value::selectors position rest
+    |({node=Kw("owner"|"type"|"selection"|"default");_}as key)::value::rest->key::value::selectors position rest
     |({node=Kw name;_}as selector)::rest when position=1->
         {selector with node=Str name}::selectors(position+1)rest
     |first::rest->first::selectors(position+1)rest|[]->[] in
