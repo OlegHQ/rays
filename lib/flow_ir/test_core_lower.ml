@@ -53,3 +53,52 @@ let () =
   assert !observed;
   assert (C.literal_of_value (E.Residual (match List.assoc "g" (ok (E.static (checked "(+ t 1)"))).results with
     E.Residual r -> r | _ -> assert false)) = None)
+
+let () =
+  let geometry=Flow.Ty.geometry and image=Flow.Ty.image in
+  let marker name ty id = Flow.Op.{(Option.get(Flow.Op.find "frame/dt" Flow.Context.value)) with
+    name;signature={pos=[];opt=[];rest=None;kw=[]};out=(fun _->ty);out_args=None;
+    live=false;arithmetic=None;packed_extension=None;
+    body=(fun ~live:_ ~node:_ _->Flow.Value.Deferred(ty,id))} in
+  let ops=[marker "handle_geometry" geometry 11;marker "handle_image" image 11] in
+  let compiled body =
+    let forms=ok(Flow.Syntax.parse ("(workspace handles (graph g :context value " ^
+      "[(selected : bool false) (geo : geometry (handle_geometry)) (img : image (handle_image)) (bad : geometry (handle_geometry))] " ^
+      "(let* [tested (if selected " ^ body ^ " " ^ body ^ ")] 0.)))")) in
+    let workspace=match Flow.Workspace.check ~ops {Flow.Check.version=1;kinds=[]} forms with
+      |Some workspace,[]->workspace|_,ds->failwith(String.concat "; " (List.map Flow.Diagnostic.to_string ds)) in
+    let inputs=["g",["selected",E.Source("test/selected",Flow.Ty.Bool,[]);
+      "geo",E.Deferred(geometry,11);"img",E.Deferred(image,11);"bad",E.Deferred(geometry,99)]] in
+    let value=snd(List.hd(List.assoc["g";"tested"](ok(E.static ~record:true ~inputs workspace)).records)) in
+    let residual=match value with E.Residual r->r|_->failwith("Expected cooked residual: "^body^" = "^E.show value) in
+    Flow_ir.Core_exec.prepare(Result.get_ok(Flow_ir.Core_lower.lower ~strict:true residual)) in
+  let reason=Flow.Diagnostic.error ~cause:"unknown handle cause" ~code:"E_TEST_HANDLE" "Unknown cooked handle." in
+  let run prepared time allow_bad =
+    let calls=ref [] in
+    let resolve=function
+      |E.Source("test/selected",Flow.Ty.Bool,[])->
+          calls:=(Flow.Ty.Bool,0)::!calls;Ok(E.Bool(time>0.))
+      |E.Source("$core/cooked",ty,["id",E.Int id])->
+          calls:=(ty,id)::!calls;
+          if (ty=geometry || ty=image) && (id=11 || allow_bad && id=99) then Ok(E.Deferred(ty,id))
+          else Error reason
+      |_->assert false in
+    let result=Flow_ir.Core_exec.execute ~resolve prepared ~live:(Frame_input.at_time time) in
+    result,List.rev !calls in
+  let mixed=compiled "(if selected {:a geo :b geo :picture img} {:a geo :b geo :picture img})" in
+  List.iter(fun time->let result,calls=run mixed time false in
+    assert(result=Ok(E.Record["a",E.Deferred(geometry,11);"b",E.Deferred(geometry,11);"picture",E.Deferred(image,11)]));
+    assert(List.filter((=)(geometry,11))calls|>List.length=1);
+    assert(List.filter((=)(image,11))calls|>List.length=1);
+    assert(List.filter((=)(Flow.Ty.Bool,0))calls|>List.length=2)) [-1.;1.;-1.;1.];
+  let lazy_bad=compiled "(if selected {:a bad :b bad} {:a geo :b geo})" in
+  List.iter(fun time->let result,calls=run lazy_bad time false in
+    if time>0. then match result with Error d->assert(d.code=reason.code && d.message=reason.message && d.cause=reason.cause)
+      |Ok _->assert false
+    else (assert(result=Ok(E.Record["a",E.Deferred(geometry,11);"b",E.Deferred(geometry,11)]));
+      assert(not(List.mem(geometry,99)calls)))) [-1.;1.;-1.;1.];
+  let crossing=compiled "(let* [chosen (if selected geo bad)] {:first chosen :after geo})" in
+  List.iter(fun time->let result,calls=run crossing time true in
+    assert(result=Ok(E.Record["first",E.Deferred(geometry,(if time>0. then 11 else 99));"after",E.Deferred(geometry,11)]));
+    assert(List.mem(geometry,11)calls)) [1.;-1.;1.;-1.];
+  print_endline "Core cooked handles: exact type, lazy failures, changing live branches and fresh execution validation"

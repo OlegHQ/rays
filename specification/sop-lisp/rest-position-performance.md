@@ -148,3 +148,28 @@ Log: `/tmp/rays-rest-nested-source-static-lane-bench.log`. The allocation
 reduction is less than 2 KB per cook compared with prepared-body reuse. The
 larger remaining source/session cost still needs a measured shared fix;
 Rest Position stays unregistered.
+
+## Repeated cooked-handle validation
+
+A scoped single-cook diagnostic then found five validations of the same typed
+geometry handle, id 0, in default Swap. Each Source force allocated 512 bytes
+(528 on the first call), including temporary counter bookkeeping. There were
+no image or other cooked-handle validations. This bounds the possible saving
+at less than 2 KB; it does not explain the complete remaining wrapper cost.
+All observers were removed. Log: `/tmp/rays-rest-cooked-handle-profile.log`.
+
+The compiler now reuses checked immutable cooked handles in its existing
+branch-scoped cache, keyed by exact type and handle id. Residuals use a separate
+key variant. Existing branch copies retain dominance: a local initialized in
+one arm does not escape into another arm or an unconditional later use. Each
+execution still resolves its selected handles against that execution's fresh
+host table. Named Source and Host_source queries are never memoized by this
+change.
+
+Semantic tests passed before the compiler change. The optimized tests assert
+one check each for same-id geometry and image captures, independent repeated
+Bool host queries, exact lazy unknown-handle errors and causes, changing live
+selection, and a handle used both inside and after a branch. Fresh execution
+continues to validate the selected handles. The tests use a host-resolved Bool
+selector; the ordinary language prohibition on top-level time-selected
+geometry is preserved.

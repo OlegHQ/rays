@@ -5,6 +5,7 @@ module C = Core
 module Names = Map.Make (String)
 exception Unsupported of string
 let refuse name = raise (Unsupported name)
+type cache_key = Residual_key of int | Cooked_key of Flow.Ty.t * int
 type lowered = Known of E.value | Computed of int * Flow.Ty.t
   | Record_fields of (string * lowered) list
   | Record_choice of lowered * lowered * lowered
@@ -57,8 +58,11 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
         (match emit statements source (V.ty_of value) (Source value) with
          | Computed (n,_) -> n | _ -> assert false)
     | Known (V.Deferred(ty,id)) when Flow.Ty.is_cooked ty ->
-        (match emit statements source ty (Source(V.Source("$core/cooked",ty,["id",V.Int id]))) with
-         |Computed(n,_)->n|_->assert false)
+        let key=Cooked_key(ty,id) in
+        let value=match Hashtbl.find_opt cache key with Some value->value|None->
+          let value=emit statements source ty (Source(V.Source("$core/cooked",ty,["id",V.Int id]))) in
+          Hashtbl.add cache key value;value in
+        ensure statements cache source value
     | Known (V.Record fields) -> ensure statements cache source (Record_fields (List.map (fun (name,v) -> name,Known v) fields))
     | Known (V.List items) when C.literal_of_value (V.List items)=None ->
         if Array.length items>4096 then refuse "list_limit";
@@ -181,7 +185,8 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
     | _ -> None
   and residual statements cache r =
     let id = E.Private.residual_id r in
-    match Hashtbl.find_opt cache id with Some value -> value | None ->
+    let key=Residual_key id in
+    match Hashtbl.find_opt cache key with Some value -> value | None ->
     let view = E.Private.residual_view r in
     if Hashtbl.mem active id then refuse "cycle";
     Hashtbl.add active id ();
@@ -195,7 +200,7 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
       let value = if Option.is_some packed then region statements (Option.get packed) view else
         if view.previous then state_term statements cache {source with C.span=Some view.term.form.span}
           env view.term true else term statements cache source env view.term in
-      Hashtbl.add cache id value;
+      Hashtbl.add cache key value;
       value)
   and descriptor statements cache source = function
     | Known ((V.Source(name,ty,fields) | V.Struct(name,(Flow.Ty.Array _ as ty),fields)))
