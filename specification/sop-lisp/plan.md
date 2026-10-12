@@ -456,7 +456,13 @@ Every port keeps its OCaml node as the oracle until the port passes, and the com
 
 `ocamlopt` 5.3.0 on arm64 fuses `a *. b +. c` into one `fmadd` instruction wherever it can. The source has no `Float.fma` at those sites. Counted with `objdump -d` on the built objects: 661 fused instructions in `Parametric_generators`, 255 in `Spiral`, 144 in `Box_generator`, 76 in `Noise`, 52 in `Transform_ops`, 43 in `Deform`.
 
-The Lisp kernel tier executes multiply and add separately (`lib/flow_ir/packed.ml:293-295`, zero fused instructions in `flow_ir__Packed.o`), and `specification/flow.md:1229-1232` promises "separately rounded float64 multiplications and additions". JavaScript has no fused multiply-add, so the web target cannot reproduce the fused results either.
+Ordinary Lisp multiplication and addition remain separately rounded, as
+specified in `specification/flow.md`. Explicit `fma` and checked FMA are now
+available in the reference, CPU and JavaScript paths; the JavaScript path
+emulates binary64 single rounding exactly. Ports can therefore reproduce
+verified native fused sites explicitly. Automatic contraction of ordinary
+multiply/add expressions would change their rounding contract and remains
+undecided; explicit FMA support does not enable it.
 
 ### The gate for one ported node
 
