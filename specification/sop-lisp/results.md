@@ -2165,3 +2165,47 @@ Reproduce timings from `_build/default/lib/flow_sop` with
 through the shared check launcher and draining competing CPU work. This port
 brings the completed whole-node ledger to eight of 128. B.12 stays unchecked
 until its other five metadata ports pass their own full recipes.
+
+### Typed Collect guards reuse lazy active spans (shared prerequisite)
+
+The typed CPU runner now reuses identical guard-list spans within a single
+Collect block, excluding gather programs. The cache key includes the guard
+list and exact interval, so nested and truncated invocations stay distinct.
+First use retains the original predicate scan and executes each selected body
+immediately; only a successfully completed invocation publishes its spans.
+There is no eager evaluation of later predicates. Each block owns at most the
+program's instruction count (64) cache entries, each bounded by the 1,024-lane
+block, and discards the cache before the next block. Reducers, scans, folds,
+gather preparation and lane-major gather execution retain their old routes.
+
+Focused request 68597 exited 0 for `@lib/flow_ir/runtest
+@lib/flow_sop/point_jitter_draft
+_build/default/lib/flow_sop/test_point_jitter.exe`
+(`/tmp/rays-point-jitter-guard-cache-focused3.log`). The added 32,769-row
+regular regression compares strict execution with reference bytes at times
+0, 0.25 and 1024.5, domains 1/4/8, both flat and deliberately nested guard
+wrappers. It covers changing block predicates, truncated spans, checked
+result/status projections, signed zero and an untaken error. Existing exact
+integer, lazy diagnostic, gather and Point Jitter selected-error proofs pass.
+
+Quiet first-four request 74683 exited 0 after every native/reference/strict
+preflight, using the freshly linked 68597 binary. The fixture and protocol
+match the earlier unboxed-helper table: Apple M1, OCaml 5.3.0 dev profile,
+one million actual grid points and 998,001 quads, grain 4096, median of three
+fresh-session cold cooks, domains 1/4. Four-domain allocation counters cover
+only the initial domain. Log:
+`/tmp/rays-point-jitter-guard-cache-bench-first.log`.
+
+| Mode | Domains | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---|---:|---:|---:|---:|---:|---:|
+| defaults | 1 | 0.021215 | 0.579217 | **27.302×** | 72015704 | 617403680 |
+| defaults | 4 | 0.007088 | 0.243064 | **34.293×** | 36477808 | 363725112 |
+| selected optional inputs | 1 | 0.024350 | 0.697501 | **28.645×** | 48016440 | 732659608 |
+| selected optional inputs | 4 | 0.007702 | 0.288948 | **37.515×** | 30270520 | 405668808 |
+
+The corresponding earlier Lisp times were 0.779768, 0.295018, 1.005076 and
+0.370817 seconds (request 28993, retained above). The cache cuts whole-cook
+time by about 18–31%, but adds span storage: selected optional one-domain
+allocation rises from 535,779,504 to 732,659,608 bytes. All four unchanged
+2× gates still fail. This is shared execution evidence, not a Point Jitter
+port acceptance; no registration, native removal or broader timing claim.

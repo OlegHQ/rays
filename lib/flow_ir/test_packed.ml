@@ -15,6 +15,34 @@ let same a b = match a, b with
   | Ok a, Ok b -> Marshal.to_string a [Marshal.No_sharing] = Marshal.to_string b [Marshal.No_sharing]
   | Error a, Error b -> Flow.Diagnostic.to_string a = Flow.Diagnostic.to_string b
   | _ -> false
+let () =
+  let trace = !I.Packed.Private.trace in
+  Fun.protect ~finally:(fun () -> I.Packed.Private.trace := trace) (fun () ->
+    I.Packed.Private.trace := ignore;
+    let packed = Test_program.compile "(map (fn [index]
+      (let* [x (+ (float index) t)]
+        (if (< (mod x 2053.0) 1025.0)
+          (let* [a (float/mul_checked x 0.5)]
+            (if (< (mod x 7.0) 3.0)
+              [a.value (float a.valid) (+ x 1.0) (- x 1.0)]
+              [a.value (float a.valid) (+ x 2.0) (- x 2.0)]))
+          (if (int/lt index 0)
+            (error \"E_UNTAKEN\" \"Inactive guarded instruction ran.\")
+            [-0.0 0.0 x (- 0.0 x)])))) (array/range 32769 :type int))" in
+    let region = I.Packed.to_region packed in
+    let nested = ok (Result.map_error List.hd (I.Packed.of_region
+      {region with code = Array.map (function
+        | I.Core.Region.Guarded (first :: (_ :: _ as rest), body) ->
+            I.Core.Region.Guarded ([first], Guarded (rest, body))
+        | instruction -> instruction) region.code})) in
+    List.iter (fun time ->
+      let live = Frame_input.at_time time in
+      let expected = I.Packed.reference packed ~live in
+      List.iter (fun domains -> Rays_math.Parallel.run ~domains (fun () ->
+        List.iter (fun program -> assert (same
+          (I.Packed.force ~strict:true program ~live) expected)) [packed; nested]))
+        [1;4;8]) [0.;0.25;1024.5];
+    print_endline "Guard reuse: changing blocks, nested/truncated spans, checked projections and untaken failure match reference at one/four/eight domains")
 let has_cpu p = Array.exists (fun (n : I.node) -> n.tier = Cpu_kernel) (I.Executor.graph p).nodes
 let stages p = Array.fold_left (fun count (n : I.node) -> match n.kind with
   | Kernel {body = Packed_map p; _} -> max count (I.Packed.stage_count p) | _ -> count)

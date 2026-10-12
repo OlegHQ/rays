@@ -261,6 +261,8 @@ let rec integer_range residual (term : W.term) = match term.node with
 let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~seed t ~live =
   let gather=Array.exists(fun instruction->match unguarded instruction with
     | Array_prepare _|Gather _|Int_gather _->true|_->false)t.code in
+  let cache_guards=t.result=Collect && not gather
+    && Array.exists(function Guarded _->true|_->false)t.code in
   let borrowed=Array.make (Array.length t.sources) None in
   let ranges=Array.make (Array.length t.sources) None in
   let inputs=Array.mapi (fun i (r,term)->
@@ -373,18 +375,44 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
         done; !length in
       let source j i=let index=if contiguous then start+j else indices.(j) in
         if t.iteration=Zip then index else index/strides.(i) mod lengths.(i) in
+      let guard_spans=if cache_guards then Some(Hashtbl.create 16) else None in
       let rec execute slot instruction first last =
         let at=slot*block_size in
         match instruction with
         | Guarded(guards,body)->
+          (* Publish spans after their first execution: scanning ahead of a
+             failing body would change lazy predicate evaluation. *)
+          let cached=match guard_spans with None->None
+            |Some cache->Hashtbl.find_opt cache (guards,first,last) in
+          (match cached with
+          |Some spans->for i=0 to Array.length spans/2-1 do
+              execute slot body spans.(2*i) spans.(2*i+1)
+            done
+          |None->
+            let saved=match guard_spans with
+              |Some cache when Hashtbl.length cache<Array.length t.code->Some(ref[||],ref 0)
+              |_->None in
             let rec selected j=function []->true|(r,yes)::rest->(numeric r j<>0.)=yes && selected j rest in
             let next=ref first in
             while !next<last do
               while !next<last && not(selected !next guards) do incr next done;
               let first= !next in
               while !next<last && selected !next guards do incr next done;
-              if first< !next then execute slot body first !next
-            done
+              if first< !next then begin
+                execute slot body first !next;
+                match saved with None->()|Some(spans,used)->
+                  if !used=Array.length !spans then begin
+                    let capacity=min (2*block_size) (max 4 (2*Array.length !spans)) in
+                    let grown=Array.make capacity 0 in
+                    Array.blit !spans 0 grown 0 !used;spans:=grown
+                  end;
+                  (!spans).(!used)<-first;(!spans).(!used+1)<- !next;used:= !used+2
+              end
+            done;
+            match guard_spans,saved with
+            |Some cache,Some(spans,used) when Hashtbl.length cache<Array.length t.code->
+                Hashtbl.replace cache (guards,first,last) (Array.sub !spans 0 !used)
+            |_->())
         | Raise(_,code,message,cause)->if first<last then V.raise_diagnostic(Flow.Diagnostic.error ?cause ~code message)
         | Array_prepare(i,ty)->if first<last then ignore(prepare i ty)
         | Int_gather(array,index)->
