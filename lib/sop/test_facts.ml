@@ -185,6 +185,10 @@ let test_declarations () =
     |> Result.map_error Flow.Diagnostic.to_string |> get in
   let factories = native @ lowered.factories in
   let geometry = fixture () in
+  let topology = Geometry.topology geometry in
+  let edges = Edge_group.init ~topology ~index:(Topology_index.create topology)
+    ~name:"edges" (fun _ -> true) in
+  let geometry = Geometry.with_edge_group edges geometry |> get in
   let count = Geometry.point_count geometry in
   let uv = Packed.Float2.of_owned ~x:(Array.make count 0.) ~y:(Array.make count 0.) |> get in
   let uv = Attribute.create_owned ~name:"uv" ~owner:Attribute.Point (Float2 uv) |> get in

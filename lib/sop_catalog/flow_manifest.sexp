@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "fafaf06693fe67896fcf22b27dbf357b")
+  (digest "536ca411537394f6c4f3977b72a028d0")
   (kinds
     (kind "sop/box"
       (key "box")
@@ -2692,18 +2692,6 @@
       (fields)
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/rename_edge_group"
-      (key "rename_edge_group")
-      (aliases)
-      (operation "rename_edge_group")
-      (label "Rename Edge Group")
-      (category "Group" "Manage")
-      (slots (slot "in0" required))
-      (fields
-        (field "from" "From" (folder) (text) (text "edges") (primary false) (vec3))
-        (field "into" "To" (folder) (text) (text "renamed") (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/delete_attributes"
       (key "delete_attributes")
       (aliases)
@@ -3421,6 +3409,19 @@
         (field "frequency" "Frequency" (folder) (float (soft 0 20) (hard 0 nil)) (float 1) (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode generic) (elementwise points) (reads "P" "N") (writes "P" "N") (topology preserved) (exact false))
+      (body lisp)
+      (calls))
+    (kind "sop/rename_edge_group"
+      (key "rename_edge_group")
+      (aliases)
+      (operation "rename_edge_group")
+      (label "Rename Edge Group")
+      (category "Group" "Manage")
+      (slots (slot "in0" required))
+      (fields
+        (field "from" "From" (folder) (text) (text "edges") (primary false) (vec3))
+        (field "into" "To" (folder) (text) (text "renamed") (primary false) (vec3)))
+      (outputs (output "geo" geometry))
       (body lisp)
       (calls))
     (kind "sop/set_float"

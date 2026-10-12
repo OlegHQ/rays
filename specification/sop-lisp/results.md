@@ -2063,3 +2063,105 @@ indexed loops). These establish a measured baseline, not a whole-node speed
 qualification. No SOP port follows from this feature. C.2 remains unchecked
 because Name From Groups still requires the separately specified Text leaf
 extension; B.13/B.14 and all other original port gates remain required.
+
+### Rename Edge Group production port
+
+The authoritative declaration is now `nodes/rename_edge_group.rays`, with the
+unchanged `from`/`into` Text defaults and labels, one required geometry slot,
+and the generic `sop/rename_edge` body. The native registration is removed;
+`Sop.Nodes.Rename_edge_group.factory` and `Geometry.rename_edge_group` remain
+independent test oracles. This metadata-only operation reads literal edge-group
+names and renames one ordered group. It does not read or change float data.
+Equal names, missing sources, existing destinations and blank names retain
+native code/message/cause and conflict-before-missing-source order; there is
+no trimming or pattern interpretation.
+
+The whole-port function in `lib/sop/test_lisp_ports.ml` loads actual embedded
+production sources. Defaults and every physical parameter, empty/single/4,225
+grid/mixed/32,769 inputs, reference and compiled cooks, domains 1/4/8, grains
+1/97/4096, exact payload bytes/errors, immutable inputs, schema/operation/key,
+public cache misses/hits, relabel identity and wrong input/parameter refusals
+pass. The shared edge tests additionally cover all attribute storage types
+and owners, group/attribute order, unusual literal names, raw NaN payloads,
+infinities, direct graph edits, card/inspector parity and actual bypass cooks.
+The preserved-facts sweep now supplies the default edge group rather than
+excluding the newly precise declaration: 18 registered Preserved nodes pass
+at one/eight domains.
+
+Focused request 31093 exited 0 for `@lib/sop/runtest
+@lib/flow_sop/runtest @lib/flow_sop/metadata_ports_draft
+@lib/sop_catalog/runtest @test/dependency_gate`
+(`/tmp/rays-rename-edge-focused3.log`). Earlier 83234/59840 failures identified
+and corrected a test field accessor, the intended manifest promotion and the
+missing default group in the facts fixture; the whole-port recipe already
+passed in 59840. Promoted manifest digest:
+`536ca411537394f6c4f3977b72a028d0`. The actual generated CLI catalog baseline
+is `5005be4a79464f0cd37f03e63f6866439cbda8f6283609ac71749748b61bdd3d`;
+follow-up 11963 passed its crams and Flow tests.
+
+Full `@runtest-native`, `@test/test_workspace_source` and
+`@tools/api_manifest/runtest` request 30232 exited 0
+(`/tmp/rays-rename-edge-native.log`). This includes all native rendering,
+editor/host/presentation tests, the 23 SOP graph one/four-domain PNG comparisons,
+and real workspace source save/reopen/reload. No golden changed. This complete
+native run also supplies the full-suite follow-up for Delete Edge Group, whose
+earlier port evidence recorded focused native checks.
+
+Both timing runs use Apple M1, OCaml 5.3.0 dev profile, a real million-point
+grid with 998,001 quads, grain 4096 and domains 1/4. All twelve configurations
+have a native/Lisp byte-or-error preflight before timing. Session creation and
+close and full-major GC are outside each timed interval; allocations at four
+domains cover only the initial domain. The median of three samples is reported.
+Missing-source cooks are intentionally retained. Ratios use unrounded times.
+
+The original quiet single-cook measurement, request 89904, exited 0 and is
+retained in full (`/tmp/rays-rename-edge-bench.log`). Its 8-group existing-source
+four-domain row failed the unchanged 2× gate:
+
+| Groups | Source | Domains | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 0 | edges | 1 | 0.000022 | 0.000025 | 1.129× | 6024 | 11944 |
+| 0 | edges | 4 | 0.000022 | 0.000032 | 1.467× | 6256 | 12176 |
+| 0 | absent | 1 | 0.000026 | 0.000023 | 0.890× | 6032 | 11952 |
+| 0 | absent | 4 | 0.000021 | 0.000026 | 1.239× | 6264 | 12184 |
+| 1 | edges | 1 | 0.000052 | 0.000031 | 0.596× | 7480 | 14408 |
+| 1 | edges | 4 | 0.000024 | 0.000036 | 1.510× | 7712 | 14640 |
+| 1 | absent | 1 | 0.000022 | 0.000028 | 1.272× | 6160 | 12152 |
+| 1 | absent | 4 | 0.000022 | 0.000028 | 1.272× | 6392 | 12384 |
+| 8 | edges | 1 | 0.000026 | 0.000030 | 1.145× | 9488 | 17424 |
+| 8 | edges | 4 | 0.000024 | 0.000063 | **2.614×** | 9720 | 17656 |
+| 8 | absent | 1 | 0.000023 | 0.000037 | 1.608× | 7056 | 13552 |
+| 8 | absent | 4 | 0.000021 | 0.000032 | 1.523× | 7288 | 13784 |
+
+These operations take microseconds, so the test harness adds a longer fixed
+measurement: each sample times 1,000 separately created, fresh cold Sessions,
+one cook in each Session, divided by 1,000. It never reuses a warm Session hit.
+No production implementation changed between runs. This measures amortized
+cold-cook throughput rather than isolated post-GC latency, reducing clock and
+scheduling sensitivity while preserving the workload and strict bound. Build
+32834 and quiet benchmark 34513 exited 0; all twelve predetermined rows pass,
+maximum 1.858× (`/tmp/rays-rename-edge-batch-build.log`,
+`/tmp/rays-rename-edge-batch-bench.log`). This is the acceptance timing table;
+the failed isolated-latency result above remains part of the evidence.
+
+| Groups | Source | Domains | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 0 | edges | 1 | 0.000003 | 0.000004 | 1.510× | 5928 | 11848 |
+| 0 | edges | 4 | 0.000003 | 0.000004 | 1.373× | 6160 | 12080 |
+| 0 | absent | 1 | 0.000003 | 0.000005 | 1.858× | 5936 | 11856 |
+| 0 | absent | 4 | 0.000003 | 0.000006 | 1.696× | 6168 | 12088 |
+| 1 | edges | 1 | 0.000004 | 0.000006 | 1.566× | 7384 | 14312 |
+| 1 | edges | 4 | 0.000004 | 0.000006 | 1.489× | 7616 | 14544 |
+| 1 | absent | 1 | 0.000003 | 0.000005 | 1.802× | 6064 | 12056 |
+| 1 | absent | 4 | 0.000003 | 0.000005 | 1.702× | 6296 | 12288 |
+| 8 | edges | 1 | 0.000005 | 0.000007 | 1.459× | 9400 | 17336 |
+| 8 | edges | 4 | 0.000005 | 0.000008 | 1.640× | 9632 | 17568 |
+| 8 | absent | 1 | 0.000004 | 0.000005 | 1.468× | 6968 | 13464 |
+| 8 | absent | 4 | 0.000004 | 0.000007 | 1.703× | 7200 | 13696 |
+
+Reproduce timings from `_build/default/lib/flow_sop` with
+`opam exec -- ./test_metadata_ports.exe --bench-rename-edge` and
+`opam exec -- ./test_metadata_ports.exe --bench-rename-edge-batch` after linking
+through the shared check launcher and draining competing CPU work. This port
+brings the completed whole-node ledger to eight of 128. B.12 stays unchecked
+until its other five metadata ports pass their own full recipes.
