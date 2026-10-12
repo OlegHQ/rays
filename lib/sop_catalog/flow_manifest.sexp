@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "2019eaed71f6bbcded648a345705a3bc")
+  (digest "59dcfe1be5f12f620e25c7b6214bc158")
   (kinds
     (kind "sop/box"
       (key "box")
@@ -2692,17 +2692,6 @@
       (fields)
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/rename_attributes"
-      (key "rename_attributes")
-      (aliases)
-      (operation "attribute_rename_pattern")
-      (label "Rename Attributes")
-      (category "Attribute" "Manage")
-      (slots (slot "in0" required))
-      (fields
-        (field "rules" "Rules (owner, pattern, replacement, conflict)" (folder) (text) (text "") (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/swap_attributes"
       (key "swap_attributes")
       (aliases)
@@ -3410,6 +3399,18 @@
         (field "frequency" "Frequency" (folder) (float (soft 0 20) (hard 0 nil)) (float 1) (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode generic) (elementwise points) (reads "P" "N") (writes "P" "N") (topology preserved) (exact false))
+      (body lisp)
+      (calls))
+    (kind "sop/rename_attributes"
+      (key "rename_attributes")
+      (aliases)
+      (operation "attribute_rename_pattern")
+      (label "Rename Attributes")
+      (category "Attribute" "Manage")
+      (slots (slot "in0" required))
+      (fields
+        (field "rules" "Rules (owner, pattern, replacement, conflict)" (folder) (text) (text "") (primary false) (vec3)))
+      (outputs (output "geo" geometry))
       (body lisp)
       (calls))
     (kind "sop/rename_edge_group"

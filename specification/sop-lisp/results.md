@@ -3004,3 +3004,122 @@ The direct encoded parameter-edit regression also asserts zero workspace
 Evaluate invocations and passed in request 11682. Logs:
 `/tmp/rays-rename-attributes-production-focused2.log` and
 `/tmp/rays-rename-attributes-native-integration.log`.
+
+## Rename Attributes production port
+
+The complete native wrapper and `attribute_lifecycle.rename` were read. The
+Lisp recipe applies generic `sop/rename_attr` in encoded rule order; it adds no
+node-specific host callback. Owner aliases and policies use native ASCII
+trim/lower canonicalization. Every rewrite is validated before construction,
+including a malformed later rule following an earlier cooked conflict. The
+header keeps the native operation, label, category, slot, encoded Rules field
+and default.
+
+Combined focused gate **92200 exited 0**, including
+`@lib/flow_sop/rename_attributes_draft`. The independent native factory proof
+covers all four owners, Any aliases, skip/error/overwrite, literal and captured
+wildcards, no-op/missing names, successive rewrites, ordered overwrites,
+reserved point P and physical vertex P, empty-name cooked refusals, and exact
+code/message/cause. It compares all eight storage types, ordered groups and
+edge groups, raw NaN/Inf positions and attribute bytes, immutable inputs and
+borrowed position/topology identity. Required inputs include empty, singleton,
+a real 4,225-point quad grid, mixed polygon/polyline and 32,769 points. Strict
+and reference cooks are byte identical to native at domains 1/4/8 and grains
+1/97/4096. Rebuild refusals include malformed table escapes/rows, UTF-8 quoted
+owners/policies, rewrite syntax, non-finite/wrong parameter types and wrong
+geometry inputs. Every Rules edit has native canonical fields/key, one public
+miss and a warm hit; relabeling preserves identity/key/cook. The native graph
+card, full inspector and complete factory descriptor match, and direct Rules
+and bypass gestures cook the expected bytes.
+
+Quiet session **77401 exited 0** on the 92200 binary. All **50** native,
+strict and reference million-point preflights passed; every measured ratio is
+below the unchanged **2×** gate (maximum **1.806×**). These are metadata-only
+cooks: the geometry has 1,000,000 points, 998,001 quad primitives, and twelve
+physical Float attributes across all owners. Rename borrows their dense
+payloads. Hardware: Apple M1, arm64, OCaml 5.3.0, Dune dev profile. Grain 4096;
+wall time is the median of three samples of 1,000 fresh cold sessions, with
+session creation excluded. Allocation is `Gc.allocated_bytes` on the initial
+domain, including cook/output headers; multi-domain allocations are not a
+whole-process total. All fifty rows are retained below. The accepted body is
+embedded in `nodes/rename_attributes.rays`; its native catalog registration
+is removed, while the native factory and RDK kernel remain test oracles.
+
+Production request 67783 exposed an unused draft-test declaration and the
+encoded-normalizer instrumentation gap recorded separately below. Request
+19605 passed all semantic recipes after those fixes, including the normal
+`lib/sop/test_lisp_ports.ml` function and required all-owner/raw fixtures;
+only the intended manifest difference remained. The reviewed manifest
+retains the entire parameter/slot/identity block and gains the Lisp body
+marker; its digest is `59dcfe1be5f12f620e25c7b6214bc158`.
+
+Full native request 11682 passed every render/editor/source/catalog/API
+check with only the actual CLI catalog-hash snapshot difference. That
+observed hash is `c1e072875e402532a4676f46daec9e9cfddd212f84ff43fe0425dda215ae10ee`.
+After accepting that one-line snapshot, request **26067 exited 0** for
+`@runtest-native @lib/sop/test_lisp_ports @lib/flow_sop/runtest
+@lib/sop_catalog/runtest @tools/lisp/test/runtest @test/test_workspace_source
+@test/test_workspace_shell @test/test_sop_catalog @tools/api_manifest/runtest
+@test/dependency_gate`. Logs: `/tmp/rays-rename-attributes-production-focused2.log`,
+`/tmp/rays-rename-attributes-native-integration.log` and
+`/tmp/rays-rename-attributes-native-integration2.log`. Native PNGs and other
+render goldens are unchanged. This is the **tenth** completed whole port:
+**10/128 (7.8125%)**, with **118** still required. B.12 remains incomplete.
+
+Command (from `lib/flow_sop`):
+`opam exec -- ../../_build/default/lib/flow_sop/test_metadata_ports.exe --bench-rename-attributes`.
+Logs: `/tmp/rays-text-one-lane-guard-focused.log` and
+`/tmp/rays-rename-attributes-bench-before.log`.
+
+| Mode | Domains | Native µs | Lisp µs | Ratio | Native bytes | Lisp bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| default | 1 | 5.062 | 9.140 | 1.806 | 12056 | 22480 |
+| default | 4 | 6.220 | 11.211 | 1.802 | 12288 | 22712 |
+| missing | 1 | 7.750 | 8.478 | 1.094 | 18520 | 27664 |
+| missing | 4 | 6.245 | 9.565 | 1.532 | 18752 | 27896 |
+| same | 1 | 7.195 | 9.546 | 1.327 | 21080 | 30224 |
+| same | 4 | 8.280 | 9.661 | 1.167 | 21312 | 30456 |
+| point_skip | 1 | 6.176 | 8.311 | 1.346 | 16480 | 25648 |
+| point_skip | 4 | 6.258 | 8.483 | 1.356 | 16712 | 25880 |
+| point_error | 1 | 5.162 | 7.137 | 1.383 | 14824 | 22096 |
+| point_error | 4 | 5.951 | 7.485 | 1.258 | 15056 | 22328 |
+| point_overwrite | 1 | 7.065 | 9.241 | 1.308 | 18168 | 27248 |
+| point_overwrite | 4 | 7.129 | 9.347 | 1.311 | 18400 | 27480 |
+| vertex_skip | 1 | 6.581 | 9.298 | 1.413 | 16192 | 25360 |
+| vertex_skip | 4 | 6.096 | 9.146 | 1.500 | 16424 | 25592 |
+| vertex_error | 1 | 5.103 | 6.967 | 1.365 | 14536 | 21816 |
+| vertex_error | 4 | 5.806 | 7.805 | 1.344 | 14768 | 22048 |
+| vertex_overwrite | 1 | 7.597 | 9.302 | 1.224 | 17880 | 26984 |
+| vertex_overwrite | 4 | 7.222 | 10.769 | 1.491 | 18112 | 27216 |
+| primitive_skip | 1 | 7.239 | 8.242 | 1.139 | 16200 | 25376 |
+| primitive_skip | 4 | 7.622 | 9.513 | 1.248 | 16432 | 25608 |
+| primitive_error | 1 | 6.449 | 7.824 | 1.213 | 14552 | 21832 |
+| primitive_error | 4 | 5.536 | 7.513 | 1.357 | 14784 | 22064 |
+| primitive_overwrite | 1 | 6.943 | 9.409 | 1.355 | 17904 | 27008 |
+| primitive_overwrite | 4 | 7.337 | 12.174 | 1.659 | 18136 | 27240 |
+| detail_skip | 1 | 7.885 | 9.896 | 1.255 | 16192 | 25360 |
+| detail_skip | 4 | 6.028 | 9.079 | 1.506 | 16424 | 25592 |
+| detail_error | 1 | 5.219 | 7.165 | 1.373 | 14536 | 21816 |
+| detail_error | 4 | 5.738 | 7.485 | 1.304 | 14768 | 22048 |
+| detail_overwrite | 1 | 7.764 | 9.471 | 1.220 | 17880 | 26984 |
+| detail_overwrite | 4 | 8.255 | 10.434 | 1.264 | 18112 | 27216 |
+| any_skip | 1 | 7.290 | 9.391 | 1.288 | 19744 | 28912 |
+| any_skip | 4 | 6.815 | 9.199 | 1.350 | 19976 | 29144 |
+| any_error | 1 | 5.074 | 6.822 | 1.345 | 14824 | 22096 |
+| any_error | 4 | 6.303 | 7.271 | 1.154 | 15056 | 22328 |
+| any_overwrite | 1 | 8.349 | 10.380 | 1.243 | 20280 | 29072 |
+| any_overwrite | 4 | 7.421 | 10.866 | 1.464 | 20512 | 29304 |
+| point_wildcard | 1 | 7.993 | 9.551 | 1.195 | 19192 | 28360 |
+| point_wildcard | 4 | 8.949 | 10.713 | 1.197 | 19424 | 28592 |
+| vertex_wildcard | 1 | 8.139 | 10.352 | 1.272 | 18872 | 28040 |
+| vertex_wildcard | 4 | 7.922 | 12.175 | 1.537 | 19104 | 28272 |
+| primitive_wildcard | 1 | 7.909 | 10.066 | 1.273 | 18880 | 28056 |
+| primitive_wildcard | 4 | 7.604 | 10.685 | 1.405 | 19112 | 28288 |
+| detail_wildcard | 1 | 8.509 | 10.822 | 1.272 | 18872 | 28040 |
+| detail_wildcard | 4 | 7.552 | 10.304 | 1.364 | 19104 | 28272 |
+| any_wildcard | 1 | 9.270 | 11.446 | 1.235 | 23920 | 33064 |
+| any_wildcard | 4 | 9.274 | 11.327 | 1.221 | 24152 | 33296 |
+| successive | 1 | 12.087 | 17.770 | 1.470 | 33760 | 50640 |
+| successive | 4 | 12.144 | 17.120 | 1.410 | 33992 | 50872 |
+| overwrite_order | 1 | 10.637 | 13.991 | 1.315 | 25120 | 40336 |
+| overwrite_order | 4 | 9.243 | 13.097 | 1.417 | 25352 | 40568 |

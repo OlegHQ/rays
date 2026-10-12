@@ -100,6 +100,11 @@
  (action (run %{exe:test_metadata_ports.exe})))
 
 (rule
+ (alias rename_attributes_draft)
+ (deps nodes/metadata.pending)
+ (action (run %{exe:test_metadata_ports.exe} --rename-attributes)))
+
+(rule
  (alias metadata_ports_large)
  (deps nodes/metadata.pending)
  (action (run %{exe:test_metadata_ports.exe} --large)))

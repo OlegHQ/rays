@@ -393,7 +393,7 @@ let set_orient ()=setter_port "set_orient"
 
 let set_transform ()=setter_port "set_transform"
 
-let metadata_port ?reference_input ~key ~native_factory ~cases ~initial_changes ~edit () =
+let metadata_port ?reference_input ?(extra_geometries=[]) ~key ~native_factory ~cases ~initial_changes ~edit () =
   let sources=Flow_sop.Catalog.sources()|>flow_ok in
   let authored ~reference input keywords =
     let factory=Sop.Edit_graph.factory ~key:"edge_port_input" ~label:"Edge input" ~category:["Test"] ~arity:0(fun _->input) in
@@ -435,7 +435,7 @@ let metadata_port ?reference_input ~key ~native_factory ~cases ~initial_changes 
           check(baseline=cooked_bytes s(context domains grain)walked)(key^": reference bytes/errors"))
           [1;97;4096])[1;4;8]))cases;
     check(before=geometry_bytes geometry)(key^": input mutation"))
-    [payload(points 0);payload(points 1);grid;mixed();payload(points 32769)];
+    ([payload(points 0);payload(points 1);grid;mixed();payload(points 32769)]@extra_geometries);
   let input=Lisp_sop.snapshot(mixed()) in
   let initial=fst(N.apply_parameters(authored ~reference:false input "")initial_changes|>get_string_ok)
   and oracle=native input initial_changes in
@@ -516,5 +516,42 @@ let delete_attributes () =
     check(apply initial=apply oracle && Result.is_error(apply initial))"Delete Attributes invalid glob rebuild diagnostic")
     ["[";"\\";"[z-a]"])patterns
 
+let rename_attributes () =
+  let table=Param.String_table.encode in
+  let extra=List.fold_left(fun geometry(owner,count)->
+    let array value=Array.make count value in
+    let float_csr=Packed.Float_array.create_owned ~offsets:(Array.init(count+1)(fun i->i*2))
+      ~values:(Array.make(count*2)(-0.))|>get_string_ok
+    and int_csr=Packed.Int_array.create_owned ~offsets:(Array.init(count+1)(fun i->i*2))
+      ~values:(Array.make(count*2)max_int)|>get_string_ok in
+    List.fold_left(fun geometry(name,storage)->Geometry.with_attribute
+      (Attribute.create_owned ~owner ~name storage|>get_string_ok)geometry|>get_string_ok)geometry
+      ["old_float",Attribute.Float(array(-0.));"old_int",Int(array max_int);
+       "old_vec2",Float2(Packed.Float2.of_owned ~x:(array(-0.))~y:(array 2.)|>get_string_ok);
+       "old_vec3",Float3(Packed.Float3.of_owned ~x:(array 1.)~y:(array(-0.))~z:(array 3.)|>get_string_ok);
+       "old_vec4",Float4(Packed.Float4.of_owned ~x:(array(-0.))~y:(array 2.)~z:(array 3.)~w:(array 4.)|>get_string_ok);
+       "old_text",Text(array "猫\t😀");"old_float_array",Float_array float_csr;"old_int_array",Int_array int_csr])
+    (mixed())[Attribute.Point,6;Vertex,7;Primitive,2;Detail,1] in
+  let positions=Packed.Float3.Private.view(Geometry.positions extra) in
+  let x=Array.copy positions.x in x.(0)<-nan;x.(1)<-infinity;x.(2)<-neg_infinity;
+  let raw=Geometry.with_positions(Packed.Float3.of_owned ~x ~y:(Array.copy positions.y)
+    ~z:(Array.copy positions.z)|>get_string_ok)extra|>get_string_ok in
+  let raw=Geometry.with_attribute(Attribute.create_owned ~owner:Point ~name:"raw_float"
+    (Float[|nan;infinity;neg_infinity;-0.;0.;1.|])|>get_string_ok)raw|>get_string_ok in
+  let rows=[]::List.concat_map(fun owner->List.concat_map(fun policy->
+    List.map(fun(pattern,replacement)->[[owner;pattern;replacement;policy]])
+      ["old_*","new_*";"old_*","old_*";"missing","new";
+       "old_float","old_int";"old_float","\\ ";"old_float","P";
+       "old_?nt","new_?nt";"old_[fi]*","new_[fi]*";"N","normal";
+       "id","N";"weight","renamed_weight";"tag","é猫"])
+    ["skip";"error";"overwrite"])["point";"vertex";"primitive";"detail";" ANY ";"*"]@
+    [[["any";"old_*";"mid_*";"skip"];["any";"mid_*";"new_*";"overwrite"]];
+     [["point";"old_float";"old_int";"overwrite"];["point";"old_int";"old_vec2";"overwrite"]]] in
+  let cases=List.map(fun rows->let encoded=table rows in
+    ":rules "^Flow.Lisp.flat(Flow.Syntax.make(Str encoded)),["rules",P.Text_value encoded])rows in
+  metadata_port ~key:"rename_attributes" ~native_factory:Sop.Nodes.Rename_attributes.factory ~cases
+    ~extra_geometries:[extra;raw] ~initial_changes:[]
+    ~edit:["rules",P.Text_value(table[[" POINTS ";"id";"identifier";" SKIP "]])] ()
+
 let ()=if Array.exists ((=) "--bench") Sys.argv then benchmark ()
-  else (noise_displace ();set_float ();set_int ();set_vector ();set_orient ();set_transform ();delete_edge_group ();rename_edge_group ();delete_attributes ())
+  else (noise_displace ();set_float ();set_int ();set_vector ();set_orient ();set_transform ();delete_edge_group ();rename_edge_group ();delete_attributes ();rename_attributes ())

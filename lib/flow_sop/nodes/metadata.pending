@@ -21,10 +21,6 @@
       "edge" "edge" "edges" "edge" "any" "any" "*" "any"
       :else (error "E_PARAM" (str "unknown group owner " (text/repr token))))))
 
-(defn metadata_attribute_conflict :context value [(raw : text)]
-  (let* [token (text/lower (text/trim raw))]
-    (case token "skip" "skip" "error" "error" "overwrite" "overwrite"
-      :else (error "E_PARAM" (str "unknown attribute rename conflict " (text/repr token))))))
 (defn metadata_group_conflict :context value [(raw : text)]
   (let* [token (text/lower (text/trim raw))]
     (case token "skip" "skip" "error" "error" "overwrite" "overwrite" "union" "union"
@@ -34,13 +30,6 @@
     (case token "swap" "swap" "move" "move" "copy" "copy"
       :else (error "E_PARAM" (str "unknown attribute swap method " (text/repr token))))))
 
-(defn metadata_rename_attributes_normalize :context value [(raw : text)]
-  (text/table_encode (map (fn [(row : (list text))]
-    (if (= (count row) 4)
-      (list (metadata_attribute_owner (nth row 0) true) (nth row 1) (nth row 2)
-        (metadata_attribute_conflict (nth row 3)))
-      (error "E_PARAM" (str "Attribute Rename rule needs owner, pattern, replacement, and conflict; got " (count row) " columns"))))
-    (text/table_decode raw))))
 (defn metadata_swap_attributes_normalize :context value [(raw : text)]
   (text/table_encode (map (fn [(row : (list text))]
     (if (= (count row) 4)
@@ -64,16 +53,6 @@
 (defn metadata_rewrite_validate :context value [(operation : text) (pattern : text) (replacement : text)]
   (let* [message (text/glob_rewrite_error pattern replacement)]
     (if (equal? message "") true (error "E_PARAM" (str operation ": " message)))))
-
-(defnode sop/rename_attributes :label "Rename Attributes" :operation "attribute_rename_pattern"
-  :category ["Attribute" "Manage"]
-  :validate (reduce (fn [valid row]
-    (metadata_rewrite_validate "sop/rename_attributes" (nth row 1) (nth row 2))) true (text/table_decode rules))
-  [(in0 : geometry)
-   (rules : text "" :label "Rules (owner, pattern, replacement, conflict)" :kind encoded
-     :normalize metadata_rename_attributes_normalize)]
-  (reduce (fn [geometry row]
-    (sop/rename_attr geometry (nth row 1) (nth row 2) :owner (nth row 0) :conflict (nth row 3))) in0 (text/table_decode rules)))
 
 (defnode sop/swap_attributes :label "Swap Attributes" :operation "attribute_swap"
   :category ["Attribute" "Manage"]
