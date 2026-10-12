@@ -1,43 +1,37 @@
-(workspace metadata_nodes
-; Whole-node drafts, not embedded or registered. Native encoded keys and
-; canonical aliases are authored here; group pattern failures remain cooked.
-
-(defn metadata_attribute_owner :context value [(raw : text) (allow_any : bool)]
+(workspace swap_attributes_node
+(defn swap_attributes_owner :context value [(raw : text)]
   (let* [token (text/lower (text/trim raw))]
     (case token
       "point" "point" "points" "point"
       "vertex" "vertex" "vertices" "vertex"
       "primitive" "primitive" "primitives" "primitive" "detail" "detail"
-      "any" (if allow_any "any" (error "E_PARAM" (str "unknown attribute owner " (text/repr token))))
-      "*" (if allow_any "any" (error "E_PARAM" (str "unknown attribute owner " (text/repr token))))
       :else (error "E_PARAM" (str "unknown attribute owner " (text/repr token))))))
 
-(defn metadata_attribute_method :context value [(raw : text)]
+(defn swap_attributes_method :context value [(raw : text)]
   (let* [token (text/lower (text/trim raw))]
     (case token "swap" "swap" "move" "move" "copy" "copy"
       :else (error "E_PARAM" (str "unknown attribute swap method " (text/repr token))))))
 
-(defn metadata_swap_attributes_normalize :context value [(raw : text)]
+(defn swap_attributes_normalize :context value [(raw : text)]
   (text/table_encode (map (fn [(row : (list text))]
     (if (= (count row) 4)
-      (list (metadata_attribute_owner (nth row 0) false) (nth row 1) (nth row 2)
-        (metadata_attribute_method (nth row 3)))
+      (list (swap_attributes_owner (nth row 0)) (nth row 1) (nth row 2)
+        (swap_attributes_method (nth row 3)))
       (error "E_PARAM" (str "Attribute Swap rule needs owner, source, destination, and method; got " (count row) " columns"))))
     (text/table_decode raw))))
 
-(defn metadata_rewrite_validate :context value [(operation : text) (pattern : text) (replacement : text)]
+(defn swap_attributes_rewrite_validate :context value [(pattern : text) (replacement : text)]
   (let* [message (text/glob_rewrite_error pattern replacement)]
-    (if (equal? message "") true (error "E_PARAM" (str operation ": " message)))))
+    (if (equal? message "") true (error "E_PARAM" (str "sop/swap_attributes: " message)))))
 
 (defnode sop/swap_attributes :label "Swap Attributes" :operation "attribute_swap"
   :category ["Attribute" "Manage"]
   :validate (reduce (fn [valid row]
-    (and (metadata_rewrite_validate "sop/swap_attributes" (nth row 1) (nth row 2))
-      (metadata_rewrite_validate "sop/swap_attributes" (nth row 2) (nth row 1)))) true (text/table_decode rules))
+    (and (swap_attributes_rewrite_validate (nth row 1) (nth row 2))
+      (swap_attributes_rewrite_validate (nth row 2) (nth row 1)))) true (text/table_decode rules))
   [(in0 : geometry)
    (rules : text "" :label "Rules (owner, source, destination, method)" :kind encoded
-     :normalize metadata_swap_attributes_normalize)]
+     :normalize swap_attributes_normalize)]
   (reduce (fn [geometry row]
     (sop/swap_attr geometry (nth row 1) (nth row 2) :owner (nth row 0) :method (nth row 3))) in0 (text/table_decode rules)))
-
 )

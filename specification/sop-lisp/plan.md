@@ -637,7 +637,7 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 - [x] B.9 — named and CSR segmented reductions match ordered references at one/eight domains, including empty/malformed rows and captured compiled sources.
 - [ ] B.10
 - [ ] B.11
-- [ ] B.12
+- [x] B.12
 - [ ] B.13
 - [ ] B.14
 - [ ] B.15
@@ -682,7 +682,7 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 ### Completed whole-node ports
 
 Each checked node passed the full Verification recipe and has its own source
-commit. Evidence and timings are in `results.md`. The other 116 inventory
+commit. Evidence and timings are in `results.md`. The other 115 inventory
 nodes remain required; grouped phase milestones stay unchecked until every
 node in that group has passed.
 
@@ -698,3 +698,4 @@ node in that group has passed.
 - [x] `rename_attributes` — B.12, all owners/storages, conflicts and rewrite/error order, metadata and graph/editor parity.
 - [x] `group_delete` — B.12, all four owners, unused groups, ordered rules and native error/schema/cache/graph parity.
 - [x] `group_rename` — B.12, all owners and conflict modes, ordered unions, rewrite/error order and native schema/cache/graph parity.
+- [x] `swap_attributes` — B.12, all owners, storage and copy/move/swap modes, canonical P, eager rewrite validation and native schema/cache/graph parity.

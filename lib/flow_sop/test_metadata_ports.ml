@@ -5,10 +5,7 @@ module N = Sop.Node
 module P = Param
 let flow_ok = function Ok value->value|Error diagnostic->fail(Flow.Diagnostic.to_string diagnostic)
 let quoted value=Flow.Lisp.flat(Flow.Syntax.make(Str value))
-let source=In_channel.with_open_bin "nodes/metadata.pending" In_channel.input_all |>Flow.Syntax.parse |>flow_ok
-  |>List.concat_map(fun form->match form.Flow.Syntax.node with
-    |List(_::_::children)when Flow.Syntax.head form=Some "workspace"->children|_->[form])
-let sources=(Flow_sop.Catalog.sources()|>flow_ok)@source
+let sources=Flow_sop.Catalog.sources()|>flow_ok
 let keys=["rename_attributes";"swap_attributes";"delete_attributes";"group_rename";"group_delete";"delete_edge_group";"rename_edge_group"]
 let factories input reference =
   let snapshot key node=Sop.Edit_graph.factory ~key ~label:key ~category:["Test"] ~arity:0(fun _->node) in
@@ -163,7 +160,10 @@ let edits ()=
   print_endline "metadata ports: every physical edit has native canonical schema/key and one public miss"
 let declaration_metadata ()=
   let definitions=List.filter_map(fun form->if Flow.Syntax.head form=Some "defnode"
-    then Some(Flow.Defnode.parse form|>flow_ok)else None)source in
+    then let definition=Flow.Defnode.parse form|>flow_ok in
+      if List.mem(Flow.Check.short definition.kind.qualified)keys then Some definition else None
+    else None)sources in
+  check(List.length definitions=List.length keys)"Every metadata kind has one embedded Lisp declaration";
   List.iter(fun(definition:Flow.Defnode.t)->
     let key=Flow.Check.short definition.kind.qualified in
     let native_factory=factory key in
@@ -619,6 +619,157 @@ let cold_sample ~batch ~domains node =
       (Unix.gettimeofday()-.started)/.float batch,(Gc.allocated_bytes()-.bytes)/.float batch))
     |>List.sort(fun(a,_)(b,_)->Float.compare a b)|>fun samples->List.nth samples 1
 
+let swap_attributes_cases =
+  let methods=["swap";"move";"copy"] in
+  let kinds=["float";"int";"vec2";"vec3";"vec4";"text";"float_array";"int_array"] in
+  []::List.concat_map(fun owner->List.concat_map(fun method_->
+    List.map(fun(source,destination)->[[owner;source;destination;method_]])
+      (["old_*","new_*";"old_*","old_*";"missing","old_float";
+        "old_float","missing";"missing","missing2";"old_float","old_int";
+        "old_float","old_float";"absent_*","old_*";"old_?nt","new_?nt";
+        "old_[fi]*","new_[fi]*";"old_float","\\ "]@
+       List.map(fun kind->"old_"^kind,"new_"^kind)kinds))methods)
+    [" POINTS ";"vertices";"primitives";"detail"]@
+  List.concat_map(fun method_->List.map(fun(source,destination)->[["point";source;destination;method_]])
+    (["P","P";"P","new_P";"missing","P";"P","old_vec3";"old_vec3","P";
+      "P","old_float";"old_float","P"]@
+     List.concat_map(fun kind->["old_"^kind,"P";"P","old_"^kind])kinds))methods@
+  [[ ["point";"old_float";"old_int";"swap"];["point";"old_int";"old_vec2";"swap"] ];
+   [ ["point";"old_*";"mid_*";"copy"];["point";"mid_*";"new_*";"move"] ];
+   [ ["point";"old_vec3";"P";"move"];["point";"P";"new_P";"copy"] ];
+   [ ["vertex";"P";"new_P";"swap"] ]]
+
+let swap_attributes_fixture () =
+  let geometry=fixture() in
+  let geometry=Geometry.with_attribute(Attribute.create_owned ~owner:Vertex ~name:"P"
+    (Float(Array.make(Geometry.vertex_count geometry)(-0.)))|>get_string_ok)geometry|>get_string_ok in
+  List.fold_left(fun geometry name->Geometry.with_attribute
+    (Attribute.create_owned ~owner:Point ~name (Text(Array.make 6 "猫\t😀"))|>get_string_ok)
+    geometry|>get_string_ok)geometry ["é猫";"a-b";"back\\slash";"a b";"[x]";"*"]
+
+let swap_attributes_exact () =
+  let key="swap_attributes" and base=swap_attributes_fixture() in
+  let positions=Packed.Float3.Private.view(Geometry.positions base) in
+  let x=Array.copy positions.x in x.(0)<-nan;x.(1)<-infinity;x.(2)<-neg_infinity;
+  let raw=Geometry.with_positions(Packed.Float3.of_owned ~x ~y:(Array.copy positions.y)
+    ~z:(Array.copy positions.z)|>get_string_ok)base|>get_string_ok in
+  let raw=Geometry.with_attribute(Attribute.create_owned ~owner:Point ~name:"raw_float"
+    (Float[|nan;infinity;neg_infinity;-0.;0.;1.|])|>get_string_ok)raw|>get_string_ok in
+  let cases=swap_attributes_cases@List.concat_map(fun method_->List.map(fun pattern->
+    [["point";pattern;"renamed";method_]])
+    ["é猫";"a-b";"back\\\\slash";"a\\ b";"\\[x\\]";"\\*"])["swap";"move";"copy"] in
+  List.iter(fun geometry->let before=geometry_bytes geometry and input=Lisp_sop.snapshot geometry in
+    List.iter(fun rows->let keywords,changes=rules rows in
+      let actual=node ~reference:false input key keywords and walked=node ~reference:true input key keywords
+      and expected=native input key changes in
+      check(N.operation actual=N.operation expected && N.version actual=N.version expected
+        && N.label actual=N.label expected && N.parameter_fields actual=N.parameter_fields expected
+        && N.parameter_key actual=N.parameter_key expected)"Swap Attributes native identity/schema/key";
+      let session=Sop.Session.create ~max_entries:32 ~max_payload_bytes:64_000_000|>get_string_ok in
+      Fun.protect ~finally:(fun()->Sop.Session.close session)(fun()->
+        let baseline=cook session 1 97 expected in
+        List.iter(fun domains->List.iter(fun grain->Sop.Session.clear session;
+          let observed=cook session domains grain actual in
+          check(same baseline observed)("Swap Attributes native bytes/cause "^keywords^
+            "\nNative "^describe baseline^"\nLisp "^describe observed);
+          check(same baseline(cook session domains grain walked))"Swap Attributes strict/reference bytes/cause")
+          [1;97;4096])[1;4;8]))cases;
+    check(before=geometry_bytes geometry)"Swap Attributes input mutation")
+    [points 0;points 1;grid();base;raw;points 32769];
+  let input=Lisp_sop.snapshot base in
+  let actual=node ~reference:false input key "" and expected=native input key [] in
+  List.iter(fun raw->let apply node=match N.apply_parameters node["rules",P.Text_value raw]with
+      |Error message->Error message|Ok _->Ok() in
+    check(apply actual=apply expected && Result.is_error(apply actual))"Swap Attributes encoded/validation constructor refusal")
+    ["point";"point\twrong\\q";"point\twrong\\";
+      table[["any";"old_float";"new_float";"copy"]];table[["*";"old_float";"new_float";"copy"]];
+      table[["BADé猫\"";"old_float";"new_float";"copy"]];table[["point";"old_float";"new_float";"BADé猫\""]];
+      table[["point";"[";"new";"copy"]];table[["point";"old";"new*";"move"]];
+      table[["point";"old*";"new";"swap"]];table[["point";"\\";"new";"copy"]];
+      table[["point";"old_float";"P";"move"];["vertex";"[";"new";"copy"]];
+      table[["point";"old_float";"P";"move"];["BADé猫\"";"old";"new";"copy"]]];
+  List.iter(fun value->let apply node=match N.apply_parameters node["rules",value]with
+      |Error message->Error message|Ok _->Ok() in
+    check(apply actual=apply expected && Result.is_error(apply actual))"Swap Attributes wrong parameter refusal")
+    [P.Bool_value true;P.Int_value 17;P.Float_value nan;P.Float_value infinity];
+  let changes=["rules",P.Text_value(table[[" POINTS ";"old_float";"old_int";" SWAP "]])] in
+  let edited=fst(N.apply_parameters actual changes|>get_string_ok)
+  and oracle=fst(N.apply_parameters expected changes|>get_string_ok) in
+  check(N.parameter_fields edited=N.parameter_fields oracle && N.parameter_key edited=N.parameter_key oracle)
+    "Swap Attributes canonical edit schema/key";
+  let session=Sop.Session.create ~max_entries:32 ~max_payload_bytes:64_000_000|>get_string_ok in
+  Fun.protect ~finally:(fun()->Sop.Session.close session)(fun()->
+    ignore(cook session 1 97 actual);let before=Sop.Session.stats session in
+    let observed=cook session 1 97 edited in let after=Sop.Session.stats session in
+    check(after.misses=before.misses+1 && same observed(cook session 1 97 oracle))
+      "Swap Attributes one public edit miss and native bytes";
+    let before=Sop.Session.stats session in ignore(cook session 1 97 edited);let after=Sop.Session.stats session in
+    check(after.misses=before.misses && after.hits>before.hits)"Swap Attributes warm hit";
+    List.iter(fun label->let relabeled=N.relabel label edited in
+      check(N.id relabeled=N.id edited && N.parameter_key relabeled=N.parameter_key edited
+        && same observed(cook session 1 97 relabeled))"Swap Attributes relabel identity/cook") ["Swapped";"é猫"]);
+  print_endline "Swap Attributes all owner/method/storage/P/order/raw/error/schema/cache/domain proof"
+
+let swap_attributes_projection () =
+  metadata_projection "swap_attributes"
+    ["rules",P.Text_value(table[[" POINTS ";"old_float";"old_int";" SWAP "]])]
+
+let swap_attributes_benchmark ?(p_only=false) () =
+  let measured=ref 0 and failures=ref [] in
+  let geometry=Plane_generators.grid ~connectivity:Grid_quads ~columns:999 ~rows:999 ~size:8.()|>get_ok in
+  check(Geometry.point_count geometry=1_000_000)"Swap Attributes million-point quad grid";
+  let geometry=List.fold_left(fun geometry(owner,count)->
+    List.fold_left(fun geometry name->Geometry.with_attribute
+      (Attribute.create_owned ~owner ~name(Float(Array.make count(-0.)))|>get_string_ok)geometry|>get_string_ok)
+      geometry ["old_a";"old_b";"target"])geometry
+    [Attribute.Point,Geometry.point_count geometry;Vertex,Geometry.vertex_count geometry;
+      Primitive,Geometry.primitive_count geometry;Detail,1] in
+  let alternate_positions=Packed.Float3.of_owned
+    ~x:(Array.make(Geometry.point_count geometry)1.)
+    ~y:(Array.make(Geometry.point_count geometry)(-0.))
+    ~z:(Array.make(Geometry.point_count geometry)3.)|>get_string_ok in
+  check(Packed.Float3.data_id alternate_positions<>Packed.Float3.data_id(Geometry.positions geometry))
+    "Swap Attributes benchmark must change canonical P, not reuse its buffer";
+  let geometry=Geometry.with_attribute(Attribute.create_owned ~owner:Point ~name:"old_vec3"
+    (Float3 alternate_positions)|>get_string_ok)geometry|>get_string_ok in
+  let input=Lisp_sop.snapshot geometry in
+  let configs=["default",[],1000]@
+    List.concat_map(fun owner->List.concat_map(fun method_->
+      List.map(fun(label,source,destination)->owner^"_"^method_^"_"^label,
+        [[owner;source;destination;method_]],1000)
+        ["present","old_a","target";"new","old_a","new";"inverse","missing","target";
+         "missing","missing","missing2";"same","old_a","old_a";"wildcard","old_*","new_*"]@
+      [owner^"_"^method_^"_successive",[[owner;"old_*";"mid_*";method_];[owner;"mid_*";"new_*";method_]],1000])
+      ["swap";"move";"copy"])["point";"vertex";"primitive";"detail"]@
+    List.concat_map(fun method_->List.map(fun(label,source,destination)->"P_"^method_^"_"^label,
+      [["point";source;destination;method_]],1)
+      ["same","P","P";"from","P","new_P";"from_existing","P","old_vec3";
+       "into","old_vec3","P";"wrong_into","old_a","P";"wrong_from","P","old_a";
+       "inverse","missing","P"])["swap";"move";"copy"] in
+  let configs=if p_only then List.filter_map(fun(label,rows,_)->
+    if String.starts_with ~prefix:"P_" label then Some(label,rows,1000)else None)configs else configs in
+  List.iter(fun(label,rows,batch)->let keywords,changes=rules rows in
+    let actual=node ~reference:false input "swap_attributes" keywords
+    and walked=node ~reference:true input "swap_attributes" keywords
+    and expected=native input "swap_attributes" changes in
+    List.iter(fun domains->let session=Sop.Session.create ~max_entries:32 ~max_payload_bytes:512_000_000|>get_string_ok in
+      Fun.protect ~finally:(fun()->Sop.Session.close session)(fun()->
+        let baseline=cook session domains 4096 expected in
+        check(same baseline(cook session domains 4096 actual) && same baseline(cook session domains 4096 walked))
+          ("Swap Attributes million-point native/reference preflight "^label));
+      let native_time,native_bytes=cold_sample ~batch ~domains expected
+      and time,bytes=cold_sample ~batch ~domains actual in
+      incr measured;
+      let ratio=time/.native_time in
+      if time>2.*.native_time then failures:=(label,domains,ratio)::!failures;
+      Printf.printf "swap_attributes points=1000000 quads=998001 float_attrs=12 vec3_attrs=1 mode=%s domains=%d grain=4096 cold_sessions=%d native=%.17g lisp=%.17g ratio=%.17g native_bytes=%.0f lisp_bytes=%.0f\n%!"
+        label domains batch native_time time ratio native_bytes bytes)[1;4])configs;
+  check(!measured=(if p_only then 42 else 212))"Swap Attributes must retain all predetermined performance rows";
+  Printf.printf "swap_attributes_gate rows=%d failures=%d p_batch=%b\n%!" !measured(List.length !failures)p_only;
+  match List.rev !failures with []->()| (mode,domains,ratio)::_->fail(Printf.sprintf
+    "Swap Attributes2x gate: %d failed rows; first %s domains=%d ratio=%.17g"
+    (List.length !failures)mode domains ratio)
+
 let rename_attributes_benchmark () =
   let geometry=Plane_generators.grid ~connectivity:Grid_quads ~columns:999 ~rows:999 ~size:8.()|>get_ok in
   check(Geometry.point_count geometry=1_000_000)"Rename Attributes million-point grid";
@@ -803,6 +954,9 @@ let edges ()=List.iter(fun key->edge_exact key;edge_projection key)["delete_edge
 let ()=if Array.exists((=)"--bench-edge")Sys.argv then edge_benchmark "delete_edge_group"
   else if Array.exists((=)"--bench-delete-attributes")Sys.argv then delete_attributes_benchmark()
   else if Array.exists((=)"--bench-group-delete")Sys.argv then group_delete_benchmark()
+  else if Array.exists((=)"--bench-swap-attributes-p-batch")Sys.argv then swap_attributes_benchmark ~p_only:true()
+  else if Array.exists((=)"--bench-swap-attributes")Sys.argv then swap_attributes_benchmark()
+  else if Array.exists((=)"--swap-attributes")Sys.argv then (swap_attributes_exact();swap_attributes_projection())
   else if Array.exists((=)"--bench-group-rename")Sys.argv then group_rename_benchmark()
   else if Array.exists((=)"--group-rename")Sys.argv then (group_rename_exact();group_rename_projection())
   else if Array.exists((=)"--group-delete")Sys.argv then (group_delete_exact();group_delete_projection())
@@ -810,7 +964,7 @@ let ()=if Array.exists((=)"--bench-edge")Sys.argv then edge_benchmark "delete_ed
   else if Array.exists((=)"--rename-attributes")Sys.argv then (rename_attributes_exact();rename_attributes_projection())
   else if Array.exists((=)"--bench-rename-edge")Sys.argv then edge_benchmark "rename_edge_group"
   else if Array.exists((=)"--bench-rename-edge-batch")Sys.argv then edge_benchmark ~batch:1000 "rename_edge_group"
-  else if Array.exists((=)"--edge")Sys.argv then (delete_attributes_projection();rename_attributes_projection();group_delete_projection();group_rename_projection();edges())
+  else if Array.exists((=)"--edge")Sys.argv then (delete_attributes_projection();rename_attributes_projection();group_delete_projection();group_rename_projection();swap_attributes_projection();edges())
   else if Array.exists((=)"--huge")Sys.argv then large_rules 100001
   else if Array.exists((=)"--large")Sys.argv then large_rules 5001
   else(declaration_metadata();verify();edits();invalid_parameters();reference_input();delete_attributes_projection();edges())

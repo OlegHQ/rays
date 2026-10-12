@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "aaa406af3e1f7aed181887624251eda1")
+  (digest "987ce6c924bf01aea508ee6e0a6f7243")
   (kinds
     (kind "sop/box"
       (key "box")
@@ -2669,17 +2669,6 @@
       (fields)
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/swap_attributes"
-      (key "swap_attributes")
-      (aliases)
-      (operation "attribute_swap")
-      (label "Swap Attributes")
-      (category "Attribute" "Manage")
-      (slots (slot "in0" required))
-      (fields
-        (field "rules" "Rules (owner, source, destination, method)" (folder) (text) (text "") (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/triangulate_2d"
       (key "triangulate_2d")
       (aliases)
@@ -3511,6 +3500,18 @@
         (field "x" "X" (folder "Value") (float (soft -10 10) (hard nil nil)) (float 0) (primary false) (vec3 "value" 0))
         (field "y" "Y" (folder "Value") (float (soft -10 10) (hard nil nil)) (float 0) (primary false) (vec3 "value" 1))
         (field "z" "Z" (folder "Value") (float (soft -10 10) (hard nil nil)) (float 0) (primary false) (vec3 "value" 2)))
+      (outputs (output "geo" geometry))
+      (body lisp)
+      (calls))
+    (kind "sop/swap_attributes"
+      (key "swap_attributes")
+      (aliases)
+      (operation "attribute_swap")
+      (label "Swap Attributes")
+      (category "Attribute" "Manage")
+      (slots (slot "in0" required))
+      (fields
+        (field "rules" "Rules (owner, source, destination, method)" (folder) (text) (text "") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (body lisp)
       (calls))

@@ -636,6 +636,57 @@ let group_rename () =
     ~extra_geometries:[extra;raw] ~initial_changes:[]
     ~edit:["rules",P.Text_value(Param.String_table.encode[[" POINTS ";"alternating";"selected";" UNION "]])] ()
 
+let swap_attributes () =
+  let extra=List.fold_left(fun geometry(owner,count)->
+    let array value=Array.make count value in
+    let float_csr=Packed.Float_array.create_owned ~offsets:(Array.init(count+1)(fun i->i*2))
+      ~values:(Array.make(count*2)(-0.))|>get_string_ok
+    and int_csr=Packed.Int_array.create_owned ~offsets:(Array.init(count+1)(fun i->i*2))
+      ~values:(Array.make(count*2)max_int)|>get_string_ok in
+    List.fold_left(fun geometry(name,storage)->Geometry.with_attribute
+      (Attribute.create_owned ~owner ~name storage|>get_string_ok)geometry|>get_string_ok)geometry
+      ["old_float",Attribute.Float(array(-0.));"old_int",Int(array max_int);
+       "old_vec2",Float2(Packed.Float2.of_owned ~x:(array(-0.))~y:(array 2.)|>get_string_ok);
+       "old_vec3",Float3(Packed.Float3.of_owned ~x:(array 1.)~y:(array(-0.))~z:(array 3.)|>get_string_ok);
+       "old_vec4",Float4(Packed.Float4.of_owned ~x:(array(-0.))~y:(array 2.)~z:(array 3.)~w:(array 4.)|>get_string_ok);
+       "old_text",Text(array "猫\t😀");"old_float_array",Float_array float_csr;"old_int_array",Int_array int_csr])
+    (mixed())[Attribute.Point,6;Vertex,7;Primitive,2;Detail,1] in
+  let extra=Geometry.with_attribute(Attribute.create_owned ~owner:Vertex ~name:"P"
+    (Float(Array.make 7(-0.)))|>get_string_ok)extra|>get_string_ok in
+  let extra=List.fold_left(fun geometry name->Geometry.with_attribute
+    (Attribute.create_owned ~owner:Point ~name(Text(Array.make 6 "猫\t😀"))|>get_string_ok)geometry|>get_string_ok)
+    extra ["é猫";"a-b";"back\\slash";"a b";"[x]";"*"] in
+  let positions=Packed.Float3.Private.view(Geometry.positions extra) in
+  let x=Array.copy positions.x in x.(0)<-nan;x.(1)<-infinity;x.(2)<-neg_infinity;
+  let raw=Geometry.with_positions(Packed.Float3.of_owned ~x ~y:(Array.copy positions.y)
+    ~z:(Array.copy positions.z)|>get_string_ok)extra|>get_string_ok in
+  let raw=Geometry.with_attribute(Attribute.create_owned ~owner:Point ~name:"raw_float"
+    (Float[|nan;infinity;neg_infinity;-0.;0.;1.|])|>get_string_ok)raw|>get_string_ok in
+  let methods=["swap";"move";"copy"] in
+  let kinds=["float";"int";"vec2";"vec3";"vec4";"text";"float_array";"int_array"] in
+  let rows=[]::List.concat_map(fun owner->List.concat_map(fun method_->
+    List.map(fun(source,destination)->[[owner;source;destination;method_]])
+      (["old_*","new_*";"old_*","old_*";"missing","old_float";
+        "old_float","missing";"missing","missing2";"old_float","old_int";
+        "old_float","old_float";"absent_*","old_*";"old_?nt","new_?nt";
+        "old_[fi]*","new_[fi]*";"old_float","\\ "]@
+       List.map(fun kind->"old_"^kind,"new_"^kind)kinds))methods)
+    [" POINTS ";"vertices";"primitives";"detail"]@
+    List.concat_map(fun method_->List.map(fun(source,destination)->[["point";source;destination;method_]])
+      (["P","P";"P","new_P";"missing","P";"P","old_vec3";"old_vec3","P"]@
+       List.concat_map(fun kind->["old_"^kind,"P";"P","old_"^kind])kinds))methods@
+    [[ ["point";"old_float";"old_int";"swap"];["point";"old_int";"old_vec2";"swap"] ];
+     [ ["point";"old_*";"mid_*";"copy"];["point";"mid_*";"new_*";"move"] ];
+     [ ["point";"old_vec3";"P";"move"];["point";"P";"new_P";"copy"] ];
+     [ ["vertex";"P";"new_P";"swap"] ]]@
+    List.concat_map(fun method_->List.map(fun pattern->[["point";pattern;"renamed";method_]])
+      ["é猫";"a-b";"back\\\\slash";"a\\ b";"\\[x\\]";"\\*"])methods in
+  let cases=List.map(fun rows->let encoded=Param.String_table.encode rows in
+    ":rules "^Flow.Lisp.flat(Flow.Syntax.make(Str encoded)),["rules",P.Text_value encoded])rows in
+  metadata_port ~key:"swap_attributes" ~native_factory:Sop.Nodes.Swap_attributes.factory ~cases
+    ~extra_geometries:[extra;raw] ~initial_changes:[]
+    ~edit:["rules",P.Text_value(Param.String_table.encode[[" POINTS ";"id";"N";" SWAP "]])] ()
+
 let ()=if Array.exists ((=) "--bench") Sys.argv then benchmark ()
   else if Array.exists ((=) "--rename-attributes") Sys.argv then rename_attributes ()
-  else (noise_displace ();set_float ();set_int ();set_vector ();set_orient ();set_transform ();delete_edge_group ();rename_edge_group ();delete_attributes ();rename_attributes ();group_delete ();group_rename ())
+  else (noise_displace ();set_float ();set_int ();set_vector ();set_orient ();set_transform ();delete_edge_group ();rename_edge_group ();delete_attributes ();rename_attributes ();group_delete ();group_rename ();swap_attributes ())

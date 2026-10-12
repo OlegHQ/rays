@@ -3493,3 +3493,405 @@ contract in `specification/sop.md`; no public API changed. Set Color remains
 unregistered pending its complete current-runtime performance table and whole
 production/native oracle gates. No 4-ULP thresholds, exact byte comparisons,
 render goldens or target counts changed.
+
+## Swap Attributes whole recipe and initial candidate performance
+
+Focused **7245** exited 0 for `@lib/flow_sop/swap_attributes_draft` and
+`@lib/flow_sop/runtest`; strengthened-fixture focused **19041** also exited 0.
+The pending source uses the original native header and generic `sop/swap_attr`
+inside an ordered geometry reduce. Its unique helpers preserve encoded
+owner/method canonicalization and eager forward/backward rewrite validation
+for every rule. There is no node-specific runtime callback or API change.
+
+The strong candidate proof covers 320 rule configurations over empty, one,
+real 4225-point quad grid, mixed polygon/polyline, raw NaN/Inf/-0 payload and
+32769-point inputs. All four owners, swap/move/copy, all eight storages,
+canonical Point P and other-owner physical P, missing source inverse fallback,
+wildcard/same/successive overlaps, attribute order and immutable input bytes
+agree with native and reference at domains 1/4/8 and grains 1/97/4096. Exact
+constructor/cook code/message/cause and validation precedence, full native
+schema/identity/key, edits/miss/hit/relabel, descriptor/card/inspector projection
+and direct parameter/bypass gestures pass. Canonical P timing uses distinct
+finite Float3 planes with a checked different data ID, exercising the native
+position-change branch rather than aliasing the original position buffer.
+
+Quiet **70484** completed all 212 rows and every large-input native/reference/
+strict preflight, then exited 2 for the unchanged, unrounded `time > 2*native`
+gate. Hardware: Apple M1 arm64, OCaml 5.3.0, Dune dev profile; no competing CPU
+builds/timings. Input: real 1,000,000-point / 998,001-quad grid, three Float
+attributes per owner (12 total), plus one separate Point Float3 column. Native
+metadata slots share immutable storage regardless of the eight storage kinds;
+the semantic fixture covers them all without an unnecessarily large timing
+inventory. Wall times are medians of three fresh-cold whole-cook samples at
+grain 4096. Session creation, node construction, preflight serialization and
+GC before each sample are outside the timer. Allocations are initial-domain
+`Gc.allocated_bytes`, not whole-process domain-4 totals. The fixed protocol
+used 1000 cold sessions/sample for all 170 metadata rows and conservatively
+one for all 42 canonical-P rows; both implementations use the same batch.
+
+All 170 batched metadata rows pass, worst 1.7478277031736444x (default domain 1).
+Three one-session P rows fail: `P_move_from` domain 4 at 2.0860927152317883x,
+`P_move_inverse` domain 1 at 2.2857142857142856x, and `P_move_inverse` domain 4
+at 2.2781456953642385x. Native and Lisp P allocations are only metadata-sized;
+the RDK alias audit and compiled Lisp host route contain no dense copying or
+numeric kernel. A separately authorized fixed sampling proof of ALL 42 P
+rows, rather than a failed-row retry, is proposed; these first 212 results
+remain retained regardless of its outcome. Raw log:
+`/tmp/rays-swap-attributes-bench-before.log`.
+
+| Mode | Domains | Cold sessions/sample | Native us | Lisp us | Unrounded ratio | Native bytes/cook | Lisp bytes/cook | Gate |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| default | 1 | 1000 | 5.131006241 | 8.968114853 | 1.7478277031736444 | 12568 | 21000 | PASS |
+| default | 4 | 1000 | 5.871057510 | 8.510828018 | 1.4496243654822336 | 12800 | 21232 | PASS |
+| point_swap_present | 1 | 1000 | 8.429050446 | 9.711027145 | 1.1520902868133733 | 25816 | 30528 | PASS |
+| point_swap_present | 4 | 1000 | 10.292053223 | 10.720014572 | 1.0415817272053374 | 26048 | 30760 | PASS |
+| point_swap_new | 1 | 1000 | 11.218070984 | 12.547016144 | 1.1184646773782199 | 25680 | 30392 | PASS |
+| point_swap_new | 4 | 1000 | 8.969068527 | 10.952949524 | 1.2211914192296445 | 25912 | 30624 | PASS |
+| point_swap_inverse | 1 | 1000 | 8.926868439 | 10.953187943 | 1.2269910795363497 | 28576 | 33288 | PASS |
+| point_swap_inverse | 4 | 1000 | 9.153127670 | 10.455846786 | 1.1423250240941887 | 28808 | 33520 | PASS |
+| point_swap_missing | 1 | 1000 | 7.161140442 | 9.597063065 | 1.3401584764948729 | 22616 | 27328 | PASS |
+| point_swap_missing | 4 | 1000 | 7.310867310 | 9.150028229 | 1.2515653535090008 | 22848 | 27560 | PASS |
+| point_swap_same | 1 | 1000 | 6.911039352 | 9.808063507 | 1.4191879118225412 | 20040 | 24752 | PASS |
+| point_swap_same | 4 | 1000 | 7.646083832 | 8.810043335 | 1.1522294979731835 | 20272 | 24984 | PASS |
+| point_swap_wildcard | 1 | 1000 | 9.398937225 | 11.260986328 | 1.1981127289330831 | 29008 | 33720 | PASS |
+| point_swap_wildcard | 4 | 1000 | 9.656906128 | 11.309862137 | 1.1711682796760814 | 29240 | 33952 | PASS |
+| point_swap_successive | 1 | 1000 | 12.826919556 | 18.273115158 | 1.4245910780669147 | 40824 | 55776 | PASS |
+| point_swap_successive | 4 | 1000 | 13.669013977 | 18.562078476 | 1.3579676271541199 | 41056 | 56008 | PASS |
+| point_move_present | 1 | 1000 | 9.130001068 | 11.919021606 | 1.3054786650650232 | 25424 | 30136 | PASS |
+| point_move_present | 4 | 1000 | 9.366035461 | 9.961843491 | 1.0636136849607984 | 25656 | 30368 | PASS |
+| point_move_new | 1 | 1000 | 8.949995041 | 9.414911270 | 1.0519459761847678 | 24976 | 29688 | PASS |
+| point_move_new | 4 | 1000 | 10.796070099 | 10.396003723 | 0.96294333289165679 | 25208 | 29920 | PASS |
+| point_move_inverse | 1 | 1000 | 7.282972336 | 8.136034012 | 1.1171309784921597 | 20312 | 25024 | PASS |
+| point_move_inverse | 4 | 1000 | 6.695985794 | 8.183956146 | 1.2222182659782801 | 20544 | 25256 | PASS |
+| point_move_missing | 1 | 1000 | 7.690906525 | 9.106159210 | 1.184016368032736 | 20800 | 25512 | PASS |
+| point_move_missing | 4 | 1000 | 9.192943573 | 9.912014008 | 1.0782198246797032 | 21032 | 25744 | PASS |
+| point_move_same | 1 | 1000 | 7.908105850 | 8.160114288 | 1.0318671048267962 | 20040 | 24752 | PASS |
+| point_move_same | 4 | 1000 | 6.965875626 | 7.914066315 | 1.1361193825512546 | 20272 | 24984 | PASS |
+| point_move_wildcard | 1 | 1000 | 8.924961090 | 11.651039124 | 1.3054442485441045 | 27232 | 31944 | PASS |
+| point_move_wildcard | 4 | 1000 | 9.588003159 | 10.735034943 | 1.1196319781176178 | 27464 | 32176 | PASS |
+| point_move_successive | 1 | 1000 | 12.028932571 | 15.713930130 | 1.3063445186609319 | 36672 | 50184 | PASS |
+| point_move_successive | 4 | 1000 | 11.258125305 | 15.195131302 | 1.3497035154595509 | 36904 | 50416 | PASS |
+| point_copy_present | 1 | 1000 | 8.610010147 | 11.507987976 | 1.3365823941516906 | 25688 | 30400 | PASS |
+| point_copy_present | 4 | 1000 | 9.353160858 | 11.271953583 | 1.2051491205709917 | 25920 | 30632 | PASS |
+| point_copy_new | 1 | 1000 | 8.477926254 | 10.066986084 | 1.1874349672375488 | 25632 | 30344 | PASS |
+| point_copy_new | 4 | 1000 | 8.538961411 | 11.576175690 | 1.355688957140863 | 25864 | 30576 | PASS |
+| point_copy_inverse | 1 | 1000 | 7.122039795 | 7.924079895 | 1.1126138189608998 | 20312 | 25024 | PASS |
+| point_copy_inverse | 4 | 1000 | 7.348060608 | 7.962942123 | 1.0836794289422453 | 20544 | 25256 | PASS |
+| point_copy_missing | 1 | 1000 | 6.697893143 | 8.296966553 | 1.2387427473035986 | 20800 | 25512 | PASS |
+| point_copy_missing | 4 | 1000 | 7.734060287 | 9.572982788 | 1.2377693517062796 | 21032 | 25744 | PASS |
+| point_copy_same | 1 | 1000 | 8.723974228 | 9.529113770 | 1.0922904539367604 | 20040 | 24752 | PASS |
+| point_copy_same | 4 | 1000 | 7.628917694 | 8.640050888 | 1.1325395337208575 | 20272 | 24984 | PASS |
+| point_copy_wildcard | 1 | 1000 | 9.704113007 | 11.025190353 | 1.1361358164217976 | 28864 | 33576 | PASS |
+| point_copy_wildcard | 4 | 1000 | 12.409925461 | 11.016130447 | 0.8876870761368657 | 29096 | 33808 | PASS |
+| point_copy_successive | 1 | 1000 | 13.570785522 | 17.019987106 | 1.2541637385804638 | 40536 | 55488 | PASS |
+| point_copy_successive | 4 | 1000 | 12.850046158 | 17.498970032 | 1.3617826595172273 | 40768 | 55720 | PASS |
+| vertex_swap_present | 1 | 1000 | 9.171962738 | 10.115861893 | 1.1029113595009099 | 24960 | 29672 | PASS |
+| vertex_swap_present | 4 | 1000 | 8.622884750 | 10.159015656 | 1.1781458235407969 | 25192 | 29904 | PASS |
+| vertex_swap_new | 1 | 1000 | 8.517980576 | 9.721040726 | 1.1412377193719039 | 24816 | 29528 | PASS |
+| vertex_swap_new | 4 | 1000 | 8.261919022 | 11.592864990 | 1.4031685568349062 | 25048 | 29760 | PASS |
+| vertex_swap_inverse | 1 | 1000 | 8.611917496 | 10.290145874 | 1.1948727886824837 | 26856 | 31568 | PASS |
+| vertex_swap_inverse | 4 | 1000 | 9.022951126 | 12.161970139 | 1.3478927203065134 | 27088 | 31800 | PASS |
+| vertex_swap_missing | 1 | 1000 | 7.633924484 | 8.219003677 | 1.0766419938161718 | 20888 | 25600 | PASS |
+| vertex_swap_missing | 4 | 1000 | 7.002830505 | 9.037017822 | 1.2904807299468883 | 21120 | 25832 | PASS |
+| vertex_swap_same | 1 | 1000 | 8.286952972 | 9.768962860 | 1.178836526842741 | 19176 | 23888 | PASS |
+| vertex_swap_same | 4 | 1000 | 6.947994232 | 9.572029114 | 1.3776679706265873 | 19408 | 24120 | PASS |
+| vertex_swap_wildcard | 1 | 1000 | 8.902072906 | 10.323047638 | 1.1596229042798223 | 26920 | 31632 | PASS |
+| vertex_swap_wildcard | 4 | 1000 | 9.846210480 | 10.730028152 | 1.0897622160879461 | 27152 | 31864 | PASS |
+| vertex_swap_successive | 1 | 1000 | 11.121034622 | 15.249967575 | 1.3712723764604995 | 36600 | 51064 | PASS |
+| vertex_swap_successive | 4 | 1000 | 12.467861176 | 16.673088074 | 1.3372853482235056 | 36832 | 51296 | PASS |
+| vertex_move_present | 1 | 1000 | 8.327960968 | 11.896848679 | 1.4285427998854854 | 24568 | 29280 | PASS |
+| vertex_move_present | 4 | 1000 | 8.096933365 | 9.559154510 | 1.1805894997202675 | 24800 | 29512 | PASS |
+| vertex_move_new | 1 | 1000 | 8.168935776 | 9.493112564 | 1.1620990572921228 | 24112 | 28824 | PASS |
+| vertex_move_new | 4 | 1000 | 8.573055267 | 11.792898178 | 1.3755770621280383 | 24344 | 29056 | PASS |
+| vertex_move_inverse | 1 | 1000 | 7.416963577 | 8.296966553 | 1.1186473367835672 | 19456 | 24168 | PASS |
+| vertex_move_inverse | 4 | 1000 | 7.138013840 | 9.585142136 | 1.3428304218577776 | 19688 | 24400 | PASS |
+| vertex_move_missing | 1 | 1000 | 8.126020432 | 9.122848511 | 1.1226711263679843 | 19936 | 24648 | PASS |
+| vertex_move_missing | 4 | 1000 | 8.088827133 | 8.877038956 | 1.0974445132195596 | 20168 | 24880 | PASS |
+| vertex_move_same | 1 | 1000 | 7.396936417 | 8.058071136 | 1.089379532634972 | 19176 | 23888 | PASS |
+| vertex_move_same | 4 | 1000 | 6.749153137 | 7.900953293 | 1.170658471103575 | 19408 | 24120 | PASS |
+| vertex_move_wildcard | 1 | 1000 | 10.053873062 | 10.246038437 | 1.0191135668381988 | 25744 | 30456 | PASS |
+| vertex_move_wildcard | 4 | 1000 | 8.480072021 | 9.742021561 | 1.1488135402609088 | 25976 | 30688 | PASS |
+| vertex_move_successive | 1 | 1000 | 10.874986649 | 17.725944519 | 1.6299739109464406 | 33712 | 47224 | PASS |
+| vertex_move_successive | 4 | 1000 | 10.580062866 | 14.060020447 | 1.3289165314584461 | 33944 | 47456 | PASS |
+| vertex_copy_present | 1 | 1000 | 8.200168610 | 11.253833771 | 1.3723905332325406 | 24832 | 29544 | PASS |
+| vertex_copy_present | 4 | 1000 | 8.255004883 | 9.454011917 | 1.1452460720887245 | 25064 | 29776 | PASS |
+| vertex_copy_new | 1 | 1000 | 9.256124496 | 9.600877762 | 1.0372459624449424 | 24768 | 29480 | PASS |
+| vertex_copy_new | 4 | 1000 | 8.391857147 | 9.341955185 | 1.1132166600375022 | 25000 | 29712 | PASS |
+| vertex_copy_inverse | 1 | 1000 | 6.659030914 | 8.033037186 | 1.2063372717508056 | 19456 | 24168 | PASS |
+| vertex_copy_inverse | 4 | 1000 | 6.664991379 | 7.881164551 | 1.1824718297263459 | 19688 | 24400 | PASS |
+| vertex_copy_missing | 1 | 1000 | 7.031917572 | 8.016824722 | 1.1400623855699465 | 19936 | 24648 | PASS |
+| vertex_copy_missing | 4 | 1000 | 6.859064102 | 9.313106537 | 1.3577809447669367 | 20168 | 24880 | PASS |
+| vertex_copy_same | 1 | 1000 | 7.253885269 | 7.987976074 | 1.1011996713229251 | 19176 | 23888 | PASS |
+| vertex_copy_same | 4 | 1000 | 8.219957352 | 11.822938919 | 1.43832119964034 | 19408 | 24120 | PASS |
+| vertex_copy_wildcard | 1 | 1000 | 8.902072906 | 10.298967361 | 1.156917885264342 | 26824 | 31536 | PASS |
+| vertex_copy_wildcard | 4 | 1000 | 9.001016617 | 10.259866714 | 1.1398564352501788 | 27056 | 31768 | PASS |
+| vertex_copy_successive | 1 | 1000 | 12.583971024 | 15.501976013 | 1.2318826850571227 | 36408 | 50872 | PASS |
+| vertex_copy_successive | 4 | 1000 | 11.133909225 | 16.165018082 | 1.4518726311055912 | 36640 | 51104 | PASS |
+| primitive_swap_present | 1 | 1000 | 8.091211319 | 9.420156479 | 1.164245513746059 | 24968 | 29680 | PASS |
+| primitive_swap_present | 4 | 1000 | 8.331060410 | 9.326934814 | 1.1195375325530148 | 25200 | 29912 | PASS |
+| primitive_swap_new | 1 | 1000 | 8.587121964 | 9.467124939 | 1.1024793847349861 | 24840 | 29552 | PASS |
+| primitive_swap_new | 4 | 1000 | 8.288860321 | 10.312080383 | 1.2440890525225796 | 25072 | 29784 | PASS |
+| primitive_swap_inverse | 1 | 1000 | 9.755134583 | 10.414123535 | 1.0675530354873399 | 26856 | 31568 | PASS |
+| primitive_swap_inverse | 4 | 1000 | 9.088039398 | 10.056018829 | 1.1065113594627209 | 27088 | 31800 | PASS |
+| primitive_swap_missing | 1 | 1000 | 6.737947464 | 8.002996445 | 1.1877499026927569 | 20904 | 25616 | PASS |
+| primitive_swap_missing | 4 | 1000 | 8.525133133 | 7.972955704 | 0.93522946555919129 | 21136 | 25848 | PASS |
+| primitive_swap_same | 1 | 1000 | 6.788969040 | 7.747888565 | 1.1412467076382791 | 19192 | 23904 | PASS |
+| primitive_swap_same | 4 | 1000 | 6.644010544 | 8.032083511 | 1.2089209459216994 | 19424 | 24136 | PASS |
+| primitive_swap_wildcard | 1 | 1000 | 9.735107422 | 10.016918182 | 1.0289478840125392 | 26936 | 31648 | PASS |
+| primitive_swap_wildcard | 4 | 1000 | 8.671045303 | 10.213136673 | 1.1778437680442135 | 27168 | 31880 | PASS |
+| primitive_swap_successive | 1 | 1000 | 11.235952377 | 15.112161636 | 1.3449827063042417 | 36616 | 51080 | PASS |
+| primitive_swap_successive | 4 | 1000 | 11.934041977 | 16.159057617 | 1.3540305663769852 | 36848 | 51312 | PASS |
+| primitive_move_present | 1 | 1000 | 8.321046829 | 9.778022766 | 1.1750952694765191 | 24576 | 29288 | PASS |
+| primitive_move_present | 4 | 1000 | 8.281946182 | 9.274959564 | 1.1199009701471054 | 24808 | 29520 | PASS |
+| primitive_move_new | 1 | 1000 | 7.786989212 | 9.022951126 | 1.1587214108569852 | 24136 | 28848 | PASS |
+| primitive_move_new | 4 | 1000 | 8.213043213 | 9.171962738 | 1.1167556897352531 | 24368 | 29080 | PASS |
+| primitive_move_inverse | 1 | 1000 | 6.666898727 | 7.727861404 | 1.1591388620677323 | 19456 | 24168 | PASS |
+| primitive_move_inverse | 4 | 1000 | 6.881952286 | 7.719039917 | 1.1216351983370865 | 19688 | 24400 | PASS |
+| primitive_move_missing | 1 | 1000 | 6.916046143 | 8.310079575 | 1.2015650854936568 | 19952 | 24664 | PASS |
+| primitive_move_missing | 4 | 1000 | 6.803035736 | 8.043050766 | 1.1822737786500315 | 20184 | 24896 | PASS |
+| primitive_move_same | 1 | 1000 | 6.633043289 | 7.889032364 | 1.1893533661622515 | 19192 | 23904 | PASS |
+| primitive_move_same | 4 | 1000 | 7.727146149 | 8.006095886 | 1.0360999691453256 | 19424 | 24136 | PASS |
+| primitive_move_wildcard | 1 | 1000 | 8.797883987 | 12.600898743 | 1.4322647082734883 | 25760 | 30472 | PASS |
+| primitive_move_wildcard | 4 | 1000 | 9.000062943 | 10.159015656 | 1.1287716230893532 | 25992 | 30704 | PASS |
+| primitive_move_successive | 1 | 1000 | 10.727882385 | 14.213085175 | 1.3248733220730731 | 33728 | 47240 | PASS |
+| primitive_move_successive | 4 | 1000 | 10.416030884 | 14.817953110 | 1.4226103277787951 | 33960 | 47472 | PASS |
+| primitive_copy_present | 1 | 1000 | 8.599042892 | 9.865045547 | 1.147225996062883 | 24840 | 29552 | PASS |
+| primitive_copy_present | 4 | 1000 | 8.436918259 | 9.779930115 | 1.1591827507276684 | 25072 | 29784 | PASS |
+| primitive_copy_new | 1 | 1000 | 11.172056198 | 10.213136673 | 0.91416803602296259 | 24792 | 29504 | PASS |
+| primitive_copy_new | 4 | 1000 | 8.994102478 | 9.915113449 | 1.1024016541193937 | 25024 | 29736 | PASS |
+| primitive_copy_inverse | 1 | 1000 | 6.747961044 | 9.611129761 | 1.4243013108151079 | 19456 | 24168 | PASS |
+| primitive_copy_inverse | 4 | 1000 | 7.651090622 | 8.144855499 | 1.0645352279455298 | 19688 | 24400 | PASS |
+| primitive_copy_missing | 1 | 1000 | 7.439136505 | 7.973194122 | 1.0717902698544965 | 19952 | 24664 | PASS |
+| primitive_copy_missing | 4 | 1000 | 8.769035339 | 9.102106094 | 1.0379825992387166 | 20184 | 24896 | PASS |
+| primitive_copy_same | 1 | 1000 | 6.838083267 | 8.766174316 | 1.2819636693281267 | 19192 | 23904 | PASS |
+| primitive_copy_same | 4 | 1000 | 6.889104843 | 8.267879486 | 1.2001384322547153 | 19424 | 24136 | PASS |
+| primitive_copy_wildcard | 1 | 1000 | 9.139060974 | 10.689973831 | 1.16970155483669 | 26840 | 31552 | PASS |
+| primitive_copy_wildcard | 4 | 1000 | 8.870124817 | 11.349916458 | 1.2795667132566391 | 27072 | 31784 | PASS |
+| primitive_copy_successive | 1 | 1000 | 11.193990707 | 18.220901489 | 1.62773955826287 | 36424 | 50888 | PASS |
+| primitive_copy_successive | 4 | 1000 | 11.451005936 | 16.613960266 | 1.4508734306356574 | 36656 | 51120 | PASS |
+| detail_swap_present | 1 | 1000 | 8.419990540 | 9.902000427 | 1.1760108732585794 | 24960 | 29672 | PASS |
+| detail_swap_present | 4 | 1000 | 9.313821793 | 9.479999542 | 1.0178420581082812 | 25192 | 29904 | PASS |
+| detail_swap_new | 1 | 1000 | 8.394002914 | 12.441873550 | 1.4822336467179822 | 24816 | 29528 | PASS |
+| detail_swap_new | 4 | 1000 | 8.213043213 | 10.082006454 | 1.2275603808639108 | 25048 | 29760 | PASS |
+| detail_swap_inverse | 1 | 1000 | 8.578062057 | 9.651899338 | 1.1251841351899718 | 26856 | 31568 | PASS |
+| detail_swap_inverse | 4 | 1000 | 8.711099625 | 9.934902191 | 1.1404877247721488 | 27088 | 31800 | PASS |
+| detail_swap_missing | 1 | 1000 | 6.998062134 | 8.289098740 | 1.1844848732624693 | 20888 | 25600 | PASS |
+| detail_swap_missing | 4 | 1000 | 7.513999939 | 9.021997452 | 1.2006917121462115 | 21120 | 25832 | PASS |
+| detail_swap_same | 1 | 1000 | 7.116079330 | 7.964134216 | 1.1191744563942776 | 19176 | 23888 | PASS |
+| detail_swap_same | 4 | 1000 | 6.685018539 | 8.252859116 | 1.2345304754092514 | 19408 | 24120 | PASS |
+| detail_swap_wildcard | 1 | 1000 | 10.644912720 | 12.762069702 | 1.1988890879770648 | 26920 | 31632 | PASS |
+| detail_swap_wildcard | 4 | 1000 | 9.121179581 | 10.807037354 | 1.184828920197611 | 27152 | 31864 | PASS |
+| detail_swap_successive | 1 | 1000 | 12.068986893 | 15.552997589 | 1.2886746607139328 | 36600 | 51064 | PASS |
+| detail_swap_successive | 4 | 1000 | 12.113094330 | 16.471862793 | 1.3598393890485376 | 36832 | 51296 | PASS |
+| detail_move_present | 1 | 1000 | 7.869005203 | 10.130882263 | 1.2874412967732161 | 24568 | 29280 | PASS |
+| detail_move_present | 4 | 1000 | 8.166074753 | 10.735034943 | 1.3145893550553271 | 24800 | 29512 | PASS |
+| detail_move_new | 1 | 1000 | 8.105039597 | 9.800195694 | 1.2091484041770848 | 24112 | 28824 | PASS |
+| detail_move_new | 4 | 1000 | 9.027004242 | 9.888887405 | 1.0954783159896464 | 24344 | 29056 | PASS |
+| detail_move_inverse | 1 | 1000 | 6.641149521 | 7.956981659 | 1.1981331897325436 | 19456 | 24168 | PASS |
+| detail_move_inverse | 4 | 1000 | 7.111072540 | 7.861137390 | 1.1054784416281098 | 19688 | 24400 | PASS |
+| detail_move_missing | 1 | 1000 | 6.586074829 | 7.992982864 | 1.2136185925282363 | 19936 | 24648 | PASS |
+| detail_move_missing | 4 | 1000 | 6.989955902 | 8.306026459 | 1.1882802373968211 | 20168 | 24880 | PASS |
+| detail_move_same | 1 | 1000 | 7.776021957 | 8.875846863 | 1.1414379886555266 | 19176 | 23888 | PASS |
+| detail_move_same | 4 | 1000 | 7.073879242 | 8.749961853 | 1.2369396697000337 | 19408 | 24120 | PASS |
+| detail_move_wildcard | 1 | 1000 | 8.975028992 | 10.071992874 | 1.1222239931994475 | 25744 | 30456 | PASS |
+| detail_move_wildcard | 4 | 1000 | 9.297132492 | 10.212898254 | 1.0984998076676498 | 25976 | 30688 | PASS |
+| detail_move_successive | 1 | 1000 | 10.837078094 | 15.772104263 | 1.4553834646015753 | 33712 | 47224 | PASS |
+| detail_move_successive | 4 | 1000 | 11.620998383 | 14.508008957 | 1.2484305116737107 | 33944 | 47456 | PASS |
+| detail_copy_present | 1 | 1000 | 8.536100388 | 9.677171707 | 1.1336759489428261 | 24832 | 29544 | PASS |
+| detail_copy_present | 4 | 1000 | 8.587121964 | 9.781837463 | 1.1391287447594189 | 25064 | 29776 | PASS |
+| detail_copy_new | 1 | 1000 | 9.320974350 | 10.581970215 | 1.1352858421793068 | 24768 | 29480 | PASS |
+| detail_copy_new | 4 | 1000 | 8.365869522 | 9.927988052 | 1.1867251845307647 | 25000 | 29712 | PASS |
+| detail_copy_inverse | 1 | 1000 | 6.687164307 | 7.925987244 | 1.1852538505419281 | 19456 | 24168 | PASS |
+| detail_copy_inverse | 4 | 1000 | 10.210990906 | 9.429931641 | 0.92350798543009238 | 19688 | 24400 | PASS |
+| detail_copy_missing | 1 | 1000 | 6.599187851 | 8.134126663 | 1.2325951082047761 | 19936 | 24648 | PASS |
+| detail_copy_missing | 4 | 1000 | 6.762981415 | 7.920026779 | 1.1710851018825355 | 20168 | 24880 | PASS |
+| detail_copy_same | 1 | 1000 | 7.004022598 | 8.358955383 | 1.1934506586785583 | 19176 | 23888 | PASS |
+| detail_copy_same | 4 | 1000 | 7.226943970 | 8.765935898 | 1.2129519662179995 | 19408 | 24120 | PASS |
+| detail_copy_wildcard | 1 | 1000 | 9.455919266 | 11.146068573 | 1.178739819974282 | 26824 | 31536 | PASS |
+| detail_copy_wildcard | 4 | 1000 | 8.980989456 | 10.394811630 | 1.1574238763970373 | 27056 | 31768 | PASS |
+| detail_copy_successive | 1 | 1000 | 11.091947556 | 15.419006348 | 1.3901081185650106 | 36408 | 50872 | PASS |
+| detail_copy_successive | 4 | 1000 | 11.067867279 | 16.070842743 | 1.4520270561371766 | 36640 | 51104 | PASS |
+| P_swap_same | 1 | 1 | 28.848648071 | 28.133392334 | 0.97520661157024791 | 18288 | 23000 | PASS |
+| P_swap_same | 4 | 1 | 30.994415283 | 34.093856812 | 1.1000000000000001 | 18520 | 23232 | PASS |
+| P_swap_from | 1 | 1 | 39.100646973 | 47.922134399 | 1.225609756097561 | 25352 | 30064 | PASS |
+| P_swap_from | 4 | 1 | 35.047531128 | 41.007995605 | 1.1700680272108843 | 25584 | 30296 | PASS |
+| P_swap_from_existing | 1 | 1 | 35.047531128 | 51.975250244 | 1.4829931972789117 | 25424 | 30136 | PASS |
+| P_swap_from_existing | 4 | 1 | 37.908554077 | 41.007995605 | 1.0817610062893082 | 25656 | 30368 | PASS |
+| P_swap_into | 1 | 1 | 30.040740967 | 38.862228394 | 1.2936507936507937 | 25424 | 30136 | PASS |
+| P_swap_into | 4 | 1 | 32.901763916 | 41.007995605 | 1.2463768115942029 | 25656 | 30368 | PASS |
+| P_swap_wrong_into | 1 | 1 | 30.994415283 | 41.007995605 | 1.323076923076923 | 18096 | 22424 | PASS |
+| P_swap_wrong_into | 4 | 1 | 51.021575928 | 40.054321289 | 0.78504672897196259 | 18328 | 22656 | PASS |
+| P_swap_wrong_from | 1 | 1 | 35.047531128 | 36.954879761 | 1.0544217687074831 | 18096 | 22424 | PASS |
+| P_swap_wrong_from | 4 | 1 | 34.093856812 | 36.954879761 | 1.083916083916084 | 18328 | 22656 | PASS |
+| P_swap_inverse | 1 | 1 | 33.855438232 | 53.167343140 | 1.5704225352112675 | 27576 | 32288 | PASS |
+| P_swap_inverse | 4 | 1 | 34.093856812 | 46.968460083 | 1.3776223776223777 | 27808 | 32520 | PASS |
+| P_move_same | 1 | 1 | 30.994415283 | 35.047531128 | 1.1307692307692307 | 18288 | 23000 | PASS |
+| P_move_same | 4 | 1 | 31.948089600 | 39.100646973 | 1.2238805970149254 | 18520 | 23232 | PASS |
+| P_move_from | 1 | 1 | 40.054321289 | 42.200088501 | 1.0535714285714286 | 25352 | 30064 | PASS |
+| P_move_from | 4 | 1 | 36.001205444 | 75.101852417 | 2.0860927152317883 | 25584 | 30296 | FAIL |
+| P_move_from_existing | 1 | 1 | 32.901763916 | 30.994415283 | 0.94202898550724634 | 25416 | 30128 | PASS |
+| P_move_from_existing | 4 | 1 | 41.961669922 | 47.206878662 | 1.125 | 25648 | 30360 | PASS |
+| P_move_into | 1 | 1 | 32.186508179 | 31.948089600 | 0.99259259259259258 | 24960 | 29672 | PASS |
+| P_move_into | 4 | 1 | 33.855438232 | 41.961669922 | 1.2394366197183098 | 25192 | 29904 | PASS |
+| P_move_wrong_into | 1 | 1 | 38.862228394 | 37.908554077 | 0.97546012269938653 | 18080 | 22408 | PASS |
+| P_move_wrong_into | 4 | 1 | 36.954879761 | 35.047531128 | 0.94838709677419353 | 18312 | 22640 | PASS |
+| P_move_wrong_from | 1 | 1 | 35.047531128 | 44.822692871 | 1.2789115646258504 | 24696 | 29408 | PASS |
+| P_move_wrong_from | 4 | 1 | 34.093856812 | 39.815902710 | 1.1678321678321679 | 24928 | 29640 | PASS |
+| P_move_inverse | 1 | 1 | 25.033950806 | 57.220458984 | 2.2857142857142856 | 19264 | 23976 | FAIL |
+| P_move_inverse | 4 | 1 | 36.001205444 | 82.015991211 | 2.2781456953642385 | 19496 | 24208 | FAIL |
+| P_copy_same | 1 | 1 | 24.080276489 | 40.054321289 | 1.6633663366336633 | 18288 | 23000 | PASS |
+| P_copy_same | 4 | 1 | 27.894973755 | 34.093856812 | 1.2222222222222223 | 18520 | 23232 | PASS |
+| P_copy_from | 1 | 1 | 39.100646973 | 36.954879761 | 0.94512195121951215 | 25352 | 30064 | PASS |
+| P_copy_from | 4 | 1 | 82.969665527 | 42.200088501 | 0.50862068965517238 | 25584 | 30296 | PASS |
+| P_copy_from_existing | 1 | 1 | 35.047531128 | 33.855438232 | 0.96598639455782309 | 25416 | 30128 | PASS |
+| P_copy_from_existing | 4 | 1 | 62.942504883 | 40.054321289 | 0.63636363636363635 | 25648 | 30360 | PASS |
+| P_copy_into | 1 | 1 | 38.146972656 | 37.908554077 | 0.99375000000000002 | 25344 | 30056 | PASS |
+| P_copy_into | 4 | 1 | 40.054321289 | 45.061111450 | 1.125 | 25576 | 30288 | PASS |
+| P_copy_wrong_into | 1 | 1 | 30.994415283 | 45.061111450 | 1.4538461538461538 | 18144 | 22472 | PASS |
+| P_copy_wrong_into | 4 | 1 | 46.968460083 | 35.047531128 | 0.74619289340101524 | 18376 | 22704 | PASS |
+| P_copy_wrong_from | 1 | 1 | 36.954879761 | 36.001205444 | 0.97419354838709682 | 24696 | 29408 | PASS |
+| P_copy_wrong_from | 4 | 1 | 56.028366089 | 46.968460083 | 0.83829787234042552 | 24928 | 29640 | PASS |
+| P_copy_inverse | 1 | 1 | 28.133392334 | 36.001205444 | 1.2796610169491525 | 19264 | 23976 | PASS |
+| P_copy_inverse | 4 | 1 | 25.987625122 | 31.948089600 | 1.2293577981651376 | 19496 | 24208 | PASS |
+
+
+Swap Attributes remains pending with its native registration intact. No port
+completion, catalog/CLI/render rebaseline, target-count increment or API
+promotion follows from this failed first timing table.
+
+
+### Fixed all42 canonical-P precision proof
+
+Root authorized this sampling amendment after tracing every canonical-P branch,
+before its outcome was known. RDK `swap_store` keeps immutable storage handles;
+`position_attribute`, `Attribute.create_owned` and `Attribute.with_name` wrap
+the existing planes. `swap_set_position` changes the Float3 handle, and
+`Geometry.Private.with_positions_and_attributes_owned` validates counts/layout
+without copying or scanning its dense payload. The distinct `old_vec3` planes
+still exercise actual position replacement. The Lisp structural Core route
+borrows its cooked snapshot handle, calls generic `Attribute_metadata.swap`,
+and reaches that same RDK kernel. It has no numeric region, dense array
+constructor or deep clone; the measured 19–31KB native/Lisp metadata allocation
+is consistent with that route, rather than a 24MB position copy.
+
+The initial all212 table and all three failures remain above. The amendment
+selects every one of the predetermined 21 `P_` configurations, including
+previous passes and failures, at both domains 1 and 4: ALL42 rows. Both native
+and whole strict Lisp now use 1000 fresh cold sessions per sample, median of
+three samples. All170 already-batched metadata rows retain their original
+evidence. Input, distinct planes, profile, grain4096, session construction and
+GC boundaries, exact preflights, per-cook initial-domain allocation and the
+unrounded `time > 2*native` gate remain identical. No runtime implementation
+changed. Command, from `lib/flow_sop`:
+
+`opam exec -- ../../_build/default/lib/flow_sop/test_metadata_ports.exe --bench-swap-attributes-p-batch`
+
+Focused **7446** exited0 for `@lib/flow_sop/swap_attributes_draft`, retaining
+the complete semantic/schema/cache/graph proof. Reserved quiet **9439** exited0
+after every million-point native/reference/strict preflight and final
+`swap_attributes_gate rows=42 failures=0 p_batch=true`.
+Raw log: `/tmp/rays-swap-attributes-p-batch-bench.log`.
+
+All42 pass; exact maximum 1.4869351484212519x (P_swap_wrong_into domain 1).
+
+| Mode | Domains | Cold sessions/sample | Native us | Lisp us | Unrounded ratio | Native bytes/cook | Lisp bytes/cook | Gate |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| P_swap_same | 1 | 1000 | 6.385087967 | 7.471084595 | 1.1700832679884994 | 18152 | 22864 | PASS |
+| P_swap_same | 4 | 1000 | 6.536960602 | 8.608818054 | 1.3169450725800569 | 18384 | 23096 | PASS |
+| P_swap_from | 1 | 1000 | 8.672952652 | 10.143041611 | 1.1695027077549001 | 25216 | 29928 | PASS |
+| P_swap_from | 4 | 1000 | 12.373209000 | 11.314868927 | 0.91446519066612708 | 25448 | 30160 | PASS |
+| P_swap_from_existing | 1 | 1000 | 10.189056396 | 10.033130646 | 0.98469674279296149 | 25288 | 30000 | PASS |
+| P_swap_from_existing | 4 | 1000 | 8.106946945 | 11.245965958 | 1.3872011293121194 | 25520 | 30232 | PASS |
+| P_swap_into | 1 | 1000 | 9.350776672 | 9.598970413 | 1.0265425803161654 | 25288 | 30000 | PASS |
+| P_swap_into | 4 | 1000 | 8.496999741 | 10.529041290 | 1.2391481242459101 | 25520 | 30232 | PASS |
+| P_swap_wrong_into | 1 | 1000 | 6.304979324 | 9.375095367 | 1.4869351484212519 | 17960 | 22288 | PASS |
+| P_swap_wrong_into | 4 | 1000 | 6.242036819 | 8.124113083 | 1.301516366830908 | 18192 | 22520 | PASS |
+| P_swap_wrong_from | 1 | 1000 | 6.366968155 | 6.929159164 | 1.0882980715221868 | 17960 | 22288 | PASS |
+| P_swap_wrong_from | 4 | 1000 | 5.919933319 | 7.287025452 | 1.2309303262182845 | 18192 | 22520 | PASS |
+| P_swap_inverse | 1 | 1000 | 8.956909180 | 10.183095932 | 1.1368984241908007 | 27440 | 32152 | PASS |
+| P_swap_inverse | 4 | 1000 | 9.107112885 | 11.292934418 | 1.2400125661029373 | 27672 | 32384 | PASS |
+| P_move_same | 1 | 1000 | 6.422042847 | 7.918834686 | 1.233070983070983 | 18152 | 22864 | PASS |
+| P_move_same | 4 | 1000 | 6.465911865 | 8.114099503 | 1.2549041297935104 | 18384 | 23096 | PASS |
+| P_move_from | 1 | 1000 | 8.731126785 | 9.927034378 | 1.1369705906447121 | 25216 | 29928 | PASS |
+| P_move_from | 4 | 1000 | 8.928060532 | 10.087013245 | 1.1298101316527358 | 25448 | 30160 | PASS |
+| P_move_from_existing | 1 | 1000 | 9.567975998 | 9.790897369 | 1.0232986967680846 | 25280 | 29992 | PASS |
+| P_move_from_existing | 4 | 1000 | 9.382009506 | 10.385990143 | 1.1070112576554598 | 25512 | 30224 | PASS |
+| P_move_into | 1 | 1000 | 8.057117462 | 10.203123093 | 1.266349056045452 | 24824 | 29536 | PASS |
+| P_move_into | 4 | 1000 | 10.330915451 | 10.857105255 | 1.0509335118044816 | 25056 | 29768 | PASS |
+| P_move_wrong_into | 1 | 1000 | 7.459878922 | 7.426023483 | 0.99546166384352319 | 17944 | 22272 | PASS |
+| P_move_wrong_into | 4 | 1000 | 6.652116776 | 8.244991302 | 1.2394537830185299 | 18176 | 22504 | PASS |
+| P_move_wrong_from | 1 | 1000 | 8.187055588 | 9.671211243 | 1.1812807594862984 | 24560 | 29272 | PASS |
+| P_move_wrong_from | 4 | 1000 | 10.162115097 | 11.909961700 | 1.1719963400042233 | 24792 | 29504 | PASS |
+| P_move_inverse | 1 | 1000 | 6.533145905 | 8.231878281 | 1.2600175169695642 | 19128 | 23840 | PASS |
+| P_move_inverse | 4 | 1000 | 6.712913513 | 7.844209671 | 1.1685253587157269 | 19360 | 24072 | PASS |
+| P_copy_same | 1 | 1000 | 6.826877594 | 8.814096451 | 1.2910875183348467 | 18152 | 22864 | PASS |
+| P_copy_same | 4 | 1000 | 6.530046463 | 8.066177368 | 1.2352404249881339 | 18384 | 23096 | PASS |
+| P_copy_from | 1 | 1000 | 8.589029312 | 10.318040848 | 1.2013046495489244 | 25216 | 29928 | PASS |
+| P_copy_from | 4 | 1000 | 8.523941040 | 10.004997253 | 1.173752517341687 | 25448 | 30160 | PASS |
+| P_copy_from_existing | 1 | 1000 | 9.268999100 | 10.647058487 | 1.1486740232013786 | 25280 | 29992 | PASS |
+| P_copy_from_existing | 4 | 1000 | 8.532047272 | 9.654998779 | 1.1316157156429889 | 25512 | 30224 | PASS |
+| P_copy_into | 1 | 1000 | 8.391141891 | 10.311126709 | 1.2288109106407159 | 25208 | 29920 | PASS |
+| P_copy_into | 4 | 1000 | 8.838891983 | 9.782075882 | 1.1067083861570417 | 25440 | 30152 | PASS |
+| P_copy_wrong_into | 1 | 1000 | 5.832195282 | 7.143974304 | 1.2249202845229334 | 18008 | 22336 | PASS |
+| P_copy_wrong_into | 4 | 1000 | 6.014823914 | 7.405996323 | 1.2312906294593309 | 18240 | 22568 | PASS |
+| P_copy_wrong_from | 1 | 1000 | 11.231899261 | 10.873079300 | 0.96805349182763734 | 24560 | 29272 | PASS |
+| P_copy_wrong_from | 4 | 1000 | 9.397983551 | 11.271953583 | 1.1994012887513319 | 24792 | 29504 | PASS |
+| P_copy_inverse | 1 | 1000 | 6.883144379 | 8.634805679 | 1.2544856252164875 | 19128 | 23840 | PASS |
+| P_copy_inverse | 4 | 1000 | 7.045984268 | 8.079051971 | 1.1466179406490036 | 19360 | 24072 | PASS |
+
+This qualifies the candidate sampling gate together with the initial170 metadata rows; production registration, whole SOP oracle, manifest/CLI/native integration and target-count changes remain parent-owned and unclaimed here.
+
+### Swap production integration
+
+The 37-line declaration is now embedded as `nodes/swap_attributes.rays`;
+its OCaml catalog registration is removed and the last `metadata.pending`
+draft file is deleted. The real `Sop.Nodes.Swap_attributes` factory remains
+the independent whole-port oracle. The normal metadata projection alias now
+includes Swap. Declaration checks require exactly one embedded Lisp definition
+for each of all seven metadata kinds, comparing their native schemas and menu
+identities. The whole-port runner adds mandatory empty, single, 4,225-point
+and mixed inputs plus every storage/owner/method, exceptional P and numeric
+planes, canonical P conflicts, successive rules, literal Unicode/escaped names,
+native refusals, cache edits, relabels and reference/domain/grain bytes.
+
+The accepted timing matrix combines all 170 original batch1000 metadata rows
+with all 42 fixed batch1000 canonical-P rows above. Both matrices use the
+unchanged 2x unrounded gate and native/reference million-point byte preflights.
+The three original batch1 failures remain recorded above. No failed-row subset
+was retimed and no runtime or native denominator was changed for this proof.
+
+Production focused handle26574 exited1: the integration initially left a
+reference to the deleted draft `source`, an unused whole-port function before
+its runner call was added, and the expected manifest diff. The corrected
+handle88033 ran all whole recipes, candidate proof, Color raw72 proof and
+catalog/lowering checks successfully; it exited1 only because the dependency
+scanner raced the newly built Color executable's initially dangling build-tree
+link. The final native run below reran that scan successfully; the scanner and
+its rules were not changed.
+
+Full integration handle99047 exited1 only for the expected generated CLI
+catalog hash. Handle90589 then exited0 for the same complete alias set:
+`@runtest-native @lib/sop/test_lisp_ports @lib/flow_sop/runtest
+@lib/flow_sop/metadata_ports_draft @lib/flow_sop/swap_attributes_draft
+@lib/flow_sop/metadata_ports_large @lib/sop_catalog/runtest
+@tools/lisp/test/runtest @test/test_workspace_source @test/test_workspace_shell
+@test/test_sop_catalog @tools/api_manifest/runtest @test/dependency_gate`.
+The 5,001-row encoded normalize/rebuild/cook checks pass for every table-driven
+metadata kind. All thirteen whole recipes pass. Native render, editor, source,
+API and dependency checks pass. The older intermittent Rename Attributes
+failure remains an unresolved phase-review item; these runs did not reproduce
+it and do not claim to fix it.
+
+Reviewed/promoted manifest digest: `987ce6c924bf01aea508ee6e0a6f7243`.
+The Swap schema/operation/slots remain identical; its body marker and ordering
+change as it becomes Lisp. The only golden fixture changed in this port is
+`tools/lisp/test/ml.t`, replacing its generated catalog hash with
+`bc7f2cc05f2b6d18dd2150ad71494cf54622e8b440b24b569d79e3a5c0b0ae6a`.
+No rendered golden or public API manifest changed.
+Logs: `/tmp/rays-swap-attributes-production-focused.log`,
+`/tmp/rays-swap-attributes-production-focused2.log`,
+`/tmp/rays-swap-attributes-native-integration.log` and
+`/tmp/rays-swap-attributes-native-integration2.log`.
+
+Swap is whole port13 of128. All seven B.12 metadata ports are complete;
+115 whole ports remain and the remaining phase groups stay required.
