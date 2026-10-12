@@ -32,11 +32,13 @@ let compile ?fusion residual term =
    | _ -> assert false);
   legacy
 let () =
-  if Array.exists (fun arg -> arg="--bench-product" || arg="--bench-product-row") Sys.argv then begin
+  if Array.exists (fun arg -> arg="--bench-product" || arg="--bench-product-row" || arg="--bench-int-scale") Sys.argv then begin
     I.Packed.Private.trace := ignore;
     let count = 1_000_000 and width = 16 in
+    let integer = Array.exists ((=) "--bench-int-scale") Sys.argv in
     let repeated_row = Array.exists ((=) "--bench-product-row") Sys.argv in
-    let packed = Test_program.compile ~fusion:false (Printf.sprintf
+    let packed = Test_program.compile ~fusion:false (if integer then Printf.sprintf
+      "(map (fn [index] (int/mul index %d)) (array/range (int/add %d (int t)) :type int))" width count else Printf.sprintf
       (if repeated_row then
          "(for [index (array/range %d :type int) component (map (fn [x] (+ x t)) (array/range %d))] component)"
        else "(for [index (array/range %d :type int) component (array/range %d)] (+ component t))")
@@ -44,6 +46,7 @@ let () =
     let live = Frame_input.at_time (-0.25) in
     let row = Array.init width (fun i -> float i -. 0.25) in
     let native () =
+      if integer then E.Int_array(Array.init count(fun i->i*width)) else
       let data = Array.make (count * width) 0. in
       for i = 0 to count - 1 do Array.blit row 0 data (i * width) width done;
       E.Float_array data in
@@ -60,8 +63,8 @@ let () =
         trials.(1) in
       let native_seconds, native_bytes = measure native in
       let seconds, allocated = measure (fun () -> ok (I.Packed.force ~strict:true packed ~live)) in
-      Printf.printf "product_float count=%d width=%d registers=%d domains=%d native_seconds=%.6f packed_seconds=%.6f ratio=%.3f native_allocated_bytes=%.0f packed_allocated_bytes=%.0f\n%!"
-        count width (Array.length (I.Packed.Private.view packed).code) domains
+      Printf.printf "%s count=%d width=%d registers=%d domains=%d native_seconds=%.6f packed_seconds=%.6f ratio=%.3f native_allocated_bytes=%.0f packed_allocated_bytes=%.0f\n%!"
+        (if integer then "integer_scale" else "product_float") count width (Array.length (I.Packed.Private.view packed).code) domains
         native_seconds seconds (seconds /. native_seconds) native_bytes allocated)) [1;4];
     exit 0
   end
@@ -165,6 +168,28 @@ let () =
   (match I.Packed.force ~strict:true packed ~live with Error d->assert(d.code="E_ARRAY_TYPE")|_->assert false);
   I.Packed.Private.trace := trace;
   print_endline "Product row projection: repeated bits, empty sources, selected errors, sinks and one/four/eight domains passed"
+
+let () =
+  let trace = !I.Packed.Private.trace in
+  I.Packed.Private.trace := ignore;
+  List.iter(fun count->List.iter(fun factor->List.iter(fun reverse->
+    let operation=Printf.sprintf (if reverse then "(int/mul %d x)" else "(int/mul x %d)") factor in
+    let packed=Test_program.compile(Printf.sprintf
+      "(map (fn [x] %s) (array/range (int/add %d (int t)) :type int))" operation count) in
+    let live=Frame_input.at_time 0.25 in
+    let expected=E.Int_array(Array.init count(fun i->i*factor)) in
+    List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+      assert(same(I.Packed.force ~strict:true packed ~live)(Ok expected));
+      assert(same(I.Packed.force ~strict:true packed ~live)(I.Packed.reference packed ~live))))[1;4;8];
+    if count>1 then begin
+      let region=I.Packed.to_region packed in
+      let skipped=I.Packed.of_region {region with skip=[|1|]} |>function
+        |Ok value->value|Error _->assert false in
+      assert(same(I.Packed.force ~strict:true skipped ~live)
+        (Ok(E.Int_array(Array.init(count-1)(fun i->(if i<1 then i else i+1)*factor)))))
+    end)[false;true])[0;1;-3;max_int;min_int])[0;1;32769];
+  I.Packed.Private.trace:=trace;
+  print_endline "Integer scaling: exact wrapping constants, empty/multi-block/reference/domain bytes and skipped rows pass"
 
 let () =
   let trace = !I.Packed.Private.trace in

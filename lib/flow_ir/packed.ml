@@ -422,6 +422,13 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
     | Product,Collect,[||],[|E.Int_array outer;E.Float_array row|],
         [|Input(1,1,0);Int_input 0|],[|[|0|]|] -> Some(outer,row)
     | _ -> None in
+  (* Exact integer scaling needs one pass and no temporary register banks. *)
+  let scaled_column=match t.iteration,t.result,skip,inputs,t.code,t.outputs,outputs with
+    |Zip,Collect,[||],[|E.Int_array input|],
+       ([|Int_input 0;Int_const factor;Int_binary(Imul,0,1)|]
+       |[|Int_const factor;Int_input 0;Int_binary(Imul,0,1)|]),
+       [|[|2|]|],[|E.Int_array output|]->Some(input,factor,output)
+    |_->None in
   (match repeated_row with
   | Some(outer,row) ->
       if count>0 then begin
@@ -436,9 +443,12 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
           (fun i->Array.blit row 0 data (i*Array.length row) (Array.length row)))output
       end
   | None ->
-  if t.result=Collect && Array.for_all concrete t.uniforms && count>=4096 then
-    Rays_math.Parallel.for_ ~chunk_size:1 ~start:0 ~finish:(chunks-1) chunk
-  else for i=0 to chunks-1 do chunk i done);
+  (match scaled_column with
+  |Some(input,factor,output)->Rays_math.Parallel.for_ ~chunk_size:4096 ~start:0 ~finish:(count-1)
+      (fun i->output.(i)<-input.(i)*factor)
+  |None->if t.result=Collect && Array.for_all concrete t.uniforms && count>=4096 then
+      Rays_math.Parallel.for_ ~chunk_size:1 ~start:0 ~finish:(chunks-1) chunk
+    else for i=0 to chunks-1 do chunk i done));
   if plane_outputs<>None then [] else if collecting then Array.to_list outputs else
     [if kept=0 then match t.result,seed with Accumulate _,Some seed->seed|Sum false,_->E.Int 0|_-> !accumulator else !accumulator]
 

@@ -1345,3 +1345,43 @@ Four-domain allocations record the initial domain only. Both ratios pass
 the unchanged 2× gate. The complete log is
 `/tmp/rays-set-orient-production-bench.log`. B.11 stays unchecked while
 Set Color and Set Transform remain incomplete.
+
+### Exact integer-column scaling
+
+The typed Packed runner recognizes a three-instruction Collect program that
+multiplies one concrete Int column by a constant. It fills the fresh output
+in one pass without register-bank copies. Source evaluation, count/type
+validation, skip handling and all other programs retain their boundaries;
+there is no SOP-specific callback or arithmetic change.
+
+Focused request 83384 exited 0 for `@lib/flow_ir/runtest`
+`@lib/flow_sop/runtest` and the setter executable. Regression cases cover
+empty/single/32,769 rows, either operand order, zero/negative/extreme signed
+constants, native wrapping, strict/reference and 1/4/8-domain exact bytes.
+Skipped rows deliberately retain the general block path.
+
+`opam exec -- ./test_packed.exe --bench-int-scale` from
+`_build/default/lib/flow_ir`, Apple M1, OCaml 5.3.0, one million indices,
+scale 16, median three runs, produced the following quiet measurements.
+Both complete logs are retained: `/tmp/rays-int-scale-before.log` and
+`/tmp/rays-int-scale-after.log`.
+
+| Version | Domains | Native seconds | Packed seconds | Ratio | Native allocated bytes | Packed allocated bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Before | 1 | 0.004234 | 0.012506 | 2.954 | 8,000,120 | 19,474,864 |
+| Before | 4 | 0.003235 | 0.005918 | 1.829 | 8,000,120 | 16,968,656 |
+| After | 1 | 0.003426 | 0.007466 | 2.179 | 8,000,120 | 16,009,784 |
+| After | 4 | 0.003252 | 0.005497 | 1.690 | 8,000,120 | 16,055,432 |
+
+The real Set Transform benchmark, unchanged fixture and median-three fresh
+cold sessions, still fails the one-domain 2× port gate. Quiet log
+`/tmp/rays-transform-int-scale-bench.log`:
+
+| Domains | Native seconds | Lisp seconds | Ratio | Native allocated bytes | Lisp allocated bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.015331 | 0.034930 | 2.278 | 136,007,824 | 152,098,752 |
+| 4 | 0.014769 | 0.017140 | 1.161 | 136,008,056 | 152,137,632 |
+
+This run includes the separately checked prepared-body reuse. Four-domain
+allocations record the initial domain only. Source range arrays still
+materialize; Set Transform remains pending and no gate is relaxed.
