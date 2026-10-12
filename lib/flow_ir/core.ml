@@ -87,6 +87,8 @@ module Region = struct
     | Binary of Flow.Packed_ops.binary * int * int | Unary of Flow.Packed_ops.unary * int
     | Noise3 of int * int * int * int * int | Fma of int * int * int | Rand_at of int * int | Select of int * int * int
     | Checked_mul of projection * int * int | Checked_fma of projection * int * int * int
+    | Array_prepare of int * Flow.Ty.t
+    | Gather of int * int * int * int | Int_gather of int * int
     | Int_const of int | Int_input of int | Int_uniform of int | Int_frame of string | Int_accumulator
     | Int_binary of Flow.Packed_ops.integer * int * int
     | Int_compare of Flow.Packed_ops.comparison * int * int | Int_abs of int
@@ -95,12 +97,13 @@ module Region = struct
     | Raise of Flow.Ty.t * string * string * string option
   let rec integer_register = function
     | Int_const _ | Int_input _ | Int_uniform _ | Int_frame _ | Int_accumulator
-    | Int_binary _ | Int_abs _ | Int_select _ | Raise (Flow.Ty.Int,_,_,_) -> true
+    | Int_binary _ | Int_abs _ | Int_select _ | Int_gather _ | Raise (Flow.Ty.Int,_,_,_) -> true
     | Convert (To_float,_) -> false | Convert _ -> true
     | Guarded (_,instruction) -> integer_register instruction
     | _ -> false
   let rec operands = function
-    | Binary (_,a,b) | Int_binary (_,a,b) | Int_compare (_,a,b) | Rand_at(a,b) | Checked_mul(_,a,b) -> [a;b]
+    | Binary (_,a,b) | Int_binary (_,a,b) | Int_compare (_,a,b) | Rand_at(a,b) | Checked_mul(_,a,b)
+    | Gather(a,b,_,_) | Int_gather(a,b) -> [a;b]
     | Unary (_,a) | Int_abs a | Convert (_,a) -> [a]
     | Noise3 (a,b,c,_,_) | Fma(a,b,c) | Select (a,b,c) | Int_select (a,b,c) | Checked_fma(_,a,b,c) -> [a;b;c]
     | Guarded (guards,instruction) -> List.map fst guards @ operands instruction
@@ -300,6 +303,9 @@ let pp fmt p =
        | Rand_at(seed,index) -> out "rand_at(r%d r%d)" seed index
        | Fma(a,b,c) -> out "fma(r%d r%d r%d)" a b c
        | Checked_mul(p,a,b) -> out "mul_checked.%s(r%d r%d)" (match p with Value->"value"|Valid->"valid") a b
+       | Array_prepare(i,ty) -> out "array_prepare u%d:%s" i (Flow.Ty.to_string ty)
+       | Gather(a,i,w,c) -> out "gather(r%d r%d width=%d component=%d)" a i w c
+       | Int_gather(a,i) -> out "int_gather(r%d r%d)" a i
        | Checked_fma(p,a,b,c) -> out "fma_checked.%s(r%d r%d r%d)" (match p with Value->"value"|Valid->"valid") a b c
        | Select (c, a, b) | Int_select (c,a,b) -> out "select(r%d r%d r%d)" c a b
        | Int_const n -> out "int:%d" n | Int_input i -> out "input:int[%d]" i

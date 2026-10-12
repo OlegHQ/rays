@@ -8,7 +8,7 @@ type arithmetic = { apply : 'f 'r. ('f, 'r) Value.t -> ('f, 'r) Value.t -> ('f, 
 type packed_kind = Binary of Packed_ops.binary | Unary of Packed_ops.unary
   | Integer of Packed_ops.integer | Integer_compare of Packed_ops.comparison
   | Convert of Packed_ops.conversion
-  | Noise3 | Fma | Checked_mul | Checked_fma | Rand_at | Length | Dot | Cross | Normalize | Exact | Frame | Constant_only
+  | Noise3 | Fma | Checked_mul | Checked_fma | Rand_at | Length | Dot | Cross | Normalize | Exact | Gather | Frame | Constant_only
 type t = {
   name : string; ctx : Context.t; signature : signature;
   out : Ty.t list -> Ty.t;
@@ -841,6 +841,7 @@ let packed_kind op =
     | _ when op.name = "float/fma_checked" -> Some Checked_fma
     | _ when op.name = "rand/at" -> Some Rand_at
     | _ when op.name = "exact" -> Some Exact
+    | _ when op.name = "array/nth" -> Some Gather
     | _ when op.live -> Some Frame
     | _ -> Some Constant_only
   else match op.packed_extension with

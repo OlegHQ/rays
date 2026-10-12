@@ -767,6 +767,8 @@ new collection of shader operations:
 | `Fma(a,b,c)` | Explicit binary64 single-rounding multiply-add of three numeric registers. Input conversion is explicit where needed; untaken guarded instructions do not execute. CPU and JavaScript match `Float.fma` bits; GPU qualification refuses unavailable binary64 arithmetic. Ordinary multiply/add instructions retain their separate rounding. |
 | `Checked_mul(projection,a,b)`, `Checked_fma(projection,a,b,c)` | `Value` emits the finite binary64 result or positive zero; `Valid` emits exactly one or zero. Compiler-only record fields connect the two registers. Both projections use existing guards, so untaken branches do not execute. No nonfinite register is published. The single-destination representation computes each projection separately; duplicate FMA work is a measured optimization candidate, not a speed claim. GPU targets refuse these instructions. |
 | `Rand_at(seed,index)` | Exact signed63 integer registers to the native `Rand.float_at` Float result. CPU and emitted JavaScript retain all integer bits; GPU qualification refuses this instruction explicitly. |
+| `Array_prepare(uniform,type)` | Lazily materialize a checked invariant Int/Float/Vec2/3/4 table at its argument's evaluation position. Its compiler-local handle is neither a numeric register nor an output. The table is separate from iteration sources and count/origin proofs. |
+| `Gather(table,index,width,component)`, `Int_gather(table,index)` | Read one component or exact signed63 integer from a prepared immutable table. Check the integer element index against native bounds and row count before component address multiplication. GPU targets refuse table preparation and indexed reads, including Float-output kernels. |
 | `Select(condition,yes,no)` | Selects by condition unequal to zero; branch instructions carry their execution guards. |
 | `Guarded(conditions,instruction)` | Executes the instruction and its finite checks only when every condition selects this branch. Metal and WGSL declare the result outside the conditional and assign it inside, so later selections retain the same lazy behavior. An unselected overflow is unevaluated; `min` and `max` still evaluate both arguments. |
 
@@ -780,6 +782,24 @@ and output slots. Zip uses the shortest input; product uses source-order
 strides. No inputs means no iterations. Outputs become an ordered list of
 slot groups when several attributes are fused, with an explicit width for
 each group. A single-output region keeps the existing instruction spelling.
+
+Numeric `array/nth` inside a kernel uses the same declaration, coercion and
+`E_ARRAY_RANGE` messages as scalar indexing. A table can be a checked capture,
+record field, helper array argument or invariant constructor. Lane-dependent
+tables remain a located compilation refusal. Preparation precedes index
+evaluation and follows the same branch guards: an untaken read does not force
+its host source, and zero iterations do not resolve tables. Host descriptors
+resolve on the initial domain once per selected execution; concrete immutable
+tables can be read by workers. No table length truncates the iteration count.
+Numeric source validation retains the whole-table finite/type boundary.
+
+Gather programs execute instructions in reference lane order. Parallel Collect
+keeps each chunk's first diagnostic and reports the lowest failing chunk,
+preserving code, message and cause. Iteration `:skip` omits the body; a discarded
+output plane still executes selected reads and finite checks. New outputs stay
+private until success, and source buffers remain immutable. Ordered folds,
+scans and reductions retain their accumulator order. Text lookup banks are a
+separate extension and are not accepted in numeric regions.
 
 Fusion may combine equal-count/equal-origin elementwise producers and several
 outputs, with provenance retained. It declines when qualification or register
@@ -803,6 +823,13 @@ sources or captures depend on the frame; it does not freeze their sampled
 values. Integer capture storage follows the consuming integer uniform bank;
 floating banks convert numerically. A packed vector has floating components
 even when one component was computed by an integer instruction.
+
+Fixed numeric lookup captures use typed views of `data.bin`, with explicit
+offset, component length and integer-storage metadata. JavaScript keeps exact
+BigInt indices until bounds checks finish. The production runtime and worker
+pool preserve table constructors and diagnostics; worker failure order is the
+lowest failing chunk, independent of completion order. Live tables stay in
+structured Core instead of being frozen as export constants.
 
 ## State slots and frame facts
 
@@ -919,7 +946,7 @@ operation. A user function/macro row is not a new runtime primitive.
 | `and` | primitive | `and`; eager arguments. |
 | `array/concat` | primitive | `array/concat` |
 | `array/count` | primitive | `array/count` |
-| `array/nth` | primitive | `array/nth` |
+| `array/nth` | primitive | Scalar `array/nth`; numeric invariant captures use `Array_prepare` and `Gather`/`Int_gather`, with lazy preparation, independent counts and CPU/JavaScript execution. |
 | `array/range` | primitive | `array/range` |
 | `array/slice` | primitive | `array/slice` |
 | `array/vec3` | primitive | `array/vec3` |

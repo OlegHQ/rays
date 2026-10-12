@@ -45,3 +45,9 @@
  (modules test_fma)
  (deps ../../tools/web/runtime/prims.js)
  (libraries flow_web flow flow_ir rays_math))
+
+(test
+ (name test_gather)
+ (modules test_gather)
+ (deps (glob_files ../../tools/web/runtime/*.js))
+ (libraries flow_web flow flow_ir rays_math str))

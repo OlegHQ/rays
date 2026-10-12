@@ -157,7 +157,9 @@ export function createRuntime(program, { now = () => performance.now() / 1000, f
       const inputs = r.inputs.map(([offset, length, integer]) => new (integer ? BigInt64Array : Float64Array)(rt.data, offset, length));
       const facts = Array(r.length).fill(0);
       for (const [slot, name, integer] of r.frame) facts[slot] = integer ? BigInt(FACTS[name](input)) : Number(FACTS[name](input));
-      const uniforms = [...r.uniforms.map(u => typeof u[0] === 'string' ? BigInt64Array.from(u, BigInt) : Float64Array.from(u)), facts];
+      const uniforms = [...r.uniforms.map(u => u.table
+        ? new (u.table[2] ? BigInt64Array : Float64Array)(rt.data, u.table[0], u.table[1])
+        : typeof u[0] === 'string' ? BigInt64Array.from(u, BigInt) : Float64Array.from(u)), facts];
       const pool = rt.pool;
       const ArrayType = r.integer ? BigInt64Array : Float64Array;
       const outputs = [pool ? pool.alloc(r.kept * r.width, ArrayType) : new ArrayType(r.kept * r.width)];

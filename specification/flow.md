@@ -1395,6 +1395,19 @@ constants/noise do not invalidate a program. A one-source Product is already
 effective Zip. Ordered accumulators remain refused even when unused. This
 runtime backstop remains for hand-built programs and execution boundaries.
 
+Existing `array/nth` cards also compile inside numeric maps and ordered loops
+when their table is an invariant Int/Float/Vec2/3/4 capture. The table is not an
+iteration source: its size cannot truncate a map or establish a count proof.
+Reads prepare the checked immutable table before evaluating the index, follow
+branch guards and retain scalar bounds diagnostics. Untaken reads and empty
+iteration sets do not resolve tables. Native host captures resolve on the
+initial domain; CPU domains and JavaScript workers preserve exact integer
+storage and the first reference-order diagnostic. Discarding an output plane
+still executes its selected reads. Text tables and lane-dependent table
+construction remain explicit numeric-kernel refusals. Metal and WGSL refuse
+numeric gather, including Float-output kernels. This extends the existing
+card and positional edit gesture without adding syntax.
+
 `Flow_ir.Packed.compile_result` reports the first actual compilation refusal
 with a source span and a concrete state, function, capture, type, form, register
 limit, operator, constant or layout reason. Evaluator diagnostic codes are

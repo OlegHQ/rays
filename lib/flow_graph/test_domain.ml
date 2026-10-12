@@ -4,6 +4,25 @@ let catalog = {Check.version = 1; kinds = []}
 let ok = function Ok x -> x | Error d -> failwith (Diagnostic.to_string d)
 
 let () =
+  let source=ok(Syntax.parse "(workspace lookup (graph g :context value (let* [table (array/int 3 9007199254740993) picked (array/nth table 1)] picked)))") in
+  let workspace=match Workspace.check catalog source with Some w,[]->w|_->assert false in
+  let card=Option.get(Projection.find(Projection.of_graph catalog workspace "g")["g";"picked"])in
+  assert(card.head="array/nth" && card.ty=Ty.Int);
+  let _,edited=ok(Flow_edit.apply_checked catalog source
+    (Set_arg{node=card.path;key=Pos 1;sub=[];value=Syntax.make(Num "2")}))in
+  assert(List.assoc "g"(ok(Eval.run ~time:0. edited)).results=Eval.Int 9007199254740993)
+
+let () =
+  let source=ok(Syntax.parse "(workspace lookup (graph g :context host (let* [table (array/range 3 :type int) picked (map (fn [i] (array/nth table i)) (array/range 3 :type int))] picked)))")in
+  let workspace=match Workspace.check catalog source with Some w,[]->w|_->assert false in
+  let rec lookup(scope:Projection.scope)=List.find_map(fun(node:Projection.node)->
+    if node.head="array/nth"then Some node else Option.bind node.zone(fun zone->lookup zone.scope))scope.nodes in
+  let card=Option.get(lookup(Projection.of_graph catalog workspace "g"))in
+  let _,edited=ok(Flow_edit.apply_checked catalog source
+    (Set_arg{node=card.path;key=Pos 1;sub=[];value=Syntax.make(Num "2")}))in
+  assert(List.assoc "g"(ok(Eval.run ~time:0. edited)).results=Eval.Int_array[|2;2;2|])
+
+let () =
   List.iter(fun(name,args,index)->
     let source=ok(Syntax.parse("(workspace checked (graph g :context value (let* [status ("^name^" "^args^")] status.value)))")) in
     let workspace=match Workspace.check catalog source with Some w,[]->w|_,ds->

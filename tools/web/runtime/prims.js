@@ -368,6 +368,10 @@ export const fail = (code, message, cause) => err(code, message, cause);
 // ---- packed arrays ----
 const MAX_LENGTH = 2n ** 54n - 1n; // Sys.max_floatarray_length
 function count(name, v) {
+  if (typeof v === 'bigint') {
+    if (v < 0n || v > MAX_LENGTH) err('E_ARRAY_RANGE', `${name} needs a non-negative whole length.`);
+    return Number(v);
+  }
   const n = num(v);
   return n < 0 || n !== Math.floor(n) || n > Number(MAX_LENGTH)
     ? err('E_ARRAY_RANGE', `${name} needs a non-negative whole length.`) : n;

@@ -160,7 +160,9 @@ let lower ?(fusion = true) ?(dynamic = false)
         (Array.length sources) (List.length params));
     let code = ref [] and size = ref 0 and uniforms = ref [] and nuniforms = ref 0 and uniform_names = ref [] in
     let shared = Hashtbl.create 16 in
-    let guards = ref [] and integer_registers = Hashtbl.create 16 in
+    let guards = ref [] and integer_registers = Hashtbl.create 16
+    and array_registers = Hashtbl.create 8 in
+    let table_uniforms = Hashtbl.create 8 in
     let emit instruction =
       let instruction = if !guards=[] then instruction else Guarded (!guards,instruction) in
       (* As in fusion, compare constant bits too: +0 and -0 remain distinct. *)
@@ -173,10 +175,26 @@ let lower ?(fusion = true) ?(dynamic = false)
             refuse "E_PACKED_LIMIT" (Printf.sprintf "Packed kernel exceeds %d registers." Flow.Packed_ops.register_limit);
           let id = !size in incr size; code := instruction :: !code;
           Hashtbl.add integer_registers id (Core.Region.integer_register instruction);
+          (match instruction with Array_prepare(_,ty) | Guarded(_,Array_prepare(_,ty)) ->
+            Hashtbl.add array_registers id ty | _ -> ());
           Hashtbl.add shared key id;
           id in
+    let array_type = function E.Residual r -> (E.Private.residual_view r).term.ty
+      | value -> V.ty_of value in
+    let table at name value =
+      let ty=array_type value in
+      (match ty with Ty.Array (Ty.Int|Float|Vec2|Vec3|Vec4) -> ()
+       | _ -> refuse ~at "E_PACKED_CAPTURE" "Kernel lookup tables require integer, float or vector arrays.");
+      let i=match if fst name="" then None else Hashtbl.find_opt table_uniforms name with
+        |Some i->i
+        |None->let i= !nuniforms in incr nuniforms;uniforms:=value::!uniforms;
+            uniform_names:=name::!uniform_names;
+            if fst name<>"" then Hashtbl.add table_uniforms name i;i in
+      {registers=[|emit(Array_prepare(i,ty))|];constant=None;fields=[]} in
+    let is_table e=Array.length e.registers=1 && Hashtbl.mem array_registers e.registers.(0) in
     let rec literal ?(at = term) v =
       match v with
+      | E.Int_array _ | Float_array _ | Vec2_array _ | Vec3_array _ | Vec4_array _ -> table at ("",[]) v
       | E.Record fields -> {registers=[||];constant=Some v;
           fields=List.map(fun(name,value)->name,literal ~at value)fields}
       | _ ->
@@ -185,11 +203,13 @@ let lower ?(fusion = true) ?(dynamic = false)
         | Float _ | Bool _ | Vec2 _ | Vec3 _ | Vec4 _ -> Array.map (fun f -> emit (Const f)) (components v)
         | _ -> refuse ~at "E_PACKED_TYPE" ("Packed constant has unsupported type " ^ Ty.to_string (V.ty_of v) ^ ".") in
       {registers; constant = Some v; fields=[]} in
-    let as_float e = match e.constant with
+    let as_float e = if is_table e then refuse "E_PACKED_TYPE" "An array handle cannot be used as a number.";
+      match e.constant with
       | Some (E.Int n) -> literal (E.Float (float n))
       | _ -> {e with registers=Array.map (fun register ->
           if Hashtbl.find integer_registers register then emit (Convert(To_float,register)) else register) e.registers} in
-    let as_int e = match e.constant with
+    let as_int e = if is_table e then refuse "E_PACKED_TYPE" "An array handle cannot be used as an integer.";
+      match e.constant with
       | Some value ->
           let value=V.coerce_to Ty.Int value in
           (match value with E.Int n -> {registers=[|emit (Int_const n)|];constant=Some value;fields=[]}
@@ -198,7 +218,9 @@ let lower ?(fusion = true) ?(dynamic = false)
           if Hashtbl.find integer_registers register then register else emit (Convert(Coerce_int,register))) e.registers} in
     let input i width = {registers = Array.init width (fun j ->
       if sources.(i).W.ty=Ty.Array Ty.Int then emit (Int_input i) else emit (Input (i, width, j))); constant = None;fields=[]} in
-    let uniform at name v = match v with
+    let uniform at name v = match array_type v with
+      | Ty.Array _ -> table at name v
+      | _ -> match v with
       | E.Residual _ | E.Source _ | E.Int _ | Float _ | Bool _ | Vec2 _ | Vec3 _ | Vec4 _
         when dynamic || E.is_live v || (match v with E.Source _ -> true | _ -> false) ->
           let ty = match v with E.Residual r -> (E.Private.residual_view r).term.ty | v -> V.ty_of v in
@@ -261,6 +283,7 @@ let lower ?(fusion = true) ?(dynamic = false)
           name (Array.length e.registers)) in
     let component e i = e.registers.(if Array.length e.registers = 1 then 0 else i) in
     let rec coerce at ty value = match ty,value.constant with
+      | Ty.Array _,_ when is_table value && Hashtbl.find array_registers value.registers.(0)=ty -> value
       | Ty.Int,Some _ -> as_int value
       | _,Some constant -> literal ~at (V.coerce_to ty constant)
       | Ty.Record fields,_ -> {value with fields=List.map (fun (name,ty) ->
@@ -402,6 +425,17 @@ let lower ?(fusion = true) ?(dynamic = false)
               (List.map2 (fun (name, _) e -> name, Option.get e.constant) args expressions))
           else if declaration.live && args = [] && List.mem t.ty [Ty.Float; Ty.Int; Ty.Bool] then
             {registers = [|emit (if t.ty=Ty.Int then Int_frame declaration.name else Frame declaration.name)|]; constant = None;fields=[]}
+          else if kind=Flow.Op.Gather then begin
+            match expressions with
+            | [array;index] when is_table array ->
+                let index=as_int index in
+                if Array.length index.registers<>1 then refuse ~at:t "E_PACKED_TYPE" "Array indices require a scalar integer.";
+                let prepared=array.registers.(0) and index=index.registers.(0) in
+                let registers=if t.ty=Ty.Int then [|emit(Int_gather(prepared,index))|]
+                  else let width=width_of t.ty in Array.init width(fun component->emit(Gather(prepared,index,width,component))) in
+                {registers;constant=None;fields=[]}
+            | _ -> refuse ~at:t "E_PACKED_CAPTURE" "Array lookup requires an invariant numeric table."
+          end
           else if kind=Flow.Op.Checked_mul || kind=Flow.Op.Checked_fma then begin
             (* ponytail: one destination per instruction computes both projections
                separately; co-compute pairs only if duplicate arithmetic measures hot. *)
@@ -548,7 +582,8 @@ let lower ?(fusion = true) ?(dynamic = false)
     let rec integer_work = function
       | Int_const _ -> false
       | Int_input _ | Int_uniform _ | Int_frame _ | Int_accumulator | Int_binary _ | Int_compare _
-      | Int_abs _ | Convert _ | Int_select _ | Rand_at _ | Raise _ -> true
+      | Int_abs _ | Convert _ | Int_select _ | Rand_at _ | Raise _
+      | Array_prepare _ | Gather _ | Int_gather _ -> true
       | Guarded (_,instruction) -> integer_work instruction
       | _ -> false in
     let code = if Array.exists integer_work code then code else Array.map (function
@@ -592,7 +627,8 @@ let rebind (t : Core.Region.t) residual =
           | Some (E.Fn f) when Option.fold ~none:false ~some:(fun (_, body) -> body == t.body)
               (E.Private.function_body f) -> E.Private.function_bindings f
           | _ -> raise Unsupported) in
-    let uniforms = Array.map (fun (name, fields) -> captured_value bindings name fields) t.uniform_names in
+    let uniforms = Array.mapi (fun i (name, fields) ->
+      if name="" then t.uniforms.(i) else captured_value bindings name fields) t.uniform_names in
     let sources = Array.map (fun (r, term) ->
       if r != t.residual then raise Unsupported; residual, term) t.sources in
     let count = count_of_sources t.iteration (Array.map (fun (r, s) -> count_of r s) sources) in

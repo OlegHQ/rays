@@ -1,4 +1,12 @@
 let () =
+  let program=Test_program.compile
+    "(let* [table (array/float 7 0.25)] (map (fn [i] (+ t (array/nth table (int/mod (int i) 7)))) (array/range 32769)))" in
+  (match Flow_ir.Packed.gpu_refusals program,Flow_gpu.Emit.kernel program with
+   |d::_,Error emitted->assert(d.code="E_GPU_FORM" && emitted.message=d.message);
+     assert(d.message="Indexed array reads stay on the CPU.")
+   |_->assert false)
+
+let () =
   List.iter (fun source ->
     let checked=match Flow.Workspace.check Flow.Check.{version=1;kinds=[]}
         (Flow.Syntax.parse source |> Test_program.ok)with

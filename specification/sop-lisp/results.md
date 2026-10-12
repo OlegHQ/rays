@@ -2039,3 +2039,27 @@ The measured allocation cut is substantial, but all four rows still fail the
 unchanged 2× gate. The original failed table remains above; the broader table
 stays held. There is no node-specific optimization, public API change,
 registration or whole-port performance claim.
+
+### Numeric gather compiler foundation accepted
+
+Invariant Int/Float/Vec2/Vec3/Vec4 `array/nth` now lowers through typed table
+preparation and exact indexed reads in the existing compiler and CPU runner.
+Tables remain independent of iteration counts. The shared primitive, graph
+projection, reference semantics and existing error/ownership boundaries remain
+the contract. JavaScript regions, the production runtime, worker transport and
+actual exports carry exact numeric tables; Metal and WGSL explicitly refuse
+these CPU operations. Reviewed public APIs were accepted in `6bc7f726`.
+
+The detailed coverage, raw command references and complete ten-row native-loop
+comparison are in `gather-validation.md`. Combined request 1029 passed the
+IR/Web/Graph/GPU/tools/dependency/API gates; 40365 passed the expanded non-cram
+proofs, and follow-up 11963 passed Flow and corrected actual exporter/CLI crams.
+Source aliases and earlier/later failures retain live reference concretization
+order, including unused let bindings. Exact integer exports above 2^53 execute
+through real frames and one/eight-worker pools.
+
+Quiet benchmark 45613 retains all ten slow rows (2.028–11.324× simple native
+indexed loops). These establish a measured baseline, not a whole-node speed
+qualification. No SOP port follows from this feature. C.2 remains unchecked
+because Name From Groups still requires the separately specified Text leaf
+extension; B.13/B.14 and all other original port gates remain required.

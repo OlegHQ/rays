@@ -63,6 +63,11 @@
  (libraries flow_ir flow rays_math))
 
 (test
+ (name test_gather)
+ (modules test_gather)
+ (libraries flow_ir flow rays_math unix))
+
+(test
  (name test_reductions)
  (modules test_reductions)
  (libraries flow_ir flow rays_math unix))

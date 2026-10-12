@@ -95,6 +95,9 @@ let region program =
   let add format = Printf.bprintf line format in
   let rec unguarded = function P.Guarded (_,body) -> unguarded body | instruction -> instruction in
   let checks = P.Private.finite_checks program in
+  let gathered=Array.exists(fun instruction->match unguarded instruction with
+    | P.Array_prepare _->true|_->false)view.code in
+  let nonfinite = if gathered then "fail('E_NONFINITE', 'packed produced a nonfinite value.');" else "return 1;" in
   let seeds = Array.to_list view.code |> List.filter_map (fun instruction -> match unguarded instruction with P.Noise3 (_,_,_,seed,_) -> Some seed | _ -> None)
     |> List.sort_uniq Int.compare in
   let collecting = match region.result with R.Collect | R.Accumulate (_, true) -> true | _ -> false in
@@ -109,6 +112,16 @@ let region program =
     add "  const fail = (code, message, cause) => { const e = new Error(message); e.code = code; if (cause !== undefined) e.cause = cause; throw e; };\n"
   else add "  const fail = (code, message) => { const e = new Error(message); e.code = code; throw e; };\n";
   add "  const wrap = x => BigInt.asIntN(63, x);\n";
+  if Array.exists(fun instruction->match unguarded instruction with P.Array_prepare _->true|_->false)view.code then begin
+    add "  const tables = new Map();\n";
+    add "  const table = (slot, integer, width) => { if (tables.has(slot)) return tables.get(slot); const data = uniforms[slot];\n";
+    add "    if (!(data instanceof (integer ? BigInt64Array : Float64Array))) fail('E_ARRAY_TYPE', 'Kernel lookup table changed its packed element type.');\n";
+    add "    if (data.length %% width !== 0) fail('E_ARRAY_TYPE', `Packed vec${width} storage has ${['','','two','three','four'][width]} coordinates per element.`);\n";
+    add "    if (!integer) for (const x of data) if (!Number.isFinite(x)) fail('E_NONFINITE', 'array input produced a nonfinite value.');\n";
+    add "    tables.set(slot, data); return data; };\n";
+    add "  const row = (array, index, width) => { if (index < 0n || index > %sn) fail('E_ARRAY_RANGE', 'array/nth needs a non-negative whole length.');\n" (string_of_int Sys.max_array_length);
+    add "    if (index >= BigInt(array.length / width)) fail('E_ARRAY_RANGE', 'Array index is outside its length.'); return Number(index); };\n"
+  end;
   if Array.exists (fun instruction -> match unguarded instruction with P.Fma _ | Checked_fma _ -> true | _ -> false) view.code then
     add "%s" fused;
   if Array.exists(fun instruction->match unguarded instruction with P.Checked_mul _ | Checked_fma _ -> true | _ -> false)view.code then
@@ -158,6 +171,11 @@ let region program =
       | Fma (a,b,c) -> Printf.sprintf "fused(%s, %s, %s)" (numeric a) (numeric b) (numeric c)
       | Checked_mul(p,a,b) -> Printf.sprintf "checked(%b, %s * %s)" (p=P.Valid) (numeric a) (numeric b)
       | Checked_fma(p,a,b,c) -> Printf.sprintf "checked(%b, fused(%s, %s, %s))" (p=P.Valid) (numeric a) (numeric b) (numeric c)
+      | Array_prepare(i,ty) -> Printf.sprintf "table(%d, %b, %d)" i (ty=Flow.Ty.Array Flow.Ty.Int)
+          (Option.get(Flow.Packed_ops.array_width ty))
+      | Gather(array,index,width,component) -> Printf.sprintf "%s[row(%s, %s, %d) * %d + %d]"
+          (register array)(register array)(register index)width width component
+      | Int_gather(array,index) -> Printf.sprintf "%s[row(%s, %s, 1)]" (register array)(register array)(register index)
       | Rand_at(seed,index) -> Printf.sprintf "randAt(%s, %s)" (register seed) (register index)
       | Int_const n->string_of_int n^"n" | Int_input i->Printf.sprintf "in%d[j%d]" i i
       | Int_uniform i->Printf.sprintf "uniforms[%d][0]" i | Int_accumulator->"st[0]"
@@ -191,10 +209,10 @@ let region program =
      | Checked_fma(_,a,b,c) -> add "    if (!(Number.isFinite(%s) && Number.isFinite(%s) && Number.isFinite(%s))) return 1;\n" (numeric a) (numeric b) (numeric c)
      | _ -> ());
     add "    r%d = %s;\n" slot (expression slot body);
-    if not(R.integer_register body) && checks.(slot) then add "    if (!Number.isFinite(r%d)) return 1;\n" slot;
+    if not(R.integer_register body) && checks.(slot) then add "    if (!Number.isFinite(r%d)) %s\n" slot nonfinite;
     if guards<>[] then add "    }\n") view.code;
   Array.iteri (fun k registers -> Array.iteri (fun component slot ->
-    if not(R.integer_register view.code.(slot)) then add "    if (!Number.isFinite(r%d)) return 1;\n" slot;
+    if not(R.integer_register view.code.(slot)) then add "    if (!Number.isFinite(r%d)) %s\n" slot nonfinite;
     (match region.result with
      | R.Collect | R.Accumulate _ -> ()
      | R.Sum true when R.integer_register view.code.(slot) ->

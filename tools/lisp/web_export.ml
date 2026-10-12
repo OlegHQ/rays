@@ -103,6 +103,7 @@ type fixed = { packed : Flow_ir.Packed.t; view : Flow_ir.Packed.Private.view; ar
 
 let rec region_instruction = function C.Region.Guarded (_,body) -> region_instruction body | body -> body
 let uniform_components = function
+  | E.Float_array values | Vec2_array values | Vec3_array values | Vec4_array values -> values
   | E.Vec2 (x,y) -> [|x;y|] | Vec3 (x,y,z) -> [|x;y;z|]
   | Vec4 (x,y,z,w) -> [|x;y;z;w|] | value -> [|Flow.Value.num value|]
 
@@ -123,7 +124,7 @@ let fixed_inputs (r : C.Region.t) =
       let* b = prepare (probe 0.5 7) in
       if a.arrays <> b.arrays || a.uniforms <> b.uniforms || a.count <> b.count then
         refuse "E_WEB_CAPTURE" "This region reads a value that changes from frame to frame; the web export needs its inputs fixed."
-      else if Array.exists (fun value -> match value with E.Int _ -> false | _ ->
+      else if Array.exists (fun value -> match value with E.Int _ | Int_array _ -> false | _ ->
           Array.exists (fun x -> not (Float.is_finite x)) (uniform_components value)) a.uniforms then
         refuse "E_WEB_REGION" "This region captures a non-finite value."
       else begin
@@ -145,6 +146,9 @@ let fixed_members ?kept ~data f =
       let integer=Array.exists (fun instruction -> match region_instruction instruction with
         | C.Region.Int_uniform slot -> slot=index | _ -> false) f.view.code in
       match integer,value with
+      | _,(E.Int_array _|Float_array _|Vec2_array _|Vec3_array _|Vec4_array _) ->
+          let offset,length=data value in Printf.sprintf "{\"table\":[%d,%d,%b]}" offset length
+            (match value with E.Int_array _->true|_->false)
       | true,E.Int n -> "[" ^ Flow_web.Kernel_table.json_string (string_of_int n) ^ "]"
       | _ -> list number (Array.to_list (uniform_components value)))
       (Array.to_list(Array.mapi(fun i value->i,value)f.uniforms)))

@@ -31,7 +31,7 @@ listen(m => {
     if (m.op === 'load') regions.set(m.id, new Function(m.source + '\\nreturn region;')());
     else if (m.op === 'unload') regions.delete(m.id);
     else port.postMessage({ status: regions.get(m.id)(m.inputs, m.uniforms, m.outputs, m.start, m.stop) });
-  } catch (error) { port.postMessage({ error: String(error) }); }
+  } catch (error) { port.postMessage({ error: { message: error?.message ?? String(error), code: error?.code, cause: error?.cause } }); }
 });`;
 
 // The one adapter: {post(message), onMessage(f), stop()}.
@@ -79,15 +79,23 @@ export async function createPool({ size = Math.max(1, (globalThis.navigator?.har
         if (chunks <= 1) return resolve(compiled.get(id)(inputs, uniforms, outputs, 0, count));
         if (!outputs.every(o => o.buffer instanceof SharedArrayBuffer)) return reject(new TypeError('collect outputs must be pool.alloc arrays'));
         const ins = inputs.map(shared);
-        let next = 0, left = chunks, status = 0, failure = null;
+        const captures = uniforms.map(u => ArrayBuffer.isView(u) ? shared(u) : u);
+        let next = 0, left = chunks, status = 0, failure = null, failureStart = Infinity;
         const feed = slot => {
           if (next >= chunks) return;
           const start = next++ * CHUNK;
           slot.done = m => {
-            if (m.error) { failure ??= m.error; left -= chunks - next; next = chunks; } else status |= m.status;
-            if (--left === 0) failure ? reject(new Error(failure)) : resolve(status); else feed(slot);
+            if (m.error) {
+              if (start < failureStart) { failure = m.error; failureStart = start; }
+              left -= chunks - next; next = chunks;
+            } else status |= m.status;
+            if (--left === 0) {
+              if (failure) { const e = new Error(failure.message); if (failure.code !== undefined) e.code = failure.code;
+                if (failure.cause !== undefined) e.cause = failure.cause; reject(e); }
+              else resolve(status);
+            } else feed(slot);
           };
-          slot.w.post({ op: 'run', id, inputs: ins, uniforms, outputs, start, stop: Math.min(count, start + CHUNK) });
+          slot.w.post({ op: 'run', id, inputs: ins, uniforms: captures, outputs, start, stop: Math.min(count, start + CHUNK) });
         };
         slots.forEach(feed);
       });

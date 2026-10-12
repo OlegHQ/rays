@@ -44,6 +44,9 @@ let builder () =
             if not (Core.Region.integer_register instruction) then raise Core_region.Unsupported;
             instruction
         | Uniform (n, component) -> Uniform (uniform + n, component)
+        | Array_prepare(n,ty) -> Array_prepare(uniform+n,ty)
+        | Gather(a,i,w,c) -> Gather(at a,at i,w,c)
+        | Int_gather(a,i) -> Int_gather(at a,at i)
         | Int_uniform n -> Int_uniform (uniform+n)
         | Binary (op, a, b) -> Binary (op, at a, at b)
         | Int_binary (op,a,b) -> Int_binary(op,at a,at b)
