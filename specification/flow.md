@@ -1468,6 +1468,20 @@ host has cooked the source geometry. The reference evaluator and packed
 executor receive the same immutable attribute resolver; Flow itself has no
 geometry dependency.
 
+`(sop/attr_checked geometry :weight :type float :owner point)` returns
+`{:values (array float) :valid (array int)}`. It accepts `float`, `vec2`,
+`vec3` and `vec4` storage on any attribute owner, with the same defaults and
+missing/type errors as `sop/attr`. Each validity entry is one when every
+component of that row is finite, and zero otherwise. Valid rows preserve
+their exact bytes, including signed zero; invalid rows become positive zero
+in every component. Both fields are owned copies. This lets Lisp apply a
+selection before choosing whether invalid native data is an error, without
+publishing nonfinite numeric values. Ordinary numeric reads, computation and
+writers retain their finite-value checks. The query is deferred, records the
+named attribute dependency, and projects as a card with editable geometry,
+attribute, owner and type inputs. Dynamic host sources remain outside web
+export's 2D scope.
+
 `(sop/count geometry :points)` returns an exact integer count; the selectors
 `:vertices`, `:primitives` and `:edges` use the corresponding topology index
 spaces. `(sop/edges geometry)` returns a record with separate `(array int)`

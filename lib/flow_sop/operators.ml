@@ -29,6 +29,27 @@ let attr : Flow.Op.t = {
         name,Flow.Value.Struct("sop/attr",ty,args@["component",Flow.Value.Text name]))fields)
     | _ -> Flow.Value.Struct ("sop/attr",ty,args));
 }
+let checked_attribute_type args =
+  let kind=type_argument args in
+  if not(List.mem kind ["float";"vec2";"vec3";"vec4"]) then
+    Flow.Value.fail "E_ATTR_TYPE" "Checked attributes require float, vec2, vec3 or vec4 storage.";
+  Flow.Ty.Record ["values",attribute_type args;"valid",Flow.Ty.Array Flow.Ty.Int]
+let attr_checked : Flow.Op.t = {
+  attr with name="sop/attr_checked";
+  out=(fun _->Flow.Ty.Record["values",Array Vec3;"valid",Array Int]);
+  out_args=Some checked_attribute_type;
+  check=(fun args->validate_args args;
+    let kind=match List.assoc_opt "type" args with Some(Flow.Value.Text kind)->kind|_->"vec3" in
+    if not(List.mem kind ["float";"vec2";"vec3";"vec4"]) then
+      Flow.Value.fail "E_ATTR_TYPE" "Checked attributes require float, vec2, vec3 or vec4 storage.");
+  body=(fun ~live:_ ~node:_ args->
+    let named=List.map(fun(name,v)->name,Flow.Value.ty_of v,
+      (match v with Flow.Value.Text text->Some(Param.Text_value text)|_->None))args in
+    match checked_attribute_type named with
+    | Flow.Ty.Record fields -> Flow.Value.Record(List.map(fun(name,ty)->
+        name,Flow.Value.Source("sop/attr_checked",ty,args@["component",Flow.Value.Text name]))fields)
+    | _ -> assert false);
+}
 let with_attr : Flow.Op.t = {
   attr with name = "sop/with_attr";
   signature = {attr.signature with pos = attr.signature.pos @ ["values", Flow.Ty.Any]};
@@ -272,7 +293,7 @@ let glob_literal : Flow.Op.t = {
     checked(Attribute_metadata.glob_literal(metadata_text args "text"))));
 }
 
-let all = Flow_ir.Operators.all @ [attr; with_attr; has_attr; delete_attr; count; edges;
+let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges;
   group; group_order; group_names; group_entries; with_group; context_seed;
   rename_attr;swap_attr;delete_attrs;rename_group;delete_group;rename_edge;delete_edge;attr_type;attr_names;
   glob_error;glob_rewrite_error;glob_rewrite;glob_literal]

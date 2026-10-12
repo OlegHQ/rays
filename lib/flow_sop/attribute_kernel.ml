@@ -49,7 +49,7 @@ let reads value =
     let rec scan (term : Flow.Workspace.term) =
       let all = List.iter scan and fields fields = List.iter (fun (_, term) -> scan term) fields in
       match term.node with
-      | Op {op=("sop/attr"|"sop/has_attr"|"sop/attr_type");args;_} ->
+      | Op {op=("sop/attr"|"sop/attr_checked"|"sop/has_attr"|"sop/attr_type");args;_} ->
           (match Option.bind (List.assoc_opt "attribute" args) (lookup bindings),
               Option.bind (List.assoc_opt "geometry" args) (lookup bindings) with
            | Some (E.Text name), Some (E.Deferred (ty, id)) when Flow.Ty.is_geometry ty ->
@@ -92,7 +92,7 @@ let reads value =
         names:="*"::!names;
         (match List.assoc_opt "geometry" args with Some(E.Deferred(ty,_))when Flow.Ty.is_geometry ty->()
          |_->opaque:=true)
-    | E.Struct ("sop/attr", _, args) | E.Source(("sop/attr"|"sop/has_attr"|"sop/attr_type"),_,args) ->
+    | E.Struct ("sop/attr", _, args) | E.Source(("sop/attr"|"sop/attr_checked"|"sop/has_attr"|"sop/attr_type"),_,args) ->
         (match List.assoc_opt "attribute" args, List.assoc_opt "geometry" args with
          | Some (E.Text name), Some (E.Deferred (ty, _)) when Flow.Ty.is_geometry ty ->
              names := name :: !names
@@ -183,7 +183,42 @@ let read ?component ~owner ~kind name geometry =
         done);
       Ok (match width with 1->E.Float_array values|2->E.Vec2_array values|3->E.Vec3_array values|_->E.Vec4_array values))
 
+let read_checked ~component ~owner ~kind name geometry =
+  Result.bind (typed_storage ~owner ~name ~kind geometry) (fun storage ->
+    match columns storage with
+    | None -> error "E_ATTR_TYPE" "Checked attributes require float, vec2, vec3 or vec4 storage."
+    | Some planes ->
+        let count=owner_count geometry owner and width=Array.length planes in
+        if component<>"values" && component<>"valid" then
+          error "E_ATTR_TYPE" "Checked attribute component is values or valid."
+        else if count>Sys.max_floatarray_length/width then
+          error "E_ATTR_COUNT" "Attribute buffer exceeds array limits."
+        else
+          let valid=if component="valid" then Array.make count 0 else [||]
+          and values=if component="values" then Array.make(count*width)0. else [||] in
+          ranges ~grain:16_384 count (fun ~first ~last ->
+            for i=first to last-1 do
+              let finite=ref true in
+              for c=0 to width-1 do
+                if not(Float.is_finite planes.(c).(i)) then finite:=false
+              done;
+              if component="valid" then valid.(i)<-(if !finite then 1 else 0)
+              else if !finite then
+                for c=0 to width-1 do values.(i*width+c)<-planes.(c).(i) done
+            done);
+          Ok(if component="valid" then E.Int_array valid else match width with
+            |1->E.Float_array values|2->E.Vec2_array values|3->E.Vec3_array values|_->E.Vec4_array values))
+
 let resolve ~geometry = function
+  | E.Source ("sop/attr_checked",_,args) ->
+      (match List.assoc_opt "geometry" args,List.assoc_opt "attribute" args,
+          List.assoc_opt "component" args with
+       | Some(E.Deferred(ty,id)),Some(E.Text name),Some(E.Text component) when Flow.Ty.is_geometry ty ->
+           (match geometry id with
+            |None->error "E_DATA_SOURCE" "Attribute source has not been cooked."
+            |Some geometry->Result.bind(options args)(fun(owner,kind)->
+                read_checked ~component ~owner ~kind name geometry))
+       |_->error "E_ATTR_TYPE" "sop/attr_checked needs geometry, an attribute name and a component.")
   | E.Struct ("sop/attr", _, args) | E.Source ("sop/attr", _, args) ->
       (match List.assoc_opt "geometry" args, List.assoc_opt "attribute" args with
        | Some (E.Deferred (ty, id)), Some (E.Text name) when Flow.Ty.is_geometry ty ->
@@ -409,7 +444,7 @@ let prepare ?profile ?strict ?approx ?sink ~sources inputs values =
           (if List.exists(fun(name,value)->List.mem name ["owner";"type"] && value=None)resolved then None
           else Some(List.filter_map(fun(name,value)->Option.map(fun value->name,value)value)resolved))
       | _ -> (match captured bindings term with
-          | Some (E.Struct("sop/attr",_,args) | E.Source("sop/attr",_,args)) -> false,Some args
+          | Some (E.Struct("sop/attr",_,args) | E.Source(("sop/attr"|"sop/attr_checked"),_,args)) -> false,Some args
           | Some (E.Source("sop/edges",_,args)) -> true,Some args
           | Some (E.Source("sop/group",_,args)) -> List.assoc_opt "owner" args=Some(E.Text "edge"),Some args
           | _ -> false,None) in

@@ -1506,3 +1506,36 @@ Four-domain allocations record the initial domain only. Both ratios pass
 the unchanged 2× gate. The complete production log is
 `/tmp/rays-set-transform-production-bench.log`; earlier failing shared
 compiler measurements remain above as evidence of the optimization.
+
+### Checked native attribute query foundation
+
+`sop/attr_checked` is a generic query with the same geometry, name, owner and
+literal numeric storage selectors as `sop/attr`. Its ordinary record contains
+`values` and an exact integer `valid` mask. A row is valid only when every
+component is finite. Valid rows retain their float64 bytes, including signed
+zero and maximum finite values; invalid rows contain positive zero in every
+component. Source arrays stay immutable and returned arrays are owned copies.
+The original query, ordinary arithmetic and writers retain finite validation.
+No SOP algorithm or selection policy is implemented by this host primitive.
+
+Request 96857 exited 0 for `@lib/flow_sop/runtest @lib/flow/runtest`
+`@lib/flow_ir/runtest @lib/flow_web/runtest @tools/api_manifest/runtest`
+`@test/dependency_gate`; log `/tmp/rays-checked-attribute-focused4.log`.
+Runnable tests cover Float/Vec2/Vec3/Vec4 on point, vertex, primitive and detail,
+NaN payloads and both infinities, exact signed-zero/maximum-finite bits, empty
+and 32,769-row buffers, owned result mutation, strict/reference parity and
+one/eight domains. Authored defnodes write both fields through normal compiled
+numeric maps. Named attribute read facts, lazy missing sources, fresh repeated
+execution, uncooked source refusal, nonnumeric/computed storage refusal, record
+card typing and geometry/name/owner/type gestures pass. Web's existing host
+Source refusal remains unchanged; no public OCaml signature or golden changed.
+
+This closes the safe input-classification part of Point Jitter's prerequisite,
+not its whole-node gate. Controlled arithmetic overflow diagnostics and a
+selected writer that preserves untouched native nonfinite bytes remain needed.
+The read-only native audit also found differing policies in other deformers:
+Bend accepts clamped infinities in active mask rows, Peak/Mountain report the
+last bad index within the earliest failing grain range, and several nodes
+preserve invalid unselected coordinates or normals. Those policies belong in
+Lisp node bodies and must not be collapsed into this query's validity rule.
+No additional whole-node or phase checkbox is marked by this foundation.

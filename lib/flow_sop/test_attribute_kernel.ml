@@ -38,6 +38,136 @@ let stages program = Array.fold_left (fun count (node : Flow_ir.node) -> match n
   | _ -> count) 0 (Flow_ir.Executor.graph program).nodes
 
 let () =
+  let evaluate body =
+    let forms=Flow.Syntax.parse ("(workspace checked_attribute (graph g :context sop [(geo : geometry nil)] "^
+      "(let* [tested "^body^"] geo)))") |>flow_ok in
+    let checked=match Flow.Workspace.check ~ops:Flow_sop.Operators.all Flow.Check.{version=1;kinds=[]} forms with
+      |Some checked,[]->checked|_,ds->failwith(String.concat "; "(List.map Flow.Diagnostic.to_string ds)) in
+    E.static ~record:true ~inputs:["g",["geo",E.Deferred(Flow.Ty.geometry,7)]]checked |>flow_ok
+      |>fun evaluation->List.assoc["g";"tested"]evaluation.records |>List.hd |>snd in
+  let bits value=Marshal.to_string value [Marshal.No_sharing] in
+  let small=Line_geometry.points(Array.init 6(fun i->float i,0.,0.)) in
+  let topology=Topology.polygons_owned ~point_count:6 ~vertex_points:[|0;1;2;3;4;5|]
+    ~primitive_offsets:[|0;3;6|] |>get_string_ok in
+  let small=Geometry.create ~positions:(Geometry.positions small) ~topology () |>get_string_ok in
+  let fixtures=[small,[Attribute.Point,"point",6;Vertex,"vertex",6;Primitive,"primitive",2;Detail,"detail",1];
+    Line_geometry.points[||],[Attribute.Point,"point",0];
+    Line_geometry.points(Array.init 32769(fun i->float i,0.,0.)),[Attribute.Point,"point",32769]] in
+  List.iter(fun(original,owners)->List.iter(fun(owner,owner_name,count)->
+    List.iter(fun(kind,width)->List.iter(fun bad->
+      let planes=Array.init width(fun c->Array.init count(fun i->
+        if i mod 2=0 && c=width-1 then bad else if c=0 then -0. else Float.max_float)) in
+      let storage=match kind with
+        |"float"->Attribute.Float planes.(0)
+        |"vec2"->Float2(Packed.Float2.of_owned ~x:planes.(0) ~y:planes.(1)|>get_string_ok)
+        |"vec3"->Float3(Packed.Float3.Private.of_owned_exn ~x:planes.(0) ~y:planes.(1) ~z:planes.(2))
+        |_->Float4(Packed.Float4.of_owned ~x:planes.(0) ~y:planes.(1) ~z:planes.(2) ~w:planes.(3)|>get_string_ok) in
+      let attribute=Attribute.create_owned ~owner ~name:"checked" storage |>get_string_ok in
+      let geo=Geometry.with_attribute attribute original |>get_string_ok in
+      let before=geometry_bytes geo in
+      let query=Printf.sprintf "(sop/attr_checked geo :checked :owner %s :type %s)" owner_name kind in
+      let value=evaluate query in
+      (match value with E.Record fields ->
+        List.iter(fun(component,kind)->
+          let node=Flow_sop.Attribute_kernel.node ~strict:true ~kind ~source:"checked-source-facts"
+            ~name:"copy" ~values:(List.assoc component fields) ~sources:[7][Lisp_sop.snapshot geo] in
+          assert((Sop.Node.facts node).reads=["checked"]))["values",kind;"valid","int"]
+       |_->assert false);
+      let resolve=Flow_sop.Attribute_kernel.resolve ~geometry:(fun id->if id=7 then Some geo else None) in
+      let values=Array.init(count*width)(fun at->let i=at/width and c=at mod width in
+        if i mod 2=0 then 0. else planes.(c).(i)) in
+      let values=match width with 1->E.Float_array values|2->Vec2_array values|3->Vec3_array values|_->Vec4_array values in
+      let expected=E.Record["values",values;"valid",E.Int_array(Array.init count(fun i->i mod 2))] in
+      let program=Flow_ir.Executor.compile ~strict:true value |>flow_ok in
+      let live=Frame_input.at_time 0. in
+      List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+        let force reference=if reference then E.Private.force_reference ~resolve value ~live
+          else Flow_ir.Executor.force ~strict:true ~resolve program ~live in
+        List.iter(fun reference->
+          let actual=force reference |>flow_ok in
+          assert(bits actual=bits expected);
+          (match actual with E.Record fields->
+            (match List.assoc "values" fields with
+             |E.Float_array a|Vec2_array a|Vec3_array a|Vec4_array a->Array.fill a 0(Array.length a)99.
+             |_->assert false);
+            (match List.assoc "valid" fields with E.Int_array a->Array.fill a 0(Array.length a)99|_->assert false)
+           |_->assert false);
+          assert(bits(force reference |>flow_ok)=bits expected);
+          assert(geometry_bytes geo=before)) [false;true]))[1;8];
+      if count>0 then begin
+        let ordinary=evaluate(Printf.sprintf "(sop/attr geo :checked :owner %s :type %s)" owner_name kind) in
+        let ordinary_program=Flow_ir.Executor.compile ~strict:true ordinary |>flow_ok in
+        List.iter(function Error d->assert(d.Flow.Diagnostic.code="E_NONFINITE")|Ok _->assert false)
+          [E.Private.force_reference ~resolve ordinary ~live;
+           Flow_ir.Executor.force ~strict:true ~resolve ordinary_program ~live]
+      end;
+      if count=6 && bad=infinity then begin
+        let input=Lisp_sop.snapshot geo in
+        let body=Printf.sprintf {|(workspace checked_write
+          (defnode sop/checked_write [(geo : geometry)]
+            (let* [data %s cleaned (sop/with_attr geo :cleaned (exact (map (fn [x] x) data.values)) :owner %s :type %s)]
+              (sop/with_attr cleaned :valid (exact (map (fn [(x : int)] x) data.valid)) :owner %s :type int)))
+          (graph g :context sop (sop/checked_write (sop/ext_source))))|}query owner_name kind owner_name in
+        let factory=Edit.factory ~key:"ext_source" ~label:"Source" ~category:["Test"] ~arity:0(fun _->input) in
+        List.iter(fun reference->
+          let l=L.workspace ~reference ~factories:(factory::factories)(Flow.Syntax.parse body |>flow_ok)|>flow_ok in
+          let node=compiled l in
+          let session=session() in
+          Fun.protect ~finally:(fun()->Session.close session)(fun()->List.iter(fun domains->
+            let output=cook session ~domains ~time:0. node |>geometry in
+            let read component ty name=Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->Some output)
+              (E.Source("sop/attr",ty,["geometry",E.Deferred(Flow.Ty.geometry,7);"attribute",E.Text name;
+                "owner",E.Text owner_name;"type",E.Text component]))|>flow_ok in
+            assert(bits(read kind(Flow.Ty.Array(if width=1 then Float else if width=2 then Vec2 else if width=3 then Vec3 else Vec4))"cleaned")=bits values);
+            assert(read "int" Flow.Ty.(Array Int)"valid"=E.Int_array(Array.init count(fun i->i mod 2)));
+            Session.clear session)[1;8]))[false;true]
+      end)
+      [Int64.float_of_bits 0x7ff8000000001234L;infinity;neg_infinity])
+      ["float",1;"vec2",2;"vec3",3;"vec4",4])owners)fixtures;
+  let resolve=Flow_sop.Attribute_kernel.resolve ~geometry:(fun id->if id=7 then Some small else None) in
+  let live=Frame_input.at_time 0. in
+  let missing=evaluate "(sop/attr_checked geo :missing)" in
+  List.iter(function Error d->assert(d.Flow.Diagnostic.code="E_ATTR_TYPE")|Ok _->assert false)
+    [E.Private.force_reference ~resolve missing ~live;
+     Flow_ir.Executor.force ~strict:true ~resolve(Flow_ir.Executor.compile ~strict:true missing |>flow_ok) ~live];
+  let lazy_query=evaluate "(if (> t 0) (sop/attr_checked geo :missing) (sop/attr_checked geo :P))" in
+  let program=Flow_ir.Executor.compile ~strict:true lazy_query |>flow_ok in
+  List.iter(fun reference->
+    let force time=let live=Frame_input.at_time time in
+      if reference then E.Private.force_reference ~resolve lazy_query ~live
+      else Flow_ir.Executor.force ~strict:true ~resolve program ~live in
+    ignore(force (-1.) |>flow_ok);
+    (match force 1. with Error d->assert(d.code="E_ATTR_TYPE")|Ok _->assert false);
+    ignore(force (-1.) |>flow_ok))[false;true];
+  (match E.Private.force_reference ~resolve:(Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->None)) missing ~live with
+   |Error d->assert(d.code="E_DATA_SOURCE")|Ok _->assert false);
+  List.iter(fun kind->
+    let source="(workspace bad_checked (graph g :context sop (let* [geo (sop/line) data (sop/attr_checked geo :P :type "^kind^")] geo)))" in
+    let _,ds=Flow.Workspace.check ~ops:Flow_sop.Operators.all Flow.Check.{version=1;kinds=[]}(Flow.Syntax.parse source |>flow_ok) in
+    assert(List.exists(fun(d:Flow.Diagnostic.t)->d.code="E_ATTR_TYPE")ds))
+    ["int";"text";"float_array";"int_array";"(if true \"float\" \"vec3\")"];
+  print_endline "Checked attributes: numeric/all-owner finite classification, raw bytes, strict/reference/domain copies and ordinary nonfinite guards pass"
+
+let () =
+  let checker=Flow_sop.Catalog.check_workspace ~ops:Flow_sop.Operators.all in
+  let forms=Flow.Syntax.parse {|(workspace checked_projection (graph g :context sop
+    (let* [geo (sop/line) data (sop/attr_checked geo :P :owner point :type vec3)] geo)))|} |>flow_ok in
+  let checked=match checker catalog forms with Some checked,[]->checked|_->assert false in
+  let card workspace=Flow_graph.Projection.find(Flow_graph.Projection.of_graph catalog workspace "g")["g";"data"]|>Option.get in
+  assert((card checked).ty=Flow.Ty.Record["values",Array Vec3;"valid",Array Int]);
+  let edited,checked=Flow_graph.Flow_edit.apply_checked ~checker catalog forms
+    (Set_arg{node=["g";"data"];key=Kw "type";sub=[];value=Flow.Syntax.make(Str "float")})|>flow_ok in
+  assert((card checked).ty=Flow.Ty.Record["values",Array Float;"valid",Array Int]);
+  List.iter(fun(key,value)->ignore(Flow_graph.Flow_edit.apply_checked ~checker catalog edited
+    (Set_arg{node=["g";"data"];key;sub=[];value=Flow.Syntax.make(Str value)})|>flow_ok))
+    [Pos 1,"weight";Kw "owner","vertex"];
+  ignore(Flow_graph.Flow_edit.apply_checked ~checker catalog edited
+    (Connect{node=["g";"data"];key=Pos 0;src="geo";iter=false})|>flow_ok);
+  assert(Result.is_error(Flow_graph.Flow_edit.apply_checked ~checker catalog edited
+    (Set_arg{node=["g";"data"];key=Kw "type";sub=[];value=Flow.Syntax.make(Str "text")})));
+  print_endline "Checked attributes: record card and all argument gestures retain typed projection"
+
+let () =
   let geo=Line_geometry.points[|0.,0.,0.|] in
   let write data=Flow_sop.Attribute_kernel.write ~grain:97 ~owner:Attribute.Point
     ~kind:"float_array" "csr" (E.Record["offsets",E.Int_array[|0;Array.length data|];
