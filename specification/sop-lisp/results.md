@@ -4057,3 +4057,71 @@ body and shared runtime as this production declaration.
 Set Color is whole port14 of128. All six B.11 setters and seven B.12 metadata
 ports are complete; 114 whole ports remain. The plan has20 of60 milestones
 complete; remaining phase and review gates stay required.
+
+## Prepared-table prefixes for typed gathers
+
+The shared typed Collect executor now extends its contiguous total prefix
+through execution-local tables already published after full validation, and
+through reads whose executed guard/index banks prove every selected index in
+bounds. Proof resolves no capture, changes no state and raises no diagnostic.
+The first unknown table, wrong tag, bad selected index or fallible instruction
+leaves the entire suffix in reference lane order. Admitted reads use the
+existing checked executor. An admitted preparation is skipped because its
+already completed publication is its only effect. No source buffer is changed,
+no partial result is published, and reductions/scans retain their old order.
+
+The new runnable regression delays first table use by two blocks and keeps
+invalid inactive indices after warming; changes live table content/count across
+forces; and conflicts a warmed table's late bad index with an earlier second
+table's raw-byte cause and state changes. Fusion off/on, domains1/4/8, both
+error orders and block/chunk boundaries preserve reference bytes, resolver
+calls on the initial domain and rollback. Existing numeric/type/finiteness,
+skip/Product, discarded sink, real Web/export/worker and SOP checks also pass.
+
+Focused67661 exited0 for `@lib/flow_ir/runtest @lib/flow_web/runtest
+@lib/flow_sop/runtest`. The standalone Text benchmark's diagnostic now prints
+full-precision timings and unrounded 2x verdicts; focused97660 passed after
+that change. A request for the nonexistent `test_gather` alias failed before
+compilation and was corrected to `@lib/flow_ir/runtest`; no check was skipped.
+Diagnostic `--trace-text` reuses `Core.pp` and shows the same seven authored
+instructions; focused62620 and trace89187 exited0. The refinement that skips
+already completed preparation passed the same full focused request56636.
+
+Quiet protocol: Apple M1 arm64, OCaml5.3.0 development build, million rows,
+strict Packed Collect, block1024/chunk16384, median3 force-only, unchanged
+native-byte preflight and one/four domains. Source preparation and full-major
+GC are outside the measured force. No concurrent build or benchmark ran.
+Four-domain allocations observe only the initial domain. Every row is retained:
+
+| Experiment | Domains | Native seconds | Packed seconds | Ratio | 2x gate | Native bytes | Packed bytes |
+| --- | ---: | ---: | ---: | ---: | --- | ---: | ---: |
+| Prior total prefix72326 | 1 | 0.006232 | 0.055121 | 8.845 | FAIL | 8000168 | 17211544 |
+| Prior total prefix72326 | 4 | 0.006342 | 0.015340 | 2.419 | FAIL | 8000168 | 10396088 |
+| Prepared tables60246 | 1 | 0.0063140392303466797 | 0.043770074844360352 | 6.9321829097911865 | FAIL | 8000168 | 17446008 |
+| Prepared tables60246 | 4 | 0.0064108371734619141 | 0.012497186660766602 | 1.9493845066755922 | PASS | 8000168 | 10454744 |
+| Skip ready prepare4802 | 1 | 0.0064330101013183594 | 0.040699005126953125 | 6.3265880957675487 | FAIL | 8000168 | 17446008 |
+| Skip ready prepare4802 | 4 | 0.0062489509582519531 | 0.011553764343261719 | 1.8489126287676458 | PASS | 8000168 | 10454216 |
+
+Handles60246/4802 completed the harness with exit0; their one-domain 2x
+failures remain. The historical baseline printed rounded timings/ratios;
+new rows retain full precision. Relative to72326, Packed force time fell26.2%
+at one domain and24.7% at four domains. One-domain allocations grew234,464 B.
+This runtime improvement qualifies no whole Text port: one domain is still
+above2x and each dependent node still requires its complete recipe/mode matrix.
+The separate integer-dispatch and dense-bank allocation ideas remain unapplied.
+
+Profile83973 ran the unchanged one-domain `--profile-text` loop and exited0;
+`/usr/bin/sample` handle32859 sampled3 seconds and exited0. Its1,351 main-thread
+samples show executor, reference write-barrier, guard/bounds scans, array copying
+and GC work. The profile is diagnostic evidence, not another timing gate.
+
+Logs: `/tmp/rays-text-prepared-prefix-focused.log`,
+`/tmp/rays-text-prepared-prefix-gather-focused.log`,
+`/tmp/rays-text-prepared-prefix-bench.log`,
+`/tmp/rays-text-prepared-prefix-trace-focused.log`,
+`/tmp/rays-text-prepared-prefix-trace.log`,
+`/tmp/rays-text-prepared-prefix-skip-ready-focused.log`,
+`/tmp/rays-text-prepared-prefix-skip-ready-bench.log`,
+`/tmp/rays-text-prepared-prefix-profile.log`,
+`/tmp/rays-text-prepared-prefix-sample.txt`. Contract and proof details are in
+`text-gather-validation.md`. No API, shader, generated manifest or golden changes.

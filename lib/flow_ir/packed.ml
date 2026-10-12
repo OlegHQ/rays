@@ -639,8 +639,42 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
         done in
       if gather && t.result=Collect then begin
         for slot=0 to total_prefix-1 do execute slot t.code.(slot) 0 length done;
+        let cached i ty=match Atomic.get prepared.(i) with
+          |Some value when V.ty_of value=ty->Some value|_->None in
+        let cached_table register=match unguarded t.code.(register) with
+          |Array_prepare(i,ty)->cached i ty|_->None in
+        let valid_indices guards index count=
+          let j=ref 0 in
+          while !j<length && (not(selected !j guards) ||
+            let index=integer.(index*block_size+ !j) in
+            index>=0 && index<=Sys.max_array_length && index<count) do incr j done;
+          !j=length in
+        let rec safe guards=function
+          |Guarded(more,body)->safe (if guards=[] then more else guards@more) body
+          |Array_prepare(i,ty)->cached i ty<>None
+          |Text_gather(array,index)->(match cached_table array with
+              |Some(E.Text_array data)->valid_indices guards index (Array.length data)
+              |_->false)
+          |Int_gather(array,index)->(match cached_table array with
+              |Some(E.Int_array data)->valid_indices guards index (Array.length data)
+              |_->false)
+          |Gather(array,index,width,_)->(match cached_table array,width with
+              |Some(E.Float_array data),1|Some(E.Vec2_array data),2
+              |Some(E.Vec3_array data),3|Some(E.Vec4_array data),4->
+                  Array.length data mod width=0 && valid_indices guards index (Array.length data/width)
+              |_->false)
+          |body->total body in
+        (* Only already published, validated tables can extend the prefix.
+           A failed bounds proof leaves the whole remaining suffix lane-major. *)
+        let prefix=ref total_prefix in
+        while !prefix<Array.length t.code && safe [] t.code.(!prefix) do
+          (match unguarded t.code.(!prefix) with
+           |Array_prepare _->() (* Publication already completed its only effect. *)
+           |_->execute !prefix t.code.(!prefix) 0 length);
+          incr prefix
+        done;
         for j=0 to length-1 do
-          for slot=total_prefix to Array.length t.code-1 do execute slot t.code.(slot) j (j+1) done
+          for slot= !prefix to Array.length t.code-1 do execute slot t.code.(slot) j (j+1) done
         done
       end
       else if not gather then execute_all false 0 length;

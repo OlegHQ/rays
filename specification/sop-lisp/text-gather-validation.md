@@ -268,3 +268,80 @@ Both 2× gates remain unmet. This qualifies the shared semantic optimization,
 not a whole Text node. Logs: `/tmp/rays-text-total-prefix-focused.log`,
 `/tmp/rays-text-total-prefix-focused2.log`,
 `/tmp/rays-text-total-prefix-bench.log`.
+
+## Prepared-table incremental prefixes
+
+The typed Collect executor extends its existing contiguous prefix per block.
+After executing its previously proven-total instructions, it probes only tables
+already published following successful type/storage/whole-table validation in
+this execution. The first unresolved table remains at its original selected
+row; the proof performs no lazy forcing, source resolution, validation, state
+write, output publication or diagnostic. It may admit an already prepared
+instruction, then a Text/Int/Float/vector read if its executed guard/index banks
+prove every selected index in bounds. Inactive rows are not read. Each admitted
+read uses the existing span executor before proof of the next instruction.
+
+The first wrong tag, bad selected index, unknown capture or fallible operation
+ends extension. The complete suffix remains lane-major, so an earlier row's
+later table/cause failure still wins over a late bounds failure. Prepared cells
+belong to one force and cannot carry a previous live table into the next force.
+Concrete-table publication can safely be observed between workers; captured host
+tables retain the existing initial-domain sequential forcing path. Source arrays
+remain immutable, outputs private and ordered reductions/scans excluded.
+
+The regression adds delayed-first-use, changed table contents/cardinality/live time
+across repeated forces, and warmed-A late-bounds versus earlier-B raw-cause/state
+rollback checks at block/chunk boundaries, with fusion off/on and domains1/4/8.
+Existing type/finiteness, skip/Product, discarded sink, worker/export and numeric
+parity proofs remain required. The Boolean proof adds a selected-index/guard
+scan, and existing checked span reads remain; reduced dispatch may be offset by
+this extra work. No speed prediction follows from static review.
+
+Focused request67661 exited0 for `@lib/flow_ir/runtest @lib/flow_web/runtest
+@lib/flow_sop/runtest`. The Text benchmark now prints full-precision timings
+and an unrounded 2x verdict. Its million-row inputs, native-byte preflight,
+median3 force-only protocol and one/four domains remain unchanged. Request97660
+passed after that diagnostic change. Quiet request60246 completed both rows:
+
+| Domains | Native seconds | Packed seconds | Ratio | 2x gate | Native bytes | Packed bytes |
+| ---: | ---: | ---: | ---: | --- | ---: | ---: |
+| 1 | 0.0063140392303466797 | 0.043770074844360352 | 6.9321829097911865 | FAIL | 8000168 | 17446008 |
+| 4 | 0.0064108371734619141 | 0.012497186660766602 | 1.9493845066755922 | PASS | 8000168 | 10454744 |
+
+The instruction trace shows all seven benchmark instructions are admitted once
+the table has been published; it introduces no new math or lookup instruction.
+Skipping an admitted preparation's already completed effect removes repeated
+guard scans and table reads. The same full focused request56636 exited0;
+quiet request4802 completed the same two rows after that refinement:
+
+| Domains | Native seconds | Packed seconds | Ratio | 2x gate | Native bytes | Packed bytes |
+| ---: | ---: | ---: | ---: | --- | ---: | ---: |
+| 1 | 0.0064330101013183594 | 0.040699005126953125 | 6.3265880957675487 | FAIL | 8000168 | 17446008 |
+| 4 | 0.0062489509582519531 | 0.011553764343261719 | 1.8489126287676458 | PASS | 8000168 | 10454216 |
+
+Compared with baseline72326, Packed force time fell26.2% at one domain and
+24.7% at four domains. Initial-domain allocations grew234,464 bytes at one
+domain; four-domain counts exclude worker allocations. Apple M1 arm64,
+OCaml5.3.0 development build, block1024/chunk16384, no concurrent builds or
+benchmarks. Preparation cells remain execution-local. The last two-row baseline is72326:
+Native/Packed 0.006232/0.055121 seconds (8.845×) at one domain and
+0.006342/0.015340 seconds (2.419×) at four domains; both 2× failures remain.
+The one-domain 2x failure remains; this improvement qualifies no whole Text
+node. The separate integer-dispatch candidate remains unapplied. Logs:
+`/tmp/rays-text-prepared-prefix-focused.log`,
+`/tmp/rays-text-prepared-prefix-gather-focused.log`,
+`/tmp/rays-text-prepared-prefix-bench.log`,
+`/tmp/rays-text-prepared-prefix-trace-focused.log`,
+`/tmp/rays-text-prepared-prefix-trace.log`,
+`/tmp/rays-text-prepared-prefix-skip-ready-focused.log`,
+`/tmp/rays-text-prepared-prefix-skip-ready-bench.log`.
+
+Post-change `/usr/bin/sample` profile32859 covers3 seconds of the unchanged
+one-domain `--profile-text` loop (handle83973, exit0). Its1,351 initial-domain
+samples include267 executor,233 write-barrier,120 guard and43 bounds-proof
+top-stack samples, with shared-array copying and GC also visible. These are
+sampling counts, not benchmark percentages. The profile is diagnostic and
+supplies no additional timing gate. Logs:
+`/tmp/rays-text-prepared-prefix-profile.log`,
+`/tmp/rays-text-prepared-prefix-sample.txt`. Scratch allocation and repeated
+Text reference writes remain candidates for measurement; neither has changed.

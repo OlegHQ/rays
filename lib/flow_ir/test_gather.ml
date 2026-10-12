@@ -276,6 +276,60 @@ let () =
     [0;1023;1024;16383;16384];
   print_endline "Typed total prefix: wrapping Int/native Text bytes, guarded storage checks and earliest-row block/chunk errors pass"
 
+let () =
+  let live=Frame_input.at_time 0.25 and domain=Domain.self()in
+  (* The first two blocks leave the table untaken. Later warmed blocks still
+     contain inactive negative indices. Table contents and cardinality change
+     across forces; no prepared snapshot may cross a force. *)
+  let value=instantiate(Flow.Ty.Array Flow.Ty.Text)
+    "(fn [(index : int)] (if (int/lt index 0) \"safe\255\000\" (array/nth data index)))"
+    (Array.init 32769(fun i->if i<2048 || i mod 5=0 then -1 else i mod 3))in
+  let current=ref(E.Text_array[|"old\255\000";"old1";"old2"|])in
+  List.iter(fun fusion->let p=packed ~fusion value in
+    List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+      List.iteri(fun step table->current:=table;let calls=ref 0 in
+        let live=Frame_input.at_time(float step)in
+        let resolve _=assert(Domain.self()=domain);incr calls;Ok !current in
+        let result=P.force ~strict:true ~resolve p ~live in
+        let reference=E.Private.force_reference ~resolve:(fun _->Ok !current)value ~live in
+        assert(!calls=1);
+        match result,reference with
+        |Ok result,Ok reference->assert(bytes result=bytes reference)
+        |Error _,Error _->same_error result reference
+        |_->failwith "Prepared table crossed an execution boundary")
+        [E.Text_array[|"old\255\000";"old1";"old2"|];E.Text_array[|"short"|];
+         E.Text_array[|"new\128\000";"new1";"new2"|]]))[1;4;8]) [false;true];
+  let fields=Flow.Ty.Record["a",Flow.Ty.Array Flow.Ty.Text;"b",Flow.Ty.Array Flow.Ty.Text]in
+  let closure=fn fields
+    "(fn [(index : int)] (let* [chosen (array/nth data.a index)] (if (int/eq index 1) (array/nth data.b 0) chosen)))"in
+  let closure=E.Private.map_function_bindings(function
+    |E.Source("probe/table",_,_)->E.Record[
+        "a",E.Source("probe/a",Flow.Ty.Array Flow.Ty.Text,[]);
+        "b",E.Source("probe/b",Flow.Ty.Array Flow.Ty.Text,[])]
+    |value->value)closure in
+  let advancing=recorded(Flow.Ty.Array Flow.Ty.Text)"(state [counter 0] (int/add counter 1))"in
+  (* A is prepared in block 0. A late bad A index in block 1 must not be
+     reported ahead of an earlier row's later B resolution/error/cause. *)
+  List.iter(fun (early,late)->
+    let value=ok(E.Private.map_function ~signature:Flow.Ty.{params=[Int];result=Text}
+      closure [E.Int_array(Array.init 32769(fun i->if i=early then 1 else if i=late then 2 else 0))])in
+    let resolve state calls=function
+      |E.Source("probe/a",_,_)->assert(Domain.self()=domain);calls:="a"::!calls;Ok(E.Text_array[|"a0";"a1"|])
+      |E.Source("probe/b",_,_)->assert(Domain.self()=domain);calls:="b"::!calls;
+          ignore(ok(E.Private.force_reference ~state advancing ~live));
+          Error(Flow.Diagnostic.error ~code:"E_LATE_TABLE" ~cause:"b\255\000cause" "B failed")
+      |_->assert false in
+    let reference_state=E.create_state()in
+    let reference=E.Private.force_reference ~state:reference_state ~resolve:(resolve reference_state(ref[]))value ~live in
+    List.iter(fun fusion->List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+      let calls=ref []and state=E.create_state()in
+      let before=E.state_stamp state in
+      same_error(P.force ~strict:true ~state ~resolve:(resolve state calls)(packed ~fusion value)~live)reference;
+      assert(E.state_stamp state=before && E.state_stamp reference_state=before);
+      assert(List.rev !calls=(if early<late then ["a";"b"]else["a"]))))[1;4;8]) [false;true])
+    [1100,1600;1600,1100;16383,16384;16384,16383];
+  print_endline "Prepared table prefix: delayed forcing, per-force content/count changes, late bounds versus earlier table cause and one/four/eight domains pass"
+
 let ()=if Array.exists((=)"--bench")Sys.argv then begin
   let count=1_000_000 and indices=Array.init 1_000_000 Fun.id in
   Printf.printf "Numeric gather: OCaml %s, direct strict Packed, block1024/chunk16384, million rows, median3; allocations observe the initial domain only\n%!"Sys.ocaml_version;
@@ -423,7 +477,7 @@ let () =
   assert(Result.is_error(P.of_region{region with code;outputs=[|[|Array.length code-1|]|]}));
   print_endline "Text gather: immutable byte leaves, identity/uniform/select/helper, strict Core and one/four/eight domains pass"
 
-let ()=if Array.exists(fun arg->arg="--bench-text" || arg="--profile-text")Sys.argv then begin
+let ()=if Array.exists(fun arg->arg="--bench-text" || arg="--profile-text" || arg="--trace-text")Sys.argv then begin
   let count=1_000_000 and strings=[|"";"é日本😀";"a\000b";"\255\128"|]in
   let indices=Array.init 1_000_000(fun i->if i mod 5=0 then -1 else i mod 4)in
   let old=Array.init count(fun i->strings.((i+1)mod 4))in
@@ -434,6 +488,9 @@ let ()=if Array.exists(fun arg->arg="--bench-text" || arg="--profile-text")Sys.a
   let value=ok(E.Private.map_function ~signature:Flow.Ty.{params=[Int;Text];result=Text}
     closure [E.Int_array indices;E.Text_array old])in
   let p=packed value and live=Frame_input.at_time 0.25 in
+  if Array.exists((=)"--trace-text")Sys.argv then
+    Format.printf "%a\n%!" I.Core.pp I.Core.{constants=[||];locals=[||];body=[];results=[||];
+      state_slots=[||];regions=[|P.to_region p|];call_slots=0};
   let native()=E.Text_array(Array.init count(fun i->if indices.(i)<0 then old.(i)else strings.(indices.(i))))in
   if Array.exists((=)"--profile-text")Sys.argv then Rays_math.Parallel.run ~domains:1(fun()->
     assert(bytes(ok(P.force ~strict:true p ~live))=bytes(native()));
@@ -452,7 +509,7 @@ let ()=if Array.exists(fun arg->arg="--bench-text" || arg="--profile-text")Sys.a
     let run()=ok(P.force ~strict:true p ~live)in
     assert(bytes(run())=bytes(native()));
     let nt,nb=measure native and pt,pb=measure run in
-    Printf.printf "Text domains%d native %.6f/%.0fB packed %.6f/%.0fB ratio %.3f\n%!"
-      domains nt nb pt pb(pt/.nt)))[1;4]
+    Printf.printf "Text domains%d native %.17g/%.0fB packed %.17g/%.0fB ratio %.17g gate=%s\n%!"
+      domains nt nb pt pb(pt/.nt)(if pt<=2.*.nt then "pass" else "fail")))[1;4]
   end
 end

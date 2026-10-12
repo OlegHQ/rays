@@ -802,10 +802,18 @@ Gather programs keep fallible instructions and lazy captures in reference lane
 order. Native Collect may execute a leading proven-total prefix over a whole
 block: finite constants, checked Int/Text storage loads, wrapping Int arithmetic
 and exact comparisons/selections, including guards whose operands precede them
-in that prefix. These instructions only write private register banks. Source
-resolution, table preparation, float finite checks and potentially failing
-arithmetic end the prefix; inspecting a malformed input tag declines batching
-without changing the selected instruction's error. Parallel Collect
+in that prefix. These instructions only write private register banks. Each
+block may extend this prefix incrementally through a table already published
+after successful validation in the same execution, and through selected reads
+whose ready guard/index banks prove every selected index in bounds. The proof
+resolves no capture and raises no error. An unresolved table, wrong storage tag,
+bad selected index, unproven float check or potentially failing operation stops batching;
+the entire remaining suffix keeps reference lane order. Unknown and malformed
+values therefore keep their original selected diagnostic position. Prepared
+tables remain immutable and their publication cells reset on every execution.
+An already published preparation has completed its only effect and is skipped;
+admitted reads retain the existing checked span executor.
+Parallel Collect
 keeps each chunk's first diagnostic and reports the lowest failing chunk,
 preserving code, message and cause. Iteration `:skip` omits the body; a discarded
 output plane still executes selected reads and finite checks. New outputs stay
