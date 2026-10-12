@@ -35,6 +35,7 @@ type t = {
 }
 
 exception Fail of Diagnostic.t
+exception Body_error of Diagnostic.t
 let fail code message = raise (Fail (Diagnostic.error ~code message))
 let ok = function Ok value -> value | Error diagnostic -> raise (Fail diagnostic)
 let edit = function Ok value -> value | Error message -> fail "E_LOWER" message
@@ -135,7 +136,7 @@ let objects lowered = List.filter_map (fun (graph : graph) ->
   Option.map (fun root -> graph.instance, graph.network, root) graph.root)
   lowered.graphs
 
-let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(kernel_bindings = []) ?(compiled_ids = Instance_path.Map.empty)
+let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(defer_body_errors = false) ?(kernel_bindings = []) ?(compiled_ids = Instance_path.Map.empty)
     ?(sites = []) ?inputs checked =
   Phase_timer.measure Lower (fun () ->
   try
@@ -148,7 +149,10 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(k
         | Some (Some previous) when producer = Some previous -> producer
         | _ -> None in
       Hashtbl.replace image_origins key origin in
-    let checked, evaluated = ok (Flow_ir.qualify_workspace ~record:true ?inputs ~observe checked) in
+    let checked, evaluated = match Flow_ir.qualify_workspace ~record:true ?inputs ~observe checked with
+      | Ok evaluated -> evaluated
+      | Error diagnostic when defer_body_errors -> raise (Body_error diagnostic)
+      | Error diagnostic -> raise (Fail diagnostic) in
     let profile = Flow_ir.Profile.create ~clock:Unix.gettimeofday in
     (* Kernel bodies are cache inputs as well as their captures. The digest is
        lazy so ordinary catalog edits retain their existing pipeline counts.
@@ -174,9 +178,9 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(k
         ~dependencies:(if E.frame_dependent(E.Residual residual) then Sop.Context.Dependencies.one Input
           else Sop.Context.Dependencies.static)
         (fun ~node_id:_ context payloads->
-          let session=Result.get_ok(Sop.Session.create ~max_entries:0 ~max_payload_bytes:0) in
-          Sop.Session.Private.set_parallel_override session (Some false);
-          Fun.protect ~finally:(fun()->Sop.Session.close session)(fun()->
+          let session=lazy(let session=Result.get_ok(Sop.Session.create ~max_entries:0 ~max_payload_bytes:0) in
+            Sop.Session.Private.set_parallel_override session (Some false);session) in
+          Fun.protect ~finally:(fun()->if Lazy.is_val session then Sop.Session.close(Lazy.force session))(fun()->
           let handles=Hashtbl.create 16 and geometries=Hashtbl.create 16 and next=ref(-1) in
           List.iteri(fun index(id,ty,node)->
             Hashtbl.add handles id (ty,node,ref(Some Sop.Session.{payload=payloads.(index);diagnostics=[];instances=None})))captures;
@@ -193,7 +197,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(k
             match !output with Some output->validate output|None->
               Result.bind
                 (Result.map_error(fun(d:Sop.Diagnostic.error)->Diagnostic.error ?cause:d.cause ~code:d.code d.message)
-                  (Sop.Session.cook session ~context node))
+                  (Sop.Session.cook (Lazy.force session) ~context node))
                 (fun value->Result.map(fun value->output:=Some value;value)(validate value))) in
           let geometry id=match Hashtbl.find_opt geometries id with
             |Some geometry->Some geometry
@@ -541,8 +545,12 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(k
           | E.Bool true -> ()
           | E.Bool false -> invalid_parameter code message
           | _ -> invalid_arg "A Lisp node validation must return bool") definition.validations;
+        (* Header validation is a constructor contract; evaluated body errors
+           belong to cooking. Strict compiler refusals remain construction errors. *)
+        try
         let body_overrides, kernel_bindings, aliases = if forwarded=[] then List.hd overrides, [], [] else
-          let forwarded_evaluation = ok (E.static ~inputs:[List.hd overrides] {nested with graphs=[body]}) in
+          let forwarded_evaluation = match E.static ~inputs:[List.hd overrides] {nested with graphs=[body]} with
+            |Ok evaluated->evaluated|Error diagnostic->raise(Body_error diagnostic) in
           let marker name = match List.assoc name forwarded_evaluation.plan.instances.(0).inputs with
             | E.Deferred (_,source) -> source
             | _ -> fail "E_LOWER" "A forwarded kernel needs a cooked source" in
@@ -563,7 +571,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(k
           List.map (fun (_,fn,source,_,_) -> fn,source) remapped,
           List.map (fun (_,_,_,index,sources) -> index,sources) remapped in
         let capture_factories = make_capture_factories aliases in
-        let nested = ok (lower_checked ~reference ~strict_body:true ~kernel_bindings
+        let nested = ok (lower_checked ~reference ~strict_body:true ~defer_body_errors:true ~kernel_bindings
           ~factories:(List.map snd capture_factories @ List.map (fun (_,_,_,factory) -> factory) geometry_captures @ factories)
           ~inputs:[body_overrides] {nested with graphs=[body]}) in
         let graph = match nested.graphs with
@@ -603,7 +611,17 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(k
               ~time:(Sop.Context.time context) graph.network) (fun resolved ->
               Result.map_error (Diagnostic.error ~code:"E_LOWER")
                 (Edit.compile_node resolved.geometry ~node_id:root))) in
-        body, dependencies, facts) in
+        body, dependencies, facts
+        with Body_error diagnostic ->
+          let dependencies = if Context_kernel.depends ~inputs:parameters ~defs:checked.defs definition.body then
+            Sop.Context.Dependencies.one Seed else Sop.Context.Dependencies.static in
+          let cook_mode=if inputs=[] then Sop.Node.Generator else Generic in
+          let exact=Option.fold ~none:true ~some:(fun (facts:Check.kernel_facts)->facts.exact)
+            definition.kind.facts in
+          let facts=Sop.Node.{cook_mode;
+            elementwise=None;reads=["*"];writes=["*"];topology=Changed;exact} in
+          (fun _ -> Error(Sop.Diagnostic.error ?cause:diagnostic.cause
+            ~code:diagnostic.code diagnostic.message)), dependencies, facts) in
       let category = if definition.category=[] then ["Custom"] else definition.category in
       let construct inputs =
           let next = ref 0 in

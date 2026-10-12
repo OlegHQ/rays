@@ -61,6 +61,39 @@ let () = with_session (fun session ->
     "empty geometry changed through a Lisp map")
 
 let () =
+  let source body=Printf.sprintf {|(workspace body_error
+    (defnode sop/body_error [(geo : geometry) (bad : bool true)] %s)
+    (graph g :context sop (sop/body_error (sop/line :points 2))))|} body in
+  let expect_error session domains node=match Sop.Session.cook session
+      ~context:(ok(Sop.Context.create ~domains ())) node with
+    |Error d->check(d.code="E_BODY" && d.message="body failure" && d.cause=Some "authored cause")
+        ("authored body error changed during cooking: "^Sop.Diagnostic.error_to_string d)
+    |Ok _->failwith "authored body error succeeded" in
+  List.iter(fun reference->List.iter(fun body->
+    let node=lower ~reference(source body) in
+    with_session(fun session->List.iter(fun domains->expect_error session domains node)[1;8]);
+    let healthy,_=ok(Sop.Node.apply_parameters node ["bad",Param.Bool_value false]) in
+    if String.starts_with ~prefix:"(if" body then begin
+      with_session(fun session->ignore(cook session healthy));
+      let broken,_=ok(Sop.Node.apply_parameters healthy ["bad",Param.Bool_value true]) in
+      with_session(fun session->expect_error session 1 broken)
+    end)
+    ["(if bad (error \"E_BODY\" \"body failure\" :cause \"authored cause\") geo)";
+     "(let* [ignored (error \"E_BODY\" \"body failure\" :cause \"authored cause\")] geo)"])
+    [false;true];
+  let healthy=lower(source "(if false (error \"E_BODY\" \"body failure\") geo)") in
+  with_session(fun session->ignore(cook session healthy));
+  let seed=Flow_sop.Operators.seed_for ~seed:0L ~namespace:"body_error" ~label:"body_error" in
+  let seeded=lower(source(Printf.sprintf
+    "(if (int/eq (sop/context_seed \"body_error\") %d) (error \"E_BODY\" \"body failure\" :cause \"authored cause\") geo)" seed)) in
+  check(Sop.Context.Dependencies.mem Seed (Sop.Node.dependencies seeded))
+    "deferred body error lost its context seed dependency";
+  with_session(fun session->expect_error session 1 seeded;
+    ignore(cook session ~seed:123456789L seeded);
+    expect_error session 1 seeded);
+  print_endline "Authored body errors cook lazily; parameter rebuilds, causes and context seed changes preserve timing"
+
+let () =
   let original=Rdk.Line_geometry.points[|0.,-0.,2.;1.,3.,4.|] in
   let before=Rdk_test_support.geometry_bytes original in
   let transforms=[|Rays_math.Mat4.translation(Rays_math.Vec3.create 1. 0. 0.);

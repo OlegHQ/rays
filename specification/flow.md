@@ -811,6 +811,14 @@ primitives or irregular, component name vectors for reads and writes, topology
 preserved or changed, and an exact bool. `Workspace.kind_calls` exposes the
 checked body's transitive calls through specialized functions and macros.
 
+An authored node body's evaluated errors occur when the node cooks, even when
+static parameters select the failing arm during construction. Parameter edits
+can therefore prepare a failing body; header `:validate` remains a constructor
+and edit check. Cooking preserves the error's code, message and cause, evaluates
+only the selected arm, and rebuilds seed-dependent bodies when the context seed
+changes. Unsupported numeric kernels still fail strict compilation during
+construction.
+
 `Flow.Op` is the immutable resolution table for built-in operators. Each declaration
 contains its context, signature, output type, choices, value shape, validation, evaluator body
 and menu category. The checker, evaluator (including compiled arithmetic) and editor read that
