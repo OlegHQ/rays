@@ -38,6 +38,30 @@ let stages program = Array.fold_left (fun count (node : Flow_ir.node) -> match n
   | _ -> count) 0 (Flow_ir.Executor.graph program).nodes
 
 let () =
+  let geo=Line_geometry.points[|0.,0.,0.|] in
+  let write data=Flow_sop.Attribute_kernel.write ~grain:97 ~owner:Attribute.Point
+    ~kind:"float_array" "csr" (E.Record["offsets",E.Int_array[|0;Array.length data|];
+      "values",E.Float_array data]) geo in
+  let data=[|-0.;0.;Float.max_float|] in
+  let written=write data |> flow_ok in
+  let stored=Geometry.find_attribute ~owner:Attribute.Point "csr" written |>Option.get
+    |>Attribute.Private.storage in
+  (match stored with Attribute.Float_array stored->
+    let stored=Packed.Float_array.Private.view stored in
+    assert(stored.values!=data && stored.offsets=[|0;3|]);
+    Array.iteri(fun i x->assert(Int64.bits_of_float x=Int64.bits_of_float data.(i)))stored.values
+   |_->assert false);
+  List.iter(fun(index,value)->let invalid=Array.copy data in invalid.(index)<-value;
+    match write invalid with
+    |Error d->assert(d.code="E_NONFINITE" && d.message="Attribute values must be finite.")
+    |Ok _->assert false)[0,nan;2,infinity;2,neg_infinity];
+  assert(Geometry.find_attribute ~owner:Attribute.Point "csr" geo=None);
+  let empty=Flow_sop.Attribute_kernel.write ~grain:97 ~owner:Attribute.Point ~kind:"float_array"
+    "csr" (E.Record["offsets",E.Int_array[|0|];"values",E.Float_array[||]])(Line_geometry.points[||]) in
+  ignore(flow_ok empty);
+  print_endline "CSR writer finite scan: empty/finite signed-zero owned rows and first/last nonfinite refusals pass"
+
+let () =
   List.iter(fun count->
     let original=Kernel.generate_point_ranges count(fun ~first ~last ~x ~y ~z->
       for i=first to last-1 do x.(i)<-float i;y.(i)<- -0.;z.(i)<-0. done) in

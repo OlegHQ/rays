@@ -301,7 +301,9 @@ let write ~grain ~owner ~kind name values geometry =
            let offsets=Array.copy offsets in
            (match kind,values with
             | "float_array",E.Float_array data ->
-                if not(Array.for_all Float.is_finite data)then error "E_NONFINITE" "Attribute values must be finite." else
+                let index=ref 0 in
+                while !index<Array.length data && Float.is_finite data.(!index) do incr index done;
+                if !index<Array.length data then error "E_NONFINITE" "Attribute values must be finite." else
                 Result.bind (Result.map_error(Flow.Diagnostic.error ~code:"E_ATTR_COUNT")
                   (Rdk.Packed.Float_array.create_owned ~offsets ~values:(Array.copy data))) (fun data->owned(A.Float_array data))
             | "int_array",E.Int_array data ->

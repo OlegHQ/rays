@@ -1189,3 +1189,39 @@ of three cold cooks and identical allocations as the first run. Both fresh
 repeat gates pass the unchanged 2× limit; the initial four-domain timing
 spike remains recorded. Set Integer is complete in its separate source commit; B.11 remains
 unchecked.
+
+### Shared materialized writes and CSR finite scan
+
+API commit `5e74832a` and implementation `5ec793b7` reuse the existing
+owned-storage writer for already materialized cooked host-call arguments.
+Focused FlowSOP request 50244 passed tuple/CSR ownership, instance expansion,
+source diagnostics, cancellation and producer-before-count error precedence;
+the accepted API manifest confirmation also passed. This route does not apply
+to Set Transform's direct attribute node. Its unchanged production benchmark
+after that change remained 7.224/4.680 times native at one/four domains.
+
+The direct CSR writer used `Array.for_all Float.is_finite`, boxing every
+double. A direct bounded scan preserves the same refusal code/message and
+removes those allocations. Focused request 88831 exited 0, including the new
+empty/finite/signed-zero/owned-storage and first/last NaN/infinity regression.
+The earlier new-test `Geometry.empty` typo was corrected to the existing empty
+point-geometry constructor before this successful gate.
+
+Command: `opam exec -- ./test_setters.exe --bench-transform`, from
+`_build/default/lib/flow_sop`, Apple M1, OCaml 5.3.0, 1,000,000 points,
+grain 4096, median of three fresh-session cold cooks. Both benchmark
+invocations exited 0. Logs: `/tmp/rays-transform-materialized-bench.log` and
+`/tmp/rays-transform-unboxed-scan-bench.log`.
+
+| Scan | Domains | Native seconds | Lisp seconds | Ratio | Native allocated bytes | Lisp allocated bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Boxed | 1 | 0.015810 | 0.114206 | 7.224 | 136,007,824 | 547,510,488 |
+| Boxed | 4 | 0.015019 | 0.070282 | 4.680 | 136,013,080 | 544,995,320 |
+| Direct | 1 | 0.015856 | 0.071279 | 4.495 | 136,007,824 | 291,510,440 |
+| Direct | 4 | 0.014908 | 0.034811 | 2.335 | 136,008,056 | 288,996,584 |
+
+Four-domain allocations count the initial domain only. The direct scan
+removes approximately 256 MB of temporary float boxes. Set Transform still
+fails the unchanged 2× gate and remains unregistered. Generated CSR arrays
+are still copied into owned native storage; no buffer-adoption proof is
+claimed here.
