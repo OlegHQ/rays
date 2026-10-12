@@ -182,8 +182,8 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
             Sop.Session.Private.set_parallel_override session (Some false);session) in
           Fun.protect ~finally:(fun()->if Lazy.is_val session then Sop.Session.close(Lazy.force session))(fun()->
           let handles=Hashtbl.create 16 and geometries=Hashtbl.create 16 and next=ref(-1) in
-          List.iteri(fun index(id,ty,node)->
-            Hashtbl.add handles id (ty,node,ref(Some Sop.Session.{payload=payloads.(index);diagnostics=[];instances=None})))captures;
+          List.iteri(fun index(id,ty,_)->
+            Hashtbl.add handles id (ty,None,ref(Some Sop.Session.{payload=payloads.(index);diagnostics=[];instances=None})))captures;
           let error code message=Error(Diagnostic.error ~code message) in
           let handle ty id=match Hashtbl.find_opt handles id with
             |Some(actual,node,output) when actual=ty->Ok(node,output)
@@ -194,7 +194,9 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
               |ty,Sop.Payload.Geometry _ when ty=Ty.geometry->Ok value
               |ty,Sop.Payload.Image _ when ty=Ty.image->Ok value
               |_->error "E_DATA_SOURCE" "A cooked handle returned a payload of the wrong type." in
-            match !output with Some output->validate output|None->
+            match !output,node with Some output,_->validate output|None,None->
+              error "E_DATA_SOURCE" "A cooked handle has no result or prepared node."
+            |None,Some node->
               Result.bind
                 (Result.map_error(fun(d:Sop.Diagnostic.error)->Diagnostic.error ?cause:d.cause ~code:d.code d.message)
                   (Sop.Session.cook (Lazy.force session) ~context node))
@@ -212,12 +214,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
                 Hashtbl.add geometries id geometry;Some geometry in
           let register_output ty (output:Sop.Session.output)=
             let id= !next in decr next;
-            let node=Sop.Node.Private.make ~operation:"flow.host_snapshot" ~version:1
-              ~parameters:(string_of_int id) ~cook_mode:Sop.Node.Generator ~inputs:[||]
-              ~dependencies:Sop.Context.Dependencies.static
-              (fun ~node_id:_ _context _inputs->Ok Sop.Node.Private.{payload=output.payload;
-                diagnostics=output.diagnostics;instances=output.instances}) in
-            Hashtbl.add handles id(ty,node,ref(Some output));
+            Hashtbl.add handles id(ty,None,ref(Some output));
             E.Deferred(ty,id) in
           let rec cooked_term factories ty value = match value with
             |E.Deferred(actual,id) when Ty.is_cooked actual->
@@ -302,7 +299,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
               |[graph]->(match graph.root with None->error "E_DATA_SOURCE" "A cooked call returned no result."
                 |Some root->Result.bind(Result.map_error(Diagnostic.error ~code:"E_LOWER")
                     (Edit.compile_node graph.network.geometry ~node_id:root))(fun node->
-                  let id= !next in decr next;Hashtbl.add handles id(ty,node,ref None);Ok(E.Deferred(ty,id))))
+                  let id= !next in decr next;Hashtbl.add handles id(ty,Some node,ref None);Ok(E.Deferred(ty,id))))
               |_->error "E_DATA_SOURCE" "A cooked call must return one typed result.")) in
           let resolve value=try match value with
             |E.Source("$core/cooked",ty,["id",E.Int id])->Result.map(fun _->E.Deferred(ty,id))(handle ty id)
