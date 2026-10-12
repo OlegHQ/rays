@@ -1044,6 +1044,7 @@
     {
       "api": [
         "val sources : Flow.Eval.value -> int list",
+        "val reads : Flow.Eval.value -> string list",
         "val owner : string -> ( Rdk.Attribute.owner , Flow.Diagnostic.t ) result",
         "val value_type : string -> ( Flow.Ty.t , Flow.Diagnostic.t ) result",
         "val resolve : geometry : ( int -> Rdk.Geometry.t option ) -> Flow.Eval.value -> ( Flow.Eval.value , Flow.Diagnostic.t ) result",
@@ -1056,7 +1057,7 @@
         "val prepare : ? profile : Flow_ir.Profile.t -> ? strict : bool -> ? approx : Flow.Workspace.Paths.t -> ? sink : Flow_ir.sink -> sources : int list -> Sop.Node.t list -> Flow.Eval.value -> ( Flow_ir.Executor.program , Flow.Diagnostic.t ) result",
         "val node : ? state : Flow.Eval.state -> ? reference : bool -> ? strict : bool -> ? elems : ( string * Flow.Eval.value ) list -> ? profile : Flow_ir.Profile.t -> ? selection : Flow.Eval.value -> ? default : Flow.Eval.value -> ? owner : Rdk.Attribute.owner -> ? kind : string -> source : string -> name : string -> values : Flow.Eval.value -> sources : int list -> Sop.Node.t list -> Sop.Node.t"
       ],
-      "api_sha256": "2a9e0f69bf3eb358330b945c015aee7cec1e9480c158501306c0859cdf864c78",
+      "api_sha256": "286b33ed925db5a55cc0fb1593b90a09b366f14d41bebbcc7e41f456b6ca8cd0",
       "excluded_legacy_symbols": [],
       "library": "flow_sop",
       "module": "Attribute_kernel",

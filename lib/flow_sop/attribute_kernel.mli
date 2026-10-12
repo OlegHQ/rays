@@ -1,5 +1,10 @@
 (** Cook-time connection between immutable geometry and packed Flow data. *)
 val sources : Flow.Eval.value -> int list
+
+val reads : Flow.Eval.value -> string list
+(** Attribute dependencies of retained data, including topology-only sources;
+    opaque geometry uses conservatively read every attribute. *)
+
 val owner : string -> (Rdk.Attribute.owner, Flow.Diagnostic.t) result
 val value_type : string -> (Flow.Ty.t, Flow.Diagnostic.t) result
 val resolve : geometry:(int -> Rdk.Geometry.t option) ->
