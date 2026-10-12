@@ -87,7 +87,12 @@
 (executable
  (name test_metadata_ports)
  (modules test_metadata_ports)
- (libraries flow flow_ir flow_sop sop_catalog rdk rdk_test_support lisp_sop))
+ (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop unix))
+
+(rule
+ (alias runtest)
+ (deps nodes/metadata.pending)
+ (action (run %{exe:test_metadata_ports.exe} --edge)))
 
 (rule
  (alias metadata_ports_draft)

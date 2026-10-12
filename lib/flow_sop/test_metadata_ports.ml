@@ -209,6 +209,100 @@ let large_rules count=
       check(same(cook session 1 97 edited)(cook session 1 97 expected))(key^": large native output differs"));
     Printf.printf "metadata ports: %s %d-row normalize/rebuild/cook matches native\n%!" key count)
     ["rename_attributes";"swap_attributes";"group_rename";"group_delete"]
-let ()=if Array.exists((=)"--huge")Sys.argv then large_rules 100001
+let edge_exact () =
+  let key="delete_edge_group" in
+  let geometry=fixture() in
+  let edge=Option.get(Geometry.find_edge_group "edges" geometry) in
+  let geometry=List.fold_left(fun geometry name->
+    Geometry.with_edge_group(Edge_group.with_name name edge)geometry|>get_string_ok)
+    geometry [" edges ";"*";"é猫\"";"[";"\\"] in
+  let old=Packed.Float3.Private.view(Geometry.positions geometry) in
+  let x=Array.copy old.x in
+  x.(0)<-Int64.float_of_bits 0x7ff8000000000123L;x.(1)<-infinity;x.(2)<-neg_infinity;
+  let raw=Geometry.with_positions(Packed.Float3.of_owned ~x ~y:(Array.copy old.y)
+    ~z:(Array.copy old.z)|>get_string_ok)geometry|>get_string_ok in
+  List.iter(fun geometry->let before=geometry_bytes geometry and input=Lisp_sop.snapshot geometry in
+    List.iter(fun name->
+      let expected=native input key ["name",P.Text_value name] in
+      List.iter(fun reference->let actual=node ~reference input key(":name "^quoted name) in
+        let session=Sop.Session.create ~max_entries:32 ~max_payload_bytes:64_000_000|>get_string_ok in
+        Fun.protect ~finally:(fun()->Sop.Session.close session)(fun()->
+          let expected=cook session 1 97 expected in
+          List.iter(fun domains->List.iter(fun grain->Sop.Session.clear session;
+            check(same expected(cook session domains grain actual))"Delete Edge Group literal/native bytes")
+            [1;97;4096])[1;4;8]))[false;true])
+      ["edges";"old_edges";" edges ";"*";"é猫\"";"[";"\\";"";"absent"];
+    check(before=geometry_bytes geometry)"Delete Edge Group input mutation")
+    [geometry;raw;points 0;points 1;grid();points 32769];
+  print_endline "Delete Edge Group exact literal names, missing/empty, all payloads and reference/domain/grain parity"
+
+let edge_projection () =
+  let module S=Flow.Syntax in
+  let module Projection=Flow_graph.Projection in
+  let module Edit=Flow_graph.Flow_edit in
+  let input=Lisp_sop.snapshot(fixture()) in
+  let factories=factories input input in
+  let catalog factories=Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version factories|>flow_ok in
+  let catalog=catalog factories and native_catalog=catalog(Sop.Nodes.Delete_edge_group.factory::factories) in
+  let checker catalog forms=Flow_sop.Catalog.check_workspace ~sources ~ops:Flow_sop.Operators.all catalog forms in
+  let workspace=function Some workspace,ds when not(List.exists(fun(d:Flow.Diagnostic.t)->d.severity=Error)ds)->workspace
+    |_,ds->fail(String.concat "\n"(List.map Flow.Diagnostic.to_string ds)) in
+  let forms=S.parse{|(workspace edges (graph g :context sop
+    (let* [src (sop/metadata_input) card (sop/delete_edge_group src)] card)))|}|>flow_ok in
+  let actual=workspace(checker catalog forms)
+  and expected=workspace(Flow.Workspace.check ~ops:Flow_sop.Operators.all native_catalog forms) in
+  let card catalog workspace=Option.get(Projection.find(Projection.of_graph catalog workspace "g")["g";"card"]) in
+  let actual_card=card catalog actual and expected_card=card native_catalog expected in
+  check(actual_card=expected_card)"Delete Edge Group native card metadata";
+  check(Projection.lines Full actual_card=Projection.lines Full expected_card)"Delete Edge Group native inspector";
+  let _,edited=Edit.apply_checked ~checker catalog forms
+    (Set_arg{node=actual_card.path;key=Kw "name";sub=[];value=S.make(Str "old_edges")})|>flow_ok in
+  let lowered=Flow_sop.Lower.of_checked ~factories edited|>flow_ok in
+  let graph=List.hd lowered.graphs in
+  let edited=Sop.Edit_graph.compile_node graph.network.geometry ~node_id:(Option.get graph.root)|>get_string_ok in
+  let expected=native input "delete_edge_group" ["name",P.Text_value "old_edges"] in
+  check(N.parameter_key edited=N.parameter_key expected)"Delete Edge Group graph parameter key";
+  let _,bypassed=Edit.apply_checked ~checker catalog forms(Toggle_bypass{node=actual_card.path})|>flow_ok in
+  check((card catalog bypassed).bypass)"Delete Edge Group graph bypass";
+  let lowered=Flow_sop.Lower.of_checked ~factories bypassed|>flow_ok in
+  let graph=List.hd lowered.graphs in
+  let bypassed=Sop.Edit_graph.compile_node graph.network.geometry ~node_id:(Option.get graph.root)|>get_string_ok in
+  let session=Sop.Session.create ~max_entries:32 ~max_payload_bytes:64_000_000|>get_string_ok in
+  Fun.protect ~finally:(fun()->Sop.Session.close session)(fun()->
+    check(same(cook session 1 97 edited)(cook session 1 97 expected))"Delete Edge Group graph edit cook";
+    check(same(cook session 1 97 bypassed)(cook session 1 97 input))"Delete Edge Group bypass preserves input bytes");
+  print_endline "Delete Edge Group native card/inspector parity, direct name edit and bypass gestures"
+
+let edge_benchmark () =
+  let geometry=Plane_generators.grid ~connectivity:Grid_quads ~columns:999 ~rows:999 ~size:8.()|>get_ok in
+  check(Geometry.point_count geometry=1_000_000)"Delete Edge Group million-point grid";
+  let topology=Geometry.topology geometry in
+  let edge=Edge_group.init ~topology ~index:(Topology_index.create topology) ~name:"edges"(fun i->i mod 2=0) in
+  List.iter(fun group_count->
+    let geometry=List.init group_count(fun i->if i=0 then "edges" else "edge_"^string_of_int i)
+      |>List.fold_left(fun geometry name->Geometry.with_edge_group(Edge_group.with_name name edge)geometry|>get_string_ok)geometry in
+    let input=Lisp_sop.snapshot geometry in
+    List.iter(fun name->let actual=node ~reference:false input "delete_edge_group"(":name "^quoted name)
+      and expected=native input "delete_edge_group"["name",P.Text_value name] in
+      List.iter(fun domains->
+        let preflight=Sop.Session.create ~max_entries:32 ~max_payload_bytes:512_000_000|>get_string_ok in
+        Fun.protect ~finally:(fun()->Sop.Session.close preflight)(fun()->
+          check(same(cook preflight domains 4096 actual)(cook preflight domains 4096 expected))
+            "Delete Edge Group million-point native preflight");
+        let sample node=List.init 3(fun _->
+          let session=Sop.Session.create ~max_entries:32 ~max_payload_bytes:512_000_000|>get_string_ok in
+          Fun.protect ~finally:(fun()->Sop.Session.close session)(fun()->
+            Gc.full_major();let bytes=Gc.allocated_bytes() and started=Unix.gettimeofday() in
+            ignore(Result.get_ok(cook session domains 4096 node));
+            Unix.gettimeofday()-.started,Gc.allocated_bytes()-.bytes))
+          |>List.sort(fun(a,_)(b,_)->Float.compare a b)|>fun samples->List.nth samples 1 in
+        let native_time,native_bytes=sample expected and time,bytes=sample actual in
+        Printf.printf "Delete Edge Group points=1000000 quads=998001 groups=%d name=%S domains=%d grain=4096 native=%.6f lisp=%.6f ratio=%.3f native_bytes=%.0f lisp_bytes=%.0f\n%!"
+          group_count name domains native_time time(time/.native_time)native_bytes bytes)[1;4])
+      ["edges";"absent"])[0;1;8]
+
+let ()=if Array.exists((=)"--bench-edge")Sys.argv then edge_benchmark()
+  else if Array.exists((=)"--edge")Sys.argv then(edge_exact();edge_projection())
+  else if Array.exists((=)"--huge")Sys.argv then large_rules 100001
   else if Array.exists((=)"--large")Sys.argv then large_rules 5001
-  else(declaration_metadata();verify();edits();invalid_parameters();reference_input())
+  else(declaration_metadata();verify();edits();invalid_parameters();reference_input();edge_exact();edge_projection())

@@ -1713,3 +1713,90 @@ still exceed 2x, plus one Detail row: wrong-float Cd at four domains is 2.359x
 (0.000028 native/0.000066 Lisp seconds). Maximum ratio across all 78 rows is
 5.676x. Grouped allocation remains about 72 MB. Full rows are retained above;
 Set Color stays unregistered and the ledger remains six of 128 ports.
+
+### Delete Edge Group production port
+
+Whole-node completion: `sop/delete_edge_group` now loads its checked Lisp body
+from `lib/flow_sop/nodes/delete_edge_group.rays`, using the existing generic
+`sop/delete_edge` primitive. The independent `Sop.Nodes.Delete_edge_group`
+factory remains the oracle. This is port 7 of 128 (5.47%); the other 121 remain
+required, and B.12 remains unchecked until its other six nodes pass.
+The promoted catalog digest is `fafaf06693fe67896fcf22b27dbf357b`.
+Default, schema, operation/version, slots and literal-name behavior are unchanged.
+
+The authoritative `lib/sop/test_lisp_ports.ml` and regular Flow SOP tests cover
+all eight attribute storages and four owners; ordered groups and mixed
+polygon/polyline edges; empty, single, 4,225-point grid and 32,769-point geometry;
+whitespace, glob-looking and UTF-8 literal names; raw canonical P with NaN
+payloads and infinities; immutable input; exact reference/native parity at
+1/4/8 domains and grains 1/97/4096; malformed parameters and inputs; cache
+miss/hit and relabel identity. Graph tests compare the native and Lisp card and
+inspector, edit the name directly, then actually cook the bypassed graph.
+
+All commands use `opam exec -- _build/default/tools/check.exe`:
+
+- `@lib/flow_sop/metadata_ports_draft`: terminal 39424, exit 0;
+  `/tmp/rays-metadata-edge-focused2.log`.
+- `@tools/api_manifest/runtest @lib/sop_catalog/runtest
+  @lib/flow_sop/metadata_ports_draft @test/dependency_gate
+  @test/test_workspace_source`: terminal 15070, exit 0;
+  `/tmp/rays-delete-edge-group-confirm.log`. Initial production/API runs had
+  intended generated differences; those were reviewed and promoted. Shared
+  compiler APIs were accepted separately in commit `6bc7f726`.
+- `@test/sop_render_parity @test/test_rays_editor`: terminal 40922, exit 0;
+  `/tmp/rays-delete-edge-group-native.log`. All 23 native render graphs retain
+  identical one/four-domain PNGs; actual editor and workspace tests pass.
+- `@lib/sop/runtest @lib/flow_sop/runtest
+  @lib/flow_sop/metadata_ports_draft @lib/sop_catalog/runtest
+  @tools/api_manifest/runtest @test/test_workspace_source
+  @test/dependency_gate`: terminal 4307, exit 0;
+  `/tmp/rays-delete-edge-group-final.log`.
+- Final actual bypass-cook regression: `@lib/flow_sop/runtest
+  @lib/flow_sop/metadata_ports_draft`, terminal 47419, exit 0;
+  `/tmp/rays-delete-edge-group-bypass.log`.
+
+Performance command: from `_build/default/lib/flow_sop`,
+`opam exec -- ./test_metadata_ports.exe --bench-edge`. Apple M1 arm64,
+OCaml 5.3 development build; 1,000,000 points and 998,001 actual quads,
+grain 4096. Each row first checks exact native/Lisp output, then takes the
+median of three fresh cold sessions; major collection is outside timing.
+Allocation counts are bytes on the initial domain (four-domain counts omit
+worker allocations). The clean binary was built by terminal 39424, timestamp
+2026-10-12 21:26:08. The acceptance run had no concurrent validation or timing
+process; terminal 45820, exit 0, `/tmp/rays-delete-edge-group-bench2.log`.
+All twelve rows meet the unchanged 2× gate; maximum 1.373×.
+
+| Groups | Name | Domains | Native s | Lisp s | Ratio | Native bytes | Lisp bytes |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 0 | edges | 1 | .000022 | .000028 | 1.272 | 6688 | 13448 |
+| 0 | edges | 4 | .000041 | .000027 | .657 | 6920 | 13680 |
+| 0 | absent | 1 | .000022 | .000028 | 1.272 | 6688 | 13448 |
+| 0 | absent | 4 | .000022 | .000030 | 1.355 | 6920 | 13680 |
+| 1 | edges | 1 | .000026 | .000036 | 1.373 | 6872 | 13704 |
+| 1 | edges | 4 | .000022 | .000030 | 1.370 | 7104 | 13936 |
+| 1 | absent | 1 | .000047 | .000029 | .619 | 7008 | 13912 |
+| 1 | absent | 4 | .000027 | .000035 | 1.301 | 7240 | 14144 |
+| 8 | edges | 1 | .000051 | .000046 | .902 | 8824 | 16664 |
+| 8 | edges | 4 | .000033 | .000036 | 1.094 | 9056 | 16896 |
+| 8 | absent | 1 | .000029 | .000026 | .901 | 8912 | 16824 |
+| 8 | absent | 4 | .000025 | .000032 | 1.288 | 9144 | 17056 |
+
+The earlier run overlapped another agent's compiler validation and is retained
+as diagnostic evidence, not acceptance: terminal 16353, exit 0,
+`/tmp/rays-delete-edge-group-bench1.log`. Its complete table follows; the
+verified contention was the reason for the quiet repeat.
+
+| Groups | Name | Domains | Native s | Lisp s | Ratio | Native bytes | Lisp bytes |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 0 | edges | 1 | .000025 | .000031 | 1.250 | 6688 | 13448 |
+| 0 | edges | 4 | .000026 | .000028 | 1.083 | 6920 | 13680 |
+| 0 | absent | 1 | .000020 | .000034 | 1.702 | 6688 | 13448 |
+| 0 | absent | 4 | .000028 | .000032 | 1.136 | 6920 | 13680 |
+| 1 | edges | 1 | .000021 | .000031 | 1.477 | 6872 | 13704 |
+| 1 | edges | 4 | .000021 | .000032 | 1.523 | 7104 | 13936 |
+| 1 | absent | 1 | .000029 | .000027 | .926 | 7008 | 13912 |
+| 1 | absent | 4 | .000020 | .000030 | 1.518 | 7240 | 14144 |
+| 8 | edges | 1 | .000029 | .000027 | .934 | 8824 | 16664 |
+| 8 | edges | 4 | .000024 | .000032 | 1.337 | 9056 | 16896 |
+| 8 | absent | 1 | .000028 | .000039 | 1.390 | 8912 | 16824 |
+| 8 | absent | 4 | .000034 | .000071 | 2.099 | 9144 | 17056 |

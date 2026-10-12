@@ -121,9 +121,6 @@
     (sop/delete_group geometry (nth row 1) :owner (nth row 0))) in0 (text/table_decode rules))]
     (sop/delete_group selected "" :unused delete_unused)))
 
-(defnode sop/delete_edge_group :label "Delete Edge Group" :category ["Group" "Manage"]
-  [(in0 : geometry) (name : text "edges" :label "Edge group")]
-  (sop/delete_edge in0 name))
 (defnode sop/rename_edge_group :label "Rename Edge Group" :category ["Group" "Manage"]
   [(in0 : geometry) (from : text "edges" :label "From") (into : text "renamed" :label "To")]
   (sop/rename_edge in0 from into))

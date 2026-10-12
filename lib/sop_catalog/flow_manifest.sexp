@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "49f47151c9ab6a78486b97f3fccfa096")
+  (digest "fafaf06693fe67896fcf22b27dbf357b")
   (kinds
     (kind "sop/box"
       (key "box")
@@ -2692,17 +2692,6 @@
       (fields)
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/delete_edge_group"
-      (key "delete_edge_group")
-      (aliases)
-      (operation "delete_edge_group")
-      (label "Delete Edge Group")
-      (category "Group" "Manage")
-      (slots (slot "in0" required))
-      (fields
-        (field "name" "Edge group" (folder) (text) (text "edges") (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/rename_edge_group"
       (key "rename_edge_group")
       (aliases)
@@ -3405,6 +3394,18 @@
         (field "cap_group" "Cap group" (folder) (text) (text "caps") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
+    (kind "sop/delete_edge_group"
+      (key "delete_edge_group")
+      (aliases)
+      (operation "delete_edge_group")
+      (label "Delete Edge Group")
+      (category "Group" "Manage")
+      (slots (slot "in0" required))
+      (fields
+        (field "name" "Edge group" (folder) (text) (text "edges") (primary false) (vec3)))
+      (outputs (output "geo" geometry))
+      (body lisp)
+      (calls))
     (kind "sop/noise_displace"
       (key "noise_displace")
       (aliases)
