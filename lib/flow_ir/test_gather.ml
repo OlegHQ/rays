@@ -232,6 +232,17 @@ end
 let () =
   let strings=[|"";"é日本😀";"nul\000tail";"\255\128";"\237\160\128";"quote\"\\";"\239\187\191BOM"|] in
   let table=E.Text_array strings and live=Frame_input.at_time 0.25 in
+  (* Nested one-lane guards change across blocks; the last lane alone takes
+     the error arm, and untaken invalid reads must never execute. *)
+  List.iter(fun count->
+    let value=instantiate ~table (Flow.Ty.Array Flow.Ty.Text)
+      "(fn [(index : int)] (if (int/lt index 32768) (if (int/eq (int/mod index 2) 0) (array/nth data (int/mod index 7)) (if (int/ge index 0) \"odd\" (array/nth data -1))) (error \"E_LAST\" \"last lane\" :cause \"selected\")))"
+      (Array.init count Fun.id)in
+    let reference=E.Private.force_reference value ~live in
+    List.iter(fun fusion->List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+      let result=P.force ~strict:true(packed ~fusion value)~live in
+      if count=32768 then assert(bytes(ok result)=bytes(ok reference))
+      else same_error result reference))[1;4;8])[false;true]) [32768;32769];
   List.iter(fun count->
     let value=instantiate ~table (Flow.Ty.Array Flow.Ty.Text)
       "(fn [(index : int)] (if (int/ge index 0) (array/nth data (int/mod index 7)) \"untaken\"))"
@@ -340,7 +351,7 @@ let () =
   assert(Result.is_error(P.of_region{region with code;outputs=[|[|Array.length code-1|]|]}));
   print_endline "Text gather: immutable byte leaves, identity/uniform/select/helper, strict Core and one/four/eight domains pass"
 
-let ()=if Array.exists((=)"--bench-text")Sys.argv then begin
+let ()=if Array.exists(fun arg->arg="--bench-text" || arg="--profile-text")Sys.argv then begin
   let count=1_000_000 and strings=[|"";"é日本😀";"a\000b";"\255\128"|]in
   let indices=Array.init 1_000_000(fun i->if i mod 5=0 then -1 else i mod 4)in
   let old=Array.init count(fun i->strings.((i+1)mod 4))in
@@ -352,6 +363,15 @@ let ()=if Array.exists((=)"--bench-text")Sys.argv then begin
     closure [E.Int_array indices;E.Text_array old])in
   let p=packed value and live=Frame_input.at_time 0.25 in
   let native()=E.Text_array(Array.init count(fun i->if indices.(i)<0 then old.(i)else strings.(indices.(i))))in
+  if Array.exists((=)"--profile-text")Sys.argv then Rays_math.Parallel.run ~domains:1(fun()->
+    assert(bytes(ok(P.force ~strict:true p ~live))=bytes(native()));
+    Gc.full_major();
+    let before=Gc.allocated_bytes() and started=Unix.gettimeofday() and runs=ref 0 in
+    Printf.printf "Text profile starts: pid%d, million rows, domains1\n%!"(Unix.getpid());
+    while Unix.gettimeofday()-.started<8. do ignore(ok(P.force ~strict:true p ~live));incr runs done;
+    Printf.printf "Text profile terminal: %d forces, %.6fs, %.0fB/force\n%!"
+      !runs (Unix.gettimeofday()-.started) ((Gc.allocated_bytes()-.before)/.float !runs));
+  if Array.exists((=)"--bench-text")Sys.argv then begin
   let measure f=let samples=Array.init 3(fun _->Gc.full_major();let before=Gc.allocated_bytes()and started=Unix.gettimeofday()in
     ignore(f());Unix.gettimeofday()-.started,Gc.allocated_bytes()-.before)in
     Array.sort(fun(a,_)(b,_)->Float.compare a b)samples;samples.(1)in
@@ -362,4 +382,5 @@ let ()=if Array.exists((=)"--bench-text")Sys.argv then begin
     let nt,nb=measure native and pt,pb=measure run in
     Printf.printf "Text domains%d native %.6f/%.0fB packed %.6f/%.0fB ratio %.3f\n%!"
       domains nt nb pt pb(pt/.nt)))[1;4]
+  end
 end

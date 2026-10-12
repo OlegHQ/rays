@@ -393,6 +393,7 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
     and floats=Array.make (Array.length t.code*block_size) 0. in
     let texts=Array.make (!text_count*block_size) "" in
     let[@inline always] numeric r j=let at=r*block_size+j in if banks.(r) then float integer.(at) else floats.(at) in
+    let rec selected j=function []->true|(r,yes)::rest->(numeric r j<>0.)=yes && selected j rest in
     let frame=Array.map(fun instruction->lazy(match unguarded instruction with
       | Int_frame name | Frame name ->
           if name="t" then E.Float live.Frame_input.t else
@@ -446,6 +447,10 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
               let register=if numeric condition j<>0. then yes else no in
               texts.(text_offsets.(slot)*block_size+j)<-texts.(text_offsets.(register)*block_size+j)
             done
+        | Guarded(guards,body) when last=first+1->
+            (* Ordered gather execution visits one lane; bypass the span
+               scanner without inspecting any later lane. *)
+            if selected first guards then execute slot body first last
         | Guarded(guards,body)->
           (* Publish spans after their first execution: scanning ahead of a
              failing body would change lazy predicate evaluation. *)
@@ -459,7 +464,6 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
             let saved=match guard_spans with
               |Some cache when Hashtbl.length cache<Array.length t.code->Some(ref[||],ref 0)
               |_->None in
-            let rec selected j=function []->true|(r,yes)::rest->(numeric r j<>0.)=yes && selected j rest in
             let next=ref first in
             while !next<last do
               while !next<last && not(selected !next guards) do incr next done;

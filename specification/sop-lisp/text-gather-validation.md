@@ -88,3 +88,72 @@ only and do not total worker allocations.
 Both rows exceed 2× the native indexed loop. These retained costs do not
 qualify or authorize registration of Name From Groups or any other whole
 node. The feature provides checked Text lookup execution, not a speed claim.
+
+## Ordered guard allocation follow-up
+
+After feature commit `d2cd9030` and Float-bank span commit `2870ff72`, the
+optional `test_gather.exe --profile-text` mode repeatedly forces the same
+million-row assignment for eight seconds on one domain. Request 55499 exited
+zero: 62 forces in 8.031484 seconds, averaging 97,170,221 allocated bytes per
+force. Log: `/tmp/rays-text-guard-profile-before.log`.
+
+The ARM object listing `/tmp/rays-text-guard-baseline-arm.txt`, produced with
+`otool -tvV`, shows a 40-byte predicate closure allocation inside each typed
+`Guarded` invocation (`sub x27, x27, #0x28`). Its scanner reference is promoted
+to the stack. The predicate's numeric reads and truth comparison are unboxed;
+this evidence does not support a numeric truth-boxing explanation. Gather and
+Text Collect execute each instruction for one lane at a time to preserve the
+first selected error, so that closure is repeatedly constructed.
+
+OS sample request 30748 also exited zero, writing
+`/tmp/rays-text-guard-profile-before.sample.txt`. Its capture overlaps the
+following benchmark's major GC, so its aggregate sample proportions are not
+an exclusive profile of execution. The same run retained this median table;
+use the earlier quiet 90509 table above as the clean feature baseline rather
+than treating these sampled timings as a fresh uncontaminated baseline.
+
+| Domains | Native seconds | Packed seconds | Ratio | Native allocated bytes | Packed allocated bytes |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | .010944 | .092999 | 8.498 | 8,000,168 | 97,170,312 |
+| 4 | .006246 | .025880 | 4.143 | 8,000,168 | 31,552,264 |
+
+The shared change moves the predicate helper to chunk scope and directly
+checks a single-lane `Guarded` invocation before the span scanner. It checks
+only that lane, short-circuits nested predicates in their original order and
+dispatches the existing instruction body. Multi-lane spans and their cache
+remain unchanged. The rebuilt ARM listing
+`/tmp/rays-text-guard-after-arm.txt` shows the single-lane predicate call and
+body dispatch without the former per-invocation closure allocation.
+
+Combined focused request 92200 exited zero:
+
+```sh
+opam exec -- _build/default/tools/check.exe \
+  @lib/flow_ir/runtest @lib/flow_web/runtest @lib/flow_sop/runtest \
+  @lib/flow_sop/point_jitter_draft @lib/flow_sop/group_delete_draft \
+  @lib/flow_sop/rename_attributes_draft @lib/flow_sop/set_color_draft
+```
+
+Log: `/tmp/rays-text-one-lane-guard-focused.log`. The added native regression
+alternates nested Text guards across 32,768 rows and reaches a selected error
+only at row 32,768 in a 32,769-row input. An invalid read in an untaken arm
+stays unevaluated. Both fusion settings and one/four/eight domains match
+reference bytes or the exact diagnostic code/message/cause. Existing numeric
+gather, reductions, lazy errors, Text byte transport, actual JavaScript workers
+and current SOP recipes also pass. No public API changed.
+
+Quiet after-change request 99638 exited zero, using the same `--bench-text`
+command and measurement protocol as 90509. Log:
+`/tmp/rays-text-one-lane-guard-bench.log`.
+
+| Domains | Native seconds | Packed seconds | Ratio | Native allocated bytes | Packed allocated bytes |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | .006353 | .079464 | 12.508 | 8,000,168 | 17,180,608 |
+| 4 | .006478 | .022348 | 3.450 | 8,000,168 | 10,388,728 |
+
+The one-domain allocation decreases by about 80 MB per force, consistent with
+removing the repeated 40-byte predicate closures. Both speed ratios still
+fail 2×. The original feature and sampled follow-up tables remain above;
+this change does not qualify a whole port. The optional `--profile-text`
+mode now ends after its repeated force loop, so later median samples cannot
+spill into a subsequent OS capture. No production profiling hooks remain.

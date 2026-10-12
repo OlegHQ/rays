@@ -2934,3 +2934,24 @@ change by +0.5% and −1.4%; the prior allocation regression remains. All four
 unchanged 2× gates still fail. This is a shared execution improvement with
 measured limits, not acceptance of a Point Jitter port. No registration or
 native removal is claimed, and no unchanged-code repeat replaces this table.
+
+### Ordered one-lane guards avoid repeated predicate allocations
+
+The shared typed runner hoists its predicate closure once per chunk and
+dispatches a single guarded lane directly without the interval scanner.
+ARM evidence confirms removal of the former 40-byte per-invocation closure;
+lazy nested predicates never inspect a later lane. Focused request 92200
+passed IR, Web, FlowSOP and the Point Jitter, Group Delete, Rename Attributes
+and Set Color drafts. A nested Text regression covers 32768/32769 rows,
+untaken bad reads, exact error causes, both fusion modes and 1/4/8 domains.
+No public API changed.
+
+Quiet request 99638 retained million-row native preflight and median-three
+timing: domains 1 Native 0.006353 s / 8000168 B, Packed 0.079464 s /
+17180608 B, **12.508×**; domains 4 Native 0.006478 s / 8000168 B,
+Packed 0.022348 s / 10388728 initial-domain B, **3.450×**. Roughly 80 MB
+of one-domain allocations are removed against the original 90509 baseline,
+but both 2× gates still fail. All prior tables and the contaminated sampled
+profile caveat are preserved in [text-gather-validation.md](text-gather-validation.md).
+Logs: `/tmp/rays-text-one-lane-guard-focused.log` and
+`/tmp/rays-text-one-lane-guard-bench.log`. No whole port is qualified.
