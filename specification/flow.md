@@ -1519,6 +1519,13 @@ selector inputs, and ordinary argument gestures edit them.
 `(sop/group geometry :name "top" :owner point)` returns an owned `(array int)`
 mask containing zero or one per owner element. Group owners are `point`,
 `vertex`, `primitive` and `edge`; the default is `point`.
+Optional `:as_owner point` promotes that source group's membership to a
+point-length mask: a point is selected when any incident source element is
+selected. Repeated corners and shared edges contribute membership once;
+isolated points are unselected for non-point sources. The source owner still
+controls lookup. Omitting `:as_owner` keeps the original mask and count;
+other targets report `E_GROUP_TARGET`. The optional row is edited on the
+query's card and does not change `sop/group_order`'s traversal query.
 `(sop/with_group geometry mask :name "top" :owner point)` writes that mask
 without changing topology or other payloads. The mask must match its owner's
 count. `(sop/group_names geometry "wall*" :owner point)` returns matching names

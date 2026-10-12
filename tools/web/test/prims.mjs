@@ -74,6 +74,35 @@ for (const [type, width] of [['float', 1], ['vec2', 2], ['vec3', 3], ['vec4', 4]
     throw new Error('sop_with_attr: selected default or fill lost negative zero');
 }
 
+// Cooked host masks arrive from valid native geometries; reject malformed
+// storage at the JavaScript boundary before it can index the point result.
+{
+  const group = mask => new Map([['owner', 'vertex'], ['name', 'selected'], ['mask', mask]]);
+  const geometry = mask => new Map([
+    ['positions', new PArray(3, new Float64Array(9))],
+    ['vertex_points', [0n, 1n, 2n]], ['primitive_offsets', [0n, 3n]],
+    ['primitive_kinds', String.fromCharCode(0)], ['groups', [group(mask)]],
+  ]);
+  for (const [mask, code] of [
+    [new PArray(1, new Float64Array(3)), 'E_GROUP_MASK'],
+    [new PArray(1, new BigInt64Array(2)), 'E_GROUP_COUNT'],
+    [new PArray(1, BigInt64Array.from([0n, 2n, 0n])), 'E_GROUP_MASK'],
+  ]) {
+    let failure;
+    try { prims.sop_group(geometry(mask), 'selected', 'vertex', 'point'); }
+    catch (e) { failure = e; }
+    if (!(failure instanceof Fail) || failure.code !== code)
+      throw new Error(`sop_group: malformed mask must report ${code}`);
+  }
+  const mask = new PArray(1, BigInt64Array.from([0n, 1n, 0n]));
+  const input = geometry(mask), result = prims.sop_group(input, 'selected', 'vertex', 'point');
+  if (result.data[0] !== 0n || result.data[1] !== 1n || result.data[2] !== 0n)
+    throw new Error('sop_group: promoted membership mismatch');
+  result.data.fill(99n);
+  if (mask.data[1] !== 1n || prims.sop_group(input, 'selected', 'vertex', 'point').data[1] !== 1n)
+    throw new Error('sop_group: promoted mask aliases native storage');
+}
+
 // ---- decoding the JSON encoding of core_fixtures.ml ----
 const decodeFloat = v => {
   if (typeof v === 'number') return v;

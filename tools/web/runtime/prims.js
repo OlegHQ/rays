@@ -1177,25 +1177,53 @@ export function sop_count(geometry, element) {
 }
 
 function groupOwner(owner) {
+  if (typeof owner !== 'string') err('E_GROUP_TYPE', 'Group owner must be text.');
   if (!['point', 'vertex', 'primitive', 'edge'].includes(owner))
     err('E_GROUP_OWNER', 'Group owner is point, vertex, primitive or edge.');
 }
 function groupName(name) {
-  if (typeof name !== 'string' || !name.trim()) err('E_GROUP_NAME', 'Group name must not be blank.');
+  if (typeof name !== 'string') err('E_GROUP_TYPE', 'Group name must be text.');
+  if (text_blank(name)) err('E_GROUP_NAME', 'Group name must not be blank.');
 }
 function groupGeometry(geometry) {
   if (!(geometry instanceof Map)) err('E_DATA_SOURCE', 'Group source requires cooked geometry.');
   return topologyGeometry(geometry);
 }
-function groupStorage(geometry, name, owner) {
-  groupOwner(owner); groupName(name); groupGeometry(geometry);
+function groupStorage(geometry, name, owner, asOwner) {
+  groupOwner(owner); groupGeometry(geometry); groupName(name);
+  if (asOwner !== undefined) {
+    if (typeof asOwner !== 'string') err('E_GROUP_TYPE', 'Group as_owner must be text.');
+    if (asOwner !== 'point') err('E_GROUP_TARGET', 'Group promotion target is point.');
+  }
   const groups = geometry.get(owner === 'edge' ? 'edge_groups' : 'groups') ?? [];
   const group = groups.find(group => group.get('name') === name && (owner === 'edge' || group.get('owner') === owner));
   if (!group) err('E_GROUP_MISSING', `Missing group ${name}.`);
   return group;
 }
-export function sop_group(geometry, name, owner = 'point') {
-  return copyAttribute(groupStorage(geometry, name, owner).get('mask'));
+export function sop_group(geometry, name, owner = 'point', asOwner) {
+  const group = groupStorage(geometry, name, owner, asOwner), mask = group.get('mask');
+  if (asOwner === undefined) return copyAttribute(mask);
+  const count = Number(sop_count(geometry, owner === 'point' ? 'points'
+    : owner === 'vertex' ? 'vertices' : owner === 'primitive' ? 'primitives' : 'edges'));
+  if (!(mask instanceof PArray) || mask.width !== 1 || !(mask.data instanceof BigInt64Array))
+    err('E_GROUP_MASK', 'Group mask must have integer storage.');
+  if (mask.data.length !== count) err('E_GROUP_COUNT', 'Group mask must match its owner element count.');
+  if (!mask.data.every(value => value === 0n || value === 1n)) err('E_GROUP_MASK', 'Group mask values must be 0 or 1.');
+  const result = new BigInt64Array(Number(sop_count(geometry, 'points')));
+  const points = geometry.get('vertex_points'), offsets = geometry.get('primitive_offsets');
+  const edges = owner === 'edge' ? sop_edges(geometry) : undefined;
+  for (let i = 0; i < count; i++) if (mask.data[i] === 1n) {
+    if (owner === 'point') result[i] = 1n;
+    else if (owner === 'vertex') result[Number(points[i])] = 1n;
+    else if (owner === 'primitive') {
+      for (let vertex = Number(offsets[i]); vertex < Number(offsets[i + 1]); vertex++)
+        result[Number(points[vertex])] = 1n;
+    } else {
+      result[Number(edges.get('a').data[i])] = 1n;
+      result[Number(edges.get('b').data[i])] = 1n;
+    }
+  }
+  return new PArray(1, result);
 }
 export function sop_group_order(geometry, name, owner = 'point') {
   const group = groupStorage(geometry, name, owner);

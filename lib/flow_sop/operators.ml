@@ -125,23 +125,29 @@ let group_check args =
    | _ -> Flow.Value.fail "E_GROUP_NAME" "Group name must not be blank.");
   Option.iter(function Flow.Value.Text owner->ignore(checked(Group_kernel.owner owner))
     | _->Flow.Value.fail "E_GROUP_OWNER" "Group owner is point, vertex, primitive or edge.")
-    (List.assoc_opt "owner" args)
+    (List.assoc_opt "owner" args);
+  Option.iter(function Flow.Value.Text "point"->()
+    | _->Flow.Value.fail "E_GROUP_TARGET" "Group promotion target is point.")
+    (List.assoc_opt "as_owner" args)
 let group : Flow.Op.t = {
   attr with name="sop/group";category="Groups";
-  signature={pos=["geometry",Flow.Ty.geometry];opt=[];rest=None;kw=["name",Flow.Ty.Text;"owner",Flow.Ty.Text]};
+  signature={pos=["geometry",Flow.Ty.geometry];opt=[];rest=None;kw=["name",Flow.Ty.Text;"owner",Flow.Ty.Text;"as_owner",Flow.Ty.Text]};
   out=(fun _->Flow.Ty.Array Flow.Ty.Int);out_args=None;
-  choices=["owner",["point";"vertex";"primitive";"edge"]];check=group_check;
+  choices=["owner",["point";"vertex";"primitive";"edge"];"as_owner",["point"]];check=group_check;
   body=(fun ~live:_ ~node:_ args->Flow.Value.Source("sop/group",Flow.Ty.Array Flow.Ty.Int,args));
 }
 let group_order_type=Flow.Ty.Record["ordered",Bool;"indices",Array Int]
 let group_order : Flow.Op.t = {
   group with name="sop/group_order";out=(fun _->group_order_type);
+  signature={group.signature with kw=List.remove_assoc "as_owner" group.signature.kw};
+  choices=List.remove_assoc "as_owner" group.choices;
   body=(fun ~live:_ ~node:_ args->Flow.Value.Record(List.map(fun(component,ty)->
     component,Flow.Value.Source("sop/group_order",ty,args@["component",Flow.Value.Text component]))
     ["ordered",Flow.Ty.Bool;"indices",Flow.Ty.Array Int]));
 }
 let group_names : Flow.Op.t = {
   group with name="sop/group_names";
+  choices=List.remove_assoc "as_owner" group.choices;
   signature={group.signature with pos=["geometry",Flow.Ty.geometry;"pattern",Flow.Ty.Text];kw=["owner",Flow.Ty.Text]};
   out=(fun _->Flow.Ty.Array Flow.Ty.Text);
   check=(fun args->

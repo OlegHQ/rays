@@ -368,7 +368,7 @@ delegated to the old `noise_displace` body or dropped.
 | B.2 | L | A.R | Integer arrays and int kernel ops (B2). | Fixtures in `tools/core_fixtures.ml`; 1 and 8 domain equality |
 | B.3 | L | B.2 | Text arrays, interpreter tier (B3). | Round trip of a text attribute |
 | B.4 | L | B.2 | Element counts (B4) and unique edges (B6). | Counts and edge arrays equal `Topology_index` on five fixtures |
-| B.5 | L | B.2 | Groups as masks, ordered groups, pattern resolution (B5). | Round trip per owner; pattern cases from `Attribute_pattern` tests |
+| B.5 | L | B.2 | Groups as masks, ordered groups, pattern resolution (B5), and source-owner membership promoted to affected points. | Round trip per owner; pattern cases from `Attribute_pattern` tests; native any-incidence point masks, count origins and direct graph edits |
 | B.6 | L | B.1 | Attribute and group metadata operators (B7). | Rename, delete, conflict policy |
 | B.7 | L | A.R | Math operators and the matrix and quaternion helpers (B8). | Fixtures per operator against `Stdlib` and `Rays_math` |
 | B.8 | L | B.2 | `rand/at` and fractal `noise3` (B9). | Bit equality with `Rand.float_at` and `Noise.fbm3` over 100,000 indices |
@@ -630,7 +630,7 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 - [x] B.2 — exact integer arrays/operators, native/JavaScript fixtures and one/eight-domain checks passed; final shipping/native/web gates passed.
 - [x] B.3 — owned Text arrays, all-owner round trips and compiled structured Core/JavaScript checks passed; unsupported numeric producers retain strict refusals.
 - [x] B.4 — owner counts and canonical unique-edge arrays match five native fixtures; focused language/source/graph gates passed.
-- [x] B.5 — all-owner masks, ordered groups and native pattern rules pass round trips, cache and live-source gates.
+- [x] B.5 — all-owner masks, ordered groups and native pattern rules pass round trips, cache and live-source gates. Optional affected-point promotion also passes native/reference/domain/grain, count-origin fusion, graph and JavaScript boundary checks; evidence in `results.md`.
 - [x] B.6 — native metadata rename/delete/conflict, ordered groups and canonical P pass focused language and JavaScript gates; complete node ports remain B.12.
 - [x] B.7 — scalar/rounding math, matrix/quaternion helpers and native four-ULP audit pass; explicit native-order cross/matrix FMA matches reference/CPU/JavaScript bits without automatic arithmetic contraction.
 - [x] B.8 — 100,000 exact random keys and 300,054 native noise samples passed with strict reference/domain/JavaScript parity; evidence in results.md.

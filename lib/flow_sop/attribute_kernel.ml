@@ -529,6 +529,9 @@ let prepare ?profile ?strict ?approx ?sink ~sources inputs values =
   Result.bind (source_origins ~sources inputs) (fun by_source ->
   let count_source residual (term : Flow.Workspace.term) =
     let bindings = (E.Private.residual_view residual).bindings in
+    let promoted args=match List.assoc_opt "as_owner" args with
+      |None->args
+      |Some target->("owner",target)::List.remove_assoc "owner" args in
     let edge, args = match term.node with
       | Get ({node=Op {op="sop/edges";args;_};_},("a"|"b")) ->
           true,Some(List.filter_map(fun(name,term)->Option.map(fun value->name,value)
@@ -536,13 +539,15 @@ let prepare ?profile ?strict ?approx ?sink ~sources inputs values =
       | Op {op=("sop/attr"|"sop/group" as operation);args;_} ->
           let resolved=List.map(fun(name,term)->name,
             (match term.Flow.Workspace.node with Text text->Some(E.Text text)|_->captured bindings term))args in
+          let resolved=if operation="sop/group" then promoted resolved else resolved in
           (operation="sop/group" && List.assoc_opt "owner" resolved=Some(Some(E.Text "edge"))),
-          (if List.exists(fun(name,value)->List.mem name ["owner";"type"] && value=None)resolved then None
+          (if List.exists(fun(name,value)->List.mem name ["owner";"type";"as_owner"] && value=None)resolved then None
           else Some(List.filter_map(fun(name,value)->Option.map(fun value->name,value)value)resolved))
       | _ -> (match captured bindings term with
           | Some (E.Struct("sop/attr",_,args) | E.Source(("sop/attr"|"sop/attr_checked"),_,args)) -> false,Some args
           | Some (E.Source("sop/edges",_,args)) -> true,Some args
-          | Some (E.Source("sop/group",_,args)) -> List.assoc_opt "owner" args=Some(E.Text "edge"),Some args
+          | Some (E.Source("sop/group",_,args)) ->
+              let args=promoted args in List.assoc_opt "owner" args=Some(E.Text "edge"),Some args
           | _ -> false,None) in
     let geometry=Option.bind args (List.assoc_opt "geometry") in
     Option.bind geometry (function

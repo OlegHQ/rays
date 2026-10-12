@@ -255,6 +255,7 @@ let attribute_args head args =
     | ({node=Kw kind;_}as key)::({node=Sym name;_}as value)::rest
       when (attribute && kind="owner" && List.mem name ["point";"vertex";"primitive";"detail"])
         || (group && kind="owner" && List.mem name ["point";"vertex";"primitive";"edge"])
+        || (head="sop/group" && kind="as_owner" && name="point")
         || (attribute_metadata && kind="owner" && List.mem name ["point";"vertex";"primitive";"detail";"any"])
         || (group_metadata && kind="owner" && List.mem name ["point";"vertex";"primitive";"edge";"any"])
         || ((attribute_metadata || group_metadata) && kind="conflict" && List.mem name ["skip";"error";"overwrite";"union"])

@@ -33,6 +33,19 @@ let read ~owner ~name geometry =
   | Edge -> (match G.find_edge_group name geometry with
       | None -> missing name | Some group -> Ok (E.Int_array (Array.init (Edge.length group)
           (fun index -> if Edge.mem index group then 1 else 0))))
+let read_points ~owner ~name geometry =
+  let selection=match owner with
+    |Ordinary owner->(match G.find_group ~owner name geometry with
+        |None->missing name
+        |Some group->Ok(match owner with
+          |Point->Rdk_core.Element_selection.Selected_points group
+          |Vertex->Selected_vertices group|Primitive->Selected_primitives group))
+    |Edge->(match G.find_edge_group name geometry with
+        |None->missing name|Some group->Ok(Rdk_core.Element_selection.Selected_edges group)) in
+  Result.bind selection(fun selection->Result.map mask
+    (Result.map_error(Flow.Diagnostic.error ~code:"E_GROUP_SOURCE")
+      (Rdk_core.Element_selection.promote ~grain:4096 ~destination:Group.Point
+        selection(G.topology geometry))))
 let order ~owner ~name geometry =
   match owner with
   | Edge -> (match G.find_edge_group name geometry with
@@ -120,7 +133,12 @@ let resolve ~geometry = function
            | Some geometry ->
                if operation="sop/group_names" then Result.bind(text "pattern" "")(fun pattern->names ~owner ~pattern geometry)
                else Result.bind(text "name" "")(fun group_name->Result.bind(name group_name)(fun()->
-                 if operation="sop/group" then read ~owner ~name:group_name geometry
+                 if operation="sop/group" then
+                   (match List.assoc_opt "as_owner" args with
+                    |None->read ~owner ~name:group_name geometry
+                    |Some(E.Text "point")->read_points ~owner ~name:group_name geometry
+                    |Some(E.Text _)->error "E_GROUP_TARGET" "Group promotion target is point."
+                    |Some _->error "E_GROUP_TYPE" "Group as_owner must be text.")
                  else Result.bind(order ~owner ~name:group_name geometry)(function
                    | E.Record fields -> (match List.assoc_opt "component" args with
                        | Some(E.Text component) -> (match List.assoc_opt component fields with

@@ -711,7 +711,7 @@ let () =
                 | Ok output->Ok(geometry_value(Result.get_ok(Sop.Payload.geometry output.payload)))))) in
   List.iter(fun geometry->List.iter(fun(owner,count,native_owner)->
     let mask=Array.init count(fun i->if i mod 2=0 then 1 else 0) in
-    let names=["wall_a";"wall_b";"wall_1";"floor";"literal*";"žarek"] in
+    let names=["wall_a";"wall_b";"wall_1";"floor";"literal*";"žarek";"\194\160";"\227\128\128"] in
     let grouped=List.fold_left(fun geometry name->match native_owner with
       | Some owner->Rdk.Geometry.with_group(Rdk.Group.init ~owner ~name count(fun i->mask.(i)=1))geometry |>Result.get_ok
       | None->let topology=Rdk.Geometry.topology geometry in
@@ -722,10 +722,24 @@ let () =
     List.iter(fun name->
       add_host "sop/group" [geometry_value grouped;E.Text name;E.Text owner]
         (host_result(fun()->resolve(E.Source("sop/group",T.Array T.Int,args name))));
+      List.iter(fun target->add_host "sop/group"
+        [geometry_value grouped;E.Text name;E.Text owner;target]
+        (host_result(fun()->resolve(E.Source("sop/group",T.Array T.Int,
+          args name@["as_owner",target])))))
+        [E.Text"point";E.Text"edge";E.Int 1];
       add_host "sop/group_order" [geometry_value grouped;E.Text name;E.Text owner]
         (host_result(fun()->Result.bind(resolve(E.Source("sop/group_order",T.Bool,args name@["component",E.Text"ordered"])))
           (fun ordered->Result.map(fun indices->E.Record["ordered",ordered;"indices",indices])
-            (resolve(E.Source("sop/group_order",T.Array T.Int,args name@["component",E.Text"indices"]))))))) ["wall_a";"missing"];
+            (resolve(E.Source("sop/group_order",T.Array T.Int,args name@["component",E.Text"indices"])))))))
+      ["wall_a";"missing";"\194\160";"\227\128\128";" \t\r\n\012"];
+    List.iter(fun(name,owner_value)->
+      add_host "sop/group" [geometry_value grouped;name;owner_value;E.Text"point"]
+        (host_result(fun()->resolve(E.Source("sop/group",T.Array T.Int,
+          ["geometry",E.Deferred(T.geometry,0);"name",name;"owner",owner_value;"as_owner",E.Text"point"])))))
+      [E.Int 1,E.Text owner;E.Text"wall_a",E.Int 1;E.Text"",E.Int 1];
+    add_host "sop/group" [E.No_geo;E.Text"";E.Text owner;E.Text"point"]
+      (host_result(fun()->resolve(E.Source("sop/group",T.Array T.Int,
+        ["geometry",E.No_geo;"name",E.Text"";"owner",E.Text owner;"as_owner",E.Text"point"]))));
     List.iter(fun pattern->add_host "sop/group_names" [geometry_value grouped;E.Text pattern;E.Text owner]
       (host_result(fun()->resolve(E.Source("sop/group_names",T.Array T.Text,
         ["geometry",E.Deferred(T.geometry,0);"owner",E.Text owner;"pattern",E.Text pattern])))))

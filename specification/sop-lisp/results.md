@@ -4125,3 +4125,80 @@ Logs: `/tmp/rays-text-prepared-prefix-focused.log`,
 `/tmp/rays-text-prepared-prefix-profile.log`,
 `/tmp/rays-text-prepared-prefix-sample.txt`. Contract and proof details are in
 `text-gather-validation.md`. No API, shader, generated manifest or golden changes.
+
+## Source group membership promoted to affected points
+
+`(sop/group geometry :name "selected" :owner vertex :as_owner point)` now
+returns an owned point-length Int mask. The source owner still determines
+lookup; omitting the new optional keyword preserves the existing source mask.
+The private resolver reuses `Rdk_core.Element_selection.promote` and the existing
+byte-mask unpacker. There is no new geometry algorithm, node callback, public
+module or dependency edge. Point/vertex/primitive/edge sources use native
+Include-any incidence, including repeated corners, shared/reversed edges,
+self-loops and isolated points. Traversal order remains `sop/group_order`'s
+source-owner contract. Other promotion targets are refused.
+
+The count-origin visitor covers direct authored calls and captured Source
+descriptors. Promoted edge/vertex/primitive masks share the point origin with
+P, while unpromoted masks retain their own origin. A three-stage map fusion
+check proves this distinction and compares strict execution with reference
+bytes. Unknown targets cannot supply a count proof. Optional target rows
+project and support direct set/disconnect gestures; sibling group operations
+do not inherit the keyword. Normative Flow and Core contracts are updated.
+
+Focused request53971 failed compilation because the initial outside draft used
+the nonexistent `Rdk.Element_selection` re-export. Using the existing core
+module fixed that without an API addition. Request63202 then passed the native
+promotion and graph checks but failed an added fusion fixture's `E_SHADOW`
+names. Distinct lambda names corrected the fixture. Full focused request53805
+exited0:
+
+```
+opam exec -- _build/default/tools/check.exe @lib/flow/runtest @lib/flow_sop/runtest @lib/flow_web/runtest @tools/lisp/test/runtest @test/dependency_gate
+```
+
+Tests cover empty/1/7/8/9/32769-point tails, all four source owners,
+empty/full/alternating/boundary membership, explicit order, missing/wrong-owner
+lookup, foreign edge topology refusal, owned copies and immutable geometry.
+Native promotion agrees at domains1/4/8 and grains1/97/4096; authored query
+execution agrees with the reference and count-origin fusion remains exact.
+JavaScript host fixtures execute all five native topologies, exact Unicode
+names and target/type errors. Shared host name validation now uses native
+ASCII whitespace, and source type/geometry/name error precedence matches the
+native resolver. Extra JavaScript checks reject noninteger, wrong-length and
+nonbinary masks and prove result ownership. Final boundary/API request60486
+exited0 for `@tools/lisp/test/runtest @lib/flow_web/runtest
+@tools/api_manifest/runtest`; no golden or API changes were required.
+
+Benchmark22037 exited0, including exact preflight/postflight masks in every
+row. Apple M1 arm64, OCaml5.3.0 dev; one million points, 999999 vertices,
+333333 disjoint triangles and one isolated point; alternating source masks;
+warmed shared incidence/edge indices; median3 calls with Gc.full_major outside
+the timer. The native oracle calls shared promotion then Array.init membership;
+the query uses the same promotion plus existing byte unpacking. Allocations
+below count the initial domain only. No overlapping agent tools or builds ran;
+external QEMU processes were active (44.2% and9.6% CPU in the preflight snapshot).
+These are helper measurements, not whole-port or idle-machine qualification.
+
+| Source | Domains | Native seconds | Query seconds | Query/native | Native bytes | Query bytes |
+| --- | --- | --- | --- | --- | --- | --- |
+| Point | 1 | 0.0052800178527832031 | 0.0020589828491210938 | 0.38995755441163188 | 8000432 | 8001232 |
+| Point | 4 | 0.0052268505096435547 | 0.0018911361694335938 | 0.36181179583086254 | 8000432 | 8001232 |
+| Vertex | 1 | 0.013342857360839844 | 0.010154008865356445 | 0.76100707597741402 | 8126056 | 8126856 |
+| Vertex | 4 | 0.0074379444122314453 | 0.0045139789581298828 | 0.60688527743052212 | 8173288 | 8177072 |
+| Primitive | 1 | 0.013930082321166992 | 0.010699987411499023 | 0.7681209030071714 | 8126056 | 8126856 |
+| Primitive | 4 | 0.0075621604919433594 | 0.0043950080871582031 | 0.58118418563591656 | 8172416 | 8173456 |
+| Edge | 1 | 0.015276908874511719 | 0.012288093566894531 | 0.80435732567576002 | 8126128 | 8126928 |
+| Edge | 4 | 0.0079739093780517578 | 0.0047259330749511719 | 0.59267454029002842 | 8168832 | 8172608 |
+
+Reproduce with `_build/default/lib/flow_sop/test_group_kernel.exe
+--bench-promotion` after the focused build. Logs:
+`/tmp/rays-group-point-promotion-focused.log`,
+`/tmp/rays-group-point-promotion-focused2.log`,
+`/tmp/rays-group-point-promotion-focused3.log`,
+`/tmp/rays-group-point-promotion-boundary.log`,
+`/tmp/rays-group-point-promotion-bench.log`.
+Existing host cancellation checks remain; this adds no cancellation-granularity
+claim. C1 topology construction, IEEE computed arrays, normal fallbacks and
+native diagnostic mapping remain separate prerequisites. B.5 remains complete;
+whole completion stays14/128 and20/60 milestones.

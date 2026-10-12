@@ -405,3 +405,174 @@ let ()=
           && Group.data_id group=identity)) [false;true])owners)
     [0;1;7;8;9;63;64;65;32769];
   print_endline "Ordinary group byte masks preserve empty/tails/all owners/explicit order and immutable storage at one/four/eight domains"
+
+let promoted_query geometry owner name =
+  Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->Some geometry)
+    (E.Source("sop/group",Flow.Ty.Array Flow.Ty.Int,
+      ["geometry",E.Deferred(Flow.Ty.geometry,7);"owner",E.Text owner;
+       "name",E.Text name;"as_owner",E.Text"point"]))|>flow_ok
+let native_promoted geometry owner name grain =
+  let selection=match owner with
+    |"point"->Rdk_core.Element_selection.Selected_points(Option.get(G.find_group ~owner:Group.Point name geometry))
+    |"vertex"->Selected_vertices(Option.get(G.find_group ~owner:Group.Vertex name geometry))
+    |"primitive"->Selected_primitives(Option.get(G.find_group ~owner:Group.Primitive name geometry))
+    |"edge"->Selected_edges(Option.get(G.find_edge_group name geometry))|_->assert false in
+  let group=Rdk_core.Element_selection.promote ~grain ~destination:Group.Point selection(G.topology geometry)|>ok in
+  E.Int_array(Array.init(G.point_count geometry)(fun i->if Group.mem i group then 1 else 0))
+let promotion_fixture n =
+  let topology=if n<6 then Rdk.Topology.empty ~point_count:n else
+    Rdk.Topology.create_owned ~point_count:n ~vertex_points:[|0;1;2;2;1;3;4;4;0|]
+      ~primitive_offsets:[|0;3;6;9|]
+      ~primitive_kinds:[|Rdk.Topology.Polygon;Polygon;Open_polyline|]|>ok in
+  G.create ~positions:(Rdk.Packed.Float3.Private.of_owned_exn
+    ~x:(Array.init n float) ~y:(Array.make n 0.) ~z:(Array.make n 0.)) ~topology()|>ok
+let () =
+  List.iter(fun n->let geometry=promotion_fixture n in
+    List.iter(fun(owner,native_owner)->let length=count geometry native_owner in
+      List.iter(fun selected->let mask=Array.init length(fun i->if selected i then 1 else 0) in
+        List.iter(fun ordered->
+          let order=if ordered && native_owner<>None then Some
+            (Array.to_list(Array.mapi(fun i value->i,value)mask)|>List.filter_map(fun(i,value)->
+              if value=1 then Some i else None)|>List.rev|>Array.of_list) else None in
+          let geometry=native_write ?order ~owner:native_owner ~name:"promoted" mask geometry in
+          let before=bytes geometry and original=query geometry owner "promoted" None in
+          let expected=native_promoted geometry owner "promoted" 97 in
+          List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+            List.iter(fun grain->assert(native_promoted geometry owner "promoted" grain=expected)) [1;97;4096];
+            assert(promoted_query geometry owner "promoted"=expected);
+            (match promoted_query geometry owner "promoted" with E.Int_array values when n>0->values.(0)<-1-values.(0)|_->());
+            assert(promoted_query geometry owner "promoted"=expected);
+            assert(query geometry owner "promoted" None=original))) [1;4;8];
+          exact geometry("(exact (map (fn [(value : int)] value) "^
+            "(sop/group geo :name \"promoted\" :owner "^owner^" :as_owner point)))")expected;
+          assert(bytes geometry=before)) [false;true])
+        [(fun _->false);(fun _->true);(fun i->i mod 2=0);(fun i->i=length-1)])owners)
+    [0;1;7;8;9;32769];
+  let geometry=promotion_fixture 7 in
+  List.iter(fun name->let geometry=native_write ~owner:(Some Group.Vertex) ~name
+    (Array.make(G.vertex_count geometry)1)geometry in
+    assert(promoted_query geometry "vertex" name=native_promoted geometry "vertex" name 97)) ["\194\160";"\227\128\128"];
+  List.iter(fun(name,owner,target,code)->
+    match Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->Some geometry)
+      (E.Source("sop/group",Flow.Ty.Array Flow.Ty.Int,["geometry",E.Deferred(Flow.Ty.geometry,7);
+        "name",E.Text name;"owner",E.Text owner;"as_owner",target])) with
+    |Error d->assert(d.code=code)|Ok _->assert false)
+    ["absent","vertex",E.Text"point","E_GROUP_MISSING";
+     " ","vertex",E.Text"point","E_GROUP_NAME";
+     "absent","detail",E.Text"point","E_GROUP_OWNER";
+     "absent","vertex",E.Text"edge","E_GROUP_TARGET";
+     "absent","vertex",E.Int 0,"E_GROUP_TYPE"];
+  let point_only=native_write ~owner:(Some Group.Point) ~name:"other_owner" (Array.make 7 1)geometry in
+  (match Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->Some point_only)
+    (E.Source("sop/group",Flow.Ty.Array Flow.Ty.Int,["geometry",E.Deferred(Flow.Ty.geometry,7);
+      "name",E.Text"other_owner";"owner",E.Text"vertex";"as_owner",E.Text"point"]))with
+   |Error d->assert(d.code="E_GROUP_MISSING")|Ok _->assert false);
+  let foreign=Rdk.Topology.empty ~point_count:7 in
+  let edge=Edge.init ~topology:foreign ~index:(Rdk.Topology_index.create foreign) ~name:"foreign"(fun _->true) in
+  assert(Result.is_error(G.with_edge_group edge geometry));
+  print_endline "Group query promotion: native any-incidence masks, owner lookup, empty/tails/order/copy and exact domain/grain proof"
+
+let () =
+  let geometry=promotion_fixture 7 in
+  List.iter(fun(owner,native_owner)->let geometry=native_write ~owner:native_owner ~name:"promoted"
+    (Array.init(count geometry native_owner)(fun i->if i mod 2=0 then 1 else 0))geometry in
+    let expected=native_promoted geometry owner "promoted" 97 in
+    List.iter(fun captured->
+      let body=if captured then "(let* [mask (sop/group geo :name \"promoted\" :owner "^owner^
+        " :as_owner point)] (sop/with_attr geo \"mark\" (exact (map (fn [(p : vec3) (m : int)] m) "^
+        "(sop/attr geo :P) mask)) :type int))" else
+        "(sop/with_attr geo \"mark\" (exact (map (fn [(p : vec3) (m : int)] m) "^
+        "(sop/attr geo :P) (sop/group geo :name \"promoted\" :owner "^owner^" :as_owner point))) :type int)" in
+      let node=Lisp_sop.workspace_node ~with_:["source",Lisp_sop.snapshot geometry]
+        ("(workspace promotion_origin (defnode sop/promoted [(geo : geometry)] "^body^
+          ") (graph g :context sop (sop/promoted (sop/ext_source))))") in
+      let session=create_session() in Fun.protect ~finally:(fun()->Sop.Session.close session)(fun()->
+        List.iter(fun domains->Sop.Session.clear session;
+          let output=cook session domains node in
+          assert((Sop.Node.facts node).reads=["P"]);
+          match G.find_attribute ~owner:Rdk.Attribute.Point "mark" output |>Option.get |>Rdk.Attribute.storage,expected with
+          |Rdk.Attribute.Int actual,E.Int_array expected->assert(actual=expected)|_->assert false) [1;4;8])) [false;true])owners;
+  let catalog=Flow.Check.{version=1;kinds=[]} in
+  let checker=Flow.Workspace.check ~ops:Flow_sop.Operators.all in
+  let forms=Flow.Syntax.parse {|(workspace promotion_cards (graph g :context sop [(geo : geometry nil)]
+    (let* [mask (sop/group geo :name "selected" :owner vertex)] geo)))|}|>flow_ok in
+  let workspace=function Some checked,[]->checked|_,ds->failwith(String.concat "; "(List.map Flow.Diagnostic.to_string ds)) in
+  let initial=workspace(checker catalog forms) in
+  let card workspace=Flow_graph.Projection.find(Flow_graph.Projection.of_graph catalog workspace "g")["g";"mask"]|>Option.get in
+  let row workspace=List.find(fun(row:Flow_graph.Projection.row)->row.key=Flow_graph.Flow_edit.Kw"as_owner")(card workspace).rows in
+  assert((row initial).expr=None);
+  let changed_forms,changed=Flow_graph.Flow_edit.apply_checked ~checker catalog forms
+    (Set_arg{node=["g";"mask"];key=Kw"as_owner";sub=[];value=Flow.Syntax.make(Str"point")})|>flow_ok in
+  assert(Option.map Flow.Lisp.flat(row changed).expr=Some"\"point\"");
+  let _,cleared=Flow_graph.Flow_edit.apply_checked ~checker catalog changed_forms
+    (Disconnect{node=["g";"mask"];key=Kw"as_owner";fallback=None})|>flow_ok in
+  assert((row cleared).expr=None);
+  List.iter(fun op->let forms=Flow.Syntax.parse("(workspace invalid_target (graph g :context sop [(geo : geometry nil)] "^
+    "(let* [mask ("^op^" geo :name \"selected\" :as_owner point)] geo)))")|>flow_ok in
+    match checker catalog forms with None,_ ->()|_->assert false)["sop/group_order"];
+  print_endline "Group promotion output count origins and optional-target graph set/disconnect gestures preserve source owner"
+
+let () =
+  let stages program=Array.fold_left(fun count(node:Flow_ir.node)->match node.kind with
+    |Kernel{body=Packed_map program;_}->max count(Flow_ir.Packed.stage_count program)|_->count)
+    0(Flow_ir.Executor.graph program).nodes in
+  let geometry=promotion_fixture 7 and catalog=Flow.Check.{version=1;kinds=[]} in
+  let forms=Flow.Syntax.parse {|(workspace origins (graph g :context value
+    [(p : (array vec3) (array/vec3 0)) (mask : (array int) (array/int 0 0))]
+    (let* [a (map (fn [(position : vec3)] (+ position [t 0 0])) p)
+           b (map (fn [(m : int)] [(float m) t 0]) mask)
+           tested (exact (map (fn [(left : vec3) (right : vec3)] (+ left right)) a b))] 0.0)))|}|>flow_ok in
+  let checked=match Flow.Workspace.check catalog forms with Some workspace,[]->workspace
+    |_,ds->failwith(String.concat "; "(List.map Flow.Diagnostic.to_string ds)) in
+  List.iter(fun(owner,native_owner)->let geometry=native_write ~owner:native_owner ~name:"promoted"
+    (Array.init(count geometry native_owner)(fun i->i mod 2))geometry in
+    List.iter(fun promoted->
+      let marker=E.Source("sop/group",Flow.Ty.Array Flow.Ty.Int,
+        ["geometry",E.Deferred(Flow.Ty.geometry,7);"owner",E.Text owner;"name",E.Text"promoted"]@
+        (if promoted then["as_owner",E.Text"point"]else[])) in
+      let positions=E.Source("sop/attr",Flow.Ty.Array Flow.Ty.Vec3,
+        ["geometry",E.Deferred(Flow.Ty.geometry,7);"attribute",E.Text"P"]) in
+      let evaluation=E.static ~record:true ~inputs:["g",["p",positions;"mask",marker]]checked|>flow_ok in
+      let values=List.assoc["g";"tested"]evaluation.records|>List.hd|>snd in
+      let program=Flow_sop.Attribute_kernel.prepare ~strict:true ~sources:[7]
+        [Lisp_sop.snapshot geometry]values|>flow_ok in
+      assert(stages program=(if promoted || owner="point" then 3 else 1));
+      let resolve=Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->Some geometry) in
+      List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->let live=Frame_input.at_time 0.25 in
+        let expected=E.Private.force_reference ~resolve values ~live|>flow_ok in
+        let actual=Flow_ir.Executor.force ~strict:true ~resolve program ~live|>flow_ok in
+        assert(actual=expected))) [1;4;8]) [false;true])owners;
+  print_endline "Promoted captured group descriptors share point fusion origins; original source owners remain distinct"
+
+let () = if Array.mem "--bench-promotion" Sys.argv then begin
+  let n=1_000_000 and primitives=333_333 in
+  let topology=Rdk.Topology.create_owned ~point_count:n
+    ~vertex_points:(Array.init(3*primitives)Fun.id)
+    ~primitive_offsets:(Array.init(primitives+1)(fun i->3*i))
+    ~primitive_kinds:(Array.make primitives Rdk.Topology.Polygon)|>ok in
+  let geometry=G.create ~positions:(Rdk.Packed.Float3.Private.of_owned_exn
+    ~x:(Array.init n float) ~y:(Array.make n 0.) ~z:(Array.make n 0.)) ~topology()|>ok in
+  let measure force =
+    let samples=Array.init 3(fun _->
+      Gc.full_major();
+      let allocated=Gc.allocated_bytes() and started=Unix.gettimeofday() in
+      let result=force() in
+      let seconds=Unix.gettimeofday()-.started in
+      let allocated=Gc.allocated_bytes()-.allocated in
+      Sys.opaque_identity result |>ignore;
+      seconds,allocated) in
+    Array.sort(fun(a,_)(b,_)->Float.compare a b)samples;
+    samples.(1) in
+  print_endline "Group promotion: 1000000 points, 999999 vertices, 333333 triangles, one isolated point; warm indices; median3; initial-domain allocated bytes";
+  List.iter(fun(owner,native_owner)->
+    let geometry=native_write ~owner:native_owner ~name:"promoted"
+      (Array.init(count geometry native_owner)(fun i->i mod 2))geometry in
+    let expected=native_promoted geometry owner "promoted" 4096 in
+    List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+      assert(promoted_query geometry owner "promoted"=expected);
+      let native,native_bytes=measure(fun()->native_promoted geometry owner "promoted" 4096) in
+      let query,query_bytes=measure(fun()->promoted_query geometry owner "promoted") in
+      assert(promoted_query geometry owner "promoted"=expected);
+      Printf.printf "promotion owner=%s domains=%d native=%.17g query=%.17g ratio=%.17g native_bytes=%.0f query_bytes=%.0f\n%!"
+        owner domains native query (query/.native) native_bytes query_bytes)) [1;4])owners
+end
