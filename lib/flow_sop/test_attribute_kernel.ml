@@ -38,6 +38,42 @@ let stages program = Array.fold_left (fun count (node : Flow_ir.node) -> match n
   | _ -> count) 0 (Flow_ir.Executor.graph program).nodes
 
 let () =
+  let fixture detail =
+    let geometry = Line_geometry.points [|0., 0., 0.; 1., 0., 0.|] in
+    let attribute owner name values = Attribute.create_owned ~owner ~name (Attribute.Float values)
+      |> get_string_ok in
+    List.fold_left (fun geometry attribute -> Geometry.with_attribute attribute geometry |> get_string_ok)
+      geometry [attribute Point "N" [|1.; 2.|]; attribute Detail "N" [|detail|];
+        attribute Point "Cd" [|0.5; 0.75|]] in
+  let first = fixture 1. in
+  let changed = Geometry.with_attribute
+    (Attribute.create_owned ~owner:Detail ~name:"N" (Attribute.Float [|2.|]) |> get_string_ok)
+    first |> get_string_ok in
+  let node = Lisp_sop.node ~with_:["source", Lisp_sop.snapshot first]
+    {|(sop/delete_attr (sop/ext_source) "N" :owner "point")|} in
+  assert ((Sop.Node.facts node).reads=[]);
+  List.iter (fun domains ->
+    let session = session () in
+    Fun.protect ~finally:(fun () -> Session.close session) (fun () ->
+      ignore (cook session ~domains ~time:0. node |> geometry);
+      let source = Lisp_sop.snapshot changed in
+      ignore (cook session ~domains ~time:0. source |> geometry);
+      let before = Session.stats session in
+      let result = cook session ~domains ~time:0.
+        (Sop.Node.Private.rebuild_with_inputs node [|source|]) |> geometry in
+      assert ((Session.stats session).misses=before.misses && (Session.stats session).hits=before.hits+2);
+      let expected = Attribute_ops.delete ~point_pattern:"N" changed |> get_ok in
+      assert (geometry_bytes result=geometry_bytes expected);
+      List.iter (fun pattern ->
+        let node = Lisp_sop.node ~with_:["source", source]
+          (Printf.sprintf "(sop/delete_attr (sop/ext_source) %S :owner \"point\")" pattern) in
+        assert ((Sop.Node.facts node).reads=["*"] && (Sop.Node.facts node).writes=["*"]);
+        let result = cook session ~domains ~time:0. node |> geometry in
+        let expected = Attribute_ops.delete ~point_pattern:pattern changed |> get_ok in
+        assert (geometry_bytes result=geometry_bytes expected)) ["N*"; "N Cd"; "^Cd"])) [1;8];
+  print_endline "Attribute deletion: selective refresh carries same-name owners; patterns stay conservative at one/eight domains"
+
+let () =
   List.iter (fun count ->
     let positions = Packed.Float3.Private.of_owned_exn
       ~x:(Array.make count 0.) ~y:(Array.make count 0.) ~z:(Array.make count 0.) in

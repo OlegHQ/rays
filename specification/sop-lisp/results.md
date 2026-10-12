@@ -10,6 +10,14 @@ The intended public API snapshot was accepted separately in commit `9cea2e6b`
 78317 and the API/catalog/dependency gate exited 0. That commit changes only
 `tools/api_manifest/api_stable.json`; the implementation and pilot remain
 separate changes, as required by the plan.
+The Phase A integration was committed as `74efb1ee` before the production
+pilot switch. It includes the source/checker/cache/editor integration and its
+navigation/vocabulary tests; the actual pilot save fixture belongs to the
+pilot commit.
+The scoped phase-timing API snapshot was accepted separately as `e5ea583c`
+(`Accept scoped phase timing API`). Its implementation retains exactly one
+workspace evaluation/lowering invocation while attributing internal compilation
+duration to that phase; the test also checks restoration after an exception.
 
 ## Task evidence
 
@@ -19,12 +27,21 @@ separate changes, as required by the plan.
 | A.1 | `opam exec -- _build/default/tools/check.exe @lib/rdk/test_support/runtest @test/lisp_sop/runtest` exited 0 (helper agent session 95253). `test_geometry_comparison.ml` checks equality at 0 ULP, one ULP at tolerance 1, rejection at 0, two ULP rejection at 1, and changed integer storage rejection at 4. | Complete: helper gates passed. |
 | A.2 | The census checks all 128 target keys. `test_defnode.ml` covers typed/image/function/optional/rest slots, every supported metadata key, vector grouping, refusal shapes, recursion and an OCaml kind-name clash. `_build/default/tools/check.exe @lib/flow/runtest @lib/sop_catalog/runtest @test/dependency_gate` exited 0 after the final checker changes (session 29492); prior checker sessions 87642 and 6143 also passed. | Complete: reader/checker gates passed. |
 | A.3 | Lowering keeps one public cache identity with zero retained internal entries; derives specialized facts; tests all Param edits with exactly one miss, nested/optional/rest nodes, physical Image/Fn slots and cooked captures, strict unsupported refusal without interpreter fallback, and reference/domain/grain exactness. `@lib/flow_sop/runtest @lib/flow_ir/runtest` passed (helper sessions 9823, 3589 and 55571). The last run covers strict typed-Fn lowering and geometry-zone element uniforms after forwarding `elems` to the packed executor. Attribute packing ownership/nonfinite/domain regressions passed (root session 92124). Injected-body cache identity passed (session 91419). Borrowed-plane host tests passed in `@lib/flow_sop/runtest` (root session 37000): 0/1/32769 elements, signed zero, one/eight domains, physically shared exact P planes, independently owned Cd planes, short-zip `E_ATTR_COUNT`, and immutable original bytes. Accepted optional/rest Fn slots and scoped helper context dependencies were repaired; refreshed `@lib/flow_sop/runtest @lib/flow/runtest @lib/flow_ir/runtest` exited 0 (session 93829), followed by root integration gate 80542. | Complete: focused lowering, cache, typed-slot and exactness gates passed. |
-| A.4 | Shared `tools/lisp/embed.exe` embeds the source directory; the catalog injects definitions with disjoint IDs and the manifest records Lisp bodies and checked calls. Focused lowering/dependency tests passed (session 61578); focused dummy-driver editor tests passed (session 97387). Reviewed promoted metadata-only manifest diff: descriptions and non-Cook impact, digest `e3e6c69a267f17ee74791ce4f4adc112`. `@lib/sop_catalog/runtest @test/dependency_gate` exited 0 (sessions 95723, 14766); combined checker/catalog/dependency gate passed (session 29492). Source/edit/body-cache and keyword manifest regressions passed (session 91419). | Focused integration gates passed; actual embedded-pilot save/editor refresh remains pending before A.R. |
-| A.5 | `test_lisp_projection.ml` compares the Lisp and independent OCaml cards structurally, full inspector metadata, scalar/vector scrubs, parameter drives, bypass, nested cards and schema-change invalidation. Combined lowering/graph/editor gate exited 0 (session 89094); actual editor fallback-inspector editing and menu search/add passed (session 92998). Dummy-driver `@test/test_workspace_vocabulary @test/test_workspace_shell @test/test_sop_catalog @test/dependency_gate` exited 0 (session 16558), proving helper navigation filtering, completion refresh after declaration addition/removal, schema changes, reload and reducer undo/redo, actual menu interaction, and the combined factory registry. | Focused card/menu/vocabulary/navigation gates passed; actual embedded-pilot save/editor refresh remains pending before A.R. |
-| A.6 | The complete pilot implements both noise modes and explicit/context seed selection. Its context-seed and attribute-delete prerequisites have moved forward from later work. Whole-mode geometry/domain/grain/cache/schema checks passed (checker agent session 60089). The quiet one-million-point timing gate passed (session 59246, measurements below). | Production `.rays` registration switch, source-save/editor rerun, shipping/native checks and any justified golden refresh remain pending. |
-| A.R | `specification/sop.md` and `lib/sop_catalog/AGENTS.md` now describe the Lisp declaration alternative and runtime ownership. `specification/flow.md` describes `defnode`. | `check.exe --ship` and `@runtest-native` after the pilot remain pending. |
+| A.4 | Shared `tools/lisp/embed.exe` embeds the source directory; the catalog injects definitions with disjoint IDs and the manifest records Lisp bodies and checked calls. Focused lowering/dependency tests passed (session 61578); focused dummy-driver editor tests passed (session 97387). Reviewed promoted metadata-only manifest diff: descriptions and non-Cook impact, digest `e3e6c69a267f17ee74791ce4f4adc112`. `@lib/sop_catalog/runtest @test/dependency_gate` exited 0 (sessions 95723, 14766); combined checker/catalog/dependency gate passed (session 29492). Source/edit/body-cache and keyword manifest regressions passed (session 91419). After the production switch, dummy-driver `@test/test_workspace_source @test/test_workspace_shell @test/test_sop_catalog @test/dependency_gate` exited 0 (session 21186): scalar scrub, structural gesture, atomic save and reopen retain the embedded definition while saving only authored calls. | Complete: focused integration and production source-boundary gates passed. |
+| A.5 | `test_lisp_projection.ml` compares the Lisp and independent OCaml cards structurally, full inspector metadata, scalar/vector scrubs, parameter drives, bypass, nested cards and schema-change invalidation. Combined lowering/graph/editor gate exited 0 (session 89094); actual editor fallback-inspector editing and menu search/add passed (session 92998). Dummy-driver `@test/test_workspace_vocabulary @test/test_workspace_shell @test/test_sop_catalog @test/dependency_gate` exited 0 (session 16558), proving helper navigation filtering, completion refresh after declaration addition/removal, schema changes, reload and reducer undo/redo, actual menu interaction, and the combined factory registry. The production source/editor/catalog/dependency refresh exited 0 (session 21186). | Complete: focused card/menu/vocabulary/navigation and production source/editor gates passed. |
+| A.6 | The complete pilot implements both noise modes and explicit/context seed selection. Its context-seed and attribute-delete prerequisites have moved forward from later work. Whole-mode geometry/domain/grain/cache/schema checks passed (checker agent session 60089). Real-parallel 32,769-point fixtures cover both modes at 1/4/8 domains and grains 97/4096, with 4-ULP oracle and byte-exact strict-reference comparisons after clearing the session (session 48781). The quiet one-million-point timing gate passed (session 59246, measurements below). Production now embeds `noise_displace.rays` and removes its native catalog registration while retaining `Sop.Nodes` as the oracle. The reviewed promoted manifest has digest `ef85cfb9f1560f4b8d7456cbcf6af521`; labels/defaults remain unchanged and the entry records a Lisp body. Production pilot/catalog/checker gates exited 0 (checker agent sessions 68500 and 99460); actual source-save/editor/catalog/dependency refresh passed (session 21186). Final pilot and legacy node gates passed after repairing the native factory's default cook-label protocol (session 45407), including relabel/cache/parameter-rebuild checks with ASCII and UTF-8 labels at context seeds 42 and 999. | Complete: full Verification and final shipping/native gates passed; committed with the production port. |
+| A.R | `specification/sop.md` and `lib/sop_catalog/AGENTS.md` now describe the Lisp declaration alternative and runtime ownership. `specification/flow.md` describes `defnode`. Root focused `@API @test/dependency_gate @lib/flow/runtest @lib/flow_sop/runtest @test/test_rays_editor @test/test_workspace_start @runtest-native` exited 0 (session 36479), including actual native rendering/pathtracer gates. Native reruns 41613 and 34796 passed; the latter covers 23 SOP graphs with exact one/four-domain PNG comparisons. Render goldens remain unchanged. `opam exec -- _build/default/tools/check.exe @lib/flow_sop/runtest @lib/sop/test_nodes` exited 0 (session 86865), covering selective attribute/deletion facts and the combined native/Lisp factory census. Shipping runs 15355/25500 exposed narrow catalog injection and the generated-source digest expectation; fixes are recorded below. | Complete: final `check.exe --ship` (session 83244) and `@runtest-native` (session 33890) exited 0; committed with the production port. |
 | B–E | No port evidence recorded here yet. | All language, port and phase review gates. |
 | G.1–G.2 | Optional tasks; no placement evidence recorded here yet. | Measured placement and CPU/GPU tolerance checks. |
+
+The production source/editor gate was repeated after fixing shared completion
+and catalog-order integration: dummy-driver `@test/test_workspace_source
+@test/test_workspace_shell @test/test_text_pane @test/test_workspace_doc
+@test/test_sop_catalog @test/dependency_gate` exited 0 (session 36116).
+The exact existing completion and manifest assertions remain intact. Full-edit
+reference checks now load embedded definitions through the same catalog checker
+as the document; the full-versus-literal corpus still compares authored bytes,
+plans, refusals and 43 checked-in documents' window settings.
 
 ## A.2 parameter census
 
@@ -289,21 +306,22 @@ OCAML
 
 ## Port and measurement ledger
 
-No nodes have completed their full Verification gate in this ledger yet.
+One of the 128 target nodes has completed its full Verification gate: the
+complete `noise_displace` pilot. The remaining 127 ports are still required.
 Do not fill timings, run counts, render parity or domain equality from estimates.
 Each accepted row must cite the command and fixture, machine/domain setup,
 OCaml/Lisp times and validation result before its plan checkbox is marked.
 
 | Node | CPU oracle gate | 1/8 domains | Cache/refusals/UI | Native goldens | OCaml/Lisp time at 1,000,000 | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| `noise_displace` pilot | Pending new port gate | Pending | Pending | Pending | Unmeasured | Not ported |
+| `noise_displace` pilot | Final pilot and legacy node gate 45407 passed at 4 ULP | 48781 passed, byte-exact strict reference | Schema/cache/refusals and real source/save/editor gates passed; label regression 45407 passed | Final 33890 passed; render fixtures unchanged; ml.t catalog digest expectation refreshed | Both modes 1/4 domains below 2×; table below | Complete in this port commit; A.6 and A.R passed |
 
 ## Moves and blocked modes
 
 | Found during | Prerequisite / move | Gate status |
 | --- | --- | --- |
-| A.6 pilot audit | `sop/context_seed` exposes the cook's keyed seed inside a Lisp body, preserving its Seed context dependency. Parameter validators reject context seed directly or through a helper. | Direct/helper context and checker/IR regressions passed in session 93829; full production pilot gate pending. |
-| A.6 pilot audit | Owner/pattern `sop/delete_attr` advances the subset of B.6 required to invalidate point and vertex N after displacement. | Both pilot modes passed session 60089; production switch pending and B.6 remains incomplete. |
+| A.6 pilot audit | `sop/context_seed` exposes the cook's keyed seed inside a Lisp body, preserving its Seed context dependency. Parameter validators reject context seed directly or through a helper. The initial cook label is the kind key, while the declaration label remains menu/inspector text, matching native factories. | Direct/helper checker/IR regressions passed in 93829; final production seed, relabel and parameter-rebuild parity passed in 45407. |
+| A.6 pilot audit | Owner/pattern `sop/delete_attr` advances the subset of B.6 required to invalidate point and vertex N after displacement. Literal names have no read dependency and named writes; patterns retain wildcard reads/writes. | Both pilot modes passed 60089; selective same-name owner/cache refresh and pattern conservatism passed 86865. Production source is registered; B.6 remains incomplete. |
 
 ## A.6 pilot performance evidence
 
@@ -320,40 +338,66 @@ Four-domain allocation counts cover only the main domain.
 | Default height 2D, amplitude 0.1, frequency 1 | 1 | 0.014198 | 0.020069 | 1.414 | 8,078,088 | 9,686,600 |
 | Default height 2D, amplitude 0.1, frequency 1 | 4 | 0.004773 | 0.006412 | 1.343 | 8,132,456 | 8,554,072 |
 
-Both complete modes are below the plan's 2× cook-time threshold. This is pilot
-evidence before the production registration switch; it does not complete A.6
-or A.R's shipping checks.
+Both complete modes are below the plan's 2× cook-time threshold. The later
+production registration, shipping and native gates also passed, as recorded below.
 
 ## Phase A integration audit
 
 The audit found that library injection crossed the authored-source boundary on
 literal edits and that structural edits used the generic checker. The fixes
-below are implemented. Focused source, editor and catalog checks passed; the
-production-pilot save gate and shipping checks remain pending.
+below are implemented. Focused source, editor and catalog checks and the actual
+production-pilot save gate passed; final shipping and native checks also passed.
 
 | Path / invariant | Current finding | Required evidence |
 | --- | --- | --- |
-| Embedded definitions stay out of saved user files | `Catalog.check_workspace` restores authored `checked.source` after checking the injected library. | `test_workspace_source.run_embedded_nodes` checks literal scrubbing, structural notes, atomic save and reopen without embedded definitions. Run after the production pilot source lands. |
+| Embedded definitions stay out of saved user files | `Catalog.check_workspace` restores authored `checked.source` after checking the injected library. | `test_workspace_source.run_embedded_nodes` checks literal scrubbing, structural notes, atomic save and reopen without embedded definitions. Actual production source/editor gates 21186 and 36116 passed. |
+| Narrow extension catalogs retain their language | Automatic source injection includes only embedded kinds registered in the requested catalog, with helpers/macros retained for selected definitions. Explicit `sources` overrides remain unconditional. | `test_open_domain` retains exact custom operator-list identity and asserts no unrelated embedded SOP definitions in its empty catalog. Its full editor-host fixture supplies production operators plus custom operators explicitly. `test_node_sources` tests empty catalog membership and unconditional explicit source injection. Final shipping session 83244 passed, including all 67 open-domain assertions and source-selection regressions. |
 | Gestures keep the library available | `Flow_edit.apply_checked` accepts a checker callback for branch defaults and every candidate; `Workspace_doc` supplies `Catalog.check_workspace`. | `test_node_sources` checks a library-backed structural edit and printed-source reopen. `@lib/flow_sop/runtest @lib/flow_graph/runtest` exited 0 (session 91419). |
 | Body identity survives authored-source restoration | `Lower` hashes authored forms plus checked definition, macro and node-body forms. | `test_node_sources` keeps authored text and public node ID unchanged while changing the injected body or an embedded macro helper, and requires changed output with exactly one public cache miss. Lowering/graph gate exited 0 (sessions 91419 and 73414). |
 | Helper context dependencies use lexical scope | `Context_kernel.depends` binds helper formal names to actual scalar arguments, tracks sequential aliases, and removes function/loop/state binders from inherited known values. Unknown branches are scanned conservatively. | `test_node_sources` covers nested helper calls with an outer boolean of the same name, active/inactive helper branches and function-local names. An active seed helper changes output and causes exactly one public miss across context seeds; an inactive helper retains its hit. Checker/lowering/IR gate exited 0 (session 93829). |
+| Specialized component facts remain truthful | Attribute kernels collect checked/captured attribute names and retain wildcard reads for opaque geometry uses. Literal deletion records no reads and its named write; deletion patterns retain wildcard reads/writes. Lisp wrappers derive body facts, preserve declared component order and retain a declared non-exact contract. | Same-name point/detail owner refresh, wildcard deletion and combined native/Lisp preserved-topology/domain census passed in session 86865. |
 | Embedded helpers stay out of editable navigation | Navigator filters checked defns/macros by authored top-level form IDs, including the search view, while lowering retains them. | `test_workspace_source.run_library_navigation` checks normal/search rows hide injected helpers while retaining authored definitions. Refreshed dummy-driver editor gate passed (session 16558). |
 | Local declaration completions follow the document | Shared vocabulary refresh compares operator and declaration schema identities on install, history/preset reduction and carry document adoption. Scalar scrubs reuse the same lazy vocabulary. | Actual editor reload/add/remove/schema changes and reducer undo/redo pass in `@test/test_workspace_vocabulary` (sessions 97286 and 16558). |
-| Catalog/menu inventory survives registration removal | Catalog tests assemble the native and lowered Lisp factory lists, keeping the existing total-key, metadata, disconnected-instance and cache perturbation assertions. | Combined registry test passed before the production switch (sessions 97286 and 16558); repeat after the switch. |
+| Catalog/menu inventory survives registration removal | Catalog tests assemble the native and lowered Lisp factory lists, keeping the existing total-key, metadata, disconnected-instance and cache perturbation assertions. | Combined registry test passed before the production switch (97286 and 16558) and after it (21186 and 36116). `test_facts` now sweeps the same combined registry; 86865 passed. |
 | Typed function libraries remain inspectable before connection | Default factories without a checked callable retain operation/schema identity and report `disconnected_input` on cook. Instantiated calls derive their facts and packed bodies from the actual function. | `test_node_sources` checks native keyword-Fn delegation, typed vec3-map calls, default factory catalog introspection, disconnected identity/schema and typed unbound cook refusal. Refreshed lowering/graph gate exited 0 after these checks. |
 
-The A.4 and A.5 passing sessions above predate these source-boundary fixes;
-their integration gates must run again before A.R is complete. Combined
+Early A.4 and A.5 sessions predate these source-boundary fixes. Combined
 `@lib/flow_sop/runtest @lib/flow_graph/runtest` sessions 77216 and 79773 exited 1
 on the ongoing A.3 function-capture regression; they are not passing evidence
 for the phase review.
 The later session 91419 passed both focused aliases, including the new body
-cache, source/edit and keyword function/image manifest regressions. The actual
-embedded-pilot save gate and the catalog/editor checks after registration
-removal remain pending. The refreshed editor/navigation/vocabulary and
-dependency gate passed before that switch in session 16558.
+cache, source/edit and keyword function/image manifest regressions. Actual
+embedded-pilot save and catalog/editor checks after registration removal passed
+in sessions 21186 and 36116. The refreshed editor/navigation/vocabulary and
+dependency gate passed before the switch in session 16558.
+
+The final seed mismatch was caused by using the declaration's display label as
+the initial cook label rather than the native factory's stable kind key.
+The implementation now follows the native label protocol. The pilot oracle
+instantiates the genuine native factory and asserts equal initial labels; it
+does not rewrite the oracle's label to mask the mismatch. Display-only relabel
+and restored labels retain warm cache hits; parameter rebuilds after relabel
+match the native namespace at both tested context seeds. The legacy node oracle
+uses the approved four-ULP comparison only for native-versus-Lisp arithmetic;
+one-versus-four-domain comparison remains byte-exact. Render fixtures remain
+unchanged. The generated-source expectation in `tools/lisp/test/ml.t` was
+reviewed and updated only for the catalog digest, from
+`84f55bc3821897e594fda2cfcd03c76ee8ab2395d7de962686c7ba71d6bb1dbc` to
+`f00fd3644c20c0baab5a1dca8e5ae455fea598adf20e438567a95f62e71920ec`.
+The authored source digest, generated source text and refusal diagnostics are
+unchanged; the catalog digest changed with the accepted production declaration.
 
 No node classification move has been accepted yet. The known array-valued
 attribute, `next_after`, `fma`, encoded-decoder and partial-subdivide requirements
 above must be resolved by implementation or an explicit recorded move. They are
 scope requirements, not evidence that a node has been completed.
+
+Final Phase A gates: `opam exec -- _build/default/tools/check.exe --ship`
+(session 83244) exited 0 after the catalog membership fix and reviewed `ml.t`
+catalog digest update. It includes `@all`, `@runtest`, `@smoke` and
+`git diff --check`; the workspace IR sweep covered 43 standard files, one
+custom-catalog executable and 13 fixtures at four times and domains 1/8.
+`opam exec -- _build/default/tools/check.exe @runtest-native` (session 33890)
+also exited 0, including 23 SOP graphs with byte-identical one/four-domain PNGs.
+No native render golden was refreshed. Phase A is complete; B–E and G remain
+required and unchecked.

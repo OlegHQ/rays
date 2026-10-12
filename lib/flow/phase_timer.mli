@@ -12,6 +12,11 @@ val sample : clock:(unit -> float) -> (unit -> 'a) -> 'a * t
     on exceptions. Backward clock readings are clamped. *)
 
 val measure : phase -> (unit -> 'a) -> 'a
+
+val without : (unit -> 'a) -> 'a
+(** Internal compilation within a measured phase contributes to that phase's
+    duration without adding workspace invocation counts. Restored on exceptions. *)
+
 val calls : t -> phase -> int
 val seconds : t -> phase -> float
 val summary : t -> string

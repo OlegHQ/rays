@@ -1,0 +1,18 @@
+; One Lisp body for both displacement modes. Scalar seed specializes the noise kernel.
+(defnode sop/noise_displace :label "Noise Displace" :category ["Deform" "Noise"]
+  :facts {:elementwise points :reads ["P" "N"] :writes ["P" "N"] :topology preserved :exact false}
+  [(in0 : geometry)
+   (mode : text "height_2d" :label "Mode" :choices ["height_2d" "normal_3d"])
+   (context_seed : bool false :label "Use context seed")
+   (seed : int 0 :label "Seed" :min 0 :max 9999)
+   (amplitude : float 0.1 :label "Amplitude" :min -10 :max 10)
+   (frequency : float 1.0 :label "Frequency" :min 0 :max 20 :hard_min 0)]
+  (let* [effective_seed (if context_seed (sop/context_seed "noise_displace") seed)
+         positions (sop/attr in0 :P)
+         displaced (if (equal? mode "normal_3d")
+           (map (fn [p n] (+ p (* n (* amplitude (noise3 (* p frequency) :seed effective_seed)))))
+             positions (sop/attr in0 :N))
+           (map (fn [p] [p.x (+ p.y (* amplitude (- (* (noise3 [(* p.x frequency) (* p.z frequency) 0.0]
+               :seed effective_seed) 2.0) 1.0))) p.z]) positions))
+         changed (sop/with_attr in0 :P (exact displaced))]
+    (sop/delete_attr (sop/delete_attr changed "N" :owner "point") "N" :owner "vertex")))

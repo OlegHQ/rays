@@ -46,8 +46,20 @@ let check_workspace ?ops ?library ?sources:override catalog forms =
   match Result.bind sources (fun sources ->
     Result.map (fun nodes -> sources, nodes) (definitions_of_sources sources)) with
   | Error diagnostic -> None, [diagnostic]
-  | Ok ([], _) -> Flow.Workspace.check ?ops ?library catalog forms
   | Ok (sources, nodes) ->
+      let sources, nodes = match override with
+        | Some _ -> sources, nodes
+        | None ->
+            let nodes = List.filter (fun (node : Flow.Defnode.t) ->
+              List.exists (fun (kind : Flow.Check.kind) -> kind.qualified=node.kind.qualified)
+                catalog.Flow.Check.kinds) nodes in
+            let sources = if nodes=[] then [] else List.filter (fun form ->
+              match form.Flow.Syntax.node with
+              | List ({node=Sym "defnode";_} :: {node=Sym name;_} :: _) ->
+                  List.exists (fun (node : Flow.Defnode.t) -> node.kind.qualified=name) nodes
+              | _ -> true) sources in
+            sources, nodes in
+      if sources=[] then Flow.Workspace.check ?ops ?library catalog forms else
       let authored = forms in
       let rec next_id (form : Flow.Syntax.t) = List.fold_left (fun highest child ->
         max highest (next_id child)) (form.id + 1) (Flow.Syntax.children form) in
@@ -142,4 +154,8 @@ let of_factories ~version ?(extra = []) ?nodes factories =
                 || List.mem node.kind.qualified kind.aliases) catalog.Flow.Check.kinds then
               Error (Flow.Diagnostic.error ~code:"E_CATALOG" ("Duplicate kind " ^ node.kind.qualified))
             else append {catalog with kinds = catalog.kinds @ [node.kind]} rest in
-      append catalog nodes))
+      Result.map (fun (checked:Flow.Check.catalog) ->
+        let native, extra = List.partition (fun (kind:Flow.Check.kind) ->
+          Hashtbl.mem declarations kind.qualified) catalog.kinds in
+        {checked with kinds=native @ List.map (fun (node:Flow.Defnode.t) -> node.kind) nodes @ extra})
+        (append catalog nodes)))

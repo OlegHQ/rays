@@ -9,6 +9,10 @@ let empty = { total = 0.; entries = [] }
 type scope = { mutable children : float }
 type sample = { now : unit -> float; started : float; mutable entries : entry list; mutable stack : scope list }
 let current = Domain.DLS.new_key (fun () -> None)
+let without run =
+  let previous = Domain.DLS.get current in
+  Domain.DLS.set current None;
+  Fun.protect run ~finally:(fun () -> Domain.DLS.set current previous)
 let measure phase run = match Domain.DLS.get current with
   | None -> run ()
   | Some sample ->

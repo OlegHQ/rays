@@ -4,6 +4,17 @@ let checked = function Some workspace, [] -> workspace
   | _, diagnostics -> failwith (String.concat "\n" (List.map Flow.Diagnostic.to_string diagnostics))
 
 let () =
+  let catalog = Flow.Check.{version=1;kinds=[]} in
+  let authored = parse "(workspace narrow (graph value :context value 0.0))" in
+  let workspace = Flow_sop.Catalog.check_workspace catalog authored |> checked in
+  assert (workspace.nodes=[] && workspace.ops=[]);
+  let sources = parse "(defnode sop/selected_fixture [(geo : geometry)] geo)" in
+  let workspace = Flow_sop.Catalog.check_workspace ~sources catalog authored |> checked in
+  assert (List.map (fun (node : Flow.Workspace.node_definition) -> node.kind.qualified)
+    workspace.nodes=["sop/selected_fixture"]);
+  assert (workspace.source=authored)
+
+let () =
   let factories = [Sop.Nodes.Line.factory] in
   let source = parse {|(workspace helper_seed
     (defn helper_seed :context value [(enabled : bool)]
@@ -48,7 +59,8 @@ let () =
     (graph g :context sop (sop/fn_seed_scope (sop/line :points 2))))|} in
   let catalog = Flow_sop.Catalog.of_factories ~version:1 [Sop.Nodes.Line.factory] |> ok in
   let workspace = Flow_sop.Catalog.check_workspace ~ops:Flow_sop.Operators.all catalog source |> checked in
-  let definition = List.hd workspace.Flow.Workspace.nodes in
+  let definition = List.find (fun (node:Flow.Workspace.node_definition) ->
+    node.kind.qualified="sop/fn_seed_scope") workspace.Flow.Workspace.nodes in
   assert (Flow_sop.Context_kernel.depends ~inputs:["enabled", Flow.Eval.Bool false]
     ~defs:workspace.defs definition.body)
 

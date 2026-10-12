@@ -7,10 +7,17 @@ let () =
     time := 4.; measure Check (fun () -> time := 5.); time := 6.)) in
   assert (timing.total = 6. && seconds timing Reduce = 3.);
   assert (calls timing Check = 2 && seconds timing Check = 3.);
+  let _, internal = sample ~clock (fun () -> measure Lower (fun () ->
+    time := 7.;
+    (try without (fun () -> measure Evaluate (fun () ->
+      time := 8.; failwith "body")) with Failure _ -> ());
+    measure Check (fun () -> time := 9.))) in
+  assert (calls internal Lower = 1 && seconds internal Lower = 2.);
+  assert (calls internal Evaluate = 0 && calls internal Check = 1);
   let _, outer = sample ~clock (fun () ->
     (try measure Check (fun () -> failwith "refused") with Failure _ -> ());
-    ignore (sample ~clock (fun () -> measure Parse (fun () -> time := 7.)));
-    measure Print (fun () -> time := 8.)) in
+    ignore (sample ~clock (fun () -> measure Parse (fun () -> time := 10.)));
+    measure Print (fun () -> time := 11.)) in
   assert (calls outer Check = 1 && calls outer Parse = 1 && calls outer Print = 1);
   let _, backward = sample ~clock (fun () -> measure Check (fun () -> time := 0.)) in
   assert (backward.total = 0. && seconds backward Check = 0.);

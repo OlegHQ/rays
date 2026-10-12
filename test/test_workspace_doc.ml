@@ -45,6 +45,11 @@ let of_text ?settings text = match Doc.of_text ?settings catalog text with
   | Ok doc -> doc
   | Error ds -> fail (show ds)
 
+let full_edit catalog (doc : Doc.t) operation =
+  E.apply_checked ~ops:doc.checked.ops ~library:doc.fragment
+    ~checker:(Flow_sop.Catalog.check_workspace ~ops:doc.checked.ops ~library:doc.fragment)
+    catalog doc.source operation
+
 let part_text () =
   let text = still ^ {|
 (layout
@@ -466,7 +471,7 @@ let part_literals () =
   let op path field sub text = E.Set_arg {node = path; key = Kw field; sub; value = syntax text} in
   List.iter (fun operation ->
     let old = !doc in
-    let (source, checked) = E.apply_checked catalog old.source operation |> Result.get_ok in
+    let (source, checked) = full_edit catalog old operation |> Result.get_ok in
     let next, phases = Flow.Phase_timer.sample ~clock:Unix.gettimeofday (fun () ->
       Doc.edit catalog old operation |> Result.get_ok) in
     List.iter (fun phase -> check (Flow.Phase_timer.calls phases phase = 0)
@@ -520,7 +525,7 @@ let part_literals () =
      op ["g";"b"] "translate" [0] "-9";
      op ["g";"a"] "size" [] "[1 2 3]"];
   List.iter (fun operation ->
-    let slow = E.apply_checked catalog (!doc).source operation
+    let slow = full_edit catalog !doc operation
     and fast = Doc.edit catalog !doc operation in
     check (match slow, fast with Error a, Error b -> a.code = b.code | _ -> false)
       "invalid literal did not refuse atomically with the checker's code")
@@ -548,7 +553,7 @@ let part_literals () =
       Doc.edit catalog old operation |> Result.get_ok) in
     check (Flow.Phase_timer.calls phases Check = 0 && Flow.Phase_timer.calls phases Parse = 0)
       "literal with notes or in a loop repeated the workspace check";
-    let source, checked = E.apply_checked catalog old.source operation |> Result.get_ok in
+    let source, checked = full_edit catalog old operation |> Result.get_ok in
     check (Doc.to_text next = Doc.to_text {next with source; checked}) "loop/comment literal text differs";
     let lowered = L.of_checked ~factories old.checked |> Result.get_ok in
     let patched, phases = Flow.Phase_timer.sample ~clock:Unix.gettimeofday (fun () ->
@@ -597,7 +602,7 @@ let part_literals () =
       let e = E3.edit e operation |> Result.get_ok in E3.update e (frame [] 1)) in
     List.iter (fun phase -> check (Flow.Phase_timer.calls phases phase = 0)
       ("editor literal repeated " ^ Flow.Phase_timer.name phase)) [Print; Parse; Check; Evaluate; Lower; Project; Layout];
-    let source, checked = E.apply_checked catalog (of_text still).source operation |> Result.get_ok in
+    let source, checked = full_edit catalog (of_text still) operation |> Result.get_ok in
     let ws = E3.workspace e in
     check (Doc.to_text ws = Doc.to_text {ws with source; checked}) "editor literal save differs");
   print_endline "workspace literal edits: source, checked terms, plans, records, projected rows and cooked bytes match the full path"
@@ -651,7 +656,7 @@ let part_files () =
     List.iter (fun (path, key, sub, _, value) ->
       let op = E.Set_arg { node = path; key; sub; value } in
       let where = Printf.sprintf "%s %s" file (String.concat "/" path) in
-      let full = E.apply_checked ~ops:doc.checked.ops catalog doc.source op in
+      let full = full_edit catalog doc op in
       let next, phases = Flow.Phase_timer.sample ~clock:Unix.gettimeofday (fun () -> Doc.edit catalog doc op) in
       match full, next with
       | Error a, Error b -> check (a.code = b.code) (where ^ ": the literal path refused with another code"); incr refused

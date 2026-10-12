@@ -437,6 +437,38 @@ let run_library () =
     for count = 2 to 70 do e := E3.update !e (Test_editor_input.frame (450., 300.) [] count) done;
     check (has (Doc.to_text (E3.workspace !e)) "(* x 5)") "bare definition library did not reload")
 
+let run_embedded_nodes () =
+  let text = {|;; embedded node call
+(workspace w (graph g :context sop
+  (let* [source (sop/line)
+         shifted (sop/noise_displace source :amplitude 0.5)] shifted)))
+|} in
+  let contains_node doc = List.exists (fun (node : Flow.Workspace.node_definition) ->
+    node.kind.qualified = "sop/noise_displace") doc.Doc.checked.nodes in
+  let doc = Doc.of_text catalog text |> Result.get_ok in
+  check (contains_node doc) "embedded definition absent at load";
+  let doc = Doc.edit catalog doc (Flow_graph.Flow_edit.Set_arg {
+    node=["g"; "shifted"]; key=Kw "amplitude"; sub=[]; value=Flow.Syntax.make (Num "0.75")})
+    |> Result.get_ok in
+  check (Option.is_some doc.literal) "embedded scalar scrub missed literal edit path";
+  check (contains_node doc) "scalar scrub lost embedded definition";
+  check (not (has (printed doc) "(defnode")) "scalar scrub copied library forms into saved source";
+  let doc = Doc.edit catalog doc (Flow_graph.Flow_edit.Set_note {
+    node=["g"; "shifted"]; text="edited node"}) |> Result.get_ok in
+  check (doc.literal=None && contains_node doc) "structural gesture lost embedded definition";
+  let saved = printed doc in
+  check (has saved ":amplitude 0.75" && has saved "; edited node") "edits absent from saved source";
+  check (not (has saved "(defnode") && not (has saved "sop/context_seed"))
+    "saving authored calls copied embedded library into document";
+  let dir = directory () in
+  Fun.protect ~finally:(fun () -> remove_tree dir) (fun () ->
+    let file = Filename.concat dir "sketch.rays" in
+    write file text;
+    ignore (Source.save (Source.at ~file ~digest:(sha text)) saved |> Result.get_ok);
+    let reopened = Doc.of_text catalog (read file) |> Result.get_ok in
+    check (contains_node reopened && printed reopened=saved)
+      "saved embedded call did not reopen with identical authored source")
+
 let run_library_navigation () =
   let parse text = Flow.Syntax.parse text |> Result.get_ok in
   let sources = parse {|(defn embedded_helper :context value [(x : float)] (+ x 1))
@@ -502,5 +534,5 @@ let run_vocabulary_refresh () =
     write file (text None); poll ();
     check (not (head ())) "reload retained removed local kind completion")
 
-let run () = run_files (); run_find (); run_editor (); run_external_over_dirty (); run_autosave (); run_start_keywords (); run_imports (); run_library (); run_library_navigation (); run_vocabulary_refresh ();
+let run () = run_files (); run_find (); run_editor (); run_external_over_dirty (); run_autosave (); run_start_keywords (); run_imports (); run_library (); run_embedded_nodes (); run_library_navigation (); run_vocabulary_refresh ();
   print_endline "workspace source tests passed"

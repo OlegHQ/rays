@@ -35,6 +35,6 @@ val check_workspace :
   ?ops:Flow.Op.t list -> ?library:bool -> ?sources:Flow.Syntax.t list ->
   Flow.Check.catalog -> Flow.Syntax.t list ->
   Flow.Workspace.t option * Flow.Diagnostic.t list
-(** Check with the embedded definitions in scope. Authored form IDs stay intact;
+(** Check with the embedded definitions registered in [catalog] in scope. Authored form IDs stay intact;
     library forms receive a disjoint ID space and stay out of [Workspace.source]. [sources] overrides the embedded
-    definitions for callers providing their own node library. *)
+    definitions for callers providing their own node library, regardless of catalog membership. *)

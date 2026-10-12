@@ -304,7 +304,7 @@ let run () =
     let lowered = lower name in
     let catalog = Editor_document.Contexts.catalog ~version:Manifest.version factories |> Result.get_ok in
     let forms = Flow.Syntax.parse (read (Filename.concat cases (name ^ ".lisp"))) |> Result.get_ok in
-    let checked = match Flow.Workspace.check catalog forms with
+    let checked = match Catalog.check_workspace ~ops:Operators.all catalog forms with
       | Some checked, _ -> checked | _ -> fail (name ^ " did not check") in
     let from_checked, phases = Flow.Phase_timer.sample ~clock:Unix.gettimeofday (fun () ->
       Lower.of_checked ~factories checked |> Result.get_ok) in

@@ -10,7 +10,17 @@
 (test
  (name test_facts)
  (modules test_facts)
- (libraries sop rdk rays_math sop_catalog lisp_sop rdk_test_support))
+ (libraries sop rdk rays_math sop_catalog flow flow_sop lisp_sop rdk_test_support))
+
+(test
+ (name test_lisp_ports)
+ (modules test_lisp_ports)
+ (deps ../flow_sop/nodes/noise_displace.rays)
+ (libraries sop rdk rays_math sop_catalog flow flow_sop lisp_sop rdk_test_support unix))
+
+(rule
+ (alias test_lisp_ports)
+ (action (run %{exe:test_lisp_ports.exe})))
 
 (test
  (name test_payload)

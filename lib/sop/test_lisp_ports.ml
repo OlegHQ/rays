@@ -1,0 +1,265 @@
+open Rdk
+open Rdk_test_support
+module N = Sop.Node
+module P = Param
+
+let flow_ok = function Ok x -> x | Error d -> fail (Flow.Diagnostic.to_string d)
+let source_file = "../flow_sop/nodes/noise_displace.rays"
+let source = In_channel.with_open_bin source_file In_channel.input_all
+let declarations = Flow.Syntax.parse source |> flow_ok
+
+let node ?(reference=false) input keywords =
+  let factory=Sop.Edit_graph.factory ~key:"port_input" ~label:"Port input" ~category:["Test"] ~arity:0 (fun _ -> input) in
+  let factories=factory::List.filter (fun f -> Sop.Edit_graph.factory_key f<>"noise_displace") Sop_catalog.Editor.factories in
+  let catalog=Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version factories |> flow_ok in
+  let forms=Flow.Syntax.parse ("(workspace port (graph g :context sop (sop/noise_displace (sop/port_input) "^keywords^")))") |> flow_ok in
+  let checked=match Flow_sop.Catalog.check_workspace ~sources:declarations ~ops:Flow_sop.Operators.all catalog forms with
+    | Some w, ds when not (List.exists (fun (d:Flow.Diagnostic.t)->d.severity=Error) ds)->w
+    | _,ds->fail (String.concat "\n" (List.map Flow.Diagnostic.to_string ds)) in
+  let lowered=Flow_sop.Lower.of_checked ~reference ~factories checked |> flow_ok in
+  let graph=List.hd lowered.graphs in
+  Sop.Edit_graph.compile_node graph.network.geometry ~node_id:(Option.get graph.root) |> get_string_ok
+
+let oracle input label changes =
+  let native=Sop.Edit_graph.instantiate Sop.Nodes.Noise_displace.factory [input] |> get_string_ok in
+  check (N.label native=label) "Lisp default node label differs from the native factory key";
+  fst (N.apply_parameters native changes |> get_string_ok)
+let session ()=Sop.Session.create ~max_entries:64 ~max_payload_bytes:256_000_000 |> get_string_ok
+let context ?(seed=42L) domains grain=Sop.Context.create ~seed ~domains ~grain () |> get_string_ok
+let cooked session context node = match Sop.Session.cook session ~context node with
+  | Ok output->Sop.Payload.geometry output.payload |> (function Ok g->g | Error d->fail (Sop.Diagnostic.error_to_string d))
+  | Error d->fail (Sop.Diagnostic.error_to_string d)
+
+let points count = Kernel.generate_point_ranges count (fun ~first ~last ~x ~y ~z ->
+  for i=first to last-1 do x.(i)<-float (i mod 65)*.0.13-.4.;y.(i)<-sin (float i*.0.27);z.(i)<-float (i/65)*.0.19-.3. done)
+let payload geometry =
+  let vector count f=Packed.Float3.Private.of_owned_exn ~x:(Array.init count (fun i->f i))
+    ~y:(Array.make count 0.37) ~z:(Array.make count (-1.2)) in
+  let add name owner storage g=Geometry.with_attribute (Attribute.create_owned ~name ~owner storage |> get_string_ok) g |> get_string_ok in
+  geometry
+  |> add "N" Attribute.Point (Attribute.Float3 (vector (Geometry.point_count geometry) (fun i->cos (float i*.0.23))))
+  |> add "N" Attribute.Vertex (Attribute.Float3 (vector (Geometry.vertex_count geometry) (fun _->1.)))
+  |> add "id" Attribute.Point (Attribute.Int (Array.init (Geometry.point_count geometry) Fun.id))
+  |> add "weight" Attribute.Primitive (Attribute.Float (Array.init (Geometry.primitive_count geometry) float))
+  |> add "tag" Attribute.Detail (Attribute.Text [|"preserved"|])
+  |> Geometry.with_group (Group.init ~owner:Group.Point ~name:"alternating" (Geometry.point_count geometry) (fun i->i mod 2=0))
+  |> get_string_ok
+let mixed () =
+  let topology=Topology.create_owned ~point_count:6 ~vertex_points:[|0;1;2;3;1;4;5|]
+    ~primitive_offsets:[|0;4;7|] ~primitive_kinds:[|Topology.Polygon;Open_polyline|] |> get_string_ok in
+  Geometry.create ~positions:(Geometry.positions (points 6)) ~topology () |> get_string_ok |> payload
+  |> Geometry.with_group (Group.init ~owner:Group.Vertex ~name:"corners" 7 (fun i->i mod 3=0)) |> get_string_ok
+  |> Geometry.with_group (Group.init ~owner:Group.Primitive ~name:"polygon" 2 (fun i->i=0)) |> get_string_ok
+  |> Geometry.with_edge_group (Edge_group.init ~topology ~index:(Topology_index.create topology)
+    ~name:"selected_edges" (fun i->i mod 2=0)) |> get_string_ok
+
+let cases = [
+  "", [];
+  ":mode \"normal_3d\"", ["mode",P.Choice_value "normal_3d"];
+  ":seed 17", ["seed",P.Int_value 17];
+  ":amplitude -0.7", ["amplitude",P.Float_value (-0.7)];
+  ":frequency 0.16", ["frequency",P.Float_value 0.16];
+  ":context_seed true", ["context_seed",P.Bool_value true];
+  ":mode \"normal_3d\" :seed 311 :amplitude 0.8 :frequency 0.16", ["mode",P.Choice_value "normal_3d";"seed",P.Int_value 311;"amplitude",P.Float_value 0.8;"frequency",P.Float_value 0.16];
+  ":mode \"normal_3d\" :context_seed true :amplitude 0.5 :frequency 0.25", ["mode",P.Choice_value "normal_3d";"context_seed",P.Bool_value true;"amplitude",P.Float_value 0.5;"frequency",P.Float_value 0.25];
+  ":amplitude 0 :frequency 0", ["amplitude",P.Float_value 0.;"frequency",P.Float_value 0.]
+]
+
+let noise_displace () =
+  let grid=Plane_generators.grid ~connectivity:Grid_quads ~columns:64 ~rows:64 ~size:8. ()
+    |> get_ok |> payload in
+  check (Geometry.point_count grid=4225) "pilot grid must have 4,225 points";
+  List.iter (fun geometry ->
+    let input=Lisp_sop.snapshot geometry and before=geometry_bytes geometry in
+    List.iter (fun (keywords,changes)->
+      let lisp=node input keywords and reference=node ~reference:true input keywords in
+      let native=oracle input (N.label lisp) changes in
+      check (N.parameter_fields lisp=N.parameter_fields native) "noise_displace parameter metadata changed";
+      check (N.parameter_key lisp=N.parameter_key native) (Printf.sprintf "noise_displace parameter cache key changed: %S <> %S" (N.parameter_key lisp) (N.parameter_key native));
+      let s=session () in
+      Fun.protect ~finally:(fun()->Sop.Session.close s) (fun()->
+        let baseline=cooked s (context 1 97) lisp in
+        List.iter (fun domains->List.iter (fun grain->
+          let c=context domains grain in
+          Sop.Session.clear s;
+          let actual=cooked s c lisp and expected=cooked s c native and walked=cooked s c reference in
+          if not (close_geometry ~ulps:4 actual expected) then begin
+            let a=Packed.Float3.Private.view (Geometry.positions actual) and b=Packed.Float3.Private.view (Geometry.positions expected) in
+            let maximum=ref (0.,0,0.,0.) in
+            List.iter (fun (a,b)->Array.iteri (fun i x->let y=b.(i) in
+              let _,exponent=Float.frexp (Float.max (abs_float x) (abs_float y)) in
+              let ulps=abs_float (x-.y)/.Float.ldexp 1. (max (-1074) (exponent-53)) in
+              let best,_,_,_= !maximum in if ulps>best then maximum:=ulps,i,x,y) a) [a.x,b.x;a.y,b.y;a.z,b.z];
+            let ulps,index,x,y= !maximum in fail (Printf.sprintf "noise_displace oracle mismatch: %s max_ulp=%g point=%d actual=%.17g expected=%.17g" keywords ulps index x y)
+          end;
+          check (geometry_bytes baseline=geometry_bytes actual) "noise_displace domains/grains changed bits";
+          check (geometry_bytes actual=geometry_bytes walked) "noise_displace reference/kernel changed bits";
+          check (Geometry.find_attribute ~owner:Attribute.Point "N" actual=None
+            && Geometry.find_attribute ~owner:Attribute.Vertex "N" actual=None) "noise_displace retained normals") [1;97;4096]) [1;4];
+        List.iter (fun seed->
+          let c=context ~seed 4 97 in
+          check (close_geometry ~ulps:4 (cooked s c lisp) (cooked s c native)) "noise_displace changed context seed differs from oracle") [0L;(-17L);0x7fffffffffffffffL]);
+      check (before=geometry_bytes geometry) "noise_displace mutated its input") cases)
+    [payload (points 0);payload (points 1);payload (points 4225);grid;mixed ()];
+  (* More than two packed chunks exercises worker domains, unlike tiny fixtures. *)
+  let geometry=payload (points 32769) in
+  let input=Lisp_sop.snapshot geometry and before=geometry_bytes geometry in
+  List.iter (fun mode ->
+    let keywords=Printf.sprintf ":mode %S :seed 311 :amplitude 0.8 :frequency 0.16" mode in
+    let lisp=node input keywords and reference=node ~reference:true input keywords in
+    let native=oracle input (N.label lisp) ["mode",P.Choice_value mode;"seed",P.Int_value 311;
+      "amplitude",P.Float_value 0.8;"frequency",P.Float_value 0.16] in
+    let s=session () in
+    Fun.protect ~finally:(fun()->Sop.Session.close s) (fun()->
+      let baseline=cooked s (context 1 4096) lisp in
+      check (close_geometry ~ulps:4 baseline (cooked s (context 1 4096) native))
+        "multi-block pilot differs from oracle";
+      check (geometry_bytes baseline=geometry_bytes (cooked s (context 1 4096) reference))
+        "multi-block pilot differs from reference bits";
+      List.iter (fun domains -> List.iter (fun grain ->
+        Sop.Session.clear s;
+        check (geometry_bytes baseline=geometry_bytes (cooked s (context domains grain) lisp))
+          "multi-block pilot differs across worker domains") [97;4096]) [1;4;8]))
+    ["height_2d";"normal_3d"];
+  check (before=geometry_bytes geometry) "multi-block pilot mutated its input";
+  let input=Lisp_sop.snapshot (payload (points 129)) in
+  let lisp=node input "" in
+  let native=oracle input (N.label lisp) [] in
+  let invalid field value=match N.apply_parameters lisp [field,value],N.apply_parameters native [field,value] with
+    |Error actual,Error expected->check (actual=expected) ("noise_displace changed validation error for "^field)
+    |Ok (actual,_),Ok (expected,_)->check (N.parameter_key actual=N.parameter_key expected
+        && N.parameter_fields actual=N.parameter_fields expected)
+        ("noise_displace changed parameter coercion for "^field)
+    |actual,expected->let state=function Ok _->"accepted"|Error e->"rejected: "^e in
+        fail ("noise_displace validation differs for "^field^": Lisp "^state actual^"; native "^state expected) in
+  List.iter (fun field->List.iter (fun n->
+    invalid field (P.Float_value n))
+    [nan;infinity;neg_infinity]) ["amplitude";"frequency"];
+  List.iter (fun (field,value)->invalid field value)
+    ["frequency",P.Float_value (-1.);"mode",P.Choice_value "unknown";
+     "context_seed",P.Int_value 1;"seed",P.Text_value "bad"];
+  let native_catalog=Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version
+    (Sop.Nodes.Noise_displace.factory::Sop_catalog.Editor.factories) |> flow_ok in
+  let lisp_catalog=Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version
+    Sop_catalog.Editor.factories |> flow_ok in
+  List.iter (fun input ->
+    let forms=Flow.Syntax.parse ("(workspace wrong_input (graph g :context sop (sop/noise_displace "^input^")))") |> flow_ok in
+    let codes (workspace,diagnostics)=
+      check (workspace=None) "noise_displace accepted a wrongly typed geometry input";
+      List.filter_map (fun (d:Flow.Diagnostic.t)->if d.severity=Error then Some d.code else None) diagnostics in
+    let expected=codes (Flow.Workspace.check ~ops:Flow_sop.Operators.all native_catalog forms)
+    and actual=codes (Flow_sop.Catalog.check_workspace ~sources:declarations ~ops:Flow_sop.Operators.all lisp_catalog forms) in
+    check (actual=expected && List.mem "E_TYPE" actual) "noise_displace changed wrong input diagnostic")
+    ["17";"(image/noise :width 1 :height 1)"];
+  let s=session () in
+  Fun.protect ~finally:(fun()->Sop.Session.close s) (fun()->
+    let c=context 1 97 in
+    let first=cooked s c lisp in
+    check (cooked s c lisp==first) "unchanged noise_displace missed cache";
+    let misses=(Sop.Session.stats s).misses in
+    check (cooked s (context ~seed:999L 1 97) lisp==first)
+      "noise_displace context_seed=false missed when context seed changed";
+    check ((Sop.Session.stats s).misses=misses)
+      "noise_displace context_seed=false depends on context seed";
+    let seeded=fst (N.apply_parameters lisp ["context_seed",P.Bool_value true] |> get_string_ok) in
+    let seeded_first=cooked s c seeded in
+    let misses=(Sop.Session.stats s).misses in
+    let seeded_next=cooked s (context ~seed:999L 1 97) seeded in
+    check ((Sop.Session.stats s).misses=misses+1)
+      "noise_displace context_seed=true did not invalidate for context seed";
+    check (geometry_bytes seeded_first<>geometry_bytes seeded_next)
+      "noise_displace context_seed=true did not use changed context seed";
+    List.iter (fun label ->
+      let renamed=N.relabel label seeded in
+      let native=N.relabel label (oracle input (N.label lisp) ["context_seed",P.Bool_value true]) in
+      check (N.id renamed=N.id seeded) "node relabel changed logical identity";
+      let restored=N.relabel (N.label seeded) renamed in
+      List.iter (fun seed ->
+        let context=context ~seed 1 97 in
+        let original=cooked s context seeded in
+        let misses=(Sop.Session.stats s).misses in
+        check (cooked s context renamed==original) "display relabel changed the cached cook identity";
+        check (cooked s context restored==original) "restoring the label missed the cached cook identity";
+        check ((Sop.Session.stats s).misses=misses) "display relabel caused a cache miss";
+        check (close_geometry ~ulps:4 original (cooked s context native))
+          "renamed Lisp node differs from the native context seed protocol") [999L;42L];
+      let rebuild node=fst (N.apply_parameters node ["amplitude",P.Float_value 0.8] |> get_string_ok) in
+      let rebuilt=rebuild renamed and native_rebuilt=rebuild native in
+      let rebuilt_session=session () in
+      Fun.protect ~finally:(fun()->Sop.Session.close rebuilt_session) (fun()->
+        List.iter (fun seed ->
+          let context=context ~seed 1 97 in
+          check (close_geometry ~ulps:4 (cooked rebuilt_session context rebuilt)
+            (cooked rebuilt_session context native_rebuilt))
+            "parameter rebuild after relabel differs from the native seed namespace") [42L;999L]))
+      ["seeded terrain";"déplacement 雪"];
+    Sop.Session.clear s;
+    ignore (cooked s c lisp);
+    List.iter (fun (field,value)->
+      let before=(Sop.Session.stats s).misses in
+      let changed=fst (N.apply_parameters lisp [field,value] |> get_string_ok) in
+      let result=cooked s c changed in
+      check ((Sop.Session.stats s).misses=before+1) ("noise_displace changed "^field^" did not miss one cache entry");
+      check (cooked s c changed==result) "edited noise_displace did not hit cache")
+      ["mode",P.Choice_value "normal_3d";"context_seed",P.Bool_value true;"seed",P.Int_value 7;
+       "amplitude",P.Float_value 0.8;"frequency",P.Float_value 0.25]);
+  print_endline "Lisp noise_displace: modes, parameter contracts, metadata, all geometry payloads, 4-ULP oracle, reference/kernel, domains/grains and cache identity pass"
+
+let benchmark () =
+  let count=1_000_000 in
+  let geometry=Kernel.generate_point_ranges count (fun ~first ~last ~x ~y ~z->
+    for i=first to last-1 do x.(i)<-float (i mod 1000)*.0.01;y.(i)<-sin (float i*.0.01);z.(i)<-float (i/1000)*.0.01 done) |> payload in
+  let input=Lisp_sop.snapshot geometry in
+  List.iter (fun mode->
+  let amplitude,frequency=if mode="normal_3d" then 0.8,0.16 else 0.1,1. in
+  Printf.printf "mode=%s amplitude=%.17g frequency=%.17g grain=4096\n%!" mode amplitude frequency;
+  let packed=ref None in
+  let trace= !Flow_ir.Packed.Private.trace in
+  Flow_ir.Packed.Private.trace:=(fun result->trace result;match result with
+    | Ok p when Array.exists (function Flow_ir.Packed.Noise3 _->true|_->false)
+        (Flow_ir.Packed.Private.view p).code -> packed:=Some p
+    | _->());
+  let lisp=Fun.protect ~finally:(fun()->Flow_ir.Packed.Private.trace:=trace)
+    (fun()->node input (Printf.sprintf ":mode %S :amplitude %.17g :frequency %.17g" mode amplitude frequency)) in
+  let native=oracle input (N.label lisp) ["mode",P.Choice_value mode;"amplitude",P.Float_value amplitude;"frequency",P.Float_value frequency] in
+  List.iter (fun domains->
+    let run label node =
+      let trials=Array.init 3 (fun _->
+        let s=session () in
+        Fun.protect ~finally:(fun()->Sop.Session.close s) (fun()->
+          Gc.full_major ();let gc=Gc.allocated_bytes () and start=Unix.gettimeofday () in
+          ignore(cooked s (context domains 4096) node);
+          Unix.gettimeofday ()-.start,Gc.allocated_bytes ()-.gc)) in
+      Array.sort (fun (a,_) (b,_)->Float.compare a b) trials;
+      let seconds,words=trials.(1) in
+      Printf.printf "%s points=%d domains=%d median_seconds=%.6f allocated_bytes=%.0f\n%!" label count domains seconds words;
+      seconds in
+    let native=run "OCaml" native and lisp=run "Lisp" lisp in
+    Printf.printf "Lisp/OCaml=%.3f\n%!" (lisp/.native);
+    let p=Packed.Float3.Private.view (Geometry.positions geometry) in
+    let noise=Rays_math.Noise.create 0 and output=Array.make count 0.
+    and zeros=Array.make count 0. in
+    Gc.full_major ();let start=Unix.gettimeofday () in
+    Rays_math.Parallel.run ~domains (fun()->Rays_math.Parallel.for_ ~chunk_size:1
+      ~start:0 ~finish:((count-1)/4096) (fun block->
+        let first=block*4096 and last=min count ((block+1)*4096) in
+        Rays_math.Noise.Private.sample3_into noise ~first ~last ~frequency
+          ~x:p.x ~y:(if mode="normal_3d" then p.y else p.z)
+          ~z:(if mode="normal_3d" then p.z else zeros) ~output ()));
+    Printf.printf "Bulk noise alone domains=%d seconds=%.6f\n%!" domains (Unix.gettimeofday ()-.start);
+    Option.iter (fun packed->
+      let array positions=let p=Packed.Float3.Private.view positions in
+        Flow.Eval.Vec3_array (Array.init (count*3) (fun i-> match i mod 3 with
+          |0->p.x.(i/3)|1->p.y.(i/3)|_->p.z.(i/3))) in
+      let positions=array (Geometry.positions geometry) and normals=array
+        (Geometry.find_attribute ~owner:Attribute.Point "N" geometry |> Option.get
+         |> Attribute.get (Attribute.key ~name:"N" ~owner:Attribute.Point Attribute.float3) |> Option.get) in
+      let resolve=function
+        |Flow.Eval.Struct ("sop/attr",_,args)->Ok (if List.assoc "attribute" args=Flow.Eval.Text "P" then positions else normals)
+        |_->fail "Unexpected isolated packed source" in
+      Gc.full_major ();let start=Unix.gettimeofday () in
+      Rays_math.Parallel.run ~domains (fun()->ignore (Flow_ir.Packed.force ~strict:true ~resolve packed ~live:(Frame_input.at_time 0.) |> flow_ok));
+      Printf.printf "Packed isolated domains=%d registers=%d seconds=%.6f\n%!" domains
+        (Array.length (Flow_ir.Packed.Private.view packed).code) (Unix.gettimeofday ()-.start)) !packed) [1;4]) ["normal_3d";"height_2d"]
+
+let ()=if Array.exists ((=) "--bench") Sys.argv then benchmark () else noise_displace ()

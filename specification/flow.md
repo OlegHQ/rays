@@ -1585,7 +1585,7 @@ dropped from Finder (§7.12).
 | Following a graph panel (2026-10-05) | `:of binding` on `ui/inspector`, `ui/list`, `ui/lisp`: one keyword, a panel-typed wire in the graph; without it the panel follows the focus |
 | Layout forms in the printer (2026-10-05) | `ui/` calls are never threaded with `->` |
 | Guide | on by default, persisted off |
-| Edit timings (2026-10-07) | the status strip and crash report retain the last document edit's print, parse, check, evaluate, lower, project, layout, reduce and cook durations; `Flow.Phase_timer` also exposes invocation counts for regressions |
+| Edit timings (2026-10-07) | the status strip and crash report retain the last document edit's print, parse, check, evaluate, lower, project, layout, reduce and cook durations; `Flow.Phase_timer` also exposes invocation counts for regressions. Internal `defnode` body preparation contributes to lowering time without counting as another authored-workspace evaluation or lowering pass. |
 | Checked lowering (2026-10-07) | document edits check once; `Lower.of_checked` evaluates once with recording and graph probes reuse that evaluation, including its plan and state folds |
 | Edit-frame gate (2026-10-07) | a scrub frame without the recook its value requires costs no more than a layout-drag frame at the same node count (`bench_rays_editor`'s `scrub_edit` row), with zero print/parse/check/evaluate/lower/project/layout; every checked-in `.rays` literal saves the full path's bytes and refuses with its code (`test_workspace_doc`); `(ref g)` is never a binding read |
 | Wheel and trackpad scroll | zoom at the pointer; right-drag and middle-drag pan |

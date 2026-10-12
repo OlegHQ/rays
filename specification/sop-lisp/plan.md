@@ -599,10 +599,10 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 - [x] A.1 — helper equality/ULP/integer gates passed; command and coverage in `results.md`.
 - [x] A.2 — typed declaration, metadata/refusal and clash checks passed; evidence in `results.md`.
 - [x] A.3 — public cache identity, parameter/typed slots including optional/rest Fn, strict kernel/exactness and scoped helper context-dependency gates passed; latest evidence in `results.md`.
-- [x] A.4 — embedded sources/catalog/manifest integration and dependency gate passed; promoted digest in `results.md`. Source-boundary regression rerun pending before A.R.
-- [x] A.5 — structural card/inspector/gesture parity and actual menu addition passed; evidence in `results.md`. Source-boundary regression rerun pending before A.R.
-- [ ] A.6
-- [ ] A.R
+- [x] A.4 — embedded sources/catalog/manifest integration, dependency gate and production save/reopen regression passed; promoted digest in `results.md`.
+- [x] A.5 — structural card/inspector/gesture parity, actual menu addition and production source/editor rerun passed; evidence in `results.md`.
+- [x] A.6 — complete production noise_displace port; oracle, reference/domain/grain, metadata, cache, refusal, native and million-point timing gates passed; evidence in results.md.
+- [x] A.R — final check.exe --ship and @runtest-native passed after the integration audit; specs and declaration guidance updated.
 - [ ] B.1
 - [ ] B.2
 - [ ] B.3

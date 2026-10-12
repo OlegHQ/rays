@@ -178,6 +178,12 @@ let test_refusals () =
   Session.close evaluator
 
 let test_declarations () =
+  let native = Sop_catalog.Editor.factories in
+  let lowered = Result.bind
+    (Flow.Syntax.parse "(workspace facts (graph unused :context value 0.0))")
+    (Flow_sop.Lower.workspace ~factories:native)
+    |> Result.map_error Flow.Diagnostic.to_string |> get in
+  let factories = native @ lowered.factories in
   let geometry = fixture () in
   let count = Geometry.point_count geometry in
   let uv = Packed.Float2.of_owned ~x:(Array.make count 0.) ~y:(Array.make count 0.) |> get in
@@ -201,7 +207,7 @@ let test_declarations () =
         (Node.operation node ^ " replaced Preserved topology");
       check (geometry_bytes one = geometry_bytes eight) (Node.operation node ^ " differs at eight domains");
       preserved := Edit_graph.factory_key factory :: !preserved
-    end) Sop_catalog.Editor.factories;
+    end) factories;
   List.iter (fun name -> check (List.mem name !preserved) (name ^ " lacks a Preserved declaration"))
     ["transform"; "soft_transform"; "noise_displace"; "peak"; "bend"; "mountain";
      "normals"; "attribute_noise"; "attribute_noise_quaternion"; "color_by_height"];

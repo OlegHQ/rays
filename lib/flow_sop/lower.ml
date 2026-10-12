@@ -259,6 +259,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(k
       let key = String.sub definition.kind.qualified 4
         (String.length definition.kind.qualified - 4) in
       let build bindings ~label ~context inputs parameters =
+        Phase_timer.without (fun () ->
         let make_capture_factories aliases = List.mapi (fun index input ->
           let key = "lisp_capture_" ^ string_of_int index in
           let factory = Edit.factory ~key ~label:key ~category:["Flow"] ~arity:0
@@ -374,16 +375,22 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(k
         let preserved = List.for_all (fun (node : Sop.Graph.info) ->
           node.facts.topology=Sop.Node.Preserved) owned in
         let input_count = List.length inputs in
+        let components declared inferred =
+          let inferred = List.sort_uniq String.compare inferred in
+          List.filter (fun name -> List.mem name inferred) declared
+          @ List.filter (fun name -> not (List.mem name declared)) inferred in
+        let declared = definition.kind.facts in
         let facts = Sop.Node.{
           cook_mode=(if input_count=0 then Generator else if preserved && input_count=1
             then Duplicate_input 0 else Generic);
           elementwise=(if preserved then (Sop.Node.facts compiled).elementwise else None);
           reads=List.concat_map (fun (node : Sop.Graph.info) -> node.facts.reads) owned
-            |> List.sort_uniq String.compare;
+            |> components (Option.fold ~none:[] ~some:(fun (f : Check.kernel_facts) -> f.reads) declared);
           writes=List.concat_map (fun (node : Sop.Graph.info) -> node.facts.writes) owned
-            |> List.sort_uniq String.compare;
+            |> components (Option.fold ~none:[] ~some:(fun (f : Check.kernel_facts) -> f.writes) declared);
           topology=(if preserved then Preserved else Changed);
-          exact=List.for_all (fun (node : Sop.Graph.info) -> node.facts.exact) owned} in
+          exact=Option.fold ~none:true ~some:(fun (facts : Check.kernel_facts) -> facts.exact)
+            definition.kind.facts && List.for_all (fun (node : Sop.Graph.info) -> node.facts.exact) owned} in
         let body context =
           let lane = Value_lane.create () in
           Result.map_error (fun (d : Diagnostic.t) -> Sop.Diagnostic.error ~code:d.code d.message)
@@ -391,7 +398,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(k
               ~time:(Sop.Context.time context) graph.network) (fun resolved ->
               Result.map_error (Diagnostic.error ~code:"E_LOWER")
                 (Edit.compile_node resolved.geometry ~node_id:root))) in
-        body, dependencies, facts in
+        body, dependencies, facts) in
       let category = if definition.category=[] then ["Custom"] else definition.category in
       let construct inputs =
           let next = ref 0 in
@@ -406,7 +413,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(k
                 not (List.mem_assoc slot.name functions) && (slot.required ||
                   Option.value ~default:[] (List.assoc_opt slot.name bindings) <> []) | _ -> false)
               definition.slots)
-            ~qualified:definition.kind.qualified ~label:definition.label
+            ~qualified:definition.kind.qualified ~label:key
             ~fields:definition.fields ~source:(Lazy.force kernel_source) ~build:(build bindings)
             (List.filter_map Fun.id inputs) in
       if definition.slots=[] then

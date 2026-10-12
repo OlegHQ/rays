@@ -94,7 +94,7 @@ let brackets text = let _, pairs, _ = lex text in pairs
 
 (* forms whose body is indented two in from the paren rather than under the first argument *)
 let body_forms = List.filter (fun form -> List.mem form Flow.Workspace.special_forms)
-    [ "workspace"; "graph"; "defn"; "defmacro"; "let*"; "for"; "fold"; "scan"; "sum"; "state"; "if"; "fn";
+    [ "workspace"; "graph"; "defn"; "defnode"; "defmacro"; "let*"; "for"; "fold"; "scan"; "sum"; "state"; "if"; "fn";
       "cond"; "case" ]
 
 let indent text caret =
@@ -159,6 +159,7 @@ let special_docs = [
   "import", "(import \"relative/path.rays\") · shared definitions and graphs beside the workspace";
   "graph", "(graph name :context sop [inputs] body) · a network; the body is a let* or an expression";
   "defn", "(defn name :context value [(p : type) ...] body) · a function called as (name args)";
+  "defnode", "(defnode sop/name [slots and parameters] body) · a reusable SOP kind with typed inputs and parameter defaults";
   "defmacro", "(defmacro name [params] `template) · a syntax template; ~p fills a hole";
   "let*", "(let* [name expr ...] result) · sequential bindings: the graph's nodes";
   "for", "(for [i (range n)] body) · repeat over lists; geometry merges, numbers are summed";

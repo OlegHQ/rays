@@ -77,6 +77,7 @@ let () =
   let kernel_ops = kernel :: ops in
   let field_source = "(workspace w (graph g :context toy (let* [surface (toy/kernel :field (fn [p] p.x))] surface)))" in
   let field_doc = doc (D.of_text ~ops:kernel_ops catalog field_source) in
+  check (field_doc.checked.nodes=[]) "narrow custom catalog acquired embedded SOP definitions";
   let field_scope = P.of_graph catalog field_doc.checked "g" in
   check (List.exists (fun (n : P.node) ->
     Option.fold ~none:false ~some:(fun (z : P.zone) -> z.kind = P.Fn) n.zone) field_scope.nodes)
@@ -169,7 +170,8 @@ let () =
   let module E = Rays_editor.Editor in
   let host_text = "(workspace host (graph g :context toy (toy/emit 1.0 :gain 3.0))\n\
     (graph editor :context editor (ui/workspace (ui/split \"horizontal\" (ui/graph \"g\") (ui/lisp)))))" in
-  let workspace = doc (Rays_editor.Workspace.load ~ops host_text) in
+  let host_ops = Flow_sop.Operators.all @ ops in
+  let workspace = doc (Rays_editor.Workspace.load ~ops:host_ops host_text) in
   let presets = Filename.temp_dir "rays-domain-test" "" in
   let host = ref (E.create ~workspace ~await:true ~domains:1 ~presets
     ~prepare:(fun _ _ -> Ok ()) ~scene3:(fun _ () -> Scene3.create []) () |> Result.get_ok) in
@@ -188,7 +190,7 @@ let () =
       "host menu did not insert registered domain's operator";
     let path = Filename.concat presets "saved.rays" in
     Out_channel.with_open_bin path (fun oc -> output_string oc (D.to_text (E.workspace !host)));
-    let loaded = Editor_document.Preset.load_with_ops ~ops ~path ~factories:Sop_catalog.Editor.factories
+    let loaded = Editor_document.Preset.load_with_ops ~ops:host_ops ~path ~factories:Sop_catalog.Editor.factories
       ~settings:Editor_document.Settings.none |> Result.get_ok in
     check (Array.length (snd loaded.doc.workspace).evaluated.plan.nodes = 2)
       "preset reload discarded custom operators");

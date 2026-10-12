@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "e3e6c69a267f17ee74791ce4f4adc112")
+  (digest "ef85cfb9f1560f4b8d7456cbcf6af521")
   (kinds
     (kind "sop/box"
       (key "box")
@@ -2346,21 +2346,6 @@
         (field "combine_indices" "Combine indices" (folder "Output") (bool) (bool false) (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/noise_displace"
-      (key "noise_displace")
-      (aliases)
-      (operation "noise_displace")
-      (label "Noise Displace")
-      (category "Deform" "Noise")
-      (slots (slot "in0" required))
-      (fields
-        (field "mode" "Mode" (folder) (choice "height_2d" "normal_3d") (choice "height_2d") (primary false) (vec3))
-        (field "context_seed" "Use context seed" (folder) (bool) (bool false) (primary false) (vec3))
-        (field "seed" "Seed" (folder) (int (soft 0 9999) (hard nil nil)) (int 0) (primary false) (vec3))
-        (field "amplitude" "Amplitude" (folder) (float (soft -10 10) (hard nil nil)) (float 0.1) (primary false) (vec3))
-        (field "frequency" "Frequency" (folder) (float (soft 0 20) (hard 0 nil)) (float 1) (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise points) (reads "P") (writes "P" "N") (topology preserved) (exact false)))
     (kind "sop/color_by_height"
       (key "color_by_height")
       (aliases)
@@ -3501,6 +3486,23 @@
         (field "cap_group" "Cap group" (folder) (text) (text "caps") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
+    (kind "sop/noise_displace"
+      (key "noise_displace")
+      (aliases)
+      (operation "noise_displace")
+      (label "Noise Displace")
+      (category "Deform" "Noise")
+      (slots (slot "in0" required))
+      (fields
+        (field "mode" "Mode" (folder) (choice "height_2d" "normal_3d") (choice "height_2d") (primary false) (vec3))
+        (field "context_seed" "Use context seed" (folder) (bool) (bool false) (primary false) (vec3))
+        (field "seed" "Seed" (folder) (int (soft 0 9999) (hard nil nil)) (int 0) (primary false) (vec3))
+        (field "amplitude" "Amplitude" (folder) (float (soft -10 10) (hard nil nil)) (float 0.1) (primary false) (vec3))
+        (field "frequency" "Frequency" (folder) (float (soft 0 20) (hard 0 nil)) (float 1) (primary false) (vec3)))
+      (outputs (output "geo" geometry))
+      (facts (cook-mode generic) (elementwise points) (reads "P" "N") (writes "P" "N") (topology preserved) (exact false))
+      (body lisp)
+      (calls))
     (kind "scene/geometry"
       (key "geometry")
       (aliases)

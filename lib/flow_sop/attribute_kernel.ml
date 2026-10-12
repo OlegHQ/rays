@@ -32,6 +32,74 @@ let sources value =
     | _ -> () in
   visit value; List.sort_uniq Int.compare !ids
 
+let reads value =
+  let residuals = Residuals.create 16 and functions = Functions.create 16 in
+  let names = ref [] and opaque = ref false in
+  let rec lookup bindings (term : Flow.Workspace.term) = match term.node with
+    | Text name -> Some (E.Text name)
+    | Ref_binding (name, fields) -> List.fold_left (fun value field -> Option.bind value (function
+        | E.Record fields | Struct (_, _, fields) -> List.assoc_opt field fields | _ -> None))
+        (List.assoc_opt name bindings) fields
+    | Get (term, field) -> Option.bind (lookup bindings term) (function
+        | E.Record fields | Struct (_, _, fields) -> List.assoc_opt field fields | _ -> None)
+    | Expanded {body; _} | Bypass body -> lookup bindings body
+    | _ -> None in
+  let checked_reads bindings term =
+    let safe = ref [] and unsafe = ref [] in
+    let rec scan (term : Flow.Workspace.term) =
+      let all = List.iter scan and fields fields = List.iter (fun (_, term) -> scan term) fields in
+      match term.node with
+      | Op {op="sop/attr";args;_} ->
+          (match Option.bind (List.assoc_opt "attribute" args) (lookup bindings),
+              Option.bind (List.assoc_opt "geometry" args) (lookup bindings) with
+           | Some (E.Text name), Some (E.Deferred (ty, id)) when Flow.Ty.is_geometry ty ->
+               names := name :: !names; safe := id :: !safe
+           | _ -> opaque := true)
+      | Ref_binding _ when Flow.Ty.is_geometry term.ty ->
+          (match lookup bindings term with Some (E.Deferred (_, id)) -> unsafe := id :: !unsafe | _ -> ())
+      | Vec terms | List_lit terms | Str terms | List_op (_, terms) | Hof (_, terms) -> all terms
+      | Op {args;_} | Call {args;_} | Record args -> fields args
+      | Call_fn {args;_} -> all args
+      | Graph_ref {inputs;_} -> fields inputs
+      | Let (bindings, body) -> fields bindings; scan body
+      | Loop {accs;clauses;body;_} -> fields accs; fields clauses; scan body
+      | State {init;step;_} -> all [init;step]
+      | If (condition, yes, no) -> all [condition;yes;no]
+      | Cond (arms, default) -> List.iter (fun (condition, yes) -> all [condition;yes]) arms; scan default
+      | Case (value, arms, default) -> scan value; fields arms; scan default
+      | Fn {body;capture;_} -> Option.iter scan capture; scan body
+      | Get (term,_) | Expanded {body=term;_} -> scan term
+      | Bypass call -> Option.iter scan (Flow.Workspace.bypass_input call)
+      | Assoc (record, updates) -> scan record; fields updates
+      | Ref_binding _ | Lit _ | Text _ | Nil | Time | Fn_ref _ -> () in
+    scan term;
+    List.filter (fun id -> not (List.mem id !unsafe)) !safe in
+  let rec visit safe = function
+    | E.Struct ("sop/attr", _, args) ->
+        (match List.assoc_opt "attribute" args, List.assoc_opt "geometry" args with
+         | Some (E.Text name), Some (E.Deferred (ty, _)) when Flow.Ty.is_geometry ty ->
+             names := name :: !names
+         | _ -> opaque := true)
+    | E.Deferred (ty, id) when Flow.Ty.is_geometry ty ->
+        if not (List.mem id safe) then opaque := true
+    | E.Residual residual when not (Residuals.mem residuals residual) ->
+        Residuals.add residuals residual ();
+        let view = E.Private.residual_view residual in
+        let safe = checked_reads view.bindings view.term in
+        List.iter (fun (_, value) -> visit safe value) view.bindings
+    | E.Fn fn when not (Functions.mem functions fn) ->
+        Functions.add functions fn ();
+        let bindings = E.Private.function_bindings fn in
+        let safe = match E.Private.function_body fn with
+          | None -> opaque := true; []
+          | Some (_, body) -> checked_reads bindings body in
+        List.iter (fun (_, value) -> visit safe value) bindings
+    | E.List values -> Array.iter (visit safe) values
+    | E.Record fields | E.Struct (_, _, fields) -> List.iter (fun (_, value) -> visit safe value) fields
+    | _ -> () in
+  visit [] value;
+  if !opaque then ["*"] else List.sort_uniq String.compare !names
+
 let error code message = Error (Flow.Diagnostic.error ~code message)
 let ranges ~grain count f =
   let chunks = if count=0 then 0 else (count-1)/grain+1 in
@@ -246,4 +314,4 @@ let node ?state ?(reference = false) ?(strict = false) ?elems ?profile ~source ~
       Result.map_error (fun (d : Flow.Diagnostic.t) -> Sop.Diagnostic.error ~code:d.code d.message)
         (Result.map (fun geometry -> N.Private.{geometry; diagnostics = []; instances = None}) result)) in
   N.Private.with_facts { (N.facts node) with elementwise = N.Points;
-    topology = N.Preserved; reads = ["*"]; writes = [name] } node
+    topology = N.Preserved; reads = reads values; writes = [name] } node

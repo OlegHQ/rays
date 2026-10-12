@@ -302,6 +302,10 @@ native factories for node menus and inspection. The generated manifest records
 `(body lisp)` and `(calls ...)`; calls come from checked terms, including
 specialized helper functions and macros, rather than a textual name scan.
 Registration rejects a Lisp kind that collides with an OCaml kind.
+The header label supplies menu and inspector text; the initial cook label is the
+stable kind key, matching native factories and their context-seed namespaces.
+`Node.relabel` retains its existing display-only cook identity; a subsequent
+parameter rebuild follows the native label protocol.
 Embedded definitions stay in the checked definition tables and outside authored
 workspace source. Saving after a scrub or structural gesture writes the user's
 calls without copying the library into the file. Document gestures use the same

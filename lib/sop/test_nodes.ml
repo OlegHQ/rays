@@ -362,10 +362,16 @@ let same_node name ~typed ~catalog =
   check (Node.parameter_key typed = Node.parameter_key catalog && Node.parameter_key typed <> "")
     (name ^ ": Lisp node and factory share the schema key");
   let one = cook 1 typed in
-  List.iter (fun (what, geometry) -> check (equal_geometry one geometry)
-      (name ^ ": " ^ what ^ " cooks the same geometry"))
-    [ "Lisp node at four domains", cook 4 typed;
-      "factory at one domain", cook 1 catalog;
+  let ported_noise = Node.operation typed = "noise_displace" in
+  let four = cook 4 typed in
+  check (if ported_noise then geometry_bytes one = geometry_bytes four else equal_geometry one four)
+    (name ^ ": Lisp node at four domains cooks the same geometry");
+  (* The port uses separately rounded arithmetic; only its native oracle has
+     the approved four-ULP tolerance. Domain self-consistency stays bit-exact. *)
+  let equal_oracle = if ported_noise then close_geometry ~ulps:4 else equal_geometry in
+  List.iter (fun (what, geometry) -> check (equal_oracle one geometry)
+    (name ^ ": " ^ what ^ " cooks the same geometry"))
+    [ "factory at one domain", cook 1 catalog;
       "factory at four domains", cook 4 catalog ]
 
 let same_cook ?(inputs = []) ?optional_inputs name ~typed ~factory values input =
@@ -7376,7 +7382,7 @@ weight")|});
   List.iter (fun context_seed -> List.iter (fun seed ->
     same_cook "Group Random explicit context flag" ~typed:(Lisp_sop.node ~with_:["warped", (warped)] (Printf.sprintf {|(sop/group_random (sop/ext_warped) :context_seed %b :seed %d)|} (context_seed) (seed)))
       ~factory:Nodes.Group_random.factory ["context_seed",Bool_value context_seed;"seed",Int_value seed] warped;
-    same_cook "Noise Displace explicit context flag" ~typed:(Lisp_sop.node ~with_:["warped", (warped)] (Printf.sprintf {|(sop/noise_displace (sop/ext_warped) :context_seed %b :seed %d)|} (context_seed) (seed)))
+    same_cook (Printf.sprintf "Noise Displace context_seed=%b seed=%d" context_seed seed) ~typed:(Lisp_sop.node ~with_:["warped", (warped)] (Printf.sprintf {|(sop/noise_displace (sop/ext_warped) :context_seed %b :seed %d)|} (context_seed) (seed)))
       ~factory:Nodes.Noise_displace.factory ["context_seed",Bool_value context_seed;"seed",Int_value seed] warped)
     [0;17]) [false;true];
   List.iter (fun count ->
