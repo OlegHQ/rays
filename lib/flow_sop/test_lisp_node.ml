@@ -94,6 +94,30 @@ let () =
   print_endline "Authored body errors cook lazily; parameter rebuilds, causes and context seed changes preserve timing"
 
 let () =
+  List.iter(fun expression->List.iter(fun reference->
+    let node=lower ~reference(Printf.sprintf {|(workspace live_body
+      (defnode sop/live_body [(geo : geometry)]
+        (sop/transform geo :translate [%s 0.0 0.0]))
+      (graph g :context sop (sop/live_body (sop/line :points 2))))|} expression) in
+    with_session(fun session->List.iter(fun(time,dt)->
+      let live={(Frame_input.at_time time) with dt;frame=int_of_float time;tick=int_of_float time} in
+      let context=ok(Sop.Context.create ~time ~frame:(Int64.of_int live.frame) ~input:live ()) in
+      let actual=Sop.Session.cook session ~context node |>Result.get_ok
+        |>fun(output:Sop.Session.output)->Result.get_ok(Sop.Payload.geometry output.payload) in
+      let offset=if expression="t" then time else dt in
+      let expected=Lisp_sop.node(Printf.sprintf
+        "(sop/transform (sop/line :points 2) :translate [%.17g 0.0 0.0])" offset)
+        |>cook session in
+      check(Rdk_test_support.geometry_bytes actual=Rdk_test_support.geometry_bytes expected)
+        (Printf.sprintf "Prepared body reused stale geometry for %s at t=%g dt=%g" expression time dt);
+      let before=Sop.Session.stats session in
+      ignore(Sop.Session.cook session ~context node |>Result.get_ok);
+      check((Sop.Session.stats session).misses=before.misses)
+        "An unchanged prepared body missed its warm cache") [0.,0.25;1.,0.5;2.,0.125]))
+    [false;true]) ["t";"(state [previous 0.0] (+ previous (frame/dt)))"];
+  print_endline "Prepared bodies reuse unchanged graphs; live drives/state changes recompile and warm contexts retain cache hits"
+
+let () =
   let original=Rdk.Line_geometry.points[|0.,-0.,2.;1.,3.,4.|] in
   let before=Rdk_test_support.geometry_bytes original in
   let transforms=[|Rays_math.Mat4.translation(Rays_math.Vec3.create 1. 0. 0.);

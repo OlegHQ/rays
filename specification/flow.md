@@ -826,6 +826,10 @@ only the selected arm, and rebuilds seed-dependent bodies when the context seed
 changes. Unsupported numeric kernels still fail strict compilation during
 construction.
 
+Cooking reuses the prepared body node while its resolved immutable geometry
+graph is unchanged. Live parameter drives, frame nodes and state lanes contribute
+frame dependencies; a changed resolved graph recompiles the body.
+
 `Flow.Op` is the immutable resolution table for built-in operators. Each declaration
 contains its context, signature, output type, choices, value shape, validation, evaluator body
 and menu category. The checker, evaluator (including compiled arithmetic) and editor read that
