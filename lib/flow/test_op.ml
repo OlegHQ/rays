@@ -289,3 +289,16 @@ let () =
   assert(Eval.Private.force_reference ~state ~resolve marker ~live=Error reason);
   assert(Eval.state_stamp state=before);
   print_endline "Host forcing: concrete/legacy sources, validation/cause/frame failures and live nested fallback agree with supplied state"
+
+let () =
+  List.iter(fun(name,ty,fill)->let op=Option.get(Op.find name Context.value) in
+    List.iter(fun count->
+      let actual=op.body ~live:(Frame_input.at_time 0.) ~node:(fun _ _->assert false)
+        ["count",Int count;"value",fill]
+      and expected=Value.array_init ty count(fun _->fill) in
+      let data=function Vec3_array data|Vec4_array data->data|_->assert false in
+      assert(Array.for_all2(fun a b->Int64.bits_of_float a=Int64.bits_of_float b)
+        (data actual)(data expected))) [0;1;2;3;5;17;4097;32769])
+    ["array/vec3",Ty.Vec3,Vec3(-0.,1.,-2.);
+     "array/vec4",Ty.Vec4,Vec4(-0.,1.,-2.,Float.next_after 0. 1.)];
+  print_endline "Constant vector constructor: empty/single/power tails/multi-block signed-zero bits match element builder"

@@ -1669,3 +1669,22 @@ API confirmation request exited 0 after promotion.
 Point Jitter can now express native arithmetic validation and error sequencing
 in its Lisp body. Its whole-node semantic and speed gates still have to pass;
 no new SOP registration or whole-node completion is claimed here.
+
+### Shared constant vector fill accepted
+
+The generic `array/vec3` and `array/vec4` constructors now grow a validated
+sample with overlapping bulk `Array.blit` calls rather than one tiny blit per
+row. Regular Flow regression cases cover empty, single, uneven tails and
+multi-block lengths through 32,769, including signed zero and subnormal bits.
+Focused request 20157 exited 0 for `@lib/flow/runtest`,
+`@lib/flow_sop/runtest`, `@lib/flow_sop/set_color_draft` and
+`@tools/api_manifest/runtest` (`/tmp/rays-set-color-bulk-constructor-final.log`).
+
+On Apple M1, OCaml 5.3, the bounded 65,538-element single-domain diagnostic
+constructor took 0.000256 seconds and 2,097,616 allocated bytes, compared with
+0.000675 seconds and the same allocation before the change. These are single
+stage samples, not whole-node medians. The complete subsequent 78-row,
+median-three Set Color table (request 73970) still failed 54 grouped rows,
+with maximum ratio 8.542. Set Color stays unregistered; the port ledger remains
+six of 128. Commands and the complete table are retained in the Set Color
+section above.

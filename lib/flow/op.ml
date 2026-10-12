@@ -301,7 +301,15 @@ let constant_array ty count value =
   | (Vec2_array sample|Vec3_array sample|Vec4_array sample) as array ->
       let width=match array with Vec2_array _->2|Vec3_array _->3|_->4 in
       let values=Array.make(count*width)0. in
-      for i=0 to count-1 do Array.blit sample 0 values (i*width) width done;
+      if count>0 then begin
+        Array.blit sample 0 values 0 width;
+        let filled=ref width in
+        while !filled<Array.length values do
+          let copied=min !filled (Array.length values - !filled) in
+          Array.blit values 0 values !filled copied;
+          filled:= !filled+copied
+        done
+      end;
       (match width with 2->Vec2_array values|3->Vec3_array values|_->Vec4_array values)
   | _->assert false
 let arrays = [
