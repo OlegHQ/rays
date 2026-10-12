@@ -122,6 +122,53 @@ let () =
 let () =
   let trace = !I.Packed.Private.trace in
   I.Packed.Private.trace := ignore;
+  let base=Test_program.compile ~fusion:false
+    "(for [index (array/range 32769 :type int) component (map (fn [x] (+ x t)) (array/range 7))] component)" in
+  let region=I.Packed.to_region base in
+  assert(region.code=[|I.Core.Region.Int_input 0;Input(1,1,0)|]);
+  let make outer row =
+    let sources=Array.mapi(fun i (residual,term)->
+      let name=if i=0 then "repeat_outer" else "repeat_row" in
+      let term={term with Flow.Workspace.node=Ref_binding(name,[])} in
+      E.Private.with_bindings residual ~term [name,(if i=0 then outer else E.Float_array row)],term)region.sources in
+    let region={region with sources} in
+    let ordinary={region with code=Array.append region.code [|I.Core.Region.Unary(Abs,1)|]} in
+    let program region=match I.Packed.of_region region with Ok p->p
+      |Error ds->failwith(String.concat "; "(List.map Flow.Diagnostic.to_string ds)) in
+    program region,program ordinary in
+  let live=Frame_input.at_time 0.25 in
+  List.iter(fun row->List.iter(fun count->
+    let outer=E.Int_array(Array.init count(fun i->max_int-i)) in
+    let packed,ordinary=make outer row in
+    let expected=Array.make (count*Array.length row) 0. in
+    for i=0 to count-1 do Array.blit row 0 expected (i*Array.length row) (Array.length row) done;
+    List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+      assert(same(I.Packed.force ~strict:true packed ~live)(Ok(E.Float_array expected)));
+      assert(same(I.Packed.force ~strict:true packed ~live)(I.Packed.force ~strict:true ordinary ~live));
+      let data=Array.make (Array.length expected) 0. in
+      ignore(ok(I.Packed.force_into ~strict:true ~column_source:(fun _ _->Ok None)
+        ~count:(Array.length expected) ~outputs:[|[|Some data|]|] packed ~live));
+      assert(same(Ok(E.Float_array data))(Ok(E.Float_array expected))))) [1;4;8]) [0;1;32769])
+    [[||];[|-0.;0.;Float.next_after 1. infinity;Float.ldexp 1. (-1074)|]];
+  List.iter(fun bad->List.iter(fun count->
+    let packed,ordinary=make (E.Int_array(Array.make count 0)) [|0.;bad|] in
+    let actual=I.Packed.force ~strict:true packed ~live in
+    assert(same actual(I.Packed.force ~strict:true ordinary ~live));
+    let discarded=I.Packed.force_into ~strict:true ~column_source:(fun _ _->Ok None)
+      ~count:(2*count) ~outputs:[|[|None|]|] packed ~live in
+    if count=0 then assert(Result.is_ok actual && Result.is_ok discarded)
+    else match actual,discarded with
+      |Error a,Error b->assert(a.code="E_NONFINITE" && a.code=b.code && a.message=b.message)
+      |_->assert false) [0;1;32769]) [nan;infinity;neg_infinity];
+  let packed,ordinary=make (E.Float_array [|infinity|]) [|0.|] in
+  assert(same(I.Packed.force ~strict:true packed ~live)(I.Packed.force ~strict:true ordinary ~live));
+  (match I.Packed.force ~strict:true packed ~live with Error d->assert(d.code="E_ARRAY_TYPE")|_->assert false);
+  I.Packed.Private.trace := trace;
+  print_endline "Product row projection: repeated bits, empty sources, selected errors, sinks and one/four/eight domains passed"
+
+let () =
+  let trace = !I.Packed.Private.trace in
+  I.Packed.Private.trace := ignore;
   let count = 32769 in
   let bodies =
     ["(if (< (mod x 2.0) 1.0) (if (< (mod x 4.0) 1.0) (+ (sin x) t) (- (cos x) t)) (+ x t))";

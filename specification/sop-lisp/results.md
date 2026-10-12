@@ -1026,6 +1026,45 @@ request 87196 and Drawing request 7654b3 passed Source count/fusion/read facts,
 malformed-handle guards, exact domain outputs and editor error causes/spans.
 The root's valid-argument Drawing execution also exited 0. Fresh full shipping
 request 21836 exited 0 in `/tmp/rays-sop-lisp-foundation-ship-final.log`,
-including all 43 standard workspaces and 13 fixtures. The prepared four setter
-production sources and authoritative oracle
-entry remain outside the worktree; native registrations are unchanged.
+including all 43 standard workspaces and 13 fixtures. At this checkpoint,
+the prepared four setter production sources and authoritative oracle entry
+remained outside the worktree; native registrations were unchanged.
+
+### Cartesian row projection
+
+Foundation source shipping passed and was committed as `b0323372` after the
+separate API declaration commit. A generic packed Cartesian projection now
+copies a checked Float row with `Array.blit`, using coarse disjoint output
+ranges. It applies only to a two-input, two-instruction Collect program with
+an unused concrete Int outer input and a Float row output; guards, skips,
+arithmetic and other input types retain the block executor.
+
+Build 46362, exact regression 65081 and focused IR request 28796 exited 0. Independent repeated-array
+bytes, signed zeros, subnormals, empty inputs, selected NaN/Inf, omitted output
+lanes and wrong input types agree with the ordinary block path at 1/4/8
+domains. Existing packed diagnostics and snapshots also passed.
+
+Quiet `test_packed.exe --bench-product-row` repeats 16 Float values over one
+million outer indices, median of three materializations. On Apple M1:
+
+| Domains | Native seconds | Packed seconds | Ratio | Packed allocated bytes |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.009826 | 0.013712 | 1.395 | 136,053,288 |
+| 4 | 0.009328 | 0.009653 | 1.035 | 136,101,384 |
+
+Log: `/tmp/rays-product-repeat-bench.log`. The previous two-register probe
+took 0.195219/0.057069 seconds at 1/4 domains. This primitive now meets the
+speed limit; that does not qualify a whole node.
+
+Actual `test_setters.exe --bench-transform` (19154, exit 0), one million
+points, grain 4096, median three cold sessions, still fails the whole-port
+speed gate:
+
+| Domains | Native seconds | Lisp seconds | Ratio | Lisp allocated bytes |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.020379 | 0.110583 | 5.426 | 547,557,488 |
+| 4 | 0.016020 | 0.077010 | 4.807 | 544,994,128 |
+
+Log: `/tmp/rays-transform-repeat-bench.log`. Remaining materialized CSR
+arguments are rebuilt through a checked host-call graph and copied into
+owned storage. Further shared work is required; Set Transform is unregistered.

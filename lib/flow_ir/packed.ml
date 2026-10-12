@@ -390,9 +390,32 @@ let run_typed ?plane_outputs ?expected_count ~evaluate ~uniform ~seed t ~live =
         if t.result<>Collect then initialized:=true
       done
     done in
+  (* A Cartesian projection repeats one checked row. The unused outer input
+     must be concrete integers, so removing its loads cannot hide a type or
+     finite-value error. All other instruction programs use the block loop. *)
+  let repeated_row = match t.iteration,t.result,skip,inputs,t.code,t.outputs with
+    | Product,Collect,[||],[|E.Int_array outer;E.Float_array row|],
+        [|Int_input 0;Input(1,1,0)|],[|[|1|]|]
+    | Product,Collect,[||],[|E.Int_array outer;E.Float_array row|],
+        [|Input(1,1,0);Int_input 0|],[|[|0|]|] -> Some(outer,row)
+    | _ -> None in
+  (match repeated_row with
+  | Some(outer,row) ->
+      if count>0 then begin
+        Array.iter(fun x->if not(Float.is_finite x) then
+          V.fail "E_NONFINITE" "packed produced a nonfinite value.")row;
+        let output=match plane_outputs,outputs.(0) with
+          |Some columns,_->columns.(0).(0)
+          |None,E.Float_array data->Some data
+          |_->assert false in
+        Option.iter(fun data->Rays_math.Parallel.for_ ~chunk_size:4096
+          ~start:0 ~finish:(Array.length outer-1)
+          (fun i->Array.blit row 0 data (i*Array.length row) (Array.length row)))output
+      end
+  | None ->
   if t.result=Collect && Array.for_all concrete t.uniforms && count>=4096 then
     Rays_math.Parallel.for_ ~chunk_size:1 ~start:0 ~finish:(chunks-1) chunk
-  else for i=0 to chunks-1 do chunk i done;
+  else for i=0 to chunks-1 do chunk i done);
   if plane_outputs<>None then [] else if collecting then Array.to_list outputs else
     [if kept=0 then match t.result,seed with Accumulate _,Some seed->seed|Sum false,_->E.Int 0|_-> !accumulator else !accumulator]
 
