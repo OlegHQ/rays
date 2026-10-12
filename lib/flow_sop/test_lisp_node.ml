@@ -26,11 +26,102 @@ let source = {|(workspace test
       (sop/attr geo :P)))))
   (graph g :context sop (sop/lisp_shift (sop/ext_src) :distance 2.0)))|}
 
+let () =
+  let geometry=Rdk.Line_geometry.points [|0.,0.,0.|] in
+  let source={|(workspace select
+    (defnode sop/select_write [(geo : geometry)]
+      (if (= (sop/count geo :points) 1)
+        (let* [first (sop/with_attr geo "stage" (array/int 1 7) :type int)]
+          (sop/with_attr first "seen" (array/int 1 (sop/count first :points)) :owner detail :type int))
+        (error "E_UNTAKEN" "Untaken cooked branch")))
+    (graph g :context sop (sop/select_write (sop/ext_src))))|} in
+  let factory=Sop.Edit_graph.factory ~key:"ext_src" ~label:"Source" ~category:["Test"] ~arity:0
+    (fun _->Lisp_sop.snapshot geometry) in
+  let compile reference=match Flow_sop.Lower.workspace ~reference
+      ~factories:(factory::Sop_catalog.Editor.factories)(parse source) with
+    |Error d->failwith(Flow.Diagnostic.to_string d)
+    |Ok lowered->let graph=List.hd lowered.graphs in
+        ok(Sop.Edit_graph.compile_node graph.network.geometry ~node_id:(Option.get graph.root)) in
+  let expected=with_session(fun session->cook session (compile false)) in
+  List.iter(fun reference->List.iter(fun domains->with_session(fun session->
+    let actual=cook session ~domains (compile reference) in
+    check(Rdk_test_support.geometry_bytes actual=Rdk_test_support.geometry_bytes expected)
+      "lazy cooked selection disconnected a chained write or changed domain bytes";
+    List.iter(fun(owner,name,value)->match Rdk.Geometry.find_attribute ~owner name actual with
+      |Some attribute->(match Rdk.Attribute.storage attribute with
+        |Rdk.Attribute.Int values->check(values=[|value|]) "chained cooked write has wrong values"
+        |_->failwith "chained cooked write has wrong type")
+      |None->failwith "chained cooked write lost an attribute")
+      [Rdk.Attribute.Point,"stage",7;Rdk.Attribute.Detail,"seen",1])) [1;8]) [false;true]
+
 let () = with_session (fun session ->
   let empty = Rdk.Line_geometry.points [||] in
   let node = Lisp_sop.workspace_node ~with_:["src", Lisp_sop.snapshot empty] source in
   check (Rdk_test_support.geometry_bytes (cook session node) = Rdk_test_support.geometry_bytes empty)
     "empty geometry changed through a Lisp map")
+
+let () = with_session(fun session->
+  let node=lower {|(workspace selected_error
+    (defnode sop/selected_error [(geo : geometry)]
+      (if (= (sop/count geo :points) 1)
+        (error "E_SELECTED" "selected failure" :cause (str "point count " (sop/count geo :points)))
+        geo))
+    (graph g :context sop (sop/selected_error (sop/line :kind "Points" :points 1))))|} in
+  List.iter(fun domains->match Sop.Session.cook session
+      ~context:(ok(Sop.Context.create ~domains()))node with
+    |Error d->check(d.code="E_SELECTED" && d.message="selected failure" && d.cause=Some "point count 1")
+        ("compiled cooked selection diagnostic differs: "^Sop.Diagnostic.error_to_string d)
+    |Ok _->failwith "selected cooked error succeeded") [1;8])
+
+let () =
+  let original = Option.get (Flow.Op.find "frame/dt" Flow.Context.value) in
+  List.iter (fun (id,message) ->
+    let probe = Flow.Op.{original with name="bad_handle";
+      signature={pos=[];opt=[];rest=None;kw=[]};out=(fun _->Flow.Ty.Bool);out_args=None;
+      live=false;arithmetic=None;packed_extension=None;
+      body=(fun ~live:_ ~node:_ _ ->
+        Flow.Value.Source("$core/cooked",Flow.Ty.Bool,["id",Flow.Value.Int id]))} in
+    List.iter (fun count ->
+      let geometry=Rdk.Line_geometry.points (Array.make count (0.,0.,0.)) in
+      let factory=Sop.Edit_graph.factory ~key:"handle_source" ~label:"Source" ~category:["Test"] ~arity:0
+        (fun _->Lisp_sop.snapshot geometry) in
+      let factories=factory::Sop_catalog.Editor.factories in
+      let catalog=match Flow_sop.Catalog.of_factories ~version:1 factories with
+        |Ok catalog->catalog|Error d->failwith(Flow.Diagnostic.to_string d) in
+      let forms=parse {|(workspace handles
+        (defnode sop/handle_probe [(geo : geometry)]
+          (if (int/gt (sop/count geo :points) 0) (if (bad_handle) geo geo) geo))
+        (graph g :context sop (sop/handle_probe (sop/handle_source))))|} in
+      let checked=match Flow_sop.Catalog.check_workspace ~ops:(probe::Flow_sop.Operators.all) catalog forms with
+        |Some checked,_->checked|_,diagnostics->failwith(String.concat "; " (List.map Flow.Diagnostic.to_string diagnostics)) in
+      let lowered=match Flow_sop.Lower.of_checked ~factories checked with
+        |Ok lowered->lowered|Error d->failwith(Flow.Diagnostic.to_string d) in
+      let graph=List.hd lowered.graphs in
+      let node=ok(Sop.Edit_graph.compile_node graph.network.geometry ~node_id:(Option.get graph.root)) in
+      List.iter(fun domains->with_session(fun session->
+        let result=Sop.Session.cook session ~context:(ok(Sop.Context.create ~domains()))node in
+        if count=0 then match result with
+          |Ok output->check(Rdk_test_support.geometry_bytes(Result.get_ok(Sop.Payload.geometry output.payload))=
+              Rdk_test_support.geometry_bytes geometry) "untaken malformed handle changed geometry"
+          |Error d->failwith(Sop.Diagnostic.error_to_string d)
+        else match result with
+          |Error d->check(d.code="E_DATA_SOURCE" && d.message=message) "malformed cooked handle bypassed its typed guard"
+          |Ok _->failwith "malformed cooked handle succeeded")) [1;8]) [0;1])
+    [999,"A cooked handle is missing from this execution.";
+     0,"A cooked handle has the wrong declared type."]
+
+let () =
+  List.iter(fun predicate->
+    let node=lower(Printf.sprintf {|(workspace parameter_error
+      (defnode sop/parameter_error :validate %s :code "E_PARAM" :message "count must be positive"
+        [(geo : geometry) (count : int 1)] geo)
+      (graph g :context sop (sop/parameter_error (sop/line))))|} predicate) in
+    let previous=Sop.Node.parameter_key node in
+    (match Sop.Node.apply_parameters node ["count",Param.Int_value 0] with
+     |Error message->check(message="count must be positive") "parameter validation error formatting differs"
+     |Ok _->failwith "invalid parameter edit succeeded");
+    check(Sop.Node.parameter_key node=previous) "rejected validation changed the node")
+    ["(> count 0)";"(if (> count 0) true (error \"E_PARAM\" \"count must be positive\" :cause \"validation reason\"))"]
 
 let () =
   let open Rdk in

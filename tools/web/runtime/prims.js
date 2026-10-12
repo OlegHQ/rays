@@ -10,7 +10,8 @@
 // | {list: type} | {record: [[name, type], ...]}; a mode is "clamped" | "unclamped".
 // A native failure is thrown as Fail with the same code.
 
-export class Fail extends Error { constructor(code, message) { super(message); this.code = code; } }
+export class Fail extends Error { constructor(code, message, cause) { super(message); this.code = code;
+  if (cause !== undefined) this.cause = cause; } }
 export class PArray { constructor(width, data) { this.width = width; this.data = data; } }
 export class TextArray {
   constructor(data) {
@@ -20,7 +21,10 @@ export class TextArray {
   }
 }
 
-const err = (code, message) => { throw new Fail(code, message); };
+const err = (code, message, cause) => { throw new Fail(code, message, cause); };
+export const error = (code, message, cause) => typeof code === 'string' && typeof message === 'string'
+  ? (cause === undefined || typeof cause === 'string' ? err(code, message, cause)
+    : err('E_TYPE', 'error cause must be text.')) : err('E_TYPE', 'error needs text code and message.');
 const num = v => typeof v === 'number' ? v : typeof v === 'bigint' ? Number(v)
   : typeof v === 'boolean' ? +v : err('E_TYPE', 'Expected a number.');
 const truth = v => typeof v === 'boolean' ? v : typeof v === 'bigint' ? v !== 0n
@@ -69,6 +73,34 @@ export const log = x => fin('log', Math.log(num(x)));
 export const sign = x => fin('sign', Math.sign(num(x)));
 export const atan2 = (a, b) => fin('atan2', Math.atan2(num(a), num(b)));
 export const hypot = (a, b) => fin('hypot', Math.hypot(num(a), num(b)));
+const fmaBytes = new DataView(new ArrayBuffer(8));
+function fmaDecode(x) {
+  fmaBytes.setFloat64(0, x, false);
+  const b = fmaBytes.getBigUint64(0, false), exponent = Number((b >> 52n) & 2047n);
+  const fraction = b & ((1n << 52n) - 1n);
+  return {negative: !!(b >> 63n), n: exponent ? fraction | (1n << 52n) : fraction,
+    e: exponent ? exponent - 1075 : -1074};
+}
+export function fma(a, b, c) {
+  a = fin('fma', num(a)); b = fin('fma', num(b)); c = fin('fma', num(c));
+  const aa = fmaDecode(a), bb = fmaDecode(b), cc = fmaDecode(c);
+  const negative = aa.negative !== bb.negative, pe = aa.e + bb.e, e = Math.min(pe, cc.e);
+  let n = aa.n * bb.n << BigInt(pe - e);
+  if (negative) n = -n;
+  const cn = cc.n << BigInt(cc.e - e);
+  n += cc.negative ? -cn : cn;
+  if (n === 0n) return aa.n * bb.n === 0n && cc.n === 0n && negative && cc.negative ? -0 : 0;
+  const sign = n < 0n;
+  if (sign) n = -n;
+  const quantum = Math.max(-1074, e + n.toString(2).length - 53), shift = quantum - e;
+  let rounded;
+  if (shift > 0) {
+    const s = BigInt(shift), q = n >> s, remainder = n - (q << s), half = 1n << (s - 1n);
+    rounded = q + (remainder > half || (remainder === half && (q & 1n)) ? 1n : 0n);
+  } else rounded = n << BigInt(-shift);
+  const value = Number(rounded) * 2 ** quantum;
+  return fin('fma', sign ? -value : value);
+}
 export const sqrt = x => Math.sqrt(Math.abs(num(x)));
 export const exp = x => fin('exp', Math.exp(num(x)));
 export const abs = x => typeof x === 'bigint' ? (x < 0n ? wrap(-x) : x) : Math.abs(num(x));
@@ -110,6 +142,17 @@ export const int_le = (a, b) => operand(a) <= operand(b);
 export const int_gt = (a, b) => operand(a) > operand(b);
 export const int_ge = (a, b) => operand(a) >= operand(b);
 export const int_eq = (a, b) => operand(a) === operand(b);
+export function rand_at(seed, index) {
+  if (typeof seed !== 'bigint' || typeof index !== 'bigint' || wrap(seed) !== seed || wrap(index) !== index)
+    err('E_TYPE', 'rand/at needs integer seed and index.');
+  let x = wrap(seed ^ wrap(wrap(index + 0x11b54a32d192ed03n) * 0x1e3779b97f4a7c15n));
+  x = wrap(x ^ (BigInt.asUintN(63, x) >> 30n));
+  x = wrap(x * 0x3f58476d1ce4e5b9n);
+  x = wrap(x ^ (BigInt.asUintN(63, x) >> 27n));
+  x = wrap(x * 0x14d049bb133111ebn);
+  x = wrap(x ^ (BigInt.asUintN(63, x) >> 31n));
+  return Number(BigInt.asUintN(63, x) >> 10n) / 9007199254740992;
+}
 
 // ---- equality, display, text ----
 export function equal(a, b) {
@@ -169,6 +212,47 @@ export function show(v) {
 }
 export const text_concat = (...parts) =>
   parts.map(p => typeof p === 'string' ? p : err('E_TYPE', 'Expected text.')).join('');
+export const text_blank = text => typeof text === 'string'
+  ? /^[ \t\n\r\f]*$/.test(text) : err('E_TYPE', 'Expected text.');
+export const text_trim = text => typeof text === 'string'
+  ? text.replace(/^[ \t\n\r\f]+|[ \t\n\r\f]+$/g, '') : err('E_TYPE', 'Expected text.');
+export const text_lower = text => typeof text === 'string'
+  ? text.replace(/[A-Z]/g, c => String.fromCharCode(c.charCodeAt(0) + 32)) : err('E_TYPE', 'Expected text.');
+export const text_repr = text => typeof text === 'string'
+  ? metadataQuoted(text) : err('E_TYPE', 'Expected text.');
+export function text_table_decode(text) {
+  if (typeof text !== 'string') err('E_TYPE', 'Expected text.');
+  if (text === '') return [];
+  const rows = []; let row = [], cell = '', escaped = false;
+  for (const c of text) {
+    if (escaped) {
+      escaped = false;
+      if (c === '\\') cell += '\\';
+      else if (c === 't') cell += '\t';
+      else if (c === 'n') cell += '\n';
+      else {
+        // The native byte codec reports the first byte; JSON replaces an isolated UTF-8 byte.
+        const byte = new TextEncoder().encode(c)[0];
+        err('E_TABLE', `unsupported table escape \\${new TextDecoder().decode(Uint8Array.of(byte))}`);
+      }
+    } else if (c === '\\') escaped = true;
+    else if (c === '\t') { row.push(cell); cell = ''; }
+    else if (c === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
+    else cell += c;
+  }
+  if (escaped) err('E_TABLE', 'trailing table escape');
+  row.push(cell); rows.push(row); return rows;
+}
+export function text_table_encode(rows) {
+  if (!Array.isArray(rows)) err('E_TYPE', 'Expected a table of text cells.');
+  return rows.map(row => {
+    if (!Array.isArray(row)) err('E_TYPE', 'Table rows must be lists of text.');
+    return row.map(cell => {
+      if (typeof cell !== 'string') err('E_TYPE', 'Table cells must be text.');
+      return cell.replace(/[\\\t\n]/g, c => c === '\\' ? '\\\\' : c === '\t' ? '\\t' : '\\n');
+    }).join('\t');
+  }).join('\n');
+}
 
 // ---- bounded lists ----
 const list = v => Array.isArray(v) ? v : err('E_TYPE', 'Expected a list.');
@@ -266,7 +350,7 @@ export function coerce(ty, v) {
   return v;
 }
 export const truthy = v => truth(v);
-export const fail = (code, message) => err(code, message);
+export const fail = (code, message, cause) => err(code, message, cause);
 
 // ---- packed arrays ----
 const MAX_LENGTH = 2n ** 54n - 1n; // Sys.max_floatarray_length
@@ -316,7 +400,50 @@ export const array_text = (n, value = '') => {
 };
 export const array_float = (n, value = 0) => build(1, count('array/float', n), () => value);
 export const array_vec3 = (n, value = new Float64Array(3)) => build(3, count('array/vec3', n), () => value);
+export const array_vec4 = (n, value = new Float64Array(4)) => build(4, count('array/vec4', n), () => value);
 export const array_count = a => BigInt(length(a));
+function arrayReduce(operation, a, offsets) {
+  const count = length(a), segmented = offsets !== undefined;
+  let segments = 1;
+  if (segmented) {
+    if (!(offsets instanceof PArray) || offsets.width !== 1 || !(offsets.data instanceof BigInt64Array))
+      err('E_ARRAY_TYPE', 'Segment offsets must be an integer array.');
+    const o = offsets.data, n = o.length;
+    const bad = () => err('E_ARRAY_OFFSETS', 'Segment offsets must start at zero, be nondecreasing and end at the value count.');
+    if (!n || o[0] !== 0n || o[n - 1] !== BigInt(count)) bad();
+    for (let i = 1; i < n; i++) if (o[i] < o[i - 1]) bad();
+    segments = n - 1;
+  }
+  if (!(a instanceof PArray)) err('E_ARRAY_TYPE', 'Array reductions need int, float or vector arrays.');
+  const integer = a.data instanceof BigInt64Array, width = a.width;
+  const name = 'array/' + (segmented ? 'segment_' : '') + operation;
+  const reduce = (first, finish, component) => {
+    if (operation !== 'sum' && first === finish) err('E_ARRAY_EMPTY', 'An extremum needs at least one array value.');
+    let result = operation === 'sum' ? integer ? 0n : 0 : a.data[first * width + component];
+    if (!integer) result = fin(name, result);
+    for (let i = operation === 'sum' ? first : first + 1; i < finish; i++) {
+      const x = a.data[i * width + component];
+      if (integer) result = operation === 'sum' ? wrap(result + x)
+        : operation === 'min' ? (x < result ? x : result) : (x > result ? x : result);
+      else {
+        fin(name, x);
+        result = fin(name, operation === 'sum' ? result + x : operation === 'min' ? Math.min(result, x) : Math.max(result, x));
+      }
+    }
+    return result;
+  };
+  if (!segmented) return width === 1 ? reduce(0, count, 0)
+    : Float64Array.from({ length: width }, (_, c) => reduce(0, count, c));
+  const result = integer ? new BigInt64Array(segments) : new Float64Array(segments * width);
+  for (let row = 0; row < segments; row++) for (let c = 0; c < width; c++)
+    result[row * width + c] = reduce(Number(offsets.data[row]), Number(offsets.data[row + 1]), c);
+  return new PArray(width, result);
+}
+export const array_min = a => arrayReduce('min', a);
+export const array_max = a => arrayReduce('max', a);
+export const array_segment_sum = (a, offsets) => arrayReduce('sum', a, offsets);
+export const array_segment_min = (a, offsets) => arrayReduce('min', a, offsets);
+export const array_segment_max = (a, offsets) => arrayReduce('max', a, offsets);
 export function array_sum(a) {
   if (a instanceof TextArray) err('E_TYPE', 'array/sum adds numbers or matching-width vectors.');
   const n = length(a);
@@ -489,7 +616,7 @@ export function sop_context_seed(namespace, context) {
   return BigInt.asIntN(63, mixed ^ (mixed >> 32n));
 }
 
-function attributePattern(source) {
+function attributePattern(source, rewriteLabel = null) {
   const bytes = s => Array.from(new TextEncoder().encode(s), n => String.fromCharCode(n)).join('');
   const raw = bytes(source), terms = [];
   const whitespace = c => ' \t\n\r\f'.includes(c);
@@ -506,18 +633,22 @@ function attributePattern(source) {
     terms.push(token);
   }
   const literal = c => `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`;
+  if (rewriteLabel && terms.length !== 1) err('E_METADATA_PATTERN', `Attribute_pattern: ${rewriteLabel} must contain exactly one glob term`);
   const compiled = terms.map((token, termIndex) => {
-    const fail = message => err('E_ATTR_PATTERN', `Attribute_pattern: term ${termIndex + 1}: ${message}`);
+    const fail = message => err(rewriteLabel ? 'E_METADATA_PATTERN' : 'E_ATTR_PATTERN',
+      rewriteLabel ? message : `Attribute_pattern: term ${termIndex + 1}: ${message}`);
     const excluded = token.startsWith('^');
-    let i = excluded ? 1 : 0, pattern = '';
+    if (rewriteLabel && excluded) err('E_METADATA_PATTERN', `Attribute_pattern: ${rewriteLabel} cannot be an exclusion`);
+    let i = excluded ? 1 : 0, pattern = '', atoms = [];
     if (i === token.length) fail('empty exclusion term');
     while (i < token.length) {
       const c = token[i++];
       if (c === '\\') {
         if (i === token.length) fail('dangling backslash escape');
-        pattern += literal(token[i++]);
-      } else if (c === '*') pattern += '[\\s\\S]*';
-      else if (c === '?') pattern += '[\\s\\S]';
+        const character = token[i++]; pattern += literal(character); atoms.push({ kind: 'literal', character });
+      } else if (c === '*') {
+        pattern += '[\\s\\S]*'; if (atoms.at(-1)?.kind !== 'star') atoms.push({ kind: 'star' });
+      } else if (c === '?') { pattern += '[\\s\\S]'; atoms.push({ kind: 'any' }); }
       else if (c === '[') {
         let close = i, escaped = false;
         while (close < token.length) {
@@ -543,17 +674,287 @@ function attributePattern(source) {
             content += `${literal(left)}-${literal(right)}`;
           } else content += literal(left);
         }
-        pattern += `[${negated ? '^' : ''}${content}]`; i = close + 1;
-      } else pattern += literal(c);
+        const fragment = `[${negated ? '^' : ''}${content}]`;
+        pattern += fragment; atoms.push({ kind: 'class', negated, regex: new RegExp(`^${fragment}$`),
+          bits: new RegExp(`^[${content}]$`) }); i = close + 1;
+      } else { pattern += literal(c); atoms.push({ kind: 'literal', character: c }); }
     }
-    return { excluded, regex: new RegExp(`^(?:${pattern})$`) };
+    return { excluded, atoms, regex: new RegExp(`^(?:${pattern})$`) };
   });
-  return name => {
-    let selected = compiled.length === 0 || compiled[0].excluded;
+  if (rewriteLabel) return compiled[0].atoms;
+  return (name, selected = compiled.length === 0 || compiled[0].excluded) => {
     const text = bytes(name);
     for (const { excluded, regex } of compiled) if (regex.test(text)) selected = !excluded;
     return selected;
   };
+}
+
+// Metadata host operations keep the native byte glob and immutable store order.
+const metadataTrim = text => text.replace(/^[ \t\n\r\f]+|[ \t\n\r\f]+$/g, '');
+function metadataOwner(text, groups = false, one = false) {
+  const token = text_lower(metadataTrim(text));
+  const owner = ({ points: 'point', vertices: 'vertex', primitives: 'primitive', edges: 'edge', '*': 'any' })[token] ?? token;
+  if (!['point', 'vertex', 'primitive', ...(groups ? ['edge'] : ['detail']), 'any'].includes(owner))
+    err(groups ? 'E_GROUP_OWNER' : 'E_ATTR_OWNER', `Unknown ${groups ? 'group' : 'attribute'} owner ${metadataQuoted(text)}.`);
+  if (one && owner === 'any') err('E_ATTR_OWNER', 'Metadata queries require one owner.');
+  return owner;
+}
+function metadataQuoted(text) {
+  let output = '"';
+  for (const byte of new TextEncoder().encode(text)) {
+    output += byte === 34 ? '\\"' : byte === 92 ? '\\\\' : byte === 8 ? '\\b'
+      : byte === 9 ? '\\t' : byte === 10 ? '\\n' : byte === 13 ? '\\r'
+      : byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : `\\${String(byte).padStart(3, '0')}`;
+  }
+  return output + '"';
+}
+function metadataGeometry(geometry) {
+  if (!(geometry instanceof Map) || !Array.isArray(geometry.get('attributes')))
+    err('E_DATA_SOURCE', 'Metadata source requires cooked geometry.');
+  return geometry;
+}
+export function sop_attr_type(geometry, name, owner = 'point') {
+  attributeArgs(name, owner); metadataGeometry(geometry);
+  const attribute = attributeStorage(geometry, name, owner);
+  if (!attribute) err('E_ATTR_TYPE', `Attribute ${metadataQuoted(name)} is missing.`);
+  return attribute.get('type');
+}
+export function sop_attr_names(geometry, pattern, owner = 'point') {
+  owner = metadataOwner(owner);
+  const matches = attributePattern(pattern);
+  if (owner === 'any') err('E_ATTR_OWNER', 'Metadata queries require one owner.');
+  metadataGeometry(geometry);
+  return new TextArray(geometry.get('attributes').filter(attribute =>
+    attribute.get('owner') === owner && matches(attribute.get('name'))).map(attribute => attribute.get('name')));
+}
+export function sop_delete_attrs(geometry, reference = null, inverse = false, point = '', vertex = '', primitive = '', detail = '') {
+  const owners = ['point', 'vertex', 'primitive', 'detail'];
+  const patterns = [point, vertex, primitive, detail].map(pattern => {
+    if (!metadataTrim(pattern)) return null;
+    try { return attributePattern(pattern); }
+    catch (failure) { if (failure instanceof Fail) err('E_METADATA_PATTERN', failure.message); throw failure; }
+  });
+  metadataGeometry(geometry);
+  const referenced = owners.map(owner => new Set((reference?.get('attributes') ?? [])
+    .filter(attribute => attribute.get('owner') === owner).map(attribute => attribute.get('name'))));
+  const attributes = geometry.get('attributes').filter(attribute => {
+    const owner = owners.indexOf(attribute.get('owner')), name = attribute.get('name');
+    const selected = patterns[owner] === null ? referenced[owner].has(name)
+      : referenced[owner].size ? patterns[owner](name, referenced[owner].has(name)) : patterns[owner](name);
+    return inverse ? selected : !selected;
+  });
+  if (attributes.length === geometry.get('attributes').length) return geometry;
+  const result = new Map(geometry); result.set('attributes', attributes); return result;
+}
+
+function metadataRewrite(pattern, replacement) {
+  const parse = (source, label) => {
+    try { return attributePattern(source, label); }
+    catch (failure) { if (failure instanceof Fail) err('E_METADATA_PATTERN', failure.message); throw failure; }
+  };
+  const source = parse(pattern, 'rewrite pattern'), target = parse(replacement, 'rewrite replacement');
+  const groups = atoms => {
+    const output = [], ofAtom = [];
+    for (let i = 0; i < atoms.length;) {
+      if (atoms[i].kind === 'literal') { ofAtom[i++] = -1; continue; }
+      const first = i, kind = atoms[i].kind;
+      do { ofAtom[i++] = output.length; } while (kind !== 'star' && i < atoms.length && atoms[i].kind === kind);
+      const signature = kind === 'class' ? atoms.slice(first, i).map(atom => (atom.negated ? '!' : '') +
+        Array.from({ length: 256 }, (_, byte) => atom.bits.test(String.fromCharCode(byte)) ? '1' : '0').join('')).join('/')
+        : kind === 'any' ? String(i - first) : '';
+      output.push({ first, length: i - first, kind, signature });
+    }
+    return { groups: output, ofAtom };
+  };
+  const captures = groups(source), outputs = groups(target);
+  if (captures.groups.length !== outputs.groups.length) err('E_METADATA_PATTERN',
+    `Attribute_pattern: rewrite wildcard count differs (${captures.groups.length} source, ${outputs.groups.length} replacement)`);
+  const used = new Set(), mapping = outputs.groups.map(group => {
+    let index = captures.groups.findIndex((candidate, i) => !used.has(i) && candidate.kind === group.kind && candidate.signature === group.signature);
+    if (index < 0) index = captures.groups.findIndex((_, i) => !used.has(i));
+    used.add(index); return index;
+  });
+  const bytes = text => Array.from(new TextEncoder().encode(text), byte => String.fromCharCode(byte)).join('');
+  return name => {
+    const text = bytes(name), starts = new Array(captures.groups.length).fill(0), lengths = starts.slice();
+    let atom = 0, character = 0, lastStar = -1, retry = 0;
+    while (character < text.length) {
+      const candidate = source[atom];
+      if (candidate?.kind === 'star') {
+        const group = captures.ofAtom[atom]; starts[group] = character; lengths[group] = 0;
+        lastStar = atom++; retry = character;
+      } else if (candidate && (candidate.kind === 'any' || candidate.kind === 'literal' && candidate.character === text[character]
+        || candidate.kind === 'class' && candidate.regex.test(text[character]))) {
+        const group = captures.ofAtom[atom];
+        if (group >= 0) {
+          if (atom === captures.groups[group].first) starts[group] = character;
+          lengths[group] = character - starts[group] + 1;
+        }
+        atom++; character++;
+      } else if (lastStar >= 0 && retry < text.length) {
+        character = ++retry; atom = lastStar + 1;
+        const group = captures.ofAtom[lastStar]; lengths[group] = retry - starts[group];
+      } else return null;
+    }
+    while (atom < source.length && source[atom].kind === 'star') {
+      const group = captures.ofAtom[atom++]; starts[group] = character; lengths[group] = 0;
+    }
+    if (atom !== source.length) return null;
+    let result = '';
+    for (let i = 0; i < target.length;) {
+      if (target[i].kind === 'literal') result += target[i++].character;
+      else {
+        const group = outputs.ofAtom[i], capture = mapping[group];
+        result += text.slice(starts[capture], starts[capture] + lengths[capture]); i += outputs.groups[group].length;
+      }
+    }
+    return new TextDecoder().decode(Uint8Array.from(result, character => character.charCodeAt(0)));
+  };
+}
+export function text_glob_error(pattern) {
+  if (typeof pattern !== 'string') err('E_METADATA_TEXT', 'Metadata names and patterns must be text.');
+  try { attributePattern(pattern); return ''; }
+  catch (failure) { if (failure instanceof Fail) return failure.message; throw failure; }
+}
+export function text_glob_rewrite_error(pattern, replacement) {
+  if (typeof pattern !== 'string' || typeof replacement !== 'string') err('E_METADATA_TEXT', 'Metadata names and patterns must be text.');
+  try { metadataRewrite(pattern, replacement); return ''; }
+  catch (failure) { if (failure instanceof Fail) return failure.message; throw failure; }
+}
+function metadataPolicy(value, groups = false) {
+  const policy = text_lower(metadataTrim(value));
+  if (!['skip', 'error', 'overwrite', ...(groups ? ['union'] : [])].includes(policy)) err('E_METADATA_CONFLICT',
+    `Unknown ${groups ? 'group' : 'attribute'} rename conflict ${metadataQuoted(value)}.`);
+  return policy;
+}
+const metadataFailure = (operation, groups = false) => err(groups ? 'invalid_group' : 'invalid_attribute', `${operation} could not produce valid geometry`);
+export function sop_rename_attr(geometry, pattern, replacement, owner = 'any', conflict = 'error') {
+  owner = metadataOwner(owner); conflict = metadataPolicy(conflict);
+  const rewrite = metadataRewrite(pattern, replacement); metadataGeometry(geometry);
+  const entries = geometry.get('attributes').map(attribute => new Map(attribute));
+  for (const entry of entries.slice()) {
+    if (!entries.includes(entry) || owner !== 'any' && entry.get('owner') !== owner) continue;
+    const name = rewrite(entry.get('name'));
+    if (name === null || name === entry.get('name')) continue;
+    if (!metadataTrim(name) || entry.get('owner') === 'point' && name === 'P') metadataFailure('attribute_rename');
+    const destination = entries.find(candidate => candidate.get('owner') === entry.get('owner') && candidate.get('name') === name);
+    if (destination) {
+      if (conflict === 'skip') continue;
+      if (conflict === 'error') metadataFailure('attribute_rename');
+      entries.splice(entries.indexOf(destination), 1);
+    }
+    entry.set('name', name);
+  }
+  const result = new Map(geometry); result.set('attributes', entries); return result;
+}
+export function sop_swap_attr(geometry, source, destination, owner = 'point', method = 'swap') {
+  owner = metadataOwner(owner);
+  if (owner === 'any') err('E_ATTR_OWNER', 'Attribute swap requires one owner.');
+  method = text_lower(metadataTrim(method));
+  if (!['swap', 'move', 'copy'].includes(method)) err('E_METADATA_METHOD', 'Attribute method is swap, move or copy.');
+  let forward, backward;
+  try { forward = metadataRewrite(source, destination); backward = metadataRewrite(destination, source); }
+  catch (failure) { if (failure instanceof Fail) metadataFailure('attribute_swap'); throw failure; }
+  metadataGeometry(geometry);
+  const entries = geometry.get('attributes').map(attribute => new Map(attribute));
+  let positions = geometry.get('positions');
+  const find = name => owner === 'point' && name === 'P' ? new Map([['owner', owner], ['name', name], ['type', 'vec3'], ['values', positions]])
+    : entries.find(entry => entry.get('owner') === owner && entry.get('name') === name);
+  const put = (name, value) => {
+    const replacement = new Map(value); replacement.set('name', name);
+    if (owner === 'point' && name === 'P') {
+      if (replacement.get('type') !== 'vec3') metadataFailure('attribute_swap');
+      positions = replacement.get('values');
+    } else {
+      const old = find(name);
+      if (old) entries[entries.indexOf(old)] = replacement; else entries.push(replacement);
+    }
+  };
+  const copy = (from, into) => { const value = find(from); if (value && from !== into) put(into, value); };
+  const names = (owner === 'point' ? ['P'] : []).concat(entries.filter(entry => entry.get('owner') === owner).map(entry => entry.get('name')));
+  const pairs = names.flatMap(name => { const into = forward(name); return into === null ? [] : [[name, into]]; });
+  if (!pairs.length && method === 'swap') {
+    for (const name of names) { const into = backward(name); if (into !== null && !find(into)) copy(name, into); }
+  } else for (const [from, into] of pairs) {
+    if (from === into) continue;
+    const a = find(from), b = find(into);
+    if (method === 'copy') copy(from, into);
+    else if (method === 'swap') {
+      if (!a) copy(into, from); else if (!b) copy(from, into); else { put(from, b); put(into, a); }
+    } else if (a) {
+      if (owner === 'point' && from === 'P') copy(from, into);
+      else {
+        if (owner === 'point' && into === 'P') { put(into, a); entries.splice(entries.indexOf(a), 1); }
+        else { if (b) entries.splice(entries.indexOf(b), 1); a.set('name', into); }
+      }
+    }
+  }
+  const result = new Map(geometry); result.set('attributes', entries); result.set('positions', positions); return result;
+}
+export function sop_delete_group(geometry, pattern, owner = 'any', unused = false) {
+  owner = metadataOwner(owner, true); const matches = metadataTrim(pattern) ? (() => {
+    try { return attributePattern(pattern); } catch (failure) { if (failure instanceof Fail) metadataFailure('group_delete', true); throw failure; }
+  })() : null;
+  metadataGeometry(geometry); const result = new Map(geometry);
+  for (const field of ['groups', 'edge_groups']) result.set(field, geometry.get(field).filter(group => {
+    const selectedOwner = field === 'edge_groups' ? 'edge' : group.get('owner');
+    return !(matches && (owner === 'any' || owner === selectedOwner) && matches(group.get('name'))
+      || unused && !group.get('mask').data.some(value => value !== 0n));
+  }));
+  return result;
+}
+export function sop_rename_group(geometry, pattern, replacement, owner = 'any', conflict = 'error') {
+  owner = metadataOwner(owner, true); conflict = metadataPolicy(conflict, true);
+  let rewrite;
+  try { rewrite = metadataRewrite(pattern, replacement); }
+  catch (failure) { if (failure instanceof Fail) metadataFailure('group_rename', true); throw failure; }
+  metadataGeometry(geometry);
+  const result = new Map(geometry);
+  for (const field of ['groups', 'edge_groups']) {
+    const entries = geometry.get(field).map(group => new Map(group));
+    for (const entry of entries.slice()) {
+      const entryOwner = field === 'edge_groups' ? 'edge' : entry.get('owner');
+      if (!entries.includes(entry) || owner !== 'any' && owner !== entryOwner) continue;
+      const name = rewrite(entry.get('name'));
+      if (name === null || name === entry.get('name')) continue;
+      if (!metadataTrim(name)) metadataFailure('group_rename', true);
+      const destination = entries.find(candidate => candidate.get('name') === name && (field === 'edge_groups' || candidate.get('owner') === entryOwner));
+      if (destination) {
+        if (conflict === 'skip') continue;
+        if (conflict === 'error') metadataFailure('group_rename', true);
+        if (conflict === 'union') {
+          const a = destination.get('mask').data, b = entry.get('mask').data;
+          const order = group => group.get('ordered') ? Array.from(group.get('indices').data)
+            : Array.from(group.get('mask').data).flatMap((value, i) => value ? [BigInt(i)] : []);
+          const combinedOrder = field === 'groups' && (destination.get('ordered') || entry.get('ordered'))
+            ? [...new Set([...order(destination), ...order(entry)])] : null;
+          destination.set('mask', new PArray(1, BigInt64Array.from(a, (value, i) => value || b[i])));
+          if (field === 'groups' && (destination.get('ordered') || entry.get('ordered'))) {
+            destination.set('ordered', true); destination.set('indices', new PArray(1, BigInt64Array.from(combinedOrder)));
+          }
+          entries.splice(entries.indexOf(entry), 1); continue;
+        }
+        entries.splice(entries.indexOf(destination), 1);
+      }
+      entry.set('name', name);
+    }
+    result.set(field, entries);
+  }
+  return result;
+}
+export function sop_rename_edge(geometry, from, into) {
+  metadataGeometry(geometry); const groups = geometry.get('edge_groups');
+  const source = groups.find(group => group.get('name') === from), destination = groups.find(group => group.get('name') === into);
+  if (!source || from !== into && destination)
+    err('rename_edge_group_failed', 'rename_edge_group could not produce valid geometry');
+  if (from === into) return geometry;
+  if (!metadataTrim(into)) err('uncaught_node_exception', 'a procedural node raised an exception while cooking');
+  const renamed = new Map(source); renamed.set('name', into);
+  const result = new Map(geometry); result.set('edge_groups', groups.filter(group => group !== source).concat([renamed])); return result;
+}
+export function sop_delete_edge(geometry, name) {
+  metadataGeometry(geometry); const result = new Map(geometry);
+  result.set('edge_groups', geometry.get('edge_groups').filter(group => group.get('name') !== name)); return result;
 }
 
 export function sop_delete_attr(geometry, pattern, owner = 'point') {
@@ -640,4 +1041,110 @@ export function sop_with_attr(geometry, name, owner, type, values) {
     result.set('attributes', attributes);
   }
   return result;
+}
+
+// Cooked topology host protocol; edge order is first outgoing-corner occurrence.
+function topologyGeometry(geometry) {
+  if (!(geometry instanceof Map) || !(geometry.get('positions') instanceof PArray)
+      || !Array.isArray(geometry.get('vertex_points')) || !Array.isArray(geometry.get('primitive_offsets'))
+      || typeof geometry.get('primitive_kinds') !== 'string')
+    err('E_DATA_SOURCE', 'Topology source requires cooked geometry.');
+  return geometry;
+}
+export function sop_edges(geometry) {
+  topologyGeometry(geometry);
+  const points = geometry.get('vertex_points'), offsets = geometry.get('primitive_offsets');
+  const kinds = geometry.get('primitive_kinds'), seen = new Set(), a = [], b = [];
+  for (let primitive = 0; primitive < kinds.length; primitive++) {
+    const first = Number(offsets[primitive]), last = Number(offsets[primitive + 1]);
+    for (let vertex = first; vertex < last; vertex++) {
+      const next = vertex + 1 < last ? vertex + 1 : kinds.charCodeAt(primitive) === 1 ? -1 : first;
+      if (next < 0) continue;
+      const from = points[vertex], to = points[next], lo = from <= to ? from : to, hi = from <= to ? to : from;
+      const key = `${lo}:${hi}`;
+      if (!seen.has(key)) { seen.add(key); a.push(lo); b.push(hi); }
+    }
+  }
+  return new Map([['a', new PArray(1, BigInt64Array.from(a))], ['b', new PArray(1, BigInt64Array.from(b))]]);
+}
+export function sop_count(geometry, element) {
+  if (!['points', 'vertices', 'primitives', 'edges'].includes(element))
+    err('E_TOPOLOGY_COUNT', 'Count element is points, vertices, primitives or edges.');
+  topologyGeometry(geometry);
+  return BigInt(element === 'points' ? length(geometry.get('positions'))
+    : element === 'vertices' ? geometry.get('vertex_points').length
+    : element === 'primitives' ? geometry.get('primitive_offsets').length - 1
+    : sop_edges(geometry).get('a').data.length);
+}
+
+function groupOwner(owner) {
+  if (!['point', 'vertex', 'primitive', 'edge'].includes(owner))
+    err('E_GROUP_OWNER', 'Group owner is point, vertex, primitive or edge.');
+}
+function groupName(name) {
+  if (typeof name !== 'string' || !name.trim()) err('E_GROUP_NAME', 'Group name must not be blank.');
+}
+function groupGeometry(geometry) {
+  if (!(geometry instanceof Map)) err('E_DATA_SOURCE', 'Group source requires cooked geometry.');
+  return topologyGeometry(geometry);
+}
+function groupStorage(geometry, name, owner) {
+  groupOwner(owner); groupName(name); groupGeometry(geometry);
+  const groups = geometry.get(owner === 'edge' ? 'edge_groups' : 'groups') ?? [];
+  const group = groups.find(group => group.get('name') === name && (owner === 'edge' || group.get('owner') === owner));
+  if (!group) err('E_GROUP_MISSING', `Missing group ${name}.`);
+  return group;
+}
+export function sop_group(geometry, name, owner = 'point') {
+  return copyAttribute(groupStorage(geometry, name, owner).get('mask'));
+}
+export function sop_group_order(geometry, name, owner = 'point') {
+  const group = groupStorage(geometry, name, owner);
+  return owner === 'edge' ? new Map([['ordered', false], ['indices', new PArray(1, new BigInt64Array())]])
+    : new Map([['ordered', group.get('ordered')], ['indices', copyAttribute(group.get('indices'))]]);
+}
+export function sop_group_names(geometry, pattern, owner = 'point') {
+  groupOwner(owner); groupGeometry(geometry);
+  let matches;
+  try { matches = attributePattern(pattern); }
+  catch (e) { if (e instanceof Fail) err('E_GROUP_PATTERN', e.message); throw e; }
+  const groups = geometry.get(owner === 'edge' ? 'edge_groups' : 'groups') ?? [];
+  return new TextArray(groups.filter(group => (owner === 'edge' || group.get('owner') === owner)
+    && matches(group.get('name'))).map(group => group.get('name')));
+}
+export function sop_with_group(geometry, mask, name, owner = 'point', order) {
+  groupOwner(owner); groupName(name); groupGeometry(geometry);
+  const integer = value => value instanceof PArray && value.width === 1 && value.data instanceof BigInt64Array;
+  if (!integer(mask)) err('E_GROUP_MASK', 'Group mask requires an integer array.');
+  const count = Number(sop_count(geometry, owner === 'point' ? 'points' : owner === 'vertex' ? 'vertices'
+    : owner === 'primitive' ? 'primitives' : 'edges'));
+  if (mask.data.length !== count) err('E_GROUP_COUNT', 'Group mask must match its owner element count.');
+  if (mask.data.some(value => value !== 0n && value !== 1n)) err('E_GROUP_MASK', 'Group mask values must be 0 or 1.');
+  if (order instanceof Map) {
+    if (typeof order.get('ordered') !== 'boolean' || !integer(order.get('indices')))
+      err('E_GROUP_ORDER', 'Group order requires an integer array or an ordered/indices record.');
+    order = order.get('ordered') ? order.get('indices') : undefined;
+  }
+  if (order !== undefined && !integer(order))
+    err('E_GROUP_ORDER', 'Group order requires an integer array or an ordered/indices record.');
+  if (owner === 'edge' && order !== undefined)
+    err('E_GROUP_OWNER', 'Edge groups do not have an explicit traversal order.');
+  if (order !== undefined) {
+    const seen = new Set();
+    for (const index of order.data) {
+      if (index < 0n || index >= BigInt(count)) err('E_GROUP_ORDER', 'Group.ordered: element index out of bounds');
+      if (seen.has(index)) err('E_GROUP_ORDER', 'Group.ordered: duplicate element index');
+      seen.add(index);
+    }
+    if (seen.size !== mask.data.reduce((sum, value) => sum + Number(value), 0)
+        || order.data.some(index => mask.data[Number(index)] !== 1n))
+      err('E_GROUP_ORDER', 'Explicit order must contain each selected mask index exactly once.');
+  }
+  const key = owner === 'edge' ? 'edge_groups' : 'groups', groups = (geometry.get(key) ?? []).slice();
+  const group = owner === 'edge' ? new Map([['name', name], ['mask', copyAttribute(mask)]])
+    : new Map([['owner', owner], ['name', name], ['mask', copyAttribute(mask)], ['ordered', order !== undefined],
+        ['indices', order === undefined ? new PArray(1, new BigInt64Array()) : copyAttribute(order)]]);
+  const at = groups.findIndex(group => group.get('name') === name && (owner === 'edge' || group.get('owner') === owner));
+  if (at < 0) groups.push(group); else groups[at] = group;
+  const result = new Map(geometry); result.set(key, groups); return result;
 }

@@ -1,0 +1,82 @@
+(workspace setter_nodes
+; DRAFT: not embedded or registered. Requires B4 sop/count and pure text/blank?.
+; Quaternion overflow follows the guarded shared helper, preserving native signed zeros.
+; Metadata copied from the full native declarations, including soft ranges.
+(defmacro setter_constant [geo owner name type constructor value]
+  `(if (equal? ~owner "Point")
+     (sop/with_attr ~geo ~name (~constructor (sop/count ~geo :points) ~value) :owner "point" :type ~type)
+     (if (equal? ~owner "Vertex")
+       (sop/with_attr ~geo ~name (~constructor (sop/count ~geo :vertices) ~value) :owner "vertex" :type ~type)
+       (if (equal? ~owner "Primitive")
+         (sop/with_attr ~geo ~name (~constructor (sop/count ~geo :primitives) ~value) :owner "primitive" :type ~type)
+         (sop/with_attr ~geo ~name (~constructor 1 ~value) :owner "detail" :type ~type)))))
+
+(defnode sop/set_float :label "Set Float" :category ["Attribute" "Set"]
+  :validate (not (text/blank? name)) :code "E_PARAM" :message "sop/set_float: empty name"
+  [(in0 : geometry)
+   (owner : text "Point" :label "Owner" :choices ["Point" "Vertex" "Primitive" "Detail"])
+   (name : text "value" :label "Attribute"
+     :validate (not (and (equal? owner "Point") (equal? name "P")))
+     :code "E_PARAM" :message "sop/set_float: cannot replace canonical P")
+   (value : float 0.0 :label "Value" :min -10 :max 10)]
+  (setter_constant in0 owner name float array/float value))
+
+(defnode sop/set_int :label "Set Integer" :category ["Attribute" "Set"]
+  :validate (not (text/blank? name)) :code "E_PARAM" :message "sop/set_int: empty name"
+  [(in0 : geometry)
+   (owner : text "Point" :label "Owner" :choices ["Point" "Vertex" "Primitive" "Detail"])
+   (name : text "value" :label "Attribute"
+     :validate (not (and (equal? owner "Point") (equal? name "P")))
+     :code "E_PARAM" :message "sop/set_int: cannot replace canonical P")
+   (value : int 0 :label "Value" :min -100 :max 100)]
+  (setter_constant in0 owner name int array/int value))
+
+(defnode sop/set_vector :label "Set Vector" :category ["Attribute" "Set"]
+  :validate (not (text/blank? name)) :code "E_PARAM" :message "sop/set_vector: empty name"
+  [(in0 : geometry)
+   (owner : text "Point" :label "Owner" :choices ["Point" "Vertex" "Primitive" "Detail"])
+   (name : text "v" :label "Attribute"
+     :validate (not (and (equal? owner "Point") (equal? name "P")))
+     :code "E_PARAM" :message "sop/set_vector: cannot replace canonical P")
+   (x : float 0.0 :label "X" :folder ["Value"] :min -10 :max 10 :vec3 ["value" 0])
+   (y : float 0.0 :label "Y" :folder ["Value"] :min -10 :max 10 :vec3 ["value" 1])
+   (z : float 0.0 :label "Z" :folder ["Value"] :min -10 :max 10 :vec3 ["value" 2])]
+  (setter_constant in0 owner name vec3 array/vec3 [x y z]))
+
+(defnode sop/set_orient :label "Set Orient" :category ["Attribute" "Set"]
+  [(in0 : geometry)
+   (x : float 0.0 :label "X" :min -1 :max 1)
+   (y : float 0.0 :label "Y" :min -1 :max 1)
+   (z : float 0.0 :label "Z" :min -1 :max 1)
+   (w : float 1.0 :label "W" :min -1 :max 1)]
+  (sop/with_attr in0 "orient"
+    (array/vec4 (sop/count in0 :points) (quat_normalize [x y z w])) :owner "point" :type vec4))
+
+(defnode sop/set_transform :label "Set Transform" :category ["Attribute" "Set"]
+  :validate (and (and (<= (abs m30) 1e-12) (<= (abs m31) 1e-12))
+                 (and (<= (abs m32) 1e-12) (<= (abs (- m33 1.0)) 1e-12)))
+    :code "E_PARAM" :message "sop/set_transform: matrix must be affine"
+  [(in0 : geometry)
+   (m00 : float 1.0 :label "M00" :folder ["Matrix" "Row 0"] :min -10 :max 10)
+   (m01 : float 0.0 :label "M01" :folder ["Matrix" "Row 0"] :min -10 :max 10)
+   (m02 : float 0.0 :label "M02" :folder ["Matrix" "Row 0"] :min -10 :max 10)
+   (m03 : float 0.0 :label "M03" :folder ["Matrix" "Row 0"] :min -10 :max 10)
+   (m10 : float 0.0 :label "M10" :folder ["Matrix" "Row 1"] :min -10 :max 10)
+   (m11 : float 1.0 :label "M11" :folder ["Matrix" "Row 1"] :min -10 :max 10)
+   (m12 : float 0.0 :label "M12" :folder ["Matrix" "Row 1"] :min -10 :max 10)
+   (m13 : float 0.0 :label "M13" :folder ["Matrix" "Row 1"] :min -10 :max 10)
+   (m20 : float 0.0 :label "M20" :folder ["Matrix" "Row 2"] :min -10 :max 10)
+   (m21 : float 0.0 :label "M21" :folder ["Matrix" "Row 2"] :min -10 :max 10)
+   (m22 : float 1.0 :label "M22" :folder ["Matrix" "Row 2"] :min -10 :max 10)
+   (m23 : float 0.0 :label "M23" :folder ["Matrix" "Row 2"] :min -10 :max 10)
+   (m30 : float 0.0 :label "M30" :folder ["Matrix" "Row 3"] :min -10 :max 10)
+   (m31 : float 0.0 :label "M31" :folder ["Matrix" "Row 3"] :min -10 :max 10)
+   (m32 : float 0.0 :label "M32" :folder ["Matrix" "Row 3"] :min -10 :max 10)
+   (m33 : float 1.0 :label "M33" :folder ["Matrix" "Row 3"] :min -10 :max 10)]
+  (let* [count (sop/count in0 :points)
+         offsets (map (fn [index] (int/mul index 16)) (array/range (int/add count 1) :type int))
+         row (array/concat (array/concat (array/concat (array/concat (array/concat (array/concat (array/concat (array/concat (array/concat (array/concat (array/concat (array/concat (array/concat (array/concat (array/concat (array/float 1 m00) (array/float 1 m01)) (array/float 1 m02)) (array/float 1 m03)) (array/float 1 m10)) (array/float 1 m11)) (array/float 1 m12)) (array/float 1 m13)) (array/float 1 m20)) (array/float 1 m21)) (array/float 1 m22)) (array/float 1 m23)) (array/float 1 m30)) (array/float 1 m31)) (array/float 1 m32)) (array/float 1 m33))
+         data (for [index (array/range count :type int) component row] component)]
+    (sop/with_attr in0 "transform" {:offsets (exact offsets) :values (exact data)} :owner "point" :type float_array)))
+
+)

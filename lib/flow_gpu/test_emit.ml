@@ -104,6 +104,8 @@ let () =
       | name when Flow.Packed_ops.comparison name <> None ->
           "(if (" ^ name ^ " x 1) (+ t 1.0) t)"
       | "noise3" -> "(noise3 [x t 0])"
+      | "fma" -> "(fma x t 0.5)"
+      | "rand/at" -> "(rand/at (int t) x)"
       | "length" -> "(length [x t 0])"
       | "dot" -> "(dot [x t 0] [1 2 3])"
       | "cross" -> "(cross [x t 0] [1 2 3])"
@@ -115,10 +117,10 @@ let () =
       | "<" | "<=" | ">" | ">=" | "=" -> "(if (" ^ name ^ " x t) x t)"
       | name when Flow.Packed_ops.unary name<>None -> "(" ^ name ^ " (+ x t))"
       | name -> "(" ^ name ^ " x t)" in
-    let integer = Flow.Packed_ops.integer name <> None || Flow.Packed_ops.comparison name <> None in
+    let integer = Flow.Packed_ops.integer name <> None || Flow.Packed_ops.comparison name <> None || name = "rand/at" in
     let array = if integer then "(array/range 1024 :type \"int\")" else "(array/range 1024)" in
     let program = Test_program.compile ("(map (fn [x] " ^ body ^ ") " ^ array ^ ")") in
-    if integer || name = "hypot" then
+    if integer || name = "hypot" || name = "fma" then
       (match Flow_gpu.Emit.kernel program with
        | Error d -> assert (d.code = "E_GPU_FORM")
        | Ok _ -> failwith ("Metal must refuse " ^ name))

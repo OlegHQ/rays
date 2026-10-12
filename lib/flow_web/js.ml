@@ -60,6 +60,35 @@ let unary operation a = match operation with
   | Sqrt -> "Math.sqrt(Math.abs(" ^ a ^ "))" | Abs -> "Math.abs(" ^ a ^ ")" | Not -> flag (a ^ " === 0")
   | Tan -> "Math.tan("^a^")" | Asin -> "Math.asin("^a^")" | Acos -> "Math.acos("^a^")"
   | Exp -> "Math.exp("^a^")" | Log -> "Math.log("^a^")" | Sign -> "Math.sign("^a^")"
+let fused = {|  const fmaBytes = new DataView(new ArrayBuffer(8));
+  const fmaDecode = x => {
+    fmaBytes.setFloat64(0, x, false);
+    const b = fmaBytes.getBigUint64(0, false), exponent = Number((b >> 52n) & 2047n);
+    const fraction = b & ((1n << 52n) - 1n);
+    return {negative: !!(b >> 63n), n: exponent ? fraction | (1n << 52n) : fraction,
+      e: exponent ? exponent - 1075 : -1074};
+  };
+  const fused = (a, b, c) => {
+    if (!Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(c)) return NaN;
+    const aa = fmaDecode(a), bb = fmaDecode(b), cc = fmaDecode(c);
+    const negative = aa.negative !== bb.negative, pe = aa.e + bb.e, e = Math.min(pe, cc.e);
+    let n = aa.n * bb.n << BigInt(pe - e);
+    if (negative) n = -n;
+    const cn = cc.n << BigInt(cc.e - e);
+    n += cc.negative ? -cn : cn;
+    if (n === 0n) return aa.n * bb.n === 0n && cc.n === 0n && negative && cc.negative ? -0 : 0;
+    const sign = n < 0n;
+    if (sign) n = -n;
+    const quantum = Math.max(-1074, e + n.toString(2).length - 53), shift = quantum - e;
+    let rounded;
+    if (shift > 0) {
+      const s = BigInt(shift), q = n >> s, remainder = n - (q << s), half = 1n << (s - 1n);
+      rounded = q + (remainder > half || (remainder === half && (q & 1n)) ? 1n : 0n);
+    } else rounded = n << BigInt(-shift);
+    const value = Number(rounded) * 2 ** quantum;
+    return sign ? -value : value;
+  };
+|}
 let region program =
   let view = P.Private.view program and region = P.to_region program in
   let line = Buffer.create 4096 in
@@ -76,8 +105,14 @@ let region program =
   let product = region.iteration = R.Product && sources > 1 in
   let skip = Array.to_list region.skip |> List.filter (fun index -> index >= 0) in
   add "function region(inputs, uniforms, outputs, start, stop) {\n";
-  add "  const fail = (code, message) => { const e = new Error(message); e.code = code; throw e; };\n";
+  if Array.exists(fun instruction->match unguarded instruction with P.Raise(_,_,_,Some _)->true|_->false)view.code then
+    add "  const fail = (code, message, cause) => { const e = new Error(message); e.code = code; if (cause !== undefined) e.cause = cause; throw e; };\n"
+  else add "  const fail = (code, message) => { const e = new Error(message); e.code = code; throw e; };\n";
   add "  const wrap = x => BigInt.asIntN(63, x);\n";
+  if Array.exists (fun instruction -> match unguarded instruction with P.Fma _ -> true | _ -> false) view.code then
+    add "%s" fused;
+  if Array.exists(fun instruction->match unguarded instruction with P.Rand_at _->true|_->false)view.code then
+    add "  const randAt = (seed, index) => { let x = wrap(seed ^ wrap(wrap(index + 0x11b54a32d192ed03n) * 0x1e3779b97f4a7c15n)); x = wrap(x ^ (BigInt.asUintN(63, x) >> 30n)); x = wrap(x * 0x3f58476d1ce4e5b9n); x = wrap(x ^ (BigInt.asUintN(63, x) >> 27n)); x = wrap(x * 0x14d049bb133111ebn); x = wrap(x ^ (BigInt.asUintN(63, x) >> 31n)); return Number(BigInt.asUintN(63, x) >> 10n) / 9007199254740992; };\n";
   add "  const convert = (name, x) => Number.isFinite(x) && Math.abs(x) < 4e18 ? BigInt(Math.trunc(x)) : fail('E_NONFINITE', name + ' produced a nonfinite value.');\n";
   add "  const divide = (a, b, mod) => b === 0n ? fail('E_RANGE', 'Integer division by zero.') : wrap(mod ? a %% b : a / b);\n";
   add "  const shift = (a, b, right) => b < 0n || b > 62n ? fail('E_RANGE', 'Integer shift count must be within [0, 62].') : wrap(right ? BigInt.asUintN(63, a) >> b : a << b);\n";
@@ -118,6 +153,8 @@ let region program =
       | Select (c, yes, no) -> Printf.sprintf "%s !== 0 ? %s : %s" (numeric c) (numeric yes) (numeric no)
       | Noise3 (x, y, z, seed, octaves) -> Printf.sprintf "fbm(table%d, %s, %s, %s, %d)" seed
           (numeric x) (numeric y) (numeric z) octaves
+      | Fma (a,b,c) -> Printf.sprintf "fused(%s, %s, %s)" (numeric a) (numeric b) (numeric c)
+      | Rand_at(seed,index) -> Printf.sprintf "randAt(%s, %s)" (register seed) (register index)
       | Int_const n->string_of_int n^"n" | Int_input i->Printf.sprintf "in%d[j%d]" i i
       | Int_uniform i->Printf.sprintf "uniforms[%d][0]" i | Int_accumulator->"st[0]"
       | Int_frame _->Printf.sprintf "uniforms[%d][%d]"(Array.length view.uniform_widths)slot
@@ -137,7 +174,8 @@ let region program =
           |Coerce_int->"int","Math.floor("^numeric a^" + 0.5)"
           |Integer_result n->n,"Math.floor("^numeric a^" + 0.5)"|To_float->assert false in
           Printf.sprintf "convert(%S, %s)" name x
-      | Raise(_,code,message)->Printf.sprintf "fail(%S, %S)" code message
+      | Raise(_,code,message,cause)->Printf.sprintf "fail(%S, %S%s)" code message
+          (Option.fold ~none:"" ~some:(Printf.sprintf ", %S")cause)
       | Guarded(_,body)->expression slot body in
   Array.iteri (fun slot instruction ->
     let guards,body=match instruction with P.Guarded(g,b)->g,b|b->[],b in
@@ -210,6 +248,7 @@ let rec ty_json : Flow.Ty.t -> string = function
 let export_name primitive = match C.primitive_name primitive with
   | "+" -> "add" | "-" -> "sub" | "*" -> "mul" | "/" -> "div" | "<" -> "lt" | "<=" -> "le"
   | ">" -> "gt" | ">=" -> "ge" | "=" -> "eq" | "equal?" -> "equal"
+  | "text/blank?" -> "text_blank"
   | name -> String.map (fun c -> if c = '/' then '_' else c) name
 
 (* Fixed-arity primitives: the argument names, in prims.js's parameter order. *)
@@ -218,14 +257,20 @@ let signature : C.primitive -> string list option = function
   | Math Not -> Some ["a"]
   | Math _ | Exp | Floor | Ceil | Round | Int_convert | Float_convert | Color_byte _ -> Some ["x"]
   | Show | Truthy | Coerce _ -> Some ["value"]
+  | Text_blank | Text_trim | Text_lower | Text_repr -> Some ["text"]
+  | Text_table_decode -> Some ["text"] | Text_table_encode -> Some ["rows"]
+  | Array_reduce _ -> Some ["array"] | Array_segment _ -> Some ["values";"offsets"]
   | Sequence_length -> Some ["list"] | Sequence_get -> Some ["list"; "index"]
   | Sequence_build -> Some ["count"; "width"; "type"]
   | Sequence_slice -> Some ["list"; "first"; "count"]
-  | Array_range -> Some ["count";"type"] | Array_int | Array_text | Array_float | Array_vec3 -> Some ["count"; "value"]
+  | Array_range -> Some ["count";"type"] | Array_int | Array_text | Array_float | Array_vec3 | Array_vec4 -> Some ["count"; "value"]
   | Array_count -> Some ["array"] | Array_nth -> Some ["array"; "index"]
   | Array_slice -> Some ["array"; "first"; "count"] | Array_concat -> Some ["first"; "second"]
   | Noise3 -> Some ["position"; "seed"; "octaves"]
-  | Fail _ -> Some []
+  | Rand_at -> Some ["seed";"index"]
+  | Error -> Some ["code";"message";"cause"]
+  | Fma -> Some ["a";"b";"c"]
+  | Fail _ | Fail_diagnostic _ -> Some []
   | Text_concat | Sequence_concat | Rand | Color_parse -> None
 
 (* Helpers the module carries, emitted only when the body calls them (name, text). *)
@@ -405,14 +450,16 @@ let call ctx primitive args =
   ignore ctx;
   let statics = match primitive with
     | C.Coerce ty -> [ty_json ty] | Color_byte C.Clamped -> [{|"clamped"|}] | Color_byte Unclamped -> [{|"unclamped"|}]
-    | Fail (code, message) -> [escape code; escape message] | _ -> [] in
+    | Fail (code, message) -> [escape code; escape message]
+    | Fail_diagnostic d -> [escape d.code;escape d.message;Option.fold ~none:"undefined" ~some:escape d.cause]
+    | _ -> [] in
   Printf.sprintf "rt.%s(%s)" (export_name primitive) (String.concat ", " (statics @ values))
 
 let expression ctx : C.expr -> string = function
   | Constant n -> Printf.sprintf "K[%d]" n
   | Local n -> local n
   | Call_index slot -> Printf.sprintf "BigInt(calls[%d]++)" slot
-  | Source _ -> raise (Refused ("E_WEB_SOURCE", "This host-owned source is outside the 2D web target.", None))
+  | Source _ | Host_source _ -> raise (Refused ("E_WEB_SOURCE", "This host-owned source is outside the 2D web target.", None))
   | Frame field -> (match field with
       | Time -> "input.t" | Dt -> "input.dt" | Index -> "BigInt(input.frame)" | Tick -> "BigInt(input.tick)"
       | Width -> "BigInt(input.size[0])" | Height -> "BigInt(input.size[1])"

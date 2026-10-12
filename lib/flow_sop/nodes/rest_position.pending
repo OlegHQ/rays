@@ -1,0 +1,65 @@
+; Whole-node draft. Not embedded or registered until its Verification gates pass.
+; Native additions are installed normal, rest normal, rest position, in that order.
+(defn rest_position_error :context value [(code : text) (reason : text)]
+  (error code "rest_position could not produce valid geometry"
+    :cause (str "rest_position [" code "]: " reason)))
+(defnode sop/rest_position :label "Rest Position" :category ["Attribute" "Motion"]
+  :validate (not (equal? rest_attribute "P"))
+  :code "E_PARAM" :message "sop/rest_position: rest attribute cannot be P"
+  [(input : geometry)
+   (reference : geometry :required false)
+   (mode : text "Store" :label "Mode" :choices ["Store" "Extract" "Swap"])
+   (rest_attribute : text "rest" :label "Rest position" :folder ["Attributes"])
+   (normals : text "None" :label "Rest normals" :choices ["None" "If present" "Always"]
+     :validate (or (equal? normals "None")
+       (and (and (not (text/blank? normal_attribute)) (not (equal? normal_attribute "P")))
+            (and (not (text/blank? rest_normal_attribute)) (not (equal? rest_normal_attribute "P")))))
+     :code "E_PARAM" :message "sop/rest_position: normal names must be non-empty and cannot be P")
+   (normal_attribute : text "N" :label "Normal" :folder ["Attributes"])
+   (rest_normal_attribute : text "restN" :label "Rest normal" :folder ["Attributes"])]
+  (if (and (text/blank? rest_attribute) (equal? normals "None")) input
+    (let* [has_rest (and (not (text/blank? rest_attribute)) (sop/has_attr input rest_attribute))
+           actual_mode (if has_rest mode "Store")
+           source (if (equal? reference nil) input reference)
+           normal_source (if (equal? actual_mode "Store") source input)
+           has_stored_normal (and (not (equal? rest_normal_attribute "P"))
+                                  (sop/has_attr input rest_normal_attribute))]
+      (cond
+        (and (equal? actual_mode "Store")
+              (not (int/eq (sop/count source :points) (sop/count input :points))))
+          (rest_position_error "cardinality_mismatch" "reference and destination must have the same point count")
+        (and has_rest (not (sop/has_attr input rest_attribute :type vec3)))
+          (rest_position_error "invalid_attribute" (str "point attribute " (text/repr rest_attribute) " must have float3 storage"))
+        (and (not (equal? normals "None"))
+              (and (sop/has_attr normal_source normal_attribute)
+                   (not (sop/has_attr normal_source normal_attribute :type vec3))))
+          (rest_position_error "invalid_attribute" (str "point attribute " (text/repr normal_attribute) " must have float3 storage"))
+        (and (equal? normals "Always")
+              (and (not (sop/has_attr normal_source normal_attribute))
+                   (not (equal? normal_attribute "N"))))
+          (rest_position_error "missing_attribute" (str "cannot compute nonstandard normal attribute " (text/repr normal_attribute)))
+        (and has_stored_normal
+              (not (sop/has_attr input rest_normal_attribute :type vec3)))
+          (rest_position_error "invalid_attribute" (str "point attribute " (text/repr rest_normal_attribute) " must have float3 storage"))
+        (and (and (not (equal? actual_mode "Store")) has_stored_normal)
+              (text/blank? normal_attribute))
+          (rest_position_error "invalid_attribute" "Attribute.create_owned: empty name")
+        (and (and (not (equal? actual_mode "Store")) has_stored_normal)
+              (equal? normal_attribute "P"))
+          (rest_position_error "invalid_geometry" "Geometry.create: P is the canonical position buffer, not an ordinary attribute")
+        :else
+          (let* [current_normal_source (if (and (equal? normals "Always")
+                                               (not (sop/has_attr normal_source normal_attribute)))
+                                        (sop/normals normal_source :owner "Point") normal_source)
+                 has_current_normal (and (not (equal? normals "None"))
+                                          (sop/has_attr current_normal_source normal_attribute))
+                 positions (if (equal? actual_mode "Store") input
+                             (sop/with_attr input :P (sop/attr input rest_attribute)))
+                 with_normal (if (and (not (equal? actual_mode "Store")) has_stored_normal)
+                               (sop/with_attr positions normal_attribute (sop/attr input rest_normal_attribute)) positions)
+                 with_rest_normal (if (and (not (equal? actual_mode "Extract")) has_current_normal)
+                                    (sop/with_attr with_normal rest_normal_attribute
+                                      (sop/attr current_normal_source normal_attribute)) with_normal)]
+            (if (and (not (equal? actual_mode "Extract")) (not (text/blank? rest_attribute)))
+              (sop/with_attr with_rest_normal rest_attribute
+                (sop/attr (if (equal? actual_mode "Store") source input) :P)) with_rest_normal))))))

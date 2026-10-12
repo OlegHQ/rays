@@ -99,7 +99,7 @@ let coverage programs =
     | Assign (_, e) -> mark (match e with
         | C.Constant _ -> "constant" | Local _ -> "local" | Frame _ -> "frame" | Call_index _ -> "call_index"
         | Prim _ -> "prim" | Vec _ -> "vec" | Fields _ -> "fields" | Items _ -> "items" | Field _ -> "field"
-        | Source _ -> "source")
+        | Source _ -> "source" | Host_source _ -> "host_source")
     | Reset_call _ -> mark "reset_call"
     | Draw d -> mark (match d with
         | C.Background _ -> "background" | Point _ -> "point" | Mark _ -> "mark" | Batch _ -> "batch" | Points _ -> "points"
@@ -179,6 +179,7 @@ let json_of_live (l : Frame_input.t) =
 let live ?(events = []) i t = {(Frame_input.at_time t) with dt = 0.25; frame = i; tick = i; size = (640, 360);
   pointer = (12.5, 40.); events}
 let outcome render = function Ok v -> "ok\t" ^ render v | Error (d : Flow.Diagnostic.t) -> "err\t" ^ d.code
+  ^Option.fold ~none:"" ~some:(fun cause->"\t"^hex cause)d.cause
 
 let value_case name (_, program) =
   let lives = List.mapi (fun i t -> live i t) [-3.; -0.; 0.37; 1.9; 100.25] in
@@ -228,8 +229,7 @@ let run_node cases =
   if Sys.command command <> 0 then failwith (In_channel.with_open_bin (out ^ ".err") In_channel.input_all);
   String.split_on_char '\n' (In_channel.with_open_bin out In_channel.input_all)
   |> List.filter_map (fun l -> match String.split_on_char '\t' l with
-    | [name; frame; status; payload] -> Some ((name, int_of_string frame), status ^ "\t" ^ payload)
-    | [name; frame; status] -> Some ((name, int_of_string frame), status ^ "\t")
+    | name::frame::status::payload -> Some ((name, int_of_string frame), status ^ "\t" ^ String.concat "\t" payload)
     | _ -> None)
 
 let rec has_invoke l = List.exists (fun (s : C.statement) -> match s.node with
@@ -251,9 +251,19 @@ let () =
       |Ok program->program|Error form->failwith("Text Core refused "^form) in
     assert(Array.length program.regions=0);
     let case=value_case name (r,program) in
-    List.iter(fun live->assert(ok(I.Core_exec.run program ~live)=ok(E.Private.force_reference(E.Residual r)~live))) case.lives;
+    List.iter(fun live->match I.Core_exec.run program ~live,E.Private.force_reference(E.Residual r)~live with
+      |Ok actual,Ok expected->assert(actual=expected)
+      |Error actual,Error expected->assert(actual.code=expected.code && actual.message=expected.message)
+      |_->assert false) case.lives;
     case)
-    ["(array/text (+ 5001 (frame/index)) \"猫😀é\")";
+    ["(text/blank? (if (> t 0.) \" \\t\\r\\n\" \" \"))";
+     "(if (> t 0.) (error (str \"E_TEXT_\" (int t)) (str \"exact é日本😀 \" t) :cause (str \"reason 日本😀 \" t)) \"safe\")";
+     "(text/trim (if (> t 0.) \" \\tABéÉ日本😀\\r\\n\" \"　A \"))";
+     "(text/lower (if (> t 0.) \"ABéÉΣİ日本😀\" \"Z\000A\"))";
+     "(text/repr (if (> t 0.) \"é日本😀\\t\\n\\\\\\\"\" \"Z\000A\"))";
+     "(map (fn [x] (text/repr (if (> t 0.) x \"ÉΣİZ\"))) (array/text 5001 \" \\tABéÉ日本😀\\r\\n\"))";
+     "(map (fn [x] (text/lower (text/trim (if (> t 0.) x \"ÉΣİZ\")))) (array/text 5001 \" \\tABéÉ日本😀\\r\\n\"))";
+     "(array/text (+ 5001 (frame/index)) \"猫😀é\")";
      "(map (fn [x] (if (> t 0.) x \"😀\")) (array/text 5001 \"猫\"))";
      "(for [x (array/text 5001 \"猫\")] (if (> t 0.) x \"😀\"))";
      "(scan [a \"seed\"] [x (array/text 5001 \"猫\")] (if (> t 0.) x \"😀\"))";

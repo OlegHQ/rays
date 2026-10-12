@@ -7,6 +7,7 @@
   ../../web/test/shape2.mjs
   ../../web/runtime/shape2.js
   ../../web/test/prims.mjs
+  ../../web/test/rt_shim.mjs
   ../../web/runtime/prims.js
   (glob_files ../../web/runtime/*.js)
   ../../web/test/runtime.mjs

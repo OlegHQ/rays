@@ -147,6 +147,18 @@ let () =
     ["arithmetic"; "noise"; "select"; "two_outputs"];
   if not node then print_endline "JS regions: goldens passed; node is absent, so the native comparison was SKIPPED"
   else begin
+    let caused=Test_program.compile "(map (fn [x] (if (> x t) (error \"E_CAUSE\" \"selected\" :cause \"reason\") x)) (array/range 2))" in
+    let file=Filename.temp_file "region-cause" ".js" in
+    Fun.protect ~finally:(fun()->Sys.remove file)(fun()->
+      Out_channel.with_open_bin file(fun channel->
+        output_string channel(Flow_web.Js.region caused);
+        Printf.fprintf channel "const inputs = [Float64Array.from([0,1])], uniforms = [new Float64Array(%d).fill(0.5)], outputs = [new Float64Array(2)];\n" (Array.length(P.Private.view caused).code);
+        output_string channel {|
+if (region(inputs, uniforms, outputs, 0, 0) !== 0 || region(inputs, uniforms, outputs, 0, 1) !== 0) throw new Error('untaken cause raised');
+try { region(inputs, uniforms, outputs, 1, 2); throw new Error('selected cause did not raise'); }
+catch (e) { if (e.code !== 'E_CAUSE' || e.message !== 'selected' || e.cause !== 'reason') throw e; }
+|});
+      if Sys.command("node "^Filename.quote file)<>0 then failwith(In_channel.with_open_bin file In_channel.input_all));
     print_endline "JS regions under node against native Packed.force_all:";
     List.iter (fun (name, program) -> compare_native name program) programs;
     List.iter compare_integer [

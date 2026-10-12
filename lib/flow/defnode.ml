@@ -3,10 +3,10 @@ module S = Syntax
 type validation = { predicate : S.t; code : string; message : string }
 type t = {
   kind : Check.kind; slots : Check.slot list; keyword_inputs : string list;
-  fields : Param.field_view list; label : string;
+  fields : Param.field_view list; label : string; operation : string;
   category : string list; description : string option;
   inputs : (string * Ty.t * S.t option) list; body : S.t;
-  validations : validation list; form : S.t;
+  validations : validation list; normalizers : (string * S.t) list; form : S.t;
 }
 
 let valid_name name = match String.split_on_char '/' name with
@@ -49,7 +49,7 @@ let validation opts =
   | Some predicate -> [{predicate;code;message}]
 let parameter_keys = ["label";"description";"folder";"min";"max";"hard_min";"hard_max";
   "hard-min";"hard-max";"primary";"unit";"kind";"choices";"impact";"vec3";
-  "required";"rest";"keyword";"validate";"code";"message"]
+  "required";"rest";"keyword";"validate";"code";"message";"normalize"]
 let facts x =
   let xs = match x.S.node with S.Map xs -> xs | _ -> bad x ":facts is a metadata map." in
   let opts = options x ["elementwise";"reads";"writes";"topology";"preserves_topology";"exact";"cook-mode"] xs in
@@ -75,9 +75,11 @@ let parse form = try
     | [{S.node=S.Vec ps;_}; body] -> List.rev acc, ps, body
     | _ -> bad form "A defnode needs metadata, a parameter vector and exactly one body." in
   let hs, ps, body = header [] rest in
-  let hs = options form ["label";"category";"description";"facts";"validate";"code";"message"] hs in
+  let hs = options form ["label";"operation";"category";"description";"facts";"validate";"code";"message"] hs in
+  let operation=get hs "operation" text (Check.short name) in
+  if not(Symbol.valid_name operation) then bad form ":operation is a nonempty stable operation name.";
   let used = Hashtbl.create 8 and fields = ref [] and slots = ref [] in
-  let keywords=ref [] in
+  let keywords=ref [] and normalizers=ref [] in
   let validations = ref (validation hs) in
   let inputs = List.map (fun p ->
     let pn, ty, tail = match p.S.node with
@@ -102,6 +104,7 @@ let parse form = try
     let keyword=get opts "keyword" bool false in
     let slot = default=None || ty=Ty.geometry || ty=Ty.image || (match ty with Ty.Fn _ -> true | _ -> false) in
     if slot then begin
+      if List.mem_assoc "normalize" opts then bad p "Only encoded text parameters have :normalize.";
       if default <> None then bad p "Typed slots have no default; use :required false for an optional slot.";
       if List.exists (fun k -> List.mem_assoc k opts) ["min";"max";"hard_min";"hard_max";"hard-min";"hard-max";"choices";"kind";"vec3"] then
         bad p "Range and kind metadata belongs to parameters with defaults.";
@@ -126,6 +129,11 @@ let parse form = try
             labels
         | _ -> bad v "Choices are a vector of strings.") [] in
       let kname = get opts "kind" word (if choices<>[] then "choice" else Ty.to_string ty) in
+      (match kname,List.assoc_opt "normalize" opts with
+       | "encoded",Some fn when ty=Ty.Text -> normalizers:= !normalizers@[pn,fn]
+       | "encoded",None -> bad p "An encoded parameter requires a pure :normalize text-to-text function."
+       | _,Some _ -> bad p "Only encoded text parameters have :normalize."
+       | _ -> ());
       let hard key alternate f = match opt opts key f, opt opts alternate f with
         | Some _, Some _ -> bad p ("Duplicate metadata :" ^ key ^ ".")
         | Some n, _ | _, Some n -> Some n | _ -> None in
@@ -182,6 +190,7 @@ let parse form = try
     slots=List.filter (fun (s:Check.slot)->not(List.mem s.name keyword_inputs)) !slots;
     parameters=Check.parameters_of_fields !fields @ !keywords;
     outputs=["geo",Port_type.Geometry];facts=opt hs "facts" facts} in
-  Ok {kind;slots= !slots;keyword_inputs;fields= !fields;label=get hs "label" text (title (Check.short name));
-    category=get hs "category" strings [];description=opt hs "description" text;inputs;body;validations= !validations;form}
+  Ok {kind;slots= !slots;keyword_inputs;fields= !fields;label=get hs "label" text (title (Check.short name));operation;
+    category=get hs "category" strings [];description=opt hs "description" text;inputs;body;validations= !validations;
+    normalizers= !normalizers;form}
 with Invalid d -> Error d

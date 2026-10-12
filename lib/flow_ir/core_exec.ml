@@ -36,7 +36,7 @@ let static_invokes (program : C.program) =
     | Prim (op, args) -> op <> Rand && List.for_all (fun (_, a) -> static.(a)) args
     | Vec ns | Items ns -> List.for_all (fun a -> static.(a)) ns
     | Fields fs -> List.for_all (fun (_, a) -> static.(a)) fs
-    | Frame _ | Call_index _ | Source _ -> false in
+    | Frame _ | Call_index _ | Source _ | Host_source _ -> false in
   let region_static (r : C.region) =
     not (E.frame_dependent (E.Residual r.residual)) && not (E.state_dependent (E.Residual r.residual))
     && Array.for_all (fun (source, _) -> not (E.frame_dependent (E.Residual source))) r.sources in
@@ -59,7 +59,7 @@ let device_regions (program : C.program) =
   let expression : C.expr -> unit = function
     | Constant _ | Frame _ | Call_index _ | Source _ -> ()
     | Local a | Field (a, _) -> use a
-    | Prim (_, args) | Fields args -> List.iter (fun (_, a) -> use a) args
+    | Prim (_, args) | Fields args | Host_source {args;_} -> List.iter (fun (_, a) -> use a) args
     | Vec ns | Items ns -> List.iter use ns in
   let draw : C.draw -> unit = function
     | Batch {args; _} -> List.iter (fun (name, a) ->
@@ -189,6 +189,28 @@ let primitive ~track ~locals op args =
     | Text_concat -> fun st -> V.Text (String.concat "" (List.map (function _,V.Text s -> s
         | _ -> V.fail "E_TYPE" "Expected text.") (get st)))
     | Fail (code,message) -> fun _ -> V.fail code message
+    | Fail_diagnostic d -> fun _ -> V.raise_diagnostic d
+    | Error ->
+        let code=List.assoc "code" args and message=List.assoc "message" args in
+        fun st -> (match st.values.(code),st.values.(message) with
+          | V.Text code,V.Text message ->
+              let cause=match List.assoc_opt "cause" args with None->None|Some index->
+                (match st.values.(index) with V.Text cause->Some cause|_->V.fail "E_TYPE" "error cause must be text.") in
+              V.raise_diagnostic(Flow.Diagnostic.error ?cause ~code message)
+          | _ -> V.fail "E_TYPE" "error needs text code and message.")
+    | Rand_at ->
+        let seed=List.assoc "seed" args and index=List.assoc "index" args in
+        fun st -> (match st.values.(seed),st.values.(index) with
+          | V.Int seed,V.Int index -> V.Float(Flow.Packed_ops.rand_at seed index)
+          | _ -> V.fail "E_TYPE" "rand/at needs integer seed and index.")
+    | Array_reduce operation ->
+        let values=a_ "array" in
+        fun st -> Flow.Op.Private.reduce_array operation st.values.(values)
+    | Array_segment operation ->
+        let values=a_ "values" and offsets=a_ "offsets" in
+        fun st -> Flow.Op.Private.reduce_array
+          ~rows:(fun ~start ~finish f -> Rays_math.Parallel.for_ ~start ~finish f) operation
+          ~offsets:st.values.(offsets) st.values.(values)
     | Remainder -> let a=a () and b=b () in
         fun st -> V.Float (V.fin "remainder" (Float.rem (V.num st.values.(a)) (V.num st.values.(b))))
     | Array_count when List.map fst args=["array"] -> fun st -> V.Int (V.array_length st.values.(first))
@@ -343,7 +365,7 @@ let counted_kernel (program : C.program) loop_id index item body =
   let expr use : C.expr -> unit = function
     | Constant _ | Frame _ | Call_index _ | Source _ -> ()
     | Local n | Field (n,_) -> use n
-    | Prim (_,args) | Fields args -> List.iter (fun (_,n) -> use n) args
+    | Prim (_,args) | Fields args | Host_source {args;_} -> List.iter (fun (_,n) -> use n) args
     | Vec ns | Items ns -> List.iter use ns in
   let rec outside (s : C.statement) = if s.id<>loop_id then match s.node with
     | Assign (_,e) -> expr use e
@@ -570,7 +592,11 @@ let prepare ?(fused=true) (program : C.program) =
     | C.Constant n -> let v=constants.(n) in fun _ -> v
     | Source value -> fun st ->
         (match E.Private.force_reference ?resolve:st.resolve value ~live:st.live with
-         | Ok value -> value | Error d -> raise (V.Fail (d.code,d.message,d.span)))
+         | Ok value -> value | Error d -> V.raise_diagnostic d)
+    | Host_source {name;ty;args}->fun st->
+        let value=E.Source(name,ty,List.map(fun(name,index)->name,st.values.(index))args) in
+        (match E.Private.force_reference ?resolve:st.resolve value ~live:st.live with
+         |Ok value->value|Error d->V.raise_diagnostic d)
     | Local n -> fun st -> st.values.(n)
     | Call_index slot -> fun st -> let n=st.calls.(slot) in st.calls.(slot)<-n+1; V.Int n
     | Frame field ->
@@ -646,6 +672,7 @@ let prepare ?(fused=true) (program : C.program) =
     fun st -> let i=ref 0 in
       try while !i<Array.length run do run.(!i) st; incr i done
       with V.Fail (code,message,None) -> raise (V.Fail (code,message,spans.(!i)))
+        | V.Diagnostic_fail d when d.span=None -> V.raise_diagnostic {d with span=spans.(!i)}
   and loop_body body =
     let inner = !in_loop in in_loop := true;
     let run = block body in in_loop := inner;
@@ -744,8 +771,10 @@ let prepare ?(fused=true) (program : C.program) =
           let instance,path,iter,host=slot_key st slot in
           seal st value;
           st.values.(value)<-E.Private.state_write (state_root st) ~instance ~path ~iter ~host st.values.(value)
-    | Invoke {region;result;_} ->
+    | Invoke {region;args;result} ->
         let packed=Packed.of_region program.regions.(region) in
+        let packed=if args=[] then Result.bind packed(fun packed ->
+          Result.map_error(fun d->[d])(Packed.Private.bind_arguments packed[||])) else packed in
         let on_device=device_ok.(region) and keep=static_ok.(result) in
         let kept=ref None in
         fun st ->
@@ -753,8 +782,10 @@ let prepare ?(fused=true) (program : C.program) =
           match !kept with
           | Some v when st.marks<>None -> st.values.(result)<-v
           | _ ->
-          let packed=match packed with Ok p -> p | Error (d :: _) -> raise (V.Fail (d.code,d.message,d.span)) | Error [] -> assert false in
-          let fail (d : Flow.Diagnostic.t) = raise (V.Fail (d.code,d.message,d.span)) in
+          let fail (d : Flow.Diagnostic.t) = V.raise_diagnostic d in
+          let packed=match packed with Ok p -> p | Error (d :: _) -> fail d | Error [] -> assert false in
+          let packed=if args=[] then packed else match Packed.Private.bind_arguments packed
+            (Array.of_list(List.map(fun n->st.values.(n))args)) with Ok p->p | Error d->fail d in
           let device=match st.device,st.marks with
             | Some device,Some sink when on_device ->
                 (match device packed with
@@ -789,6 +820,7 @@ let general root force resolve prepared live =
           if Array.length program.results<>1 then V.fail "E_CORE" "Expected one core result.";
           Ok st.values.(program.results.(0))
         with V.Fail (code,message,span) -> Error (Flow.Diagnostic.error ?span ~code message)
+          | V.Diagnostic_fail d -> Error d
           | Not_found | Invalid_argument _ | Failure _ -> Error (Flow.Diagnostic.error ~code:"E_CORE" "Invalid core program.") in
         release (); result
 
@@ -828,9 +860,10 @@ let draw ?root ?force ?resolve ?device ?image prepared ~live ~size ~buffers =
       let sink=Core_marks.sink ?image:(Option.map (fun resolve value ->
         match resolve value with
         | Ok resource -> resource
-        | Error (d : Flow.Diagnostic.t) -> raise (V.Fail (d.code,d.message,d.span))) image) ~size buffers in
+        | Error (d : Flow.Diagnostic.t) -> V.raise_diagnostic d) image) ~size buffers in
       let st = {values=Array.make (Array.length program.locals) E.No_geo;
         builders=[||]; calls=Array.make program.call_slots 0; live; root; force; resolve; marks=Some sink; device} in
       (try prepared.body st; Ok (Core_marks.finish sink)
        with V.Fail (code,message,span) -> Error (Flow.Diagnostic.error ?span ~code message)
+         | V.Diagnostic_fail d -> Error d
          | Not_found | Invalid_argument _ | Failure _ -> Error (Flow.Diagnostic.error ~code:"E_CORE" "Invalid core program."))

@@ -6,7 +6,7 @@ checked workspace and the tree walker remain the language contract and the
 native exactness oracle. A target prints or executes this core; it does not
 walk `Workspace.term`, expand macros, or interpret Lisp operator names.
 
-The frame primitive inventory below has **73 entries**. Region instruction
+The frame primitive inventory below has **88 entries**. Region instruction
 constructors, structured control, drawing statements and host intrinsics are
 listed separately: none is a hidden primitive in a target's numeric runtime.
 The P0.R review must confirm this inventory before product implementation.
@@ -133,6 +133,15 @@ append a draw entry or invoke an intrinsic. A branch or loop assigns its result
 to explicit result locals. There are no jump offsets, bytecode opcodes or
 general run-time function calls.
 
+An `Invoke` carries the explicit Core locals used by a compiled region. Lowering
+replaces computed scalar, integer, array and structured closure captures with
+typed argument sources; native invocation checks exact arity, declared storage
+and finite values before binding immutable inputs. It does not reevaluate the
+producer. Production web export declines regions with deferred arguments and
+lowers their computation as structured Core instead; fixed export-time probing
+must never resolve these argument markers. An unsupported producer remains a
+strict qualification error through either route.
+
 Counted iteration converts endpoints with the source's list-index rounding,
 computes `max(0,last-first)` with native integer subtraction, checks its bound,
 and initializes its result builder once before visiting items. The ordinal
@@ -246,12 +255,20 @@ unlisted calls in `prims.js`.
 | `int/add`, `int/sub`, `int/mul`, `int/div`, `int/mod`, `int/and`, `int/or`, `int/xor`, `int/shl`, `int/shr` | 10 | Exact signed 63-bit integer operations, including wrapping overflow, division and remainder, bitwise operations and checked shifts; zero integer divisor is `E_RANGE`. No 32-bit JavaScript bitwise truncation. |
 | `int/lt`, `int/le`, `int/gt`, `int/ge`, `int/eq` | 5 | Exact integer comparisons without a floating conversion. |
 | `equal?`, `show`, `text/concat` | 3 | Typed structural equality, source value display, and ordered text concatenation. `show` has display formatting, distinct from workspace source-number printing. |
+| `text/blank?` | 1 | True exactly when `String.trim` yields empty text: only ASCII space, tab, LF, CR and form feed are whitespace. Vertical tab, NUL and Unicode spaces remain nonblank; wrong input storage is `E_TYPE`. |
+| `text/trim`, `text/lower` | 2 | `String.trim` removes only ASCII space, tab, LF, CR and form feed at either end. `String.lowercase_ascii` changes only ASCII A–Z; non-ASCII UTF-8 bytes are unchanged. Both accept text storage only (`E_TYPE`) and execute as structured text operations, never numeric packed instructions. |
+| `text/repr` | 1 | Text to quoted text with exactly `Printf.%S` byte escaping: ASCII quotes and backslashes escape, backspace/tab/LF/CR use named escapes, and every other nonprintable byte uses three decimal digits. UTF-8 is quoted byte by byte, yielding ASCII output. Native text includes arbitrary bytes; the existing JavaScript Unicode transport represents valid UTF-8 text, quoted through UTF-8 encoding. Wrong storage is `E_TYPE`. This is a structured text operation. |
+| `text/table_decode`, `text/table_encode` | 2 | Exact ordered text-cell tables, with tab-separated cells, LF-separated rows and only backslash, `t` and `n` escapes. Empty text decodes to an empty table; encoding empty rows retains the native codec's empty-row ambiguity. Invalid escapes are `E_TABLE`, invalid cell storage is `E_TYPE`. |
 | `sequence/length`, `sequence/get`, `sequence/build`, `sequence/slice`, `sequence/concat` | 5 | Element count, checked list element access, fresh bounded-list storage, checked copying slice, and ordered concatenation with the 4,096-element cap. Element layouts and nested record field order are explicit. Given an element width of 1 to 4, `sequence/build` allocates packed storage with no list cap, filled by the same ordered stores (the walker's `array_init` checks per element). Integer and text builders require width one and explicit type `int` or `text`. Text builders store strings and do not create packed numeric storage. |
-| `array/range`, `array/int`, `array/text`, `array/float`, `array/vec3`, `array/nth`, `array/count`, `array/slice`, `array/concat` | 9 | Typed-array construction, indexing, length and copying operations, including exact integer and decoded text storage. Range defaults to float and accepts the literal type `int`. Count is in elements, not components; all products and offsets are checked before allocation or access. An array is not converted to a list. |
+| `array/range`, `array/int`, `array/text`, `array/float`, `array/vec3`, `array/vec4`, `array/nth`, `array/count`, `array/slice`, `array/concat` | 10 | Typed-array construction, indexing, length and copying operations, including exact integer and decoded text storage. Range defaults to float and accepts the literal type `int`. Vector constructors accept the matching vector or broadcast a scalar; omitted values are typed zero. Count is in elements, not components; all products and offsets are checked before allocation or access. An array is not converted to a list. |
+| `array/min`, `array/max`, `array/segment_sum`, `array/segment_min`, `array/segment_max` | 5 | Ordered typed numeric reductions, componentwise for vectors. Integer sums wrap at signed 63 bits; floating extrema retain `Float.min`/`Float.max` signed-zero semantics. Segment offsets must be an integer array starting at zero, nondecreasing and ending at the value count (`E_ARRAY_OFFSETS`). Duplicate offsets yield typed zero for sums and `E_ARRAY_EMPTY` for extrema. Global empty extrema also fail; offsets `[0]` yield zero output rows. Independent contiguous segments may use the shared pool; additions within each segment retain source order. These operations do not gather or rearrange values. |
 | `value/rand`, `noise3`, `color/parse`, `color/byte` | 4 | The deterministic keyed hash, seeded Perlin/fBm sample, source drawing-color decoding, and channel conversion. Static noise permutations become data; dynamic-seed caches are bounded to 16 entries. Color conversion preserves native byte quantization. |
+| `rand/at` | 1 | Two exact signed63 integers, seed and index, to a Float with the exact `Rand.float_at` keyed-hash bits. No floating conversion precedes hashing. The independently authored `rand_at` Lisp arithmetic helper remains an oracle, rather than a compiler-recognized name. |
+| `fma` | 1 | Explicit scalar binary64 fused multiply-add: the exact product and sum round once, matching `Float.fma` including signed zero, subnormals and finite overflow cancellation. Nonfinite inputs or final output fail with `E_NONFINITE`; an overflowing intermediate product alone is allowed. JavaScript computes the exact significands with BigInt and rounds to nearest, ties to even. This primitive does not contract ordinary `*` and `+`. GPU targets refuse it when exact binary64 single rounding is unavailable. |
+| `error` | 1 | Text code and text message, with optional `:cause` Text, produce an authored diagnostic preserving all three exactly. Its checked result is `Any`, allowing an error branch to join a typed successful branch. Structured Core retains dynamic text arguments; literal/captured constant text in numeric packed bodies uses `Raise`, while unresolved dynamic messages or causes refuse packed qualification. Untaken branches and empty collections do not raise. Wrong argument storage is `E_TYPE`. |
 | `coerce`, `truthy`, `fail` | 3 | Explicit checked source-value coercion, condition truth conversion, and a diagnostic with a code, message and source span. Coercion preserves record order and list element joins. |
 
-Total: 8 + 1 + 12 + 5 + 8 + 10 + 5 + 3 + 5 + 9 + 4 + 3 = **73**.
+Total: 8 + 1 + 12 + 5 + 8 + 10 + 5 + 3 + 1 + 2 + 1 + 2 + 5 + 10 + 5 + 4 + 1 + 1 + 1 + 3 = **88**.
 `array/sum` remains an ordered typed reduction in structured Core, using exact
 wrapping integer addition for integer arrays; its JavaScript twin is checked
 alongside the intrinsic inventory without adding a Core primitive.
@@ -514,6 +531,7 @@ a count just below the ceiling but above that quotient fails with `E_ARRAY_RANGE
 | `array/text(count,value)` | Fresh typed string-array storage, with empty text when value is omitted. Count/get/slice/concat preserve exact decoded string contents and copying ownership. Text array maps use structured compiled loops, outside the numeric region tier and bounded-list cap. |
 | `array/float(count,value)` | Fresh width-1 storage filled with the numeric value; omitted value is Float zero. |
 | `array/vec3(count,value)` | Fresh width-3 storage; omitted value is Vec3 zero. A Vec3 fills its components; a scalar Int/Float/Bool broadcasts numerically. Other widths fail with `E_ARRAY_TYPE`. |
+| `array/vec4(count,value)` | Fresh width-4 storage with the corresponding Vec4 zero, matching-vector fill and scalar broadcasting. Other vector widths fail with `E_ARRAY_TYPE`. Empty arrays retain the existing constructor's value-validation order. |
 | `array/count(array)` | Int element count; non-array or malformed width is `E_ARRAY_TYPE`. |
 | `array/nth(array,index)` | Convert index as above, require index < element count, and return Int, Float or the matching vector. Out of bounds is `E_ARRAY_RANGE` ("Array index is outside its length."). |
 | `array/slice(array,first,count)` | Convert first and count as above; require first <= length and count <= length-first. Copy the component range into fresh same-kind storage. An empty slice at length is legal. Range failure is `E_ARRAY_RANGE` ("An array slice must be within its source."); non-array is `E_TYPE`. |
@@ -704,6 +722,8 @@ new collection of shader operations:
 | `Binary(op,a,b)` | A binary leaf over prior scalar slots. |
 | `Unary(op,a)` | A unary leaf over a prior scalar slot. |
 | `Noise3(x,y,z,seed,octaves)` | A seeded numeric sample; seed and octaves satisfy packed qualification. |
+| `Fma(a,b,c)` | Explicit binary64 single-rounding multiply-add of three numeric registers. Input conversion is explicit where needed; untaken guarded instructions do not execute. CPU and JavaScript match `Float.fma` bits; GPU qualification refuses unavailable binary64 arithmetic. Ordinary multiply/add instructions retain their separate rounding. |
+| `Rand_at(seed,index)` | Exact signed63 integer registers to the native `Rand.float_at` Float result. CPU and emitted JavaScript retain all integer bits; GPU qualification refuses this instruction explicitly. |
 | `Select(condition,yes,no)` | Selects by condition unequal to zero; branch instructions carry their execution guards. |
 | `Guarded(conditions,instruction)` | Executes the instruction and its finite checks only when every condition selects this branch. Metal and WGSL declare the result outside the conditional and assign it inside, so later selections retain the same lazy behavior. An unselected overflow is unevaluated; `min` and `max` still evaluate both arguments. |
 
@@ -954,6 +974,12 @@ operation. A user function/macro row is not a new runtime primitive.
 | `sop/delete_attr` | intrinsic | Geometry metadata deletion by owner and Houdini-style name pattern. The host protocol is an immutable geometry record with ordered attribute records carrying owner, name and payload. Native uses `Rdk.Attribute_ops.delete`; the JavaScript twin preserves topology, positions, ordering and unselected payloads. Outside the current 2D export scope. |
 | `sop/attr`, `sop/with_attr` | intrinsic | Cooked owner-aware attributes, default point/vec3. Float and tuple storage use packed arrays; integer storage stays exact signed native integers; text storage uses typed string arrays with exact decoded contents. `float_array` and `int_array` use records of integer CSR offsets and typed flat values; offsets start at zero, remain monotone and end at the flat count. Missing/wrong storage is `E_ATTR_TYPE`, owner cardinality is `E_ATTR_COUNT`, nonfinite writes are `E_NONFINITE`. Point P is canonical vec3 positions. Host geometry attributes carry owner, name, type and immutable copied values; twins preserve topology and other payloads. Outside the current 2D export scope. |
 | `sop/has_attr` | intrinsic | A genuine Boolean cooked host source, with owner and optional literal storage type. Without type it tests any storage; with type it tests exact storage. Point P always has vec3 storage. Lazy branches can explicitly preserve native absent/wrong-normal fallbacks without reading nonexistent data. Sources retain truthful geometry/attribute dependencies. |
+| `sop/count` | intrinsic | Cooked topology count over the immutable geometry host protocol. Selectors `points`, `vertices`, `primitives`, `edges` return exact signed native integers. Invalid selectors are `E_TOPOLOGY_COUNT`; unavailable geometry is `E_DATA_SOURCE`. Reads depend on topology, rather than coordinate or attribute values. Outside the current 2D export scope. |
+| `sop/edges` | intrinsic | Cooked topology source returning separate exact integer arrays `a`, `b`, with normalized endpoint pairs in first outgoing-corner occurrence order; self-edges remain and open polylines have no outgoing final corner. Arrays are owned copies. Native indexing uses `Topology_index`; JavaScript preserves the same order. Unavailable geometry is `E_DATA_SOURCE`. Outside the current 2D export scope. |
+| `sop/group` | intrinsic | Cooked point/vertex/primitive/edge group mask as an owned exact integer array of zeros and ones. Missing groups report `E_GROUP_MISSING`. Geometry host groups preserve owner, name, membership and optional explicit traversal order. Outside the current 2D export scope. |
+| `sop/group_names` | intrinsic | Owner-filtered names in native insertion order using the shared Houdini-style wildcard, class, escape and exclusion rules. Invalid patterns report `E_GROUP_PATTERN`; names remain exact text arrays. |
+| `sop/group_order` | intrinsic | Record of Boolean `ordered` and exact integer `indices`, preserving ordered-empty versus unordered groups. Edge groups return false and an empty index array. |
+| `sop/with_group` | intrinsic | Immutable owner-aware mask write, preserving topology and unrelated payloads. Optional integer order must enumerate selected elements once, or an order record preserves the query's ordering state. Edge explicit order is `E_GROUP_OWNER`; wrong cardinality, mask or order is `E_GROUP_COUNT`, `E_GROUP_MASK` or `E_GROUP_ORDER`. |
 | `sop/context_seed` | intrinsic | A defnode body cook-context constant, specialized before core lowering. Its literal namespace and node label are UTF-8 FNV-1a hashed into 64 bits, multiplied by `0x9e3779b97f4a7c15`, xor-ed with the context seed, then xor-ed with the unsigned upper 32 bits and truncated to a signed native 63-bit int. Fixtures pass the implicit context as a record of decimal seed text and label; use outside a body or in a pure parameter validator is `E_NODE_CONTEXT`. |
 | `sop/uv_sphere` | refused on web | Native geometry factory. |
 | `split-level` | compiler rule | Inline checked definition: packed slices/concatenation, nested maps, `value/rand`, arithmetic and numeric branches. |

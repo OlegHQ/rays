@@ -16,6 +16,8 @@ let rec instruction : P.instruction -> string = function
       | Sin -> "Sin" | Cos -> "Cos" | Sqrt -> "Sqrt" | Abs -> "Abs" | Not -> "Not"
       |Tan->"Tan"|Asin->"Asin"|Acos->"Acos"|Exp->"Exp"|Log->"Log"|Sign->"Sign")) a
   | Noise3 (x, y, z, seed, octaves) -> Printf.sprintf "Noise3 %d %d %d seed=%d octaves=%d" x y z seed octaves
+  | Fma (a,b,c) -> Printf.sprintf "Fma %d %d %d" a b c
+  | Rand_at (seed, index) -> Printf.sprintf "Rand_at %d %d" seed index
   | Select (c, a, b) -> Printf.sprintf "Select %d %d %d" c a b
   | Int_const n->Printf.sprintf "Int_const %d" n
   | Int_input n->Printf.sprintf "Int_input %d" n | Int_uniform n->Printf.sprintf "Int_uniform %d" n
@@ -27,7 +29,8 @@ let rec instruction : P.instruction -> string = function
   | Int_select(c,a,b)->Printf.sprintf "Int_select %d %d %d" c a b
   | Convert(op,a)->Printf.sprintf "Convert %s %d" (match op with To_float->"float"|Truncate->"int"|Floor->"floor"|Ceil->"ceil"|Round->"round"|Coerce_int->"coerce:int"|Integer_result n->"int-result:"^n) a
   | Guarded(guards,body)->Printf.sprintf "Guarded %s (%s)" (String.concat ";" (List.map(fun(r,b)->Printf.sprintf "%d:%b" r b)guards))(instruction body)
-  | Raise(ty,code,message)->Printf.sprintf "Raise %s %S %S"(Flow.Ty.to_string ty)code message
+  | Raise(ty,code,message,cause)->Printf.sprintf "Raise %s %S %S%s"(Flow.Ty.to_string ty)code message
+      (Option.fold ~none:"" ~some:(Printf.sprintf " cause=%S")cause)
 
 let ints a = "[" ^ String.concat ";" (Array.to_list (Array.map string_of_int a)) ^ "]"
 

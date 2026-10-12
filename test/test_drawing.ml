@@ -46,6 +46,22 @@ let pure workspace =
     if o.ctx = Flow.Context.draw && o.name<>"draw/image" then Some o.name else None) |> List.sort String.compare));
   assert (ok (render_once all.plan (List.assoc "picture" all.results)
     ~live:(Frame_input.at_time 0.) ~size:(800, 600)) <> []);
+  let gpu_document = doc {|(workspace gpu_error (graph picture :context draw
+    (draw/circles (map (fn [i] [(+ i t) 0 0]) (array/range 10000)))))|} in
+  let gpu_checked, gpu_evaluated = ok (Flow_ir.qualify_workspace gpu_document.checked) in
+  let gpu_prepared = ok (Rays_editor.Drawing.prepare ~approx:gpu_checked.approx
+    gpu_evaluated.plan (List.assoc "picture" gpu_evaluated.results)) in
+  let diagnostic = Flow.Diagnostic.error ~code:"E_TEST_GPU" ~cause:"原因 🐈"
+    ~span:Flow.Diagnostic.{start=3;finish=8} "A backend failure" in
+  let calls = ref 0 in
+  let backend : Flow_ir.Gpu.backend = {cost=(fun _ ~count:_ -> None);
+    prepare=(fun _ -> Ok {run=(fun (inputs:Flow_ir.Packed.Private.inputs) ->
+      Ok Flow_ir.Gpu.{identity=17;count=inputs.count;width=3;stamp=0L;gpu_seconds=None});
+      readback=(fun _ -> failwith "Display-only output must remain on the device")})} in
+  let result = Flow_ir.Gpu.with_backend ~policy:Flow_ir.Gpu.Qualification backend (fun () ->
+    Rays_editor.Drawing.render_prepared gpu_prepared ~live:(Frame_input.at_time 0.25)
+      ~size:(800,600) ~gpu:(fun ~slot:_ ~kind:_ ~count:_ _ -> incr calls; Error diagnostic)) in
+  assert (!calls=1 && result=Error diagnostic);
   let colored=doc {|(workspace colored (graph picture :context draw
     (draw/lines (array/vec3 2 [1 2 0]) (array/vec3 2 [3 4 0])
       :color (array/vec3 2 [1 0 0]))))|}in

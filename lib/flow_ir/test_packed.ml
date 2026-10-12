@@ -32,6 +32,40 @@ let compile ?fusion residual term =
    | _ -> assert false);
   legacy
 let () =
+  if Array.exists (fun arg -> arg="--bench-product" || arg="--bench-product-row") Sys.argv then begin
+    I.Packed.Private.trace := ignore;
+    let count = 1_000_000 and width = 16 in
+    let repeated_row = Array.exists ((=) "--bench-product-row") Sys.argv in
+    let packed = Test_program.compile ~fusion:false (Printf.sprintf
+      (if repeated_row then
+         "(for [index (array/range %d :type int) component (map (fn [x] (+ x t)) (array/range %d))] component)"
+       else "(for [index (array/range %d :type int) component (array/range %d)] (+ component t))")
+      count width) in
+    let live = Frame_input.at_time (-0.25) in
+    let row = Array.init width (fun i -> float i -. 0.25) in
+    let native () =
+      let data = Array.make (count * width) 0. in
+      for i = 0 to count - 1 do Array.blit row 0 data (i * width) width done;
+      E.Float_array data in
+    List.iter (fun domains -> Rays_math.Parallel.run ~domains (fun () ->
+      let actual = ok (I.Packed.force ~strict:true packed ~live) in
+      assert (same (Ok actual) (Ok (native ())));
+      let measure f =
+        let trials = Array.init 3 (fun _ ->
+          Gc.full_major ();
+          let allocated = Gc.allocated_bytes () and started = Unix.gettimeofday () in
+          ignore (f ());
+          Unix.gettimeofday () -. started, Gc.allocated_bytes () -. allocated) in
+        Array.sort (fun (a, _) (b, _) -> Float.compare a b) trials;
+        trials.(1) in
+      let native_seconds, native_bytes = measure native in
+      let seconds, allocated = measure (fun () -> ok (I.Packed.force ~strict:true packed ~live)) in
+      Printf.printf "product_float count=%d width=%d registers=%d domains=%d native_seconds=%.6f packed_seconds=%.6f ratio=%.3f native_allocated_bytes=%.0f packed_allocated_bytes=%.0f\n%!"
+        count width (Array.length (I.Packed.Private.view packed).code) domains
+        native_seconds seconds (seconds /. native_seconds) native_bytes allocated)) [1;4];
+    exit 0
+  end
+let () =
   if Array.exists ((=) "--bench-guarded") Sys.argv then begin
     I.Packed.Private.trace := ignore;
     let count = 1_000_000 in
@@ -53,6 +87,37 @@ let () =
         count (Array.length (I.Packed.Private.view packed).code) domains seconds allocated)) [1;4];
     exit 0
   end
+
+let () =
+  let trace= !I.Packed.Private.trace in
+  I.Packed.Private.trace:=ignore;
+  let count=32769 in
+  let source=Printf.sprintf "(array/range %d :type int)" count in
+  let cases=[
+    "(map (fn [x] (int/add (int/xor x (frame/index)) 9007199254740993)) "^source^")";
+    "(map (fn [x] (if (int/lt x 0) (int/div x 0) (int/add x (frame/index)))) "^source^")";
+    "(map (fn [x] [(- (float x) t) (float (int/shr x 10))]) "^source^")";
+    "(for [x "^source^" y (array/float 2 t)] y)";
+    "(for [x "^source^" y (array/vec3 2 [t -0.0 2])] y)";
+    "(for [x "^source^" y (array/vec4 2 [t -0.0 2 3])] y)";
+    "(for [x "^source^" y (array/range 3 :type int)] :skip [0 1024 16384] (int/add (int/mul x 17) (int/add y (frame/index))))";
+    "(array/sum (map (fn [x] (int/add x (frame/index))) "^source^"))";
+    "(scan [a (frame/index)] [x "^source^"] (int/xor (int/mul a 2177342782468422677) x))";
+    "(fold [a (frame/index)] [x "^source^"] (int/xor (int/mul a 2177342782468422677) x))";
+    "(map (fn [x] (if (int/eq x 32768) (int/shr x 63) (int/add x (frame/index)))) "^source^")";
+    "(map (fn [x] (if (int/eq x 32768) (int/div x 0) (int/add x (frame/index)))) "^source^")"] in
+  List.iter(fun body->
+    let value=recorded body in
+    let residual=match value with E.Residual residual->residual|_->assert false in
+    let packed=Option.get(I.Packed.compile residual (E.Private.residual_view residual).term) in
+    List.iter(fun frame->
+      let live={(Frame_input.at_time 0.25)with frame} in
+      let expected=E.Private.force_reference value ~live in
+      List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+        if not(same expected (I.Packed.force ~strict:true packed ~live))then
+          failwith("Typed block parity: "^body))) [1;4;8]) [0;42]) cases;
+  I.Packed.Private.trace:=trace;
+  print_endline "Typed blocks: exact integers, guards, mixed scalar/vector outputs, skipped products, wrapping ordered folds/scans and selected errors agree at one/four/eight domains"
 
 let () =
   let trace = !I.Packed.Private.trace in

@@ -50,7 +50,7 @@ let compare_js program ~live expected =
   Printf.bprintf script "const inputs=[%s], uniforms=[%s], outputs=[new Float64Array(%d)];\n"
     (String.concat "," (Array.to_list (Array.map js_input inputs.arrays)))
     (String.concat "," (Array.to_list (Array.map (fun value -> js_array [|value|]) inputs.uniforms)
-      @ [js_array inputs.frame])) inputs.count;
+      @ [js_array inputs.frame])) (Array.length expected);
   Printf.bprintf script "if(region(inputs,uniforms,outputs,0,%d)!==0 || region(inputs,uniforms,outputs,%d,%d)!==0) throw Error('region failed');\n"
     (inputs.count/2) (inputs.count/2) inputs.count;
   Buffer.add_string script "const expected=[";
@@ -61,7 +61,38 @@ let compare_js program ~live expected =
   Fun.protect ~finally:(fun () -> Sys.remove file) (fun () ->
     Out_channel.with_open_bin file (fun channel -> output_string channel (Buffer.contents script));
     assert (Sys.command ("node " ^ Filename.quote file)=0))
+let benchmark operator =
+  let count=1_000_000 and grain=4096 in
+  let mapped=value (Printf.sprintf
+    "(map (fn [i] (%s (frame/index) i)) (array/range %d :type int))" operator count) in
+  let program=compile mapped and live={(Frame_input.at_time 0.) with frame=42} in
+  let expected=Array.init count (fun index -> Rays_math.Rand.float_at (Rays_math.Rand.seed 42) ~index) in
+  let native () =
+    let data=Array.make count 0. and seed=Rays_math.Rand.seed 42 in
+    Rays_math.Parallel.for_ ~chunk_size:1 ~start:0 ~finish:((count-1)/grain) (fun block ->
+      for index=block*grain to min count ((block+1)*grain)-1 do
+        data.(index)<-Rays_math.Rand.float_at seed ~index
+      done);
+    E.Float_array data in
+  let packed ()=ok (P.force ~strict:true program ~live) in
+  let measure label domains run = Rays_math.Parallel.run ~domains (fun () ->
+    same expected (run ());
+    let measurements=Array.init 3 (fun _ ->
+      Gc.full_major ();
+      let before=Gc.allocated_bytes () and started=Unix.gettimeofday () in
+      let result=run () in
+      let seconds=Unix.gettimeofday ()-.started and allocated=Gc.allocated_bytes ()-.before in
+      same expected result;
+      seconds,allocated) in
+    Array.sort (fun (a,_) (b,_)->Float.compare a b) measurements;
+    let seconds,allocated=measurements.(1) in
+    Printf.printf "%s %s count=%d grain=%d domains=%d median_seconds=%.6f allocated_bytes=%.0f\n%!"
+      operator label count grain domains seconds allocated) in
+  List.iter (fun domains->measure "native" domains native;measure "packed" domains packed) [1;4]
+
 let () =
+  if Array.exists ((=) "--bench-rand") Sys.argv then (benchmark "rand_at";exit 0);
+  if Array.exists ((=) "--bench-rand-primitive") Sys.argv then (benchmark "rand/at";exit 0);
   let count=100000 in
   let mapped=value (Printf.sprintf
     "(map (fn [i] (rand_at (frame/index) i)) (array/range %d :type int))" count) in
@@ -95,6 +126,47 @@ let () =
       same expected (ok (P.force ~strict:true program ~live)))) [1;8];
     compare_js program ~live expected) [min_int;0;42;max_int];
   print_endline "rand_at: 100,000 native/reference/packed/JavaScript exact integer keys agree at one/eight domains; signed boundaries and indices beyond 2^53 agree"
+
+let () =
+  let count=100000 in
+  let bases=[|min_int;min_int+1;-(1 lsl 53)-1;0;(1 lsl 53)+1;max_int|] in
+  let indices=Array.init count(fun i->bases.(i mod Array.length bases)+i/Array.length bases) in
+  List.iter(fun seed ->
+    let mapped,program=map ~seed Flow.Ty.Int(E.Int_array indices) "(rand/at (int/add seed (frame/index)) i)" in
+    let instructions=(P.Private.view program).code in
+    assert(Array.length instructions<=6);
+    assert(Array.exists(function P.Rand_at _->true|_->false)instructions);
+    assert(P.gpu_refusals program<>[]);
+    let live=Frame_input.at_time 0. in
+    let expected=Array.map(fun index->Rays_math.Rand.float_at(Rays_math.Rand.seed seed)~index)indices in
+    same expected(ok(E.Private.force_reference mapped ~live));
+    List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+      same expected(ok(P.force ~strict:true program ~live)))) [1;8];
+    compare_js program ~live expected;
+    List.iter(fun index->match value(Printf.sprintf "(rand/at %d %d)" seed index) with
+      |E.Float actual->assert(Int64.bits_of_float actual=Int64.bits_of_float
+        (Rays_math.Rand.float_at(Rays_math.Rand.seed seed)~index))
+      |_->assert false)(Array.to_list bases)) [min_int;0;42;max_int];
+  let mapped=value "(map (fn [(i : int)] [(rand/at (int/add 42 (frame/index)) i) (rand/at (int/add 43 (frame/index)) i) (rand/at (int/add 44 (frame/index)) i)]) (array/range 100000 :type int))" in
+  let program=compile mapped and live=Frame_input.at_time 0. in
+  assert(Array.length(P.Private.view program).code<16);
+  let expected=Array.init(count*3)(fun i->Rays_math.Rand.float_at(Rays_math.Rand.seed(42+i mod 3))~index:(i/3)) in
+  List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+    match ok(P.force ~strict:true program ~live) with
+    |E.Vec3_array actual->same expected(E.Float_array actual)|_->assert false)) [1;8];
+  compare_js program ~live expected;
+  let seeds=Array.init count(fun i->bases.((i/7) mod Array.length bases)+i/Array.length bases) in
+  let fn=match value "(fn [(s : int) (i : int)] (if (int/lt s 0) (rand/at s (int/add i (frame/index))) (rand/at s (int/sub i (frame/index)))))" with
+    |E.Fn fn->fn|_->assert false in
+  let mapped=ok(E.Private.map_function ~signature:Flow.Ty.{params=[Int;Int];result=Float}
+    fn [E.Int_array seeds;E.Int_array indices]) in
+  let program=compile mapped in
+  let expected=Array.mapi(fun i seed->Rays_math.Rand.float_at(Rays_math.Rand.seed seed)~index:indices.(i))seeds in
+  same expected(ok(E.Private.force_reference mapped ~live));
+  List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+    same expected(ok(P.force ~strict:true program ~live)))) [1;8];
+  compare_js program ~live expected;
+  print_endline "rand/at primitive: 100,000 exact signed63 keys/native/reference/CPU/JS agree; three-axis field fits registers; GPU refuses"
 
 let () =
   let count=100000 in

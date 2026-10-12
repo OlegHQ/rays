@@ -414,10 +414,14 @@
 (executable
  (name test_drawing)
  (modules test_drawing)
- (libraries rays flow flow_graph editor_document rays_editor sop_catalog scene_command frame_input editor_core unix))
+ (libraries rays flow flow_ir flow_graph editor_document rays_editor sop_catalog scene_command frame_input editor_core unix))
 
 (rule
  (alias runtest)
+ (action (run %{exe:test_drawing.exe} %{dep:../examples/particles/sketch.rays})))
+
+(rule
+ (alias test_drawing)
  (action (run %{exe:test_drawing.exe} %{dep:../examples/particles/sketch.rays})))
 
 (rule

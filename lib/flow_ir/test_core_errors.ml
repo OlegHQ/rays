@@ -17,6 +17,8 @@ let failing = [
   "out-of-range nth","(nth (list t 1 2) (+ 5 (int t)))",[0.;1.5];
   "non-finite result","(exp (* t 100000.))",[1.;3.];
   "list slice","(first (take (int t) (list t 1)))",[0.;0.5];
+  "authored error","(error (str \"E_RULES_\" (int t)) (str \"exact é日本😀 \" t))",[1.;2.];
+  "authored cause","(error \"E_CAUSE\" \"selected failure\" :cause (str \"reason é日本😀 \" t))",[1.;2.];
 ]
 let differing = ref 0
 let () =
@@ -39,7 +41,7 @@ let () =
   (* At least one core diagnostic differs from the walker's, so the rerun is observable. *)
   assert (!differing>0);
   (* A failure after a state write restores the plane before the walker answers. *)
-  let value=List.hd (ok (E.static (workspace "(state [s 0.] (if (> t 0.6) (nth (list 1 2) 9) (+ s 1.)))"))).states in
+  let value=List.hd (ok (E.static (workspace "(state [s 0.] (if (> t 0.6) (error \"E_RULES\" (str \"exact failure \" t) :cause \"state rollback\") (+ s 1.)))"))).states in
   let reference=E.create_state () and core=E.create_state () in
   let prepared=ref None and failures=ref 0 in
   let execute r live =
@@ -56,3 +58,34 @@ let () =
   done;
   assert (!failures>0);
   print_endline "Core errors: division by zero, range, non-finite and state rollback return the walker's diagnostic"
+
+let () =
+  let recorded body=snd(List.hd(List.assoc["g";"tested"]
+    (ok(E.static ~record:true(workspace body))).records)) in
+  let value=recorded "(if (> t 0.) (error (str \"E_TEXT_\" (int t)) (str \"é日本😀 \" t) :cause (str \"reason \" t)) \"safe\")" in
+  let residual=match value with E.Residual r->r|_->assert false in
+  let core=Result.get_ok(I.Core_lower.lower ~strict:true residual) in
+  let compiled=ok(I.Executor.compile ~strict:true value) in
+  List.iter(fun time->let live=Frame_input.at_time time in
+    let expected=E.Private.force_reference value ~live in
+    let check=function
+      |Ok actual->assert(expected=Ok actual)
+      |Error(d:Flow.Diagnostic.t)->(match expected with Error e->assert(d.code=e.code && d.message=e.message && d.cause=e.cause)|_->assert false) in
+    check(I.Core_exec.run core ~live);check(I.Executor.force ~strict:true compiled ~live)) [-1.;1.;2.];
+  (match E.static(workspace "(error \"E_LITERAL\" \"literal failure\" :cause \"literal cause\")") with
+   |Error d->assert(d.code="E_LITERAL" && d.cause=Some "literal cause" && d.span<>None)
+   |Ok _->assert false);
+  List.iter(fun count->
+    let value=recorded(Printf.sprintf "(map (fn [x] (if (> t 0.) (error \"E_PACKED_RULE\" \"exact é日本😀\" :cause \"selected packed cause\") x)) (array/range %d))" count) in
+    let compiled=ok(I.Executor.compile ~strict:true value) in
+    List.iter(fun time->let live=Frame_input.at_time time in
+      let expected=E.Private.force_reference value ~live in
+      List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+        match I.Executor.force ~strict:true compiled ~live,expected with
+        |Ok actual,Ok expected->assert(actual=expected)
+        |Error actual,Error expected->assert(actual.code=expected.code && actual.message=expected.message && actual.cause=expected.cause)
+        |_->assert false)) [1;8]) [-1.;1.]) [0;5001];
+  let dynamic=recorded "(map (fn [x] (if (> t 0.) (error \"E_DYNAMIC\" (str x)) x)) (array/range 5001))" in
+  (match I.Executor.compile ~strict:true dynamic with Error d->assert(d.code="E_KERNEL_FORM")|Ok _->assert false);
+  assert(Result.is_ok(E.Private.force_reference dynamic ~live:(Frame_input.at_time(-1.))));
+  print_endline "Authored errors: exact dynamic messages, lazy text/packed branches, empty inputs, rollback and dynamic packed refusal pass"

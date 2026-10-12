@@ -23,7 +23,7 @@ let static_map residual =
   | Some packed ->
       (match Packed.force packed ~live:(Frame_input.at_time 0.) with
        | Ok value -> Some value
-       | Error _ | exception (V.Fail _ | Invalid_argument _ | Not_found | Failure _) -> None)
+       | Error _ | exception (V.Fail _ | V.Diagnostic_fail _ | Invalid_argument _ | Not_found | Failure _) -> None)
 
 let static ?record ?inputs workspace =
   E.Private.static_with_kernels ?record ?inputs ~bulk:static_map workspace

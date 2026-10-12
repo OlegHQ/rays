@@ -35,13 +35,16 @@ let inventory = [
   Integer P.Iand; Integer P.Ior; Integer P.Ixor; Integer P.Ishl; Integer P.Ishr;
   Integer_compare P.Ilt; Integer_compare P.Ile; Integer_compare P.Igt;
   Integer_compare P.Ige; Integer_compare P.Ieq;
-  Equal; Show; Text_concat; Sequence_length; Sequence_get; Sequence_build; Sequence_slice; Sequence_concat;
-  Array_range; Array_int; Array_text; Array_float; Array_vec3; Array_nth; Array_count; Array_slice; Array_concat;
-  Rand; Noise3; Color_parse; Color_byte Clamped; Coerce T.Any; Truthy; Fail ("", "") ]
+  Equal; Show; Text_concat; Text_blank; Text_trim; Text_lower; Text_repr; Text_table_decode; Text_table_encode;
+  Sequence_length; Sequence_get; Sequence_build; Sequence_slice; Sequence_concat;
+  Array_reduce Minimum; Array_reduce Maximum; Array_segment Sum; Array_segment Minimum; Array_segment Maximum;
+  Array_range; Array_int; Array_text; Array_float; Array_vec3; Array_vec4; Array_nth; Array_count; Array_slice; Array_concat;
+  Rand; Rand_at; Fma; Noise3; Color_parse; Color_byte Clamped; Coerce T.Any; Truthy; Error; Fail ("", "") ]
 
 let export name = match name with
   | "+" -> "add" | "-" -> "sub" | "*" -> "mul" | "/" -> "div" | "<" -> "lt" | "<=" -> "le"
   | ">" -> "gt" | ">=" -> "ge" | "=" -> "eq" | "equal?" -> "equal"
+  | "text/blank?" -> "text_blank"
   | _ -> String.map (function '/' -> '_' | c -> c) name
 
 (* ---- JSON ---- *)
@@ -90,8 +93,15 @@ let arg_name prim i = match prim, i with
   | Math _, _ | Floor, _ | Ceil, _ | Round, _ | Int_convert, _ | Float_convert, _ -> "x"
   | Array_range, _ -> if i = 0 then "count" else "type"
   | Sequence_build, _ -> [|"count";"width";"type"|].(i)
-  | Array_int, _ | Array_text, _ | Array_float, _ | Array_vec3, _ -> if i = 0 then "count" else "value"
+  | Array_int, _ | Array_text, _ | Array_float, _ | Array_vec3, _ | Array_vec4, _ -> if i = 0 then "count" else "value"
   | Array_count, _ -> "array"
+  | Text_blank, _ | Text_trim, _ | Text_lower, _ | Text_repr, _ -> "text"
+  | Text_table_decode, _ -> "text" | Text_table_encode, _ -> "rows"
+  | Array_reduce _, _ -> "array"
+  | Rand_at, 0 -> "seed" | Rand_at, _ -> "index"
+  | Fma, _ -> [|"a";"b";"c"|].(i)
+  | Error, 0 -> "code" | Error, 1 -> "message" | Error, _ -> "cause"
+  | Array_segment _, _ -> if i=0 then "values" else "offsets"
   | Array_nth, _ -> if i = 0 then "array" else "index"
   | Exp, _ -> "x"
   | Array_slice, _ -> [|"array"; "first"; "count"|].(i)
@@ -111,7 +121,8 @@ let run prim args =
     results = [| n |]; state_slots = [||]; regions = [||]; call_slots = 0 } in
   match Flow_ir.Core_exec.run program ~live:(Frame_input.at_time 0.) with
   | Ok v -> json v
-  | Error (d : Flow.Diagnostic.t) -> Printf.sprintf {|{"error":{"code":%s,"message":%s}}|} (str d.code) (str d.message)
+  | Error (d : Flow.Diagnostic.t) -> Printf.sprintf {|{"error":{"code":%s,"message":%s%s}}|} (str d.code) (str d.message)
+      (Option.fold ~none:"" ~some:(fun cause->",\"cause\":"^str cause)d.cause)
 
 (* ---- cases ---- *)
 let cases : (string, string list ref) Hashtbl.t = Hashtbl.create 64
@@ -219,6 +230,32 @@ let () =
   List.iter (fun v -> add C.Show [v]) show_values;
   List.iter (add C.Text_concat) [[]; [txt ""]; [txt "a"]; [txt "a"; txt ""; txt "bc"];
     [txt "é"; txt "日本"; txt "\n\"\\"]; [txt "a"; int 1]; [flt_ 1.]; [txt "a"; txt "b"; E.Bool true]];
+  List.iter (fun s -> add C.Text_blank [txt s])
+    ["";" ";"\t";"\n";"\r";"\012";" \t\n\r\012";"\011";"\000";" ";"　";"é日本🐈";" a ";"a\n"];
+  List.iter (fun value -> add C.Text_blank [value]) [int 0;E.Bool false;E.No_geo];
+  List.iter(fun primitive->List.iter(fun text->add primitive[txt text])
+    ["";" \t\r\n\012";" \tA B\r\n";"\011A\011";"\000A\000";"  A 　";"éÉΣİ日本😀ABCZaz";"A\nB";"\rA\012"];
+    List.iter(fun value->add primitive[value])[int 0;E.Bool false;E.No_geo;digits[txt "A"]])
+    [C.Text_trim;C.Text_lower;C.Text_repr];
+  List.iter(fun text->add C.Text_table_decode[txt text])
+    ["";"a\tb\nc\td";"é日本😀\tline\\n\\t\\\\";"\t";"\n";"\\q";"\\é";"\\😀";"abc\\";"\\\\\\n\\t"];
+  List.iter(fun rows->add C.Text_table_encode[rows])
+    [digits[];digits[digits[]];digits[digits[txt ""]];digits[digits[txt "a";txt "b"]];
+     digits[digits[txt "é日本😀";txt "\t\n\\"];digits[txt ""]];digits[digits[];digits[]];
+     int 0;digits[int 0];digits[digits[int 0]]];
+  add C.Text_table_decode[int 0];
+  let arrays=[arr1[];arr1[0.;-0.;0.];arr1[1e16;1.;-1e16];
+    E.Int_array[|min_int;max_int;9007199254740993;-9007199254740993|];
+    arr2[3.;-0.;1.;0.];arr3[3.;2.;-0.;1.;4.;0.];arr4[3.;2.;1.;-0.;1.;4.;5.;0.];
+    arr1[nan];arr1[infinity];E.Text_array[|"x"|]] in
+  List.iter(fun operation->List.iter(fun array->add(C.Array_reduce operation)[array])arrays)
+    [Flow.Op.Private.Minimum;Maximum];
+  List.iter(fun operation->List.iter(fun array->
+    let count=Flow.Value.array_length array in
+    List.iter(fun offsets->add(C.Array_segment operation)[array;E.Int_array offsets])
+      [[|0;count|];[|0;0;count|];[|0|];[||];[|0;count+1;count|];[|0;-1;count|];[|0;max_int;count|]];
+    add(C.Array_segment operation)[array;arr1[0.;float count]]) arrays)
+    [Flow.Op.Private.Sum;Minimum;Maximum];
   (* sequences *)
   let l3 = digits [int 1; int 2; int 3] in
   let mixed = digits [int 1; flt_ 2.; txt "z"] in
@@ -293,6 +330,10 @@ let () =
     (int 0, txt "x"); (int 1, v3 nan 0. 0.); (int 1, flt_ infinity); (int (-1), flt_ 1.);
     (flt_ 1.5, flt_ 1.); (int 3, flt_ (-0.))];
   add C.Array_vec3 [int 2]; add C.Array_vec3 [int 0];
+  List.iter (add C.Array_vec4) [[int 2;v4 1. 2. 3. 4.]; [int 3;flt_ (-0.)];
+    [int 2;int 7];[int 2;E.Bool true];[int 2;v3 1. 2. 3.];
+    [int 0;txt "ignored"];[int 1;v4 nan 0. 0. 0.];[int (-1);flt_ 1.];
+    [flt_ 1.5;flt_ 1.];[int 2];[int 0]];
   let arrays = [arr1 [1.; 2.; 3.]; arr2 [1.; 2.; 3.; 4.]; arr3 [1.; 2.; 3.; 4.; 5.; 6.];
     arr4 [1.; 2.; 3.; 4.]; arr1 []; arr2 []; arr3 []; arr4 []] in
   List.iter (fun v -> add C.Array_count [v])
@@ -310,6 +351,21 @@ let () =
   add C.Array_concat [arr1 [1.]; int 2]; add C.Array_concat [int 2; arr1 [1.]];
   add C.Array_concat [arr2 [1.; 2.; 3.]; arr2 [1.]];
   (* hash, noise, colors *)
+  List.iter(add C.Error)[[txt "E_RULES";txt "exact é日本😀\t\n"];
+    [txt "E_CAUSE";txt "message";txt "reason é日本😀\t\n"];[txt "E_CAUSE";txt "message";txt ""];
+    [txt "E_CAUSE";txt "message";int 0];
+    [txt "";txt ""];[txt "CODE";txt "message"];
+    [int 0;txt "message"];[txt "CODE";int 0];[E.Bool false;txt "message"]];
+  List.iter (add C.Fma) (List.map (List.map flt_) [
+    [1.0000000000000002;0.9999999999999998;-1.];[-0.;1.;-0.];[0.;-1.;0.];
+    [Float.max_float;2.;-.Float.max_float];[Float.max_float;2.;0.];
+    [Float.min_float;0.5;0.];[Int64.float_of_bits 1L;0.5;0.];
+    [infinity;0.;1.];[1.;nan;0.];[1.;1.;neg_infinity]]);
+  add C.Fma [txt "bad";flt_ 1.;flt_ 0.];
+  List.iter(fun seed->List.iter(fun index->add C.Rand_at[int seed;int index])
+    [min_int;min_int+1;-(1 lsl 53)-1;0;1;(1 lsl 53)+1;max_int])
+    [min_int;min_int+1;0;1;42;max_int];
+  List.iter(add C.Rand_at)[[flt_ 1.;int 0];[int 0;flt_ 1.];[E.Bool false;int 0];[int 0;txt "0"]];
   List.iter (add C.Rand) [[]; [flt_ 0.]; [flt_ 1.]; [flt_ 2.]; [flt_ (-1.)]; [flt_ 0.5]; [flt_ 1.; flt_ 2.];
     [flt_ 2.; flt_ 1.]; [flt_ 1.; flt_ 2.; flt_ 3.]; [int 5]; [int 5; int 7; int 9; int 11]; [E.Bool true];
     [flt_ 1e303]; [flt_ nan]; [flt_ infinity]; [flt_ 4294.967296]; [flt_ 4294967296.]; [flt_ (-4294967296.)];
@@ -403,7 +459,18 @@ let () =
       "attributes",E.List (Array.of_list (List.map (fun attribute->
         let kind,values=storage(Rdk.Attribute.Private.storage attribute) in
         E.Record ["owner",E.Text (owner_name (Rdk.Attribute.owner attribute));"name",E.Text (Rdk.Attribute.name attribute);
-          "type",E.Text kind;"values",values]) (Rdk.Geometry.attributes geometry)))] in
+          "type",E.Text kind;"values",values]) (Rdk.Geometry.attributes geometry)));
+      "groups",E.List(Array.of_list(List.map(fun group->
+        let owner=match Rdk.Group.owner group with Point->"point"|Vertex->"vertex"|Primitive->"primitive" in
+        E.Record["owner",E.Text owner;"name",E.Text(Rdk.Group.name group);
+          "mask",E.Int_array(Array.init(Rdk.Group.length group)(fun i->if Rdk.Group.mem i group then 1 else 0));
+          "ordered",E.Bool(Rdk.Group.is_ordered group);
+          "indices",E.Int_array(Option.value ~default:[||](Rdk.Group.ordered_elements group))])
+        (Rdk.Geometry.groups geometry)));
+      "edge_groups",E.List(Array.of_list(List.map(fun group->
+        E.Record["name",E.Text(Rdk.Edge_group.name group);
+          "mask",E.Int_array(Array.init(Rdk.Edge_group.length group)(fun i->if Rdk.Edge_group.mem i group then 1 else 0))])
+        (Rdk.Geometry.edge_groups geometry)))] in
   let delete=List.find (fun (op:Flow.Op.t)->op.name="sop/delete_attr") Flow_sop.Operators.all in
   List.iter (fun owner->List.iter (fun pattern->
     let args=["geometry",E.No_geo;"attribute",E.Text pattern;"owner",E.Text owner] in
@@ -420,8 +487,21 @@ let () =
      "?";"??";"[a-z]*";"Cd N";"[";"\\";""]) ["point";"vertex";"primitive";"detail";"invalid"];
   let diagnostic(d:Flow.Diagnostic.t)=Printf.sprintf {|{"error":{"code":%s,"message":%s}}|}(str d.code)(str d.message) in
   let host_result f=try match f() with Ok value->json value|Error d->diagnostic d
-    with Flow.Value.Fail(code,message,_)->diagnostic(Flow.Diagnostic.error ~code message) in
+    with Flow.Value.Fail(code,message,_)->diagnostic(Flow.Diagnostic.error ~code message)
+      |Flow.Value.Diagnostic_fail diagnostic_->diagnostic diagnostic_ in
   let op name=List.find(fun(op:Flow.Op.t)->op.name=name)Flow_sop.Operators.all in
+  let validation name args =
+    let keys=if name="text/glob_error" then ["pattern"] else ["pattern";"replacement"] in
+    add_host name args (host_result(fun()->Ok((op name).body
+      ~live:(Frame_input.at_time 0.) ~node:(fun _ _->assert false) (List.combine keys args)))) in
+  List.iter(fun pattern->validation "text/glob_error"[E.Text pattern])
+    ["";"*";"^N Cd*";"é日本😀";"x\\*";"[a-z]";"[!a-z]";"[";"[]";"[!]";"[z-a]";"^";"x\\";"N ["];
+  List.iter(validation "text/glob_error") [[E.Int 0];[E.Bool false]];
+  List.iter(fun(pattern,replacement)->validation "text/glob_rewrite_error"[E.Text pattern;E.Text replacement])
+    ["*","x*";"é*","猫*";"a?","b?";"[ab]","[cd]";"[!ab]","[cd]";
+     "*","?";"??","?";"*?","*";"","";"a b","x";
+     "^a","x";"a","^x";"*","x";"a","*";"[","x";"a","[";"a\\","x";"a","x\\"];
+  List.iter(validation "text/glob_rewrite_error") [[E.Int 0;E.Text "x"];[E.Text "x";E.Int 0]];
   let read geometry name owner kind query =
     let args=["geometry",E.Deferred(T.geometry,0);"attribute",E.Text name;"owner",E.Text owner]
       @(if kind="" then [] else ["type",E.Text kind]) in
@@ -495,11 +575,211 @@ let () =
         (host_result(fun()->read typed name owner requested true))) [kind;wrong;""]) ["typed";"missing";"P"])
     ["float";"int";"vec2";"vec3";"vec4";"text";"float_array";"int_array"])
     ["point",3;"vertex",3;"primitive",1;"detail",1];
+  (* Cooked topology sources use the same immutable geometry protocol. *)
+  let topology_fixture points vertices offsets kinds =
+    let topology=Rdk.Topology.create_owned ~point_count:points ~vertex_points:vertices
+      ~primitive_offsets:offsets ~primitive_kinds:kinds |>Result.get_ok in
+    let positions=Rdk.Packed.Float3.Private.of_owned_exn
+      ~x:(Array.init points float) ~y:(Array.make points 0.) ~z:(Array.make points 0.) in
+    Rdk.Geometry.create ~positions ~topology () |>Result.get_ok in
+  let topology_fixtures = [
+    topology_fixture 0 [||] [|0|] [||];
+    topology_fixture 5 [|0;1;2;2;1;3|] [|0;3;6|] [|Rdk.Topology.Polygon;Polygon|];
+    topology_fixture 3 [|0;1;1;2;1|] [|0;5|] [|Rdk.Topology.Open_polyline|];
+    topology_fixture 4 [|3;2;1;0|] [|0;4|] [|Rdk.Topology.Closed_polyline|];
+    topology_fixture 6 [|0;1;2;0;1;3;1;0;4;0;1;5|] [|0;3;6;9;12|]
+      [|Rdk.Topology.Polygon;Open_polyline;Closed_polyline;Polygon|]] in
+  List.iter(fun geometry->
+    let resolve=Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->Some geometry) in
+    let handle=E.Deferred(T.geometry,0) in
+    List.iter(fun element->add_host "sop/count" [geometry_value geometry;E.Text element]
+      (host_result(fun()->
+        let args=["geometry",handle;"element",E.Text element] in
+        (op "sop/count").check args;
+        resolve(E.Source("sop/count",T.Int,args))))) ["points";"vertices";"primitives";"edges";"detail"];
+    let edge component=resolve(E.Source("sop/edges",T.Array T.Int,
+      ["geometry",handle;"component",E.Text component])) in
+    add_host "sop/edges" [geometry_value geometry]
+      (host_result(fun()->Result.bind(edge "a")(fun a->Result.map(fun b->E.Record["a",a;"b",b])(edge "b")))))
+    topology_fixtures;
+  List.iter(fun name->let args=["geometry",E.No_geo] @
+      (if name="sop/count" then ["element",E.Text"points"] else ["component",E.Text"a"]) in
+    add_host name (E.No_geo::(if name="sop/count" then [E.Text"points"] else []))
+      (host_result(fun()->Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->None)
+        (E.Source(name,(if name="sop/count" then T.Int else T.Array T.Int),args))))) ["sop/count";"sop/edges"];
+  (* Group host fixtures execute the production lowering for mask writes. *)
+  let group_write geometry owner name mask order =
+    let base=op "sop/with_group" in
+    let rec payload : type f r. E.value -> (f,r) Flow.Value.t = function
+      | E.Int_array values -> Flow.Value.Int_array values
+      | E.Bool value -> Flow.Value.Bool value
+      | E.Record fields -> Flow.Value.Record(List.map(fun(name,value)->name,payload value)fields)
+      | _ -> assert false in
+    let constant name ty value={base with Flow.Op.name=name;ctx=Flow.Context.value;
+      signature={pos=[];opt=[];rest=None;kw=[]};out=(fun _->ty);out_args=None;
+      choices=[];check=(fun _->());body=(fun ~live:_ ~node:_ _->payload value)} in
+    let input=Sop.Node.Private.make_geometry ~operation:"core_fixture.groups" ~version:1
+      ~parameters:"" ~cook_mode:Sop.Node.Generator ~dependencies:Sop.Context.Dependencies.static ~inputs:[||]
+      (fun ~node_id:_ _ _->Ok Sop.Node.Private.{geometry;diagnostics=[];instances=None}) in
+    let factory=Sop.Edit_graph.factory ~key:"fixture" ~label:"Fixture" ~category:["Test"] ~arity:0 (fun _->input) in
+    let geometry_op={base with Flow.Op.name="sop/fixture";
+      signature={pos=[];opt=[];rest=None;kw=[]};out_args=None;choices=[];check=(fun _->());
+      body=(fun ~live:_ ~node _->node "sop/fixture" [])} in
+    let order_ops=Option.to_list(Option.map(fun order->constant "fixture/order"(Flow.Value.ty_of order)order)order) in
+    let forms=Flow.Syntax.parse("(workspace groups (graph g :context sop (sop/with_group (sop/fixture) "^
+      "(fixture/mask) :name "^Flow.Lisp.flat(Flow.Syntax.make(Str name))^" :owner "^owner^
+      (if order=None then "" else " :order (fixture/order)")^")))") in
+    Result.bind forms(fun forms->
+      match Flow.Workspace.check ~ops:(geometry_op::constant "fixture/mask"(Flow.Value.ty_of mask)mask::order_ops @Flow_sop.Operators.all)
+        {Flow.Check.version=1;kinds=[]} forms with
+      | None,diagnostics->Error(List.find(fun(d:Flow.Diagnostic.t)->d.severity=Error)diagnostics)
+      | Some checked,_->Result.bind(Flow_sop.Lower.of_checked ~factories:[factory] checked)(fun lowered->
+          let graph=List.hd lowered.graphs in
+          match Sop.Edit_graph.compile_node graph.network.geometry ~node_id:(Option.get graph.root) with
+          | Error message->Error(Flow.Diagnostic.error ~code:"E_DATA_SOURCE" message)
+          | Ok node->
+              let session=Sop.Session.create ~max_entries:8 ~max_payload_bytes:1_000_000 |>Result.get_ok in
+              Fun.protect ~finally:(fun()->Sop.Session.close session)(fun()->
+                match Sop.Session.cook session ~context:(Sop.Context.create() |>Result.get_ok)node with
+                | Error d->Error(Flow.Diagnostic.error ~code:d.code d.message)
+                | Ok output->Ok(geometry_value(Result.get_ok(Sop.Payload.geometry output.payload)))))) in
+  List.iter(fun geometry->List.iter(fun(owner,count,native_owner)->
+    let mask=Array.init count(fun i->if i mod 2=0 then 1 else 0) in
+    let names=["wall_a";"wall_b";"wall_1";"floor";"literal*";"žarek"] in
+    let grouped=List.fold_left(fun geometry name->match native_owner with
+      | Some owner->Rdk.Geometry.with_group(Rdk.Group.init ~owner ~name count(fun i->mask.(i)=1))geometry |>Result.get_ok
+      | None->let topology=Rdk.Geometry.topology geometry in
+          Rdk.Geometry.with_edge_group(Rdk.Edge_group.init ~topology ~index:(Rdk.Topology_index.create topology)
+            ~name(fun i->mask.(i)=1))geometry |>Result.get_ok)geometry names in
+    let resolve=Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->Some grouped) in
+    let args name=["geometry",E.Deferred(T.geometry,0);"owner",E.Text owner;"name",E.Text name] in
+    List.iter(fun name->
+      add_host "sop/group" [geometry_value grouped;E.Text name;E.Text owner]
+        (host_result(fun()->resolve(E.Source("sop/group",T.Array T.Int,args name))));
+      add_host "sop/group_order" [geometry_value grouped;E.Text name;E.Text owner]
+        (host_result(fun()->Result.bind(resolve(E.Source("sop/group_order",T.Bool,args name@["component",E.Text"ordered"])))
+          (fun ordered->Result.map(fun indices->E.Record["ordered",ordered;"indices",indices])
+            (resolve(E.Source("sop/group_order",T.Array T.Int,args name@["component",E.Text"indices"]))))))) ["wall_a";"missing"];
+    List.iter(fun pattern->add_host "sop/group_names" [geometry_value grouped;E.Text pattern;E.Text owner]
+      (host_result(fun()->resolve(E.Source("sop/group_names",T.Array T.Text,
+        ["geometry",E.Deferred(T.geometry,0);"owner",E.Text owner;"pattern",E.Text pattern])))))
+      ["";"*";"wall*";"wall_[a-b]";"wall_[!0-9]";"* ^wall*";"^wall* wall_b";"literal\\*";"ž*";"[";"\\";"[z-a]"];
+    let selected=Array.to_list(Array.mapi(fun i value->i,value)mask) |>List.filter_map(fun(i,value)->if value=1 then Some i else None)
+      |>List.rev |>Array.of_list in
+    List.iter(fun(mask,order)->add_host "sop/with_group"
+      ([geometry_value grouped;mask;E.Text "wall_a";E.Text owner]@Option.to_list order)
+      (host_result(fun()->group_write grouped owner "wall_a" mask order)))
+      [E.Int_array mask,None;E.Int_array(Array.make count 0),Some(E.Record["ordered",E.Bool false;"indices",E.Int_array[||]]);
+       E.Int_array mask,Some(E.Int_array selected);
+       E.Int_array mask,Some(E.Record["ordered",E.Bool true;"indices",E.Int_array selected]);
+       E.Int_array(Array.make count 0),Some(E.Int_array[||]);
+       E.Int_array(Array.make(count+1)0),None;E.Int_array(Array.make count 2),None;
+       E.Int_array mask,Some(E.Int_array[|count|]);E.Int_array mask,Some(E.Int_array[|0;0|])];
+    Option.iter(fun native_owner->List.iter(fun indices->
+      let geometry=Rdk.Geometry.with_group(Rdk.Group.ordered ~owner:native_owner ~name:"wall_a" ~length:count indices
+        |>Result.get_ok)grouped |>Result.get_ok in
+      add_host "sop/group_order" [geometry_value geometry;E.Text "wall_a";E.Text owner]
+        (json(E.Record["ordered",E.Bool true;"indices",E.Int_array indices]))) [selected;[||]])native_owner)
+    ["point",Rdk.Geometry.point_count geometry,Some Rdk.Group.Point;
+     "vertex",Rdk.Geometry.vertex_count geometry,Some Vertex;
+     "primitive",Rdk.Geometry.primitive_count geometry,Some Primitive;
+     "edge",Rdk.Topology_index.edge_count(Rdk.Topology_index.create(Rdk.Geometry.topology geometry)),None])
+    topology_fixtures;
+  List.iter(fun name->let selector=if name="sop/group_names" then "pattern" else "name" in
+    let args=["geometry",E.No_geo;selector,E.Text"selected";"component",E.Text"ordered"] in
+    add_host name [E.No_geo;E.Text"selected"]
+      (host_result(fun()->Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->None)
+        (E.Source(name,T.Any,args))))) ["sop/group";"sop/group_names";"sop/group_order"];
+  (* Metadata mutations preserve immutable payloads, owner identity and store order. *)
+  let metadata_geometry=
+    let ordinary owner name indices=Rdk.Group.ordered ~owner ~name ~length:(match owner with
+      Rdk.Group.Point->3|Vertex->3|Primitive->1) indices |>Result.get_ok in
+    let geometry=List.fold_left(fun geometry group->Rdk.Geometry.with_group group geometry |>Result.get_ok) geometry
+      [ordinary Point "wall_a" [|2;0|];ordinary Point "wall_b" [|1;0|];
+       ordinary Vertex "wall_a" [|1|];ordinary Primitive "wall_a" [|0|];ordinary Point "empty" [||]] in
+    let topology=Rdk.Geometry.topology geometry in
+    List.fold_left(fun geometry name->Rdk.Geometry.with_edge_group
+      (Rdk.Edge_group.init ~topology ~index:(Rdk.Topology_index.create topology) ~name (fun i->i=0)) geometry |>Result.get_ok)
+      geometry ["wall_a";"wall_b";"literal*"] in
+  let metadata_result name args native = host_result(fun()->
+    (op name).check (("geometry",E.No_geo)::args);
+    Result.map geometry_value (Result.map_error(fun error->Flow.Diagnostic.error ~code:(Rdk.Error.code error)
+      (Rdk.Error.operation error^" could not produce valid geometry")) (native()))) in
+  let owners=["point",Some Rdk.Attribute.Point;"vertex",Some Vertex;"primitive",Some Primitive;
+    "detail",Some Detail;"any",None] in
+  List.iter(fun name->
+    let args=["pattern",E.Text "missing";"replacement",E.Text "renamed";
+      "owner",E.Text "any";"conflict",E.Text "sKip"] in
+    add_host name [geometry_value metadata_geometry;E.Text "missing";E.Text "renamed";E.Text "any";E.Text "sKip"]
+      (host_result(fun()->(op name).check (("geometry",E.No_geo)::args);Ok E.No_geo)))
+    ["sop/rename_attr";"sop/rename_group"];
+  List.iter(fun(owner,selected)->
+    List.iter(fun name->add_host "sop/attr_type" [geometry_value metadata_geometry;E.Text name;E.Text owner]
+      (host_result(fun()->let args=["geometry",E.Deferred(T.geometry,0);"attribute",E.Text name;"owner",E.Text owner] in
+        (op "sop/attr_type").check args;
+        Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->Some metadata_geometry)(E.Source("sop/attr_type",T.Text,args)))))
+      ["P";"N";"missing";"missing é"];
+    List.iter(fun pattern->add_host "sop/attr_names" [geometry_value metadata_geometry;E.Text pattern;E.Text owner]
+      (host_result(fun()->let args=["geometry",E.Deferred(T.geometry,0);"pattern",E.Text pattern;"owner",E.Text owner] in
+        (op "sop/attr_names").check args;
+        Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->Some metadata_geometry)(E.Source("sop/attr_names",T.Array T.Text,args)))))
+      ["";"*";"mask_* ^mask_A";"??";"[";"\\"];
+    List.iter(fun(pattern,replacement)->List.iter(fun(conflict,policy)->
+      add_host "sop/rename_attr" [geometry_value metadata_geometry;E.Text pattern;E.Text replacement;E.Text owner;E.Text conflict]
+        (metadata_result "sop/rename_attr" ["pattern",E.Text pattern;"replacement",E.Text replacement;"owner",E.Text owner;"conflict",E.Text conflict]
+          (fun()->Rdk.Attribute_ops.rename ~rules:[{rename_attribute_owner=selected;rename_attribute_pattern=pattern;
+            rename_attribute_replacement=replacement;rename_attribute_conflict=policy}] metadata_geometry)))
+      ["skip",Rdk.Attribute_ops.Attribute_rename_skip;"error",Attribute_rename_error;"overwrite",Attribute_rename_overwrite])
+      ["N","Cd";"mask_*","new_*";"mask_?","new_?";"mask_[1-2]","new_[1-2]";
+       "missing","new";"N","P";"a\\*","literal";"*?","?*";"N Cd","x";"*","x";"[","x"];
+    Option.iter(fun selected->List.iter(fun(source,destination)->List.iter(fun(method_,method_enum)->
+      add_host "sop/swap_attr" [geometry_value metadata_geometry;E.Text source;E.Text destination;E.Text owner;E.Text method_]
+        (metadata_result "sop/swap_attr" ["source",E.Text source;"destination",E.Text destination;"owner",E.Text owner;"method",E.Text method_]
+          (fun()->Rdk.Attribute_ops.swap ~rules:[{swap_attribute_owner=selected;swap_attribute_source=source;
+            swap_attribute_destination=destination;swap_attribute_method=method_enum}] metadata_geometry)))
+      ["swap",Rdk.Attribute_ops.Attribute_swap;"move",Attribute_move;"copy",Attribute_copy])
+      ["N","Cd";"N","new";"missing","Cd";"missing","absent";"P","new";"N","P";
+       "mask_*","copy_*";"N","N";"[","x"]) selected) owners;
+  List.iter(fun reference->List.iter(fun inverse->List.iter(fun point->
+    let reference_value=match reference with None->E.No_geo|Some geometry->geometry_value geometry in
+    add_host "sop/delete_attrs" [geometry_value metadata_geometry;reference_value;E.Bool inverse;E.Text point;E.Text"";E.Text"N";E.Text"*"]
+      (metadata_result "sop/delete_attrs" ["inverse",E.Bool inverse;"point",E.Text point;"vertex",E.Text"";
+        "primitive",E.Text"N";"detail",E.Text"*"]
+        (fun()->Rdk.Attribute_ops.delete ?reference ~delete_non_selected:inverse
+          ~point_pattern:point ~vertex_pattern:"" ~primitive_pattern:"N" ~detail_pattern:"*" metadata_geometry)))
+    ["";"*";"^N";"mask_* ^mask_1";"["]) [false;true]) [None;Some metadata_geometry];
+  List.iter(fun(owner,selected)->
+    List.iter(fun(pattern,replacement)->List.iter(fun(conflict,policy)->
+      add_host "sop/rename_group" [geometry_value metadata_geometry;E.Text pattern;E.Text replacement;E.Text owner;E.Text conflict]
+        (metadata_result "sop/rename_group" ["pattern",E.Text pattern;"replacement",E.Text replacement;"owner",E.Text owner;"conflict",E.Text conflict]
+          (fun()->Rdk.Group_ops.rename ~rules:[{rename_owner=selected;rename_pattern=pattern;
+            rename_replacement=replacement;rename_conflict=policy}] metadata_geometry)))
+      ["skip",Rdk.Group_ops.Rename_skip;"error",Rename_error;"overwrite",Rename_overwrite;"union",Rename_union])
+      ["wall_a","wall_b";"wall_*","new_*";"wall_?","new_?";"missing","absent";"literal\\*","literal";"*","x"];
+    List.iter(fun pattern->List.iter(fun unused->add_host "sop/delete_group"
+      [geometry_value metadata_geometry;E.Text pattern;E.Text owner;E.Bool unused]
+      (metadata_result "sop/delete_group" ["pattern",E.Text pattern;"owner",E.Text owner;"unused",E.Bool unused]
+        (fun()->Rdk.Group_ops.delete ~rules:[{delete_owner=selected;delete_pattern=pattern}]
+          ~delete_unused:unused metadata_geometry))) [false;true]) ["";"wall*";"^wall_a";"*"])
+    ["point",Some Rdk.Group_ops.Group_points;"vertex",Some Group_vertices;
+      "primitive",Some Group_primitives;"edge",Some Group_edges;"any",None];
+  List.iter(fun(from,into)->add_host "sop/rename_edge" [geometry_value metadata_geometry;E.Text from;E.Text into]
+    (host_result(fun()->try Result.map geometry_value(Result.map_error(fun _->Flow.Diagnostic.error
+      ~code:"rename_edge_group_failed" "rename_edge_group could not produce valid geometry")
+      (Rdk.Geometry.rename_edge_group ~from ~into metadata_geometry))
+      with Invalid_argument _->Error(Flow.Diagnostic.error ~code:"uncaught_node_exception"
+        "a procedural node raised an exception while cooking"))))
+    ["wall_a","new";"wall_a","wall_b";"wall_a","wall_a";"missing","missing";"literal*","new*";"wall_a"," "];
+  List.iter(fun name->add_host "sop/delete_edge" [geometry_value metadata_geometry;E.Text name]
+    (json(geometry_value(Rdk.Geometry.without_edge_group name metadata_geometry)))) ["wall_a";"missing";"*";""];
   (* write *)
-  assert (List.length inventory = 73);
+  assert (List.length inventory = 88);
   if not (Sys.file_exists outdir) then Sys.mkdir outdir 0o755;
   List.iter (fun name ->
     let body = String.concat ",\n" (List.rev !(Hashtbl.find cases name)) in
     Out_channel.with_open_bin (Filename.concat outdir (export name ^ ".json")) (fun oc ->
       Printf.fprintf oc "{\"primitive\":%s,\"export\":%s,\"cases\":[\n%s\n]}\n" (str name) (str (export name)) body))
-    (List.map C.primitive_name inventory @ ["array/sum";"sop/context_seed";"sop/delete_attr";"sop/attr";"sop/with_attr";"sop/has_attr"])
+    (List.map C.primitive_name inventory @ ["array/sum";"sop/context_seed";"sop/delete_attr";"sop/attr";"sop/with_attr";"sop/has_attr";"sop/count";"sop/edges";
+      "sop/group";"sop/group_names";"sop/group_order";"sop/with_group";
+      "sop/attr_type";"sop/attr_names";"sop/rename_attr";"sop/swap_attr";"sop/delete_attrs";
+      "sop/rename_group";"sop/delete_group";"sop/rename_edge";"sop/delete_edge";"text/glob_error";"text/glob_rewrite_error"])

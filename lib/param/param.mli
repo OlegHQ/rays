@@ -177,3 +177,10 @@ val apply_all :
 (** Validate and normalize every field in a record, reusing the record when
     normalization leaves its values (including float bits) unchanged. *)
 val normalize : 'record schema -> 'record -> ('record, string) result
+
+(** Escaped tab-separated cells and newline-separated rows. Empty text is an
+    empty table; backslashes, tabs and newlines within cells are escaped. *)
+module String_table : sig
+  val encode : string list list -> string
+  val decode : string -> (string list list, string) result
+end

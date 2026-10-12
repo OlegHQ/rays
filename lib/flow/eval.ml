@@ -133,6 +133,7 @@ and st = {
   mutable nfns : int;
   fn_calls : (int, int) Hashtbl.t;
   mutable steps : int;
+  budget : int;
   mutable nodes : node list;
   mutable authored : int list;
   mutable nnodes : int;
@@ -280,7 +281,7 @@ let add_values a b = Value.arith "sum" ( +. ) a b
 
 let resolve_source resolve source =
   match resolve source with
-  | Error (d : Diagnostic.t) -> raise (Fail (d.code, d.message, d.span))
+  | Error (d : Diagnostic.t) -> raise_diagnostic d
   | Ok value ->
       (match value with Source _ | Struct (_, Ty.Array _, _) ->
         fail "E_DATA_SOURCE" "The host returned an unresolved data source." | _ -> ());
@@ -313,7 +314,7 @@ and force_res c r =
         | Some live,Some execute when c.st.compiled_residuals ->
             r.live <- Some c.st;
             (match r.core with
-             | Some (owner, run, _) when owner == c.st.owner && not c.st.strict_executor -> (match run live with Ok v -> v | Error d -> raise (Fail (d.code, d.message, d.span)))
+             | Some (owner, run, _) when owner == c.st.owner && not c.st.strict_executor -> (match run live with Ok v -> v | Error d -> raise_diagnostic d)
              | _ ->
                 let saved = Option.map fork_state c.st.state in
                 let result = if c.st.strict_executor then execute r live else
@@ -321,7 +322,7 @@ and force_res c r =
                 (match result with Some (Ok v) -> v | result ->
                   Option.iter (fun saved -> restore_state (Option.get c.st.state) saved) saved;
                   match result with
-                  | Some (Error d) when c.st.strict_executor -> raise (Fail (d.code,d.message,d.span))
+                  | Some (Error d) when c.st.strict_executor -> raise_diagnostic d
                   | None when c.st.strict_executor -> fail "E_CORE_FORM" "This value needs a compiled executor."
                   | _ -> slow ()))
         | _ -> slow () in
@@ -331,8 +332,8 @@ and force_res c r =
 and ev c env (x : W.term) : value =
   let st = c.st in
   st.steps <- st.steps + 1;
-  if st.steps > max_steps then
-    failf "E_EVAL_BUDGET" "Evaluation budget exceeded (%d steps). Reduce iteration counts." max_steps;
+  if st.steps > st.budget then
+    failf "E_EVAL_BUDGET" "Evaluation budget exceeded (%d steps). Reduce iteration counts." st.budget;
   let c = match x.path with Some p -> { c with base = p; route = [] } | None -> c in
   match st.time with
   | None ->
@@ -352,7 +353,8 @@ and ev c env (x : W.term) : value =
            (match x.node with W.State _ -> st.states <- r :: st.states | _ -> ());
            (* the record is the residual: a probe forces it at the time it shows *)
            (match x.path with Some p -> note c p r | None -> ()); r
-       | exception Fail (code, msg, None) -> raise (Fail (code, msg, span_of x)))
+       | exception Fail (code, msg, None) -> raise (Fail (code, msg, span_of x))
+       | exception Diagnostic_fail d when d.span=None -> raise_diagnostic {d with span=span_of x})
   | Some live ->
       let evaluate () = match st.execute, x.node with
         | Some execute, (W.Hof ((`Map | `Reduce), _) | W.Loop _ | W.Op {op = "array/sum"; _}) ->
@@ -360,12 +362,13 @@ and ev c env (x : W.term) : value =
             let r = {rid = st.rids; rterm = x; renv = capture x env; rc = c; previous = false; live = None; core = None} in
             (match execute r live with
              | Some (Ok v) -> v
-             | Some (Error d) -> raise (Fail (d.code, d.message, d.span))
+             | Some (Error d) -> raise_diagnostic d
              | None when st.strict_executor -> fail "E_CORE_FORM" "This numeric form needs a compiled executor."
              | None -> ev_raw c env x)
         | _ -> ev_raw c env x in
       (match concrete c (evaluate ()) with
        | exception Fail (code, msg, None) -> raise (Fail (code, msg, span_of x))
+       | exception Diagnostic_fail d when d.span=None -> raise_diagnostic {d with span=span_of x}
        | v -> if st.record && c.rec_ then Option.iter (fun p -> note c p v) x.path; v)
 
 and evs c env prefix ts = List.mapi (fun i t -> ev (sub c (prefix ^ string_of_int i)) env t) ts
@@ -597,8 +600,18 @@ and apply_op c ?(authored = 0) name (vals : (string * value) list) : value =
     | _ -> vals in
   let vals = match o.shape with
     | Op.Scalar when o.ctx = Context.value ->
-        let force=if o.name="equal?" then concrete_data c else concrete c in
-        List.map (fun (n,v) -> n,force v) vals
+        let rec data_type=function
+          | Ty.Float|Int|Bool|Vec2|Vec3|Vec4|Text|Color->true
+          | Ty.List ty|Array ty->data_type ty
+          | Ty.Record fields->fields<>[] && List.for_all(fun(_,ty)->data_type ty)fields
+          | Ty.Any|Named _|Fn _->false in
+        let declared=o.signature.pos@o.signature.opt@o.signature.kw in
+        List.map (fun (n,v) ->
+          let ty=match List.assoc_opt n declared with Some _ as ty->ty
+            |None->(match o.signature.rest with Some(name,ty)when name=n->Some ty|_->None) in
+          let deep=o.name="equal?" || (match ty with
+            |Some(Ty.List _|Record _ as ty)->data_type ty|_->false) in
+          n,(if deep then concrete_data c v else concrete c v)) vals
     | _ -> vals in
   o.check vals;
   let live = match c.st.time with
@@ -1009,14 +1022,14 @@ and graph_value ?(rec_ = true) c name over =
 
 let diagnostic code msg span = Diagnostic.error ?span ~code msg
 
-let new_state ~record ws =
+let new_state ?(budget=max_steps) ~record ws =
   let graphs = Hashtbl.create 8 and defs = Hashtbl.create 8 in
   List.iter (fun (g : W.graph) -> Hashtbl.replace graphs g.name g) ws.W.graphs;
   List.iter (fun (g : W.graph) -> Hashtbl.replace defs g.name g) ws.W.defs;
   { time = None; resolve = None; execute = None; owner = ref (); compiled_residuals = true; strict_executor=false; observe_kernel = None; bulk = None;
     source = lazy (Digest.string (fst (Lisp.print ws.W.source))); state = None; states = [];
     nfns = 0; fn_calls = Hashtbl.create 1;
-    steps = 0; nodes = []; authored = []; nnodes = 0; cells = []; cache = Hashtbl.create 8;
+    steps = 0; budget; nodes = []; authored = []; nnodes = 0; cells = []; cache = Hashtbl.create 8;
     memo = Hashtbl.create 1; rids = 0; record; elems = Smap.empty; recs = Hashtbl.create 64; graphs; defs;
     kind_fns = ws.W.kind_fns; ops = ws.ops; find_op = Op.finder ws.ops }
 
@@ -1030,11 +1043,12 @@ let root st = { st; inst = -1; prefix = []; base = []; route = []; iter = []; de
 let protect f =
   try Ok (f ()) with
   | Fail (code, msg, span) -> Error (diagnostic code msg span)
+  | Diagnostic_fail d -> Error d
   | Needs_t -> Error (diagnostic "E_EVAL" "A live value was needed while evaluating statically." None)
   | Stack_overflow -> Error (diagnostic "E_DEPTH" "Evaluation is nested too deeply." None)
   | Out_of_memory -> Error (diagnostic "E_ARRAY_MEMORY" "Frame data exceeds available memory." None)
 
-let static_impl ?(record = false) ?(inputs = []) ?observe ?bulk ws =
+let static_impl ?budget ?(record = false) ?(inputs = []) ?observe ?bulk ws =
   Phase_timer.measure Evaluate (fun () ->
   protect (fun () ->
     if List.length inputs <> List.length (List.sort_uniq String.compare (List.map fst inputs)) then
@@ -1043,7 +1057,7 @@ let static_impl ?(record = false) ?(inputs = []) ?observe ?bulk ws =
       if not (List.exists (fun (g : W.graph) -> g.name = name) ws.W.graphs) then
         failf "E_UNKNOWN_GRAPH" "Unknown graph input target: %s." name) inputs;
     List.iter (fun (_, ins) -> List.iter (fun (_, value) -> Value.validate value) ins) inputs;
-    let st = new_state ~record ws in
+    let st = new_state ?budget ~record ws in
     st.observe_kernel <- observe; st.bulk <- bulk;
     Fun.protect ~finally:(fun () -> st.observe_kernel <- None; st.bulk <- None) (fun () ->
     let c = root st in
@@ -1227,6 +1241,12 @@ module Private = struct
   let force_with_executor ?state ?elems ?resolve ?owner ?compiled ?strict ~execute v ~live =
     force_with ?state ?elems ?resolve ?owner ?compiled ?strict ~execute v ~live
   let function_bindings = function Closure cl -> Smap.bindings cl.env | Named _ -> []
+  let map_function_bindings f = function
+    | Closure cl -> Closure {cl with env=Smap.map f cl.env}
+    | Named _ as fn -> fn
+  let compiled_function r ~instance ~prefix ~zone ~params ~body ~bindings =
+    Closure {params;body;zone;env=Smap.of_seq(List.to_seq bindings);calls=ref 0;
+      fid=Atomic.fetch_and_add bulk_ids (-1);at={r.rc with inst=instance;prefix}}
   let remap_function_geometry ~sources fn =
     let rec value = function
       | Deferred (ty, id) when Ty.is_geometry ty ->
@@ -1284,7 +1304,8 @@ module Private = struct
           | W.State {init; zone; _} -> state_previous c r.renv zone init
           | _ -> assert false)
         else concrete c (ev_raw c r.renv r.rterm)
-      with Fail (code, msg, None) -> raise (Fail (code, msg, span_of r.rterm)))
+      with Fail (code, msg, None) -> raise (Fail (code, msg, span_of r.rterm))
+        |Diagnostic_fail d when d.span=None -> raise_diagnostic {d with span=span_of r.rterm})
   let state_ctx r ~instance ~path ~iter ~host = {(live_ctx r) with inst = instance; prefix = path; iter; host}
   let state_read r ~instance ~path ~iter ~host ~init =
     let c = state_ctx r ~instance ~path ~iter ~host in

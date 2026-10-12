@@ -8,7 +8,7 @@ type arithmetic = { apply : 'f 'r. ('f, 'r) Value.t -> ('f, 'r) Value.t -> ('f, 
 type packed_kind = Binary of Packed_ops.binary | Unary of Packed_ops.unary
   | Integer of Packed_ops.integer | Integer_compare of Packed_ops.comparison
   | Convert of Packed_ops.conversion
-  | Noise3 | Length | Dot | Cross | Normalize | Exact | Frame | Constant_only
+  | Noise3 | Fma | Rand_at | Length | Dot | Cross | Normalize | Exact | Frame | Constant_only
 type t = {
   name : string; ctx : Context.t; signature : signature;
   out : Ty.t list -> Ty.t;
@@ -56,3 +56,13 @@ val validate : t list -> Diagnostic.t option
 (** Check an immutable extension list; declarations cannot shadow built-ins. *)
 
 val max_iterations : int
+
+module Private : sig
+  type reduction = Sum | Minimum | Maximum
+  val reduce_array :
+    ?rows:(start:int -> finish:int -> (int -> unit) -> unit) -> reduction ->
+    ?offsets:('f, 'r) Value.t -> ('f, 'r) Value.t -> ('f, 'r) Value.t
+  (** Shared numeric bulk reduction. [rows] dispatches inclusive, disjoint
+      output row indices; callers may use a pooled executor. Input storage is
+      borrowed immutably. Offsets are checked before allocation or dispatch. *)
+end

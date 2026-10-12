@@ -237,20 +237,29 @@ let renumber first x =
       | Quote (k, y) -> Quote (k, go y) in
     {x with id; node} in
   let x = go x in (x, !next)
-(* Attribute selectors are positional text, including their keyword spelling. *)
+(* Data selectors are positional text, including their keyword spelling. *)
 let attribute_args head args =
-  let attribute=List.mem head ["sop/attr";"sop/with_attr";"sop/has_attr";"attr";"with_attr";"has_attr"] in
-  if not attribute && head<>"array/range" then args else
+  let attribute=List.mem head ["sop/attr";"sop/with_attr";"sop/has_attr";"sop/attr_type";"sop/attr_names";"attr";"with_attr";"has_attr"] in
+  let group=List.mem head ["sop/group";"sop/group_names";"sop/group_order";"sop/with_group"] in
+  let attribute_metadata=List.mem head ["sop/rename_attr";"sop/swap_attr"] in
+  let group_metadata=List.mem head ["sop/rename_group";"sop/delete_group"] in
+  let positional=attribute || head="sop/count" in
+  if not positional && not group && not attribute_metadata && not group_metadata && head<>"array/range" then args else
   let rec selectors position=function
     |({node=Kw("owner"|"type");_}as key)::value::rest->key::value::selectors position rest
     |({node=Kw name;_}as selector)::rest when position=1->
         {selector with node=Str name}::selectors(position+1)rest
     |first::rest->first::selectors(position+1)rest|[]->[] in
-  let args=if attribute then selectors 0 args else args in
+  let args=if positional then selectors 0 args else args in
   let rec enums=function
     | ({node=Kw kind;_}as key)::({node=Sym name;_}as value)::rest
       when (attribute && kind="owner" && List.mem name ["point";"vertex";"primitive";"detail"])
-        || (kind="type" && List.mem name (if attribute then ["float";"int";"vec2";"vec3";"vec4";"text";"float_array";"int_array"] else ["float";"int"])) ->
+        || (group && kind="owner" && List.mem name ["point";"vertex";"primitive";"edge"])
+        || (attribute_metadata && kind="owner" && List.mem name ["point";"vertex";"primitive";"detail";"any"])
+        || (group_metadata && kind="owner" && List.mem name ["point";"vertex";"primitive";"edge";"any"])
+        || ((attribute_metadata || group_metadata) && kind="conflict" && List.mem name ["skip";"error";"overwrite";"union"])
+        || (head="sop/swap_attr" && kind="method" && List.mem name ["swap";"move";"copy"])
+        || (kind="type" && (attribute || head="array/range") && List.mem name (if attribute then ["float";"int";"vec2";"vec3";"vec4";"text";"float_array";"int_array"] else ["float";"int"])) ->
         key::{value with node=Str name}::enums rest
     | first::rest->first::enums rest|[]->[] in
   enums args

@@ -41,7 +41,7 @@ let definitions_of_sources forms =
 
 let node_definitions () = Result.bind (sources ()) definitions_of_sources
 
-let check_workspace ?ops ?library ?sources:override catalog forms =
+let check_workspace_raw ?ops ?library ?sources:override catalog forms =
   let sources = match override with Some sources -> Ok sources | None -> sources () in
   match Result.bind sources (fun sources ->
     Result.map (fun nodes -> sources, nodes) (definitions_of_sources sources)) with
@@ -76,6 +76,13 @@ let check_workspace ?ops ?library ?sources:override catalog forms =
         not (List.exists (fun (node : Flow.Defnode.t) -> node.kind.qualified = kind.qualified) nodes)) catalog.Flow.Check.kinds} in
       let workspace, diagnostics = Flow.Workspace.check ?ops ?library catalog forms in
       Option.map (fun (workspace : Flow.Workspace.t) -> {workspace with source=authored}) workspace, diagnostics
+
+let check_workspace ?ops ?library ?sources catalog forms =
+  match check_workspace_raw ?ops ?library ?sources catalog forms with
+  | None,diagnostics->None,diagnostics
+  | Some workspace,diagnostics->(match Encoded_parameters.checked workspace with
+      |Ok workspace->Some workspace,diagnostics
+      |Error diagnostic->None,diagnostics@[diagnostic])
 
 let of_factories ~version ?(extra = []) ?nodes factories =
   let declarations = Hashtbl.create (List.length factories) in

@@ -53,7 +53,7 @@ let message result=Result.map_error error result
 let (let*)=Result.bind
 let cook_context t (live:Frame_input.t)=Result.map_error error(Sop.Context.create ~seed:t.seed ~grain:t.grain ~domains:t.domains
   ~input:live ~time:live.Frame_input.t ~frame:(Int64.of_int live.frame)())
-let diagnostic result=Result.map_error(fun(d:P.Diagnostic.error)->Flow.Diagnostic.error ~code:d.code d.message)result
+let diagnostic result=Result.map_error(fun(d:P.Diagnostic.error)->Flow.Diagnostic.error ?cause:d.cause ~code:d.code d.message)result
 let with_request t ?context plan run=match t.request with
   |Some request->run request
   |None->let request={active=[];pending_images=0;session=None;

@@ -63,3 +63,15 @@ let () =
   assert (Int64.bits_of_float normalized.amount = Int64.bits_of_float expected_zero);
   assert (Result.is_error (normalize template {original with amount=Float.nan}));
   assert (Result.is_error (normalize template {original with amount=Float.infinity}))
+
+let () =
+  let open Param.String_table in
+  assert (encode [] = "");
+  assert (decode "" = Ok []);
+  let rows = [[""; "雪"; "tab\tline\nslash\\"]; ["last"; ""]] in
+  assert (encode rows = "\t雪\ttab\\tline\\nslash\\\\\nlast\t");
+  assert (decode (encode rows) = Ok rows);
+  assert (decode "a\t\n" = Ok [["a"; ""]; [""]]);
+  assert (decode "\\q" = Error "unsupported table escape \\q");
+  assert (decode "trailing\\" = Error "trailing table escape");
+  print_endline "param: string tables preserve cells, escapes and codec errors"

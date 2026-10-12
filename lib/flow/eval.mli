@@ -192,10 +192,13 @@ val show : value -> string
 
 module Private : sig
   val static_with_kernels :
+    ?budget:int ->
     ?record:bool -> ?inputs:(string * (string * value) list) list ->
     ?observe:(residual -> unit) -> ?bulk:(residual -> value option) ->
     Workspace.t -> (t, Diagnostic.t) result
-  (** [bulk] may shorten a static packed [map] of more than 4,096 elements. The
+  (** [budget] overrides the ordinary AST-step guard for checked pure parameter
+      normalization, whose accepted input size follows its encoded schema.
+      [bulk] may shorten a static packed [map] of more than 4,096 elements. The
       walker evaluates the first 4,096 elements as usual, so their records, call
       indices and failures are the ordinary ones; [bulk] is then offered the
       map as a residual (the checked term and its captures) and may return the
@@ -249,6 +252,15 @@ module Private : sig
 
   val function_bindings : fn -> (string * value) list
   (** Captured immutable inputs of a function value, for host data dependencies. *)
+
+  val map_function_bindings : (value -> value) -> fn -> fn
+  (** Replace immutable closure captures, preserving callable identity and scope. *)
+
+  val compiled_function : residual -> instance:int -> prefix:Workspace.path ->
+    zone:Workspace.path -> params:(Workspace.pattern * Ty.t option) list ->
+    body:Workspace.term -> bindings:(string * value) list -> fn
+  (** Materialize an already checked compiler closure with deferred arguments.
+      The compiler supplies its original authored scope and checked body. *)
 
   val remap_function_geometry : sources:(int * int) list -> fn -> fn
   (** Remap geometry IDs through closure and residual captures when a host moves

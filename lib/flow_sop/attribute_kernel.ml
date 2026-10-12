@@ -49,12 +49,21 @@ let reads value =
     let rec scan (term : Flow.Workspace.term) =
       let all = List.iter scan and fields fields = List.iter (fun (_, term) -> scan term) fields in
       match term.node with
-      | Op {op=("sop/attr"|"sop/has_attr");args;_} ->
+      | Op {op=("sop/attr"|"sop/has_attr"|"sop/attr_type");args;_} ->
           (match Option.bind (List.assoc_opt "attribute" args) (lookup bindings),
               Option.bind (List.assoc_opt "geometry" args) (lookup bindings) with
            | Some (E.Text name), Some (E.Deferred (ty, id)) when Flow.Ty.is_geometry ty ->
                names := name :: !names; safe := id :: !safe
            | _ -> opaque := true)
+      | Op {op=("sop/count"|"sop/edges"|"sop/group"|"sop/group_names"|"sop/group_order");args;_} ->
+          (match Option.bind (List.assoc_opt "geometry" args) (lookup bindings) with
+           | Some (E.Deferred (ty,id)) when Flow.Ty.is_geometry ty -> safe:=id::!safe
+           | _ -> opaque:=true)
+      | Op {op="sop/attr_names";args;_} ->
+          names:="*"::!names;
+          (match Option.bind(List.assoc_opt "geometry" args)(lookup bindings)with
+           |Some(E.Deferred(ty,id))when Flow.Ty.is_geometry ty->safe:=id::!safe
+           |_->opaque:=true)
       | Ref_binding _ when Flow.Ty.is_geometry term.ty ->
           (match lookup bindings term with Some (E.Deferred (_, id)) -> unsafe := id :: !unsafe | _ -> ())
       | Vec terms | List_lit terms | Str terms | List_op (_, terms) | Hof (_, terms) -> all terms
@@ -75,7 +84,15 @@ let reads value =
     scan term;
     List.filter (fun id -> not (List.mem id !unsafe)) !safe in
   let rec visit safe = function
-    | E.Struct ("sop/attr", _, args) | E.Source("sop/has_attr",_,args) ->
+    | E.Source (("sop/count"|"sop/edges"|"sop/group"|"sop/group_names"|"sop/group_order"),_,args) ->
+        (match List.assoc_opt "geometry" args with
+         | Some (E.Deferred (ty,_)) when Flow.Ty.is_geometry ty -> ()
+         | _ -> opaque:=true)
+    | E.Source("sop/attr_names",_,args) ->
+        names:="*"::!names;
+        (match List.assoc_opt "geometry" args with Some(E.Deferred(ty,_))when Flow.Ty.is_geometry ty->()
+         |_->opaque:=true)
+    | E.Struct ("sop/attr", _, args) | E.Source(("sop/attr"|"sop/has_attr"|"sop/attr_type"),_,args) ->
         (match List.assoc_opt "attribute" args, List.assoc_opt "geometry" args with
          | Some (E.Text name), Some (E.Deferred (ty, _)) when Flow.Ty.is_geometry ty ->
              names := name :: !names
@@ -167,7 +184,7 @@ let read ?component ~owner ~kind name geometry =
       Ok (match width with 1->E.Float_array values|2->E.Vec2_array values|3->E.Vec3_array values|_->E.Vec4_array values))
 
 let resolve ~geometry = function
-  | E.Struct ("sop/attr", _, args) ->
+  | E.Struct ("sop/attr", _, args) | E.Source ("sop/attr", _, args) ->
       (match List.assoc_opt "geometry" args, List.assoc_opt "attribute" args with
        | Some (E.Deferred (ty, id)), Some (E.Text name) when Flow.Ty.is_geometry ty ->
            (match geometry id with Some geometry -> Result.bind (options args) (fun (owner,kind)->
@@ -184,7 +201,9 @@ let resolve ~geometry = function
                 Ok(E.Bool(match storage ~owner ~name geometry with
                   |None->false|Some storage->Option.fold ~none:true ~some:((=)(storage_kind storage))requested))))
        | _->error "E_ATTR_TYPE" "sop/has_attr needs geometry and an attribute name.")
-  | _ -> error "E_DATA_SOURCE" "Unknown packed data source."
+  | E.Source (("sop/count"|"sop/edges"),_,_) as source -> Topology_kernel.resolve ~geometry source
+  | E.Source (("sop/attr_type"|"sop/attr_names"),_,_) as source -> Attribute_metadata.resolve ~geometry source
+  | source -> Group_kernel.resolve ~geometry source
 
 let make_storage kind planes = match kind with
   | "float" -> Ok (A.Float planes.(0))
@@ -289,17 +308,27 @@ let prepare ?profile ?strict ?approx ?sink ~sources inputs values =
   Result.bind (source_origins ~sources inputs) (fun by_source ->
   let count_source residual (term : Flow.Workspace.term) =
     let bindings = (E.Private.residual_view residual).bindings in
-    let args = match term.node with
-      | Op {op="sop/attr";args;_} ->
+    let edge, args = match term.node with
+      | Get ({node=Op {op="sop/edges";args;_};_},("a"|"b")) ->
+          true,Some(List.filter_map(fun(name,term)->Option.map(fun value->name,value)
+            (captured bindings term))args)
+      | Op {op=("sop/attr"|"sop/group" as operation);args;_} ->
           let resolved=List.map(fun(name,term)->name,
             (match term.Flow.Workspace.node with Text text->Some(E.Text text)|_->captured bindings term))args in
-          if List.exists(fun(name,value)->List.mem name ["owner";"type"] && value=None)resolved then None
-          else Some(List.filter_map(fun(name,value)->Option.map(fun value->name,value)value)resolved)
-      | _ -> (match captured bindings term with Some (E.Struct("sop/attr",_,args))->Some args|_->None) in
+          (operation="sop/group" && List.assoc_opt "owner" resolved=Some(Some(E.Text "edge"))),
+          (if List.exists(fun(name,value)->List.mem name ["owner";"type"] && value=None)resolved then None
+          else Some(List.filter_map(fun(name,value)->Option.map(fun value->name,value)value)resolved))
+      | _ -> (match captured bindings term with
+          | Some (E.Struct("sop/attr",_,args) | E.Source("sop/attr",_,args)) -> false,Some args
+          | Some (E.Source("sop/edges",_,args)) -> true,Some args
+          | Some (E.Source("sop/group",_,args)) -> List.assoc_opt "owner" args=Some(E.Text "edge"),Some args
+          | _ -> false,None) in
     let geometry=Option.bind args (List.assoc_opt "geometry") in
     Option.bind geometry (function
       | E.Deferred (ty, id) when Flow.Ty.is_geometry ty ->
-          Option.bind args (fun args -> match options args with
+          if edge then Option.map(fun origin->["@sop-edges";string_of_int origin],[])
+            (List.assoc_opt id by_source)
+          else Option.bind args (fun args -> match options args with
             | Ok(owner,kind) when List.mem kind ["float";"int";"vec2";"vec3";"vec4";"text"] ->
                 Option.map (fun origin -> ["@sop-owner";owner_name owner;string_of_int origin], []) (List.assoc_opt id by_source)
             | Ok(owner,kind) when List.mem kind ["float_array";"int_array"] ->
@@ -315,7 +344,7 @@ let prepare ?profile ?strict ?approx ?sink ~sources inputs values =
 
 let borrowed_columns ~geometry residual term =
   let rec value = function
-    | E.Struct ("sop/attr",_,args) ->
+    | E.Struct ("sop/attr",_,args) | E.Source ("sop/attr",_,args) ->
         (match List.assoc_opt "geometry" args,List.assoc_opt "attribute" args with
          | Some (E.Deferred (ty,id)),Some (E.Text name) when Flow.Ty.is_geometry ty ->
              (match geometry id with
@@ -376,8 +405,66 @@ let write_planes ?state ?elems ~strict ~resolve ~geometry ~owner ~kind ~name pro
           if d.code="E_ARRAY_COUNT" then {d with code="E_ATTR_COUNT"} else d)
   | _ -> Ok None
 
+let prepare_constant ~kind values =
+  let constructors=["array/int","int";"array/text","text";"array/float","float";
+    "array/vec3","vec3";"array/vec4","vec4"] in
+  let rec find seen residual (term:Flow.Workspace.term) = match term.node with
+    | Expanded {body;_} -> find seen residual body
+    | Op {op="exact";args=["value",body];_} -> find seen residual body
+    | Ref_binding _ | Get _ ->
+        (match captured (E.Private.residual_view residual).bindings term with
+         |Some(E.Residual nested) when not(List.mem(E.Private.residual_id nested)seen)->
+             find(E.Private.residual_id nested::seen)nested(E.Private.residual_view nested).term
+         |_->None)
+    | Op {op;args;_} when List.assoc_opt op constructors=Some kind -> Some(residual,op,args)
+    | _->None in
+  match values with
+  | E.Residual residual ->
+      (match find [E.Private.residual_id residual] residual (E.Private.residual_view residual).term with
+       |None->None
+       |Some(residual,operation,args)->
+           let compile term=Flow_ir.Executor.compile ~strict:true
+             (E.Residual(E.Private.with_bindings residual ~term [])) in
+           match compile(List.assoc "count" args),Option.map compile(List.assoc_opt "value" args) with
+           |Ok count,(None|Some(Ok _) as value)->
+               Some(Option.get(Flow.Op.find operation Flow.Context.value),count,Option.map Result.get_ok value)
+           |_->None)
+  |_->None
+
+let write_constant ?state ?elems ~resolve ~owner ~kind ~name prepared target ~live =
+  match prepared with
+  |None->Ok None
+  |Some(op,count,value)->
+           let force program=Flow_ir.Executor.force ?state ?elems ~strict:true ~resolve program ~live in
+           Result.bind(force count)(function
+             |E.Int count when count>0 && count=owner_count target owner
+                 && (width kind=0 || count<=Sys.max_floatarray_length/width kind) ->
+                 let value=match value with Some program->force program
+                   |None->Ok(match kind with "int"->E.Int 0|"text"->E.Text""|"vec3"->E.Vec3(0.,0.,0.)
+                     |"vec4"->E.Vec4(0.,0.,0.,0.)|_->E.Float 0.) in
+                 Result.bind value (fun value->
+                   (* The declared constructor validates its fill once. Every
+                      plane is newly owned here; no captured array is adopted. *)
+                   let sample=try Ok(op.Flow.Op.body ~live ~node:(fun _ _->assert false)
+                     ["count",Flow.Value.Int 1;"value",value])
+                     with Flow.Value.Fail(code,message,_)->error code message
+                       |Flow.Value.Diagnostic_fail d->Error d in
+                   Result.bind sample (fun sample->
+                     let owned storage=Result.map_error(Flow.Diagnostic.error ~code:"E_ATTR_TYPE")
+                       (Result.bind(A.create_owned ~name ~owner storage)(fun attribute->G.with_attribute attribute target)) in
+                     let result=match sample with
+                       |Flow.Value.Int_array data->owned(A.Int(Array.make count data.(0)))
+                       |Text_array data->owned(A.Text(Array.make count data.(0)))
+                       |Float_array data->install ~owner ~kind name [|Array.make count data.(0)|] target
+                       |Vec3_array data|Vec4_array data->install ~owner ~kind name
+                           (Array.map(Array.make count)data) target
+                       |_->error "E_ATTR_TYPE" "Constant attribute constructor returned the wrong storage." in
+                     Result.map Option.some result))
+             |_->Ok None)
+
 let node ?state ?(reference = false) ?(strict = false) ?elems ?profile ?(owner=A.Point) ?(kind="vec3") ~source ~name ~values ~sources inputs =
   let program = prepare ?profile ~strict ~sources inputs values in
+  let constant = if reference then None else prepare_constant ~kind values in
   let parameters = source ^ ";" ^ owner_name owner ^ ";" ^ kind ^ ";" ^ name ^ ";" ^ Flow.Value.key_of ~residual:E.Private.residual_id values
     ^ Option.fold ~none:"" ~some:(fun bindings -> Flow.Value.key_of
         ~residual:E.Private.residual_id (E.Record bindings)) elems
@@ -397,14 +484,16 @@ let node ?state ?(reference = false) ?(strict = false) ?elems ?profile ?(owner=A
         else Result.bind program (fun program ->
           let live=Sop.Context.input context in
           Result.bind (if reference then Ok None else
-            write_planes ?state ?elems ~strict ~resolve ~geometry ~owner ~kind ~name program geometries.(0) ~live)
+            Result.bind(write_constant ?state ?elems ~resolve ~owner ~kind ~name constant geometries.(0) ~live)
+              (function Some geometry->Ok(Some geometry)|None->
+                write_planes ?state ?elems ~strict ~resolve ~geometry ~owner ~kind ~name program geometries.(0) ~live))
             (fun direct -> if Sop.Context.cancelled context then error "E_CANCELLED" "Attribute kernel cancelled."
               else match direct with Some geometry -> Ok geometry | None ->
                 Result.bind (Flow_ir.Executor.force ?state ?elems ~reference ~strict ~resolve program ~live)
                   (fun values -> if Sop.Context.cancelled context then
                       error "E_CANCELLED" "Attribute kernel cancelled."
                     else write ~grain:(Sop.Context.grain context) ~owner ~kind name values geometries.(0)))) in
-      Result.map_error (fun (d : Flow.Diagnostic.t) -> Sop.Diagnostic.error ~code:d.code d.message)
+      Result.map_error (fun (d : Flow.Diagnostic.t) -> Sop.Diagnostic.error ?cause:d.cause ~code:d.code d.message)
         (Result.map (fun geometry -> N.Private.{geometry; diagnostics = []; instances = None}) result)) in
   N.Private.with_facts { (N.facts node) with elementwise = (match owner with A.Point->N.Points|Primitive->Primitives|_->None);
     topology = N.Preserved; reads = reads values; writes = [name] } node

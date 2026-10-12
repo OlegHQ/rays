@@ -2,12 +2,12 @@ type span = { start : int; finish : int }
 type severity = Error | Warning
 type position = { line : int; col : int }
 type t = { code : string; severity : severity; position : position option;
-  message : string; span : span option }
+  message : string; span : span option; cause : string option }
 
-let error ?span ?position ~code message =
-  {code; severity = Error; position; message; span}
+let error ?span ?position ?cause ~code message =
+  {code; severity = Error; position; message; span; cause}
 let warning ?span ~code message =
-  {code; severity = Warning; position = None; message; span}
+  {code; severity = Warning; position = None; message; span; cause=None}
 let to_string value = match value.position with
   | None -> value.code ^ ": " ^ value.message
   | Some position -> Printf.sprintf "%s at %d:%d: %s"

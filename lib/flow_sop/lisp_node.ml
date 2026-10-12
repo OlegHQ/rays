@@ -9,7 +9,7 @@ let input index = match List.assoc_opt index (Domain.DLS.get cooked_inputs) with
   | None -> Error (Sop.Diagnostic.error ~code:"E_DATA_SOURCE"
       "A Lisp body input is only available while its node cooks")
 
-let schema name fields =
+let schema name fields normalizers =
   let field (f : Param.field_view) =
     let make kind default decode encode =
       Param.field ~name:f.name ~label:f.label ?description:f.description
@@ -29,7 +29,11 @@ let schema name fields =
         make (Param.Floating range) default (function Param.Float_value v -> v | _ -> assert false)
           (fun v -> Param.Float_value v)
     | Text_view, Text_value default ->
-        make Param.Text default (function Param.Text_value v -> v | _ -> assert false)
+        let kind=match List.assoc_opt f.name normalizers with
+          |None->Param.Text
+          |Some normalize->Param.encoded ~equal:String.equal ~encode:Fun.id
+              ~decode:(fun value->Result.map_error(fun(d:Flow.Diagnostic.t)->d.message)(normalize value)) in
+        make kind default (function Param.Text_value v -> v | _ -> assert false)
           (fun v -> Param.Text_value v)
     | Choice_view labels, Choice_value default ->
         make (Param.choice ~equal:String.equal
@@ -58,10 +62,8 @@ let arguments fields values =
       @ List.filter_map (fun (f : Param.field_view) ->
           if f.vec3=None then None else Some (f.name, scalar f.current)) fields
 
-let node ?(unbound_function = false) ~qualified ~label ~fields ~source ~build inputs =
-  let operation = match String.split_on_char '/' qualified with
-    | ["sop"; key] -> key | _ -> invalid_arg "A Lisp SOP needs a sop/ name" in
-  let schema = schema "parameters" fields in
+let node ?(unbound_function = false) ~operation ~label ~fields ~normalizers ~source ~build inputs =
+  let schema = schema "parameters" fields normalizers in
   Sop.Custom.node ~label ~operation ~schema ~values:(Param.default schema) inputs
     (fun ~label ~inputs ~parameters ->
       if unbound_function then

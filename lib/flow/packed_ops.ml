@@ -22,7 +22,7 @@ let binaries = ["+", Add; "-", Sub; "*", Mul; "/", Div; "mod", Mod; "pow", Pow;
 let unaries = ["sin", Sin; "cos", Cos; "sqrt", Sqrt; "abs", Abs; "not", Not;
   "tan", Tan; "asin", Asin; "acos", Acos; "exp", Exp; "log", Log; "sign", Sign]
 let noise_names = ["noise3"]
-let derived_names = ["length";"dot";"cross";"normalize"]
+let derived_names = ["length";"dot";"cross";"normalize";"fma"]
 let binary name = List.assoc_opt name binaries
 let unary name = List.assoc_opt name unaries
 let integers = ["int/add", Iadd; "int/sub", Isub; "int/mul", Imul; "int/div", Idiv;
@@ -45,6 +45,14 @@ let integer_apply operation a b =
   with Division_by_zero -> Value.fail "E_RANGE" "Integer division by zero."
 let comparison_apply operation a b = match operation with
   | Ilt -> a<b | Ile -> a<=b | Igt -> a>b | Ige -> a>=b | Ieq -> a=b
+let rand_at seed index =
+  let value=seed lxor ((index+0x11b54a32d192ed03)*0x1e3779b97f4a7c15) in
+  let value=value lxor (value lsr 30) in
+  let value=value*0x3f58476d1ce4e5b9 in
+  let value=value lxor (value lsr 27) in
+  let value=value*0x14d049bb133111eb in
+  let value=value lxor (value lsr 31) in
+  float_of_int(value lsr 10)/.9_007_199_254_740_992.
 let names = List.map fst binaries @ List.map fst unaries @ noise_names @ derived_names
-  @ List.map fst integers @ List.map fst comparisons
+  @ List.map fst integers @ List.map fst comparisons @ ["rand/at"]
 let supports name = List.mem name names

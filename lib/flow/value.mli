@@ -19,6 +19,8 @@ type ('f, 'r) t =
   | Fn of 'f | Residual of 'r
 
 exception Fail of string * string * Diagnostic.span option
+exception Diagnostic_fail of Diagnostic.t
+val raise_diagnostic : Diagnostic.t -> 'a
 val fail : string -> string -> 'a
 val failf : string -> ('a, unit, string, 'b) format4 -> 'a
 val hash : float list -> float

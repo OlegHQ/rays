@@ -7,12 +7,13 @@ type conversion = Core.Region.conversion = To_float | Truncate | Floor | Ceil | 
 type instruction = Core.Region.instruction = Const of float | Input of int * int * int
   | Uniform of int * int | Frame of string | Accumulator of int
   | Binary of binary * int * int | Unary of unary * int
-  | Noise3 of int * int * int * int * int | Select of int * int * int
+  | Noise3 of int * int * int * int * int | Fma of int * int * int | Rand_at of int * int
+  | Select of int * int * int
   | Int_const of int | Int_input of int | Int_uniform of int | Int_frame of string | Int_accumulator
   | Int_binary of Flow.Packed_ops.integer * int * int
   | Int_compare of Flow.Packed_ops.comparison * int * int | Int_abs of int
   | Convert of conversion * int | Int_select of int * int * int
-  | Guarded of (int * bool) list * instruction | Raise of Flow.Ty.t * string * string
+  | Guarded of (int * bool) list * instruction | Raise of Flow.Ty.t * string * string * string option
 type origin = Flow.Workspace.path * int list
 type count_source = Flow.Eval.residual -> Flow.Workspace.term -> origin option
 (** Hosts may prove equal source cardinality from instantiated domain facts.
@@ -78,6 +79,14 @@ val reference : ?state:Flow.Eval.state -> ?elems:(string * Flow.Eval.value) list
   t -> live:Flow.Eval.live -> (Flow.Eval.value, Flow.Diagnostic.t) result
 
 module Private : sig
+  val argument_types : t -> Flow.Ty.t array
+  (** Declared types of the structured Core arguments captured by this region. *)
+
+  val bind_arguments : t -> Flow.Eval.value array -> (t,Flow.Diagnostic.t) result
+  (** Borrow checked immutable Core arguments in place of typed source markers.
+      Refuses wrong arity/storage; rewrites closure and residual captures without
+      re-evaluating their checked bodies. *)
+
   val trace : ((t, Flow.Diagnostic.t list) Stdlib.result -> unit) ref
   (** Called with every public compilation result; tests record snapshots through it. *)
 

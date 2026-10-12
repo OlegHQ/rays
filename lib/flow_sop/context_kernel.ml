@@ -57,7 +57,7 @@ let depends ?(inputs=[]) ?(defs=[]) (graph:W.graph) =
           |(key,value)::rest->Option.bind (known bindings value) (fun value->Option.map (fun rest->(key,value)::rest) (values rest)) in
         Option.bind (values args) (fun args->Option.bind (Flow.Op.find ~extra:Operators.all op Flow.Context.value) (fun op->
           try op.check args; Some (op.body ~live:(Frame_input.at_time 0.) ~node:(fun _ _->raise Exit) args)
-          with Flow.Value.Fail _ | Exit -> None))
+          with Flow.Value.Fail _ | Flow.Value.Diagnostic_fail _ | Exit -> None))
     |_->None
   and scan bindings (body:W.term) =
     let select (t:W.term)=match t.node with

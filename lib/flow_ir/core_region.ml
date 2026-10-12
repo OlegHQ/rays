@@ -41,7 +41,7 @@ let count_of residual (s : W.term) = match s.node with
       (try match captured_value (E.Private.residual_view residual).bindings name fields with
        | E.Int_array _ | Float_array _ | Vec2_array _ | Vec3_array _ | Vec4_array _ as v -> Some (V.array_length v) | _ -> None
        with Unsupported -> None)
-  | Op {op = ("array/int" | "array/float" | "array/vec3" | "array/range"); args; _} ->
+  | Op {op = ("array/int" | "array/float" | "array/vec3" | "array/vec4" | "array/range"); args; _} ->
       (match List.assoc_opt "count" args with
        | Some {node = W.Lit (Param.Int_value n); _} when n >= 0 -> Some n | _ -> None)
   | _ -> None
@@ -374,6 +374,17 @@ let lower ?(fusion = true) ?(dynamic = false)
           capture_scope := scope; incr call_depth;
           Fun.protect ~finally:(fun () -> capture_scope := previous; decr call_depth)
             (fun () -> expression env (Option.value ~default:body specialized))
+      | Op {op="error"; args; _} when Option.bind
+          (Flow.Op.find ~extra:(E.Private.residual_ops residual) "error" Flow.Context.value)
+          Flow.Op.packed_kind=Some Flow.Op.Constant_only ->
+          let text (arg:W.term) = match arg.node with
+            | Text text -> text
+            | Ref_binding(name,fields) -> (match captured_value bindings name fields with
+                |E.Text text->text|_->refuse ~at:arg "E_PACKED_CONSTANT" "Packed error code and message must be constant text.")
+            | _ -> refuse ~at:arg "E_PACKED_CONSTANT" "Packed error code and message must be constant text." in
+          let code=text(List.assoc "code" args) and message=text(List.assoc "message" args) in
+          let cause=Option.map text (List.assoc_opt "cause" args) in
+          {registers=[|emit(Raise(t.ty,code,message,cause))|];constant=None;fields=[]}
       | Op {op; args; _} ->
           let declaration, kind = match Flow.Op.find ~extra:(E.Private.residual_ops residual) op Flow.Context.value with
             | Some o -> (match Flow.Op.packed_kind o with
@@ -396,6 +407,12 @@ let lower ?(fusion = true) ?(dynamic = false)
               | Flow.Op.Integer_compare operation, [a;b] ->
                   let a=as_int a and b=as_int b in
                   [|emit (Int_compare(operation,a.registers.(0),b.registers.(0)))|]
+              | Flow.Op.Rand_at, [a;b] ->
+                  let a=as_int a and b=as_int b in
+                  [|emit (Rand_at(a.registers.(0),b.registers.(0)))|]
+              | Flow.Op.Fma, [a;b;c] ->
+                  let a=as_float a and b=as_float b and c=as_float c in
+                  [|emit(Fma(a.registers.(0),b.registers.(0),c.registers.(0)))|]
               | Flow.Op.Convert conversion, [a] ->
                   [|emit (Convert(conversion,a.registers.(0)))|]
               | Flow.Op.Noise3, a::rest when Array.length a.registers=3 ->
@@ -464,8 +481,11 @@ let lower ?(fusion = true) ?(dynamic = false)
       | _ -> refuse ~at:t "E_PACKED_FORM" ("Unsupported packed body form " ^
           Option.value ~default:(Ty.to_string t.ty) (Flow.Syntax.head t.form) ^ ".")
       with V.Fail (code, message, span) ->
-        if !guards<>[] then {registers=[|emit(Raise(t.ty,code,message))|];constant=None;fields=[]}
-        else raise (Compile_refused (Flow.Diagnostic.error ~span:(Option.value ~default:t.form.span span) ~code message)) in
+        if !guards<>[] then {registers=[|emit(Raise(t.ty,code,message,None))|];constant=None;fields=[]}
+        else raise (Compile_refused (Flow.Diagnostic.error ~span:(Option.value ~default:t.form.span span) ~code message))
+      |V.Diagnostic_fail d->
+        if !guards<>[] then {registers=[|emit(Raise(t.ty,d.code,d.message,d.cause))|];constant=None;fields=[]}
+        else raise(Compile_refused {d with span=Some(Option.value ~default:t.form.span d.span)}) in
     let result_ty = match term.ty with Ty.Array ty -> ty | ty -> ty in
     let output_expression = expression env body in
     let output = (if result_ty=Ty.Int && body.ty=Ty.Int then as_int output_expression
@@ -512,7 +532,7 @@ let lower ?(fusion = true) ?(dynamic = false)
     let rec integer_work = function
       | Int_const _ -> false
       | Int_input _ | Int_uniform _ | Int_frame _ | Int_accumulator | Int_binary _ | Int_compare _
-      | Int_abs _ | Convert _ | Int_select _ | Raise _ -> true
+      | Int_abs _ | Convert _ | Int_select _ | Rand_at _ | Raise _ -> true
       | Guarded (_,instruction) -> integer_work instruction
       | _ -> false in
     let code = if Array.exists integer_work code then code else Array.map (function
@@ -530,6 +550,7 @@ let lower ?(fusion = true) ?(dynamic = false)
   | Compile_refused d -> Error [d]
   | V.Fail (code, message, span) ->
       Error [Flow.Diagnostic.error ~span:(Option.value ~default:term.form.span span) ~code message]
+  | V.Diagnostic_fail d -> Error [{d with span=Some(Option.value ~default:term.form.span d.span)}]
   | Invalid_argument message -> Error [Flow.Diagnostic.error ~span:term.form.span ~code:"E_PACKED_LAYOUT"
       ("Packed layout is unsupported: " ^ message)]
   | Unsupported -> Error [Flow.Diagnostic.error ~span:term.form.span ~code:"E_PACKED_FORM"

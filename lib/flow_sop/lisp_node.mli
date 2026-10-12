@@ -4,7 +4,8 @@ val input : int -> (Sop.Payload.t, Sop.Diagnostic.error) result
 
 val node :
   ?unbound_function:bool ->
-  qualified:string -> label:string -> fields:Param.field_view list ->
+  operation:string -> label:string -> fields:Param.field_view list ->
+  normalizers:(string * (string -> (string, Flow.Diagnostic.t) result)) list ->
   source:string ->
   build:(label:string -> context:Sop.Context.t -> Sop.Node.t list -> (string * Flow.Eval.value) list ->
     (Sop.Context.t -> (Sop.Node.t, Sop.Diagnostic.error) result) *

@@ -1,4 +1,4 @@
-let checked = function Ok value->value|Error (d:Flow.Diagnostic.t)->Flow.Value.fail d.code d.message
+let checked = function Ok value->value|Error (d:Flow.Diagnostic.t)->Flow.Value.raise_diagnostic d
 let type_argument args = match List.find_opt (fun (name,_,_)->name="type") args with
   | None -> "vec3"
   | Some (_,_,Some(Param.Text_value kind)) -> ignore(checked(Attribute_kernel.value_type kind));kind
@@ -64,6 +64,72 @@ let delete_attr : Flow.Op.t = {
   body=(fun ~live:_ ~node args -> node "sop/delete_attr" args);
 }
 
+let count : Flow.Op.t = {
+  attr with name="sop/count";category="Topology";
+  signature={pos=["geometry",Flow.Ty.geometry;"element",Flow.Ty.Text];opt=[];rest=None;kw=[]};
+  out=(fun _->Flow.Ty.Int);out_args=None;
+  choices=["element",["points";"vertices";"primitives";"edges"]];
+  check=(fun args->match List.assoc "element" args with
+    | Flow.Value.Text element when List.mem element ["points";"vertices";"primitives";"edges"]->()
+    | _->Flow.Value.fail "E_TOPOLOGY_COUNT" "Count element is points, vertices, primitives or edges.");
+  body=(fun ~live:_ ~node:_ args->Flow.Value.Source("sop/count",Flow.Ty.Int,args));
+}
+let edges : Flow.Op.t = {
+  count with name="sop/edges";
+  signature={count.signature with pos=["geometry",Flow.Ty.geometry]};
+  out=(fun _->Flow.Ty.Record["a",Array Int;"b",Array Int]);choices=[];
+  check=(fun _->());
+  body=(fun ~live:_ ~node:_ args->Flow.Value.Record(List.map(fun component->
+    component,Flow.Value.Source("sop/edges",Flow.Ty.Array Flow.Ty.Int,
+      args@["component",Flow.Value.Text component]))["a";"b"]));
+}
+
+let group_check args =
+  (match List.assoc_opt "name" args with
+   | Some(Flow.Value.Text name) when String.trim name<>"" -> ()
+   | _ -> Flow.Value.fail "E_GROUP_NAME" "Group name must not be blank.");
+  Option.iter(function Flow.Value.Text owner->ignore(checked(Group_kernel.owner owner))
+    | _->Flow.Value.fail "E_GROUP_OWNER" "Group owner is point, vertex, primitive or edge.")
+    (List.assoc_opt "owner" args)
+let group : Flow.Op.t = {
+  attr with name="sop/group";category="Groups";
+  signature={pos=["geometry",Flow.Ty.geometry];opt=[];rest=None;kw=["name",Flow.Ty.Text;"owner",Flow.Ty.Text]};
+  out=(fun _->Flow.Ty.Array Flow.Ty.Int);out_args=None;
+  choices=["owner",["point";"vertex";"primitive";"edge"]];check=group_check;
+  body=(fun ~live:_ ~node:_ args->Flow.Value.Source("sop/group",Flow.Ty.Array Flow.Ty.Int,args));
+}
+let group_order_type=Flow.Ty.Record["ordered",Bool;"indices",Array Int]
+let group_order : Flow.Op.t = {
+  group with name="sop/group_order";out=(fun _->group_order_type);
+  body=(fun ~live:_ ~node:_ args->Flow.Value.Record(List.map(fun(component,ty)->
+    component,Flow.Value.Source("sop/group_order",ty,args@["component",Flow.Value.Text component]))
+    ["ordered",Flow.Ty.Bool;"indices",Flow.Ty.Array Int]));
+}
+let group_names : Flow.Op.t = {
+  group with name="sop/group_names";
+  signature={group.signature with pos=["geometry",Flow.Ty.geometry;"pattern",Flow.Ty.Text];kw=["owner",Flow.Ty.Text]};
+  out=(fun _->Flow.Ty.Array Flow.Ty.Text);
+  check=(fun args->
+    Option.iter(function Flow.Value.Text owner->ignore(checked(Group_kernel.owner owner))
+      | _->Flow.Value.fail "E_GROUP_OWNER" "Group owner is point, vertex, primitive or edge.") (List.assoc_opt "owner" args);
+    match List.assoc "pattern" args with
+    | Flow.Value.Text pattern -> (match Rdk.Attribute_pattern.compile pattern with Ok _->()
+        | Error message->Flow.Value.fail "E_GROUP_PATTERN" message)
+    | _->Flow.Value.fail "E_GROUP_PATTERN" "Group pattern must be text.");
+  body=(fun ~live:_ ~node:_ args->Flow.Value.Source("sop/group_names",Flow.Ty.Array Flow.Ty.Text,args));
+}
+let with_group : Flow.Op.t = {
+  group with name="sop/with_group";
+  signature={group.signature with pos=["geometry",Flow.Ty.geometry;"values",Flow.Ty.Array Int];
+    kw=group.signature.kw@["order",Flow.Ty.Any]};
+  out=(fun _->Flow.Ty.geometry);shape=Flow.Op.Scalar;
+  out_args=Some(fun args->
+    Option.iter(fun(_,ty,_)->if not(Flow.Ty.fits ty (Flow.Ty.Array Int)||Flow.Ty.fits ty group_order_type) then
+      Flow.Value.fail "E_GROUP_ORDER" "Group order requires an integer array or an ordered/indices record.")
+      (List.find_opt(fun(name,_,_)->name="order")args);Flow.Ty.geometry);
+  body=(fun ~live:_ ~node args->node "sop/with_group" args);
+}
+
 let context_seed : Flow.Op.t = {
   attr with name="sop/context_seed";ctx=Flow.Context.value;category="Random";
   signature={pos=["namespace",Flow.Ty.Text];opt=[];rest=None;kw=[]};
@@ -81,4 +147,104 @@ let seed_for ~seed ~namespace ~label =
   let mixed=Int64.logxor seed (Int64.mul !identity 0x9e3779b97f4a7c15L) in
   Int64.to_int (Int64.logxor mixed (Int64.shift_right_logical mixed 32))
 
-let all = Flow_ir.Operators.all @ [attr; with_attr; has_attr; delete_attr; context_seed]
+let metadata_text args name = match List.assoc name args with Flow.Value.Text text->text
+  | _->Flow.Value.fail "E_METADATA_TEXT" "Metadata names and patterns must be text."
+let metadata_owner parse args = Option.iter(fun value->match value with
+  | Flow.Value.Text owner->ignore(checked(parse owner))
+  | _->Flow.Value.fail "E_METADATA_OWNER" "Metadata owner must be text.") (List.assoc_opt "owner" args)
+let rewrite_check parse conflict args =
+  metadata_owner parse args;
+  Option.iter(function Flow.Value.Text policy->ignore(checked(conflict policy))
+    | _->Flow.Value.fail "E_METADATA_CONFLICT" "Conflict policy must be text.") (List.assoc_opt "conflict" args);
+  match Rdk.Attribute_pattern.compile_rewrite ~pattern:(metadata_text args "pattern")
+    ~replacement:(metadata_text args "replacement") with
+  | Ok _->()|Error message->Flow.Value.fail "E_METADATA_PATTERN" message
+let rename_attr : Flow.Op.t = {
+  delete_attr with name="sop/rename_attr";category="Metadata";
+  signature={pos=["geometry",Flow.Ty.geometry;"pattern",Text;"replacement",Text];opt=[];rest=None;
+    kw=["owner",Text;"conflict",Text]};
+  choices=["owner",["point";"vertex";"primitive";"detail";"any"];
+    "conflict",["skip";"error";"overwrite"]];
+  check=(fun args->rewrite_check Attribute_metadata.attribute_owner Attribute_metadata.attr_conflict args);
+  body=(fun ~live:_ ~node args->node "sop/rename_attr" args);
+}
+let rename_group : Flow.Op.t = {
+  rename_attr with name="sop/rename_group";
+  choices=["owner",["point";"vertex";"primitive";"edge";"any"];
+    "conflict",["skip";"error";"overwrite";"union"]];
+  check=(fun args->metadata_owner Attribute_metadata.group_owner args;
+    Option.iter(function Flow.Value.Text policy->ignore(checked(Attribute_metadata.group_conflict policy))
+      | _->Flow.Value.fail "E_METADATA_CONFLICT" "Conflict policy must be text.") (List.assoc_opt "conflict" args));
+  body=(fun ~live:_ ~node args->node "sop/rename_group" args);
+}
+let swap_attr : Flow.Op.t = {
+  rename_attr with name="sop/swap_attr";
+  signature={rename_attr.signature with pos=["geometry",Flow.Ty.geometry;"source",Text;"destination",Text];
+    kw=["owner",Text;"method",Text]};
+  choices=["owner",["point";"vertex";"primitive";"detail"];"method",["swap";"move";"copy"]];
+  check=(fun args->metadata_owner Attribute_metadata.attribute_owner args;
+    Option.iter(function Flow.Value.Text method_ when List.mem (String.lowercase_ascii(String.trim method_))["swap";"move";"copy"]->()
+      | _->Flow.Value.fail "E_METADATA_METHOD" "Attribute method is swap, move or copy.") (List.assoc_opt "method" args));
+  body=(fun ~live:_ ~node args->node "sop/swap_attr" args);
+}
+let delete_attrs : Flow.Op.t = {
+  delete_attr with name="sop/delete_attrs";category="Metadata";
+  signature={pos=["geometry",Flow.Ty.geometry];opt=[];rest=None;
+    kw=["reference",Flow.Ty.geometry;"inverse",Bool;"point",Text;"vertex",Text;"primitive",Text;"detail",Text]};
+  choices=[];check=(fun args->List.iter(fun name->Option.iter(function
+    |Flow.Value.Text pattern when String.trim pattern=""->()
+    |Flow.Value.Text pattern->(match Rdk.Attribute_pattern.compile pattern with Ok _->()
+      |Error message->Flow.Value.fail "E_METADATA_PATTERN" message)
+    |_->Flow.Value.fail "E_METADATA_PATTERN" "Delete patterns must be text.") (List.assoc_opt name args))
+    ["point";"vertex";"primitive";"detail"]);
+  body=(fun ~live:_ ~node args->node "sop/delete_attrs" args);
+}
+let delete_group : Flow.Op.t = {
+  delete_attrs with name="sop/delete_group";
+  signature={pos=["geometry",Flow.Ty.geometry;"pattern",Text];opt=[];rest=None;kw=["owner",Text;"unused",Bool]};
+  choices=["owner",["point";"vertex";"primitive";"edge";"any"]];
+  check=(fun args->metadata_owner Attribute_metadata.group_owner args);
+  body=(fun ~live:_ ~node args->node "sop/delete_group" args);
+}
+let rename_edge : Flow.Op.t = {
+  rename_attr with name="sop/rename_edge";signature={rename_attr.signature with kw=[]};
+  choices=[];check=(fun _->());body=(fun ~live:_ ~node args->node "sop/rename_edge" args);
+}
+let delete_edge : Flow.Op.t = {
+  rename_edge with name="sop/delete_edge";
+  signature={rename_edge.signature with pos=["geometry",Flow.Ty.geometry;"name",Text]};
+  body=(fun ~live:_ ~node args->node "sop/delete_edge" args);
+}
+let attr_type : Flow.Op.t = {
+  attr with name="sop/attr_type";category="Metadata";signature={attr.signature with kw=["owner",Text]};
+  out=(fun _->Flow.Ty.Text);out_args=None;
+  body=(fun ~live:_ ~node:_ args->Flow.Value.Source("sop/attr_type",Flow.Ty.Text,args));
+}
+let attr_names : Flow.Op.t = {
+  attr_type with name="sop/attr_names";
+  signature={attr_type.signature with pos=["geometry",Flow.Ty.geometry;"pattern",Text]};
+  out=(fun _->Flow.Ty.Array Text);
+  check=(fun args->metadata_owner Attribute_metadata.attribute_owner args;
+    match Rdk.Attribute_pattern.compile(metadata_text args "pattern")with Ok _->()
+    |Error message->Flow.Value.fail "E_ATTR_PATTERN" message);
+  body=(fun ~live:_ ~node:_ args->Flow.Value.Source("sop/attr_names",Flow.Ty.Array Text,args));
+}
+
+let glob_error : Flow.Op.t = {
+  attr_type with name="text/glob_error";ctx=Flow.Context.value;category="Text";
+  signature={pos=["pattern",Text];opt=[];rest=None;kw=[]};choices=[];check=(fun _->());
+  body=(fun ~live:_ ~node:_ args->Flow.Value.Text(match
+    Rdk.Attribute_pattern.compile(metadata_text args "pattern") with Ok _->""|Error message->message));
+}
+let glob_rewrite_error : Flow.Op.t = {
+  glob_error with name="text/glob_rewrite_error";
+  signature={glob_error.signature with pos=["pattern",Text;"replacement",Text]};
+  body=(fun ~live:_ ~node:_ args->Flow.Value.Text(match Rdk.Attribute_pattern.compile_rewrite
+    ~pattern:(metadata_text args "pattern") ~replacement:(metadata_text args "replacement") with
+    Ok _->""|Error message->message));
+}
+
+let all = Flow_ir.Operators.all @ [attr; with_attr; has_attr; delete_attr; count; edges;
+  group; group_order; group_names; with_group; context_seed;
+  rename_attr;swap_attr;delete_attrs;rename_group;delete_group;rename_edge;delete_edge;attr_type;attr_names;
+  glob_error;glob_rewrite_error]

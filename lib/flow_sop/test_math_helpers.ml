@@ -180,3 +180,31 @@ let () =
     (List.length !native_differences) !native_samples !native_max_ulps !native_max_error;
   List.iter print_endline (List.rev !native_differences);
   print_endline "Lisp scalar math/rounding and unfused cross/multiply match exact bytes; remaining compound helpers meet native four ULP"
+
+let () =
+  let neighbors value = [Float.next_after value neg_infinity;value;
+    Float.next_after value infinity] in
+  let samples = [-0.;0.;Int64.float_of_bits 1L;1e-12;1.;1e308] @
+    neighbors (sqrt Float.max_float) @ neighbors (Float.ldexp 1. 511) @
+    neighbors (Float.ldexp 1. 512) in
+  let checked = ref 0 in
+  List.iter (fun x -> List.iter (fun (y,z,w) ->
+    let value=Q.create ~x ~y ~z ~w in
+    let expected=Q.normalize value in
+    let actual = try floats(call "quat_normalize" [qvalue value]) with
+      Failure message -> failwith(qvalue value ^ ": " ^ message) in
+    List.iter2 (fun expected actual ->
+      let agrees = if expected=0. then
+        Int64.bits_of_float expected=Int64.bits_of_float actual
+        else distance expected actual<=4. in
+      if not agrees then
+        failwith (describe ("quaternion overflow/threshold " ^ qvalue value) expected actual))
+      [expected.x;expected.y;expected.z;expected.w]
+      actual;
+    incr checked) [0.,0.,(-0.);x,(-.x),x;0.,0.,(-.x);x*.0.5,0.,(-.x*.0.5)]) samples;
+  List.iter(fun left -> List.iter(fun right ->
+    let expected=not(Float.is_finite(left+.right)) in
+    assert(evaluate(Printf.sprintf "(>= (+ (* %s 0.25) (* %s 0.25)) 4.49423283715579e307)"
+      (number left)(number right))=E.Bool expected))
+    (neighbors (Float.ldexp 1. 970))) (List.filter Float.is_finite (neighbors Float.max_float));
+  Printf.printf "Quaternion native threshold checks: %d cases, exact overflow/signed zeros and four-ULP finite components\n" !checked

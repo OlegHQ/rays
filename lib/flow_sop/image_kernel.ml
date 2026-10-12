@@ -56,7 +56,7 @@ let node ?state t =
       let result =
         if P.Context.cancelled context then Error (Flow.Diagnostic.error ~code:"E_CANCELLED" "Image kernel cancelled.")
         else Flow_ir.Packed.force ?state ~resolve t.packed ~live:(P.Context.input context) in
-      Result.bind (Result.map_error (fun (d:Flow.Diagnostic.t) -> P.Diagnostic.error ~code:d.code d.message) result)
+      Result.bind (Result.map_error (fun (d:Flow.Diagnostic.t) -> P.Diagnostic.error ?cause:d.cause ~code:d.code d.message) result)
         (function
           | E.Vec4_array rgba -> Result.map (fun image -> P.Node.Private.{
               payload=P.Payload.Image image;diagnostics=[];instances=None})

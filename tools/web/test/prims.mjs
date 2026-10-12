@@ -139,12 +139,12 @@ function checkCase(fn, exportName, expectedJson, c) {
     got = { value: fn(...statics, ...args) };
   } catch (e) {
     if (!(e instanceof Fail)) got = { exception: String(e) };
-    else got = { error: { code: e.code, message: e.message } };
+    else got = { error: { code: e.code, message: e.message, cause: e.cause } };
   }
   if (want && typeof want === 'object' && !Array.isArray(want) && 'error' in want) {
     const expectedError = want.error;
     if (!got.error) return `expected error ${expectedError.code} ${JSON.stringify(expectedError.message)}, got ${got.exception ? `exception ${got.exception}` : show(got.value)}`;
-    if (got.error.code !== expectedError.code || got.error.message !== expectedError.message)
+    if (got.error.code !== expectedError.code || got.error.message !== expectedError.message || got.error.cause !== expectedError.cause)
       return `expected error ${expectedError.code} ${JSON.stringify(expectedError.message)}, got error ${got.error.code} ${JSON.stringify(got.error.message)}`;
     return null;
   }

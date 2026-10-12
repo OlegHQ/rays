@@ -375,7 +375,7 @@ delegated to the old `noise_displace` body or dropped.
 | B.9 | L | B.2 | `array/min`, `array/max` (B10) and segmented reduce (B11). | Equality with a reference fold; 1 and 8 domains |
 | B.10 | P | B.1 B.5 B.7 B.8 B.9 | Deformers: `match_axis`, `transform`, `match_size`, `peak`, `mountain`, `bend`, `snap_to_grid`, `point_jitter`, `rest_position`. | Recipe |
 | B.11 | P | B.1 B.4 B.5 | Setters: `set_float`, `set_int`, `set_vector`, `set_orient`, `set_color`, `set_transform`. | Recipe |
-| B.12 | P | B.6 | Metadata: `delete_attributes`, `rename_attributes`, `swap_attributes`, `delete_edge_group`, `rename_edge_group`, `group_delete`, `group_rename`. | Recipe |
+| B.12 | P | B.6 | Metadata: `delete_attributes`, `rename_attributes`, `swap_attributes`, `delete_edge_group`, `rename_edge_group`, `group_delete`, `group_rename`. Generic Lisp-authored encoded parameter validation/canonicalization must preserve native schema views and cook keys. | Recipe and encoded parameter boundary |
 | B.13 | P | B.4 B.5 B.8 B.9 | Groups: `group_combine`, `group_invert`, `group_random`, `group_bounds`, `group_non_planar`, `group_backface`, `ordered_group`. | Recipe |
 | B.14 | P | B.3 B.5 | Text: `groups_from_name`, `name_from_groups`, `material`. | Recipe |
 | B.15 | P | B.1 B.7 B.8 B.9 | Attributes: `distance_from_target`, `uv_transform`, `attr_from_image`, `attribute_noise`, `attribute_noise_quaternion`, `attribute_remap`, `attribute_composite`, `attribute_fade`, `color_by_height`. Whole ports moved after their native prerequisite audits: `uv_project` to C.14 and `measure` to C.15. | Recipe |
@@ -623,12 +623,12 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 - [x] B.1 — all-owner/type attribute round trips, strict query guards, native/web and final integration gates passed; evidence in results.md.
 - [x] B.2 — exact integer arrays/operators, native/JavaScript fixtures and one/eight-domain checks passed; final shipping/native/web gates passed.
 - [x] B.3 — owned Text arrays, all-owner round trips and compiled structured Core/JavaScript checks passed; unsupported numeric producers retain strict refusals.
-- [ ] B.4
-- [ ] B.5
-- [ ] B.6
+- [x] B.4 — owner counts and canonical unique-edge arrays match five native fixtures; focused language/source/graph gates passed.
+- [x] B.5 — all-owner masks, ordered groups and native pattern rules pass round trips, cache and live-source gates.
+- [x] B.6 — native metadata rename/delete/conflict, ordered groups and canonical P pass focused language and JavaScript gates; complete node ports remain B.12.
 - [ ] B.7
 - [x] B.8 — 100,000 exact random keys and 300,054 native noise samples passed with strict reference/domain/JavaScript parity; evidence in results.md.
-- [ ] B.9
+- [x] B.9 — named and CSR segmented reductions match ordered references at one/eight domains, including empty/malformed rows and captured compiled sources.
 - [ ] B.10
 - [ ] B.11
 - [ ] B.12

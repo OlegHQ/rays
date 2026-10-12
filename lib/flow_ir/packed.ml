@@ -9,12 +9,14 @@ type conversion = Core.Region.conversion = To_float | Truncate | Floor | Ceil | 
 type instruction = Core.Region.instruction = Const of float | Input of int * int * int
   | Uniform of int * int | Frame of string | Accumulator of int
   | Binary of binary * int * int | Unary of unary * int | Noise3 of int * int * int * int * int
+  | Fma of int * int * int
+  | Rand_at of int * int
   | Select of int * int * int
   | Int_const of int | Int_input of int | Int_uniform of int | Int_frame of string | Int_accumulator
   | Int_binary of Flow.Packed_ops.integer * int * int
   | Int_compare of Flow.Packed_ops.comparison * int * int | Int_abs of int
   | Convert of conversion * int | Int_select of int * int * int
-  | Guarded of (int * bool) list * instruction | Raise of Ty.t * string * string
+  | Guarded of (int * bool) list * instruction | Raise of Ty.t * string * string * string option
 type iteration = Core.Region.iteration = Zip | Product
 type result = Core.Region.result = Collect | Sum of bool | Accumulate of W.term * bool
 type origin = W.path * int list
@@ -29,9 +31,9 @@ type t = { residual : E.residual; term : W.term; sources : (E.residual * W.term)
   count_source : count_source; origin : origin option;
   sites : (int * W.path * int list) list }
 let rec operands = function
-  | Binary (_,a,b) | Int_binary (_,a,b) | Int_compare (_,a,b) -> [a;b]
+  | Binary (_,a,b) | Int_binary (_,a,b) | Int_compare (_,a,b) | Rand_at (a,b) -> [a;b]
   | Unary (_,a) | Int_abs a | Convert (_,a) -> [a]
-  | Noise3 (a,b,c,_,_) | Select (a,b,c) | Int_select (a,b,c) -> [a;b;c]
+  | Noise3 (a,b,c,_,_) | Fma (a,b,c) | Select (a,b,c) | Int_select (a,b,c) -> [a;b;c]
   | Guarded (guards,body) -> List.map fst guards @ operands body
   | _ -> []
 
@@ -46,7 +48,7 @@ let dependent_of code =
 let rec typed_instruction = function
   | Int_const _ -> false (* compile-time configuration literals may be unused *)
   | Int_input _ | Int_uniform _ | Int_frame _ | Int_accumulator | Int_binary _ | Int_compare _
-  | Int_abs _ | Convert _ | Int_select _ | Raise _ -> true
+  | Int_abs _ | Convert _ | Int_select _ | Raise _ | Rand_at _ -> true
   | Guarded (_,body) -> typed_instruction body
   | _ -> false
 let integer_program t = Array.exists typed_instruction t.code
@@ -150,6 +152,8 @@ let gpu_refusals t =
   if integer_program t then refuse "Integer sources, uniforms and instructions stay on the CPU.";
   if Array.exists (fun instruction -> match unguarded instruction with Binary (Hypot,_,_) -> true | _ -> false) t.code then
     refuse "Hypot requires the CPU binary64 implementation.";
+  if Array.exists (fun instruction -> match unguarded instruction with Fma _ -> true | _ -> false) t.code then
+    refuse "FMA requires exact single-rounding binary64 arithmetic.";
   if t.result <> Collect || not (zipped t) || t.skip <> [||] then
     refuse "GPU kernels require Collect with Zip iteration and no skipped elements.";
   if Array.exists (fun instruction -> match unguarded instruction with Accumulator _ | Int_accumulator -> true | _ -> false) t.code then
@@ -199,9 +203,15 @@ let run_typed ?plane_outputs ?expected_count ~evaluate ~uniform ~seed t ~live =
       n*length) (if t.iteration=Zip then max_int else 1) lengths in
   let strides=Array.make (Array.length inputs) 1 in
   for i=Array.length inputs-2 downto 0 do strides.(i)<-strides.(i+1)*lengths.(i+1) done;
-  let skip=Array.make count false in
-  Array.iter(fun i->if i>=0 && i<count then skip.(i)<-true)t.skip;
-  let kept=count-Array.fold_left(fun n b->if b then n+1 else n)0 skip in
+  let skip=Array.to_list t.skip |> List.filter(fun i->i>=0 && i<count)
+    |> List.sort_uniq Int.compare |> Array.of_list in
+  let skipped_before n =
+    let first=ref 0 and last=ref(Array.length skip) in
+    while !first < !last do
+      let middle=(!first+ !last)/2 in
+      if skip.(middle)<n then first:=middle+1 else last:=middle
+    done; !first in
+  let kept=count-Array.length skip in
   Option.iter(fun n->if n<>kept then V.fail "E_ARRAY_COUNT" "Column sink count differs from the kernel count.")expected_count;
   let collecting=match t.result with Collect|Accumulate(_,true)->true|_->false in
   let integer_outputs=Array.map(fun regs->Array.length regs=1 && Core.Region.integer_register t.code.(regs.(0)))t.outputs in
@@ -211,61 +221,178 @@ let run_typed ?plane_outputs ?expected_count ~evaluate ~uniform ~seed t ~live =
       if integer_outputs.(k) || Array.length lanes<>Array.length t.outputs.(k) then V.fail "E_ARRAY_TYPE" "Float column sinks cannot store integer outputs.";
       Array.iter(Option.iter(fun a->if Array.length a<>kept then V.fail "E_ARRAY_COUNT" "Column sink count differs from the kernel count."))lanes)outputs)plane_outputs;
   let outputs=Array.mapi(fun k registers->if not collecting || plane_outputs<>None then E.No_geo
-    else V.array_init (if integer_outputs.(k) then Ty.Int else match Array.length registers with 2->Ty.Vec2|3->Ty.Vec3|4->Ty.Vec4|_->Ty.Float) kept (fun _->E.Int 0))t.outputs in
-  let integer=Array.make (Array.length t.code) 0 and floats=Array.make (Array.length t.code) 0. in
+    else if integer_outputs.(k) then begin
+      if kept>Sys.max_array_length then V.fail "E_ARRAY_RANGE" "Array length is outside native storage bounds.";
+      E.Int_array(Array.make kept 0)
+    end else
+      let width=Array.length registers in
+      if kept>Sys.max_floatarray_length/width then V.fail "E_ARRAY_RANGE" "Array length is outside native storage bounds.";
+      let data=Array.make (kept*width) 0. in
+      match width with 2->E.Vec2_array data|3->E.Vec3_array data|4->E.Vec4_array data|_->E.Float_array data)t.outputs in
   let banks=Array.map Core.Region.integer_register t.code in
-  let numeric r=if banks.(r) then float integer.(r) else floats.(r) in
   let finite x=V.fin "packed" x in
-  let uniforms=Array.map(fun value->lazy(uniform value))t.uniforms in
+  let concrete=function E.Int _|Float _|Bool _|Vec2 _|Vec3 _|Vec4 _->true|_->false in
+  let uniforms=Array.map(fun value->if concrete value then Lazy.from_val value
+    else lazy(uniform value))t.uniforms in
+  let uniform_components=Array.mapi(fun i value->if concrete t.uniforms.(i)
+    then Lazy.from_val(components t.uniforms.(i)) else lazy(components(Lazy.force value)))uniforms in
   let accumulator=ref (Option.value ~default:(if integer_outputs.(0) then E.Int 0 else E.Float 0.) seed) in
-  let initialized=ref(match t.result with Sum zero->zero|_->true) and output_index=ref 0 in
-  let tables=Hashtbl.create 8 in
-  let noise seed=match Hashtbl.find_opt tables seed with Some n->n|None->let n=Rays_math.Noise.create seed in Hashtbl.add tables seed n;n in
-  let scratch=Rays_math.Noise.Private.create_fbm3_scratch () in
-  for index=0 to count-1 do if not skip.(index) then begin
-    let source i=if t.iteration=Zip then index else index/strides.(i) mod lengths.(i) in
-    let rec execute slot = function
-      | Guarded(guards,body)->if List.for_all(fun(r,yes)->(numeric r<>0.)=yes)guards then execute slot body
-      | Raise(_,code,message)->V.fail code message
-      | Int_const n->integer.(slot)<-n | Const x->floats.(slot)<-finite x
-      | Int_input i->(match V.array_get inputs.(i)(source i)with E.Int n->integer.(slot)<-n|_->V.fail "E_ARRAY_TYPE" "Kernel input changed its packed element type.")
-      | Input(i,_,component)->floats.(slot)<-finite (components(V.array_get inputs.(i)(source i))).(component)
-      | Int_uniform i->(match Lazy.force uniforms.(i)with E.Int n->integer.(slot)<-n|_->V.fail "E_ARRAY_TYPE" "Kernel uniform changed its integer type.")
-      | Int_frame name->(match Flow.Op.find name Flow.Context.value with
-          |Some op->(match op.body ~live ~node:(fun _ _->raise Unsupported)[]with E.Int n->integer.(slot)<-n|_->raise Unsupported)
-          |None->raise Unsupported)
-      | Uniform(i,c)->floats.(slot)<-finite(components(Lazy.force uniforms.(i))).(c)
-      | Frame name->floats.(slot)<-finite(if name="t" then live.Frame_input.t else match Flow.Op.find name Flow.Context.value with Some op->V.num(op.body ~live ~node:(fun _ _->raise Unsupported)[])|None->raise Unsupported)
-      | Int_accumulator->(match !accumulator with E.Int n->integer.(slot)<-n|_->assert false)
-      | Accumulator c->floats.(slot)<-finite(components !accumulator).(c)
-      | Int_binary(op,a,b)->integer.(slot)<-Flow.Packed_ops.integer_apply op integer.(a) integer.(b)
-      | Int_compare(op,a,b)->floats.(slot)<-(if Flow.Packed_ops.comparison_apply op integer.(a) integer.(b)then 1. else 0.)
-      | Int_abs a->integer.(slot)<-abs integer.(a)
-      | Convert(To_float,a)->floats.(slot)<-finite(numeric a)
-      | Convert(op,a)->integer.(slot)<-convert_int op (numeric a)
-      | Int_select(c,a,b)->integer.(slot)<-integer.(if numeric c<>0. then a else b)
-      | Select(c,a,b)->floats.(slot)<-finite(numeric(if numeric c<>0. then a else b))
-      | Binary(op,a,b)->floats.(slot)<-finite(binary_apply op (numeric a)(numeric b))
-      | Unary(op,a)->floats.(slot)<-finite(unary_apply op (numeric a))
-      | Noise3(x,y,z,seed,octaves)->floats.(slot)<-finite(Rays_math.Noise.Private.fbm3_with_scratch scratch (noise seed) ~octaves ~lacunarity:2. ~gain:0.5 ~x:(numeric x)~y:(numeric y)~z:(numeric z)) in
-    Array.iteri execute t.code;
-    Array.iteri(fun k registers->
-      let value=if integer_outputs.(k) then E.Int integer.(registers.(0)) else
-        let xs=Array.map(fun r->finite(numeric r))registers in match xs with
-        |[|x;y|]->E.Vec2(x,y)|[|x;y;z|]->E.Vec3(x,y,z)|[|x;y;z;w|]->E.Vec4(x,y,z,w)|_->E.Float xs.(0) in
-      (match t.result with Collect->()|Accumulate _->accumulator:=value|Sum _->
-        accumulator:=(if not !initialized then value else match !accumulator,value with
-          |E.Int a,E.Int b when t.result=Sum true ->E.Int(Flow.Packed_ops.integer_apply Iadd a b)
-          |a,b->V.arith "array/sum" (+.) a b));
-      if collecting then match plane_outputs with
-        |Some outputs->Array.iteri(fun c r->Option.iter(fun data->data.(!output_index)<-finite(numeric r))outputs.(k).(c))registers
-        |None->(match outputs.(k)with E.Int_array data->V.int_array_put data !output_index value
-          |E.Float_array data->V.array_put data 1 !output_index value
-          |E.Vec2_array data->V.array_put data 2 !output_index value
-          |E.Vec3_array data->V.array_put data 3 !output_index value
-          |E.Vec4_array data->V.array_put data 4 !output_index value|_->assert false))t.outputs;
-    initialized:=true;incr output_index
-  end done;
+  let initialized=ref(match t.result with Sum zero->zero|_->true) in
+  let block_size=1024 and blocks_per_chunk=16 in
+  let blocks=if count=0 then 0 else (count-1)/block_size+1 in
+  let chunks=if blocks=0 then 0 else (blocks-1)/blocks_per_chunk+1 in
+  let chunk chunk =
+    let integer=Array.make (Array.length t.code*block_size) 0
+    and floats=Array.make (Array.length t.code*block_size) 0. in
+    let numeric r j=let at=r*block_size+j in if banks.(r) then float integer.(at) else floats.(at) in
+    let frame=Array.map(fun instruction->lazy(match unguarded instruction with
+      | Int_frame name | Frame name ->
+          if name="t" then E.Float live.Frame_input.t else
+          (match Flow.Op.find name Flow.Context.value with
+           | Some op->op.body ~live ~node:(fun _ _->raise Unsupported)[]
+           | None->raise Unsupported)
+      | _->E.No_geo))t.code in
+    let tables=Hashtbl.create 8 in
+    let noise seed=match Hashtbl.find_opt tables seed with Some n->n|None->
+      let n=Rays_math.Noise.create seed in Hashtbl.add tables seed n;n in
+    let scratch=Rays_math.Noise.Private.create_fbm3_scratch () in
+    let contiguous=t.iteration=Zip && skip=[||] in
+    let indices=if contiguous then [||] else Array.make block_size 0 in
+    for block=chunk*blocks_per_chunk to min blocks ((chunk+1)*blocks_per_chunk)-1 do
+      let start=block*block_size and limit=min count ((block+1)*block_size) in
+      let before=skipped_before start in
+      let length=if skip=[||] then begin
+          if not contiguous then for j=0 to limit-start-1 do indices.(j)<-start+j done;
+          limit-start
+        end else
+        let skipped=ref before and length=ref 0 in
+        for i=start to limit-1 do
+          if !skipped<Array.length skip && skip.(!skipped)=i then incr skipped
+          else (indices.(!length)<-i;incr length)
+        done; !length in
+      let source j i=let index=if contiguous then start+j else indices.(j) in
+        if t.iteration=Zip then index else index/strides.(i) mod lengths.(i) in
+      let rec execute slot instruction first last =
+        let at=slot*block_size in
+        match instruction with
+        | Guarded(guards,body)->
+            let rec selected j=function []->true|(r,yes)::rest->(numeric r j<>0.)=yes && selected j rest in
+            let next=ref first in
+            while !next<last do
+              while !next<last && not(selected !next guards) do incr next done;
+              let first= !next in
+              while !next<last && selected !next guards do incr next done;
+              if first< !next then execute slot body first !next
+            done
+        | Raise(_,code,message,cause)->if first<last then V.raise_diagnostic(Flow.Diagnostic.error ?cause ~code message)
+        | Int_const n->Array.fill integer (at+first) (last-first) n
+        | Const x->if first<last then Array.fill floats (at+first) (last-first) (finite x)
+        | Int_input i when contiguous->(match inputs.(i) with
+            |E.Int_array data->Array.blit data (start+first) integer (at+first) (last-first)
+            |value->for j=first to last-1 do integer.(at+j)<-(match V.array_get value (start+j) with
+                |E.Int n->n|_->V.fail "E_ARRAY_TYPE" "Kernel input changed its packed element type.") done)
+        | Int_input i->for j=first to last-1 do integer.(at+j)<-(match inputs.(i)with
+            |E.Int_array data->data.(source j i)
+            |value->(match V.array_get value (source j i)with E.Int n->n
+              |_->V.fail "E_ARRAY_TYPE" "Kernel input changed its packed element type.")) done
+        | Input(i,width,component)->
+            let load data = for j=first to last-1 do
+              let x=data.(source j i*width+component) in
+              if not(Float.is_finite x) then V.fail "E_NONFINITE" "packed produced a nonfinite value.";
+              floats.(at+j)<-x
+            done in
+            (match inputs.(i)with
+             |E.Float_array data when width=1->load data
+             |E.Vec2_array data when width=2->load data
+             |E.Vec3_array data when width=3->load data
+             |E.Vec4_array data when width=4->load data
+             |value->for j=first to last-1 do
+                 floats.(at+j)<-finite(components(V.array_get value (source j i))).(component)
+               done)
+        | Int_uniform i->if first<last then (match Lazy.force uniforms.(i)with
+            |E.Int n->Array.fill integer (at+first) (last-first) n
+            |_->V.fail "E_ARRAY_TYPE" "Kernel uniform changed its integer type.")
+        | Int_frame _->if first<last then (match Lazy.force frame.(slot)with
+            |E.Int n->Array.fill integer (at+first) (last-first) n|_->raise Unsupported)
+        | Uniform(i,c)->if first<last then Array.fill floats (at+first) (last-first)
+            (finite(Lazy.force uniform_components.(i)).(c))
+        | Frame _->if first<last then Array.fill floats (at+first) (last-first)
+            (finite(V.num(Lazy.force frame.(slot))))
+        | Int_accumulator->(match !accumulator with E.Int n->Array.fill integer (at+first) (last-first) n|_->assert false)
+        | Accumulator c->Array.fill floats (at+first) (last-first) (finite(components !accumulator).(c))
+        | Int_binary(op,a,b)->let a=a*block_size and b=b*block_size in
+            for j=first to last-1 do integer.(at+j)<-Flow.Packed_ops.integer_apply op integer.(a+j) integer.(b+j) done
+        | Int_compare(op,a,b)->let a=a*block_size and b=b*block_size in
+            for j=first to last-1 do floats.(at+j)<-(if Flow.Packed_ops.comparison_apply op integer.(a+j) integer.(b+j)then 1. else 0.) done
+        | Int_abs a->let a=a*block_size in for j=first to last-1 do integer.(at+j)<-abs integer.(a+j) done
+        | Convert(To_float,a)->for j=first to last-1 do floats.(at+j)<-finite(numeric a j) done
+        | Convert(op,a)->for j=first to last-1 do integer.(at+j)<-convert_int op (numeric a j) done
+        | Int_select(c,a,b)->let a=a*block_size and b=b*block_size in
+            for j=first to last-1 do integer.(at+j)<-integer.((if numeric c j<>0. then a else b)+j) done
+        | Select(c,a,b)->for j=first to last-1 do floats.(at+j)<-finite(numeric(if numeric c j<>0. then a else b)j) done
+        | Binary(op,a,b)->for j=first to last-1 do floats.(at+j)<-finite(binary_apply op (numeric a j)(numeric b j)) done
+        | Fma(a,b,c)->for j=first to last-1 do floats.(at+j)<-finite(Float.fma (numeric a j)(numeric b j)(numeric c j)) done
+        | Rand_at(seed,index)->let seed=seed*block_size and index=index*block_size in
+            for j=first to last-1 do floats.(at+j)<-Flow.Packed_ops.rand_at
+              integer.(seed+j) integer.(index+j) done
+        | Unary(op,a)->for j=first to last-1 do floats.(at+j)<-finite(unary_apply op (numeric a j)) done
+        | Noise3(x,y,z,seed,octaves)->for j=first to last-1 do
+            floats.(at+j)<-finite(Rays_math.Noise.Private.fbm3_with_scratch scratch (noise seed)
+              ~octaves ~lacunarity:2. ~gain:0.5 ~x:(numeric x j)~y:(numeric y j)~z:(numeric z j)) done in
+      let execute_all dependent first last=
+        for slot=0 to Array.length t.code-1 do
+          if t.dependent.(slot)=dependent then execute slot t.code.(slot) first last
+        done in
+      execute_all false 0 length;
+      (* Instructions validate selected float results before collection. *)
+      if t.result=Collect then Array.iteri(fun k registers->
+        let output_index=start-before in
+        match plane_outputs,outputs.(k) with
+        |None,E.Int_array data->Array.blit integer (registers.(0)*block_size) data output_index length
+        |None,E.Float_array data when not banks.(registers.(0))->
+            Array.blit floats (registers.(0)*block_size) data output_index length
+        |Some outputs,_->Array.iteri(fun c r->Option.iter(fun data->
+            if banks.(r) then for j=0 to length-1 do data.(output_index+j)<-float integer.(r*block_size+j) done
+            else Array.blit floats (r*block_size) data output_index length)outputs.(k).(c))registers
+        |None,(E.Float_array data|Vec2_array data|Vec3_array data|Vec4_array data)->
+            let width=Array.length registers in
+            Array.iteri(fun c r->
+              let at=r*block_size in
+              if banks.(r) then for j=0 to length-1 do
+                data.((output_index+j)*width+c)<-float integer.(at+j)
+              done else for j=0 to length-1 do
+                data.((output_index+j)*width+c)<-floats.(at+j)
+              done)registers
+        |_->assert false)t.outputs else for j=0 to length-1 do
+        if t.result<>Collect then execute_all true j (j+1);
+        let output_index=start-before+j in
+        for k=0 to Array.length t.outputs-1 do
+          let registers=t.outputs.(k) in
+          if t.result<>Collect then begin
+            let value=if integer_outputs.(k) then E.Int integer.(registers.(0)*block_size+j) else
+              let xs=Array.map(fun r->finite(numeric r j))registers in match xs with
+              |[|x;y|]->E.Vec2(x,y)|[|x;y;z|]->E.Vec3(x,y,z)|[|x;y;z;w|]->E.Vec4(x,y,z,w)|_->E.Float xs.(0) in
+            accumulator:=(match t.result with
+              |Collect->assert false|Accumulate _->value|Sum _->
+                if not !initialized then value else match !accumulator,value with
+                  |E.Int a,E.Int b when t.result=Sum true->E.Int(Flow.Packed_ops.integer_apply Iadd a b)
+                  |a,b->V.arith "array/sum" (+.) a b)
+          end;
+          if collecting then match plane_outputs,outputs.(k)with
+            |Some outputs,_->Array.iteri(fun c r->Option.iter(fun data->data.(output_index)<-finite(numeric r j))outputs.(k).(c))registers
+            |None,E.Int_array data->data.(output_index)<-integer.(registers.(0)*block_size+j)
+            |None,(E.Float_array data|Vec2_array data|Vec3_array data|Vec4_array data)->
+                for c=0 to Array.length registers-1 do
+                  data.(output_index*Array.length registers+c)<-finite(numeric registers.(c)j)
+                done
+            |_->assert false
+        done;
+        if t.result<>Collect then initialized:=true
+      done
+    done in
+  if t.result=Collect && Array.for_all concrete t.uniforms && count>=4096 then
+    Rays_math.Parallel.for_ ~chunk_size:1 ~start:0 ~finish:(chunks-1) chunk
+  else for i=0 to chunks-1 do chunk i done;
   if plane_outputs<>None then [] else if collecting then Array.to_list outputs else
     [if kept=0 then match t.result,seed with Accumulate _,Some seed->seed|Sum false,_->E.Int 0|_-> !accumulator else !accumulator]
 
@@ -314,8 +441,8 @@ let rec run_all ?column_source ?plane_outputs ?expected_count ?state ?elems ?res
     let seed = match t.result with
       | Accumulate (seed, _) -> Some (get (evaluate t.residual seed))
       | _ -> None in
-    (* ponytail: guarded live captures keep the sequential VM; parallel lazy
-       captures need a separate preparation pass before workers use Eval state. *)
+    (* ponytail: guarded live captures keep sequential blocks; preparing only
+       selected captures on the main domain is needed before parallel execution. *)
     let guarded_capture = Array.exists (function
       | Guarded (_, body) -> (match unguarded body with
           | Uniform (index, _) -> (match t.uniforms.(index) with
@@ -664,6 +791,13 @@ let rec run_all ?column_source ?plane_outputs ?expected_count ?state ?elems ?res
                      | _ -> assert false in
                    scratch.(at+j) <- if result then 1. else 0.
                  done)
+        | Fma (a,b,c) ->
+            let a=a*block_size and b=b*block_size and c=c*block_size in
+            for j=first to last-1 do
+              let value=Float.fma scratch.(a+j) scratch.(b+j) scratch.(c+j) in
+              if not(Float.is_finite value)then raise Nonfinite;
+              scratch.(at+j)<-value
+            done
         | Unary (operation, a) ->
             let a = a * block_size in
             (match operation with
@@ -676,7 +810,7 @@ let rec run_all ?column_source ?plane_outputs ?expected_count ?state ?elems ?res
                  if not(Float.is_finite x)then raise Nonfinite;scratch.(at+j)<-x done
              | Not -> for j = first to last - 1 do scratch.(at+j) <- if scratch.(a+j) = 0. then 1. else 0. done)
         | Int_input _ | Int_uniform _ | Int_frame _ | Int_accumulator | Int_binary _ | Int_compare _
-        | Int_abs _ | Convert _ | Int_select _ | Raise _ -> raise Unsupported in
+        | Int_abs _ | Convert _ | Int_select _ | Raise _ | Rand_at _ -> raise Unsupported in
       let execute dependent first last =
       for slot = 0 to Array.length t.code - 1 do
         if t.dependent.(slot) = dependent && not omitted.(slot) then
@@ -914,6 +1048,7 @@ let rec run_all ?column_source ?plane_outputs ?expected_count ?state ?elems ?res
     | Nonfinite -> Error (Flow.Diagnostic.error ~code:"E_NONFINITE" "Packed kernel produced a nonfinite result.")
     | Unsupported -> Error (Flow.Diagnostic.error ~code:"E_KERNEL" "Kernel needs reference evaluation.")
     | V.Fail (code, message, span) -> Error (Flow.Diagnostic.error ?span ~code message)
+    | V.Diagnostic_fail d -> Error d
     | Invalid_argument message -> Error (Flow.Diagnostic.error ~code:"E_KERNEL" ("Kernel needs reference evaluation: " ^ message))
     | Out_of_memory -> Error (Flow.Diagnostic.error ~code:"E_ARRAY_MEMORY" "Frame data exceeds available memory.")) in
   match result with Ok _ -> result | Error _ when strict || plane_outputs<>None || Array.length t.outputs > 1 -> result | Error _ ->
@@ -935,6 +1070,60 @@ let force_into ?state ?elems ?resolve ?measure ?strict ~column_source ~count ~ou
   Result.map (fun _->()) (run_all ~column_source ~plane_outputs:outputs ~expected_count:count ?state ?elems ?resolve ?measure ?strict t ~live)
 
 module Private = struct
+  let argument_types (t:t) =
+    let types=Hashtbl.create 8 and visited=Hashtbl.create 8 in
+    let rec value = function
+      | E.Source ("$core/argument",ty,["index",E.Int index]) ->
+          if index<0 then V.fail "E_CORE_ARGUMENT" "Invalid compiled argument index.";
+          (match Hashtbl.find_opt types index with
+           | Some old when old<>ty -> V.fail "E_CORE_ARGUMENT" "Compiled argument types disagree."
+           | _ -> Hashtbl.replace types index ty)
+      | E.Source ("$core/argument",_,_) ->
+          V.fail "E_CORE_ARGUMENT" "Invalid compiled argument declaration."
+      | E.Residual r -> residual r
+      | Fn fn -> List.iter (fun (_,v)->value v) (E.Private.function_bindings fn)
+      | List values -> Array.iter value values
+      | Record fields | Struct(_,_,fields) | Source(_,_,fields) -> List.iter (fun (_,v)->value v) fields
+      | _ -> ()
+    and residual r =
+      let id=E.Private.residual_id r in
+      if not(Hashtbl.mem visited id) then begin
+        Hashtbl.add visited id ();
+        List.iter(fun(_,v)->value v)(E.Private.residual_view r).bindings
+      end in
+    residual t.residual;
+    Array.iter value t.uniforms;
+    Array.iter(fun(r,_)->residual r)t.sources;
+    List.iter(fun(r,_)->residual r)t.stages;
+    Array.init(Hashtbl.length types)(fun index -> match Hashtbl.find_opt types index with
+      |Some ty->ty |None->V.fail "E_CORE_ARGUMENT" "Compiled argument indices must be contiguous.")
+  let bind_arguments (t:t) arguments =
+    try
+      let types=argument_types t in
+      if Array.length types<>Array.length arguments then
+        V.fail "E_CORE_ARGUMENT" "Compiled region argument count differs from its declaration.";
+      Array.iteri(fun index value ->
+        if V.ty_of value<>types.(index) then
+          V.fail "E_CORE_ARGUMENT" "Compiled region argument storage differs from its declared type.";
+        V.validate value) arguments;
+      if types=[||] then Ok t else
+      let rec value = function
+        | E.Source("$core/argument",_,["index",E.Int index]) -> arguments.(index)
+        | Residual r -> Residual(residual r)
+        | Fn fn -> Fn(E.Private.map_function_bindings value fn)
+        | List values -> List(Array.map value values)
+        | Record fields -> Record(List.map(fun(name,v)->name,value v)fields)
+        | Struct(name,ty,fields)->Struct(name,ty,List.map(fun(name,v)->name,value v)fields)
+        | Source(name,ty,fields)->Source(name,ty,List.map(fun(name,v)->name,value v)fields)
+        | v -> v
+      and residual r =
+        let view=E.Private.residual_view r in
+        E.Private.with_bindings r ~term:view.term (List.map(fun(name,v)->name,value v)view.bindings) in
+      Ok {t with residual=residual t.residual;uniforms=Array.map value t.uniforms;
+        sources=Array.map(fun(r,term)->residual r,term)t.sources;
+        stages=List.map(fun(r,term)->residual r,term)t.stages}
+    with V.Fail(code,message,span)->Error(Flow.Diagnostic.error ?span ~code message)
+      |V.Diagnostic_fail d->Error d
   let trace = trace
   let ordered_add = ordered_add
   let output_reachable = output_reachable
@@ -987,6 +1176,7 @@ module Private = struct
     with Failed error -> Error error
       | Unsupported -> Error (Flow.Diagnostic.error ~code:"E_KERNEL" "Kernel inputs need reference evaluation.")
       | V.Fail (code,message,span) -> Error (Flow.Diagnostic.error ?span ~code message)
+      | V.Diagnostic_fail d -> Error d
       | Invalid_argument message -> Error (Flow.Diagnostic.error ~code:"E_KERNEL" ("Kernel inputs need reference evaluation: " ^ message))
       | Out_of_memory -> Error (Flow.Diagnostic.error ~code:"E_ARRAY_MEMORY" "Frame data exceeds available memory."))
   let prepare ?state ?resolve ?measure (t : t) ~live =

@@ -56,6 +56,9 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
     | Known ((V.Source _ | Struct (_, Flow.Ty.Array _, _)) as value) ->
         (match emit statements source (V.ty_of value) (Source value) with
          | Computed (n,_) -> n | _ -> assert false)
+    | Known (V.Deferred(ty,id)) when Flow.Ty.is_cooked ty ->
+        (match emit statements source ty (Source(V.Source("$core/cooked",ty,["id",V.Int id]))) with
+         |Computed(n,_)->n|_->assert false)
     | Known (V.Record fields) -> ensure statements cache source (Record_fields (List.map (fun (name,v) -> name,Known v) fields))
     | Known (V.List items) when C.literal_of_value (V.List items)=None ->
         if Array.length items>4096 then refuse "list_limit";
@@ -123,7 +126,8 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
         | Record_fields fields -> fields | _ -> fields)
     | Known value ->
         (try Known (V.coerce_to ty value)
-         with V.Fail (code,message,_) -> primitive statements cache source ty (Fail (code,message)) [])
+         with V.Fail (code,message,_) -> primitive statements cache source ty (Fail (code,message)) []
+           | V.Diagnostic_fail d -> primitive statements cache source ty (Fail_diagnostic d) [])
     | Record_fields fields as v -> (match ty with
         | Flow.Ty.Any -> v
         | Record wanted -> Record_fields (List.map (fun (name,v) -> name,
@@ -153,6 +157,15 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
     match name with
     | "exp" -> Some C.Exp | "floor" -> Some Floor | "ceil" -> Some Ceil | "round" -> Some Round
     | "int" -> Some Int_convert | "float" -> Some Float_convert | "equal?" -> Some Equal
+    | "text/blank?" -> Some Text_blank | "text/trim" -> Some Text_trim | "text/lower" -> Some Text_lower | "text/repr" -> Some Text_repr
+    | "error" -> Some Error
+    | "fma" -> Some Fma
+    | "text/table_decode" -> Some Text_table_decode
+    | "text/table_encode" -> Some Text_table_encode
+    | "array/min" -> Some (Array_reduce Minimum) | "array/max" -> Some (Array_reduce Maximum)
+    | "array/segment_sum" -> Some (Array_segment Sum)
+    | "array/segment_min" -> Some (Array_segment Minimum)
+    | "array/segment_max" -> Some (Array_segment Maximum)
     | "int/add" -> Some (Integer Iadd) | "int/sub" -> Some (Integer Isub)
     | "int/mul" -> Some (Integer Imul) | "int/div" -> Some (Integer Idiv) | "int/mod" -> Some (Integer Imod)
     | "int/and" -> Some (Integer Iand) | "int/or" -> Some (Integer Ior) | "int/xor" -> Some (Integer Ixor)
@@ -162,9 +175,9 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
     | "int/eq" -> Some (Integer_compare Ieq)
     | "array/range" -> Some Array_range | "array/int" -> Some Array_int
     | "array/text" -> Some Array_text
-    | "array/float" -> Some Array_float | "array/vec3" -> Some Array_vec3
+    | "array/float" -> Some Array_float | "array/vec3" -> Some Array_vec3 | "array/vec4" -> Some Array_vec4
     | "array/nth" -> Some Array_nth | "array/count" -> Some Array_count | "array/slice" -> Some Array_slice
-    | "array/concat" -> Some Array_concat | "value/rand" -> Some Rand | "noise3" -> Some Noise3
+    | "array/concat" -> Some Array_concat | "value/rand" -> Some Rand | "rand/at" -> Some Rand_at | "noise3" -> Some Noise3
     | _ -> None
   and residual statements cache r =
     let id = E.Private.residual_id r in
@@ -197,13 +210,27 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
       | Op {op="array/sum";_} -> true | _ -> false) in
     let packed=if not strict || not candidate then None else Option.bind !current (fun parent ->
       let names=E.Private.free_names x in
-      let bindings=List.filter_map (fun name -> match Names.find_opt name env with
-        | Some (Known value) -> Some (name,value) | _ -> None) names in
-      if List.exists (fun name -> Names.mem name env && not (List.mem_assoc name bindings)) names then None else
-      let r=E.Private.with_bindings parent ~term:x bindings in
-      Option.map (fun p->r,Packed.to_region p) (Packed.compile r x)) in
+      let arguments=ref [] in
+      let rec capture = function
+        | Known value -> value
+        | Computed(id,ty) ->
+            let index=match List.find_index((=) id) !arguments with
+              | Some index -> index | None -> let index=List.length !arguments in arguments:= !arguments @ [id];index in
+            V.Source("$core/argument",ty,["index",V.Int index])
+        | Record_fields fields -> V.Record(List.map(fun(name,v)->name,capture v)fields)
+        | Callable(Closure cl) -> V.Fn(E.Private.compiled_function parent
+            ~instance:cl.instance ~prefix:cl.prefix ~zone:cl.zone ~params:cl.params ~body:cl.body
+            ~bindings:(List.map(fun(name,v)->name,capture v)(Names.bindings cl.env)))
+        | _ -> refuse "packed_capture" in
+      try
+        let bindings=List.filter_map(fun name -> Option.map(fun v->name,capture v)(Names.find_opt name env)) names in
+        let r=E.Private.with_bindings parent ~term:x bindings in
+        Option.bind (Packed.compile r x) (fun p->
+          let region=Packed.to_region p in
+          if region_allowed region then Some(r,region,!arguments) else None)
+      with Unsupported _ -> None) in
     match packed with
-    | Some (r,packed) -> region statements packed (E.Private.residual_view r)
+    | Some (r,packed,args) -> region ~args statements packed (E.Private.residual_view r)
     | None ->
     if candidate && strict then refuse "packed_kernel";
     match x.node with
@@ -257,22 +284,41 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
         let o = match Flow.Op.find ~extra:(E.Private.residual_ops (Lazy.force root)) op Flow.Context.value with
           | Some o -> o | _ -> refuse op in
         let args = List.map (fun (n,t) -> n,compile t) args in
-        let source_value = if o.live then None else
-          let rec known = function [] -> Some []
-            | (name,Known v)::rest -> Option.map (fun rest -> (name,v)::rest) (known rest)
-            | _ -> None in
-          Option.bind (known args) (fun args ->
-            try match o.body ~live:(Frame_input.at_time 0.) ~node:(fun _ _ -> refuse op) args with
-              | (V.Source _ | Struct (_, Flow.Ty.Array _, _)) as v -> Some v
-              | _ -> None
-            with Unsupported _ | V.Fail _ -> None) in
-        (match source_value with Some v -> Known v | None ->
+        let rec data_source=function
+          | V.Source _ | Struct(_,Flow.Ty.Array _,_) -> true
+          | V.Record fields->List.exists(fun(_,v)->data_source v)fields
+          | _->false in
+        let prototype=if o.live then None else try Some(o.body ~live:(Frame_input.at_time 0.)
+            ~node:(fun _ _->refuse op)
+            (List.mapi(fun i(name,value)->name,match value with
+              |Known v->v|_->V.Source("$core/argument",type_of value,["index",V.Int i]))args))
+            with Unsupported _ | V.Fail _ | V.Diagnostic_fail _ | Invalid_argument _->None in
+        let rec host=function
+          | V.Source("$core/argument",_,["index",V.Int index])->snd(List.nth args index)
+          | (V.Source(name,ty,fields)|Struct(name,(Flow.Ty.Array _ as ty),fields)) as value ->
+              if List.for_all(fun(_,v)->match host v with Known _->true|_->false)fields then Known value else
+              emit statements source ty (Host_source{name;ty;
+                args=List.map(fun(name,v)->name,ensure statements cache source (host v))fields})
+          | V.Record fields->Record_fields(List.map(fun(name,v)->name,host v)fields)
+          | value->Known value in
+        if Flow.Ty.is_cooked x.ty then
+          emit statements source x.ty (Host_source{name="$core/operator";ty=x.ty;
+            args=List.map(fun(name,v)->name,ensure statements cache source v)
+              (("$name",Known(V.Text op))::args)}) else
+        (match prototype with Some value when data_source value->host value | _ ->
         if o.ctx<>Flow.Context.value || o.shape<>Flow.Op.Scalar || not (shipped o) then refuse op;
         (match known_values args with
         | Some values when not o.live ->
             (try Known (o.body ~live:(Frame_input.at_time 0.) ~node:(fun _ _ -> refuse op) values)
-             with V.Fail (code,message,_) -> primitive statements cache source x.ty (Fail (code,message)) [])
+             with V.Fail (code,message,_) -> primitive statements cache source x.ty (Fail (code,message)) []
+               | V.Diagnostic_fail d -> primitive statements cache source x.ty (Fail_diagnostic d) [])
         | _ -> operation statements cache source x.ty op args))
+    | Call {kind;ctx;args}->
+        if not(Flow.Ty.is_cooked x.ty)then refuse "call";
+        let args=List.map(fun(name,t)->name,ensure statements cache source (compile t))args in
+        emit statements source x.ty (Host_source{name="$core/catalog";ty=x.ty;
+          args=("$name",ensure statements cache source (Known(V.Text kind)))::
+            ("$context",ensure statements cache source (Known(V.Text(Flow.Context.name ctx))))::args})
     | Let (bindings,body) ->
         let env = List.fold_left (fun env (pattern,value) ->
           let value=term statements cache source env value in
@@ -383,7 +429,7 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
     | Loop {kind;accs;clauses;skip;body;zone} ->
         loop statements cache source env x.ty kind accs (List.map (fun (p,t) -> p,Some t) clauses) skip body zone None
     | node -> refuse (match node with
-        | Vec _ -> "vector" | Lit _ -> "literal" | Call _ -> "call"
+        | Vec _ -> "vector" | Lit _ -> "literal"
         | Graph_ref _ -> "ref"
         | _ -> assert false)
   and packed_region r (view : E.Private.residual_view) : C.Region.t option =
@@ -400,12 +446,12 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
         (try Option.bind (Packed.compile r view.term) (fun packed ->
            let region=Packed.to_region packed in if region_allowed region then Some region else None) with _ -> None)
     | _ -> None
-  and region statements packed (view : E.Private.residual_view) =
+  and region ?(args=[]) statements packed (view : E.Private.residual_view) =
     let index=List.length !regions in
     regions:=!regions @ [packed];
     let source={(source_of_view view) with C.span=Some view.term.form.span} in
     let result=local view.term.ty in
-    statements:=statement (number ()) source (Invoke {region=index;args=[];result}) :: !statements;
+    statements:=statement (number ()) source (Invoke {region=index;args;result}) :: !statements;
     Computed (result,view.term.ty)
   and state_term statements cache source env (x : W.term) previous_only =
     match x.node with
@@ -460,7 +506,8 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
         let op=Option.get (Flow.Op.find "nth" Flow.Context.value) in
         (try resolve statements cache (Known (op.body ~live:(Frame_input.at_time 0.)
             ~node:(fun _ _ -> refuse "nth") ["list",V.List items;"index",index]))
-         with V.Fail (code,message,_) -> primitive statements cache source Flow.Ty.Any (Fail (code,message)) [])
+         with V.Fail (code,message,_) -> primitive statements cache source Flow.Ty.Any (Fail (code,message)) []
+           | V.Diagnostic_fail d -> primitive statements cache source Flow.Ty.Any (Fail_diagnostic d) [])
     | Known (V.List items),index when C.literal_of_value (V.List items)=None ->
         let indices=Known (V.List (Array.init (Array.length items) (fun i -> V.Int i))) in
         let index=sequence_get statements cache source indices index in
@@ -1223,7 +1270,7 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
     Ok {C.constants=Array.of_list (List.rev !constants);locals=Array.of_list (List.rev !locals);
       body=List.rev !body;results;state_slots=Array.of_list (List.rev !slots);regions=Array.of_list !regions;call_slots= !next_call}
   with Unsupported name -> Error name
-    | V.Fail _ | Not_found | Invalid_argument _ | Failure _ -> Error "constant"
+    | V.Fail _ | V.Diagnostic_fail _ | Not_found | Invalid_argument _ | Failure _ -> Error "constant"
 
 let lower ?(strict=false) root = lower_with ~strict ~region_allowed:(fun _ -> true) ~draw:None (Lazy.from_val root)
 let lower_draw ?(region_allowed=fun _ -> true) ~root build = lower_with ~strict:false ~region_allowed ~draw:(Some build) root

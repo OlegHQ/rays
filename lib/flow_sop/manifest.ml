@@ -108,7 +108,7 @@ let lisp_node ~calls (node : Flow.Defnode.t) =
     elementwise = (match f.elementwise with Points -> Points | Primitives -> Primitives | Irregular -> None);
     reads = f.reads; writes = f.writes;
     topology = (if f.preserves_topology then Preserved else Changed); exact = f.exact}) node.kind.facts in
-  entry ?facts:declaration ~qualified:node.kind.qualified ~key ~operation:key
+  entry ?facts:declaration ~qualified:node.kind.qualified ~key ~operation:node.operation
     ~label:node.label ~category:node.category ~slots ~fields:node.fields
     ~keyword_inputs:node.keyword_inputs
     ~result:node.kind.outputs
@@ -130,7 +130,8 @@ let generate ?extra ?nodes factories =
       (Catalog.descriptor f)) factories @ List.map (fun (node : Flow.Defnode.t) ->
         let definition = List.find (fun (definition : Flow.Workspace.node_definition) ->
           definition.kind.qualified = node.kind.qualified) checked.nodes in
-        lisp_node ~calls:(Flow.Workspace.kind_calls definition.body.body) node) nodes in
+        lisp_node ~calls:(Flow.Workspace.kind_calls definition.body.body)
+          {node with fields=definition.fields;kind=definition.kind}) nodes in
     let payload = group "version" [string_of_int version] ^ "\n" ^
       group "kinds" kinds in
     let digest = Digest.to_hex (Digest.string payload) in

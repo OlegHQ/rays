@@ -52,7 +52,10 @@ let first_draw (doc : Doc.t) =
   | None -> Error (D.error ~code:"E_WEB_GRAPH" "The workspace has no draw graph to export.")
 
 let fixed_region (region : C.Region.t) =
-  not (Array.exists (fun (residual,term) ->
+  (match Flow_ir.Packed.of_region region with
+   |Ok packed -> Flow_ir.Packed.Private.argument_types packed=[||]
+   |Error _ -> false)
+  && not (Array.exists (fun (residual,term) ->
     E.frame_dependent (E.Residual (E.Private.with_bindings residual ~term []))) region.sources
     || Array.exists E.frame_dependent region.uniforms)
 
@@ -184,7 +187,7 @@ let draw_uses : C.draw -> int list = function
 let expr_uses : C.expr -> int list = function
   | Constant _ | Frame _ | Call_index _ | Source _ -> []
   | Local n -> [n]
-  | Prim (_, args) | Fields args -> List.map snd args
+  | Prim (_, args) | Fields args | Host_source {args;_} -> List.map snd args
   | Vec ns | Items ns -> ns
   | Field (n, _) -> [n]
 

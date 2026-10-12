@@ -14,11 +14,13 @@ type byte_mode = Clamped | Unclamped
 type primitive =
   | Numeric of Flow.Packed_ops.binary | Math of Flow.Packed_ops.unary
   | Remainder | Exp | Floor | Ceil | Round | Int_convert | Float_convert
-  | Integer of integer | Integer_compare of Flow.Packed_ops.comparison | Equal | Show | Text_concat
+  | Integer of integer | Integer_compare of Flow.Packed_ops.comparison | Equal | Show | Text_concat | Text_blank
+  | Text_trim | Text_lower | Text_repr | Text_table_decode | Text_table_encode
   | Sequence_length | Sequence_get | Sequence_build | Sequence_slice | Sequence_concat
-  | Array_range | Array_int | Array_text | Array_float | Array_vec3 | Array_nth | Array_count | Array_slice | Array_concat
-  | Rand | Noise3 | Color_parse | Color_byte of byte_mode
-  | Coerce of Flow.Ty.t | Truthy | Fail of string * string
+  | Array_range | Array_int | Array_text | Array_float | Array_vec3 | Array_vec4 | Array_nth | Array_count | Array_slice | Array_concat
+  | Array_reduce of Flow.Op.Private.reduction | Array_segment of Flow.Op.Private.reduction
+  | Rand | Rand_at | Fma | Noise3 | Color_parse | Color_byte of byte_mode
+  | Coerce of Flow.Ty.t | Truthy | Error | Fail of string * string | Fail_diagnostic of Flow.Diagnostic.t
 
 type frame_field = Time | Dt | Index | Tick | Width | Height | Pointer_x | Pointer_y | Input
 
@@ -29,6 +31,9 @@ type expr =
       (** Immutable host-owned source capture, materialized only when this
           expression executes. Native hosts supply the resolver; the current
           2D web exporter refuses these captures. *)
+  | Host_source of { name : string; ty : Flow.Ty.t; args : (string * int) list }
+      (** Construct a typed host source from computed arguments. The ordinary
+          resolver materializes it only when this expression executes. *)
   | Prim of primitive * (string * int) list
   | Vec of int list | Fields of (string * int) list | Items of int list
   | Field of int * string
@@ -92,13 +97,13 @@ module Region : sig
     | Const of float | Input of int * int * int  (** source, width, component *)
     | Uniform of int * int | Frame of string | Accumulator of int
     | Binary of Flow.Packed_ops.binary * int * int | Unary of Flow.Packed_ops.unary * int
-    | Noise3 of int * int * int * int * int | Select of int * int * int
+    | Noise3 of int * int * int * int * int | Fma of int * int * int | Rand_at of int * int | Select of int * int * int
     | Int_const of int | Int_input of int | Int_uniform of int | Int_frame of string | Int_accumulator
     | Int_binary of Flow.Packed_ops.integer * int * int
     | Int_compare of Flow.Packed_ops.comparison * int * int | Int_abs of int
     | Convert of conversion * int | Int_select of int * int * int
     | Guarded of (int * bool) list * instruction
-    | Raise of Flow.Ty.t * string * string
+    | Raise of Flow.Ty.t * string * string * string option
   val integer_register : instruction -> bool
   val operands : instruction -> int list
   type iteration = Zip | Product

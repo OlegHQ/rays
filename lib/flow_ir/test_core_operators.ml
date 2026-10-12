@@ -10,6 +10,17 @@ let rec same (a : E.value) (b : E.value) = match a,b with
 (* Every value-context scalar operator the closure compiler accepts, with at least one
    live expression. The coverage check below fails when an operator is added without a case. *)
 let cases = [
+  "text/repr","(text/repr (str \"é日本😀\\t\\n\\\\\\\"\" t))";
+  "fma","(fma t 0.9999999999999998 -1.)";
+  "array/vec4","(array/nth (array/vec4 4 [t 1 2 3]) 2)";
+  "text/table_decode","(text/table_decode (if (> t 0.) \"a\\t猫\\n\" \"\"))";
+  "text/table_encode","(text/table_encode (list (list (if (> t 0.) \"猫\\n\" \"a\\t\") \"\\\\\")))";
+  "text/blank?","(text/blank? (if (> t 0.) \" \\t\\r\\n\" \" \"))";
+  "array/min","(array/min (array/float 7 t))";
+  "array/max","(array/max (array/int 7 (frame/index)))";
+  "array/segment_sum","(array/nth (array/segment_sum (array/vec3 5 [t 1 2]) (map (fn [x] (int x)) (array/range 6))) 3)";
+  "array/segment_min","(array/nth (array/segment_min (array/float 5 t) (map (fn [x] (int x)) (array/range 6))) 3)";
+  "array/segment_max","(array/nth (array/segment_max (array/int 5 (frame/index)) (map (fn [x] (int x)) (array/range 6))) 3)";
   "tan","(tan t)"; "atan2","(atan2 t -0.3)";
   "asin","(asin (* t 0.1))"; "acos","(acos (* t 0.1))";
   "log","(log (+ t 4.0))"; "sign","(sign t)"; "hypot","(hypot t 3.0)";
@@ -57,6 +68,10 @@ let cases = [
   ">=","(if (>= t 1) 1. 0.)"; "=","(if (= t 1) 1. 0.)"; "and","(if (and (> t 0) (< t 2)) 1. 0.)";
   "or","(if (or (> t 2) (< t 0)) 1. 0.)"; "not","(if (not (> t 1)) 1. 0.)";
   "value/rand","(value/rand t 1 2)";
+  "rand/at","(rand/at (frame/index) (int t))";
+  "text/trim","(text/trim (str \" \\t éÉ日本 \" t \" \\n\"))";
+  "text/lower","(text/lower (str \"ABZéÉΣİ日本😀\" t))";
+  "error","(if (> t 0.) (error (str \"E_EXACT_\" (int t)) (str \"é日本😀 \" t)) 7.)";
   "value/hsv","(value/hsv (* t 0.37) 0.5 0.9)"; "value/hsv","(value/hsv (- 0 t) 1. 0.25)";
   "value/hsv","(value/hsv (* t 0.166) 0.7 0.8)"; "value/hsv","(value/hsv (+ t 5.) 0.3 1.)";
   "value/lerp","(value/lerp t 1 0.25)"; "value/lerp","(value/lerp (* t 1.3) 0.7 0.3)";
@@ -117,6 +132,9 @@ let () =
       List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
         assert(ok(I.Executor.force ~strict:true program ~live)=expected))) [1;8]) [-1.;0.;1.])
     ["(map (fn [x] (if (> t 0.) x \"😀\")) (array/text 5001 \"猫\"))";
+     "(map (fn [x] (text/trim (if (> t 0.) x \"　A \"))) (array/text 5001 \" \\tABéÉ日本😀\\r\\n\"))";
+     "(map (fn [x] (text/lower (if (> t 0.) x \"ÉΣİZ\"))) (array/text 5001 \"ABéÉ日本😀\"))";
+     "(map (fn [x] (text/repr (if (> t 0.) x \"ÉΣİZ\"))) (array/text 5001 \"ABéÉ日本😀\"))";
      "(for [x (array/text 5001 \"猫\")] (if (> t 0.) x \"😀\"))";
      "(scan [a \"\"] [x (array/text 5001 \"猫\")] (if (> t 0.) x \"😀\"))";
      "(for [x (array/text 2 \"猫\") y (array/text 2501 \"😀\")] :skip [5001] (if (> t 0.) x y))";
@@ -134,7 +152,7 @@ let () =
   assert(ok(E.Private.force_reference dependent ~live:(Frame_input.at_time 1.))
     =E.Text_array(Array.make 5002 "猫"));
   let nested_numeric=live_value
-    "(map (fn [x] (str (array/sum (map (fn [y] (value/rand y t)) (array/float 2))))) (array/text 2))" in
+    "(map (fn [x] (text/trim (text/lower (str (array/sum (map (fn [y] (value/rand y t)) (array/float 2))))))) (array/text 2))" in
   let residual=match nested_numeric with E.Residual r->r|_->assert false in
   (match I.Core_lower.lower ~strict:true residual with
    | Ok program->assert(Array.length program.regions>0)

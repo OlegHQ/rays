@@ -149,3 +149,43 @@ a readback in the frame, which the web cannot do.
   [1]
   $ grep -c "rt.invoke(0" read/program.js
   1
+
+Computed local scalar, exact integer, array and nested-record captures export as structured Core.
+The production exporter never probes deferred argument sources or leaves unresolved region arguments.
+
+  $ cat > captures.rays <<'X'
+  > (workspace w (graph picture :context draw
+  >   (let* [minimum (array/min (array/float 3 t))
+  >          exact (int/add 9007199254740993 (frame/index))
+  >          column (array/concat (array/float 2 t) (array/float 2 (+ t 3.)))
+  >          sample {:nested {:bias minimum :exact exact :column column}}
+  >          shift (fn [x] (+ x sample.nested.bias))]
+  >     (draw/text [0 0 0] (str (array/sum (map shift sample.nested.column)) ":" sample.nested.exact)))))
+  > X
+  $ rays-lisp web captures.rays -o captures
+  $ printf '{"type":"module"}\n' > captures/package.json
+  $ grep -c '\$core/argument' captures/program.js
+  0
+  [1]
+  $ cat > captures.mjs <<'X'
+  > import {frame} from './captures/program.js';
+  > import * as p from './captures/runtime/prims.js';
+  > import {makeRt} from '../../web/test/rt_shim.mjs';
+  > const rt = makeRt();
+  > await frame({t: 0.25, dt: 0, frame: 2, tick: 2, size: [640,360], pointer: [0,0], keys: [], buttons: [], events: []}, [], rt);
+  > const text = rt.marks.find(mark => mark.type === 'text')?.text;
+  > if (text !== '8:9007199254740995') throw new Error(`computed captures: ${text}`);
+  > console.log(text);
+  > const zero = new p.PArray(1, Float64Array.of(-0, 0));
+  > if (!Object.is(p.array_min(zero), -0) || !Object.is(p.array_max(zero), 0)) throw new Error('extremum signed zero');
+  > const offsets = new p.PArray(1, BigInt64Array.of(0n, 2n));
+  > const integer = new p.PArray(1, BigInt64Array.of(4611686018427387903n, 4611686018427387903n));
+  > if (p.array_segment_sum(integer, offsets).data[0] !== -2n) throw new Error('exact wrapping segment sum');
+  > const cancellation = new p.PArray(1, Float64Array.of(1e16, 1, -1e16));
+  > if (!Object.is(p.array_segment_sum(cancellation, new p.PArray(1, BigInt64Array.of(0n, 3n))).data[0], 0)) throw new Error('ordered additions');
+  > if (!Object.is(zero.data[0], -0) || integer.data[0] !== 4611686018427387903n) throw new Error('borrowed input mutation');
+  > console.log('Reduction signed zero, ordered cancellation and signed63 wrapping are exact');
+  > X
+  $ node captures.mjs
+  8:9007199254740995
+  Reduction signed zero, ordered cancellation and signed63 wrapping are exact

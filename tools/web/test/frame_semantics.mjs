@@ -66,6 +66,7 @@ for (const program of manifest.programs) {
       line = ['ok', program.mode === 'marks' ? marks(rt.marks) : canon(result)];
     } catch (e) {
       line = ['err', e?.code ?? String(e)];
+      if (e?.cause !== undefined) line.push(hex(e.cause));
     }
     console.log([program.name, index++, ...line].join('\t'));
   }

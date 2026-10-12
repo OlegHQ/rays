@@ -1,16 +1,16 @@
 module E = Flow.Eval
 module P = Flow_ir.Packed
 let ok = function Ok x -> x | Error d -> failwith (Flow.Diagnostic.to_string d)
-let function_value input_ty body =
+let function_value ?(sources=[]) input_ty body =
   let source = Flow.Syntax.parse ("(workspace math (graph result :context value (let* [tested (fn [(x : "
     ^ Flow.Ty.to_string input_ty ^ ")] " ^ body ^ ")] 0.0)))" ) |> ok in
-  let workspace = match Flow.Workspace.check Flow.Check.{version=1;kinds=[]} source with
+  let workspace = match Flow_sop.Catalog.check_workspace ~library:false ~sources Flow.Check.{version=1;kinds=[]} source with
     | Some w,[] -> w | _,ds -> failwith (String.concat "\n" (List.map Flow.Diagnostic.to_string ds)) in
   let evaluation = ok (E.static ~record:true workspace) in
   match snd (List.hd (List.assoc ["result";"tested"] evaluation.records)) with
   | E.Fn f -> f | _ -> assert false
-let compile input_ty output_ty input body =
-  let fn = function_value input_ty body in
+let compile ?sources input_ty output_ty input body =
+  let fn = function_value ?sources input_ty body in
   let value = ok (E.Private.map_function ~signature:Flow.Ty.{params=[input_ty];result=output_ty} fn [input]) in
   match value with
   | E.Residual residual ->
@@ -61,3 +61,24 @@ let () =
     nonfinite (P.force ~strict:true program ~live))
     ["(asin (+ x t))";"(acos (+ x t))";"(log (+ x t))";"(exp (+ (* x 1000.0) t))"];
   print_endline "Packed math matches native reference bytes on one/eight domains; invalid domains refuse"
+
+let () =
+  let channel=open_in "nodes/prelude.rays" in
+  let text=Fun.protect ~finally:(fun()->close_in channel)
+    (fun()->really_input_string channel(in_channel_length channel)) in
+  let sources=Flow.Syntax.parse text |> ok |> List.hd |> Flow.Syntax.children
+    |> List.filter(fun form->Flow.Syntax.head form=Some "defn") in
+  let limit=sqrt Float.max_float in
+  let cases=[|(-0.),0.,0.,0.;1e-12,0.,0.,0.;1e308,(-1e308),0.,(-0.);
+    limit,0.,0.,(-0.);Float.next_after limit infinity,0.,0.,(-0.);
+    limit*.0.5,limit*.0.25,0.,(-.limit*.0.25);limit,limit,(-.limit),limit|] in
+  let input=E.Vec4_array(Array.init(32769*4)(fun index->
+    let x,y,z,w=cases.((index/4) mod Array.length cases) in
+    match index mod 4 with 0->x|1->y|2->z|_->w)) in
+  let value,program=compile ~sources Flow.Ty.Vec4 Flow.Ty.Vec4 input
+    "(quat_normalize [x.x x.y x.z (+ x.w t)])" in
+  let live=Frame_input.at_time 0. in
+  let expected=bytes(ok(E.Private.force_reference value ~live)) in
+  List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+    assert(bytes(ok(P.force ~strict:true program ~live))=expected))) [1;8];
+  print_endline "Quaternion finite-overflow guards match strict reference bytes at one/eight domains on 32769 elements"

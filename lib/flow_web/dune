@@ -39,3 +39,9 @@
  (modules test_js_gpu core_fixtures)
  (deps (glob_files goldens/frame_gpu_*.js))
  (libraries flow_web flow flow_ir str))
+
+(test
+ (name test_fma)
+ (modules test_fma)
+ (deps ../../tools/web/runtime/prims.js)
+ (libraries flow_web flow flow_ir rays_math))

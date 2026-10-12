@@ -27,6 +27,7 @@ val integer_name : integer -> string
 val comparison_name : comparison -> string
 val integer_apply : integer -> int -> int -> int
 val comparison_apply : comparison -> int -> int -> bool
+val rand_at : int -> int -> float
 val noise_names : string list
 val names : string list
 val supports : string -> bool

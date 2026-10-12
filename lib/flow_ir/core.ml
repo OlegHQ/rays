@@ -14,11 +14,13 @@ type byte_mode = Clamped | Unclamped
 type primitive =
   | Numeric of Flow.Packed_ops.binary | Math of Flow.Packed_ops.unary
   | Remainder | Exp | Floor | Ceil | Round | Int_convert | Float_convert
-  | Integer of integer | Integer_compare of Flow.Packed_ops.comparison | Equal | Show | Text_concat
+  | Integer of integer | Integer_compare of Flow.Packed_ops.comparison | Equal | Show | Text_concat | Text_blank
+  | Text_trim | Text_lower | Text_repr | Text_table_decode | Text_table_encode
   | Sequence_length | Sequence_get | Sequence_build | Sequence_slice | Sequence_concat
-  | Array_range | Array_int | Array_text | Array_float | Array_vec3 | Array_nth | Array_count | Array_slice | Array_concat
-  | Rand | Noise3 | Color_parse | Color_byte of byte_mode
-  | Coerce of Flow.Ty.t | Truthy | Fail of string * string
+  | Array_range | Array_int | Array_text | Array_float | Array_vec3 | Array_vec4 | Array_nth | Array_count | Array_slice | Array_concat
+  | Array_reduce of Flow.Op.Private.reduction | Array_segment of Flow.Op.Private.reduction
+  | Rand | Rand_at | Fma | Noise3 | Color_parse | Color_byte of byte_mode
+  | Coerce of Flow.Ty.t | Truthy | Error | Fail of string * string | Fail_diagnostic of Flow.Diagnostic.t
 
 type frame_field = Time | Dt | Index | Tick | Width | Height | Pointer_x | Pointer_y | Input
 
@@ -26,6 +28,7 @@ type expr =
   | Constant of int | Local of int | Frame of frame_field
   | Call_index of int
   | Source of Flow.Eval.value
+  | Host_source of { name : string; ty : Flow.Ty.t; args : (string * int) list }
   | Prim of primitive * (string * int) list
   | Vec of int list | Fields of (string * int) list | Items of int list
   | Field of int * string
@@ -80,23 +83,23 @@ module Region = struct
     | Const of float | Input of int * int * int
     | Uniform of int * int | Frame of string | Accumulator of int
     | Binary of Flow.Packed_ops.binary * int * int | Unary of Flow.Packed_ops.unary * int
-    | Noise3 of int * int * int * int * int | Select of int * int * int
+    | Noise3 of int * int * int * int * int | Fma of int * int * int | Rand_at of int * int | Select of int * int * int
     | Int_const of int | Int_input of int | Int_uniform of int | Int_frame of string | Int_accumulator
     | Int_binary of Flow.Packed_ops.integer * int * int
     | Int_compare of Flow.Packed_ops.comparison * int * int | Int_abs of int
     | Convert of conversion * int | Int_select of int * int * int
     | Guarded of (int * bool) list * instruction
-    | Raise of Flow.Ty.t * string * string
+    | Raise of Flow.Ty.t * string * string * string option
   let rec integer_register = function
     | Int_const _ | Int_input _ | Int_uniform _ | Int_frame _ | Int_accumulator
-    | Int_binary _ | Int_abs _ | Int_select _ | Raise (Flow.Ty.Int,_,_) -> true
+    | Int_binary _ | Int_abs _ | Int_select _ | Raise (Flow.Ty.Int,_,_,_) -> true
     | Convert (To_float,_) -> false | Convert _ -> true
     | Guarded (_,instruction) -> integer_register instruction
     | _ -> false
   let rec operands = function
-    | Binary (_,a,b) | Int_binary (_,a,b) | Int_compare (_,a,b) -> [a;b]
+    | Binary (_,a,b) | Int_binary (_,a,b) | Int_compare (_,a,b) | Rand_at(a,b) -> [a;b]
     | Unary (_,a) | Int_abs a | Convert (_,a) -> [a]
-    | Noise3 (a,b,c,_,_) | Select (a,b,c) | Int_select (a,b,c) -> [a;b;c]
+    | Noise3 (a,b,c,_,_) | Fma(a,b,c) | Select (a,b,c) | Int_select (a,b,c) -> [a;b;c]
     | Guarded (guards,instruction) -> List.map fst guards @ operands instruction
     | _ -> []
   type iteration = Zip | Product
@@ -137,13 +140,19 @@ let primitive_name = function
   | Integer op -> Flow.Packed_ops.integer_name op
   | Integer_compare op -> Flow.Packed_ops.comparison_name op
   | Equal -> "equal?" | Show -> "show" | Text_concat -> "text/concat"
+  | Text_blank -> "text/blank?"
+  | Text_trim -> "text/trim" | Text_lower -> "text/lower" | Text_repr -> "text/repr"
+  | Text_table_decode -> "text/table_decode" | Text_table_encode -> "text/table_encode"
+  | Array_reduce operation | Array_segment operation as primitive ->
+      let suffix=match operation with Flow.Op.Private.Sum -> "sum" | Minimum -> "min" | Maximum -> "max" in
+      "array/" ^ (match primitive with Array_segment _ -> "segment_" | _ -> "") ^ suffix
   | Sequence_length -> "sequence/length" | Sequence_get -> "sequence/get"
   | Sequence_build -> "sequence/build" | Sequence_slice -> "sequence/slice" | Sequence_concat -> "sequence/concat"
-  | Array_range -> "array/range" | Array_int -> "array/int" | Array_float -> "array/float" | Array_vec3 -> "array/vec3"
+  | Array_range -> "array/range" | Array_int -> "array/int" | Array_float -> "array/float" | Array_vec3 -> "array/vec3" | Array_vec4 -> "array/vec4"
   | Array_text -> "array/text"
   | Array_nth -> "array/nth" | Array_count -> "array/count" | Array_slice -> "array/slice" | Array_concat -> "array/concat"
-  | Rand -> "value/rand" | Noise3 -> "noise3" | Color_parse -> "color/parse" | Color_byte _ -> "color/byte"
-  | Coerce _ -> "coerce" | Truthy -> "truthy" | Fail _ -> "fail"
+  | Rand -> "value/rand" | Rand_at -> "rand/at" | Fma -> "fma" | Noise3 -> "noise3" | Color_parse -> "color/parse" | Color_byte _ -> "color/byte"
+  | Coerce _ -> "coerce" | Truthy -> "truthy" | Error -> "error" | Fail _ | Fail_diagnostic _ -> "fail"
 
 let frame_name = function
   | Time -> "t" | Dt -> "dt" | Index -> "frame" | Tick -> "tick" | Width -> "width" | Height -> "height"
@@ -195,11 +204,15 @@ let pp fmt p =
     | Constant n -> out "$%d" n | Local n -> local n | Frame f -> out "frame.%s" (frame_name f)
     | Call_index n -> out "call[%d]++" n
     | Source value -> out "source<%s>" (Flow.Ty.to_string (Flow.Value.ty_of value))
+    | Host_source {name;ty;args}->out "host_source<%s %S>(" (Flow.Ty.to_string ty) name;
+        separated (fun(name,n)->out "%S:" name;local n)args;out ")"
     | Prim (op,args) ->
         out "%s" (primitive_name op);
         (match op with Coerce ty -> out "<%s>" (Flow.Ty.to_string ty)
           | Color_byte Clamped -> out "<clamped>" | Color_byte Unclamped -> out "<unclamped>"
-          | Fail (code,message) -> out "<%S %S>" code message | _ -> ());
+          | Fail (code,message) -> out "<%S %S>" code message
+          | Fail_diagnostic d -> out "<%S %S cause=%S>" d.code d.message (Option.value ~default:"" d.cause)
+          | _ -> ());
         out "("; separated (fun (name,n) -> out "%S:" name; local n) args; out ")"
     | Vec ns -> out "vec["; separated local ns; out "]"
     | Fields xs -> out "record{"; separated (fun (name,n) -> out "%S:" name; local n) xs; out "}"
@@ -278,6 +291,8 @@ let pp fmt p =
        | Binary (op, a, b) -> out "%s(r%d r%d)" (primitive_name (Numeric op)) a b
        | Unary (op, a) -> out "%s(r%d)" (primitive_name (Math op)) a
        | Noise3 (x, y, z, seed, octaves) -> out "noise3(r%d r%d r%d seed=%d octaves=%d)" x y z seed octaves
+       | Rand_at(seed,index) -> out "rand_at(r%d r%d)" seed index
+       | Fma(a,b,c) -> out "fma(r%d r%d r%d)" a b c
        | Select (c, a, b) | Int_select (c,a,b) -> out "select(r%d r%d r%d)" c a b
        | Int_const n -> out "int:%d" n | Int_input i -> out "input:int[%d]" i
        | Int_uniform i -> out "uniform:int[%d]" i | Int_accumulator -> out "accumulator:int"
@@ -290,7 +305,8 @@ let pp fmt p =
            | Round -> "round" | Coerce_int -> "coerce:int" | Integer_result name -> "int-result:"^name) a
        | Guarded (guards,body) -> out "guard[";
            separated (fun (c,yes)->out "r%d=%b" c yes) guards;out "] ";instruction body
-       | Raise (ty,code,message) -> out "error<%s %S %S>" (Flow.Ty.to_string ty) code message in
+       | Raise (ty,code,message,cause) -> out "error<%s %S %S" (Flow.Ty.to_string ty) code message;
+           Option.iter(fun cause->out " cause=%S" cause)cause;out ">" in
     Array.iteri (fun i x ->out "    r%d = " i;instruction x;
       out "\n") r.code) p.regions;
   statements 1 p.body;

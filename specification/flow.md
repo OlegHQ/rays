@@ -762,6 +762,10 @@ it cannot replace an existing OCaml kind or another workspace definition
 (`E_NAME`). Its call remains a catalog call with one card and cook identity.
 The body is checked with the declared input types and must return geometry;
 recursive node dependencies are `E_RECURSION`.
+Optional `:operation "stable_operation"` retains an existing cook operation
+identity while the catalog kind keeps its authored name and human label. It
+defaults to the unqualified kind name. The default runtime node label remains
+the unqualified kind name.
 
 ```lisp
 (defnode sop/example :label "Example" :category ["Deform"]
@@ -781,7 +785,16 @@ Function slots use `(fn [vec3] float)` type syntax, and image slots use `image`.
 parameter while retaining its position in the physical input signature.
 A parameter has a literal default. Scalar kinds are bool, int, float, text and
 choice (`:choices ["First" "Second"]`); a vec3 default expands to the three
-inspector fields. Encoded and ramp kinds retain a text recipe. All fields retain
+inspector fields. Ramp kinds retain a text recipe. An encoded text parameter
+requires `:kind encoded :normalize (fn [(raw : text)] canonical-text)`. The hook
+may call pure value helpers, including `error`, and must return stable canonical
+text: normalizing its output again yields the same text. Frame, state, cook-context
+and cooked-value dependencies, including transitive helpers, are refused with
+`E_PARAM_NORMALIZE`. The checked default, literal call values, inspector edits,
+live drives and cook key use the canonical text through `Param.encoded`; authored
+source keeps its original spelling and hook. A failed hook rejects construction
+or an edit without changing the previous node. `:normalize` on another kind and
+encoded fields without a hook are `E_SHAPE`. All fields retain
 label, description, folder, primary, unit and `:impact cook|view|export` metadata;
 `:vec3 ["group" 0]` retains an existing scalar component's presentation group.
 Numeric soft bounds (`:min`, `:max`) and optional hard bounds (`:hard_min`,
@@ -1431,8 +1444,39 @@ host has cooked the source geometry. The reference evaluator and packed
 executor receive the same immutable attribute resolver; Flow itself has no
 geometry dependency.
 
-Host-owned scalar predicates use `Value.Source (name, type, fields)`; packed
-sources retain their existing `Struct` representation. Both remain deferred
+`(sop/count geometry :points)` returns an exact integer count; the selectors
+`:vertices`, `:primitives` and `:edges` use the corresponding topology index
+spaces. `(sop/edges geometry)` returns a record with separate `(array int)`
+fields `a` and `b`. Each undirected endpoint pair is normalized to `a <= b`,
+and edges retain RDK's first outgoing-corner occurrence order, including
+self-edges. Open polylines omit their final outgoing corner. Returned arrays
+are owned copies; counts and edge reads depend on topology and do not read
+position coordinates or attributes. Their cards expose the geometry and count
+selector inputs, and ordinary argument gestures edit them.
+
+`(sop/group geometry :name "top" :owner point)` returns an owned `(array int)`
+mask containing zero or one per owner element. Group owners are `point`,
+`vertex`, `primitive` and `edge`; the default is `point`.
+`(sop/with_group geometry mask :name "top" :owner point)` writes that mask
+without changing topology or other payloads. The mask must match its owner's
+count. `(sop/group_names geometry "wall*" :owner point)` returns matching names
+in native insertion order, using the existing Houdini-style name patterns.
+
+`(sop/group_order geometry :name "top" :owner point)` returns
+`{:ordered bool :indices (array int)}`. Passing this record as `:order` to
+`sop/with_group` preserves unordered groups and ordered-empty groups distinctly.
+A bare integer array as `:order` creates an ordered group and must contain each
+selected index exactly once. Edge groups have no explicit traversal order:
+their query returns `false` and an empty array; an explicit order is refused.
+All four forms project as cards with editable owner rows. Missing groups report
+`E_GROUP_MISSING`; invalid masks, cardinality, order and owner report
+`E_GROUP_MASK`, `E_GROUP_COUNT`, `E_GROUP_ORDER` and `E_GROUP_OWNER` respectively.
+Group sources participate in native group cache dependencies; group writers use
+generic cooking rather than attribute component refresh.
+
+Host-owned scalar predicates and topology sources use
+`Value.Source (name, type, fields)`; packed attribute sources retain their
+existing `Struct` representation. Both remain deferred
 until the host materializes them, and they participate in captures and probes.
 The resolver must return concrete, valid storage of the declared type;
 unresolved or incorrectly typed results report `E_DATA_SOURCE`. An untaken

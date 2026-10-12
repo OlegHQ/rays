@@ -226,16 +226,17 @@ module Workspace = struct
           match Drawing.render_prepared ~state prepared
             ~image:(Workspace_images.image ~display:false host.images ~state ~live evaluated.plan) ~live ~size:live.size with
           | Ok scene -> (match Workspace_host.export_update host ~state ~live doc evaluated.plan with
-              |Ok()->scene|Error d->raise(Flow.Value.Fail(d.code,d.message,d.span)))
-          | Error d -> raise (Flow.Value.Fail (d.code, d.message, d.span)) in
+              |Ok()->scene|Error d->Flow.Value.raise_diagnostic d)
+          | Error d -> Flow.Value.raise_diagnostic d in
         let config = {Rays.Sketch.default_config with width = window.width; height = window.height;
           title = window.title;  clock = Rays.Sketch.Fixed (1. /. float fps)} in
         let after_present () _=match Workspace_host.save_pending host Rays.Canvas.save_screen_png with
-          |Ok()->()|Error d->raise(Flow.Value.Fail(d.code,d.message,d.span))in
+          |Ok()->()|Error d->Flow.Value.raise_diagnostic d in
         (try ignore (Rays.Sketch.export_state ~config ~fps ~directory ~frames
            ~init:(fun _ -> ()) ~update:(fun () _ -> ()) ~view ~after_present
            ~on_stop:(fun()->Workspace_host.close host) ()); Ok ()
-         with Flow.Value.Fail (code, message, span) -> Error (Flow.Diagnostic.error ?span ~code message))
+         with Flow.Value.Fail (code, message, span) -> Error (Flow.Diagnostic.error ?span ~code message)
+           | Flow.Value.Diagnostic_fail diagnostic -> Error diagnostic)
 
   let main ?imports ~path ~digest ~catalog text =
     let expected = Contexts.catalog_digest Sop_catalog.Editor.factories in

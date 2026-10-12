@@ -38,6 +38,41 @@ let stages program = Array.fold_left (fun count (node : Flow_ir.node) -> match n
   | _ -> count) 0 (Flow_ir.Executor.graph program).nodes
 
 let () =
+  List.iter(fun count->
+    let original=Kernel.generate_point_ranges count(fun ~first ~last ~x ~y ~z->
+      for i=first to last-1 do x.(i)<-float i;y.(i)<- -0.;z.(i)<-0. done) in
+    let before=geometry_bytes original and input=Lisp_sop.snapshot original in
+    List.iter(fun(kind,body)->
+      let forms=Flow.Syntax.parse(Printf.sprintf
+        "(workspace fills (graph g :context sop [(geo : geometry nil)] (let* [data %s] geo)))" body) |>flow_ok in
+      let checked=match Flow.Workspace.check ~ops:Flow_sop.Operators.all Flow.Check.{version=1;kinds=[]}forms with
+        |Some checked,[]->checked|_,diagnostics->fail(String.concat "; "(List.map Flow.Diagnostic.to_string diagnostics)) in
+      let evaluation=E.static ~record:true ~inputs:["g",["geo",E.Deferred(Flow.Ty.geometry,7)]]checked |>flow_ok in
+      let values=List.assoc["g";"data"]evaluation.records |>List.hd |>snd in
+      let node reference=Flow_sop.Attribute_kernel.node ~strict:true ~reference ~kind
+        ~source:"constant-fill-proof" ~name:"fill" ~values ~sources:[7][input] in
+      let direct=node false and reference=node true in
+      List.iter(fun time->List.iter(fun domains->let session=session() in
+        Fun.protect ~finally:(fun()->Session.close session)(fun()->
+          let actual=cook session ~domains ~time direct and expected=cook session ~domains ~time reference in
+          check(match actual,expected with
+            |Ok a,Ok b->geometry_bytes(Result.get_ok(Sop.Payload.geometry a.payload))=
+              geometry_bytes(Result.get_ok(Sop.Payload.geometry b.payload))
+            |Error a,Error b->a.code=b.code && a.message=b.message|_->false)
+            "Constant constructor direct/reference result or error differs")) [1;8]) [0.;2.;3.5];
+      check(before=geometry_bytes original) "Constant constructor mutated input")
+      (List.concat_map(fun(kind,body)->[kind,body;kind,"(let* [filled "^body^"] (exact filled))"])
+      ["float","(array/float (sop/count geo :points) (sqrt (- 1 t)))";
+       "float","(array/float (int/add (sop/count geo :points) 1) t)";
+       "float","(array/float (int/sub (sop/count geo :points) 10) t)";
+       "int","(array/int (sop/count geo :points) (int t))";
+       "text","(array/text (sop/count geo :points) (if (> t 1) \"猫\" \"😀\"))";
+       "vec3","(array/vec3 (sop/count geo :points) [t -0.0 2.5])";
+       "vec4","(array/vec4 (sop/count geo :points) [t -0.0 2.5 -3.0])"]))
+    [0;1;32769];
+  print_endline "Constant constructors: strict scalar forces, owned outputs, lazy/empty/count/error and one/eight-domain reference parity"
+
+let () =
   let positions=Packed.Float3.Private.of_owned_exn ~x:[|0.;1.;0.;2.|]
     ~y:[|0.;0.;1.;2.|] ~z:[|0.;0.;0.;0.|] in
   let topology=Topology.polygons_owned ~point_count:4 ~vertex_points:[|0;1;2|]
@@ -734,6 +769,25 @@ let () =
     assert (stages (Flow_ir.Executor.compile values |> flow_ok) = 1);
     let program = prepare inputs in
     assert (stages program = expected_stages);
+    (* Cooked Core calls use Source descriptors. Their captured count proofs,
+       selective reads and borrowed columns must match legacy Struct reads. *)
+    let forms=Flow.Syntax.parse {|(workspace descriptors
+      (graph g :context value [(pa : (array vec3) (array/vec3 0)) (pb : (array vec3) (array/vec3 0))]
+        (let* [a (map (fn [p] (+ p [t 0 0])) pa)
+               b (map (fn [p] (* p (+ t 1))) pb)
+               tested (exact (map (fn [left right] (+ left right)) a b))] 0.0)))|} |>flow_ok in
+    let checked=match Flow.Workspace.check catalog forms with
+      |Some checked,[]->checked|_,diagnostics->failwith(String.concat "; " (List.map Flow.Diagnostic.to_string diagnostics)) in
+    let other=Option.value ~default:main (List.find_opt ((<>) main) sources) in
+    let marker id=E.Source("sop/attr",Flow.Ty.Array Flow.Ty.Vec3,
+      ["geometry",E.Deferred(Flow.Ty.geometry,id);"attribute",E.Text "P"]) in
+    let evaluation=E.static ~record:true ~inputs:["g",["pa",marker main;"pb",marker other]] checked |>flow_ok in
+    let modern=List.assoc ["g";"tested"] evaluation.records |>List.hd |>snd in
+    let modern_program = Flow_sop.Attribute_kernel.prepare ~sources inputs modern |> flow_ok in
+    assert (stages modern_program = expected_stages);
+    let modern_node = Flow_sop.Attribute_kernel.node ~source:"source-descriptor-proof"
+      ~name:"P" ~values:modern ~sources inputs in
+    assert ((Sop.Node.facts modern_node).reads = ["P"]);
     if expected_stages = 3 && List.length inputs > 1 then begin
       let change field = List.mapi (fun i node -> if i = 0 then node else
         Sop.Node.Private.with_facts (field (Sop.Node.facts node)) node) inputs in
@@ -751,6 +805,8 @@ let () =
         let expected = E.Private.force_reference ~resolve values ~live |> flow_ok in
         List.iter (fun domains -> Rays_math.Parallel.run ~domains (fun () ->
           let actual = Flow_ir.Executor.force ~resolve program ~live |> flow_ok in
+          let modern = Flow_ir.Executor.force ~strict:true ~resolve modern_program ~live |> flow_ok in
+          assert (Marshal.to_string modern [Marshal.No_sharing] = Marshal.to_string expected [Marshal.No_sharing]);
           assert (Marshal.to_string actual [Marshal.No_sharing] = Marshal.to_string expected [Marshal.No_sharing])))
           [1;8]) [0.;0.125;1.25;7.]))
     ["g", 3; "(sop/transform g :translate [0 0 1])", 3;
@@ -912,9 +968,13 @@ let () =
   List.iter (fun (op : Flow.Op.t) ->
     assert (Flow.Op.validate [op] = None);
     let args = List.map (fun (name, ty) -> name, match ty with
-      | Flow.Ty.Text -> E.Text "P" | Array _ -> E.Vec3_array [||]
+      | Flow.Ty.Text -> E.Text (match List.assoc_opt name op.choices with
+          | Some (choice::_) -> choice | _ -> "P")
+      | Array Int -> E.Int_array [||]
+      | Array _ -> E.Vec3_array [||]
       | _ when name="values" && op.name="sop/with_attr" -> E.Vec3_array [||]
       | _ -> E.Deferred (Flow.Ty.geometry,0)) op.signature.pos in
+    let args=if List.mem_assoc "name" op.signature.kw then ("name",E.Text "selected")::args else args in
     op.check args;
     let result = op.body ~live:(Frame_input.at_time 0.)
       ~node:(fun _ _ -> E.Deferred (Flow.Ty.geometry,1)) args in

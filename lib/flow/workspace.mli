@@ -94,8 +94,10 @@ type node_definition = {
   label : string;
   category : string list;
   description : string option;
+  operation : string;
   body : graph;
   validations : (term * string * string) list;
+  normalizers : (string * term) list;
 }
 (** A Lisp catalog declaration. Calls retain [Call] identity; its body is
     checked once using the declared input types. Validation predicates run

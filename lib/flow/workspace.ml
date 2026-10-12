@@ -46,8 +46,9 @@ type graph = { name : string; context : context;
 type node_definition = {
   kind : Check.kind; slots : Check.slot list; keyword_inputs : string list;
   fields : Param.field_view list; label : string;
-  category : string list; description : string option; body : graph;
+  category : string list; description : string option; operation : string; body : graph;
   validations : (term * string * string) list;
+  normalizers : (string * term) list;
 }
 
 let called_names ~include_ops root =
@@ -191,7 +192,8 @@ let rec packed_body ~ops (term : term) =
        | Some (Dot | Cross) -> List.length args = 2
            && List.for_all (fun (_, (t : term)) -> t.ty = Ty.Vec3 && body t) args
        | Some Exact -> (match args with [_, t] -> body t | _ -> false)
-       | Some (Binary _ | Integer _ | Integer_compare _) -> List.length args = 2 && List.for_all (fun (_, t) -> body t) args
+       | Some Fma -> List.length args = 3 && List.for_all (fun (_, t) -> body t) args
+       | Some (Binary _ | Integer _ | Integer_compare _ | Rand_at) -> List.length args = 2 && List.for_all (fun (_, t) -> body t) args
        | Some (Unary _ | Convert _) -> List.length args = 1 && List.for_all (fun (_, t) -> body t) args
        | Some Constant_only | None -> false)
   | Let (bindings, result) -> List.for_all (fun (p, t) -> match p with Name _ -> body t | _ -> false) bindings
@@ -1410,7 +1412,8 @@ let check ?(ops = []) ?(library = false) catalog forms =
           | Expanded {body;_} -> literal body | _ -> None in
         let ty = try Op.result_type o (List.rev_map (fun (name, (term : term)) ->
           name, term.ty, literal term) !named)
-          with Value.Fail (code, message, _) -> err x code message; Ty.Any in
+          with Value.Fail (code, message, _) -> err x code message; Ty.Any
+            |Value.Diagnostic_fail d->diags:={d with span=Some x.span}:: !diags;Ty.Any in
         let avs = List.map (fun a -> a.av) args in
         let nth_live_len i = match List.nth_opt pos i with Some a -> a.av.live_len | None -> false in
         let live_len = match o.name with
@@ -1428,7 +1431,7 @@ let check ?(ops = []) ?(library = false) catalog forms =
         let capability = Op.packed_kind o in
         let exact = capability = Some Op.Exact in
         let v = { derived with live = o.live || List.exists (fun (v : v) -> v.live) avs; live_len; len;
-          approx = (match capability with Some (Op.Binary _ | Unary _ | Length | Noise3) -> approximate avs | _ -> false);
+          approx = (match capability with Some (Op.Binary _ | Unary _ | Length | Noise3 | Fma) -> approximate avs | _ -> false);
           packed_producers = (if exact || shape_ty ty then Paths.empty else derived.packed_producers);
           approx_sources = (if exact || shape_ty ty then Paths.empty else
             derived.approx_sources);
@@ -1892,8 +1895,50 @@ let check ?(ops = []) ?(library = false) catalog forms =
             err v.predicate "E_NODE_CONTEXT" "A validation checks parameters; context seed is available inside the body.";
           if value.ty<>Ty.Bool then err v.predicate "E_TYPE" "A validation predicate returns bool.";
           t,v.code,v.message) d.validations in
-        node_terms := {kind=d.kind;slots=d.slots;keyword_inputs=d.keyword_inputs;fields=d.fields;label=d.label;category=d.category;description=d.description;
-          body={name=n;context=Context.sop;inputs;body=bt;form=d.form};validations} :: !node_terms)
+        let normalizers=List.map(fun(name,form)->
+          let ncx={cx with ctx=Context.value;env=Smap.empty} in
+          let term,value=fn_arg ncx form in
+          let argument=instantiate_fn ~coerce_params:false ncx
+            {key=None;aform=form;aterm=term;av=value} {params=[Ty.Text];result=Ty.Text} in
+          let term,value=argument.aterm,argument.av in
+          if value.ty<>Ty.Fn(Some{params=[Ty.Text];result=Ty.Text}) then
+            err form "E_TYPE" "An encoded normalizer takes one text and returns text.";
+          let visited=Hashtbl.create 8 in
+          let impure (t:term)=err t.form "E_PARAM_NORMALIZE" "An encoded normalizer is pure: no frame, state, context or cooked values." in
+          let rec scan (t:term)=
+            let all=List.iter scan and fields fields=List.iter(fun(_,t)->scan t)fields in
+            if Ty.is_cooked t.ty then impure t;
+            match t.node with
+            | Time | State _ | Call _ | Graph_ref _ -> impure t
+            | Op {op;args;_}->
+                (match find_op op Context.value with
+                 |Some op when not op.live && op.ctx=Context.value && op.name<>"sop/context_seed" -> ()
+                 |_->impure t); fields args
+            | Fn_ref name -> helper t name
+            | Call_fn {fn;args;body}->all args;
+                (match body with Some body->scan body|None->helper t fn)
+            | Vec ts | List_lit ts | Str ts | List_op(_,ts) | Hof(_,ts)->all ts
+            | Let(bindings,body)->List.iter(fun(_,value)->scan value)bindings;scan body
+            | Loop{accs;clauses;body;_}->List.iter(fun(_,value)->scan value)(accs@clauses);scan body
+            | If(a,b,c)->all[a;b;c]
+            | Cond(arms,default)->List.iter(fun(a,b)->all[a;b])arms;scan default
+            | Case(value,arms,default)->scan value;fields arms;scan default
+            | Fn{body;capture;_}->scan body;Option.iter scan capture
+            | Record fields_->fields fields_
+            | Get(value,_) | Expanded{body=value;_} | Bypass value->scan value
+            | Assoc(value,updates)->scan value;fields updates
+            | Lit _ | Text _ | Nil | Ref_binding _ -> ()
+          and helper t name=if not(Hashtbl.mem visited name)then begin
+            Hashtbl.add visited name();
+            match Hashtbl.find_opt def_terms name with
+            |Some graph->scan graph.body
+            |None->(match find_op name Context.value with
+                |Some op when not op.live && op.ctx=Context.value && op.name<>"sop/context_seed"->()
+                |_->impure t)
+          end in
+          scan term;name,term) d.normalizers in
+        node_terms := {kind=d.kind;slots=d.slots;keyword_inputs=d.keyword_inputs;fields=d.fields;label=d.label;category=d.category;description=d.description;operation=d.operation;
+          body={name=n;context=Context.sop;inputs;body=bt;form=d.form};validations;normalizers} :: !node_terms)
         (Hashtbl.find_opt node_sources n)) items;
     let visited=Hashtbl.create (List.length !node_terms) in
     let rec acyclic stack (d:node_definition) =

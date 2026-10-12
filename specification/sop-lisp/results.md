@@ -20,6 +20,8 @@ workspace evaluation/lowering invocation while attributing internal compilation
 duration to that phase; the test also checks restoration after an exception.
 The complete production pilot and Phase A review were committed as `32d64042`.
 Final shipping session 83244 and native session 33890 both exited 0.
+The typed attribute, integer, Text and random foundation was committed as
+`5f27f258` after its shipping, native and web gates passed.
 
 ## Task evidence
 
@@ -32,6 +34,21 @@ and metadata; no setter registration has changed. Set Orient's extreme finite
 components also expose a numeric boundary: native sum-of-squares overflow
 normalizes to zero, while strict compiled arithmetic refuses the intermediate
 infinity. That case remains a whole-port gate before registration changes.
+
+B.6 reuses the existing metadata module and exact RDK rename/delete/swap
+operations, preserving owner selection, conflict policy, ordered groups,
+canonical P and exact edge-name error behavior. The shared table codec is now
+`Param.String_table`, with the original native helpers retained as aliases.
+Codec and metadata compilation checks passed (session 24395); this is
+preparation evidence, not a completed metadata or setter port.
+
+B.12 also requires Lisp-authored encoded parameter normalization. Native
+`Param.Encoded` fields decode edits and re-encode their normalized values for
+the schema view and cook key. A plain Text defnode field with a body decoder
+does not preserve that boundary: equivalent owner/conflict tokens retain
+different keys and malformed edits fail later. The generic declaration needs
+validation and canonicalization at the parameter boundary before these whole
+ports can ship; B.12 remains unchecked.
 
 | Task | Current evidence | Remaining gate |
 | --- | --- | --- |
@@ -46,6 +63,10 @@ infinity. That case remains a whole-port gate before registration changes.
 | B–E | No port evidence recorded here yet. | All language, port and phase review gates. |
 | B.1 | Owner-aware Float/Vec2/Vec3/Vec4/Int/Text/CSR attributes, literal-selected result types and a cooked Boolean `sop/has_attr` predicate are implemented. Focused `@lib/flow_sop/runtest @tools/lisp/runtest` exited 0 (session 98738): all-owner strict/reference Text round trips, exact UTF-8/empty strings, copied read/write ownership, count/type errors, a strict 4,097-element authored text map, empty geometry/detail counts, exact one/eight-domain bytes, graph type edits through Text, numeric multi-block fixtures, distinct owner/CSR count origins and strict compiled lazy query guards pass. Native-to-JavaScript census including Text attributes passes 15,152 cases across 79 contracts. Shared structured Core resolves genuine host sources without interpreter fallback. No new port is claimed. | Complete: focused, shipping, native and web foundation gates passed; final commands and coverage below. |
 | B.2 | The expanded native-to-JavaScript primitive census passes 15,029 cases across 78 contracts: all ten exact integer operations, five comparisons, typed integer construction/range/build/count/get/slice/concat/sum and the existing floating/host contracts. Signed bounds, values above 2^53, wrapping sums beyond 4,096 elements, invalid shifts, selectors and element types retain exact integer/error checks. The census exposed and repaired shared native range-selector and JavaScript integer builder/error boundaries. | Complete: focused, shipping, native and web foundation gates passed; final commands and coverage below. |
+| B.4 | `test_topology_kernel` compares all four counts and canonical edge endpoints with native `Topology_index` on empty, shared polygon, repeated open curve, closed curve and mixed nonmanifold fixtures. Owned queries, exact integer writes beyond 2^53, cache refresh/invalidation and graph keyword gestures pass. Focused gate 63052 exited 0; combined language gate 42787 also passed. | Complete: stated focused language gate; final Phase B review remains pending. |
+| B.5 | `test_group_kernel` covers all four owners, 0/1 masks, names/pattern escapes, ordered-empty versus unordered groups, invalid order/membership and unsupported ordered edges, immutable ownership, cache and actual live-frame sources. Focused gate 85800 and live state-fold check 68513 passed; combined language gate 42787 passed. | Complete: stated focused language gate; no group-node port is claimed. |
+| B.6 | `test_metadata_kernel` covers all attribute owners and eight storages, canonical P, rename/delete/copy/move/swap conflicts and atomicity, ordered group union, missing edge names, unused groups, strict compiled queries and graph gestures. Native/JavaScript host census passes 16,598 cases across 105 exports. Focused `@lib/flow_sop/runtest @tools/lisp/test/runtest` gate 13786 exited 0, including one/eight domains and grains 97/4096. | Complete: stated language gate; B.12 encoded parameter boundary and seven whole-node ports remain pending. |
+| B.9 | `test_reductions` checks exact wrapping Int sums, Float/tuple extrema including signed zeros, ordered CSR sums, zero rows and malformed offsets, and 32,769 rows at one/eight domains without input mutation. Computed scalar/array/record/function captures use compiled Core region arguments; unresolved web region arguments select structured Core compilation. Focused gates 27645 and 42787 passed. | Complete: stated focused language gate; no dependent whole-node port is claimed. |
 | C.15 | Full native Measure wrapper and kernel audit establishes topology/indexed position access and canonical n-gon triangulation with original-primitive mapping as prerequisites. The whole node moves from B.15 to C.15; no mode, registration or target is removed. | B.1/B.5/B.7/B.9/C.1/C.2 and a generic canonical triangulation + primitive mapping capability, then the complete port Verification gate. No implementation or completion claimed. |
 | G.1–G.2 | Optional tasks; no placement evidence recorded here yet. | Measured placement and CPU/GPU tolerance checks. |
 
@@ -293,6 +314,18 @@ An isolated JavaScript BigInt FMA prototype matches native `Float.fma` bits
 for 10,011 cases. Explicit FMA therefore has a viable web implementation;
 this does not authorize automatic Mul/Add contraction or change the current
 unfused arithmetic policy. B.7's native four-ULP gate remains unresolved.
+
+The explicit `(fma a b c)` operator is now implemented in reference evaluation,
+structured Core, strict packed CPU execution and JavaScript regions/primitives.
+Focused gates 87456, 31523 and 65940 passed. The dedicated
+`lib/flow_web/test_fma.ml` checks 10,010 finite triples across the full signed
+exponent range against native `Float.fma` bits, including cancellation, signed
+zero, subnormals, ties and finite overflow cancellation. Reference and CPU at
+one/eight domains, emitted JavaScript and scalar primitives agree exactly.
+Mixed integer captures and frame inputs, selected/unselected overflow, invalid
+non-finite inputs and the exact binary64 GPU refusal are also checked. Ordinary
+Mul/Add remain separate operations. The native-order cross/matrix helper policy
+is still awaiting the owner's preference; B.7 is not completed by this gate.
 
 The focused `@lib/flow_sop/runtest` gate 2800 exited 0, including B.1's numeric
 attribute regressions and B.8's random/noise foundations. B.8 checks 100,000
@@ -598,3 +631,401 @@ custom-catalog executable and 13 fixtures at four times and domains 1/8.
 also exited 0, including 23 SOP graphs with byte-identical one/four-domain PNGs.
 No native render golden was refreshed. Phase A is complete; B–E and G remain
 required and unchecked.
+
+## Typed integer kernel throughput diagnostic
+
+The new runnable probe is `opam exec -- ./test_rand_at.exe --bench-rand`,
+from `_build/default/lib/flow_sop`, after building with
+`opam exec -- _build/default/tools/check.exe lib/flow_sop/test_rand_at.exe`.
+It checks every output bit against native `Rand.float_at` before reporting
+the median of three runs. Apple M1, arm64, OCaml 5.3.0; one million integer
+indices, seed 42, native grain 4096. Four-domain allocations count only the
+calling domain. These are kernel diagnostics during implementation, not a
+whole-node performance qualification.
+
+| Version | Domains | Native seconds | Strict packed seconds | Packed allocated bytes |
+| --- | --- | --- | --- | --- |
+| Before | 1 | 0.005378 | 0.226860 | 552,034,032 |
+| Before | 4 | 0.001562 | 0.232287 | 552,034,032 |
+| Cached frame/uniform values, direct packed loads/stores and indexed loops | 1 | 0.004505 | 0.165916 | 120,035,872 |
+| Cached frame/uniform values, direct packed loads/stores and indexed loops | 4 | 0.001344 | 0.168545 | 120,035,872 |
+| Typed block execution | 1 | 0.004429 | 0.084496 | 137,811,008 |
+| Typed block execution | 4 | 0.001311 | 0.028506 | 58,403,280 |
+
+The shared typed executor now avoids repeated frame-operator lookup, component
+arrays and collection value boxes. Lazy frame/uniform reads still occur only
+in selected branches. Typed block execution uses separate integer and float
+banks; independent maps with concrete captures use the shared domain pool.
+Ordered folds/scans and maps with deferred captures remain sequential. This
+improves the original packed timings by 2.7 times at one domain and 8.1 times
+at four domains, but remains above the native timing ceiling. No random-heavy
+whole-node port is qualified by this diagnostic. Logs:
+`/tmp/rays-rand-before.log`, `/tmp/rays-rand-after-scalar-final.log`,
+`/tmp/rays-rand-after-block.log`.
+Focused build 27805 passed. The final `test_packed`, `test_uniforms` and
+`test_rand_at` executable checks all exited 0 (13656, 31240, 5259), including
+strict guards, captured-uniform errors/rollback, exact integer boundaries,
+100,000 native/reference/packed/JavaScript random keys and 300,054 noise samples.
+The block executor's checks also passed (`test_packed` 95003,
+`test_uniforms` 94995, `test_rand_at` 97358): 32,769-element exact integer maps,
+mixed vector conversions, product iteration with skipped indices, wrapping
+integer folds/scans and selected versus unselected arithmetic errors at one
+and eight domains. The `rand/at` primitive's later exact native/reference/CPU/
+JavaScript gates also passed (42787), including varying signed seed and index
+arrays and lazy branches. It uses the shared signed-63-bit hash primitive,
+avoiding a fresh boxed native seed for every element.
+
+The separate `--bench-rand-primitive` probe has the same one-million-element,
+median-of-three and exact-bit protocol. After replacing boxed output
+initialization/collection with typed allocation and block copies, the quiet
+run in `/tmp/rays-rand-primitive-output-block.log` exited 0:
+
+| Primitive version | Domains | Native seconds | Strict packed seconds | Packed allocated bytes |
+| --- | --- | --- | --- | --- |
+| Shared hash, before output block copies | 1 | 0.004309 | 0.025193 | 67,349,088 |
+| Shared hash, before output block copies | 4 | 0.001409 | 0.013373 | 40,763,240 |
+| Shared hash, typed output block copies | 1 | 0.004380 | 0.012836 | 35,458,528 |
+| Shared hash, typed output block copies | 4 | 0.001465 | 0.006546 | 21,166,248 |
+
+The earlier primitive log is `/tmp/rays-rand-primitive-reuse-quiet.log`.
+Independent packed/uniform/random regressions passed after the output change
+(7929/58522/13094), preserving finite checks, lazy failures, exact signed
+integers, skipped/product outputs and ordered folds/scans. This remains a
+compiler microbenchmark; no whole random-heavy node is qualified by it.
+
+Contiguous integer input blocks now use `Array.blit`, preserving indexed
+product/skipped paths and guarded bounds. Build 29283 and independent packed,
+uniform and random checks 59155/90162/68354 passed. The quiet follow-up probe
+(`/tmp/rays-rand-primitive-input-blit.log`) reports native/packed seconds
+0.004567/0.012516 at one domain and 0.001351/0.005992 at four, with packed
+allocations 35,474,160/20,851,392 bytes. The small timing difference from the
+previous run is not treated as a separate performance qualification.
+
+The independent `test_packed.exe --bench-product` probe repeats a sixteen-value
+float row across one million integer indices. It compares every output bit
+against an independent `Array.blit` loop, then measures median-of-three
+materializations (Apple M1, OCaml 5.3.0, initial-domain allocations). It is a
+compiler diagnostic, not a qualified SOP port.
+
+| Float input implementation | Domains | Native seconds | Packed seconds | Packed bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Per-element value-returning finite check | 1 | 0.009566 | 0.362461 | 1,238,802,696 |
+| Per-element value-returning finite check | 4 | 0.009444 | 0.100316 | 413,519,824 |
+| Concrete input checked and stored without boxing | 1 | 0.009606 | 0.315407 | 982,802,696 |
+| Concrete input checked and stored without boxing | 4 | 0.009480 | 0.087061 | 348,280,480 |
+
+Logs: `/tmp/rays-product-before.log` (95676) and
+`/tmp/rays-product-input-after.log` (74785), both exited 0. The shared input
+loop now selects concrete Float/Vec storage once per instruction and checks
+finite values before storing them directly in the float register bank.
+Expanded regression 65808 passed scalar/vec3/vec4 Product inputs, signed zero,
+integer/guard/error/skip cases and exact reference bytes at one/four/eight
+domains. Uniform 41676 and native/reference/JavaScript random 54737 checks
+also passed. Arithmetic remains the remaining allocation source in this probe.
+
+Typed Collect vector outputs now choose the integer/float register bank once
+per component and interleave directly, avoiding a boxed numeric return for
+each float lane. Exact packed and uniform checks 90687/23794 both passed.
+The separate `--bench-product-row` probe uses an already-computed live row,
+matching the two-register Product shape observed in Set Transform. Quiet
+38469 exited 0 (`/tmp/rays-product-row-after.log`): one domain native/packed
+seconds 0.012400/0.195219 and packed bytes 182,563,272; four domains
+0.010060/0.057069 and 147,507,032 bytes. Both remain above 2×. The remaining
+per-item Product indexing cannot be counted as solved by lower allocations.
+
+### Metadata codec and quaternion preparation
+
+The unchanged native table codec now lives in `Param.String_table`; the former
+`Sop.Support` helpers are aliases. Focused `@lib/param/runtest` and metadata
+library compilation passed (session 24395). After adding typed pure
+`text/table_encode`/`text/table_decode` declarations, structured Core lowering,
+JavaScript mirrors and live nested-list forcing, the combined
+`@lib/flow/runtest @lib/flow_ir/runtest @tools/lisp/runtest` gate exited 0
+(session 15955). Empty tables/cells, escaped tabs/newlines/backslashes, UTF-8,
+malformed escapes, trailing escapes and wrong input types are covered. This
+codec capability does not supply the missing B.12 parameter canonicalization
+boundary and does not complete B.6 or a metadata port.
+
+Unsupported non-ASCII table escapes preserve the native decoder's legacy
+first-UTF-8-byte diagnostic. That byte can be invalid UTF-8 inside the native
+error string. The JavaScript mirror matches its transported/displayed form
+using the standard UTF-8 replacement decoder; the native raw error bytes remain
+unchanged. Unsupported `é` and emoji escape transport fixtures are explicit. Normal UTF-8
+cells round-trip exactly.
+
+Quaternion normalization now guards native norm overflow with quarter-scaled
+squares, retaining the native identity threshold and signed-zero overflow
+outputs without producing a nonfinite intermediate. The existing native math
+audit remains 15/1,863 components above four ULP; B.7 remains unchecked. The
+helper threshold check passes 60 finite native cases, checking overflow and
+signed zeros exactly and other finite components at the approved four-ULP
+oracle tolerance. Strict packed/reference comparison on 32,769 elements is
+byte-identical at one/eight domains (direct helper/kernel checks, session
+79959), within the existing 64-register limit. These are prerequisites for
+Set Orient; the five setter drafts remain unregistered and their complete
+port Verification gates are still pending.
+
+### Rest Position draft and cooked structural selection
+
+The full `Motion.rest_position` and SOP wrapper were read before authoring
+`nodes/rest_position.pending`. It keeps Store/Extract/Swap, None/If present/Always
+normal policies, the optional reference, missing-rest fallback, Store-only
+reference cardinality checks, wrong-storage refusals and native attribute
+replacement order when names alias. Normal creation delegates to the existing
+`sop/normals` kind. Nothing is embedded or registered.
+
+`test_rest_position.ml` builds the draft and independent native factory. It
+contains every mode/policy, absent and present references, empty/single/mixed,
+4,225 and 32,769-point inputs, metadata/key comparisons, immutable inputs and
+strict/reference/one/eight-domain/grain comparisons. Its executable builds
+(38192), but the first runtime check fails with `E_LOWER: Graph sop/rest_position
+does not return geometry`: a cooked count/presence condition produces a residual
+geometry result, while the current structural lowering accepts only an already
+chosen deferred root. The shared cook-time structural selection capability is
+required; an eager branch selector or an interpreter fallback for numeric maps
+would not satisfy it. The pending recipe has an explicit
+`@lib/flow_sop/rest_position_draft` check and is not a passing port gate.
+
+The shared cooked-selection compiler now gets beyond that refusal. Initial
+testing found and fixed a zero-arity capture factory rebuilding a chained node
+without its inputs; captures now use lazy snapshot proxies. Expanded runtime
+10529 (`/tmp/rays-host-capture-rest-check.log`, build 61566) passed the complete
+geometry loop: modes, normal policies, optional references, alias replacement
+order, native four-ULP and strict/reference/domain/grain checks. These runs used
+one/eight domains; the fixture now additionally requests four domains.
+Canonical P as a stored-normal name is absent to the native ordinary-attribute
+lookup, and Normals=None still allows blank/P output-normal names until a
+selected Extract/Swap attempts to install them. The recipe preserves those
+native branches rather than rejecting them early.
+
+The expanded error gate then exposed the native adapter contract: the Session
+message is `rest_position could not produce valid geometry` and the detailed
+`rest_position [code]: reason` is its separate cause. The pending Lisp recipe
+and tests now require a generic cause-bearing error boundary, including quoted
+UTF-8/control names, error precedence and untaken malformed inputs. Parameter
+edit/cache and million-point timing gates remain pending. No registration,
+golden or whole-node completion has been claimed.
+
+The generic diagnostic cause boundary is now implemented. Expanded gate 32522
+passed native code/message/cause, all parameter edits and cache behavior,
+typed input refusals, the real 65×65-point quad grid, and strict/reference
+parity at one/four/eight domains with grains 1/97/4096.
+
+Quiet benchmark 29581 exited 0; the 2× performance gate fails dramatically.
+Command: `opam exec -- ../../_build/default/lib/flow_sop/test_rest_position.exe --bench`
+from `lib/flow_sop`; log `/tmp/rays-rest-position-bench.log`. Apple M1,
+OCaml 5.3.0, one million payload points, grain 4096, median of three fresh
+cold Session cooks; allocations are measured on the initial domain.
+
+| Mode | Domains | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Store | 1 | 0.000042 | 0.172309 | 4106.341 | 11,488 | 726,704,016 |
+| Store | 4 | 0.000033 | 0.158454 | 4781.324 | 11,720 | 726,765,720 |
+| Extract | 1 | 0.000034 | 0.344347 | 10171.099 | 11,504 | 1,453,371,256 |
+| Extract | 4 | 0.000034 | 0.311690 | 9206.493 | 11,736 | 1,453,496,520 |
+| Swap | 1 | 0.000063 | 0.500327 | 7948.955 | 11,720 | 2,180,039,632 |
+| Swap | 4 | 0.000062 | 0.479159 | 7729.765 | 11,952 | 2,180,214,272 |
+
+Native operations share existing attribute planes. Preserving those borrowed
+values through shared structural compilation and attribute sinks is required;
+copying them in a faster loop cannot satisfy the whole-node gate. No port
+registration or completion tick is justified by this semantic draft.
+
+### Five setter drafts: semantic proof and failed timing gate
+
+`nodes/setters.pending` contains whole Set Float, Set Integer, Set Vector, Set
+Orient and Set Transform declarations; native registration is unchanged. The
+recipes use owner-specific topology counts, typed attributes and the guarded
+quaternion helper. Transform emits the full 16-value CSR row through Cartesian
+iteration over a literal Float array, without a dynamic gather prerequisite.
+Focused executable checks passed (31091/76851 and refreshed 13786): every
+owner, defaults, empty/single/mixed/32,769-point inputs, native labels/schema/cook
+keys, four-ULP native oracle, exact strict/reference and one/eight-domain bytes
+at grains 97/4096. Every physical parameter edit also passed native key/oracle
+comparison, exactly one new public miss and subsequent warm hits (10604).
+
+The initial cold-cook timing gate failed for all five drafts. Command:
+`opam exec -- ./test_setters.exe --bench` from
+`_build/default/lib/flow_sop`; log `/tmp/rays-sop-setters-bench.log`, session
+33665 exited 0. Apple M1, OCaml 5.3.0, one million points, grain 4096, median of
+three fresh-session cold cooks. Four-domain allocations count the initial
+domain only. Values below are seconds and bytes, with the ratio Lisp/native.
+
+| Draft | Domains | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---|---:|---:|---:|---:|---:|---:|
+| Set Float | 1 | 0.000213 | 0.007590 | 35.649 | 8,006,952 | 16,039,880 |
+| Set Float | 4 | 0.000176 | 0.005424 | 30.785 | 8,007,184 | 16,078,840 |
+| Set Integer | 1 | 0.000351 | 0.005245 | 14.935 | 8,007,008 | 16,023,168 |
+| Set Integer | 4 | 0.000394 | 0.005206 | 13.217 | 8,007,240 | 16,023,400 |
+| Set Vector | 1 | 0.000469 | 0.016928 | 36.096 | 24,007,080 | 48,042,408 |
+| Set Vector | 4 | 0.000620 | 0.009971 | 16.079 | 24,007,312 | 48,041,912 |
+| Set Orient | 1 | 0.001113 | 0.064356 | 57.825 | 32,007,032 | 445,408,640 |
+| Set Orient | 4 | 0.000731 | 0.021155 | 28.940 | 32,007,264 | 139,961,536 |
+| Set Transform | 1 | 0.015526 | 0.575963 | 37.097 | 136,007,824 | 1,360,019,760 |
+| Set Transform | 4 | 0.015710 | 0.290624 | 18.499 | 136,008,056 | 943,526,304 |
+
+The generic path constructs an intermediate packed array and then copies or
+transposes it into attribute storage; Orient and Transform additionally
+materialize constant maps/product iterations. This evidence motivates a
+shared constructor/output path, not a setter-specific callback. B.11 remains
+unchecked; Set Color also awaits its whole group-aware recipe and no setter
+has been embedded or switched into the production catalog.
+
+The shared array constructors now fill constant arrays directly, and the
+attribute host prepares strict count/value programs once before cooking.
+Validated constant output writes allocate their owned attribute planes
+directly. Set Orient uses the genuine `array/vec4` constructor. Empty counts,
+invalid counts, mismatched owner counts, live values and selected nonfinite
+errors retain the original strict path and diagnostics. Refreshed checks
+74614 (attribute output) and 25323 (whole setter semantics and every physical
+parameter edit) exited 0; runtime operation/version also matches the native
+factory.
+
+The same quiet benchmark recipe then passed the 2× gate for four drafts;
+Set Transform still fails. Log `/tmp/rays-sop-setters-bench-prepared.log`,
+session 24009 exited 0. The million-point input, fresh sessions, median of
+three, domains/grain and allocation convention are unchanged.
+
+| Draft | Domains | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---|---:|---:|---:|---:|---:|---:|
+| Set Float | 1 | 0.000551 | 0.000188 | 0.341 | 8,006,952 | 8,025,288 |
+| Set Float | 4 | 0.000302 | 0.000238 | 0.788 | 8,012,208 | 8,025,520 |
+| Set Integer | 1 | 0.000411 | 0.000435 | 1.058 | 8,007,008 | 8,025,304 |
+| Set Integer | 4 | 0.000404 | 0.000426 | 1.055 | 8,007,240 | 8,025,536 |
+| Set Vector | 1 | 0.002164 | 0.001318 | 0.609 | 24,007,080 | 24,025,496 |
+| Set Vector | 4 | 0.000567 | 0.000586 | 1.034 | 24,007,312 | 24,025,728 |
+| Set Orient | 1 | 0.001583 | 0.000923 | 0.583 | 32,007,032 | 32,025,528 |
+| Set Orient | 4 | 0.000745 | 0.000749 | 1.005 | 32,007,264 | 32,025,760 |
+| Set Transform | 1 | 0.018025 | 0.355610 | 19.729 | 136,007,824 | 849,945,752 |
+| Set Transform | 4 | 0.016709 | 0.150199 | 8.989 | 136,008,056 | 626,055,488 |
+
+Transform still materializes a Cartesian loop and copies its CSR record.
+The remaining optimization must follow the shared typed representation.
+No setter registration changed; Set Color and the remaining whole-port
+error, editor and shipping gates keep B.11 unchecked.
+
+The actual Transform trace compiles both its integer offsets and its
+Float-valued Cartesian product into packed programs; the product retains
+its Int and Float sources. Strict forcing succeeds, so this is a measured
+packed throughput/copying problem rather than an interpreter fallback.
+After generic input and vector-output unboxing, the isolated whole-node
+rerun 62960 exited 0. Same million-point cold-session methodology:
+`opam exec -- ./test_setters.exe --bench-transform` from
+`_build/default/lib/flow_sop`; log
+`/tmp/rays-sop-set-transform-bench-unboxed.log`.
+
+| Node | Domains | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---|---:|---:|---:|---:|---:|---:|
+| Set Transform | 1 | 0.017570 | 0.311506 | 17.729 | 136,007,824 | 594,012,208 |
+| Set Transform | 4 | 0.015579 | 0.121583 | 7.804 | 136,008,056 | 556,980,792 |
+
+This still fails the whole-node speed gate. The refreshed semantic checks
+also cover a real 4,225-point quad grid, domains 1/4/8, grains 1/97/4096,
+atomic blank/canonical-P rejection and affine/nonfinite boundary errors.
+Session 13714 passed those checks and the constant-output ownership/error
+regressions, but exited 1 for an in-flight omitted-vector graph gesture;
+the corrected gesture passed in 97611. The aggregate failure is retained
+as a failed gate rather than reported as an aggregate pass.
+
+Integration checks now compare the complete default factory descriptors of
+all five drafts with their native factories. The four speed-passing drafts
+also compare graph cards and inspector rows, edit every physical field
+through `Flow_edit`, cook the edits against native keys and geometry, and
+exercise bypass. Build 49346 and direct `test_setters.exe` run 97611 exited
+0. Omitted grouped-vector fields are edited as complete vectors with the
+other components retained, matching the geometry inspector's gesture.
+Production integration still requires embedding those declarations,
+removing their native registrations, reviewing the generated manifest and
+running the catalog/dependency/native gates. Render parity uses Set Float
+in `edge_transport` and Set Integer in `separate_pieces`; material tests
+also use Set Integer. No rendered fixture has been refreshed for these
+unregistered drafts.
+
+### Set Color whole-node draft
+
+`nodes/set_color.pending` is an unregistered whole-node recipe. Focused gate
+52215, `@lib/flow_sop/set_color_draft`, exited 0. It covers all four owners,
+blank/trimmed/UTF-8 group names, partial/full/empty/ordered selections,
+all eight existing `Cd` storage kinds, and native parameter metadata and
+factory descriptors. The fixtures include mixed topology, empty geometry,
+32,769 points and a real 4,225-point grid. Native geometry is within 4 ULP;
+strict/reference and domains 1/4/8 with grains 1/97/4096 produce identical
+bytes. Every physical parameter edit matches the native key and cook,
+causes one public miss, then hits unchanged. Missing-group code, message
+and optional cause match native diagnostics; owner/detail-group validation,
+hard clamping and nonfinite parameter refusals are covered. Refreshed gate
+23658 additionally passed a single-point input, native graph card and
+inspector equality, every physical field's direct `Flow_edit` gesture and
+native cook/key comparison, hard-bound refusal and bypass.
+
+The million-point cold-cook gate **fails**. Session 77836 exited 0 for
+`opam exec -- ../../_build/default/lib/flow_sop/test_set_color.exe --bench`
+from `lib/flow_sop`; log `/tmp/rays-set-color-bench.log`. Apple M1,
+OCaml 5.3.0, grain 4096, median of three fresh-session cold cooks. Selected
+groups contain alternating points. Four-domain allocations count the
+initial domain only; times are seconds and allocations are bytes.
+
+| Existing Float4 Cd | Group | Domains | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---|---|---:|---:|---:|---:|---:|---:|
+| absent | all | 1 | 0.001809 | 0.021348 | 11.802 | 32,007,712 | 64,024,768 |
+| absent | all | 4 | 0.001387 | 0.011242 | 8.105 | 32,007,944 | 64,074,336 |
+| absent | selected | 1 | 0.004147 | 0.179815 | 43.360 | 32,008,128 | 503,907,776 |
+| absent | selected | 4 | 0.004262 | 0.073574 | 17.263 | 32,008,360 | 222,432,168 |
+| present | all | 1 | 0.001465 | 0.015750 | 10.752 | 32,008,752 | 64,046,696 |
+| present | all | 4 | 0.002051 | 0.011634 | 5.673 | 32,008,984 | 64,081,560 |
+| present | selected | 1 | 0.008237 | 0.173761 | 21.095 | 32,009,360 | 503,913,616 |
+| present | selected | 4 | 0.004840 | 0.080630 | 16.659 | 32,009,592 | 209,356,328 |
+
+The residual/Core trace found the ungrouped constructor captured under
+`(exact colors)`. The shared recognizer now unwraps exact and captured
+residual bindings, preserving strict qualification, original error order,
+empty-count laziness and newly owned planes. The direct and captured forms
+passed the refreshed attribute regressions in 13714.
+
+Latest quiet whole-node benchmark 58659 exited 0 after rebuilding the
+current packed compiler (51230). Same methodology as above;
+`opam exec -- ./test_set_color.exe --bench` from
+`_build/default/lib/flow_sop`; log
+`/tmp/rays-set-color-bench-exact-capture.log`.
+
+| Existing Float4 Cd | Group | Domains | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---|---|---:|---:|---:|---:|---:|---:|
+| absent | all | 1 | 0.001382 | 0.000759 | 0.549 | 32,007,712 | 32,039,368 |
+| absent | all | 4 | 0.001488 | 0.000671 | 0.451 | 32,007,944 | 32,026,920 |
+| absent | selected | 1 | 0.004060 | 0.152568 | 37.578 | 32,008,128 | 375,993,752 |
+| absent | selected | 4 | 0.003985 | 0.060991 | 15.304 | 32,008,360 | 175,731,392 |
+| present | all | 1 | 0.001867 | 0.001063 | 0.569 | 32,008,752 | 32,043,864 |
+| present | all | 4 | 0.001372 | 0.001997 | 1.455 | 32,008,984 | 32,031,416 |
+| present | selected | 1 | 0.004977 | 0.135692 | 27.264 | 32,009,360 | 375,999,592 |
+| present | selected | 4 | 0.004760 | 0.060062 | 12.618 | 32,009,592 | 175,756,336 |
+
+Ungrouped cooks now meet the speed limit. The whole node remains blocked:
+The selected path compiles a packed map inside a structured conditional;
+the attribute writer cannot offer that nested result to its direct plane
+sink, and the map's previous-color input is materialized first. Shared
+packed-output handling needs further work. The 2× limit is
+unchanged, and this draft has not been registered.
+
+### Shared compiler shipping checkpoint
+
+Public declaration, typed execution, FMA and diagnostic APIs were reviewed and
+accepted separately in commit `36a8c5cf`. Foundation shipping request 72847
+ran `opam exec -- _build/default/tools/check.exe --ship`; log
+`/tmp/rays-sop-lisp-foundation-ship.log`. It exited 1: the complete workspace
+sweep passed (43 standard files and 13 fixtures), but the GPU operation test
+still generated the old binary arity for the new three-input `fma`. The test
+now uses valid FMA/random bodies and explicitly verifies their typed GPU
+refusals; focused GPU request 82280 exited 0 with existing goldens unchanged.
+
+Review identified and fixed additional Source attribute descriptor tracking,
+editor diagnostic-cause conversions, and ASCII-only JavaScript metadata
+policy normalization. These edits happened after the baseline compiled its
+targets, so that baseline cannot validate them. Fresh attribute/drawing/web
+regressions were required before the foundation source commit. Fresh SOP
+request 87196 and Drawing request 7654b3 passed Source count/fusion/read facts,
+malformed-handle guards, exact domain outputs and editor error causes/spans.
+The root's valid-argument Drawing execution also exited 0. Fresh full shipping
+request 21836 exited 0 in `/tmp/rays-sop-lisp-foundation-ship-final.log`,
+including all 43 standard workspaces and 13 fixtures. The prepared four setter
+production sources and authoritative oracle
+entry remain outside the worktree; native registrations are unchanged.

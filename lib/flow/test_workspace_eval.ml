@@ -136,6 +136,27 @@ let () = (* the 12 fixtures run, deterministically, with unique plan keys, at an
 (* ---- check.cjs: value cases ---- *)
 
 let () = (* the first block *)
+  t "declared nested data is concrete; generic list and record selection stays lazy" (fun () ->
+    let host body="(workspace w (graph g :context host "^body^"))" in
+    let encode=Option.get(Op.find "text/table_encode" Context.value) in
+    let consume : Op.t={encode with name="test/table_record";
+      signature={encode.signature with pos=["data",Ty.Record[
+        "rows",List(List Text);"label",Text]]};
+      body=(fun ~live ~node args->match List.assoc "data" args with
+        | Value.Record fields->(match List.assoc "label" fields,
+            encode.body ~live ~node ["rows",List.assoc "rows" fields]with
+            |Value.Text label,Value.Text table->Value.Text(label^table)|_->assert false)
+        |_->assert false)} in
+    let forms=parse(host "(test/table_record {:rows (list (list (str t) \"猫\")) :label (str t)})") in
+    let workspace=match Workspace.check ~ops:[consume] catalog forms with
+      |Some workspace,[]->workspace|_,ds->failwith(show_ds ds) in
+    assert(result(run ~time:0.25 workspace)"g"=Eval.Text "0.250.25\t猫");
+    assert(g_value ~time:0.25 (host
+      "(text/table_encode (list (list (str t) \"猫\")))")=Eval.Text "0.25\t猫");
+    List.iter(fun body->assert(g_value ~time:0.25(value body)=Eval.Float 0.25))
+      ["(first (list t (array/nth (array/float 0) (floor t))))";
+       "(nth (list t (array/nth (array/float 0) (floor t))) 0)";
+       "(get {:selected t :unused (array/nth (array/float 0) (floor t))} :selected)"]);
   t "sum" (fun () -> is (value "(sum [k (range 4)] (* k 2))") (Eval.Int 12));
   t "int truncates, round is half away from zero, ceil and float" (fun () ->
     is (value "(int -2.7)") (Eval.Int (-2)); is (value "(round 2.5)") (Eval.Int 3);

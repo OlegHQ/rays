@@ -51,6 +51,8 @@ let builder () =
         | Unary (op, a) -> Unary (op, at a)
         | Int_abs a -> Int_abs(at a) | Convert (op,a) -> Convert(op,at a)
         | Noise3 (a, b, c, seed, octaves) -> Noise3 (at a, at b, at c, seed, octaves)
+        | Rand_at(seed,index) -> Rand_at(at seed,at index)
+        | Fma(a,b,c) -> Fma(at a,at b,at c)
         | Select (a, b, c) -> Select (at a, at b, at c)
         | Int_select (a,b,c) -> Int_select(at a,at b,at c)
         | Guarded (guards,body) ->

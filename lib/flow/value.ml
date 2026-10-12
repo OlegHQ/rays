@@ -23,6 +23,11 @@ type ('f, 'r) t =
 
 
 exception Fail of string * string * Diagnostic.span option
+exception Diagnostic_fail of Diagnostic.t
+
+let raise_diagnostic (d:Diagnostic.t) = match d.cause with
+  |None->raise(Fail(d.code,d.message,d.span))
+  |Some _->raise(Diagnostic_fail d)
 
 let fail code msg = raise (Fail (code, msg, None))
 let failf code fmt = Printf.ksprintf (fail code) fmt

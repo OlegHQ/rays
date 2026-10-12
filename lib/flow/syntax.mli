@@ -60,8 +60,9 @@ val children : t -> t list
 (** Direct sub-forms in reading order. *)
 
 val attribute_args : string -> t list -> t list
-(** Normalize the positional [:name] selector of [sop/attr] and
-    [sop/with_attr] to text, retaining its source identity and notes. *)
+(** Normalize cooked attribute/count selectors and supported attribute, group
+    and array type enumeration spellings to text, retaining source identity
+    and notes. *)
 
 val renumber : int -> t -> t * int
 (** [renumber first form] copies [form] numbering every form from [first] in

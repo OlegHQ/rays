@@ -8,7 +8,7 @@ type arithmetic = { apply : 'f 'r. ('f, 'r) Value.t -> ('f, 'r) Value.t -> ('f, 
 type packed_kind = Binary of Packed_ops.binary | Unary of Packed_ops.unary
   | Integer of Packed_ops.integer | Integer_compare of Packed_ops.comparison
   | Convert of Packed_ops.conversion
-  | Noise3 | Length | Dot | Cross | Normalize | Exact | Frame | Constant_only
+  | Noise3 | Fma | Rand_at | Length | Dot | Cross | Normalize | Exact | Frame | Constant_only
 type t = {
   name : string; ctx : Context.t; signature : signature;
   out : Ty.t list -> Ty.t;
@@ -197,6 +197,112 @@ let range_type args = match List.find_opt (fun (name,_,_) -> name="type") args w
   | Some (_,_,Some (Param.Text_value "int")) -> Ty.Array Ty.Int
   | Some (_,_,Some (Param.Text_value "float")) -> Ty.Array Ty.Float
   | _ -> fail "E_ARRAY_TYPE" "Array range type is the literal int or float."
+module Private = struct
+  type reduction = Sum | Minimum | Maximum
+  let reduction_name = function Sum -> "sum" | Minimum -> "min" | Maximum -> "max"
+  (* ponytail: global reductions scan sequentially; add qualified block extrema
+     only if measurements make that scan a bottleneck. Segment rows already pool. *)
+  let reduce_array ?(rows = fun ~start ~finish f -> for i=start to finish do f i done)
+      operation ?offsets values =
+    let count = array_length values in
+    let offsets = Option.map (function Int_array offsets -> offsets
+      | _ -> fail "E_ARRAY_TYPE" "Segment offsets must be an integer array.") offsets in
+    let segments = match offsets with
+      | None -> 1
+      | Some offsets ->
+        let n=Array.length offsets in
+        if n=0 || offsets.(0)<>0 || offsets.(n-1)<>count then
+          fail "E_ARRAY_OFFSETS" "Segment offsets must start at zero, be nondecreasing and end at the value count.";
+        for i=1 to n-1 do
+          if offsets.(i)<offsets.(i-1) then
+            fail "E_ARRAY_OFFSETS" "Segment offsets must start at zero, be nondecreasing and end at the value count."
+        done;
+        n-1 in
+    let range row = match offsets with None -> 0,count | Some offsets -> offsets.(row),offsets.(row+1) in
+    let extrema_start first finish =
+      if operation<>Sum && first=finish then fail "E_ARRAY_EMPTY" "An extremum needs at least one array value.";
+      if operation=Sum then first else first+1 in
+    match values with
+    | Int_array values ->
+      let apply = match operation with Sum -> ( + ) | Minimum -> min | Maximum -> max in
+      let reduce first finish =
+        let start=extrema_start first finish in
+        let result=ref (if operation=Sum then 0 else values.(first)) in
+        for i=start to finish-1 do result:=apply !result values.(i) done;
+        !result in
+      (match offsets with
+       | None -> Int (reduce 0 count)
+       | Some _ ->
+         let result=Array.make segments 0 in
+         rows ~start:0 ~finish:(segments-1) (fun row ->
+           let first,finish=range row in result.(row)<-reduce first finish);
+         Int_array result)
+    | Float_array data | Vec2_array data | Vec3_array data | Vec4_array data ->
+      let width=match values with Vec2_array _ -> 2 | Vec3_array _ -> 3 | Vec4_array _ -> 4 | _ -> 1 in
+      let name="array/" ^ (if offsets=None then "" else "segment_") ^ reduction_name operation in
+      let reduce first finish component =
+        let start=extrema_start first finish in
+        let result=ref (if operation=Sum then 0. else fin name data.(first*width+component)) in
+        for i=start to finish-1 do
+          let value=data.(i*width+component) in
+          if not(Float.is_finite value) then ignore(fin name value);
+          result:=(match operation with Sum -> !result+.value
+            | Minimum -> Float.min !result value | Maximum -> Float.max !result value);
+          if not(Float.is_finite !result) then ignore(fin name !result)
+        done;
+        !result in
+      (match offsets with
+       | None -> (match width with
+           | 1 -> Float (reduce 0 count 0)
+           | 2 -> Vec2 (reduce 0 count 0,reduce 0 count 1)
+           | 3 -> Vec3 (reduce 0 count 0,reduce 0 count 1,reduce 0 count 2)
+           | _ -> Vec4 (reduce 0 count 0,reduce 0 count 1,reduce 0 count 2,reduce 0 count 3))
+       | Some _ ->
+         if segments>Sys.max_floatarray_length/width then
+           fail "E_ARRAY_RANGE" "Array length is outside native storage bounds.";
+         let result=Array.make (segments*width) 0. in
+         rows ~start:0 ~finish:(segments-1) (fun row ->
+           let first,finish=range row in
+           for component=0 to width-1 do
+             result.(row*width+component)<-reduce first finish component
+           done);
+         (match width with 1 -> Float_array result | 2 -> Vec2_array result
+          | 3 -> Vec3_array result | _ -> Vec4_array result))
+    | _ -> fail "E_ARRAY_TYPE" "Array reductions need int, float or vector arrays."
+end
+let reduction_type segmented = function
+  | Ty.Array (Ty.Int | Float | Vec2 | Vec3 | Vec4 as element) :: _ ->
+      if segmented then Ty.Array element else element
+  | Ty.Array Ty.Any :: _ -> if segmented then Ty.Array Ty.Any else Ty.Any
+  | _ -> fail "E_ARRAY_TYPE" "Array reductions need int, float or vector arrays."
+let reductions =
+  List.map (fun operation ->
+    let name="array/" ^ Private.reduction_name operation in
+    mk ~category:"Array" name ["array",Ty.Array Ty.Any] (reduction_type false)
+      {run=fun ~name:_ ~node:_ args -> Private.reduce_array operation (List.assoc "array" args)})
+    [Private.Minimum;Maximum]
+  @ List.map (fun operation ->
+    let name="array/segment_" ^ Private.reduction_name operation in
+    mk ~category:"Array" name ["values",Ty.Array Ty.Any;"offsets",Ty.Array Ty.Int] (reduction_type true)
+      {run=fun ~name:_ ~node:_ args -> Private.reduce_array operation
+        ~offsets:(List.assoc "offsets" args) (List.assoc "values" args)})
+    [Private.Sum;Minimum;Maximum]
+let constant_array ty count value =
+  let width=match ty with Ty.Vec2->2|Vec3->3|Vec4->4|_->1 in
+  if List.mem ty [Ty.Float;Vec2;Vec3;Vec4] && count>Sys.max_floatarray_length/width then
+    fail "E_ARRAY_RANGE" "Array length is outside native storage bounds.";
+  (* Validate one element through the shared packed-storage boundary. Empty
+     arrays intentionally do not inspect their unused fill value. *)
+  match array_init ty (min count 1) (fun _->value) with
+  | Int_array sample -> Int_array(Array.make count (if count=0 then 0 else sample.(0)))
+  | Text_array sample -> Text_array(Array.make count (if count=0 then "" else sample.(0)))
+  | Float_array sample -> Float_array(Array.make count (if count=0 then 0. else sample.(0)))
+  | (Vec2_array sample|Vec3_array sample|Vec4_array sample) as array ->
+      let width=match array with Vec2_array _->2|Vec3_array _->3|_->4 in
+      let values=Array.make(count*width)0. in
+      for i=0 to count-1 do Array.blit sample 0 values (i*width) width done;
+      (match width with 2->Vec2_array values|3->Vec3_array values|_->Vec4_array values)
+  | _->assert false
 let arrays = [
   (let op = mk ~category:"Array" ~kw:["type",Ty.Text] ~choices:["type",["float";"int"]]
     "array/range" ["count", Ty.Int] (fun _ -> Ty.Array fl)
@@ -214,19 +320,23 @@ let arrays = [
   mk ~category:"Array" ~opt:["value",Ty.Int] "array/int" ["count",Ty.Int] (fun _ -> Ty.Array Ty.Int)
     {run=fun ~name ~node:_ args ->
       let value=Option.value ~default:(Int 0) (List.assoc_opt "value" args) in
-      array_init Ty.Int (array_count ~limit:Sys.max_array_length name (List.assoc "count" args)) (fun _ -> value)};
+      constant_array Ty.Int (array_count ~limit:Sys.max_array_length name (List.assoc "count" args)) value};
   mk ~category:"Array" ~opt:["value",Ty.Text] "array/text" ["count",Ty.Int] (fun _ -> Ty.Array Ty.Text)
     {run=fun ~name ~node:_ args ->
       let value=Option.value ~default:(Text "") (List.assoc_opt "value" args) in
-      array_init Ty.Text (array_count ~limit:Sys.max_array_length name (List.assoc "count" args)) (fun _ -> value)};
+      constant_array Ty.Text (array_count ~limit:Sys.max_array_length name (List.assoc "count" args)) value};
   mk ~category:"Array" ~opt:["value", fl] "array/float" ["count", Ty.Int] (fun _ -> Ty.Array fl)
     {run = fun ~name ~node:_ args ->
       let value = Option.value ~default:(Float 0.) (List.assoc_opt "value" args) in
-      array_init fl (array_count name (List.assoc "count" args)) (fun _ -> value)};
+      constant_array fl (array_count name (List.assoc "count" args)) value};
   mk ~category:"Array" ~opt:["value", Ty.Vec3] "array/vec3" ["count", Ty.Int] (fun _ -> Ty.Array Ty.Vec3)
     {run = fun ~name ~node:_ args ->
       let value = Option.value ~default:(Vec3 (0., 0., 0.)) (List.assoc_opt "value" args) in
-      array_init Ty.Vec3 (array_count name (List.assoc "count" args)) (fun _ -> value)};
+      constant_array Ty.Vec3 (array_count name (List.assoc "count" args)) value};
+  mk ~category:"Array" ~opt:["value",Ty.Vec4] "array/vec4" ["count",Ty.Int] (fun _ -> Ty.Array Ty.Vec4)
+    {run = fun ~name ~node:_ args ->
+      let value=Option.value ~default:(Vec4(0.,0.,0.,0.)) (List.assoc_opt "value" args) in
+      constant_array Ty.Vec4 (array_count name (List.assoc "count" args)) value};
   mk ~category:"Array" "array/count" ["array", Ty.Array Ty.Any] (fun _ -> Ty.Int)
     {run = fun ~name:_ ~node:_ args -> Int (array_length (List.assoc "array" args))};
   mk ~category:"Array" "array/nth" ["array", Ty.Array Ty.Any; "index", Ty.Int]
@@ -345,7 +455,7 @@ let images = [
     (fun _->Ty.image) {run=fun ~name ~node args->node name args};
 ]
 
-let all = frame @ arrays @ draw @ host @ integers @ images @ [
+let all = frame @ arrays @ reductions @ draw @ host @ integers @ images @ [
   float_unary "tan" tan;
   float_unary "asin" asin;
   float_unary "acos" acos;
@@ -378,9 +488,56 @@ let all = frame @ arrays @ draw @ host @ integers @ images @ [
           and zz = Sys.opaque_identity (z *. z) in
           Float (fin name (sqrt ((xx +. yy) +. zz)))
       | _ -> fail "E_TYPE" "length needs a vec3."};
+  mk ~category:"Math" "fma" ["a",Ty.Float;"b",Ty.Float;"c",Ty.Float] (fun _->Ty.Float)
+    {run=fun ~name ~node:_ args ->
+      let input n=fin name(num(List.assoc n args)) in
+      let a=input "a" and b=input "b" and c=input "c" in
+      Float(fin name(Float.fma a b c))};
+  mk ~category:"Random" "rand/at" ["seed",Ty.Int;"index",Ty.Int] (fun _->Ty.Float)
+    {run=fun ~name:_ ~node:_ args -> match List.assoc "seed" args,List.assoc "index" args with
+      | Int seed,Int index -> Float(Packed_ops.rand_at seed index)
+      | _ -> fail "E_TYPE" "rand/at needs integer seed and index."};
   mk ~category:"Compare" "equal?" ["a",Ty.Any;"b",Ty.Any] (fun _->Ty.Bool)
     {run=fun ~name:_ ~node:_ args->try Bool(List.assoc "a" args=List.assoc "b" args)
       with Invalid_argument _->fail "E_TYPE" "Functions cannot be compared."};
+  mk ~category:"Text" "text/blank?" ["text",Ty.Text] (fun _ -> Ty.Bool)
+    {run=fun ~name:_ ~node:_ args -> match List.assoc "text" args with
+      | Text s -> Bool (String.trim s = "")
+      | _ -> fail "E_TYPE" "Expected text."};
+  mk ~category:"Text" "text/trim" ["text",Ty.Text] (fun _ -> Ty.Text)
+    {run=fun ~name:_ ~node:_ args -> match List.assoc "text" args with
+      | Text text -> Text(String.trim text) | _ -> fail "E_TYPE" "Expected text."};
+  mk ~category:"Text" "text/lower" ["text",Ty.Text] (fun _ -> Ty.Text)
+    {run=fun ~name:_ ~node:_ args -> match List.assoc "text" args with
+      | Text text -> Text(String.lowercase_ascii text) | _ -> fail "E_TYPE" "Expected text."};
+  mk ~category:"Text" "text/repr" ["text",Ty.Text] (fun _ -> Ty.Text)
+    {run=fun ~name:_ ~node:_ args -> match List.assoc "text" args with
+      | Text text -> Text(Printf.sprintf "%S" text) | _ -> fail "E_TYPE" "Expected text."};
+  mk ~category:"Value" ~kw:["cause",Ty.Text] "error" ["code",Ty.Text;"message",Ty.Text] (fun _ -> Ty.Any)
+    {run=fun ~name:_ ~node:_ args -> match List.assoc "code" args,List.assoc "message" args with
+      | Text code,Text message ->
+          let cause=match List.assoc_opt "cause" args with None->None|Some(Text text)->Some text
+            |_->fail "E_TYPE" "error cause must be text." in
+          Value.raise_diagnostic(Diagnostic.error ?cause ~code message)
+      | _ -> fail "E_TYPE" "error needs text code and message."};
+  mk ~category:"Text" "text/table_decode" ["text",Ty.Text]
+    (fun _ -> Ty.List (Ty.List Ty.Text))
+    {run=fun ~name:_ ~node:_ args -> match List.assoc "text" args with
+      | Text text -> (match Param.String_table.decode text with
+          | Error message -> fail "E_TABLE" message
+          | Ok rows -> List (Array.of_list (List.map (fun row ->
+              List (Array.of_list (List.map (fun cell -> Text cell) row))) rows)))
+      | _ -> fail "E_TYPE" "Expected text."};
+  mk ~category:"Text" "text/table_encode" ["rows",Ty.List (Ty.List Ty.Text)]
+    (fun _ -> Ty.Text)
+    {run=fun ~name:_ ~node:_ args -> match List.assoc "rows" args with
+      | List rows ->
+          let rows=Array.to_list rows |> List.map(function
+            | List cells -> Array.to_list cells |> List.map(function Text cell->cell
+                | _->fail "E_TYPE" "Table cells must be text.")
+            | _->fail "E_TYPE" "Table rows must be lists of text.") in
+          Text (Param.String_table.encode rows)
+      | _ -> fail "E_TYPE" "Expected a table of text cells."};
   unary ~category:"Math" "exp" (fun _->fl) {run=fun ~name ~node:_ args->
     Float(fin name(exp(num(List.assoc "x" args))))};
   mk ~category:"Convert" "exact" ["value", Ty.Any]
@@ -635,6 +792,8 @@ let packed_kind op =
     | _ when op.name = "dot" -> Some Dot
     | _ when op.name = "cross" -> Some Cross
     | _ when op.name = "normalize" -> Some Normalize
+    | _ when op.name = "fma" -> Some Fma
+    | _ when op.name = "rand/at" -> Some Rand_at
     | _ when op.name = "exact" -> Some Exact
     | _ when op.live -> Some Frame
     | _ -> Some Constant_only

@@ -406,3 +406,45 @@ let normalize schema record =
   List.fold_left (fun result field ->
     Result.bind result (fun record ->
       normalize_field record field)) (Ok record) schema.fields
+
+module String_table = struct
+  let encode rows =
+    let encode_cell value =
+      let buffer = Buffer.create (String.length value) in
+      String.iter (function
+        | '\\' -> Buffer.add_string buffer "\\\\"
+        | '\t' -> Buffer.add_string buffer "\\t"
+        | '\n' -> Buffer.add_string buffer "\\n"
+        | character -> Buffer.add_char buffer character) value;
+      Buffer.contents buffer in
+    rows |> List.map (fun row -> String.concat "\t" (List.map encode_cell row))
+         |> String.concat "\n"
+
+  let decode text =
+    if text = "" then Ok [] else
+    let rows = ref [] and row = ref [] and cell = Buffer.create 32 in
+    let finish_cell () =
+      row := Buffer.contents cell :: !row;
+      Buffer.clear cell in
+    let finish_row () = finish_cell (); rows := List.rev !row :: !rows; row := [] in
+    let escaped = ref false and error = ref None in
+    String.iter (fun character -> if Option.is_none !error then
+      if !escaped then begin
+        escaped := false;
+        match character with
+        | '\\' -> Buffer.add_char cell '\\'
+        | 't' -> Buffer.add_char cell '\t'
+        | 'n' -> Buffer.add_char cell '\n'
+        | character -> error := Some (Printf.sprintf
+            "unsupported table escape \\%c" character)
+      end else match character with
+        | '\\' -> escaped := true
+        | '\t' -> finish_cell ()
+        | '\n' -> finish_row ()
+        | character -> Buffer.add_char cell character) text;
+    match !error with
+    | Some error -> Error error
+    | None when !escaped -> Error "trailing table escape"
+    | None -> finish_row (); Ok (List.rev !rows)
+
+end

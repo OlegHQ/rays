@@ -85,7 +85,7 @@ let gpu_set buffers ~device ~gpu ~converted ~slot count (kind : M.kind) =
     | Point _ -> assert false in
   match gpu ~slot ~kind:kind_word ~count attributes with
   | Ok token -> Scene.Private.shapes (Scene_command.Shape_batch.Private.of_gpu token)
-  | Error (d : Flow.Diagnostic.t) -> raise (V.Fail (d.code, d.message, d.span))
+  | Error (d : Flow.Diagnostic.t) -> V.raise_diagnostic d
 
 let has_device (kind : M.kind) =
   let d : type a. a M.attr -> bool = function M.Device _ -> true | _ -> false in
@@ -221,4 +221,5 @@ let scene ~buffers ?image ?gpu ?cache ?(device = fun _ -> no_device ()) marks =
           | Pop_transform | Pop_clip -> close ()) marks;
         Ok (List.rev !top)
       with V.Fail (code, message, span) -> Error (Flow.Diagnostic.error ?span ~code message)
+         | V.Diagnostic_fail diagnostic -> Error diagnostic
          | Invalid_argument message | Failure message -> fail "E_DRAW_RANGE" message

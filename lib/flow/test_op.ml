@@ -17,6 +17,7 @@ let rec sample name = function
   | Vec2 -> Vec2 (1., 2.) | Vec4 -> Vec4 (1., 2., 3., 4.)
   | Text | Color -> Text (if name = "axis" then "horizontal" else if name = "button" then "left" else "a")
   | List e -> List [|sample "" e; sample "" e|]
+  | Array Ty.Int when name="offsets" -> Int_array [|0;2|]
   | Array e -> Value.array_init e 2 (fun _ -> sample "" e)
   | Named _ as ty -> Option.value ~default:(Deferred (ty, 0)) (List.assoc_opt ty nominal_samples)
   | Any -> Float 1.5
@@ -24,6 +25,12 @@ let rec sample name = function
   | Fn _ -> Fn ()
 
 let check (o : Op.t) args =
+  if o.name="error" then
+    (try ignore(o.body ~live:(Frame_input.at_time 0.) ~node:(fun _ _->assert false)args);
+      failwith "error returned" with Value.Fail(code,message,_)->
+      assert(code="a" && message="a");No_geo
+      |Value.Diagnostic_fail d->assert(d.code="a" && d.message="a" && d.cause=Some "a");No_geo)
+  else
   try
     let made = ref [] in
     let result_type args = Op.result_type o (List.map (fun (name, v) ->
@@ -40,7 +47,10 @@ let check (o : Op.t) args =
   with Value.Fail (code, msg, _) -> failwith (o.name ^ ": " ^ code ^ ": " ^ msg)
 
 let () =
-  assert (List.length Op.all = 136);
+  assert (List.length Op.all = 151);
+  let repr=Option.get(Op.find "text/repr" Context.value) in
+  List.iter(fun text -> assert(check repr ["text",Text text]=Text(Printf.sprintf "%S" text)))
+    [String.init 256 Char.chr;"";"é日本😀\000\b\t\n\r\\\""];
   List.iter (fun (o : Op.t) ->
     assert (Option.get (Op.find o.name o.ctx) == o);
     assert (Option.is_some (Op.packed_kind o) = (o.ctx = Context.value && o.shape = Op.Scalar));

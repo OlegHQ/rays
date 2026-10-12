@@ -6,11 +6,13 @@ type t = {
   keyword_inputs : string list;
   fields : Param.field_view list;
   label : string;
+  operation : string;
   category : string list;
   description : string option;
   inputs : (string * Ty.t * Syntax.t option) list;
   body : Syntax.t;
   validations : validation list;
+  normalizers : (string * Syntax.t) list;
   form : Syntax.t;
 }
 

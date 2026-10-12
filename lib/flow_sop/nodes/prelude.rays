@@ -30,12 +30,25 @@
            size (sqrt (vec3_dot scaled scaled))]
       (if (= scale 0.0) [0.0 0.0 0.0]
         (/ scaled (if (= size 0.0) 1.0 size)))))
-  ; Quat.normalize has its own 1e-12 identity threshold and direct division.
+  ; Native overflow produces an infinite norm and signed zero components.
+  ; Preserve Quat.normalize's left-associated sum, 1e-12 threshold and division.
   (defn quat_normalize :context value [(value : vec4)]
-    (let* [size (sqrt (+ (+ (+ (* value.x value.x) (* value.y value.y))
-                         (* value.z value.z)) (* value.w value.w)))]
-      (if (<= size 1e-12) [0.0 0.0 0.0 1.0]
-        (/ value (if (<= size 1e-12) 1.0 size)))))
+    (let* [product_overflow (> (max (max (abs value.x) (abs value.y))
+                                  (max (abs value.z) (abs value.w))) 1.3407807929942596e154)
+           safe (if product_overflow [0.0 0.0 0.0 0.0] value)
+           xx (* safe.x safe.x) yy (* safe.y safe.y)
+           zz (* safe.z safe.z) ww (* safe.w safe.w)
+           ; Quarter-sized squares keep even the largest four-term sum finite.
+           ; Power-of-two scaling preserves overflow-threshold rounding.
+           quarter_total (+ (+ (+ (* xx 0.25) (* yy 0.25)) (* zz 0.25)) (* ww 0.25))
+           overflow (or product_overflow (>= quarter_total 4.49423283715579e307))
+           factor (if overflow 0.0 1.0)
+           ; Rescaling the square root is exact above the identity threshold.
+           size (* (sqrt quarter_total) 2.0)
+           scaled (* value factor)
+           small (and (not overflow) (<= size 1e-12))
+           numerator (if small [0.0 0.0 0.0 1.0] scaled)]
+      (/ numerator (if (<= size 1e-12) 1.0 size))))
   (defn quat_mul :context value [(left : vec4) (right : vec4)]
     [(- (+ (+ (* left.w right.x) (* left.x right.w)) (* left.y right.z)) (* left.z right.y))
      (+ (+ (- (* left.w right.y) (* left.x right.z)) (* left.y right.w)) (* left.z right.x))
