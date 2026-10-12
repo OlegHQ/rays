@@ -27,11 +27,16 @@ type execution = {tier : string; group : path; seconds : float option}
 (** Renderer-neutral host report. Only the owning card has a group duration;
     other fused cards name the same group and tier. *)
 
+type force = ?state:Flow.Eval.state -> ?elems:(string * Flow.Eval.value) list ->
+  ?resolve:(Flow.Eval.value -> (Flow.Eval.value, Flow.Diagnostic.t) result) -> Flow.Eval.value ->
+  live:Frame_input.t -> (Flow.Eval.value, Flow.Diagnostic.t) result
+
 type t
 
 val make :
   ?state:Flow.Eval.state -> ?live:Frame_input.t -> ?time:float ->
   ?resolve:(Flow.Eval.value -> (Flow.Eval.value, Flow.Diagnostic.t) result) ->
+  ?force:force ->
   ?bulk_calls:(path -> int list ->
     (int * int * (int -> ((path * (int list * Flow.Eval.value) list) list, Flow.Diagnostic.t) result)) list) ->
   ?execution:(path -> probes:int list -> execution option) ->
@@ -46,8 +51,9 @@ val make :
     node inside such a loop reads its one template record at every element.  [element zone k]
     names element [k] of that loop and gives its value (a point's position): the template's
     element-dependent values are then forced for it (without it they read [?]).
-    [resolve] supplies cooked packed sources. Map selectors materialize their
-    inputs once and reference-evaluate just the selected call, beyond the 4,096
+    [resolve] supplies cooked packed sources. [force] lets the host use its compiler for
+    live values and packed map inputs; selected function calls remain reference-recorded.
+    Map selectors materialize their inputs once and reference-evaluate just the selected call, beyond the 4,096
     recording cap. The selected call and all its body records share one bounded memo.
     Packed function sparklines sample at most 64 calls across the complete input.
     [bulk_calls zone outer] adds host-owned domain selectors as

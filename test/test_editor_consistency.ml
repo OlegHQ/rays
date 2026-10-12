@@ -839,10 +839,58 @@ let no_viewport_click () =
     let f = { (frame 2) with events = click; mouse = (15., 15.) } in
     e := E.update !e f)
 
+let compiled_probe_panels () =
+  let text = {|(workspace probes
+    (graph picture :context draw
+      (let* [count 10000
+             positions (state [previous (array/vec3 count [0 10 0])]
+                         (map (fn [p] (+ p [1 0 0])) previous))
+             shifted (map (fn [p] (+ p [1 0 0])) positions)]
+        (draw/rects shifted [1 1 0])))
+    (graph editor :context editor
+      (ui/workspace (ui/split "horizontal" (ui/canvas (ref picture))
+        (ui/split "vertical" (ui/graph "picture") (ui/lisp :tab "graph"))))))|} in
+  with_editor (workspace text) (fun e ->
+    let first_x () = E.Private.canvas_scenes !e |> List.hd |> Scene.Private.commands
+      |> Array.to_list |> List.find_map (function
+        | Scene_command.Render_ir.Shapes shapes when Scene_command.Shape_batch.count shapes > 1 ->
+            Some (Scene_command.Shape_batch.count shapes,
+              Int32.float_of_bits (Bytes.get_int32_le (Scene_command.Shape_batch.instances shapes) 0))
+        | _ -> None) |> Option.get in
+    let previous = ref (snd (first_x ())) in
+    for count = 2 to 13 do
+      e := step !e count;
+      let n, x = first_x () in
+      check (n = 10000 && x = !previous +. 1.) "panel probes advanced the canvas fold more than once";
+      previous := x
+    done;
+    Gc.full_major ();
+    let before = Gc.allocated_bytes () in
+    for count = 14 to 21 do e := step !e count done;
+    let bytes = (Gc.allocated_bytes () -. before) /. 8. in
+    check (bytes < 8_000_000.)
+      (Printf.sprintf "live panel probes rebuilt packed inputs through the reference walker (%.0f B/frame)" bytes);
+    e := E.edit !e (F.Set_graph {name="picture"; form=parse {|(graph picture :context draw
+      (let* [count 7000
+             positions (state [previous (array/vec3 count [0 20 0])]
+                         (map (fn [p] (+ p [2 0 0])) previous))
+             shifted (map (fn [p] (+ p [3 0 0])) positions)]
+        (draw/rects shifted [1 1 0])))|}}) |> Result.get_ok;
+    e := step !e 22;
+    let n, x = first_x () in
+    check ((n, x) = (7000, 5.))
+      (Printf.sprintf "source edits reused a stale probe program or advanced the new fold (%d, %.1f)" n x);
+    e := E.update !e {(frame 23) with keys=[Input.Shift]; events=[Event.KeyPressed (Input.KeyChar 'p')]};
+    let n, x = first_x () in
+    check ((n, x) = (7000, 5.)) (Printf.sprintf "timeline reset retained old probe state (%d, %.1f)" n x);
+    e := step !e 24;
+    check (first_x () = (7000, 7.)) "the reset fold did not resume exactly once")
+
 let run () =
   let failures = List.filter_map (fun (name, run) ->
     try run (); None with exn -> Some (name ^ ": " ^ Printexc.to_string exn))
-    ["settings opening and edits", settings_authority; "settings lowering", settings_rebuild;
+    ["compiled live panel probes", compiled_probe_panels;
+     "settings opening and edits", settings_authority; "settings lowering", settings_rebuild;
      "preset defaults", settings_presets; "settings graph writeback", settings_graph_writeback;
      "startup settings", startup_settings; "frozen context time", frozen_context_time;
      "scene picture", scene_picture; "empty preview", empty_preview;

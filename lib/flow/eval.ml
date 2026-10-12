@@ -105,7 +105,8 @@ and fn =
 and residual = { rid : int; rterm : W.term; renv : value Smap.t; rc : ctx;
   previous : bool;
   mutable live : st option;  (* the evaluation that last offered this residual to the executor *)
-  mutable core : (unit ref * (Frame_input.t -> (value, Diagnostic.t) result)) option
+  mutable core : (unit ref * (Frame_input.t -> (value, Diagnostic.t) result) *
+    (Frame_input.t -> (value, Diagnostic.t) result) option) option
     (* the prepared program of the executor named by the unit ref (physical): total, restores state and reruns the walker on failure *) }
 
 and state = { mutable source : string; mutable frame : int option;
@@ -298,7 +299,7 @@ and force_res c r =
         | Some live,Some execute when c.st.compiled_residuals ->
             r.live <- Some c.st;
             (match r.core with
-             | Some (owner, run) when owner == c.st.owner -> (match run live with Ok v -> v | Error d -> raise (Fail (d.code, d.message, d.span)))
+             | Some (owner, run, _) when owner == c.st.owner -> (match run live with Ok v -> v | Error d -> raise (Fail (d.code, d.message, d.span)))
              | _ ->
                 let saved = Option.map fork_state c.st.state in
                 let result = try execute r live with _ -> None in
@@ -1060,7 +1061,7 @@ let residual_eval r ~live =
 let force_with ?state ?elems ?resolve ?execute ?owner ?compiled v ~live =
   if not (is_live v) then Ok v
   else
-    with_live ?state ?elems ?resolve ?execute ?owner ?compiled live (fun ctx_of ->
+    let general () = with_live ?state ?elems ?resolve ?execute ?owner ?compiled live (fun ctx_of ->
       let rec go v = match v with
         | Residual r -> let c = ctx_of r in go (force_res c r)
         | Struct (_, Ty.Array _, _) -> (match resolve with
@@ -1071,7 +1072,18 @@ let force_with ?state ?elems ?resolve ?execute ?owner ?compiled v ~live =
         | Record fs -> Record (List.map (fun (n, x) -> (n, go x)) fs)
         | Struct (n, ty, fs) -> Struct (n, ty, List.map (fun (k, x) -> (k, go x)) fs)
         | v -> v in
-      go v)
+      go v) in
+    match v, owner, execute, compiled with
+    | Residual r, Some owner, Some _, (None | Some true) ->
+        (match r.core with
+         | Some (same, _, Some fast) when same == owner ->
+             (match Frame_input.validate live with
+              | Error message -> Error (Diagnostic.error ~code:"E_FRAME" message)
+              | Ok () -> (match (try Some (fast live) with _ -> None) with
+                  | Some (Ok _ as result) -> result
+                  | _ -> general ()))
+         | _ -> general ())
+    | _ -> general ()
 
 let force ?state ?elems v ~live = force_with ?state ?elems v ~live
 
@@ -1167,7 +1179,7 @@ module Private = struct
     let c = live_ctx r in
     let saved = Option.map fork_state c.st.state in
     fun () -> Option.iter (fun saved -> restore_state (Option.get c.st.state) saved) saved
-  let set_core r ~owner run = r.core <- Some (owner, run)
+  let set_core r ~owner ?fast run = r.core <- Some (owner, run, fast)
   let rerun r =
     let c = live_ctx r in
     let c = match r.rterm.path with Some p -> {c with base = p; route = []} | None -> c in
@@ -1196,8 +1208,8 @@ module Private = struct
   let eval_term ?state ?elems ?resolve r term ~live =
     with_live ?state ?elems ?resolve live (fun ctx_of ->
       let c = ctx_of r in concrete c (ev c r.renv term))
-  let map_probe ?state ?resolve ?(offset = 0) r ~live =
-    with_live ?state ?resolve live (fun ctx_of ->
+  let map_probe ?state ?resolve ?execute ?(offset = 0) r ~live =
+    with_live ?state ?resolve ?execute live (fun ctx_of ->
       let c = {(ctx_of r) with rec_ = false} in
       match r.rterm.node with
       | W.Hof (`Map, f :: sources) ->
@@ -1210,7 +1222,7 @@ module Private = struct
           let get v k = match v with List xs -> xs.(k) | v -> array_get v k in
           let at k = protect (fun () ->
             if k < 0 || k >= count then fail "E_LIST_RANGE" "Probe index is outside this map.";
-            let st = {c.st with record = true; recs = Hashtbl.create 16;
+            let st = {c.st with record = true; execute = None; compiled_residuals = false; recs = Hashtbl.create 16;
               fn_calls = Hashtbl.create 1; memo = Hashtbl.create 16; steps = 0} in
             let fid = match fn with Closure cl -> cl.fid | Named n -> n.fid in
             Hashtbl.add st.fn_calls fid (offset + k);

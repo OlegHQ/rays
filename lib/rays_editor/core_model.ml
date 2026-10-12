@@ -33,6 +33,7 @@ type scope_key = {
   summaries : Cook.summary list; time : Frame_input.t option;
   executions : Flow_ir.execution list;
   records : Flow_graph.Probe.t option;
+  force : Flow_graph.Probe.force;
   scope : Flow_graph.Projection.scope;
   targets : (int * int) list;  (* (object, compiled node) the cook is asked to count *)
 }

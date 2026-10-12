@@ -305,3 +305,33 @@ let () =
    | _ -> assert false);
   assert (Result.is_error (I.Packed.force program ~live));
   print_endline "Packed outputs: two outputs match at 1 and 8 domains"
+
+let () =
+  let rec repeated = function
+    | 0 -> "(+ x t)"
+    | n -> let body = repeated (n - 1) in "(+ " ^ body ^ " " ^ body ^ ")" in
+  List.iter (fun fusion ->
+    let packed = Test_program.compile ~fusion
+      ("(map (fn [x] " ^ repeated 5 ^ ") (array/range 16385))") in
+    assert (Array.length (I.Packed.Private.view packed).code = 8);
+    List.iter (fun time ->
+      let live = Frame_input.at_time time in
+      let reference = I.Packed.reference packed ~live in
+      List.iter (fun domains -> Rays_math.Parallel.run ~domains (fun () ->
+        assert (same (I.Packed.force packed ~live) reference))) [1;8]) [0.;0.37;2.]) [false;true];
+  let signed = Test_program.compile
+    "(map (fn [x] [(+ x t) 0.0 -0.0 (+ x t)]) (array/range 4))" in
+  let view = I.Packed.Private.view signed in
+  assert (view.outputs.(0).(0) = view.outputs.(0).(3));
+  assert (view.outputs.(0).(1) <> view.outputs.(0).(2));
+  List.iter (fun domains -> Rays_math.Parallel.run ~domains (fun () ->
+    let live = Frame_input.at_time 0.37 in
+    assert (same (I.Packed.force signed ~live) (I.Packed.reference signed ~live)))) [1;8];
+  let guards = Test_program.compile
+    "(map (fn [x] (if (and (< x t) (not (= x 0)))
+      (max (min (sqrt (abs (* x x))) 1) 0) (sin (cos (/ (pow (mod x 7) 2) t)))))
+      (array/range 4))" in
+  assert (I.Packed.gpu_refusals guards = []);
+  assert (Array.fold_left (fun n check -> if check then n + 1 else n) 0
+    (I.Packed.Private.finite_checks guards) = 8);
+  print_endline "Packed sharing: repeated expressions fit the register budget, signed zero and domain parity preserved"

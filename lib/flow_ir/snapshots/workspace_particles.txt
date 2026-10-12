@@ -53,20 +53,16 @@ program
   r8 = Frame "frame/width"
   r9 = Binary Ge 0 8
   r10 = Binary Or 7 9
-  r11 = Const 0x0p+0
-  r12 = Binary Sub 11 3
-  r13 = Select 10 12 3
-  r14 = Const 0x0p+0
-  r15 = Binary Lt 1 14
-  r16 = Frame "frame/height"
-  r17 = Binary Ge 1 16
-  r18 = Binary Or 15 17
-  r19 = Const 0x0p+0
-  r20 = Binary Sub 19 4
-  r21 = Select 18 20 4
-  r22 = Const 0x0p+0
+  r11 = Binary Sub 6 3
+  r12 = Select 10 11 3
+  r13 = Binary Lt 1 6
+  r14 = Frame "frame/height"
+  r15 = Binary Ge 1 14
+  r16 = Binary Or 13 15
+  r17 = Binary Sub 6 4
+  r18 = Select 16 17 4
   widths [3;3]
-  output [13;21;22]
+  output [12;18;6]
   uniform_widths []
   collecting true
 

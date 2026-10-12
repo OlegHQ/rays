@@ -290,10 +290,12 @@ module Private : sig
   val checkpoint : residual -> (unit -> unit)
   (** Snapshot the residual's evaluation state; the returned function restores it. *)
 
-  val set_core : residual -> owner:unit ref -> (live -> (value, Diagnostic.t) result) -> unit
+  val set_core : residual -> owner:unit ref ->
+    ?fast:(live -> (value, Diagnostic.t) result) -> (live -> (value, Diagnostic.t) result) -> unit
   (** Keep the executor's prepared program on the residual: later forces whose
       [~owner] (passed to {!force_with_executor}) is the same ref call it directly. It must be total, restore state and
-      rerun the walker on failure ({!checkpoint}, {!rerun}). *)
+      rerun the walker on failure ({!checkpoint}, {!rerun}). [fast] must be stateless and
+      return a concrete result; failures reenter the normal evaluator and its diagnostics. *)
 
   val rerun : residual -> (value, Diagnostic.t) result
   (** The tree walker over this residual's own term, in its live evaluation and
@@ -329,9 +331,10 @@ module Private : sig
       reference walker. IR kernels use this once for their packed inputs. *)
 
   val map_probe : ?state:state -> ?resolve:(value -> (value, Diagnostic.t) result) ->
+    ?execute:(residual -> live -> (value, Diagnostic.t) result option) ->
     ?offset:int -> residual -> live:live ->
     (int * (int -> ((Workspace.path * (int list * value) list) list, Diagnostic.t) result), Diagnostic.t) result
-  (** Materialize map inputs once with the reference walker, then record only
+  (** Materialize map inputs once, optionally through [execute], then reference-record only
       the selected function call. This admits indices beyond the preview cap;
       [offset] preserves call numbering when a function serves several maps. *)
 end

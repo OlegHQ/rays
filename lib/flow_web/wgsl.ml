@@ -103,6 +103,7 @@ let kernel ?(image = false) program = try
   let image_width = if image then uniform "image:width" 1 else 0 in
   let image_height = if image then uniform "image:height" 1 else 0 in
   let used = P.Private.output_reachable program in
+  let finite_checks = P.Private.finite_checks program in
   let word index = Printf.sprintf "uniforms[%d].%c" (index/4) "xyzw".[index mod 4] in
   let has operation = Array.exists Fun.id (Array.mapi (fun slot instruction -> used.(slot) && operation instruction) view.code) in
   let table_seeds = Array.to_list(Array.mapi(fun index instruction->index,instruction)view.code)
@@ -129,7 +130,8 @@ let kernel ?(image = false) program = try
       | Noise3 (x,y,z,seed,octaves) -> Printf.sprintf "wfbm(vec3<f32>(%s, %s, %s), %d, %d)"
           (register x) (register y) (register z) octaves (table seed) in
     Printf.bprintf body "  let r%d: f32 = %s;\n" slot expression;
-    Printf.bprintf body "  if (!wfinite(r%d)) { atomicStore(&status, 1u); }\n" slot
+    if finite_checks.(slot) then
+      Printf.bprintf body "  if (!wfinite(r%d)) { atomicStore(&status, 1u); }\n" slot
     end) view.code;
   let outputs = Array.length view.outputs in
   let output_name k = if outputs = 1 then "outbuf" else "outbuf" ^ string_of_int k in

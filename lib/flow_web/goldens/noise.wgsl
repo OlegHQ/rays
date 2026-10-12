@@ -49,19 +49,17 @@ fn wfbm(p: vec3<f32>, octaves: i32, o: i32) -> f32 {
   return select(sum / weights, 0.0, weights == 0.0);
 }
 @compute @workgroup_size(64)
-fn kernel_232e186fe513fa101652b5d72b3ab663(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn kernel_fad63a60c87d50065317aa47b3f95442(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i = gid.x;
   if (i >= uniforms[0].x) { return; }
   let r0: f32 = input0[i * 1u + 0u];
   if (!wfinite(r0)) { atomicStore(&status, 1u); }
   let r1: f32 = bitcast<f32>(0x3ca3d70au);
-  if (!wfinite(r1)) { atomicStore(&status, 1u); }
   let r2: f32 = (r0 * r1);
   if (!wfinite(r2)) { atomicStore(&status, 1u); }
   let r3: f32 = bitcast<f32>(uniforms[0].y);
   if (!wfinite(r3)) { atomicStore(&status, 1u); }
   let r4: f32 = bitcast<f32>(0x3e800000u);
-  if (!wfinite(r4)) { atomicStore(&status, 1u); }
   let r7: f32 = wfbm(vec3<f32>(r2, r3, r4), 3, 0);
   if (!wfinite(r7)) { atomicStore(&status, 1u); }
   outbuf[i * 1u + 0u] = r7;

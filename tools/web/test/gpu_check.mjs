@@ -62,6 +62,22 @@ window.__result = (async () => {
   const early = reports.length;
   await gpu.flush();
   report.overflow = { reportedSynchronously: early, reported: reports.map(e => e.code) };
+  // Overflow must still be reported when a select or clamp hides it in the output.
+  report.hiddenOverflow = {};
+  for (const name of ['hidden_select', 'hidden_min']) {
+    reports.length = 0;
+    const k = gpu.kernels.get(name), uniforms = Object.fromEntries(k.uniform_layout.map(([u]) => [u, T]));
+    gpu.dispatch(name, { count: big.length, inputs: [big], uniforms });
+    await gpu.flush();
+    report.hiddenOverflow[name] = reports.map(e => e.code);
+  }
+  // Device buffers bypass host array validation; even a safe consumer must check its input.
+  reports.length = 0;
+  const safe = gpu.kernels.get('safe');
+  gpu.dispatch('safe', { count: big.length, inputs: [gpu.buffer('arithmetic:out0')],
+    uniforms: Object.fromEntries(safe.uniform_layout.map(([u]) => [u, T])) });
+  await gpu.flush();
+  report.nonfiniteDeviceInput = reports.map(e => e.code);
   let rejected = null;
   try { gpu.dispatch('arithmetic', { count: 2, inputs: [Float64Array.of(1, Infinity)], uniforms: { [gpu.kernels.get('arithmetic').uniform_layout[0][0]]: T } }); } catch (e) { rejected = e.code; }
   report.nonfiniteInput = rejected;
@@ -94,6 +110,8 @@ if (report.unavailable) { console.error(`gpu_check: WebGPU unavailable (${report
 console.log(JSON.stringify(report, null, 1));
 const good = !report.failure && NAMES.every(n => report.kernels[n]?.ok) && report.errors.length === 0
   && report.overflow.reportedSynchronously === 0 && report.overflow.reported.join() === 'E_KERNEL'
+  && Object.values(report.hiddenOverflow).every(errors => errors.join() === 'E_KERNEL')
+  && report.nonfiniteDeviceInput.join() === 'E_KERNEL'
   && report.nonfiniteInput === 'E_KERNEL' && report.replaced;
 console.log(good ? 'gpu_check: ok' : 'gpu_check: FAILED');
 process.exit(good ? 0 : 1);

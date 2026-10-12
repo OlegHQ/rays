@@ -84,6 +84,17 @@ locals, state reads or uniforms. Native compilation to closures is permitted
 as an execution optimization after the core has been built; those closures
 never become the representation consumed by another target.
 
+The native executor may compile eligible pure packed `Counted` map bodies into
+1,024-lane numeric blocks during preparation. The structured frame program, its
+numbering and other targets' printers stay unchanged. A prepared loop owns one
+reusable scratch allocation. Branches retain their selected lanes; captures,
+array ownership and integer range are checked before using this tier. Effects,
+escaping locals, accumulators, filters, aliasing input/output buffers and
+unsupported layouts use the general statements. A block failure reruns those
+statements in element order, preserving diagnostics and partial state. Stateless
+prepared residuals may bypass creation of evaluator memo/call tables under the
+executor's owner token; frame validation and diagnostic fallback remain mandatory.
+
 Values are immutable when published. Sequence-building stores write only a
 fresh, locally owned allocation. A published sequence, constant or previous
 state value cannot be edited in place. Buffer ids belong to the caller's table;
@@ -249,6 +260,15 @@ encoded by its binary32 bits. Converting a GPU attribute buffer to a CPU
 consumer is an explicit readback/precision boundary, subject to target
 legality; it is not an implicit float conversion.
 
+Packed lowering shares identical instructions before enforcing the 64-register
+budget, including when fusion is disabled. Constant sharing compares binary64
+bits, preserving signed zero, and does not reassociate arithmetic. Metal and
+WGSL use the same finite-check classification: inputs and operations that can
+introduce nonfinite values remain checked, including intermediates hidden by
+a selection or clamp. Constants qualified as finite, comparisons, selections,
+absolute value, absolute-input square root, min and max need no additional
+check after their operand producers have been checked.
+
 Native Int has 63 signed bits: minimum -4,611,686,018,427,387,904 (`-2^62`),
 maximum 4,611,686,018,427,387,903 (`2^62-1`). This range is distinct from the
 checked float-to-int boundary: that conversion accepts only a finite double
@@ -277,7 +297,7 @@ on objects, strings and lists.
 | Ordinary `pow` | `pow(abs(a),b)` with double operands; reject a non-finite result; Float result even for two Int inputs. |
 | Vector arithmetic | Matching-width vectors apply the scalar floating operation in component order. A scalar numeric operand broadcasts to that width. Every result component is finite; result is a vector, not Int components. The checker rejects mismatched widths. |
 | Scalar `sin`, `cos`, `exp` | Number conversion followed by scalar math and the named finite-result check; Float result. |
-| Scalar `sqrt` | Number conversion followed by `sqrt(abs(x))`; Float result. There is no finite check at frame level: `sqrt(NaN)` is NaN and `sqrt(inf)` is `inf`. Packed instructions additionally check every numeric result for finiteness. |
+| Scalar `sqrt` | Number conversion followed by `sqrt(abs(x))`; Float result. There is no finite check at frame level: `sqrt(NaN)` is NaN and `sqrt(inf)` is `inf`. Packed instructions additionally require every numeric result to remain finite. |
 | Scalar `float` | Number conversion only. No finite check: NaN and the infinities pass through. |
 | Scalar `abs` | An Int input uses signed integer absolute value, retaining the native wrap at minimum Int (`abs(min_int) = min_int`); all other numeric inputs use floating absolute value and yield Float. A Float is not finite-checked: `abs(-inf)` is `inf`, `abs(NaN)` is NaN. |
 | `<`, `<=`, `>`, `>=`, `=` | Compare converted doubles, even for two Int inputs. In particular, numeric `=` may equate distinct large integers after double rounding; structural `equal?` does not. |

@@ -80,4 +80,16 @@ let () =
       let actual=E.Private.force_with_executor ~state ~execute input ~live in
       assert (!calls=1);assert (same actual expected);
       assert (E.state_stamp state=E.state_stamp reference)) [0;1;2;3]);
+  (* Repeated forces use the stateless shortcut, but ownership, invalid frames
+     and a later arithmetic failure still take their original diagnostics. *)
+  (let v=value "(exp t)" in
+    let a=ok (I.Executor.compile v) and b=ok (I.Executor.compile v) in
+    List.iter (fun time ->
+      let live=Frame_input.at_time time in
+      let expected=E.Private.force_reference v ~live in
+      assert (same (I.Executor.force a ~live) expected);
+      assert (same (I.Executor.force a ~live) expected);
+      assert (same (I.Executor.force b ~live) expected)) [0.;1.;10000.;2.];
+    let live={(Frame_input.at_time 1.) with dt=nan} in
+    assert (same (I.Executor.force a ~live) (E.Private.force_reference v ~live)));
   Printf.printf "Core parity: fixtures, scalar expressions, direct execution (%d cases), diagnostics and hook rollback passed\n" !direct

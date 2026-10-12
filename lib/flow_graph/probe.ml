@@ -11,6 +11,9 @@ type geometry = {
 type image = {node:int; width:int; height:int}
 type summary = Value of E.value | Geometry of geometry | Image of image
 type execution = {tier : string; group : path; seconds : float option}
+type force = ?state:E.state -> ?elems:(string * E.value) list ->
+  ?resolve:(E.value -> (E.value, Flow.Diagnostic.t) result) -> E.value ->
+  live:Frame_input.t -> (E.value, Flow.Diagnostic.t) result
 
 type footer = {
   value : string; spark : (float array * int) option; branch : string option;
@@ -19,6 +22,8 @@ type footer = {
 }
 
 type t = {
+  force : force;
+  execute : (E.residual -> Frame_input.t -> (E.value, Flow.Diagnostic.t) result option) option;
   execution : path -> probes:int list -> execution option;
   live_frame : Frame_input.t option;
   state : E.state option;
@@ -40,7 +45,7 @@ type t = {
   arms : (path * int list, int option) Hashtbl.t;
 }
 
-let make ?state ?live ?time ?resolve ?(bulk_calls = fun _ _ -> [])
+let make ?state ?live ?time ?resolve ?force ?(bulk_calls = fun _ _ -> [])
     ?(execution = fun _ ~probes:_ -> None)
     ?(geometry = fun _ -> None) ?(image=fun _->None) ?(dynamic = fun _ -> None)
     ?(element = fun _ _ -> None) (eval : E.t) =
@@ -51,6 +56,9 @@ let make ?state ?live ?time ?resolve ?(bulk_calls = fun _ _ -> [])
     then Hashtbl.replace templates node.site ()) eval.plan.nodes;
   let live_frame = match live with Some _ -> live | None -> Option.map Frame_input.at_time time in
   let state = Option.map E.fork_state state in
+  let force : force option = force in
+  let execute = Option.map (fun (force : force) r live -> Some (force ?state ?resolve (E.Residual r) ~live)) force in
+  let force = Option.value ~default:E.Private.force_reference force in
   let image id =
     let dimensions=match image id with Some _ as dimensions->dimensions|None->
       if id<0 || id>=Array.length eval.plan.nodes then None else
@@ -59,13 +67,13 @@ let make ?state ?live ?time ?resolve ?(bulk_calls = fun _ _ -> [])
       let live=Option.value ~default:(Frame_input.at_time 0.) live_frame in
       let dimension name default = match List.assoc_opt name node.args with
         |None->Some default
-        |Some value->(match E.Private.force_reference ?state ?resolve value ~live with
+        |Some value->(match force ?state ?resolve value ~live with
           |Ok(E.Int n)when n>0->Some n|_->None) in
       let w,h=if node.kind="image/noise" then 256,256 else live.size in
       Option.bind(dimension "width" w)(fun width->
         Option.map(fun height->width,height)(dimension "height" h)) in
     Option.map(fun(width,height)->{node=id;width;height}) dimensions in
-  { live_frame; state; resolve; execution; bulk_calls; maps = Hashtbl.create 16; calls = Hashtbl.create 16;
+  { force; execute; live_frame; state; resolve; execution; bulk_calls; maps = Hashtbl.create 16; calls = Hashtbl.create 16;
     dynamic; templates; element; geometry; image; raw; forced = Hashtbl.create 64; spots = Hashtbl.create 64;
     across = Hashtbl.create 64; feet = Hashtbl.create 64;
     arms = Hashtbl.create 8 }
@@ -83,7 +91,7 @@ let remember tbl key v =
 let summarize t v =
   let v = match t.live_frame, t.resolve with
     | (Some _ | None), _ when E.is_live v && (t.live_frame <> None || Option.is_some t.resolve) ->
-        (match E.Private.force_reference ?state:t.state ?resolve:t.resolve v
+        (match t.force ?state:t.state ?resolve:t.resolve v
           ~live:(Option.value ~default:(Frame_input.at_time 0.) t.live_frame) with Ok v -> v | Error _ -> v)
     | _ -> v in
   match v with
@@ -197,7 +205,7 @@ let map_calls t zone outer =
       let calls = List.filter_map (fun (it, value) -> if it <> outer then None else
         match value with
         | E.Record ["offset", E.Int offset; "call", E.Residual call] ->
-            (match E.Private.map_probe ?state:t.state ?resolve:t.resolve ~offset call
+            (match E.Private.map_probe ?state:t.state ?resolve:t.resolve ?execute:t.execute ~offset call
               ~live:(Option.value ~default:(Frame_input.at_time 0.) t.live_frame) with
              | Ok (count, at) -> Some (offset, count, at)
              | Error _ -> None)
@@ -239,7 +247,7 @@ let at_element t path zone k =
       (Option.value ~default:[] (Hashtbl.find_opt t.raw path)) in
   match raw, t.element zone k with
   | Some raw, Some elems when E.is_live raw ->
-      (match E.Private.force_reference ?state:t.state ?resolve:t.resolve ~elems raw ~live:(Option.value ~default:(Frame_input.at_time 0.) t.live_frame) with
+      (match t.force ?state:t.state ?resolve:t.resolve ~elems raw ~live:(Option.value ~default:(Frame_input.at_time 0.) t.live_frame) with
        | Ok v -> Some (summarize t v) | Error _ -> None)
   | _ -> None
 
@@ -264,7 +272,7 @@ let compute_at t path ~probes =
         let elems = if probes = [] then None else t.element zone (List.nth probes (List.length probes - 1)) in
         match raw, elems with
         | Some raw, Some elems when E.is_live raw ->
-            (match E.Private.force_reference ?state:t.state ?resolve:t.resolve ~elems raw ~live:(Option.value ~default:(Frame_input.at_time 0.) t.live_frame) with
+            (match t.force ?state:t.state ?resolve:t.resolve ~elems raw ~live:(Option.value ~default:(Frame_input.at_time 0.) t.live_frame) with
              | Ok v -> Some (summarize t v)
              | Error _ -> List.find_map (fun (it, v) -> if template it then Some (summarize t v) else None)
                  (Option.value ~default:[] (Hashtbl.find_opt t.raw path)))

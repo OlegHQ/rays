@@ -1,6 +1,6 @@
 #include <metal_stdlib>
 using namespace metal;
-kernel void kernel_d177524037a2e42a2c85431021bf9ec8(
+kernel void kernel_e215d07dc938dae000d9860ad32ed045(
   device const float* input0 [[buffer(0)]],
   device float* output [[buffer(1)]],
   constant uint* uniforms [[buffer(2)]],
@@ -11,7 +11,6 @@ kernel void kernel_d177524037a2e42a2c85431021bf9ec8(
   float r0=input0[i*1+0];
   if(!isfinite(r0)) atomic_store_explicit(status,1u,memory_order_relaxed);
   float r1=as_type<float>(0x40000000u);
-  if(!isfinite(r1)) atomic_store_explicit(status,1u,memory_order_relaxed);
   float r2=(r0*r1);
   if(!isfinite(r2)) atomic_store_explicit(status,1u,memory_order_relaxed);
   float r3=as_type<float>(uniforms[1]);

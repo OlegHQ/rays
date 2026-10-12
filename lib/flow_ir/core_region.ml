@@ -10,6 +10,10 @@ type expression = { registers : int array; constant : E.value option }
 exception Unsupported
 exception Compile_refused of Flow.Diagnostic.t
 
+let instruction_key = function
+  | Const value -> `Constant (Int64.bits_of_float value)
+  | instruction -> `Instruction instruction
+
 let width_of ty = match Flow.Packed_ops.scalar_width ty with
   | Some width -> width | None -> raise Unsupported
 let components = function
@@ -148,12 +152,19 @@ let lower ?(fusion = true) ?(dynamic = false)
       refuse "E_PACKED_FORM" (Printf.sprintf "Packed kernel has %d sources but %d parameters."
         (Array.length sources) (List.length params));
     let code = ref [] and size = ref 0 and uniforms = ref [] and nuniforms = ref 0 and uniform_names = ref [] in
+    let shared = Hashtbl.create 16 in
     let emit instruction =
-      (* ponytail: cap scratch at 512 KiB per block; measure larger bodies before raising it. *)
-      if !size >= Flow.Packed_ops.register_limit then
-        refuse "E_PACKED_LIMIT" (Printf.sprintf "Packed kernel exceeds %d registers." Flow.Packed_ops.register_limit);
-      let id = !size in incr size; code := instruction :: !code;
-      id in
+      (* As in fusion, compare constant bits too: +0 and -0 remain distinct. *)
+      let key = instruction_key instruction in
+      match Hashtbl.find_opt shared key with
+      | Some id -> id
+      | None ->
+          (* ponytail: cap scratch at 512 KiB per block; measure larger bodies before raising it. *)
+          if !size >= Flow.Packed_ops.register_limit then
+            refuse "E_PACKED_LIMIT" (Printf.sprintf "Packed kernel exceeds %d registers." Flow.Packed_ops.register_limit);
+          let id = !size in incr size; code := instruction :: !code;
+          Hashtbl.add shared key id;
+          id in
     let literal ?(at = term) v =
       let data = match v with
         | E.Int _ | Float _ | Bool _ | Vec2 _ | Vec3 _ | Vec4 _ -> components v

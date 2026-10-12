@@ -696,7 +696,7 @@ module Executor = struct
   let force ?state ?elems ?resolve ?(reference = false) program ~live =
     let packed_ran = ref false in
     let measure = measure ~ran:(fun () -> packed_ran := true) program.profile in
-    let state = Option.value ~default:(E.create_state ()) state in
+    let state = match state with Some state -> state | None -> E.create_state () in
     let fell_back = ref reference in
     let fallback () = fell_back := true; E.Private.force_reference ~state ?elems ?resolve program.value ~live in
     let force_with_packed value ~live =
@@ -732,7 +732,7 @@ module Executor = struct
           | Some p when not (Core_exec.has_regions p) ->
               let root = Some r in
               let run live = Core_exec.execute ?root p ~live in
-              E.Private.set_core r ~owner:program.owner run;
+              E.Private.set_core r ~owner:program.owner ?fast:(Core_exec.fast p) run;
               Some (run live)
           | Some p -> Some (Core_exec.execute ~root:r ~force:(fun packed ->
               if Option.fold ~none:false ~some:(fun count -> Cost.packed ~count <> Cpu_kernel) (Packed.static_count packed) then

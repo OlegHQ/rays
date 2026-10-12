@@ -60,6 +60,7 @@ let kernel program = try
   let frames = Array.mapi (fun index -> function
     | P.Frame name -> uniform (Printf.sprintf "frame:%d:%s" index name) 1 | _ -> 0) view.code in
   let used = P.Private.output_reachable program in
+  let finite_checks = P.Private.finite_checks program in
   let table_seeds = Array.to_list(Array.mapi(fun index instruction->index,instruction)view.code)
     |> List.filter_map (function
       | index,P.Noise3 (_,_,_,seed,_) when used.(index) ->
@@ -81,7 +82,8 @@ let kernel program = try
       | Noise3 (x,y,z,seed,octaves) -> Printf.sprintf "fbm(float3(%s,%s,%s),%d,table+%d)"
           (register x) (register y) (register z) octaves (table seed) in
     Printf.bprintf body "  float r%d=%s;\n" slot expression;
-    Printf.bprintf body "  if(!isfinite(r%d)) atomic_store_explicit(status,1u,memory_order_relaxed);\n" slot
+    if finite_checks.(slot) then
+      Printf.bprintf body "  if(!isfinite(r%d)) atomic_store_explicit(status,1u,memory_order_relaxed);\n" slot
     end) view.code;
   let outputs = Array.length view.outputs in
   let output_name k = if outputs = 1 then "output" else "output" ^ string_of_int k in

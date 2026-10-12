@@ -11,6 +11,10 @@ val rebind : Core.Region.t -> Flow.Eval.residual -> Core.Region.t option
     function body, residual or fused scope changed. *)
 
 (** Helpers shared with [Packed] and [Core_fuse]. *)
+val instruction_key : Core.Region.instruction ->
+  [ `Constant of int64 | `Instruction of Core.Region.instruction ]
+(** Sharing preserves the binary64 bits of constants, including signed zero. *)
+
 val width_of : Flow.Ty.t -> int
 val components : Flow.Eval.value -> float array
 val count_of : Flow.Eval.residual -> Flow.Workspace.term -> int option

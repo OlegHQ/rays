@@ -799,7 +799,7 @@ Native 2D Lisp sketches use `:context draw`, typed `Drawing` values and
 frame input pinned. See `examples/particles/sketch.rays` and
 `test/test_drawing.ml` for the native byte-identical export gate.
 Canvas playback and export prepare drawing arguments through `flow_ir`, so
-numeric particle maps inside frame folds use cached register templates while
+eligible numeric maps inside frame folds use prepared native blocks while
 the evaluator retains cell identity, reset and rollback semantics. The native
 export gate compares CPU and independent reference evaluation at one/eight
 domains with the OCaml rendering, pixel for pixel.
@@ -890,8 +890,10 @@ attribute payload changes while propagating that fresh attribute to its output.
 retains a cardinality source, so distinct dynamic arrays do not fuse by accident.
 Its passes preserve authored provenance and refuse illegal approximate flows;
 the value lane prepares execution programs per network. Packed arithmetic maps
-use shared-domain blocks with exact one-/eight-domain parity, and probes force
-through `Eval.Private.force_reference` without a global compilation toggle.
+use shared-domain blocks with exact one-/eight-domain parity. Probes default to
+`Eval.Private.force_reference`; the editor supplies exact CPU compilation for
+live values and packed inputs, while selected function bodies remain
+reference-recorded. Inspection forks state and does not add execution timings.
 Plain keys: `i` follows the selected node's reference or enters the selected object, `⇧I` peeks it in a
 floating graph and `u` goes back; in the view `w`/`e`/`r`
 pick translate/rotate/scale handles and Escape hides them;

@@ -18,11 +18,10 @@ program
   r2 = Binary Lt 0 1
   r3 = Const 0x1p+0
   r4 = Binary Add 0 3
-  r5 = Const 0x1p+0
-  r6 = Binary Sub 0 5
-  r7 = Select 2 4 6
+  r5 = Binary Sub 0 3
+  r6 = Select 2 4 5
   widths [1]
-  output [7]
+  output [6]
   uniform_widths []
   collecting true
 

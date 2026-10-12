@@ -17,7 +17,7 @@ let builder () =
   let uniforms = ref [] and nuniforms = ref 0 and code = ref [] and ncode = ref 0 in
   let shared = Hashtbl.create 64 in
   let emit instruction =
-    let key = Marshal.to_string instruction [Marshal.No_sharing] in
+    let key = Core_region.instruction_key instruction in
     match Hashtbl.find_opt shared key with
     | Some id -> id
     | None ->

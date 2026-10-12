@@ -111,7 +111,50 @@ let attributes () =
     and fus = time (fun () -> ignore (ok (I.Packed.force_all fused ~live))) in
     Printf.printf "domains %d  separate %.3f  fused %.3f  (%.2fx)\n%!" domains sep fus (sep /. fus)) [1; 8]
 
+(* Whole-frame core execution without a window or renderer; unchanged authored workspace. *)
+let frames ?(fused=true) path =
+  let source = ok (Flow.Syntax.parse (In_channel.with_open_bin path In_channel.input_all)) in
+  let source = List.map (fun (form : Flow.Syntax.t) -> match form.node with
+    | List (head :: name :: declarations) ->
+        let declarations = List.filter (fun (declaration : Flow.Syntax.t) -> match declaration.node with
+          | List (_ :: _ :: {node=Kw "context";_} :: {node=Sym ("editor"|"settings");_} :: _) -> false
+          | _ -> true) declarations in
+        {form with node=List (head :: name :: declarations)}
+    | _ -> form) source in
+  let ws = match Flow.Workspace.check ~ops:I.Operators.all catalog source with
+    | Some ws, [] -> ws
+    | _, ds -> failwith (String.concat "; " (List.map Flow.Diagnostic.to_string ds)) in
+  let evaluation = ok (E.static ws) in
+  let program, root = match I.Core_draw.lower evaluation.plan (snd (List.hd evaluation.results)) with
+    | Ok p -> p | Error name -> failwith name in
+  if Sys.getenv_opt "RAYS_BENCH_PRINT_CORE" = Some "1" then Format.printf "%a%!" I.Core.pp program;
+  let prepared=I.Core_exec.prepare ~fused program in
+  let sample () =
+    let state=E.create_state () and buffers=I.Core_exec.Buffers.create () in
+    let step i =
+      let live={(Frame_input.at_time (float i /. 60.)) with dt=1. /. 60.; frame=i; tick=i; size=800,600} in
+      I.Core_exec.Buffers.clear buffers;
+      let drawn=ref None in
+      (match root with
+       | None -> drawn:=Some (I.Core_exec.draw prepared ~live ~size:live.size ~buffers)
+       | Some root ->
+           let execute r live =
+             drawn:=Some (I.Core_exec.draw ~root:r prepared ~live ~size:live.size ~buffers);
+             Some (Ok (E.Int 0)) in
+           ignore (ok (E.Private.force_with_executor ~state ~execute (E.Residual root) ~live)));
+      ignore (ok (Option.get !drawn)) in
+    step 0;
+    Gc.full_major ();
+    let bytes=Gc.allocated_bytes () and start=Unix.gettimeofday () in
+    for i=1 to 600 do step i done;
+    (Unix.gettimeofday () -. start) /. 600., (Gc.allocated_bytes () -. bytes) /. 600. in
+  let samples=Array.init 3 (fun _ -> sample ()) in
+  Printf.printf "Core frame %s; blocks %b; 600 frames per sample, 800x600, domains 1; median of 3\n%.3f ms/frame %.0f allocated bytes/frame\n%!"
+    path fused (median (Array.map fst samples) *. 1e3) (median (Array.map snd samples))
+
 let () = match Sys.argv with
+  | [|_; "frames"; path|] -> frames path
+  | [|_; "frames"; path; "--boxed"|] -> frames ~fused:false path
   | [|_; "kernels"|] -> kernels ()
   | [|_; "attributes"|] -> attributes ()
   | _ -> scalar ()

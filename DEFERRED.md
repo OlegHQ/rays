@@ -28,6 +28,12 @@ deleted, not ticked.
 
 ## Known costs and behaviour changes to confirm
 
+- Native particles reportedly decay from 60 to 10 FPS with Graph and Lisp panes.
+  The graph probe overhead was repaired 2026-10-12, but the 10 FPS decay remains
+  unreproduced: one 800×600 editor switching layouts for 600 frames each retained
+  about 60 FPS with both panes after the repair. Exact launch/window conditions
+  are still needed. Paired timings and a runnable toggle benchmark are in
+  `specification/web-export/results.md`.
 - Fixed and verified 2026-10-11: a `sop/merge` with `:source_attribute` merges
   geometry once and builds only the additional primitive tag array. Existing
   tags, attribute order, schema refusals and cancellation are preserved;
@@ -58,47 +64,13 @@ Benchmark gates in `specification/web-export/plan.md` were waived by the owner o
 2026-10-11: correctness gates block, speed thresholds are recorded here and looked at
 later. Numbers and commands are in `specification/web-export/results.md`.
 
-- Core frame programs against the deleted closure tier (P1.14, P1.14a, P1.14b). Plan gate
-  was core at most 1.1 times closure on one scalar residual (`tools/bench_core.exe`,
-  expression `(+ (* (sin t) 0.5) (* t t))`, one domain, M1, background load about 4).
-  Reached 1.26: core about 151 ns and 1,960 bytes, closure about 120 ns and 1,784 bytes
-  per evaluation (walker about 890 ns). History: 2.92, then 1.39 after executor fast
-  paths and a postfix scalar tier, then 1.26 after keeping the prepared program on the
-  residual.
-  - Remaining cost is the postfix interpreter itself, about 30 ns: nine dispatches plus
-    `sin`. Not tried: superinstructions for constant and time operands, removing the
-    per-call stack allocation, compiling a core program to OCaml closures as P1.14's card
-    describes (the interpreter would stay as the test reference).
-  - Region programs are not cached on the residual; only region-free programs use the
-    slot, because a region's `force` closure captures per-call state.
-  - Final micro ratio at P1.14b: 1.23 (core 146.9 ns, closure 119.7 ns).
-  - 2026-10-12, measured, not fixed: by cycles the ratio is 1.19 (core 449, closure 376 per evaluation,
-    one run each). The postfix interpreter is about 9% of samples; the rest is fixed overhead in
-    `Executor.force` and `Eval.with_live`: two `Hashtbl.create 16` per force, two `caml_hash` calls
-    for the memo, the evaluation-state record copied twice. Removing those is an estimated 25% of
-    cycles, which would put core below the closure tier. For the boxed `Counted` loops (particles,
-    packed map/filter): compile them to block kernels inside `Core_exec.prepare`, so the lowered IR
-    and the web printers stay byte-identical.
-  - Whole-frame time over the 15 eligible workspaces, core against closure, measured
-    once before P1.16 (the bench mode was not kept): faster on 7, equal on 6, slower on
-    2. `examples/particles` is about 2.3 times slower (4.5 ms against 2.0 ms per frame):
-    its maps run about 10,000 elements times roughly 50 statements in the core
-    interpreter. `examples/drawing` is about 1.07 times slower. The closure tier is gone
-    after P1.16 (`3f1ff18c`); compare against a checkout of `3c1314b3`.
-  - Measured again 2026-10-11 (M1, load 5 to 6, nothing changed in the executor): micro
-    core 152 to 154 ns and 1,912 bytes per evaluation, walker 942 to 949 ns.
-    `examples/particles` on the core path costs 3.8 ms of processor time and 12.9 MB
-    allocated per frame (`marks_shot.exe examples/particles OUT 800 600 N`, user time and
-    `allocated_words` at 601 frames minus 1 frame, over 600): 645 bytes for each of the
-    20,000 element steps. Cause read from `Core_lower`: only a residual that is itself a
-    packed `map` is tried as a region (`packed_region`); the two maps of particles are
-    nested in a `state` step, whose sources are frame locals, so `hof` lowers them to
-    `Counted` loops of boxed statements. The closure tier had the walker offer each inner
-    map to the packed template tier (`Packed.compile_template`, still tested by
-    `test_frame_kernel`). Next step: let a region take its arrays from frame locals
-    (`Invoke`'s `args`, always `[]` today; `Packed.force` with given arrays; a template
-    with no local-dependent uniform), emitted by `Core_lower.hof` for a packed map whose
-    sources are arrays. It changes lowering goldens and the web `rt.invoke(k, args)`.
+- Remaining executor performance follow-up: region programs are not cached directly on
+  residuals because their force closure captures per-call state. Pure packed `Counted`
+  maps now compile to native blocks; filters and ordered/tag-sensitive loops retain
+  general execution. The historical whole-frame comparison reported `examples/drawing`
+  about 1.07 times the deleted closure tier; this case has not been remeasured against
+  checkout `3c1314b3`. Scalar and particles regressions were repaired 2026-10-12; current
+  before/after measurements and commands are in `specification/web-export/results.md`.
 - The corpus sweep `@test/test_workspace_ir` takes 20 to 25 minutes since P1.11, because
   every comparison now runs with the core path off and on. After P1.16 there is one
   path; check the second pass is gone and the time is back down.

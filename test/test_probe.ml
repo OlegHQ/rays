@@ -246,6 +246,40 @@ let skips () =
     | Some n -> check (n.kind = "sop/box" && n.iter = [ k ] && n.site = [ "g"; "b"; "@result" ]) "a plan node is at its own tuple"
     | None -> fail "an iteration that ran has no plan node") [ 0; 2; 3 ]
 
+let compiled_inputs () =
+  let w = T.workspace_of {|(workspace compiled_probe
+    (graph g :context value
+      (let* [tick (state [n 0] (+ n 1))
+             xs (map (fn [(x : float)] (+ x (frame/dt)))
+                     (array/float (+ 5000 (frame/index)) 1.0))
+             ys (map (fn [(x : float)]
+                       (let* [value (+ (+ x (frame/width)) tick)] value)) xs)]
+        (array/count ys))))|} in
+  let evaluated = Flow.Eval.static ~record:true w |> Result.get_ok in
+  let scope = T.scope w "g" in
+  let state = Flow.Eval.create_state () and calls = ref 0 in
+  let force : Probe.force = fun ?state ?elems ?resolve value ~live ->
+    incr calls;
+    Result.bind (Flow_ir.Executor.compile value) (fun program ->
+      Flow_ir.Executor.force ?state ?elems ?resolve program ~live) in
+  List.iter (fun frame ->
+    let live = {(Frame_input.at_time (float frame /. 60.)) with frame; dt=0.125; size=321,123} in
+    let stamp = Flow.Eval.state_stamp state in
+    let old = Probe.make ~state ~live evaluated and compiled = Probe.make ~force ~state ~live evaluated in
+    let count records = Probe.counts records scope ~probe:(fun _ -> 4999) in
+    check (count old = count compiled && List.mem (["g"; "ys#0"], 5000 + frame) (count compiled))
+      "compiled probe inputs changed live selector lengths";
+    let node = T.node w "g" ["ys#0"; "value"] in
+    List.iter (fun index ->
+      check (Probe.at old node.path ~probes:[index] = Probe.at compiled node.path ~probes:[index])
+        "compiled inputs changed the selected reference body";
+      check (Probe.footer old node ~probes:[index] = Probe.footer compiled node ~probes:[index])
+        "compiled inputs changed the sampled sparkline/footer") [0;4095;4999];
+    check (Flow.Eval.state_stamp state = stamp) "compiled probes advanced the host fold";
+    let tick = List.assoc ["g";"tick"] evaluated.records |> List.hd |> snd in
+    ignore (Flow.Eval.Private.force_reference ~state tick ~live |> Result.get_ok)) [0;1;3;0];
+  check (!calls > 0) "live map inputs bypassed the host compiler"
+
 let run () =
   let images=T.workspace_of "(workspace w (graph g :context value (let* [picture (image/noise :width 3 :height 2)] 0)))" in
   let evaluated=Result.get_ok(Flow.Eval.static ~record:true images) in
@@ -266,5 +300,5 @@ let run () =
     "the probe reads a fold snapshot";
   let result = Result.get_ok (Flow.Eval.run ~state ~live:{(Frame_input.at_time 1.) with frame = 1} ~time:1. w) in
   check (List.assoc "g" result.results = Flow.Eval.Int 1) "a probe never advances the environment fold";
-  skips (); off_display (); geometry_zone (); bounds (); sunflower (); tree (); branches (); live (); nested (); hoist (); selection ();
+  compiled_inputs (); skips (); off_display (); geometry_zone (); bounds (); sunflower (); tree (); branches (); live (); nested (); hoist (); selection ();
   print_endline "probe tests passed"

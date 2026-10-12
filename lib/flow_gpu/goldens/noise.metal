@@ -27,7 +27,7 @@ float fbm(float3 p, int octaves, device const int* table) {
   }
   return weights==0.0f?0.0f:sum/weights;
 }
-kernel void kernel_351721bb033f80dd1a3b0a6534313925(
+kernel void kernel_0d59a440d11a39e2e8f772347bc936ea(
   device const float* input0 [[buffer(0)]],
   device float* output [[buffer(1)]],
   constant uint* uniforms [[buffer(2)]],
@@ -39,13 +39,11 @@ kernel void kernel_351721bb033f80dd1a3b0a6534313925(
   float r0=input0[i*1+0];
   if(!isfinite(r0)) atomic_store_explicit(status,1u,memory_order_relaxed);
   float r1=as_type<float>(0x3ca3d70au);
-  if(!isfinite(r1)) atomic_store_explicit(status,1u,memory_order_relaxed);
   float r2=(r0*r1);
   if(!isfinite(r2)) atomic_store_explicit(status,1u,memory_order_relaxed);
   float r3=as_type<float>(uniforms[1]);
   if(!isfinite(r3)) atomic_store_explicit(status,1u,memory_order_relaxed);
   float r4=as_type<float>(0x3e800000u);
-  if(!isfinite(r4)) atomic_store_explicit(status,1u,memory_order_relaxed);
   float r7=fbm(float3(r2,r3,r4),3,table+0);
   if(!isfinite(r7)) atomic_store_explicit(status,1u,memory_order_relaxed);
   output[i*1+0]=r7;

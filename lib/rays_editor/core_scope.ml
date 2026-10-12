@@ -6,6 +6,25 @@ let picture_node records path ~probes =
   List.find_map (fun ty -> Option.map (fun id -> ty, id) (Flow_graph.Probe.plan_node ~ty records path ~probes))
     Flow.Ty.[ drawing; image ]
 
+(* Probe inputs use the same exact frame/region compiler as the canvas. Prepared programs
+   survive live frames, while values and state remain local to each probe snapshot. *)
+let probe_force () : Flow_graph.Probe.force =
+  (* ponytail: identity lookup is bounded to 64 programs; use an identity map if this scan becomes measurable. *)
+  let programs = ref [] in
+  fun ?state ?elems ?resolve value ~live ->
+    let prepared = match value with
+      | Flow.Eval.Residual residual ->
+          (match List.find_opt (fun (key, _) -> key == residual) !programs with
+           | Some (_, program) -> program
+           | None ->
+               let program = Flow_ir.Executor.compile value in
+               programs := (residual, program) :: List.filteri (fun i _ -> i < 63) !programs;
+               program)
+      | _ -> Flow_ir.Executor.compile value in
+    match prepared with
+    | Ok program -> Flow_ir.Executor.force ?state ?elems ?resolve program ~live
+    | Error _ -> Flow.Eval.Private.force_reference ?state ?elems ?resolve value ~live
+
 let sync_views value =
   let lowered = snd value.doc.Document.workspace in
   match value.view_key with
@@ -161,7 +180,10 @@ let sync_scope value =
               group = fst report.owner;
               seconds = if fst report.owner = path then Some report.seconds else None}
           | None -> None in
-        let records = Option.map (Flow_graph.Probe.make ~state:value.cook.state ?live:time ~geometry ~resolve ~execution
+        let force = match previous with
+          | Some k when k.evaluated == evaluated -> k.force
+          | _ -> probe_force () in
+        let records = Option.map (Flow_graph.Probe.make ~force ~state:value.cook.state ?live:time ~geometry ~resolve ~execution
           ~bulk_calls:(Flow_sop.Lower.field_calls ~state:value.cook.state
             ~live:(Option.value ~default:(Frame_input.at_time 0.) time) ~resolve lowered)
           ~image:(Flow_sop.Lower.image_metadata lowered.plan)
@@ -180,6 +202,6 @@ let sync_scope value =
                    ~probe:(fun path -> Option.value ~default:0 (M.find_opt path value.probes)))
           | None, _ -> [] in
         { value with scope_view; select_later; scope_key = Some { ws; probe_map = value.probes; graph = name;
-            evaluated; summaries; executions; time; records; scope; targets } }
+            evaluated; summaries; executions; time; records; force; scope; targets } }
       end
   | _ -> value

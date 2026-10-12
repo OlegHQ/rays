@@ -78,6 +78,11 @@ module Private : sig
   val output_reachable : t -> bool array
   (** Fresh instruction mask used by GPU qualification and code generation. *)
 
+  val finite_checks : t -> bool array
+  (** After [gpu_refusals] succeeds, instructions whose result needs a finite
+      check. Other instructions cannot introduce nonfinite values; checks on
+      their operand producers retain intermediate overflow detection. *)
+
   type view = {code : instruction array; widths : int array; outputs : int array array;
     uniform_widths : int array; collecting : bool; }
   val view : t -> view

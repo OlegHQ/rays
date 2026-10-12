@@ -78,6 +78,14 @@ let output_reachable t =
   Array.iter (Array.iter use) t.outputs;
   used
 
+let finite_checks t =
+  (* GPU qualification rejects nonfinite constants. These operations cannot
+     introduce a nonfinite result; their operands are checked at their source. *)
+  Array.map (function
+    | Const _ | Select _ | Unary ((Abs | Sqrt | Not), _)
+    | Binary ((Min | Max | Lt | Le | Gt | Ge | Eq | And | Or), _, _) -> false
+    | _ -> true) t.code
+
 let gpu_refusals t =
   let reasons = ref [] in
   let refuse message = reasons := Flow.Diagnostic.error ~code:"E_GPU_FORM" message :: !reasons in
@@ -402,6 +410,7 @@ module Private = struct
   let trace = trace
   let ordered_add = ordered_add
   let output_reachable = output_reachable
+  let finite_checks = finite_checks
   type view = {code : instruction array; widths : int array; outputs : int array array;
     uniform_widths : int array; collecting : bool; }
   let view (t : t) =

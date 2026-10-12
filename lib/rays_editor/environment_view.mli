@@ -14,6 +14,7 @@ type canvas_picture = {
   size : int * int;
   dynamic : bool;
   scene : Rays.Scene.t;
+  plan : Flow.Eval.plan;
   prepared : Drawing.prepared option;
   preview : (Flow.Ty.t * int) option;
 }

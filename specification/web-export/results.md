@@ -1595,3 +1595,158 @@ opens/continues in Chrome without errors. All prior GPU, presenter, reload, part
 remain green. Shipping includes `@all`, `@runtest`, `@smoke` and `git diff --check`. No native product code
 or WGSL golden changes; six JS frame goldens change only for asynchronous image resolution or background
 target size. `flow_web` retains its portable dependency boundary; SDL decoding stays in the export tool.
+
+## Shared packed compilation and shader checks (2026-10-12)
+
+Ordinary `Core_region.lower` did not share instructions; only `Core_fuse` did. Repeated expressions
+could hit the 64-register limit before fusion could help. Lowering now interns identical instructions
+before enforcing that limit, with fusion both enabled and disabled. Lowering and fusion share the same
+key: constant binary64 bits, including signed zero, and structural keys for other instructions.
+Arithmetic is not reassociated and runtime captures already use the existing capture cache.
+
+Both GPU emitters used a finite check after every reachable instruction. They now consume one
+`Packed.Private.finite_checks` classification. Inputs, captures, frame facts, potentially overflowing
+arithmetic, noise, sine and cosine retain checks. Finite-qualified constants and operations which
+cannot introduce nonfinite values omit the redundant result check. An overflow later hidden by a
+selection or clamp is still reported; device-buffer inputs still have checks even when the consumer
+uses only safe operations. This changes shared compilation, not any authored sketch.
+
+Checks: a repeated-expression tree which formerly exceeded the budget compiles to eight instructions;
+packed/reference results agree byte for byte at one and eight domains and three times. Signed zeros
+remain distinct. Real Metal and Chrome tests retain intermediate-overflow errors; Chrome additionally
+tests nonfinite device-buffer inputs. All region, Metal/WGSL/JS goldens were reviewed, and all previous
+image pixel metrics remain unchanged.
+
+Profiling: Apple M1, Chrome 154.0.8037.99, Metal WebGPU, DPR 1, background load about 5. For contours,
+20 warm frames then three samples of 60 frames, timed as `stepFrame` + presentation +
+`queue.onSubmittedWorkDone`; median of the three medians. Before is the export saved before the
+compiler changes. Shader bytes: 49,933 to 39,686; emitted temporaries: 364 to 342; finite checks:
+364 to 181. Every layer still computes its own noise and uses the existing image conversion pass.
+
+| Contours canvas | Before ms/frame | After ms/frame |
+| --- | ---: | ---: |
+| 640×480 | 3.83 | 3.82 |
+| 900×700 | 7.03 | 6.90 |
+| 1500×900 | 13.36 | 12.94 |
+
+This is a modest improvement on this workload, not evidence of a universal GPU speedup. Separate
+one-million-element arithmetic, conditional and three-octave noise dispatches measured about 0.5,
+0.5 and 1.7 ms respectively both before and after (ten warm dispatches, three samples of 30 per
+process, before/after/before/after, completion included). Compilation cache state affects startup;
+source size alone does not establish compilation or execution speed.
+
+Equivalent standalone frame timing command:
+
+```sh
+_build/default/tools/web_shot.exe --time 180 _build/default/tools/lisp/lisp.exe _build/default/tools/marks_shot.exe tools/web/test/web_shot.mjs sketches/flow_contours 1500 900
+_build/default/tools/bench_core.exe kernels
+_build/default/tools/check.exe @lib/flow_ir/runtest @lib/flow_gpu/runtest @lib/flow_web/runtest @lib/flow_gpu/runtest-native @qualification-web
+```
+
+The generic kernel CPU executions retain the same instructions on the simple benchmarks: the
+million-element map measured 13.206 to 13.227 ms at one domain and 4.118 to 4.032 ms at eight.
+No CPU execution speedup is claimed. This repair reduces duplicate work where it exists and preserves
+the existing bounds and diagnostics elsewhere. Cross-image common-expression sharing and combining
+image generation with conversion remain separate compiler/runtime optimization opportunities.
+
+## Native core executor follow-up (2026-10-12)
+
+The measured scalar overhead was mostly outside the numeric interpreter: evaluator memo/call tables
+and state-record copies on every force. An owner-checked shortcut now uses the already prepared
+stateless program, validates the frame and returns a concrete result directly. Failures reenter the
+normal evaluator for diagnostics. The executor also avoids eagerly allocating a state when the
+caller supplied one.
+
+Packed maps nested in a state step lowered to boxed `Counted` statements rather than regions.
+Preparation now compiles eligible pure numeric map bodies to 1,024-lane binary64 blocks with one
+reusable scratch allocation per prepared loop. Selected branches, input publication and final loop
+counters retain their general-executor behavior. Unsupported layouts, effects, accumulators,
+filters, aliasing and unsafe integer conversion retain the general path. A block failure reruns the
+original statements in element order. Structured frame lowering and browser JavaScript are unchanged.
+
+Apple M1, one domain, prepared and warmed programs; median of three runs. Scalar runs contain
+200,000 forces; particle runs contain 600 frames at 800×600. Particle timing includes core evaluation
+only, excluding native event handling, editor panels and rendering.
+
+| Workload | Before | After | Allocated before | Allocated after |
+| --- | ---: | ---: | ---: | ---: |
+| Scalar residual | 146.2 ns/evaluation | 54.9 ns/evaluation | 1,912 B | 568 B |
+| Particles core frame | 3.192 ms/frame | 0.925 ms/frame | 12,893,656 B | 499,624 B |
+
+The particle evaluation is 3.45 times faster with 96.1% less allocation. The same-build general
+executor (`--boxed`) measures 3.250 ms and 12,893,656 B per frame. The deleted closure tier was not
+rerun; these are paired measurements of the current repair, not a new comparison with historical
+119.7 ns closure results.
+
+```sh
+_build/default/tools/bench_core.exe
+_build/default/tools/bench_core.exe frames examples/particles/sketch.rays
+_build/default/tools/bench_core.exe frames examples/particles/sketch.rays --boxed
+_build/default/tools/check.exe @lib/flow/runtest @lib/flow_ir/runtest
+```
+
+Focused checks cover one/eight-domain exact parity, state resets and repeated reads, selected branch
+errors, rollback, scalar/vector maps, large integers, observable counters, builder publication and
+warm allocation. Region-cache work and the historical drawing comparison remain in `DEFERRED.md`.
+
+## Native graph and Lisp panel investigation (2026-10-12)
+
+Graph selector counts and footers forced complete packed map inputs through the reference walker,
+even when canvas playback used compiled execution. Sampling one selected element still materialized
+its complete sources. The editor now supplies its exact CPU compiler to `Flow_graph.Probe`, with
+a 64-entry cache of prepared programs keyed by physical residual identity. Source/import evaluation
+replacement invalidates the cache. Each probe snapshot still owns forked state and frame-local
+values; selected function bodies remain reference-recorded for their authored provenance. Standalone
+probes retain their reference default. Unsupported compiler cases, including some captured scalar
+fold uniforms, still use reference execution. Inspection adds no GPU dispatches or profile timings.
+
+The source-edit regression also exposed a canvas cache identity error: `Editor.edit` had already
+replaced the current document when frame coordination compared that document with the new one.
+A canvas now stores the actual plan that produced its prepared drawing and checks that identity
+before reuse. This preserves existing scenes on failure while correctly rebuilding after an edit.
+
+Paired native runs: Apple M1, one domain, 800×600 logical window, 10,000 particles, target 60 FPS.
+One editor/window switches canvas → graph → Lisp → graph plus Lisp, with 20 warm frames and 600
+measured frames per layout. Both binaries include the repaired core executor and canvas cache;
+the reference binary differs only by omitting the probe compiler callback. Update allocation excludes
+rendering. Frame periods include the native loop, rendering, presentation and the frame limiter.
+
+| Layout | Update before ms | Update after ms | Allocated before MB/update | Allocated after MB/update |
+| --- | ---: | ---: | ---: | ---: |
+| Canvas | 2.058 | 2.032 | 8.01 | 8.01 |
+| Graph | 9.639 | 2.842 | 42.65 | 8.57 |
+| Lisp | 3.277 | 3.151 | 9.15 | 9.15 |
+| Graph plus Lisp | 10.589 | 3.893 | 44.10 | 10.03 |
+
+Both-panel median frame period: 18.605 to 16.687 ms (about 53.7 to 59.9 FPS); p95: 25.189 to
+17.822 ms. First/last 120-frame medians before: 18.368/18.808 ms; after: 16.623/16.651 ms.
+The reported decay to 10 FPS was not reproduced in this setup. These measurements demonstrate
+the graph probe cost and its repair; they do not explain every possible native-window slowdown.
+
+```sh
+_build/default/tools/bench_rays_editor.exe --particles 120
+_build/default/tools/bench_rays_editor.exe --particles-window 600
+_build/default/tools/bench_rays_editor.exe --particles-toggle 600
+_build/default/tools/check.exe @test/test_probe @test/test_editor_consistency @test/test_editor_canvas_native @test/test_workspace_source @test/test_text_pane @lib/pxui_graph/runtest
+```
+
+Regression checks compare reference/compiled probe counts, selected records and sampled footers,
+including indices beyond 4,096, frame/size changes and forked fold state. An editor allocation guard
+detects reference materialization returning on a 10,000-element live map; canvas marks verify that
+folds advance once per frame. Source edits and the actual reset gesture rebuild the expected state
+and drawing. Existing panel, source, command, text and graph suites pass.
+
+Combined validation for these compiler/executor/editor repairs:
+
+```sh
+_build/default/tools/check.exe --ship
+_build/default/tools/check.exe @lib/flow_gpu/runtest-native @qualification-web @doc
+_build/default/tools/web_parity.exe examples/audio examples/basic examples/drawing examples/file_dialog examples/generative examples/noise examples/particles examples/pxui examples/recursive_rectangles sketches/flow_contours sketches/flow_image sketches/flow_image_kernel sketches/flow_particles_gpu sketches/flow_shader sketches/flow_vectors
+```
+
+All pass. Shipping includes all builds, normal tests, finite native smoke windows and diff checks.
+The compiler corpus covers 43 standard workspaces, one custom-catalog executable and 13 fixtures;
+the 15 exportable workspaces retain native/browser mark parity for 120 frames each. Real Metal and
+Chrome WebGPU overflow checks, presenter pixels, image fixtures and reload/asset repair checks pass.
+The intended API manifest additions were reviewed and promoted. Documentation builds complete with
+existing unresolved-reference warnings in unrelated RDK interfaces.

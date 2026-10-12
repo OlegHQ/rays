@@ -38,7 +38,13 @@ let () =
          (+ (+ (sqrt x) (min x t)) (+ (max (sin x) (cos t)) (+ (if (and (> x 3.) (not (>= x 90.))) 1. 0.) (if (or (<= x 2.) (= x 5.)) 2. 0.))))))
          (array/range 1024))" in
        let kernels = List.map (fun (name, program) -> kernel_json name (Test_program.ok (Flow_web.Wgsl.kernel program))) programs
-         @ [kernel_json ~cpu:(Flow_web.Js.region ops) "ops" (Test_program.ok (Flow_web.Wgsl.kernel ops))] in
+         @ [kernel_json ~cpu:(Flow_web.Js.region ops) "ops" (Test_program.ok (Flow_web.Wgsl.kernel ops))]
+         @ List.map (fun (name, body) ->
+           let program = Test_program.compile ("(map (fn [x] " ^ body ^ ") (array/range 1024))") in
+           kernel_json name (Test_program.ok (Flow_web.Wgsl.kernel program)))
+           ["hidden_select", "(if (> x t) 0.0 (* x x))";
+            "hidden_min", "(min (* x x) (+ t 1.0))";
+            "safe", "(if (> x t) (sqrt (abs x)) (max (min x 1.0) 0.0))"] in
        Out_channel.with_open_bin (Filename.concat dir "kernels.json") (fun c ->
          output_string c ("{\"kernels\":[" ^ String.concat ",\n" kernels ^ "]}\n"));
        exit 0
@@ -68,4 +74,13 @@ let () =
   assert (List.exists (fun (name, _, _) -> name = "image:width") image.uniform_layout);
   assert (List.exists (fun (name, _, _) -> name = "image:height") image.uniform_layout);
   assert (Result.is_error (Flow_web.Wgsl.kernel ~image:true (snd (List.hd programs))));
+  let hidden = Test_program.compile
+    "(map (fn [x] (if (> x t) 0.0 (min (* x x) 1.0))) (array/range 1024))" in
+  let source = (Test_program.ok (Flow_web.Wgsl.kernel hidden)).source in
+  let lines = String.split_on_char '\n' source in
+  let checks = Flow_ir.Packed.Private.finite_checks hidden in
+  List.iteri (fun index line -> if String.starts_with ~prefix:"  let r" line then
+    let slot = Scanf.sscanf line "  let r%d:" Fun.id in
+    let guard = Printf.sprintf "  if (!wfinite(r%d)) { atomicStore(&status, 1u); }" slot in
+    assert ((List.nth lines (index + 1) = guard) = checks.(slot))) lines;
   print_endline "WGSL printer: goldens and shared refusals passed"

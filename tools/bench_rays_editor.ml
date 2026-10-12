@@ -3,7 +3,10 @@
    undo frame that restores the layout. Prints CSV:
    name,nodes,median_s,p95_s,bytes_per_frame.
    [--panels [nodes]] measures idle frames (the pointer moving over the viewport) of layouts
-   with one and three graph panels and one and two inspectors over the same graph. *)
+   with one and three graph panels and one and two inspectors over the same graph.
+   [--particles [samples]] includes native offscreen rendering of four particle layouts;
+   [--particles-window] runs each in a window, and [--particles-toggle] switches them in one
+   running editor. Window runs print frame periods as well as update/scene costs. *)
 open Sop
 
 let pointer (x, y) = float x, float y
@@ -259,8 +262,115 @@ let measure_world () =
       if abs_float (rotation -. 0.16) > 1e-9 then failwith "World input benchmark did not rotate 0.16 degrees";
       report "rays_editor_world_frame" 1 samples bytes))
 
+(* The same animated drawing under four layouts; includes native offscreen presentation,
+   with update and UI scene construction reported separately to locate panel overhead. *)
+let measure_particles ?(window=false) ?(toggle=false) samples_count =
+  let module E = Rays_editor.Editor in
+  let module S = Flow.Syntax in
+  let source = In_channel.with_open_bin "examples/particles/sketch.rays" In_channel.input_all
+      |> S.parse |> Result.get_ok in
+  let layouts = [
+    "canvas", "(ui/canvas (ref picture) :focus true)";
+    "graph", "(ui/split \"horizontal\" (ui/canvas (ref picture) :focus true) (ui/graph \"picture\"))";
+    "lisp", "(ui/split \"horizontal\" (ui/canvas (ref picture) :focus true) (ui/lisp :tab \"graph\"))";
+    "graph_lisp", "(ui/split \"horizontal\" (ui/canvas (ref picture) :focus true) (ui/split \"vertical\" (ui/graph \"picture\") (ui/lisp :tab \"graph\")))"
+  ] in
+  let setups = if toggle then ["toggle", "(ui/switch " ^ String.concat " " (List.map snd layouts) ^ ")"] else layouts in
+  List.iter (fun (name, layout) ->
+    let editor_graph = S.parse ("(graph editor :context editor (ui/workspace " ^ layout ^ "))")
+        |> Result.get_ok |> List.hd in
+    let source = List.map (fun form -> match form.S.node with
+      | S.List children when S.head form = Some "workspace" ->
+          {form with S.node = S.List (List.map (fun child -> match S.children child with
+            | _ :: {S.node = S.Sym "editor"; _} :: _ when S.head child = Some "graph" -> editor_graph
+            | _ -> child) children)}
+      | _ -> form) source |> Flow.Lisp.print |> fst in
+    let create () = E.create ~workspace:(load source) ~await:true ~domains:1
+      ~presets:(Filename.temp_dir "rays-particles-panel-bench" "")
+      ~prepare:(fun _ _ -> Ok ()) ~scene3:(fun _ () -> Rays.Scene3.empty) () |> Result.get_ok in
+    if window then begin
+      let phases = if toggle then List.length layouts else 1 in
+      let periods = Array.make (samples_count * phases) 0. and updates = Array.make (samples_count * phases) 0.
+      and scenes = Array.make (samples_count * phases) 0. in
+      let bytes = Array.make phases 0. in
+      let phase frame = (frame.Rays.Frame.count - 1) / (samples_count + 20)
+      and local frame = (frame.Rays.Frame.count - 1) mod (samples_count + 20) in
+      let sample_index frame = phase frame * samples_count + local frame - 20 in
+      ignore (Rays.Sketch.run_state ~max_frames:((samples_count + 20) * phases)
+        ~config:{Rays.Sketch.default_config with width=800; height=600; fps=Some 60;
+          domains=Some 1; title="Particle panels: " ^ name}
+        ~init:(fun _ -> create ())
+        ~update:(fun editor frame ->
+          let editor = if toggle && local frame = 0 && phase frame > 0 then
+              E.edit editor (Flow_graph.Flow_edit.Set_layout {graph="editor"; index=phase frame}) |> Result.get_ok
+            else editor in
+          let started = Unix.gettimeofday () and before = Gc.allocated_bytes () in
+          let editor = E.update editor frame in
+          let index = sample_index frame in
+          if local frame >= 20 then begin
+            periods.(index) <- frame.dt;
+            updates.(index) <- Unix.gettimeofday () -. started;
+            bytes.(phase frame) <- bytes.(phase frame) +. Gc.allocated_bytes () -. before
+          end;
+          editor)
+        ~view:(fun editor frame ->
+          let started = Unix.gettimeofday () in
+          let scene = E.scene editor frame in
+          let index = sample_index frame in
+          if local frame >= 20 then scenes.(index) <- Unix.gettimeofday () -. started;
+          scene)
+        ~on_stop:E.close ());
+      for phase = 0 to phases - 1 do
+        let name = if toggle then "toggle_" ^ fst (List.nth layouts phase) else name in
+        let prefix = "particles_window_" ^ name in
+        let column values = Array.sub values (phase * samples_count) samples_count in
+        report (prefix ^ "_period") 10_000 (column periods) bytes.(phase);
+        report (prefix ^ "_update") 10_000 (column updates) bytes.(phase);
+        report (prefix ^ "_scene") 10_000 (column scenes) 0.;
+        if samples_count >= 240 then begin
+          report (prefix ^ "_period_first120") 10_000 (Array.sub periods (phase * samples_count) 120) 0.;
+          report (prefix ^ "_period_last120") 10_000 (Array.sub periods ((phase+1) * samples_count - 120) 120) 0.
+        end
+      done
+    end else begin
+    let environment = ref (create ()) in
+    let canvas = Rays.Canvas.create_exn ~width:1600 ~height:1200 in
+    Fun.protect ~finally:(fun () -> E.close !environment; Rays.Canvas.destroy canvas) (fun () ->
+      let frame count = {(frame ~mouse:(100,100) count) with width=800; height=600;
+        size=800,600; pixel_scale=2.,2.} in
+      let count = ref 0 in
+      let step () =
+        let input = frame !count in incr count;
+        let started = Unix.gettimeofday () in
+        environment := E.update !environment input;
+        let updated = Unix.gettimeofday () in
+        let scene = E.scene !environment input in
+        let drawn = Unix.gettimeofday () in
+        Rays.Canvas.render ~density:2 canvas scene;
+        let finished = Unix.gettimeofday () in
+        updated -. started, drawn -. updated, finished -. drawn, finished -. started in
+      for _ = 1 to 20 do ignore (step ()) done;
+      let updates = Array.make samples_count 0. and scenes = Array.make samples_count 0.
+      and rendered = Array.make samples_count 0. and totals = Array.make samples_count 0. in
+      Gc.full_major ();
+      let before = Gc.allocated_bytes () in
+      Array.iteri (fun index _ ->
+        let update, scene, render, total = step () in
+        updates.(index) <- update; scenes.(index) <- scene;
+        rendered.(index) <- render; totals.(index) <- total) totals;
+      let bytes = Gc.allocated_bytes () -. before in
+      report ("particles_" ^ name ^ "_update") 10_000 updates bytes;
+      report ("particles_" ^ name ^ "_scene") 10_000 scenes 0.;
+      report ("particles_" ^ name ^ "_render") 10_000 rendered 0.;
+      report ("particles_" ^ name ^ "_total") 10_000 totals bytes)
+    end) setups
+
 let () =
-  if Array.to_list Sys.argv = [Sys.argv.(0); "--world"] then begin
+  if Array.length Sys.argv > 1 && List.mem Sys.argv.(1) ["--particles";"--particles-window";"--particles-toggle"] then begin
+    print_endline "name,particles,median_s,p95_s,bytes_per_frame";
+    measure_particles ~window:(Sys.argv.(1)<>"--particles") ~toggle:(Sys.argv.(1)="--particles-toggle")
+      (if Array.length Sys.argv > 2 then int_of_string Sys.argv.(2) else 120)
+  end else if Array.to_list Sys.argv = [Sys.argv.(0); "--world"] then begin
     print_endline "name,objects,median_s,p95_s,bytes_per_frame";
     for _ = 1 to 3 do measure_world () done
   end else if Array.length Sys.argv > 1 && Sys.argv.(1) = "--panels" then begin

@@ -321,6 +321,232 @@ let rec builds (statements : C.statement list) = List.exists (fun (s : C.stateme
   | State_read {init;_} -> builds init
   | _ -> false) statements
 
+(* A pure packed map lowered inside a state step is a Counted body rather than an
+   Invoke. Compile its numeric statements to blocks here, leaving the shared IR alone.
+   Unsupported layouts, escaping loop locals and observable effects keep the general
+   executor. A failing block also reruns that executor, preserving lane/statement error order. *)
+let counted_kernel (program : C.program) loop_id index item body =
+  let block_size=1024 and n=Array.length program.locals in
+  let written=Array.make n false and escaped=Array.make n false in
+  let use n=escaped.(n)<-true in
+  let expr use : C.expr -> unit = function
+    | Constant _ | Frame _ | Call_index _ -> ()
+    | Local n | Field (n,_) -> use n
+    | Prim (_,args) | Fields args -> List.iter (fun (_,n) -> use n) args
+    | Vec ns | Items ns -> List.iter use ns in
+  let rec outside (s : C.statement) = if s.id<>loop_id then match s.node with
+    | Assign (_,e) -> expr use e
+    | If {condition;yes;no} -> use condition;List.iter outside yes;List.iter outside no
+    | Counted {first;last;init;body;_} -> use first;use last;List.iter outside init;List.iter outside body
+    | Iterate {sequence;body;_} -> use sequence;List.iter outside body
+    | Store {sequence;index;value} -> List.iter use [sequence;index;value]
+    | Invoke {args;_} -> List.iter use args
+    | State_read {initial;init;_} -> use initial;List.iter outside init
+    | State_write {value;_} -> use value
+    | State_peek _ | Reset_call _ -> ()
+    | Draw d -> (match d with
+        | Background a -> use a | Point {at;ink} -> use at;use ink
+        | Mark {args;_} | Batch {args;_} | Path {args;_} -> List.iter (fun (_,n) -> use n) args
+        | Points {positions;ink} -> use positions;use ink
+        | Text_run {at;text;ink;size} -> List.iter use [at;text;ink;size]
+        | Image {at;scale;angle;_} -> List.iter use [at;scale;angle]
+        | Push (_,a) -> use a | Pop -> ()) in
+  let rec writes (s : C.statement) = match s.node with
+    | Assign (n,_) -> written.(n)<-true
+    | If {yes;no;_} -> List.iter writes yes;List.iter writes no
+    | Store _ -> () | _ -> raise Exit in
+  try
+    List.iter writes body;List.iter outside program.body;Array.iter use program.results;
+    Array.iter (fun (slot : C.state_slot) -> List.iter (function
+      | C.Local_index n -> use n | Static_index _ -> ()) slot.source.iter) program.state_slots;
+    if Array.exists Fun.id (Array.mapi (fun n w -> w && escaped.(n)) written) then raise Exit;
+    (* Every read of a loop-local value must be dominated by its write in the same
+       lane. A scan, accumulator or branch-carried value keeps sequential execution. *)
+    let rec defined available statements = List.iter (fun (s : C.statement) ->
+      let read n=if not available.(n) then raise Exit in
+      match s.node with
+      | Assign (n,e) -> expr read e;available.(n)<-true
+      | If {condition;yes;no} ->
+          read condition;
+          let y=Array.copy available and n=Array.copy available in
+          defined y yes;defined n no;
+          Array.iteri (fun i yes -> available.(i)<-yes && n.(i)) y
+      | Store {sequence;index;value} -> List.iter read [sequence;index;value]
+      | _ -> raise Exit) statements in
+    defined (Array.map not written) body;
+    let offsets=Array.make n (-1) and registers=ref 0 and inputs=ref [] and stores=ref []
+    and captures=ref [] and masks=ref 0 in
+    let width n=match Flow.Packed_ops.scalar_width program.locals.(n) with Some w -> w | None -> raise Exit in
+    let reg n =
+      if n=index || n=item then raise Exit;
+      let w=width n in
+      if offsets.(n)<0 then begin
+        offsets.(n)<- !registers;registers:= !registers+w;
+        if not written.(n) && n<>index && n<>item then captures:=n::!captures
+      end; offsets.(n)*block_size,w in
+    let at n component = let offset,w=reg n in
+      if component>=w && w<>1 then raise Exit;offset+(if w=1 then 0 else component*block_size) in
+    let scalar n=if width n<>1 then raise Exit else at n 0 in
+    let add_array list n = if not (List.mem n !list) then list:=n::!list;
+      match Flow.Packed_ops.array_width program.locals.(n) with Some w -> w | None -> raise Exit in
+    let array_index n = if n<>item && n<>index then raise Exit in
+    (* [work] holds scratch, resolved packed buffers, branch masks and private call counters. *)
+    let rec compile statements =
+      let code=Array.of_list (List.map instruction statements) in
+      fun work first lanes count -> Array.iter (fun run -> run work first lanes count) code
+    and instruction (s : C.statement) = match s.node with
+      | Assign (dst,e) ->
+          let d,w=reg dst in
+          (match e with
+           | Constant k ->
+               let components=match program.constants.(k) with
+                 | C.Int n when abs_float (float n)<9007199254740992. -> [|float n|]
+                 | Float f -> [|f|] | Bool b -> [|if b then 1. else 0.|] | Vector v -> v
+                 | _ -> raise Exit in
+               if Array.length components<>w then raise Exit;
+               fun (scratch,_,_,_) _ lanes count ->
+                 for c=0 to w-1 do for j=0 to count-1 do scratch.(d+c*block_size+lanes.(j))<-components.(c) done done
+           | Frame field ->
+               let integer n=if abs_float (float n)>=9007199254740992. then raise Exit else float n in
+               let get = match field with
+                 | C.Time -> fun live -> live.Frame_input.t | Dt -> fun live -> live.Frame_input.dt
+                 | Index -> fun live -> integer live.Frame_input.frame | Tick -> fun live -> integer live.Frame_input.tick
+                 | Width -> fun live -> integer (fst live.Frame_input.size) | Height -> fun live -> integer (snd live.Frame_input.size)
+                 | Pointer_x -> fun live -> fst live.Frame_input.pointer | Pointer_y -> fun live -> snd live.Frame_input.pointer
+                 | Input -> raise Exit in
+               fun (scratch,_,_,(_,live,_)) _ lanes count ->
+                 let value=get live in for j=0 to count-1 do scratch.(d+lanes.(j))<-value done
+           | Call_index slot ->
+               (* A live call index used by the numeric body would change its integer semantics. *)
+               if List.exists (fun (s : C.statement) -> match s.node with
+                 | Assign (_,Call_index _) -> false | _ ->
+                     let saved=escaped.(dst) in escaped.(dst)<-false;outside s;
+                     let read=escaped.(dst) in escaped.(dst)<-saved;read) body then raise Exit;
+               fun (_,_,_,(calls,_,_)) _ _ count -> calls.(slot)<-calls.(slot)+count
+           | Local src | Prim ((Coerce (Float|Vec2|Vec3|Vec4)|Float_convert),[_,src]) ->
+               let offsets=Array.init w (at src) in
+               (match e with
+                | Local _ when program.locals.(src)<>program.locals.(dst) -> raise Exit
+                | Prim (Float_convert,_) when w<>1 || width src<>1 -> raise Exit
+                | Prim (Coerce want,_) when want<>program.locals.(dst) ||
+                    (w=1 && width src<>1) ||
+                    (w>1 && program.locals.(src)<>want &&
+                      not (List.mem program.locals.(src) [Flow.Ty.Float;Int])) -> raise Exit
+                | _ -> ());
+               fun (scratch,_,_,_) _ lanes count ->
+                 for c=0 to w-1 do for j=0 to count-1 do let i=lanes.(j) in scratch.(d+c*block_size+i)<-scratch.(offsets.(c)+i) done done
+           | Field (src,name) ->
+               let c=match name with "x"->0 | "y"->1 | "z"->2 | "w"->3 | _->raise Exit in
+               if width src<=c || width src=1 then raise Exit;
+               let a=at src c in
+               fun (scratch,_,_,_) _ lanes count -> for j=0 to count-1 do let i=lanes.(j) in scratch.(d+i)<-scratch.(a+i) done
+           | Vec ns ->
+               if List.length ns<>w then raise Exit;
+               let src=Array.of_list (List.map scalar ns) in
+               fun (scratch,_,_,_) _ lanes count ->
+                 for c=0 to w-1 do for j=0 to count-1 do let i=lanes.(j) in scratch.(d+c*block_size+i)<-scratch.(src.(c)+i) done done
+           | Prim (Array_nth,["array",array;"index",idx]) ->
+               let input_width=add_array inputs array in array_index idx;
+               if input_width<>w then raise Exit;
+               fun (scratch,arrays,_,(_,_,read)) first lanes count ->
+                 let data=arrays.(array) in
+                 if count>0 then read.(array)<-true;
+                 for c=0 to w-1 do for j=0 to count-1 do let i=lanes.(j) in
+                   scratch.(d+c*block_size+i)<-data.((first+i)*w+c) done done
+           | Prim (Numeric op,["a",a;"b",b]) ->
+               let comparison=match op with Lt|Le|Gt|Ge|Eq|And|Or -> true | _ -> false in
+               if comparison && (w<>1 || width a<>1 || width b<>1) then raise Exit;
+               if not comparison && w<>max (width a) (width b) then raise Exit;
+               if not comparison && program.locals.(a)=Flow.Ty.Int && program.locals.(b)=Flow.Ty.Int then raise Exit;
+               let aa=Array.init w (at a) and bb=Array.init w (at b) in
+               fun (scratch,_,_,_) _ lanes count ->
+                 for c=0 to w-1 do for j=0 to count-1 do let i=lanes.(j) in
+                   let x=scratch.(aa.(c)+i) and y=scratch.(bb.(c)+i) in
+                   let value=match op with
+                     | Add->x+.y | Sub->x-.y | Mul->x*.y | Div->if y=0. then 0. else x/.y
+                     | Mod->if y=0. then 0. else Float.rem (Float.rem x y+.y) y
+                     | Pow->Float.pow (Float.abs x) y | Min->Float.min x y | Max->Float.max x y
+                     | Lt->if x<y then 1. else 0. | Le->if x<=y then 1. else 0.
+                     | Gt->if x>y then 1. else 0. | Ge->if x>=y then 1. else 0.
+                     | Eq->if x=y then 1. else 0. | And->if x<>0. && y<>0. then 1. else 0.
+                     | Or->if x<>0. || y<>0. then 1. else 0. in
+                   if not (Float.is_finite value) then raise Non_finite;
+                   scratch.(d+c*block_size+i)<-value done done
+           | Prim (Math op,[_,a]) ->
+               if w<>1 || width a<>1 then raise Exit;let a=scalar a in
+               fun (scratch,_,_,_) _ lanes count -> for j=0 to count-1 do let i=lanes.(j) in
+                 let x=scratch.(a+i) in let value=match op with
+                   | Sin->sin x | Cos->cos x | Sqrt->sqrt (Float.abs x) | Abs->Float.abs x | Not->if x=0. then 1. else 0. in
+                 if not (Float.is_finite value) then raise Non_finite;scratch.(d+i)<-value done
+           | Prim (Truthy,[_,src]) ->
+               let a=scalar src in fun (scratch,_,_,_) _ lanes count -> for j=0 to count-1 do
+                 let i=lanes.(j) in scratch.(d+i)<-(if scratch.(a+i)<>0. then 1. else 0.) done
+           | _ -> raise Exit)
+      | If {condition;yes;no} ->
+          let a=scalar condition and k= !masks in masks:=k+2;
+          let yes=compile yes and no=compile no in
+          fun ((scratch,_,masks,_) as work) first lanes count ->
+            let yes_lanes=masks.(k) and no_lanes=masks.(k+1) and ny=ref 0 and nn=ref 0 in
+            for j=0 to count-1 do let i=lanes.(j) in
+              if scratch.(a+i)<>0. then (yes_lanes.(!ny)<-i;incr ny) else (no_lanes.(!nn)<-i;incr nn) done;
+            yes work first yes_lanes !ny;no work first no_lanes !nn
+      | Store {sequence;index=idx;value} ->
+          let w=add_array stores sequence in array_index idx;
+          let src=Array.init w (at value) in
+          fun (scratch,arrays,_,_) first lanes count ->
+            let data=arrays.(sequence) in
+            for c=0 to w-1 do for j=0 to count-1 do let i=lanes.(j) in
+              let x=scratch.(src.(c)+i) in if not (Float.is_finite x) then raise Non_finite;
+              data.((first+i)*w+c)<-x done done
+      | _ -> raise Exit in
+    let run=compile body in
+    if !stores=[] then raise Exit;
+    let captures=Array.of_list !captures and arrays=Array.of_list (List.sort_uniq Int.compare (!inputs @ !stores)) in
+    let pool=Atomic.make None in
+    Some (fun st first length ->
+      let buffers=Array.make n [||] in
+      let valid=Array.for_all (fun a -> match st.values.(a),Flow.Packed_ops.array_width program.locals.(a) with
+        | V.Float_array data,Some (1 as w) | Vec2_array data,Some (2 as w)
+        | Vec3_array data,Some (3 as w) | Vec4_array data,Some (4 as w) ->
+            buffers.(a)<-data; Array.length data mod w=0 && first>=0 && length<=Array.length data/w-first
+            && (not (List.mem a !stores) || Array.length st.builders>0 &&
+              Option.fold ~none:false ~some:(fun writable -> !writable) st.builders.(a))
+        | _ -> false) arrays in
+      let disjoint=List.for_all (fun output -> List.for_all (fun input ->
+        buffers.(output)!=buffers.(input)) !inputs) !stores in
+      if not valid || not disjoint || first<>0 || first+length>=9007199254740992 then false else
+      let saved=match Atomic.exchange pool None with Some work -> work | None ->
+        Array.make (!registers*block_size) 0.,Array.init !masks (fun _ -> Array.make block_size 0),Array.init block_size Fun.id in
+      let scratch,masks,lanes=saved in
+      let fill n =
+        let offset,w=reg n in
+        let fill c x=Array.fill scratch (offset+c*block_size) block_size x in
+        match program.locals.(n),st.values.(n) with
+        | Flow.Ty.Float,V.Float x -> fill 0 x
+        | Int,V.Int x when abs_float (float x)<9007199254740992. -> fill 0 (float x)
+        | Bool,V.Bool b -> fill 0 (if b then 1. else 0.)
+        | Vec2,V.Vec2 (x,y) -> fill 0 x;fill 1 y
+        | Vec3,V.Vec3 (x,y,z) -> fill 0 x;fill 1 y;fill 2 z
+        | Vec4,V.Vec4 (x,y,z,w) -> fill 0 x;fill 1 y;fill 2 z;fill 3 w
+        | _ -> ignore w;raise Exit in
+      let result=try
+        Array.iter fill captures;
+        let calls=Array.copy st.calls in
+        let read=Array.make n false in
+        let work=scratch,buffers,masks,(calls,st.live,read) in
+        let start=ref 0 in
+        while !start<length do
+          let count=min block_size (length- !start) in
+          (* The two loop counters remain exact integers; only their array-address use
+             enters this tier, so they need no float registers. *)
+          run work (first+ !start) lanes count;start:= !start+count
+        done;
+        Array.blit calls 0 st.calls 0 (Array.length calls);
+        Array.iteri (fun n touched -> if touched then seal st n) read;true
+      with Non_finite | Exit -> false in
+      Atomic.set pool (Some saved);result)
+  with Exit -> None
+
 let prepare ?(fused=true) (program : C.program) =
   let track = builds program.body in
   let device_ok = device_regions program in
@@ -447,6 +673,7 @@ let prepare ?(fused=true) (program : C.program) =
             body st
           done
     | Counted {first;last;count;index;item;limit;init;body} ->
+        let kernel=if fused && init=[] then counted_kernel program s.id index item body else None in
         let init=plain_block init and setup,body=loop_body body in
         fun st ->
           let first=V.int_of st.values.(first) and last=V.int_of st.values.(last) in
@@ -455,11 +682,12 @@ let prepare ?(fused=true) (program : C.program) =
           st.values.(count)<-V.Int length;
           init st;
           setup st;
-          for i=0 to length-1 do
+          let done_=match kernel with Some run when length>0 -> run st first length | _ -> false in
+          if not done_ then for i=0 to length-1 do
             st.values.(index)<-V.Int i;
             st.values.(item)<-V.Int (first+i);
             body st
-          done
+          done else begin st.values.(index)<-V.Int (length-1);st.values.(item)<-V.Int (last-1) end
     | Store {sequence;index;value} ->
         fun st ->
           if not (Option.fold ~none:false ~some:(fun writable -> !writable) (if Array.length st.builders>0 then st.builders.(sequence) else None)) then
@@ -547,6 +775,8 @@ let attempt ?root ?force prepared ~live =
   | None -> general root force prepared live
   | Some code -> (match code_value code live.t with r -> Ok (V.Float r)
       | exception Non_finite -> general root force prepared live)
+
+let fast prepared = if prepared.stateless then Some (fun live -> attempt prepared ~live) else None
 
 (* Any failure restores the evaluation state and reports the tree walker's own diagnostic,
    as the evaluator's own fallback does. Without a residual there is no walker to ask. *)

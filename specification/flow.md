@@ -1175,16 +1175,22 @@ so cancellation, rounding and signed zero are byte-identical across domain count
 Empty `sum` returns integer zero; empty `fold`/`reduce` retains its seed;
 `array/sum` retains its typed zero.
 
-Numeric packed work inside `state` steps uses the same tier. The evaluator owns
-the fold cell and frame transaction; a private callback dispatches a checked map
-or loop with the step's current immutable bindings. Each prepared IR program
+Native core preparation specializes eligible pure packed `Counted` maps inside
+`state` steps into 1,024-lane numeric blocks. Branches execute only their selected
+lanes; a failure reruns the original statements in element order. This keeps the
+shared frame IR and browser printers unchanged (see `core.md`, "Program data and
+ownership"). The evaluator owns the fold cell and frame transaction. Its independent
+packed callback can also dispatch a checked map or loop with the step's current
+immutable bindings. Each prepared IR program
 retains at most 32 register templates, shared through an atomic immutable list.
 A template rebinds arrays, scalar/record uniforms and cardinality on the next
 step; a changed function body or fused lexical captures need new specialization.
 Stateful element bodies remain interpreted. Numeric comparisons, Boolean
 operators and `if` select register values; an error from eager evaluation of an
 untaken pure arm reruns the independent reference walker, preserving branch
-diagnostics. Probes and reference drawing never invoke packed dispatch.
+diagnostics. Reference drawing and selected probe function bodies retain the
+reference walker. Probe inputs may use the host's exact CPU compiler; inspection
+does not place work on the GPU or add execution timings.
 
 Native canvas playback retains prepared drawing argument programs while its
 plan is unchanged. Exports prepare them once before the first frame. All maps
@@ -1201,8 +1207,11 @@ their materialization/evaluation boundaries. This preserves errors in a producer
 unused tail. Scratch remains capped at 64 registers per block; a larger group
 retains its separate stages. `Packed.compile ~fusion:false` retains intermediate
 arrays for parity checks and profiling. Unsupported bodies
-remain interpreted. Probe forcing uses the reference walker independently of
-compilation settings. The IR retains lexical provenance, cardinality origins,
+remain interpreted. Standalone probes default to the reference walker. The editor
+supplies exact CPU compilation for live values and packed inputs, retaining at
+most 64 prepared programs by physical residual identity across live frames.
+Replacing the recorded workspace evaluation invalidates that cache; values and
+forked state belong to each probe snapshot. The IR retains lexical provenance, cardinality origins,
 frame/event rates and exact/approximate precision. Its placement pass refuses
 approximate inputs to catalog calls, exports, state seeds and cache keys with
 `E_APPROX_SINK`; `(exact x)` is the explicit readback card. CPU evaluation
@@ -1385,7 +1394,8 @@ bodies can use the CPU tier. See `sketches/flow_kernel/sketch.rays`.
 Probes read the immutable geometries returned for the editor's bounded optional
 cook targets through that same attribute resolver. A packed map retains a call
 template alongside its capped preview records. Selecting an element materializes
-the inputs once with the reference walker and records just that function call;
+the inputs once through the host's exact CPU compiler (the reference walker by
+default) and reference-records just that function call;
 indices beyond 4,096 remain inspectable. Parameter and body cards share the call
 memo, and sparklines sample at most 64 calls across the full input. Probe state is
 forked from the environment, so inspection does not advance a frame fold. Zone

@@ -7,8 +7,12 @@ type prepared
 (** A program with its statements, constants and operators resolved once. *)
 
 val prepare : ?fused:bool -> Core.program -> prepared
-(* [~fused:false] runs every program through the general statements: the reference for the scalar tree fast path. *)
+(* [~fused:false] runs every program through the general statements: the reference for the
+   scalar fast path and pure packed Counted block kernels. *)
 val has_regions : prepared -> bool  (* the program invokes a region, so [execute] needs a [force] *)
+val fast : prepared -> (Frame_input.t -> (Flow.Eval.value, Flow.Diagnostic.t) result) option
+(* Stateless attempt for the evaluator's owner-checked shortcut. Errors must reenter the
+    normal evaluator to restore the walker's diagnostics. *)
 val execute : ?root:Flow.Eval.residual ->
   ?force:(Packed.t -> (Flow.Eval.value, Flow.Diagnostic.t) result) -> prepared -> live:Frame_input.t ->
   (Flow.Eval.value, Flow.Diagnostic.t) result

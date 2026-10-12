@@ -21,6 +21,7 @@ type ('rendered, 'camera) hidden_scene_cache = {
 }
 
 type canvas_picture = {size : int * int; dynamic : bool; scene : Scene.t;
+  plan : Flow.Eval.plan;
   prepared : Drawing.prepared option;
   preview : (Flow.Ty.t * int) option  (* the node shown instead of the pane's own picture *)}
 
