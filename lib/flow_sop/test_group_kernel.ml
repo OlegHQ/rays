@@ -372,3 +372,36 @@ let () =
       match G.find_attribute ~owner:Rdk.Attribute.Detail "iteration" output |>Option.get |>Rdk.Attribute.storage with
       |Int values->assert(values=[|5001|])|_->assert false) [1;8]);
   print_endline "Cooked defnode Fold traverses 5001 inventory entries through geometry handles; public array-node folds and collecting forms remain refused"
+
+let ()=
+  List.iter(fun n->
+    let topology=Rdk.Topology.create_owned ~point_count:n
+      ~vertex_points:(Array.init(n*2)(fun i->i/2))
+      ~primitive_offsets:(Array.init(n+1)(fun i->i*2))
+      ~primitive_kinds:(Array.make n Rdk.Topology.Open_polyline) |>ok in
+    let geometry=G.create ~positions:(Rdk.Packed.Float3.Private.of_owned_exn
+      ~x:(Array.make n 0.) ~y:(Array.make n 0.) ~z:(Array.make n 0.)) ~topology() |>ok in
+    List.iter(fun(owner,native_owner)->match native_owner with None->()|Some native_owner->
+      let length=count geometry (Some native_owner) in
+      List.iter(fun ordered->
+        let selected i=match (i lsr 3)mod 3 with
+          |0->false|1->true|_->0xa5 land(1 lsl(i land 7))<>0 in
+        let group=if ordered then
+            let members=Array.init length(fun i->length-i-1) |>Array.to_list
+              |>List.filter selected |>Array.of_list in
+            Group.ordered ~owner:native_owner ~name:"bytes" ~length members |>ok
+          else Group.init ~owner:native_owner ~name:"bytes" length selected in
+        let geometry=G.with_group group geometry |>ok in
+        let bits=Bytes.copy(Group.Private.bits_view group)
+        and order=Group.ordered_elements group and identity=Group.data_id group in
+        let expected=Array.init length(fun i->if Group.mem i group then 1 else 0) in
+        List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+          match query geometry owner "bytes" None with
+          |E.Int_array actual->assert(actual=expected);
+              if length>0 then actual.(0)<-1-actual.(0)
+          |_->assert false)) [1;4;8];
+        assert(query geometry owner "bytes" None=E.Int_array expected);
+        assert(Group.Private.bits_view group=bits && Group.ordered_elements group=order
+          && Group.data_id group=identity)) [false;true])owners)
+    [0;1;7;8;9;63;64;65;32769];
+  print_endline "Ordinary group byte masks preserve empty/tails/all owners/explicit order and immutable storage at one/four/eight domains"

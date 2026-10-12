@@ -15,11 +15,21 @@ let count geometry = function
   | Edge -> Rdk.Topology_index.edge_count (Rdk.Topology_index.create (G.topology geometry))
 let name name = if String.trim name = "" then error "E_GROUP_NAME" "Group name must not be blank." else Ok ()
 let missing name = error "E_GROUP_MISSING" ("Missing group " ^ name ^ ".")
+let mask group =
+  let length=Group.length group and bits=Group.Private.bits_view group in
+  let values=Array.make length 0 in
+  for byte=0 to Bytes.length bits-1 do
+    let value=Char.code(Bytes.unsafe_get bits byte) and first=byte lsl 3 in
+    let count=min 8(length-first) in
+    if value=255 then Array.fill values first count 1
+    else if value<>0 then
+      for bit=0 to count-1 do values.(first+bit)<-(value lsr bit)land 1 done
+  done;
+  E.Int_array values
 let read ~owner ~name geometry =
   match owner with
   | Ordinary owner -> (match G.find_group ~owner name geometry with
-      | None -> missing name | Some group -> Ok (E.Int_array (Array.init (Group.length group)
-          (fun index -> if Group.mem index group then 1 else 0))))
+      | None -> missing name | Some group -> Ok (mask group))
   | Edge -> (match G.find_edge_group name geometry with
       | None -> missing name | Some group -> Ok (E.Int_array (Array.init (Edge.length group)
           (fun index -> if Edge.mem index group then 1 else 0))))

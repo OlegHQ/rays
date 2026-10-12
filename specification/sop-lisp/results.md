@@ -1944,3 +1944,52 @@ in the Set Color history above.
 | Detail | 1 | vec4 | all | 4 | 0.000025 | 0.000052 | 2.076 | 10448 | 27976 |
 | Detail | 1 | wrong_float | all | 1 | 0.000025 | 0.000044 | 1.762 | 10216 | 27088 |
 | Detail | 1 | wrong_float | all | 4 | 0.000026 | 0.000042 | 1.615 | 10448 | 27976 |
+
+### Ordinary group-mask byte unpack (shared foundation)
+
+`Group_kernel.read` now borrows immutable ordinary-group packed bytes once,
+expands each byte into an owned integer mask, retains zero runs from
+`Array.make`, and uses standard `Array.fill` for full bytes. Edge reads keep
+the existing path. Group names, missing-group errors, owner cardinality,
+explicit traversal order and source identity are unchanged. Every cooked
+`sop/group` source uses this shared resolver in compiled/reference/callable
+paths; no node-specific callback was added and no API changed.
+
+Focused **15206** exited 0 with `@lib/flow_sop/runtest` and
+`@lib/flow_sop/set_color_draft`. The regular group test covers empty and
+tail counts 0/1/7/8/9/63/64/65/32,769, Point/Vertex/Primitive owners, reversed
+explicit order, returned-array ownership and unchanged original bits/order/
+data identity at one/four/eight domains. All existing Edge, raw 72-case Color,
+schema/cache/UI and domain/grain tests pass. Log:
+`/tmp/rays-group-byte-mask-focused.log`. `git diff --check` passes.
+
+The direct `test_set_color.exe --bench-mask` attribution uses a million
+Vertex elements, matching existing Float4 Cd, selected/full/empty groups,
+one/four domains, grain 4096, median three freshly allocated results with
+major GC before each sample. Mask resolution and descriptor selected-writer
+execution are measured separately; these are direct host calls, not whole
+Session cooks. Allocation counts are from the initial domain. Both runs
+were quiet: baseline **22026** and after **50060**, both exit 0. Logs:
+`/tmp/rays-color-mask-baseline.log`, `/tmp/rays-color-mask-after.log`.
+
+Mask resolution drops from about 5.1–5.5 ms to 2.0–2.7 ms for selected/full
+groups and to 1.1 ms for empty groups, while its required owned integer mask
+remains about 8 MB. The separate writer remains material. This is a measured
+shared cut; the unchanged whole-node 2× gate needs a fresh complete Color
+table and Set Color remains unregistered. The preceding descriptor 78-row
+table remains intact.
+
+| Group | Domains | Stage | Before seconds | After seconds | Before bytes | After bytes |
+|---|---:|---|---:|---:|---:|---:|
+| selected | 1 | group_source | 0.005518 | 0.002695 | 8000968 | 8000936 |
+| selected | 1 | descriptor_selected_writer | 0.007876 | 0.007547 | 32002272 | 32002272 |
+| selected | 4 | group_source | 0.005125 | 0.001964 | 8001200 | 8001168 |
+| selected | 4 | descriptor_selected_writer | 0.005012 | 0.005242 | 32049376 | 32050728 |
+| full | 1 | group_source | 0.005069 | 0.002594 | 8000968 | 8000936 |
+| full | 1 | descriptor_selected_writer | 0.009359 | 0.009158 | 32002272 | 32002272 |
+| full | 4 | group_source | 0.005091 | 0.002580 | 8001200 | 8001168 |
+| full | 4 | descriptor_selected_writer | 0.005066 | 0.004911 | 32049112 | 32050392 |
+| empty | 1 | group_source | 0.005220 | 0.001121 | 8000968 | 8000936 |
+| empty | 1 | descriptor_selected_writer | 0.004240 | 0.004015 | 32002272 | 32002272 |
+| empty | 4 | group_source | 0.005114 | 0.001124 | 8001200 | 8001168 |
+| empty | 4 | descriptor_selected_writer | 0.003872 | 0.003684 | 32046960 | 32055440 |
