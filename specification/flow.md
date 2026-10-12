@@ -1522,6 +1522,11 @@ nonfinite values already present in native geometry. A numeric map or other
 computed array remains checked and writes owned storage; it cannot use this
 transfer path to bypass nonfinite validation.
 
+Strict compiled Collect regions allocate and validate fresh result arrays.
+CSR writes can adopt those fresh offsets and values without copying them
+again. Captured arrays retain the copied-storage boundary, and CSR layout and
+owner cardinality remain checked after all producers run.
+
 `(sop/iso_surface :field (fn [p] (- (length p) 1)) :resolution [64 64 64])`
 samples an exact float field on a static 65³ XYZ lattice, x fastest. Resolutions
 count integral cells; min/max default to `[-2 -2 -2]`/`[2 2 2]`, iso to zero,

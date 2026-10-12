@@ -1225,3 +1225,33 @@ removes approximately 256 MB of temporary float boxes. Set Transform still
 fails the unchanged 2× gate and remains unregistered. Generated CSR arrays
 are still copied into owned native storage; no buffer-adoption proof is
 claimed here.
+
+### Fresh compiled CSR output storage
+
+The shared attribute writer now proves fresh CSR fields from its existing
+strict program graph: only Collect regions, optionally through exact readback,
+qualify. It adopts their freshly allocated arrays after full program forcing.
+Captured arrays, source queries and other structured expressions retain their
+existing boundaries. Offset layout/owner count and cancellation still check;
+no public API or SOP-specific recognition was added.
+
+Focused request 79184 exited 0 for FlowSOP and the setter executable. New
+Float/Int CSR cases cover empty, single and 32,769-point inputs, exact native
+storage/reference/one-eight-domain bytes, immutable source geometry and
+nonfinite producer-before-count errors. An initial test used an unsupported
+`workspace_node ~reference` argument; the final test reuses the existing
+reference lowering entry instead. Log:
+`/tmp/rays-csr-owned-output-regression-fixed.log`.
+
+The same quiet `test_setters.exe --bench-transform` command/fixture/machine
+as above exited 0 after this change; median three cold sessions:
+
+| Domains | Native seconds | Lisp seconds | Ratio | Native allocated bytes | Lisp allocated bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.016754 | 0.036714 | 2.191 | 136,007,824 | 155,565,160 |
+| 4 | 0.015171 | 0.018015 | 1.187 | 136,013,080 | 152,987,896 |
+
+Log: `/tmp/rays-transform-owned-csr-bench.log`. The four-domain gate passes;
+one domain still fails the unchanged 2× limit. Set Transform remains pending.
+This run also includes the separately validated lazy state/source forcing
+changes, so its timing difference is not attributed solely to buffer adoption.

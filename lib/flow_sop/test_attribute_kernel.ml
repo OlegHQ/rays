@@ -63,6 +63,53 @@ let () =
 
 let () =
   List.iter(fun count->
+    let geo=Line_geometry.points(Array.init count(fun i->float i,-0.,1.)) in
+    let before=geometry_bytes geo and input=Lisp_sop.snapshot geo in
+    List.iter(fun kind->
+      let row=if kind="float_array" then "(array/float 16 -0.0)" else "(array/range 16 :type int)" in
+      let text=Printf.sprintf {|(workspace csr_owned
+        (defnode sop/csr_owned [(geo : geometry)]
+          (let* [n (sop/count geo :points)
+                 offsets (exact (map (fn [i] (int/mul i 16)) (array/range (int/add n 1) :type int)))
+                 data (exact (for [i (array/range n :type int) x %s] x))]
+            (sop/with_attr geo :csr {:offsets offsets :values data} :type %s)))
+        (graph g :context sop (sop/csr_owned (sop/ext_csr_input))))|} row kind in
+      let make reference=
+        let factory=Edit.factory ~key:"ext_csr_input" ~label:"CSR input" ~category:["Test"] ~arity:0(fun _->input) in
+        L.workspace ~reference ~factories:(factory::factories)(Flow.Syntax.parse text |>flow_ok)
+        |>flow_ok |>compiled in
+      let authored=make false and reference=make true in
+      let offsets=Array.init(count+1)(fun i->i*16) in
+      let storage=if kind="float_array" then
+        Attribute.Float_array(Packed.Float_array.create_owned ~offsets ~values:(Array.make(count*16)(-0.)) |>get_string_ok)
+      else Attribute.Int_array(Packed.Int_array.create_owned ~offsets ~values:(Array.init(count*16)(fun i->i mod 16)) |>get_string_ok) in
+      let attribute=Attribute.create_owned ~name:"csr" ~owner:Point storage |>get_string_ok in
+      let expected=Geometry.with_attribute attribute geo |>get_string_ok |>geometry_bytes in
+      let session=session() in
+      Fun.protect ~finally:(fun()->Session.close session)(fun()->
+        List.iter(fun domains->
+          let actual=cook session ~domains ~time:0. authored |>geometry in
+          assert(geometry_bytes actual=expected);
+          assert(geometry_bytes(cook session ~domains ~time:0. reference |>geometry)=expected);
+          (* Fresh computed buffers remain independent of the immutable source. *)
+          assert(geometry_bytes geo=before);
+          Session.clear session)[1;8]))["float_array";"int_array"])
+    [0;1;32769];
+  let source=Lisp_sop.snapshot(Line_geometry.points[|0.,0.,0.|]) in
+  let invalid=Lisp_sop.workspace_node ~with_:["csr_input",source]
+    {|(workspace csr_error (defnode sop/csr_error [(geo : geometry)]
+       (sop/with_attr geo :csr
+         {:offsets (exact (map (fn [i] i) (array/range 3 :type int)))
+          :values (exact (map (fn [x] (exp x)) (array/float 1 1000.0)))} :type float_array))
+       (graph g :context sop (sop/csr_error (sop/ext_csr_input))))|} in
+  let session=session() in
+  Fun.protect ~finally:(fun()->Session.close session)(fun()->
+    match cook session ~domains:1 ~time:0. invalid with
+    |Error d->assert(d.code="E_NONFINITE")|Ok _->assert false);
+  print_endline "Fresh CSR Collect outputs: Float/Int empty/multi-block exact reference/domain bytes, immutable inputs and producer-before-count errors pass"
+
+let () =
+  List.iter(fun count->
     let original=Kernel.generate_point_ranges count(fun ~first ~last ~x ~y ~z->
       for i=first to last-1 do x.(i)<-float i;y.(i)<- -0.;z.(i)<-0. done) in
     let before=geometry_bytes original and input=Lisp_sop.snapshot original in

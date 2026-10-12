@@ -285,7 +285,7 @@ let write_source ~geometry ~owner ~kind name values target =
                |A.Float3 positions->G.with_positions positions target
                |_->Error "Canonical point P requires vec3 storage."
              else Result.bind(A.create_owned ~name ~owner storage)(fun attribute->G.with_attribute attribute target))))
-let write ~grain ~owner ~kind name values geometry =
+let write_storage ~owned_fields ~grain ~owner ~kind name values geometry =
   let owned storage = Result.map_error(Flow.Diagnostic.error ~code:"E_ATTR_TYPE")
     (Result.bind (A.create_owned ~name ~owner storage)(fun attr->G.with_attribute attr geometry)) in
   let count=owner_count geometry owner in
@@ -298,17 +298,19 @@ let write ~grain ~owner ~kind name values geometry =
       (match List.assoc_opt "offsets" fields,List.assoc_opt "values" fields with
        | Some(E.Int_array offsets),Some values ->
            if Array.length offsets<>count+1 then error "E_ATTR_COUNT" "CSR row count differs from owner count." else
-           let offsets=Array.copy offsets in
+           let offsets=if List.mem "offsets" owned_fields then offsets else Array.copy offsets in
            (match kind,values with
             | "float_array",E.Float_array data ->
-                let index=ref 0 in
+                let index=ref(if List.mem "values" owned_fields then Array.length data else 0) in
                 while !index<Array.length data && Float.is_finite data.(!index) do incr index done;
                 if !index<Array.length data then error "E_NONFINITE" "Attribute values must be finite." else
                 Result.bind (Result.map_error(Flow.Diagnostic.error ~code:"E_ATTR_COUNT")
-                  (Rdk.Packed.Float_array.create_owned ~offsets ~values:(Array.copy data))) (fun data->owned(A.Float_array data))
+                  (Rdk.Packed.Float_array.create_owned ~offsets
+                    ~values:(if List.mem "values" owned_fields then data else Array.copy data))) (fun data->owned(A.Float_array data))
             | "int_array",E.Int_array data ->
                 Result.bind(Result.map_error(Flow.Diagnostic.error ~code:"E_ATTR_COUNT")
-                  (Rdk.Packed.Int_array.create_owned ~offsets ~values:(Array.copy data))) (fun data->owned(A.Int_array data))
+                  (Rdk.Packed.Int_array.create_owned ~offsets
+                    ~values:(if List.mem "values" owned_fields then data else Array.copy data))) (fun data->owned(A.Int_array data))
             | _->error "E_ATTR_TYPE" "CSR values do not match the requested storage type.")
        | _->error "E_ATTR_TYPE" "CSR attributes require integer offsets and typed values.")
   | _ ->
@@ -335,6 +337,25 @@ let write ~grain ~owner ~kind name values geometry =
         if not (Atomic.get finite) then error "E_NONFINITE" "Attribute values must be finite."
         else install ~owner ~kind name planes geometry
   | None -> error "E_ATTR_TYPE" ("sop/with_attr requires " ^ kind ^ " storage.")
+
+let write ~grain ~owner ~kind name values geometry =
+  write_storage ~owned_fields:[] ~grain ~owner ~kind name values geometry
+
+(* Strict Collect regions allocate and finite-check their result arrays on every
+   force. Captured arrays, host sources and other structured expressions retain
+   the ordinary copied-storage boundary. *)
+let fresh_csr_fields program =
+  let ir=Flow_ir.Executor.graph program in
+  let rec fresh index=match ir.nodes.(index).kind with
+    |Flow_ir.Kernel {body=Packed_map packed;_}->Flow_ir.Packed.elementwise packed
+    |Kernel {body=Readback;_}->(match ir.nodes.(index).args with
+        |[{node;_}]->fresh node|_->false)
+    |_->false in
+  match ir.nodes.(ir.roots.(0)).kind with
+  |Kernel {body=Record_value _;_}->List.filter_map(fun(edge:Flow_ir.edge)->
+      if List.mem edge.name ["offsets";"values"] && fresh edge.node then Some edge.name else None)
+      ir.nodes.(ir.roots.(0)).args
+  |_->[]
 
 let source_origins ~sources inputs =
   if List.compare_lengths sources inputs <> 0 then
@@ -533,6 +554,8 @@ let write_constant ?state ?elems ~resolve ~owner ~kind ~name prepared target ~li
 
 let node ?state ?(reference = false) ?(strict = false) ?elems ?profile ?(owner=A.Point) ?(kind="vec3") ~source ~name ~values ~sources inputs =
   let program = prepare ?profile ~strict ~sources inputs values in
+  let owned_fields=if strict && not reference && List.mem kind ["float_array";"int_array"] then
+    Result.fold ~ok:fresh_csr_fields ~error:(fun _->[]) program else [] in
   let constant = if reference then None else prepare_constant ~kind values in
   let parameters = source ^ ";" ^ owner_name owner ^ ";" ^ kind ^ ";" ^ name ^ ";" ^ Flow.Value.key_of ~residual:E.Private.residual_id values
     ^ Option.fold ~none:"" ~some:(fun bindings -> Flow.Value.key_of
@@ -562,7 +585,7 @@ let node ?state ?(reference = false) ?(strict = false) ?elems ?profile ?(owner=A
                 Result.bind (Flow_ir.Executor.force ?state ?elems ~reference ~strict ~resolve program ~live)
                   (fun values -> if Sop.Context.cancelled context then
                       error "E_CANCELLED" "Attribute kernel cancelled."
-                    else write ~grain:(Sop.Context.grain context) ~owner ~kind name values geometries.(0))))) in
+                    else write_storage ~owned_fields ~grain:(Sop.Context.grain context) ~owner ~kind name values geometries.(0))))) in
       Result.map_error (fun (d : Flow.Diagnostic.t) -> Sop.Diagnostic.error ?cause:d.cause ~code:d.code d.message)
         (Result.map (fun geometry -> N.Private.{geometry; diagnostics = []; instances = None}) result)) in
   N.Private.with_facts { (N.facts node) with elementwise = (match owner with A.Point->N.Points|Primitive->Primitives|_->None);
