@@ -534,8 +534,8 @@ OCAML
 
 ## Port and measurement ledger
 
-Three of the 128 target nodes have completed their full Verification gates:
-`noise_displace`, `set_float` and `set_int`. The remaining 125 ports are still required.
+Four of the 128 target nodes have completed their full Verification gates:
+`noise_displace`, `set_float`, `set_int` and `set_vector`. The remaining 124 ports are still required.
 Do not fill timings, run counts, render parity or domain equality from estimates.
 Each accepted row must cite the command and fixture, machine/domain setup,
 OCaml/Lisp times and validation result before its plan checkbox is marked.
@@ -545,6 +545,7 @@ OCaml/Lisp times and validation result before its plan checkbox is marked.
 | `noise_displace` pilot | Final pilot and legacy node gate 45407 passed at 4 ULP | 48781 passed, byte-exact strict reference | Schema/cache/refusals and real source/save/editor gates passed; label regression 45407 passed | Final 33890 passed; render fixtures unchanged; ml.t catalog digest expectation refreshed | Both modes 1/4 domains below 2×; table below | Complete in this port commit; A.6 and A.R passed |
 | `set_float` | Authoritative all-owner native oracle 19797 and production 24674 passed | Exact strict/reference at 1/4/8 domains, grains 1/97/4096 | Factory/schema, every physical edit, public cache misses/hits, graph/inspector and refusals passed | 62289 passed; render fixtures unchanged; ml.t catalog digest only | Native/Lisp 0.000527/0.000175 s at 1 domain, 0.000212/0.000229 s at 4 domains; production table below | Complete in its separate port commit; B.11 remains incomplete |
 | `set_int` | Authoritative all-owner native oracle 96226 and production 22235 passed | Exact strict/reference at 1/4/8 domains, grains 1/97/4096 | Factory/schema, every physical edit, public cache misses/hits, graph/inspector and refusals passed | 26730 passed; render fixtures unchanged; ml.t catalog digest only | Two fixed production repeats passed at both domain counts; initial 4-domain 2.559× outlier and all repeat timings retained below | Complete in its separate port commit; B.11 remains incomplete |
+| `set_vector` | Authoritative all-owner native oracle 82998 and final combined 36060 passed | Exact strict/reference at 1/4/8 domains, grains 1/97/4096 | Factory/schema/vector grouping, every physical edit, public cache misses/hits, graph/inspector and refusals passed | 89432 passed; render fixtures unchanged; ml.t catalog digest only | Native/Lisp 0.002219/0.000468 s at 1 domain, 0.000540/0.000478 s at 4 domains; production table below | Complete in its separate port commit; B.11 remains incomplete |
 
 ## Moves and blocked modes
 
@@ -1255,3 +1256,48 @@ Log: `/tmp/rays-transform-owned-csr-bench.log`. The four-domain gate passes;
 one domain still fails the unchanged 2× limit. Set Transform remains pending.
 This run also includes the separately validated lazy state/source forcing
 changes, so its timing difference is not attributed solely to buffer adoption.
+
+### Set Vector production port
+
+Candidate request 82998 exited 0 for the authoritative `set_vector` recipe
+with explicitly loaded pending declarations and unchanged global native
+registration. The production `nodes/set_vector.rays` addition and native
+registration removal then happened together. Only Set Vector was removed
+from the remaining draft; the prelude's shared constant setter macro is
+reused. `Sop.Nodes.Set_vector.factory` remains the independent oracle.
+
+The candidate checks all four owners, defaults/non-defaults, required
+geometry fixtures, complete factory/runtime metadata, native 4-ULP geometry,
+exact strict/reference and 1/4/8-domain bytes at grains 1/97/4096, unchanged
+input geometry, every physical field's edit/cache identity, all float
+non-finite refusals, wrong input types and name/P validation.
+
+Reviewed manifest digest `74605783d22049a09c4cae625a8af185` changes only
+Set Vector's declaration order, native facts and Lisp body/calls markers.
+All fields, defaults, ranges, labels, folders and the `value` vector grouping
+remain equal. The generated-source expectation in `tools/lisp/test/ml.t`
+changes only its catalog hash to
+`e019bed37cd3428461ece338de693d9c7fa5597a9bd00fb88a138cd5fc5e9e41`.
+Production requests 32725 and 87384 passed the authoritative node recipes;
+their aggregate failures were the copied old catalog expectation and a
+subsequently corrected shared CSR fixture, respectively. Native request
+89432 exited 0, including exact PNGs for 23 SOP graphs at one/four domains.
+No rendered golden changed. Fresh combined request 36060 exited 0 for
+`@lib/sop/runtest @lib/flow_sop/runtest @lib/sop_catalog/runtest`
+`@tools/api_manifest/runtest @test/dependency_gate @tools/lisp/test/runtest`.
+The production node recipe, graph/inspector gestures, schema, catalog,
+CLI expectation, public API and dependency checks all pass together.
+
+`opam exec -- ./test_setters.exe --bench-vector` from
+`_build/default/lib/flow_sop` exited 0. Apple M1, OCaml 5.3.0,
+1,000,000 points, grain 4096, median of three fresh-session cold cooks:
+
+| Domains | Native seconds | Lisp seconds | Ratio | Native allocated bytes | Lisp allocated bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.002219 | 0.000468 | 0.211 | 24,007,080 | 24,025,448 |
+| 4 | 0.000540 | 0.000478 | 0.885 | 24,007,312 | 24,025,680 |
+
+Four-domain allocations record the initial domain only. Both ratios pass
+the unchanged 2× gate. The complete log is
+`/tmp/rays-set-vector-production-bench.log`. B.11 stays unchecked while
+the remaining whole setter ports are incomplete.

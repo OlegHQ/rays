@@ -2,18 +2,6 @@
 ; DRAFT: not embedded or registered. Requires B4 sop/count and pure text/blank?.
 ; Quaternion overflow follows the guarded shared helper, preserving native signed zeros.
 ; Metadata copied from the full native declarations, including soft ranges.
-(defnode sop/set_vector :label "Set Vector" :category ["Attribute" "Set"]
-  :validate (not (text/blank? name)) :code "E_PARAM" :message "sop/set_vector: empty name"
-  [(in0 : geometry)
-   (owner : text "Point" :label "Owner" :choices ["Point" "Vertex" "Primitive" "Detail"])
-   (name : text "v" :label "Attribute"
-     :validate (not (and (equal? owner "Point") (equal? name "P")))
-     :code "E_PARAM" :message "sop/set_vector: cannot replace canonical P")
-   (x : float 0.0 :label "X" :folder ["Value"] :min -10 :max 10 :vec3 ["value" 0])
-   (y : float 0.0 :label "Y" :folder ["Value"] :min -10 :max 10 :vec3 ["value" 1])
-   (z : float 0.0 :label "Z" :folder ["Value"] :min -10 :max 10 :vec3 ["value" 2])]
-  (setter_constant in0 owner name vec3 array/vec3 [x y z]))
-
 (defnode sop/set_orient :label "Set Orient" :category ["Attribute" "Set"]
   [(in0 : geometry)
    (x : float 0.0 :label "X" :min -1 :max 1)

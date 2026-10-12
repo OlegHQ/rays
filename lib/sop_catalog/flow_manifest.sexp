@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "cb0e51368d5173e1c0f3fc8aa36368f7")
+  (digest "74605783d22049a09c4cae625a8af185")
   (kinds
     (kind "sop/box"
       (key "box")
@@ -3223,21 +3223,6 @@
         (field "text_prefix" "Text prefix" (folder "Output") (text) (text "piece") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/set_vector"
-      (key "set_vector")
-      (aliases)
-      (operation "set_vector")
-      (label "Set Vector")
-      (category "Attribute" "Set")
-      (slots (slot "in0" required))
-      (fields
-        (field "owner" "Owner" (folder) (choice "Point" "Vertex" "Primitive" "Detail") (choice "Point") (primary false) (vec3))
-        (field "name" "Attribute" (folder) (text) (text "v") (primary false) (vec3))
-        (field "x" "X" (folder "Value") (float (soft -10 10) (hard nil nil)) (float 0) (primary false) (vec3 "value" 0))
-        (field "y" "Y" (folder "Value") (float (soft -10 10) (hard nil nil)) (float 0) (primary false) (vec3 "value" 1))
-        (field "z" "Z" (folder "Value") (float (soft -10 10) (hard nil nil)) (float 0) (primary false) (vec3 "value" 2)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/set_orient"
       (key "set_orient")
       (aliases)
@@ -3502,6 +3487,22 @@
         (field "owner" "Owner" (folder) (choice "Point" "Vertex" "Primitive" "Detail") (choice "Point") (primary false) (vec3))
         (field "name" "Attribute" (folder) (text) (text "value") (primary false) (vec3))
         (field "value" "Value" (folder) (int (soft -100 100) (hard nil nil)) (int 0) (primary false) (vec3)))
+      (outputs (output "geo" geometry))
+      (body lisp)
+      (calls))
+    (kind "sop/set_vector"
+      (key "set_vector")
+      (aliases)
+      (operation "set_vector")
+      (label "Set Vector")
+      (category "Attribute" "Set")
+      (slots (slot "in0" required))
+      (fields
+        (field "owner" "Owner" (folder) (choice "Point" "Vertex" "Primitive" "Detail") (choice "Point") (primary false) (vec3))
+        (field "name" "Attribute" (folder) (text) (text "v") (primary false) (vec3))
+        (field "x" "X" (folder "Value") (float (soft -10 10) (hard nil nil)) (float 0) (primary false) (vec3 "value" 0))
+        (field "y" "Y" (folder "Value") (float (soft -10 10) (hard nil nil)) (float 0) (primary false) (vec3 "value" 1))
+        (field "z" "Z" (folder "Value") (float (soft -10 10) (hard nil nil)) (float 0) (primary false) (vec3 "value" 2)))
       (outputs (output "geo" geometry))
       (body lisp)
       (calls))

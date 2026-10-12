@@ -676,10 +676,11 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 ### Completed whole-node ports
 
 Each checked node passed the full Verification recipe and has its own source
-commit. Evidence and timings are in `results.md`. The other 125 inventory
+commit. Evidence and timings are in `results.md`. The other 124 inventory
 nodes remain required; grouped phase milestones stay unchecked until every
 node in that group has passed.
 
 - [x] `noise_displace` — A.6 pilot.
 - [x] `set_float` — B.11, all owners.
-- [x] `set_int` — B.11, all owners; B.11's other four ports remain open.
+- [x] `set_int` — B.11, all owners.
+- [x] `set_vector` — B.11, all owners; B.11's other three ports remain open.
