@@ -376,8 +376,8 @@ delegated to the old `noise_displace` body or dropped.
 | B.10 | P | B.1 B.5 B.7 B.8 B.9 | Deformers: `match_axis`, `transform`, `match_size`, `peak`, `mountain`, `bend`, `snap_to_grid`, `point_jitter`, `rest_position`. | Recipe |
 | B.11 | P | B.1 B.4 B.5 | Setters: `set_float`, `set_int`, `set_vector`, `set_orient`, `set_color`, `set_transform`. | Recipe |
 | B.12 | P | B.6 | Metadata: `delete_attributes`, `rename_attributes`, `swap_attributes`, `delete_edge_group`, `rename_edge_group`, `group_delete`, `group_rename`. Generic Lisp-authored encoded parameter validation/canonicalization must preserve native schema views and cook keys. | Recipe and encoded parameter boundary |
-| B.13 | P | B.4 B.5 B.8 B.9 | Groups: `group_combine`, `group_invert`, `group_random`, `group_bounds`, `group_non_planar`, `group_backface`, `ordered_group`. | Recipe |
-| B.14 | P | B.3 B.5 | Text: `groups_from_name`, `name_from_groups`, `material`. | Recipe |
+| B.13 | P | B.4 B.5 B.8 B.9; C.2 for indexed packed-word unpacking | Groups: `group_combine`, `group_invert`, `group_random`, `group_bounds`, `group_non_planar`, `group_backface`, `ordered_group`. Gather alone does not supply a packed-word group source or satisfy whole-node performance. | Recipe |
+| B.14 | P | B.3 B.5; C.2 and typed Text leaf kernels for indexed Text assignment | Text: `groups_from_name`, `name_from_groups`, `material`. Numeric gather alone does not accelerate Name From Groups' Text result. | Recipe |
 | B.15 | P | B.1 B.7 B.8 B.9 | Attributes: `distance_from_target`, `uv_transform`, `attr_from_image`, `attribute_noise`, `attribute_noise_quaternion`, `attribute_remap`, `attribute_composite`, `attribute_fade`, `color_by_height`. Whole ports moved after their native prerequisite audits: `uv_project` to C.14 and `measure` to C.15. | Recipe |
 | B.16 | P | B.15 | `attribute_randomize`. | Recipe |
 | B.F | L | B.10 | Fuse adjacent Lisp-bodied nodes into one kernel pass (see Placement and fusion). | A chain of four deformers cooks with one kernel run; bytes equal to the unfused chain |
@@ -388,7 +388,7 @@ delegated to the old `noise_displace` body or dropped.
 | Task | Kind | Depends | What | Gate |
 | --- | --- | --- | --- | --- |
 | C.1 | L | B.R | `sop/mesh` and `sop/topology` (C1). | Build each of five fixtures from its own arrays; bytes equal |
-| C.2 | L | B.R | Gather instruction in the kernel tier (C2). | Fixtures; out-of-range index is `E_ARRAY_RANGE`; 1 and 8 domains |
+| C.2 | L | B.1 B.2 B.3 | Gather instruction in the kernel tier (C2), advanced before B.R for B.13/B.14's indexed recipes. Numeric gathers and the required Text leaf extension have separate proofs; see `gather-design.md`. | Fixtures; out-of-range index is `E_ARRAY_RANGE`; 1 and 8 domains; lazy/error-order, ownership, actual JavaScript and GPU refusal checks |
 | C.3 | L | C.1 | `sop/remap` (C3). | Identity maps reproduce the input; a permutation carries every attribute and group |
 | C.4 | L | C.2 | `array/compact`, `array/scan_sum` (C4), `array/scatter_add` (C6). | Reference equality; 1 and 8 domains |
 | C.5 | L | C.2 | `array/grade` (C5), `array/index_of` (C8). | Stability on equal keys; missing key result |
