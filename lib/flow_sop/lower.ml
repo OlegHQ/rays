@@ -245,7 +245,8 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
             |E.Record fields->List.exists(fun(_,value)->deferred value)fields
             |E.List values->Array.exists deferred values
             |_->false in
-          let force_args args=List.map(fun(name,value)->name,if deferred value then
+          let constant=function E.Source(name,_,_)->String.starts_with ~prefix:"$core/constant-array/" name|_->false in
+          let force_args ?(keep_constant=false) args=List.map(fun(name,value)->name,if deferred value && not(keep_constant && name="values" && constant value) then
               ok(E.Private.force_reference ~resolve:(Attribute_kernel.resolve ~geometry)
                 value ~live:(Sop.Context.input context)) else value)args in
           let call ty catalog name args =
@@ -257,10 +258,10 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
             let args=if not catalog && name="sop/with_attr"
                 && (List.mem_assoc "selection" args || List.mem_assoc "default" args)
                 && (match List.assoc_opt "values" args with
-                    |Some(E.Float_array _|Vec2_array _|Vec3_array _|Vec4_array _)->true|_->false)
+                    |Some(E.Float_array _|Vec2_array _|Vec3_array _|Vec4_array _)->true|Some value->constant value|_->false)
               then begin
                 if Sop.Context.cancelled context then fail "E_CANCELLED" "Attribute kernel cancelled.";
-                force_args args
+                force_args ~keep_constant:true args
               end else args in
             let borrowed=if catalog || name<>"sop/with_attr" then Ok None else
               match List.assoc_opt "geometry" args,List.assoc_opt "attribute" args,List.assoc_opt "values" args with
@@ -278,7 +279,10 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
                     Attribute_kernel.write_source ~geometry ~owner ~kind name values target)(fun result->
                   let selected_materialized=match selection,default with
                     |None,None->true|Some(E.Int_array _),Some(E.Float _|Int _|Vec2 _|Vec3 _|Vec4 _)->true|_->false in
-                  let result=match result with Some _->Ok result|None when materialized && selected_materialized->
+                  let result=match result with Some _->Ok result|None when constant values && selected_materialized->
+                    Attribute_kernel.write_constant_source ~grain:(Sop.Context.grain context) ~owner ~kind name
+                      ?selection ?default values target
+                    |None when materialized && selected_materialized->
                     (* The former checked-call input boundary validated before
                        the writer checked destination cardinality. *)
                     Flow.Value.validate values;

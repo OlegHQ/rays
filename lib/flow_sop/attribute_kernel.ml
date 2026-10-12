@@ -209,7 +209,26 @@ let read_checked ~component ~owner ~kind name geometry =
           Ok(if component="valid" then E.Int_array valid else match width with
             |1->E.Float_array values|2->E.Vec2_array values|3->E.Vec3_array values|_->E.Vec4_array values))
 
-let resolve ~geometry = function
+let constant_source = function
+  |E.Source(name,ty,args) when String.starts_with ~prefix:"$core/constant-array/" name ->
+      Some (try
+        let operation=String.sub name 21 (String.length name-21) in
+        match Flow.Op.Private.constant_array_descriptor operation args with
+        |E.Source(_,actual,fields) when actual=ty->
+            (match List.assoc_opt "count" fields,List.assoc_opt "value" fields with
+             |Some(E.Int count),Some value->Ok(operation,count,value)
+             |_->error "E_ARRAY_TYPE" "Malformed constant array descriptor.")
+        |_->error "E_ARRAY_TYPE" "Constant array descriptor has the wrong declared type."
+      with Flow.Value.Fail(code,message,_)->error code message
+        |Flow.Value.Diagnostic_fail d->Error d)
+  |_->None
+
+let resolve ~geometry value = match constant_source value with
+  |Some result->Result.bind result(fun(operation,count,value)->
+      try Ok((Option.get(Flow.Op.find operation Flow.Context.value)).body
+        ~live:(Frame_input.at_time 0.) ~node:(fun _ _->assert false)["count",E.Int count;"value",value])
+      with Flow.Value.Fail(code,message,_)->error code message|Flow.Value.Diagnostic_fail d->Error d)
+  |None->match value with
   | E.Source ("sop/attr_checked",_,args) ->
       (match List.assoc_opt "geometry" args,List.assoc_opt "attribute" args,
           List.assoc_opt "component" args with
@@ -378,22 +397,27 @@ let write ~grain ~owner ~kind name values geometry =
 
 let write_selected ~grain ~owner ~kind name ~values ~selection ~default geometry =
   let width=width kind and count=owner_count geometry owner in
+  let constant=constant_source values in
   let values=match kind,values with
-    |"float",E.Float_array data|"vec2",E.Vec2_array data|"vec3",E.Vec3_array data|"vec4",E.Vec4_array data->Some data
+    |"float",E.Float_array data|"vec2",E.Vec2_array data|"vec3",E.Vec3_array data|"vec4",E.Vec4_array data->Some(data,None)
+    |_,E.Source _->(match constant with Some(Ok(operation,n,value)) when operation="array/"^kind->
+        let row=match value with E.Float x->[|x|]|Vec3(x,y,z)->[|x;y;z|]|Vec4(x,y,z,w)->[|x;y;z;w|]|_->[||] in
+        if Array.length row=width && width>0 then Some(row,Some n)else None|_->None)
     |_->None in
   let default=match kind,default with
     |"float",E.Float x->Some[|x|]|"float",E.Int x->Some[|float x|]
     |"vec2",E.Vec2(x,y)->Some[|x;y|]|"vec3",E.Vec3(x,y,z)->Some[|x;y;z|]
     |"vec4",E.Vec4(x,y,z,w)->Some[|x;y;z;w|]|_->None in
   match values,selection,default with
-  |Some values,E.Int_array selection,Some default->
+  |Some(values,constant_count),E.Int_array selection,Some default->
       let finite data=
         let i=ref 0 in
         while !i<Array.length data && Float.is_finite data.(!i) do incr i done;
         !i=Array.length data in
-      if count>Sys.max_floatarray_length/width || Array.length values/width<>count || Array.length values mod width<>0 then
+      let value_count=Option.value ~default:(Array.length values/width)constant_count in
+      if count>Sys.max_floatarray_length/width || value_count<>count || (constant_count=None && Array.length values mod width<>0) then
         error "E_ATTR_COUNT" (Printf.sprintf "%s needs %d %s values; got %d."
-          name count (owner_name owner) (Array.length values/width))
+          name count (owner_name owner) value_count)
       else if Array.length selection<>count then error "E_ATTR_COUNT" "Attribute selection count differs from owner count."
       else if Array.exists(fun value->value<>0 && value<>1)selection then
         error "E_ATTR_SELECTION" "Attribute selection must contain only zero or one."
@@ -408,10 +432,30 @@ let write_selected ~grain ~owner ~kind name ~values ~selection ~default geometry
         ranges ~grain count(fun ~first ~last->
           for i=first to last-1 do
             if selection.(i)=1 then
-              for c=0 to width-1 do planes.(c).(i)<-values.(i*width+c) done
+              for c=0 to width-1 do planes.(c).(i)<-values.((if constant_count=None then i*width else 0)+c) done
           done);
         install ~owner ~kind name planes geometry
-  |_->error "E_ATTR_TYPE" "Selected writes require numeric arrays, an integer selection and a matching default value."
+  |_->(match constant with Some(Error d)->Error d|_->error "E_ATTR_TYPE" "Selected writes require numeric arrays, an integer selection and a matching default value.")
+
+let write_constant_source ~grain ~owner ~kind name ?selection ?default values geometry =
+  match constant_source values with
+  |None->Ok None
+  |Some result->Result.bind result(fun(operation,count,value)->
+      if operation<>"array/"^kind then error "E_ATTR_TYPE"("sop/with_attr requires "^kind^" storage.")
+      else if count<>owner_count geometry owner then error "E_ATTR_COUNT"
+        (Printf.sprintf "%s needs %d %s values; got %d." name (owner_count geometry owner)(owner_name owner)count)
+      else Result.map Option.some(match selection,default with
+        |Some selection,Some default->write_selected ~grain ~owner ~kind name ~values ~selection ~default geometry
+        |None,None->(match value with
+            |E.Int n->Result.map_error(Flow.Diagnostic.error ~code:"E_ATTR_TYPE")
+                (Result.bind(A.create_owned ~name ~owner(A.Int(Array.make count n)))(fun a->G.with_attribute a geometry))
+            |Text text->Result.map_error(Flow.Diagnostic.error ~code:"E_ATTR_TYPE")
+                (Result.bind(A.create_owned ~name ~owner(A.Text(Array.make count text)))(fun a->G.with_attribute a geometry))
+            |Float x->install ~owner ~kind name [|Array.make count x|] geometry
+            |Vec3(x,y,z)->install ~owner ~kind name(Array.map(Array.make count)[|x;y;z|])geometry
+            |Vec4(x,y,z,w)->install ~owner ~kind name(Array.map(Array.make count)[|x;y;z;w|])geometry
+            |_->error "E_ATTR_TYPE" "Constant array fill has the wrong storage.")
+        |_->error "E_ATTR_SELECTION" "Selected writes require both selection and default."))
 
 (* Strict Collect regions allocate and finite-check their result arrays on every
    force. Captured arrays, host sources and other structured expressions retain
@@ -598,31 +642,15 @@ let write_constant ?state ?elems ~resolve ~owner ~kind ~name prepared target ~li
   |None->Ok None
   |Some(op,count,value)->
            let force program=Flow_ir.Executor.force ?state ?elems ~strict:true ~resolve program ~live in
-           Result.bind(force count)(function
-             |E.Int count when count>0 && count=owner_count target owner
-                 && (width kind=0 || count<=Sys.max_floatarray_length/width kind) ->
-                 let value=match value with Some program->force program
-                   |None->Ok(match kind with "int"->E.Int 0|"text"->E.Text""|"vec3"->E.Vec3(0.,0.,0.)
-                     |"vec4"->E.Vec4(0.,0.,0.,0.)|_->E.Float 0.) in
+           Result.bind(force count)(fun count->
+                 let value=match value with Some program->Result.map(fun value->["value",value])(force program)
+                   |None->Ok [] in
                  Result.bind value (fun value->
-                   (* The declared constructor validates its fill once. Every
-                      plane is newly owned here; no captured array is adopted. *)
-                   let sample=try Ok(op.Flow.Op.body ~live ~node:(fun _ _->assert false)
-                     ["count",Flow.Value.Int 1;"value",value])
+                   let sample=try Ok(Flow.Op.Private.constant_array_descriptor op.Flow.Op.name (("count",count)::value))
                      with Flow.Value.Fail(code,message,_)->error code message
                        |Flow.Value.Diagnostic_fail d->Error d in
                    Result.bind sample (fun sample->
-                     let owned storage=Result.map_error(Flow.Diagnostic.error ~code:"E_ATTR_TYPE")
-                       (Result.bind(A.create_owned ~name ~owner storage)(fun attribute->G.with_attribute attribute target)) in
-                     let result=match sample with
-                       |Flow.Value.Int_array data->owned(A.Int(Array.make count data.(0)))
-                       |Text_array data->owned(A.Text(Array.make count data.(0)))
-                       |Float_array data->install ~owner ~kind name [|Array.make count data.(0)|] target
-                       |Vec3_array data|Vec4_array data->install ~owner ~kind name
-                           (Array.map(Array.make count)data) target
-                       |_->error "E_ATTR_TYPE" "Constant attribute constructor returned the wrong storage." in
-                     Result.map Option.some result))
-             |_->Ok None)
+                     write_constant_source ~grain:4096 ~owner ~kind name sample target)))
 
 let node ?state ?(reference = false) ?(strict = false) ?elems ?profile ?selection ?default ?(owner=A.Point) ?(kind="vec3") ~source ~name ~values ~sources inputs =
   let selected=selection<>None || default<>None in
@@ -665,7 +693,7 @@ let node ?state ?(reference = false) ?(strict = false) ?elems ?profile ?selectio
                       (fun value->
                         (* Reuse the declared constructor's count, empty-fill and
                            finite checks before evaluating later write arguments. *)
-                        let values=try Ok(op.Flow.Op.body ~live ~node:(fun _ _->assert false) (("count",count)::value))
+                        let values=try Ok(Flow.Op.Private.constant_array_descriptor op.Flow.Op.name (("count",count)::value))
                           with Flow.Value.Fail(code,message,_)->error code message
                             |Flow.Value.Diagnostic_fail d->Error d in
                         Result.bind values(fun values->Result.bind rest(fun rest->

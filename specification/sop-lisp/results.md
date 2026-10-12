@@ -1800,3 +1800,147 @@ verified contention was the reason for the quiet repeat.
 | 8 | edges | 4 | .000024 | .000032 | 1.337 | 9056 | 16896 |
 | 8 | absent | 1 | .000028 | .000039 | 1.390 | 8912 | 16824 |
 | 8 | absent | 4 | .000034 | .000071 | 2.099 | 9144 | 17056 |
+
+### Validated constant-array storage descriptors (shared foundation)
+
+Focused request **19512** exited 0: `@lib/flow/runtest
+@lib/flow_ir/runtest @lib/flow_sop/runtest
+@lib/flow_sop/set_color_draft`. Log:
+`/tmp/rays-constant-source-focused5.log`. No Set Color registration or
+whole-node completion follows from this semantic gate.
+
+The shared compiler retains canonical constant-array count/fill metadata
+only when every Core use reaches a cooked storage consumer through simple
+aliases. Numeric consumers, ambiguous aliases, record/state/loop-control
+uses and returned arrays keep the dense path. Actual constructor count,
+storage bounds and used fill validation run at the original Core statement;
+count-zero does not validate the unused fill, and later argument failures
+retain their order. Source resolution can materialize the same canonical
+array when a host needs it. Selected/full writes allocate owned output planes
+without a dense intermediate replacement array.
+
+The regular tests cover actual count/bounds/empty/fill diagnostics, simple
+aliases, mixed uses and ambiguous aliases, earlier constructor versus later
+argument errors, empty/single/32,769 metadata, malformed internal source
+fields/types, full/selected Float/Vec storage, exact Int/Text and immutable
+native bytes at one/four/eight domains. Existing Set Color raw 72-case,
+whole schema/cache/card/gesture and reference/domain checks remain green.
+
+Feature file map: `lib/flow/op.ml` factors the canonical one-element check
+and exposes `Op.Private.constant_array_descriptor`; `lib/flow_ir/core_lower.ml`
+proves use eligibility and reuses `Source_descriptor`; `core_exec.ml` validates
+metadata at the original statement; `lib/flow_sop/attribute_kernel.ml` and
+`lower.ml` resolve or consume typed metadata at the existing writer boundary.
+Regular regressions live in `lib/flow/test_op.ml`,
+`lib/flow_ir/test_core_lower.ml` and `lib/flow_sop/test_attribute_kernel.ml`.
+The public signatures were accepted with API-only commit **6bc7f726**;
+`specification/core.md` records the source/error-order contract. Temporary
+Point Jitter allocation hooks were removed from source before clean Set Color
+relink; no performance claim uses an instrumented executable.
+
+Measurement request **21014** exited 0 on the clean executable linked by
+**90154** (`@lib/flow_sop/set_color_draft`, exit 0). The complete quiet table
+uses median three fresh Sessions and cold cooks, one/four domains, grain
+4096, one million ordinary-owner elements, and one Detail element on a
+million-point input. Allocations are measured on the initial domain.
+All 78 rows are retained below. **49 rows still exceed 2×**, with maximum
+**3.414×**: all 18 selected rows, all 18 empty-group rows, 10 full-group rows
+and three Detail microcases. Set Color remains unregistered and incomplete.
+Full log: `/tmp/rays-set-color-constant-descriptor-bench.log`.
+
+The bounded 65,538-Vertex diagnostic confirms the actual wrapper now avoids
+the dense replacement: whole cold strict cook allocation falls from
+4,747,880 B to **2,653,672 B**. The independent dense constructor remains
+2,097,616 B. The group source uses 525,128 B and concrete selected writer
+2,103,136 B. Single-sample wall times were respectively 0.001050 s for whole
+cook, 0.000274 s for constructor, 0.000421 s for group source and 0.000751 s
+for concrete writer. This diagnostic overlapped validation, so its wall times
+are not quiet throughput acceptance. Log:
+`/tmp/rays-set-color-constant-descriptor-stages.log`.
+
+In the complete quiet table, grouped million-row allocation drops from about
+72 MB in the copied-plane baseline to about **40 MB**, including the 32 MB
+owned output and 8 MB selection mask. The remaining whole-node speed gate
+is not satisfied by this allocation reduction. All previous tables remain
+in the Set Color history above.
+
+| Owner | Elements | Cd | Group | Domains | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---|---:|---|---|---:|---:|---:|---:|---:|---:|
+| Point | 1000000 | absent | all | 1 | 0.001364 | 0.000649 | 0.476 | 32010016 | 32032200 |
+| Point | 1000000 | absent | all | 4 | 0.001335 | 0.000668 | 0.500 | 32010248 | 32032432 |
+| Point | 1000000 | absent | selected | 1 | 0.003750 | 0.012803 | 3.414 | 32010432 | 40030352 |
+| Point | 1000000 | absent | selected | 4 | 0.003786 | 0.009956 | 2.630 | 32010664 | 40086168 |
+| Point | 1000000 | absent | full | 1 | 0.004875 | 0.013712 | 2.813 | 32010424 | 40030408 |
+| Point | 1000000 | absent | full | 4 | 0.005092 | 0.009750 | 1.915 | 32010656 | 40076976 |
+| Point | 1000000 | absent | empty | 1 | 0.002995 | 0.008771 | 2.929 | 32010424 | 40030344 |
+| Point | 1000000 | absent | empty | 4 | 0.002870 | 0.008335 | 2.904 | 32010656 | 40083744 |
+| Point | 1000000 | vec4 | all | 1 | 0.001177 | 0.000714 | 0.607 | 32010168 | 32033504 |
+| Point | 1000000 | vec4 | all | 4 | 0.001210 | 0.000661 | 0.546 | 32010400 | 32033736 |
+| Point | 1000000 | vec4 | selected | 1 | 0.004409 | 0.012589 | 2.855 | 32010776 | 40030688 |
+| Point | 1000000 | vec4 | selected | 4 | 0.004312 | 0.010275 | 2.383 | 32011008 | 40078776 |
+| Point | 1000000 | vec4 | full | 1 | 0.005388 | 0.014324 | 2.658 | 32010768 | 40030680 |
+| Point | 1000000 | vec4 | full | 4 | 0.005728 | 0.009960 | 1.739 | 32011000 | 40077400 |
+| Point | 1000000 | vec4 | empty | 1 | 0.003392 | 0.009382 | 2.766 | 32010768 | 40030680 |
+| Point | 1000000 | vec4 | empty | 4 | 0.003917 | 0.009583 | 2.447 | 32011000 | 40067992 |
+| Point | 1000000 | wrong_float | all | 1 | 0.001308 | 0.000718 | 0.549 | 32010168 | 32047240 |
+| Point | 1000000 | wrong_float | all | 4 | 0.001336 | 0.000674 | 0.505 | 32010400 | 32033736 |
+| Point | 1000000 | wrong_float | selected | 1 | 0.004006 | 0.012024 | 3.001 | 32010600 | 40030696 |
+| Point | 1000000 | wrong_float | selected | 4 | 0.003843 | 0.009723 | 2.530 | 32010832 | 40078240 |
+| Point | 1000000 | wrong_float | full | 1 | 0.004960 | 0.013824 | 2.787 | 32010592 | 40030688 |
+| Point | 1000000 | wrong_float | full | 4 | 0.005019 | 0.009469 | 1.887 | 32010824 | 40078000 |
+| Point | 1000000 | wrong_float | empty | 1 | 0.002899 | 0.008657 | 2.986 | 32010592 | 40030624 |
+| Point | 1000000 | wrong_float | empty | 4 | 0.002858 | 0.008238 | 2.882 | 32010824 | 40083080 |
+| Vertex | 1000000 | absent | all | 1 | 0.001199 | 0.000659 | 0.550 | 32010024 | 32032208 |
+| Vertex | 1000000 | absent | all | 4 | 0.001220 | 0.000649 | 0.532 | 32010256 | 32032440 |
+| Vertex | 1000000 | absent | selected | 1 | 0.003740 | 0.011960 | 3.198 | 32010440 | 40030352 |
+| Vertex | 1000000 | absent | selected | 4 | 0.003755 | 0.010032 | 2.672 | 32010672 | 40077704 |
+| Vertex | 1000000 | absent | full | 1 | 0.004954 | 0.013687 | 2.763 | 32010424 | 40030344 |
+| Vertex | 1000000 | absent | full | 4 | 0.004828 | 0.009649 | 1.998 | 32010656 | 40076968 |
+| Vertex | 1000000 | absent | empty | 1 | 0.002850 | 0.008743 | 3.068 | 32010432 | 40030408 |
+| Vertex | 1000000 | absent | empty | 4 | 0.002884 | 0.008224 | 2.852 | 32010664 | 40083576 |
+| Vertex | 1000000 | vec4 | all | 1 | 0.001232 | 0.000655 | 0.532 | 32010176 | 32047256 |
+| Vertex | 1000000 | vec4 | all | 4 | 0.001193 | 0.000691 | 0.579 | 32010408 | 32033752 |
+| Vertex | 1000000 | vec4 | selected | 1 | 0.004293 | 0.012472 | 2.905 | 32010784 | 40030624 |
+| Vertex | 1000000 | vec4 | selected | 4 | 0.004293 | 0.011211 | 2.611 | 32011016 | 40074944 |
+| Vertex | 1000000 | vec4 | full | 1 | 0.005697 | 0.014224 | 2.497 | 32010768 | 40030616 |
+| Vertex | 1000000 | vec4 | full | 4 | 0.005494 | 0.009946 | 1.810 | 32011000 | 40077552 |
+| Vertex | 1000000 | vec4 | empty | 1 | 0.003380 | 0.009220 | 2.728 | 32010776 | 40030616 |
+| Vertex | 1000000 | vec4 | empty | 4 | 0.003370 | 0.008831 | 2.621 | 32011008 | 40083752 |
+| Vertex | 1000000 | wrong_float | all | 1 | 0.001269 | 0.000673 | 0.530 | 32010176 | 32047256 |
+| Vertex | 1000000 | wrong_float | all | 4 | 0.001274 | 0.000675 | 0.530 | 32010408 | 32033752 |
+| Vertex | 1000000 | wrong_float | selected | 1 | 0.003782 | 0.011941 | 3.157 | 32010608 | 40030696 |
+| Vertex | 1000000 | wrong_float | selected | 4 | 0.003734 | 0.010061 | 2.694 | 32010840 | 40077520 |
+| Vertex | 1000000 | wrong_float | full | 1 | 0.005204 | 0.014298 | 2.748 | 32010592 | 40030624 |
+| Vertex | 1000000 | wrong_float | full | 4 | 0.005144 | 0.009661 | 1.878 | 32010824 | 40084160 |
+| Vertex | 1000000 | wrong_float | empty | 1 | 0.003071 | 0.008717 | 2.838 | 32010600 | 40030624 |
+| Vertex | 1000000 | wrong_float | empty | 4 | 0.002876 | 0.008234 | 2.863 | 32010832 | 40083256 |
+| Primitive | 1000000 | absent | all | 1 | 0.001376 | 0.000651 | 0.473 | 32010040 | 32045976 |
+| Primitive | 1000000 | absent | all | 4 | 0.001242 | 0.000669 | 0.539 | 32010272 | 32032472 |
+| Primitive | 1000000 | absent | selected | 1 | 0.003911 | 0.012109 | 3.096 | 32010456 | 40030376 |
+| Primitive | 1000000 | absent | selected | 4 | 0.003873 | 0.009651 | 2.492 | 32010688 | 40078408 |
+| Primitive | 1000000 | absent | full | 1 | 0.004862 | 0.013613 | 2.800 | 32010432 | 40030416 |
+| Primitive | 1000000 | absent | full | 4 | 0.004851 | 0.009999 | 2.061 | 32010664 | 40076544 |
+| Primitive | 1000000 | absent | empty | 1 | 0.003009 | 0.009091 | 3.021 | 32010440 | 40030352 |
+| Primitive | 1000000 | absent | empty | 4 | 0.002882 | 0.008259 | 2.866 | 32010672 | 40082720 |
+| Primitive | 1000000 | vec4 | all | 1 | 0.001174 | 0.000671 | 0.571 | 32010200 | 32047296 |
+| Primitive | 1000000 | vec4 | all | 4 | 0.001426 | 0.000723 | 0.507 | 32010432 | 32033792 |
+| Primitive | 1000000 | vec4 | selected | 1 | 0.005060 | 0.012669 | 2.504 | 32010808 | 40030720 |
+| Primitive | 1000000 | vec4 | selected | 4 | 0.004555 | 0.010465 | 2.298 | 32011040 | 40078040 |
+| Primitive | 1000000 | vec4 | full | 1 | 0.005411 | 0.014509 | 2.681 | 32010784 | 40030696 |
+| Primitive | 1000000 | vec4 | full | 4 | 0.005345 | 0.009973 | 1.866 | 32011016 | 40077024 |
+| Primitive | 1000000 | vec4 | empty | 1 | 0.003335 | 0.009173 | 2.751 | 32010792 | 40030632 |
+| Primitive | 1000000 | vec4 | empty | 4 | 0.003400 | 0.009003 | 2.648 | 32011024 | 40096664 |
+| Primitive | 1000000 | wrong_float | all | 1 | 0.001290 | 0.000728 | 0.564 | 32010200 | 32047296 |
+| Primitive | 1000000 | wrong_float | all | 4 | 0.001233 | 0.000798 | 0.647 | 32010432 | 32033792 |
+| Primitive | 1000000 | wrong_float | selected | 1 | 0.003755 | 0.012142 | 3.234 | 32010632 | 40030664 |
+| Primitive | 1000000 | wrong_float | selected | 4 | 0.003773 | 0.009850 | 2.611 | 32010864 | 40078384 |
+| Primitive | 1000000 | wrong_float | full | 1 | 0.004868 | 0.013834 | 2.842 | 32010608 | 40030640 |
+| Primitive | 1000000 | wrong_float | full | 4 | 0.004900 | 0.009404 | 1.919 | 32010840 | 40077072 |
+| Primitive | 1000000 | wrong_float | empty | 1 | 0.002967 | 0.008902 | 3.000 | 32010616 | 40030640 |
+| Primitive | 1000000 | wrong_float | empty | 4 | 0.002912 | 0.008223 | 2.824 | 32010848 | 40083072 |
+| Detail | 1 | absent | all | 1 | 0.000030 | 0.000039 | 1.302 | 10064 | 26360 |
+| Detail | 1 | absent | all | 4 | 0.000027 | 0.000071 | 2.614 | 10296 | 27248 |
+| Detail | 1 | vec4 | all | 1 | 0.000020 | 0.000050 | 2.500 | 10216 | 27088 |
+| Detail | 1 | vec4 | all | 4 | 0.000025 | 0.000052 | 2.076 | 10448 | 27976 |
+| Detail | 1 | wrong_float | all | 1 | 0.000025 | 0.000044 | 1.762 | 10216 | 27088 |
+| Detail | 1 | wrong_float | all | 4 | 0.000026 | 0.000042 | 1.615 | 10448 | 27976 |

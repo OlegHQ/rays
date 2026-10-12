@@ -197,8 +197,30 @@ let range_type args = match List.find_opt (fun (name,_,_) -> name="type") args w
   | Some (_,_,Some (Param.Text_value "int")) -> Ty.Array Ty.Int
   | Some (_,_,Some (Param.Text_value "float")) -> Ty.Array Ty.Float
   | _ -> fail "E_ARRAY_TYPE" "Array range type is the literal int or float."
+let constant_sample ty count value =
+  let width=match ty with Ty.Vec2->2|Vec3->3|Vec4->4|_->1 in
+  if List.mem ty [Ty.Float;Vec2;Vec3;Vec4] && count>Sys.max_floatarray_length/width then
+    fail "E_ARRAY_RANGE" "Array length is outside native storage bounds.";
+  array_init ty (min count 1) (fun _->value)
+let constant_constructor = function
+  | "array/int" -> Ty.Int,Int 0 | "array/text" -> Ty.Text,Text ""
+  | "array/float" -> Ty.Float,Float 0. | "array/vec3" -> Ty.Vec3,Vec3(0.,0.,0.)
+  | "array/vec4" -> Ty.Vec4,Vec4(0.,0.,0.,0.)
+  | _ -> fail "E_ARRAY_TYPE" "Unknown constant array constructor."
+let constant_descriptor name args =
+  let ty,default=constant_constructor name in
+  if List.exists(fun(key,_)->key<>"count" && key<>"value")args
+    || List.length args<>List.length(List.sort_uniq String.compare(List.map fst args)) then
+    fail "E_ARRAY_TYPE" "Malformed constant array constructor arguments.";
+  let count=match List.assoc_opt "count" args with
+    |Some count->array_count ~limit:(if ty=Ty.Int || ty=Ty.Text then Sys.max_array_length else Sys.max_floatarray_length) name count
+    |None->fail "E_ARRAY_TYPE" "Constant array constructor needs count." in
+  let sample=constant_sample ty count (Option.value ~default(List.assoc_opt "value" args)) in
+  let value=if count=0 then default else array_get sample 0 in
+  Source("$core/constant-array/"^name,Ty.Array ty,["count",Int count;"value",value])
 module Private = struct
   let array_count = array_count
+  let constant_array_descriptor = constant_descriptor
   type reduction = Sum | Minimum | Maximum
   let reduction_name = function Sum -> "sum" | Minimum -> "min" | Maximum -> "max"
   (* ponytail: global reductions scan sequentially; add qualified block extrema
@@ -289,12 +311,9 @@ let reductions =
         ~offsets:(List.assoc "offsets" args) (List.assoc "values" args)})
     [Private.Sum;Minimum;Maximum]
 let constant_array ty count value =
-  let width=match ty with Ty.Vec2->2|Vec3->3|Vec4->4|_->1 in
-  if List.mem ty [Ty.Float;Vec2;Vec3;Vec4] && count>Sys.max_floatarray_length/width then
-    fail "E_ARRAY_RANGE" "Array length is outside native storage bounds.";
   (* Validate one element through the shared packed-storage boundary. Empty
      arrays intentionally do not inspect their unused fill value. *)
-  match array_init ty (min count 1) (fun _->value) with
+  match constant_sample ty count value with
   | Int_array sample -> Int_array(Array.make count (if count=0 then 0 else sample.(0)))
   | Text_array sample -> Text_array(Array.make count (if count=0 then "" else sample.(0)))
   | Float_array sample -> Float_array(Array.make count (if count=0 then 0. else sample.(0)))

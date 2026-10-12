@@ -598,7 +598,14 @@ let prepare ?(fused=true) (program : C.program) =
         (match E.Private.force_reference ?resolve:st.resolve value ~live:st.live with
          |Ok value->value|Error d->V.raise_diagnostic d)
     | Source_descriptor {name;ty;args}->fun st->
-        E.Source(name,ty,List.map(fun(name,index)->name,st.values.(index))args)
+        let args=List.map(fun(name,index)->name,st.values.(index))args in
+        let prefix="$core/constant-array/" in
+        if String.starts_with ~prefix name then
+          let operation=String.sub name(String.length prefix)(String.length name-String.length prefix) in
+          let value=Flow.Op.Private.constant_array_descriptor operation args in
+          if V.ty_of value<>ty then V.fail "E_ARRAY_TYPE" "Constant array descriptor has the wrong declared type.";
+          value
+        else E.Source(name,ty,args)
     | Local n -> fun st -> st.values.(n)
     | Call_index slot -> fun st -> let n=st.calls.(slot) in st.calls.(slot)<-n+1; V.Int n
     | Frame field ->

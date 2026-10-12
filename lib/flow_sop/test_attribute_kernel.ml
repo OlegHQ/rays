@@ -1344,3 +1344,38 @@ let () =
     assert (Flow.Ty.fits (Flow.Value.ty_of result) (op.out (List.map (fun (_,v) -> Flow.Value.ty_of v) args))))
     (List.filter (fun (op : Flow.Op.t) -> op.ctx = Flow.Context.sop) Flow_sop.Operators.all);
   print_endline "Cooked attribute kernel: native/reference/CPU parity, source ownership, cache invalidation, errors and graph edits passed"
+
+let () =
+  List.iter(fun count->
+    let original=Line_geometry.points(Array.init count(fun i->float i,0.,0.)) in
+    let before=geometry_bytes original in
+    List.iter(fun(kind,fill)->
+      let name="array/"^kind in
+      let marker=Flow.Op.Private.constant_array_descriptor name ["count",E.Int count;"value",fill] in
+      let dense=(Option.get(Flow.Op.find name Flow.Context.value)).body ~live:(Frame_input.at_time 0.)
+        ~node:(fun _ _->assert false)["count",E.Int count;"value",fill] in
+      let resolved=Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->None)marker|>flow_ok in
+      assert(Flow.Value.key_of ~residual:E.Private.residual_id resolved=Flow.Value.key_of ~residual:E.Private.residual_id dense);
+      List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+        let actual=Flow_sop.Attribute_kernel.write_constant_source ~grain:97 ~owner:Attribute.Point ~kind
+          "constant" marker original|>flow_ok|>Option.get in
+        let expected=Flow_sop.Attribute_kernel.write ~grain:97 ~owner:Attribute.Point ~kind "constant" dense original|>flow_ok in
+        assert(geometry_bytes actual=geometry_bytes expected);
+        if List.mem kind["float";"vec3";"vec4"]then begin
+          let selection=E.Int_array(Array.init count(fun i->i mod 2)) in
+          let actual=Flow_sop.Attribute_kernel.write_constant_source ~grain:97 ~owner:Attribute.Point ~kind "constant"
+            ~selection ~default:fill marker original|>flow_ok|>Option.get in
+          let expected=Flow_sop.Attribute_kernel.write_selected ~grain:97 ~owner:Attribute.Point ~kind "constant"
+            ~selection ~default:fill ~values:dense original|>flow_ok in
+          assert(geometry_bytes actual=geometry_bytes expected)
+        end;
+        assert(geometry_bytes original=before))) [1;4;8])
+      ["float",E.Float(-0.);"vec3",Vec3(-0.,1.,Float.next_after 0. 1.);
+       "vec4",Vec4(-0.,1.,2.,Float.next_after 0. 1.);"int",Int 9007199254740993;"text",Text "猫😀"])
+    [0;1;32769];
+  List.iter(fun source->match Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->None)source with
+    |Error d->assert(d.code="E_ARRAY_TYPE")|Ok _->assert false)
+    [E.Source("$core/constant-array/array/vec4",Flow.Ty.Array Flow.Ty.Int,["count",Int 1;"value",Vec4(0.,0.,0.,0.)]);
+     Source("$core/constant-array/array/vec4",Flow.Ty.Array Flow.Ty.Vec4,[]);
+     Source("$core/constant-array/missing",Flow.Ty.Array Flow.Ty.Float,["count",Int 1])];
+  print_endline "Constant storage descriptors: full/selected numeric and exact Int/Text, resolver backstop, malformed types, owned bytes at1/4/8"

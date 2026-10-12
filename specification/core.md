@@ -235,6 +235,20 @@ transfer semantics, including NaN payloads and infinities. Computed arrays and
 numeric consumers still materialize and validate their inputs. Both source
 expressions are refused by the current 2D web target.
 
+Canonical constant-array constructors may retain validated count and fill
+metadata for cooked storage consumers. The compiler proves every use reaches
+such a consumer through simple local aliases; mixed numeric, record, state,
+loop or returned uses keep ordinary dense arrays. Validation runs at the
+original constructor statement: authored count and fill expressions keep
+their evaluation order, actual count and storage bounds are checked, and an
+empty array does not validate its unused fill. The writer checks destination
+cardinality and later selection/default arguments at their existing boundaries,
+then creates owned planes without a dense intermediate. Ordinary source
+resolution can still materialize the descriptor with the canonical constructor.
+This does not change Lisp syntax, graph projection, reference evaluation or
+ordinary JavaScript array constructors; the existing cooked-host export refusal
+remains in force.
+
 If native lowering cannot cover a form, it returns that form's name. During
 the staged migration, execution continues through the existing path. If core
 execution fails, the native caller reruns the tree walker to obtain its exact

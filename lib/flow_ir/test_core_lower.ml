@@ -102,3 +102,45 @@ let () =
     assert(result=Ok(E.Record["first",E.Deferred(geometry,(if time>0. then 11 else 99));"after",E.Deferred(geometry,11)]));
     assert(List.mem(geometry,11)calls)) [1.;-1.;1.;-1.];
   print_endline "Core cooked handles: exact type, lazy failures, changing live branches and fresh execution validation"
+
+let () =
+  let storage=Flow.Op.{(Option.get(Flow.Op.find "frame/dt" Flow.Context.value))with
+    name="test/storage";signature={pos=["values",Flow.Ty.Array Flow.Ty.Vec4];opt=[];rest=None;kw=["later",Flow.Ty.Float]};
+    out=(fun _->Flow.Ty.geometry);out_args=None;live=false;arithmetic=None;packed_extension=None;
+    body=(fun ~live:_ ~node:_ args->Flow.Value.Source("test/storage",Flow.Ty.geometry,args))} in
+  let program body=
+    let forms=ok(Flow.Syntax.parse("(workspace constants (graph g :context value (let* [tested "^body^"] 0.)))")) in
+    let ws=match Flow.Workspace.check ~ops:[storage] {Flow.Check.version=1;kinds=[]}forms with
+      |Some ws,[]->ws|_,ds->failwith(String.concat";"(List.map Flow.Diagnostic.to_string ds)) in
+    let value=snd(List.hd(List.assoc["g";"tested"](ok(E.static ~record:true ws)).records)) in
+    match value with E.Residual r->Result.get_ok(Flow_ir.Core_lower.lower ~strict:true r)
+      |_->failwith("Expected constructor residual: "^E.show value) in
+  let count_descriptors program=
+    let count=ref 0 in
+    let rec visit(statement:C.statement)=match statement.node with
+      |Assign(_,Source_descriptor{name;_}) when String.starts_with ~prefix:"$core/constant-array/" name->incr count
+      |If{yes;no;_}->List.iter visit yes;List.iter visit no
+      |_->() in List.iter visit program.C.body; !count in
+  let run program time=
+    let received=ref None in
+    let resolve=function
+      |E.Source("$core/operator",_,args)->received:=List.assoc_opt "values" args;Ok(E.Deferred(Flow.Ty.geometry,1))
+      |_->assert false in
+    let result=Flow_ir.Core_exec.run ~resolve program ~live:(Frame_input.at_time time) in
+    result, !received in
+  let only=program "(let* [colors (array/vec4 (int t) [-0.0 1.0 2.0 3.0]) alias colors] (test/storage (exact alias)))" in
+  assert(count_descriptors only=1);
+  List.iter(fun time->let result,received=run only time in
+    assert(result=Ok(E.Deferred(Flow.Ty.geometry,1)));
+    match received with Some(E.Source(name,Flow.Ty.Array Flow.Ty.Vec4,["count",E.Int n;"value",_]))->
+      assert(name="$core/constant-array/array/vec4" && n=int_of_float time)
+      |value->failwith("Unexpected constant descriptor: "^Option.fold ~none:"missing" ~some:E.show value^"\n"^Format.asprintf "%a" C.pp only)) [0.;1.;32769.];
+  let mixed=program "(let* [colors (array/vec4 (int t) [-0.0 1.0 2.0 3.0])] (test/storage colors :later (float (array/count colors))))" in
+  assert(count_descriptors mixed=0);
+  (match snd(run mixed 3.)with Some(E.Vec4_array data)->assert(Array.length data=12)|_->assert false);
+  let ambiguous=program "(let* [colors (array/vec4 (int t) [-0.0 1.0 2.0 3.0]) alias (if (> t 1.) colors colors)] (test/storage alias))" in
+  assert(count_descriptors ambiguous=0);
+  let early=program "(test/storage (array/vec4 (int t) [-0.0 1.0 2.0 3.0]) :later (if (> t -100.) (error \"E_LATER\" \"later argument\") 0.))" in
+  (match fst(run early (-1.))with Error d->assert(d.code="E_ARRAY_RANGE")|_->assert false);
+  (match fst(run early 1.)with Error d->assert(d.code="E_LATER")|_->assert false);
+  print_endline "Core constant arrays: original-site validation, cooked storage aliases, mixed-use dense path and empty/large metadata"

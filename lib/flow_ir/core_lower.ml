@@ -24,6 +24,51 @@ type draw_context = {
   value : C.source -> E.value -> int;  (* the local holding a constant or residual value *)
   local : Flow.Ty.t -> int; emit : C.source -> C.statement_node -> unit }
 
+let constant_storage (program:C.program) =
+  let uses=Array.make(Array.length program.locals) [] and writes=Array.make(Array.length program.locals) 0 in
+  let use n consumer=uses.(n)<-consumer::uses.(n) in
+  let unsafe n=use n None in
+  let rec scan (statement:C.statement)=match statement.node with
+    |Assign(dst,expression)->incr_write dst; (match expression with
+        |Local src when program.locals.(src)=program.locals.(dst)->use src (Some dst)
+        |Host_source{ty;args;_} when Flow.Ty.is_cooked ty->List.iter(fun(_,src)->
+            match program.locals.(src) with Flow.Ty.Array _->use src (Some (-1))|_->unsafe src)args
+        |Constant _|Frame _|Call_index _|Source _->()
+        |Local src|Field(src,_)->unsafe src
+        |Prim(_,args)|Fields args|Host_source{args;_}|Source_descriptor{args;_}->List.iter(fun(_,src)->unsafe src)args
+        |Vec args|Items args->List.iter unsafe args)
+    |If{condition;yes;no}->unsafe condition;List.iter scan yes;List.iter scan no
+    |Counted{first;last;count;index;item;init;body;_}->List.iter unsafe[first;last];
+        List.iter incr_write[count;index;item];List.iter scan init;List.iter scan body
+    |Iterate{sequence;index;item;body;_}->unsafe sequence;List.iter incr_write[index;item];List.iter scan body
+    |Store{sequence;index;value}->List.iter unsafe[sequence;index;value]
+    |Invoke{args;result;_}->List.iter unsafe args;incr_write result
+    |State_read{result;initial;init;_}->unsafe initial;incr_write result;List.iter scan init
+    |State_peek{found;value;_}->List.iter incr_write[found;value]
+    |State_write{value;_}->unsafe value
+    |Reset_call _->()
+    |Draw draw->(match draw with
+        |Background n->unsafe n|Point{at;ink}->List.iter unsafe[at;ink]
+        |Mark{args;_}|Batch{args;_}|Path{args;_}->List.iter(fun(_,n)->unsafe n)args
+        |Points{positions;ink}->List.iter unsafe[positions;ink]
+        |Text_run{at;text;ink;size}->List.iter unsafe[at;text;ink;size]
+        |Image{at;scale;angle;_}->List.iter unsafe[at;scale;angle]
+        |Push(_,n)->unsafe n|Pop->())
+  and incr_write n=writes.(n)<-writes.(n)+1 in
+  List.iter scan program.body;Array.iter unsafe program.results;
+  Array.iter(fun(slot:C.state_slot)->List.iter(function C.Local_index n->unsafe n|Static_index _->())slot.source.iter)program.state_slots;
+  let rec safe seen n = writes.(n)=1 && not(List.mem n seen) && uses.(n)<>[] &&
+    List.for_all(function Some (-1)->true|Some next->safe(n::seen)next|None->false)uses.(n) in
+  let rec rewrite(statement:C.statement)=let node:C.statement_node=match statement.node with
+    |Assign(dst,Prim((Array_int|Array_text|Array_float|Array_vec3|Array_vec4 as primitive),args)) when safe [] dst->
+        Assign(dst,Source_descriptor{name="$core/constant-array/"^C.primitive_name primitive;ty=program.locals.(dst);args})
+    |If arms->If{arms with yes=List.map rewrite arms.yes;no=List.map rewrite arms.no}
+    |Counted loop->Counted{loop with init=List.map rewrite loop.init;body=List.map rewrite loop.body}
+    |Iterate loop->Iterate{loop with body=List.map rewrite loop.body}
+    |State_read state->State_read{state with init=List.map rewrite state.init}
+    |node->node in {statement with node} in
+  {program with body=List.map rewrite program.body}
+
 (* [draw] writes the program's statements in place of lowering one residual; only a residual
    reached through [value] forces [root], which then stands for the whole evaluation. *)
 let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
@@ -1307,8 +1352,8 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
           let view = E.Private.residual_view root in
           let source = { (source_of_view view) with C.span=Some view.term.form.span } in
           [|ensure body cache source result|] in
-    Ok {C.constants=Array.of_list (List.rev !constants);locals=Array.of_list (List.rev !locals);
-      body=List.rev !body;results;state_slots=Array.of_list (List.rev !slots);regions=Array.of_list !regions;call_slots= !next_call}
+    Ok (constant_storage {C.constants=Array.of_list (List.rev !constants);locals=Array.of_list (List.rev !locals);
+      body=List.rev !body;results;state_slots=Array.of_list (List.rev !slots);regions=Array.of_list !regions;call_slots= !next_call})
   with Unsupported name -> Error name
     | V.Fail _ | V.Diagnostic_fail _ | Not_found | Invalid_argument _ | Failure _ -> Error "constant"
 
