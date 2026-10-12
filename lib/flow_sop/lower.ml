@@ -251,10 +251,24 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(k
                   if Sop.Context.cancelled context then error "E_CANCELLED" "Attribute kernel cancelled." else
                   let owner,kind=attribute_options args in
                   let target=Option.get(geometry id) in
-                  Result.map(fun result->Option.map(fun geometry->
+                  let materialized=match values with
+                    |E.Float_array _|Int_array _|Text_array _|Vec2_array _|Vec3_array _|Vec4_array _->true
+                    |Record fields->(match List.assoc_opt "offsets" fields,List.assoc_opt "values" fields with
+                        |Some(E.Int_array _),Some(E.Float_array _|Int_array _)->true|_->false)
+                    |_->false in
+                  Result.bind(Attribute_kernel.write_source ~geometry ~owner ~kind name values target)(fun result->
+                  let result=match result with Some _->Ok result|None when materialized->
+                    (* The former checked-call input boundary validated before
+                       the writer checked destination cardinality. *)
+                    Flow.Value.validate values;
+                    Result.map Option.some(Attribute_kernel.write ~grain:(Sop.Context.grain context)
+                      ~owner ~kind name values target)
+                    |None->Ok None in
+                  Result.bind result(fun result->if Sop.Context.cancelled context then
+                      error "E_CANCELLED" "Attribute kernel cancelled." else
+                  Ok(Option.map(fun geometry->
                     let output=ok(snapshot Ty.geometry id) in
-                    register_output Ty.geometry {output with payload=Sop.Payload.Geometry geometry;instances=None})result)
-                    (Attribute_kernel.write_source ~geometry ~owner ~kind name values target)
+                    register_output Ty.geometry {output with payload=Sop.Payload.Geometry geometry;instances=None})result)))
               |_->Ok None in
             Result.bind borrowed(function Some result->Ok result|None->
             let rec deferred=function

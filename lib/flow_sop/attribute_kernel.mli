@@ -21,6 +21,11 @@ val write_source : geometry:(int -> Rdk.Geometry.t option) ->
 (** Share an unchanged typed attribute query's immutable storage after checking
     owner/type/cardinality. [None] retains the ordinary computed-array path. *)
 
+val write : grain:int -> owner:Rdk.Attribute.owner -> kind:string -> string ->
+  Flow.Eval.value -> Rdk.Geometry.t -> (Rdk.Geometry.t, Flow.Diagnostic.t) result
+(** Write concrete typed arrays into fresh owned storage, checking owner count,
+    storage layout and finite numeric values. *)
+
 val prepare : ?profile:Flow_ir.Profile.t -> ?strict:bool -> ?approx:Flow.Workspace.Paths.t -> ?sink:Flow_ir.sink ->
   sources:int list -> Sop.Node.t list -> Flow.Eval.value ->
   (Flow_ir.Executor.program, Flow.Diagnostic.t) result

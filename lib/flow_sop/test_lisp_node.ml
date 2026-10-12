@@ -60,6 +60,60 @@ let () = with_session (fun session ->
   check (Rdk_test_support.geometry_bytes (cook session node) = Rdk_test_support.geometry_bytes empty)
     "empty geometry changed through a Lisp map")
 
+let () =
+  let original=Rdk.Line_geometry.points[|0.,-0.,2.;1.,3.,4.|] in
+  let before=Rdk_test_support.geometry_bytes original in
+  let transforms=[|Rays_math.Mat4.translation(Rays_math.Vec3.create 1. 0. 0.);
+    Rays_math.Mat4.translation(Rays_math.Vec3.create 3. 0. 0.)|] in
+  let input=Sop.Node.Private.make_geometry ~operation:"test.materialized_input" ~version:1
+    ~parameters:"" ~cook_mode:Sop.Node.Generator ~dependencies:Sop.Context.Dependencies.static ~inputs:[||]
+    (fun ~node_id _ _->Ok Sop.Node.Private.{geometry=original;instances=Some transforms;
+      diagnostics=[Sop.Diagnostic.{severity=Warning;code="W_SOURCE";message="source retained";
+        node={node_id;label="source";operation="test.materialized_input"}}]}) in
+  let body={|(let* [data (exact (map (fn [p] (+ p [0.5 -0.0 0.0])) (sop/attr geo :P)))
+                      copied (sop/with_attr geo :copied data)
+                      rows {:offsets (array/range (int/add (sop/count copied :points) 1) :type int)
+                            :values (array/float (sop/count copied :points) 0.25)}]
+                 (sop/with_attr copied :rows rows :type float_array))|} in
+  let node body=Lisp_sop.workspace_node ~with_:["src",input](Printf.sprintf
+    "(workspace direct_write (defnode sop/direct_write [(geo : geometry)] (if (int/gt (sop/count geo :points) 0) %s geo)) (graph g :context sop (sop/direct_write (sop/ext_src))))" body) in
+  let actual=node body in
+  let expected=Rdk.Instance_copy.materialize_instances ~transforms original |>Result.get_ok in
+  with_session(fun session->List.iter(fun domains->
+    Sop.Session.clear session;
+    let context=ok(Sop.Context.create ~domains ~grain:97 ()) in
+    let output=Sop.Session.cook session ~context actual |>Result.get_ok in
+    let geometry=Sop.Payload.geometry output.payload |>Result.get_ok in
+    check(output.instances=None) "Materialized write retained already-expanded instances";
+    check(List.filter(fun(d:Sop.Diagnostic.t)->d.code="W_SOURCE")output.diagnostics|>List.length=1)
+      "Materialized write lost or duplicated source diagnostics";
+    check(Rdk.Geometry.point_count geometry=Rdk.Geometry.point_count expected)
+      "Materialized write lost source instance cardinality";
+    let storage name=Rdk.Geometry.find_attribute ~owner:Rdk.Attribute.Point name geometry|>Option.get
+      |>Rdk.Attribute.Private.storage in
+    (match storage "copied" with Rdk.Attribute.Float3 data->
+      check(data!=Rdk.Geometry.positions geometry) "Computed write borrowed its input storage";
+      for i=0 to Rdk.Geometry.point_count geometry-1 do
+        let x,y,z=Rdk.Packed.Float3.get(Rdk.Geometry.positions expected)i in
+        check(Rdk.Packed.Float3.get data i=(x+.0.5,y+.(-0.),z+.0.)) "Computed write changed numeric values"
+      done |_->failwith "Materialized write lost tuple storage");
+    (match storage "rows" with Rdk.Attribute.Float_array data->
+      let data=Rdk.Packed.Float_array.Private.view data in
+      check(data.offsets=Array.init 5 Fun.id && data.values=Array.make 4 0.25)
+        "Materialized CSR write changed row layout"|_->failwith "Materialized write lost CSR storage");
+    List.iter(fun(body,code)->match Sop.Session.cook session ~context(node body) with
+      |Error error->check(error.code=code) "Materialized write changed producer/count error precedence"
+      |Ok _->failwith "Malformed materialized write succeeded")
+      ["(sop/with_attr geo :bad (array/float (int/add (sop/count geo :points) 1) 0.5) :type float)","E_ATTR_COUNT";
+       "(sop/with_attr geo :bad (array/float (int/add (sop/count geo :points) 1) (exp 1000.0)) :type float)","E_NONFINITE"];
+    let token=Sop.Context.Cancel.create() in Sop.Context.Cancel.cancel token;
+    let cancelled=ok(Sop.Context.create ~domains ~cancel:token ()) in
+    (match Sop.Session.cook session ~context:cancelled actual with
+     |Error error->check(error.code="cancelled" || error.code="E_CANCELLED") "Materialized write lost cancellation"
+     |Ok _->failwith "Cancelled materialized write succeeded")) [1;8]);
+  check(before=Rdk_test_support.geometry_bytes original) "Materialized writes mutated their input";
+  print_endline "Cooked materialized writes: owned tuple/CSR storage, expanded instances, diagnostics, producer/count errors and cancellation"
+
 let () = with_session(fun session->
   let node=lower {|(workspace selected_error
     (defnode sop/selected_error [(geo : geometry)]
