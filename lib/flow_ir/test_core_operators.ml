@@ -10,6 +10,12 @@ let rec same (a : E.value) (b : E.value) = match a,b with
 (* Every value-context scalar operator the closure compiler accepts, with at least one
    live expression. The coverage check below fails when an operator is added without a case. *)
 let cases = [
+  "tan","(tan t)"; "atan2","(atan2 t -0.3)";
+  "asin","(asin (* t 0.1))"; "acos","(acos (* t 0.1))";
+  "log","(log (+ t 4.0))"; "sign","(sign t)"; "hypot","(hypot t 3.0)";
+  "dot","(dot [t 0.3 -0.2] [0.7 -0.2 1.1])";
+  "cross","(cross [t 0.3 -0.2] [0.7 -0.2 1.1])";
+  "normalize","(normalize [t 0.3 -0.2])";
   "frame/input","(count (get (frame/input) :keys))";
   "frame/dt","(+ (frame/dt) t)"; "frame/index","(* t (frame/index))";
   "frame/width","(* t (frame/width))"; "frame/height","(* t (frame/height))";
@@ -19,6 +25,10 @@ let cases = [
   "key/down","(if (key/down \"space\") t 0.)"; "key/down","(if (key/down \"zzz\") t 0.)";
   "array/range","(array/nth (array/range 8) (+ 1 (int t)))";
   "array/float","(array/nth (array/float 4 t) 1)";
+  "array/int","(array/nth (array/int 4 (frame/index)) 1)";
+  "array/text","(array/nth (array/text 4 (if (> t 0.) \"猫\" \"😀\")) 1)";
+  "array/text","(array/nth (array/text 4 (if (> t 0.) \"a\" \"b\")) 1)";
+  "array/text","(+ t (array/count (array/text 0)))";
   "array/vec3","(array/nth (array/vec3 4 [t 1 2]) 2)";
   "array/count","(array/count (array/float (+ 3 (int t))))";
   "array/nth","(array/nth (array/range 8) (+ 2 (int t)))";
@@ -28,6 +38,16 @@ let cases = [
   "array/sum","(+ t (array/sum (array/float 0)))";
   "int/mul","(int/mul (int t) 3)"; "int/div","(int/div (int t) 2)"; "int/mod","(int/mod (int (* t 7)) 3)";
   "int/and","(int/and (int t) 6)"; "int/xor","(int/xor (int t) 5)";
+  "int/add","(int/add (frame/index) 9007199254740993)";
+  "int/sub","(int/sub (frame/index) 9007199254740993)";
+  "int/or","(int/or (frame/index) 9007199254740993)";
+  "int/shl","(int/shl (frame/index) 31)";
+  "int/shr","(int/shr (int/sub (frame/index) 9007199254740993) 31)";
+  "int/lt","(int/lt (frame/index) 9007199254740993)";
+  "int/le","(int/le (frame/index) 9007199254740993)";
+  "int/gt","(int/gt (frame/index) 9007199254740993)";
+  "int/ge","(int/ge (frame/index) 9007199254740993)";
+  "int/eq","(int/eq (frame/index) 9007199254740993)";
   "length","(length [t 1 2])"; "equal?","(equal? t 1.)"; "exp","(exp t)"; "exact","(exact (+ t 1))";
   "+","(+ t 1)"; "-","(- t 1)"; "*","(* t 3)"; "/","(/ t 3)"; "mod","(mod t 0.7)"; "pow","(pow t 2)";
   "min","(min t 1)"; "max","(max t 1)"; "sin","(sin t)"; "cos","(cos t)"; "sqrt","(sqrt (+ t 1))";
@@ -76,3 +96,52 @@ let () =
     | _ -> static := body :: !static) cases;
   if !static<>[] then failwith ("Not live: " ^ String.concat " | " !static);
   Printf.printf "Core operators: every scalar value operator lowers and matches the walker bit for bit (%d cases)\n" !n
+
+let () =
+  let live_value body =
+    let source="(workspace text_arrays (graph g :context host (if (> t -1000.) " ^ body ^ " " ^ body ^ ")))" in
+    let ws=match Flow.Workspace.check {Flow.Check.version=1;kinds=[]} (ok(Flow.Syntax.parse source)) with
+      | Some ws,[]->ws | _,ds->failwith(String.concat "\n"(List.map Flow.Diagnostic.to_string ds)) in
+    List.assoc "g" (ok(E.static ws)).results in
+  List.iter (fun body ->
+    let value=live_value body in
+    let residual=match value with E.Residual r->r|_->failwith "live text result expected" in
+    let core=match I.Core_lower.lower ~strict:true residual with
+      |Ok core->core|Error form->failwith(body^": strict Core refused "^form) in
+    assert(Array.length core.regions=0);
+    let program=ok(I.Executor.compile ~strict:true value) in
+    List.iter(fun time->
+      let live=Frame_input.at_time time in
+      let expected=ok(E.Private.force_reference value ~live) in
+      assert(ok(I.Core_exec.run core ~live)=expected);
+      List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+        assert(ok(I.Executor.force ~strict:true program ~live)=expected))) [1;8]) [-1.;0.;1.])
+    ["(map (fn [x] (if (> t 0.) x \"😀\")) (array/text 5001 \"猫\"))";
+     "(for [x (array/text 5001 \"猫\")] (if (> t 0.) x \"😀\"))";
+     "(scan [a \"\"] [x (array/text 5001 \"猫\")] (if (> t 0.) x \"😀\"))";
+     "(for [x (array/text 2 \"猫\") y (array/text 2501 \"😀\")] :skip [5001] (if (> t 0.) x y))";
+     "(scan [a \"seed\"] [x (array/text 2 \"猫\") y (array/text 2501 \"😀\")] (if (> t 0.) x y))";
+     "(for [x (array/text 0) y (array/text -1)] (if (> t 0.) x y))";
+     "(for [x (array/text 2) y (array/text 0)] (if (> t 0.) x y))";
+     "(scan [a \"seed\"] [x (array/text 0) y (array/text -1)] (if (> t 0.) x y))";
+     "(fold [a 0] [x (array/text 5001)] (int/add a (if (> t 0.) 1 2)))";
+     "(map (fn [x] (if (> t 0.) x \"😀\")) (array/text 0))"];
+  let dependent=live_value
+    "(for [x (array/text 2 \"猫\") y (array/text (if (equal? x \"猫\") 2501 0) \"😀\")] (if (> t 0.) x y))" in
+  let residual=match dependent with E.Residual r->r|_->assert false in
+  assert(I.Core_lower.lower ~strict:true residual=Error "text_collect_dependent_clause");
+  assert(Result.is_error(I.Executor.compile ~strict:true dependent));
+  assert(ok(E.Private.force_reference dependent ~live:(Frame_input.at_time 1.))
+    =E.Text_array(Array.make 5002 "猫"));
+  let nested_numeric=live_value
+    "(map (fn [x] (str (array/sum (map (fn [y] (value/rand y t)) (array/float 2))))) (array/text 2))" in
+  let residual=match nested_numeric with E.Residual r->r|_->assert false in
+  (match I.Core_lower.lower ~strict:true residual with
+   | Ok program->assert(Array.length program.regions>0)
+   | Error form->failwith("Nested numeric Text body refused as "^form));
+  (match I.Executor.compile ~strict:true nested_numeric with
+   | Error diagnostic->assert(diagnostic.Flow.Diagnostic.code="E_KERNEL_FORM")
+   | Ok _->failwith "Unsupported numeric producer inside Text map qualified");
+  assert(match ok(E.Private.force_reference nested_numeric ~live:(Frame_input.at_time 1.)) with
+    |E.Text_array values->Array.length values=2 |_->false);
+  print_endline "Text arrays: strict structured Core and Executor match reference beyond 4,096 at one/eight domains; dependent collecting clauses refuse honestly"

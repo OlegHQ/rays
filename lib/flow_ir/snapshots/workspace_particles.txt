@@ -2,10 +2,10 @@ program
   r0 = Input 0 1 0
   r1 = Const 0x1.999999999999ap-4
   r2 = Binary Mul 0 1
-  r3 = Const 0x1.ep+4
-  r4 = Const 0x1.18p+6
-  r5 = Binary Mod 0 4
-  r6 = Binary Add 3 5
+  r3 = Const 0x1.18p+6
+  r4 = Binary Mod 0 3
+  r5 = Const 0x1.ep+4
+  r6 = Binary Add 5 4
   r7 = Unary Cos 2
   r8 = Binary Mul 7 6
   r9 = Unary Sin 2
@@ -50,19 +50,24 @@ program
   r5 = Input 1 3 2
   r6 = Const 0x0p+0
   r7 = Binary Lt 0 6
-  r8 = Frame "frame/width"
-  r9 = Binary Ge 0 8
-  r10 = Binary Or 7 9
-  r11 = Binary Sub 6 3
-  r12 = Select 10 11 3
-  r13 = Binary Lt 1 6
-  r14 = Frame "frame/height"
-  r15 = Binary Ge 1 14
-  r16 = Binary Or 13 15
-  r17 = Binary Sub 6 4
-  r18 = Select 16 17 4
+  r8 = Int_frame "frame/width"
+  r9 = Convert float 8
+  r10 = Binary Ge 0 9
+  r11 = Binary Or 7 10
+  r12 = Guarded 11:true (Const 0x0p+0)
+  r13 = Guarded 11:true (Binary Sub 12 3)
+  r14 = Select 11 13 3
+  r15 = Binary Lt 1 6
+  r16 = Int_frame "frame/height"
+  r17 = Convert float 16
+  r18 = Binary Ge 1 17
+  r19 = Binary Or 15 18
+  r20 = Guarded 19:true (Const 0x0p+0)
+  r21 = Guarded 19:true (Binary Sub 20 4)
+  r22 = Select 19 21 4
   widths [3;3]
-  output [12;18;6]
+  output [14;22;6]
   uniform_widths []
   collecting true
+  gpu_refusal E_GPU_FORM "Integer sources, uniforms and instructions stay on the CPU."
 

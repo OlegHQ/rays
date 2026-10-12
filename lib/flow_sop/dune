@@ -17,6 +17,17 @@
  (libraries flow_sop flow flow_graph sop rdk))
 
 (test
+ (name test_math_helpers)
+ (modules test_math_helpers)
+ (deps nodes/prelude.rays)
+ (libraries flow_sop flow rays_math))
+
+(test
+ (name test_math_kernel)
+ (modules test_math_kernel)
+ (libraries flow_sop flow flow_ir frame_input rays_math))
+
+(test
  (name test_lisp_node)
  (modules test_lisp_node)
  (libraries flow flow_sop sop sop_catalog rdk rdk_test_support lisp_sop))
@@ -51,6 +62,12 @@
  (name test_noise_kernel)
  (modules test_noise_kernel)
  (libraries flow flow_ir flow_sop rdk rdk_test_support))
+
+(test
+ (name test_rand_at)
+ (modules test_rand_at)
+ (deps nodes/prelude.rays)
+ (libraries flow flow_ir flow_sop flow_web rays_math))
 
 ; Tests that need no editor: they link the catalog and the document contexts,
 ; not rays_editor. They read their fixtures relative to test/, where they ran

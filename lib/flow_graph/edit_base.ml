@@ -503,6 +503,7 @@ let rec default_for ?(fresh = Fun.id) (ty : Flow.Ty.t) label = match ty with
   | Color -> Some (mk (S.Str "#285f77"))
   | Text -> Some (mk (S.Str (if label = "color" then "#285f77" else "text")))
   | Array (Float | Any) -> Some (call "array/float" [mk (S.Num "4")])
+  | Array Text -> Some (call "array/text" [mk (S.Num "4")])
   | Array Vec3 -> Some (call "array/vec3" [mk (S.Num "4")])
   | Named _ -> Flow.Ty.default ty
   | Fn (Some signature) -> Option.map (fun body ->

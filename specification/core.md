@@ -6,7 +6,7 @@ checked workspace and the tree walker remain the language contract and the
 native exactness oracle. A target prints or executes this core; it does not
 walk `Workspace.term`, expand macros, or interpret Lisp operator names.
 
-The frame primitive inventory below has **54 entries**. Region instruction
+The frame primitive inventory below has **73 entries**. Region instruction
 constructors, structured control, drawing statements and host intrinsics are
 listed separately: none is a hidden primitive in a target's numeric runtime.
 The P0.R review must confirm this inventory before product implementation.
@@ -111,6 +111,7 @@ by their owner, on the initial domain or browser main thread.
 | Record | Ordered, statically named fields. Nested records flatten to ordered field locals; layout retains names, nesting and field order for reconstruction, `show` and equality. |
 | List | An element layout and a length no greater than 4,096; a static length or a bounded dynamic length. Elements may contain records, text and other bounded lists. |
 | Packed array | Contiguous numeric storage, element width 1, 2, 3 or 4 and an element count. Counts may exceed 4,096. Lists and packed arrays remain different value kinds. |
+| Text array | Owned string storage with an element count that may exceed 4,096. Strings retain exact decoded contents. Structured frame operations handle this storage; numeric regions and shaders refuse it. |
 | Image | A resource id and its description or producer, resolved by the host; no pixels or GPU handle are smuggled into a scalar value. |
 | Drawing | An ordered sequence of drawing entries, possibly grouped by a transform. It is not a state value or a numeric region value. |
 | Effect/sample | A typed intrinsic description, legal only when the target implements that intrinsic. |
@@ -199,12 +200,33 @@ a graph instance with its checked overrides/defaults and keeps the evaluator's
 sharing and instance identity. Neither graph references nor macros become a
 second target-side interpreter.
 
+Native hosts may capture a typed unresolved `Source` in a structured expression.
+Its resolver runs only when the expression is reached, checks the declared
+result type and rejects another unresolved marker. Geometry handles remain
+private immutable host captures; this expression is refused by the 2D web target.
+
 If native lowering cannot cover a form, it returns that form's name. During
 the staged migration, execution continues through the existing path. If core
 execution fails, the native caller reruns the tree walker to obtain its exact
 diagnostic and span, with state restored before retry. Web export has no tree
 walker fallback: an unsupported reached form is a source-located export
 refusal and a non-zero exit, never a missing entry or a silent no-op.
+Strict authored node execution accepts only compiled regions and structured
+control whose numeric work compiles; executor refusals and failures propagate
+without a reference retry. Packed arrays retain their native storage bounds
+when iterated by structured Core; the 4,096 bound applies to lists.
+Core lowering can emit a region whose input is another residual producer. Its
+caller must qualify those region sources and captured uniforms before accepting
+strict execution; the Executor applies the same recursive check to regions inside
+structured Core and to top-level packed kernels. A text consumer cannot bypass
+qualification of a nested numeric producer.
+Text-array maps, filters and collecting loops execute as structured Core, including
+empty inputs and multiple invariant array clauses. The builder checks the product
+of clause counts before allocation and leaves inner collections unevaluated when
+an outer clause is empty. A dependent inner collecting clause requires a growing
+builder and currently returns `text_collect_dependent_clause` from Core lowering;
+the reference evaluator retains its ordinary nested-loop semantics. Strict mode
+propagates that refusal instead of selecting a fallback.
 
 ## Frame primitive inventory
 
@@ -218,17 +240,21 @@ unlisted calls in `prims.js`.
 | --- | ---: | --- |
 | `+`, `-`, `*`, `/`, `mod`, `pow`, `min`, `max` | 8 | Numeric arithmetic with scalar/vector broadcasting and the source result tags. `/` and `mod` return zero for a zero divisor; `mod` is the double-remainder rule; `pow` uses the absolute base. Integer results of ordinary arithmetic pass through the double arithmetic and integer conversion boundary. |
 | `remainder` | 1 | Raw floating remainder with the dividend's sign; used by color lowering. It must not add the divisor or repeat the remainder calculation as `mod` does, since that changes double rounding. A non-finite result fails with the operation's span. |
-| `sin`, `cos`, `sqrt`, `exp`, `abs` | 5 | Scalar math; `sqrt` takes the absolute input. `abs` retains an Int input's tag. `sin`, `cos` and `exp` apply the source finite check; `sqrt`, `float` and `abs` of a Float have none. |
+| `sin`, `cos`, `tan`, `asin`, `acos`, `sqrt`, `exp`, `log`, `abs`, `sign`, `atan2`, `hypot` | 12 | Scalar math with named finite-result checks, except the existing `sqrt(abs(x))` and floating `abs` contracts. `abs` retains an Int input's tag. `atan2(a,b)` takes the ordinate first; `hypot` preserves native overflow/underflow-safe length calculation. `sign` returns -1 or +1 for a nonzero input and preserves either signed zero. |
 | `floor`, `ceil`, `round`, `int`, `float` | 5 | Numeric conversion; explicit `int` truncates. `round` uses the source explicit-round rule, while type coercion to Int uses the separate coercion rule. |
 | `<`, `<=`, `>`, `>=`, `=`, `and`, `or`, `not` | 8 | Numeric comparisons and numeric boolean truth. These are not generic string/array comparisons, nor JavaScript truthiness. |
-| `int/mul`, `int/div`, `int/mod`, `int/and`, `int/xor` | 5 | Signed integer operations, including native integer overflow, division and remainder; zero integer divisor is `E_RANGE`. No 32-bit JavaScript bitwise truncation. |
+| `int/add`, `int/sub`, `int/mul`, `int/div`, `int/mod`, `int/and`, `int/or`, `int/xor`, `int/shl`, `int/shr` | 10 | Exact signed 63-bit integer operations, including wrapping overflow, division and remainder, bitwise operations and checked shifts; zero integer divisor is `E_RANGE`. No 32-bit JavaScript bitwise truncation. |
+| `int/lt`, `int/le`, `int/gt`, `int/ge`, `int/eq` | 5 | Exact integer comparisons without a floating conversion. |
 | `equal?`, `show`, `text/concat` | 3 | Typed structural equality, source value display, and ordered text concatenation. `show` has display formatting, distinct from workspace source-number printing. |
-| `sequence/length`, `sequence/get`, `sequence/build`, `sequence/slice`, `sequence/concat` | 5 | Element count, checked list element access, fresh bounded-list storage, checked copying slice, and ordered concatenation with the 4,096-element cap. Element layouts and nested record field order are explicit. Given an element width of 1 to 4, `sequence/build` allocates packed storage with no list cap, filled by the same ordered stores (the walker's `array_init` checks per element); that is how a packed `map` or `filter` whose body a region refuses is built, so the inventory stays at 54. |
-| `array/range`, `array/float`, `array/vec3`, `array/nth`, `array/count`, `array/slice`, `array/concat` | 7 | The existing packed-array construction, indexing, length and copying operations. Count is in elements, not components; all products and offsets are checked before allocation or access. An array is not converted to a list. |
+| `sequence/length`, `sequence/get`, `sequence/build`, `sequence/slice`, `sequence/concat` | 5 | Element count, checked list element access, fresh bounded-list storage, checked copying slice, and ordered concatenation with the 4,096-element cap. Element layouts and nested record field order are explicit. Given an element width of 1 to 4, `sequence/build` allocates packed storage with no list cap, filled by the same ordered stores (the walker's `array_init` checks per element). Integer and text builders require width one and explicit type `int` or `text`. Text builders store strings and do not create packed numeric storage. |
+| `array/range`, `array/int`, `array/text`, `array/float`, `array/vec3`, `array/nth`, `array/count`, `array/slice`, `array/concat` | 9 | Typed-array construction, indexing, length and copying operations, including exact integer and decoded text storage. Range defaults to float and accepts the literal type `int`. Count is in elements, not components; all products and offsets are checked before allocation or access. An array is not converted to a list. |
 | `value/rand`, `noise3`, `color/parse`, `color/byte` | 4 | The deterministic keyed hash, seeded Perlin/fBm sample, source drawing-color decoding, and channel conversion. Static noise permutations become data; dynamic-seed caches are bounded to 16 entries. Color conversion preserves native byte quantization. |
 | `coerce`, `truthy`, `fail` | 3 | Explicit checked source-value coercion, condition truth conversion, and a diagnostic with a code, message and source span. Coercion preserves record order and list element joins. |
 
-Total: 8 + 1 + 5 + 5 + 8 + 5 + 3 + 5 + 7 + 4 + 3 = **54**.
+Total: 8 + 1 + 12 + 5 + 8 + 10 + 5 + 3 + 5 + 9 + 4 + 3 = **73**.
+`array/sum` remains an ordered typed reduction in structured Core, using exact
+wrapping integer addition for integer arrays; its JavaScript twin is checked
+alongside the intrinsic inventory without adding a Core primitive.
 The numeric, list and text models below fix the behavior of these leaves;
 P0.R reviews them with the inventory.
 
@@ -296,24 +322,58 @@ on objects, strings and lists.
 | Ordinary `mod` | If the divisor is zero, positive zero; otherwise `remainder(remainder(a,b) + b,b)`, in that order. This is not integer remainder and is not one remainder calculation. |
 | Ordinary `pow` | `pow(abs(a),b)` with double operands; reject a non-finite result; Float result even for two Int inputs. |
 | Vector arithmetic | Matching-width vectors apply the scalar floating operation in component order. A scalar numeric operand broadcasts to that width. Every result component is finite; result is a vector, not Int components. The checker rejects mismatched widths. |
-| Scalar `sin`, `cos`, `exp` | Number conversion followed by scalar math and the named finite-result check; Float result. |
+| Scalar `sin`, `cos`, `tan`, `asin`, `acos`, `exp`, `log` | Number conversion followed by scalar math and the named finite-result check; Float result. Invalid inverse-trigonometric or logarithmic domains and overflowing results fail with `E_NONFINITE`. |
+| Scalar `atan2(a,b)` | Convert both inputs to doubles, compute `atan2(a,b)` in ordinate/abscissa order, and check the finite result. Quadrants and signed-zero arguments retain native semantics. |
+| Scalar `hypot(a,b)` | Convert both inputs to doubles and use native `Float.hypot`, with a finite-result check. Squaring and summing the inputs is not an equivalent implementation: finite large lengths must not overflow early, and subnormal lengths must not collapse to zero. CPU regions support it; Metal and WGSL report `E_GPU_FORM` until an equivalent target implementation is available. |
+| Scalar `sign(x)` | Number conversion; return Float -1 for a negative input, +1 for a positive input, and the original zero otherwise, followed by the named finite-result check. |
 | Scalar `sqrt` | Number conversion followed by `sqrt(abs(x))`; Float result. There is no finite check at frame level: `sqrt(NaN)` is NaN and `sqrt(inf)` is `inf`. Packed instructions additionally require every numeric result to remain finite. |
 | Scalar `float` | Number conversion only. No finite check: NaN and the infinities pass through. |
 | Scalar `abs` | An Int input uses signed integer absolute value, retaining the native wrap at minimum Int (`abs(min_int) = min_int`); all other numeric inputs use floating absolute value and yield Float. A Float is not finite-checked: `abs(-inf)` is `inf`, `abs(NaN)` is NaN. |
 | `<`, `<=`, `>`, `>=`, `=` | Compare converted doubles, even for two Int inputs. In particular, numeric `=` may equate distinct large integers after double rounding; structural `equal?` does not. |
 | `and`, `or`, `not` | Operands have already evaluated in authored order. Truth-convert operands as the source operator does and produce Bool. `and`/`or` may short-circuit the second truth conversion, but never the evaluation of the second operand expression. |
 
+The vec3 operators `dot`, `cross` and `normalize` expand to existing numeric
+instructions. Dot accumulates three separately rounded products left to right;
+cross uses the ordered pair of products and subtraction for each component.
+Normalize computes the square root of that dot product, returns positive zero
+components for a zero length, and otherwise multiplies by the reciprocal length.
+The generic language operator rejects nonfinite intermediate lengths. Port
+helpers with a different native normalization policy preserve that policy
+explicitly instead of changing this operator's meaning.
+
+The shared SOP prelude represents a matrix as the ordered record
+`{:r0 vec4 :r1 vec4 :r2 vec4 :r3 vec4}`: row-major storage, column vectors,
+right-to-left composition. Its matrix and quaternion helpers preserve
+`Rays_math` operation order. Matrix multiplication includes the initial
+positive-zero accumulator. Matrix inverse uses first-tie partial pivoting and
+the native `1e-12` singular threshold, returning an empty list for singular or
+a singleton matrix list for success. Point transforms leave the raw result
+when the homogeneous divisor's magnitude is at most `1e-12`; direction
+transforms omit translation. Quaternion normalization uses direct division
+and returns identity for lengths at most `1e-12`, distinct from vec3's
+zero-only reciprocal multiplication.
+
+Prelude `float_floor` and `float_ceil` return floating results without changing
+the Int contracts of `floor` and `ceil`. Magnitudes at least `2^52` are already
+integral and bypass conversion; the unselected conversion input is guarded.
+Zero inputs retain their sign, including negative zero from ceiling a small
+negative value.
+
 For an `int/*` operand, an existing Int is used directly; a Float or Bool
-passes through `Value.int_of`, not explicit `int` truncation. The five
+passes through `Value.int_of`, not explicit `int` truncation. Integer
 operations then work in the signed 63-bit domain:
 
 | Integer primitive | Behavior |
 | --- | --- |
+| `int/add(a,b)`, `int/sub(a,b)` | Exact addition/subtraction followed by signed 63-bit wrapping. |
 | `int/mul(a,b)` | Multiply exactly, keep the low 63 bits, interpret those bits as signed. `int/mul(max_int,2) = -2`. |
 | `int/div(a,b)` | Signed quotient truncated toward zero. Zero divisor is `E_RANGE` ("Integer division by zero."). The overflow pair `min_int / -1` wraps to `min_int`. |
 | `int/mod(a,b)` | Signed remainder `a - trunc(a/b)*b`, with the dividend's sign. Zero divisor has the same `E_RANGE`; `-7 mod 3 = -1`, `7 mod -3 = 1`, and `min_int mod -1 = 0`. |
 | `int/and(a,b)` | Bitwise AND of their 63-bit two's-complement representations, then signed interpretation. |
+| `int/or(a,b)` | Bitwise OR of those representations, then signed interpretation. |
 | `int/xor(a,b)` | Bitwise XOR of those representations, then signed interpretation. `min_int xor max_int = -1`. |
+| `int/shl(a,b)`, `int/shr(a,b)` | Checked shift count 0 through 62; left shift wraps and right shift fills with zero bits, matching native logical `lsr`. Other counts produce `E_RANGE`. |
+| `int/lt`, `int/le`, `int/gt`, `int/ge`, `int/eq` | Compare signed integer operands exactly and return Bool. |
 
 The JavaScript target represents Int as `BigInt` and Float as `Number`.
 Integer literals are emitted as decimal BigInt literals, never parsed through
@@ -449,11 +509,13 @@ a count just below the ceiling but above that quotient fails with `E_ARRAY_RANGE
 
 | Leaf | Behavior |
 | --- | --- |
-| `array/range(count)` | Fresh width-1 storage containing Float values 0 through count-1. |
+| `array/range(count :type float\|int)` | Fresh width-1 storage containing values 0 through count-1. Default type is Float; explicit `int` retains exact integer storage. |
+| `array/int(count,value)` | Fresh exact integer storage, with Int zero when value is omitted. Values use the ordinary Int coercion boundary and must then be Int. |
+| `array/text(count,value)` | Fresh typed string-array storage, with empty text when value is omitted. Count/get/slice/concat preserve exact decoded string contents and copying ownership. Text array maps use structured compiled loops, outside the numeric region tier and bounded-list cap. |
 | `array/float(count,value)` | Fresh width-1 storage filled with the numeric value; omitted value is Float zero. |
 | `array/vec3(count,value)` | Fresh width-3 storage; omitted value is Vec3 zero. A Vec3 fills its components; a scalar Int/Float/Bool broadcasts numerically. Other widths fail with `E_ARRAY_TYPE`. |
 | `array/count(array)` | Int element count; non-array or malformed width is `E_ARRAY_TYPE`. |
-| `array/nth(array,index)` | Convert index as above, require index < element count, and return Float or the matching vector. Out of bounds is `E_ARRAY_RANGE` ("Array index is outside its length."). |
+| `array/nth(array,index)` | Convert index as above, require index < element count, and return Int, Float or the matching vector. Out of bounds is `E_ARRAY_RANGE` ("Array index is outside its length."). |
 | `array/slice(array,first,count)` | Convert first and count as above; require first <= length and count <= length-first. Copy the component range into fresh same-kind storage. An empty slice at length is legal. Range failure is `E_ARRAY_RANGE` ("An array slice must be within its source."); non-array is `E_TYPE`. |
 | `array/concat(first,second)` | Both operands must have the exact same array kind/width; otherwise `E_ARRAY_TYPE` ("Concatenated arrays must have the same element type."). Copy first then second into fresh same-kind storage, checking target storage bounds. |
 
@@ -642,7 +704,8 @@ new collection of shader operations:
 | `Binary(op,a,b)` | A binary leaf over prior scalar slots. |
 | `Unary(op,a)` | A unary leaf over a prior scalar slot. |
 | `Noise3(x,y,z,seed,octaves)` | A seeded numeric sample; seed and octaves satisfy packed qualification. |
-| `Select(condition,yes,no)` | Eagerly computed branch slots, selecting by condition unequal to zero. |
+| `Select(condition,yes,no)` | Selects by condition unequal to zero; branch instructions carry their execution guards. |
+| `Guarded(conditions,instruction)` | Executes the instruction and its finite checks only when every condition selects this branch. Metal and WGSL declare the result outside the conditional and assign it inside, so later selections retain the same lazy behavior. An unselected overflow is unevaluated; `min` and `max` still evaluate both arguments. |
 
 The binary set is `Add Sub Mul Div Mod Pow Min Max Lt Le Gt Ge Eq And Or`;
 the unary set is `Sin Cos Sqrt Abs Not`. Booleans occupy numeric slots, vectors
@@ -667,6 +730,16 @@ non-finite/unrepresentable constants and disallowed forms. The web target adds
 its device-limit and in-frame-readback checks; their limits are established
 from the WebGPU specification in P5.4, not guessed here. An exact consumer
 cannot secretly read a GPU buffer back during a browser frame.
+
+An exported CPU region's input data and uniform captures must be proven
+independent of the frame before they become fixed export tables. Frame facts
+remain explicit runtime inputs. Comparing prepared values at two sample frames
+is an additional check, not proof that a width-dependent or quantized count is
+constant. Draw lowering retains structured compiled loops when a region's
+sources or captures depend on the frame; it does not freeze their sampled
+values. Integer capture storage follows the consuming integer uniform bank;
+floating banks convert numerically. A packed vector has floating components
+even when one component was computed by an integer instruction.
 
 ## State slots and frame facts
 
@@ -842,6 +915,7 @@ operation. A user function/macro row is not a new runtime primitive.
 | `image/noise` | intrinsic | Seeded numeric image producer; lower its numeric work to the shared core/regions. |
 | `inside` | compiler rule | Inline checked definition: component reads, `>=`, `<`, `+`, `and`. |
 | `int` | primitive | `int` |
+| `float` | primitive | `float` |
 | `int/and` | primitive | `int/and` |
 | `int/div` | primitive | `int/div` |
 | `int/mod` | primitive | `int/mod` |
@@ -878,6 +952,8 @@ operation. A user function/macro row is not a new runtime primitive.
 | `sop/merge` | refused on web | Native geometry composition; not a numeric sequence operation. |
 | `sop/transform` | refused on web | Native geometry transform; not a drawing view transform. |
 | `sop/delete_attr` | intrinsic | Geometry metadata deletion by owner and Houdini-style name pattern. The host protocol is an immutable geometry record with ordered attribute records carrying owner, name and payload. Native uses `Rdk.Attribute_ops.delete`; the JavaScript twin preserves topology, positions, ordering and unselected payloads. Outside the current 2D export scope. |
+| `sop/attr`, `sop/with_attr` | intrinsic | Cooked owner-aware attributes, default point/vec3. Float and tuple storage use packed arrays; integer storage stays exact signed native integers; text storage uses typed string arrays with exact decoded contents. `float_array` and `int_array` use records of integer CSR offsets and typed flat values; offsets start at zero, remain monotone and end at the flat count. Missing/wrong storage is `E_ATTR_TYPE`, owner cardinality is `E_ATTR_COUNT`, nonfinite writes are `E_NONFINITE`. Point P is canonical vec3 positions. Host geometry attributes carry owner, name, type and immutable copied values; twins preserve topology and other payloads. Outside the current 2D export scope. |
+| `sop/has_attr` | intrinsic | A genuine Boolean cooked host source, with owner and optional literal storage type. Without type it tests any storage; with type it tests exact storage. Point P always has vec3 storage. Lazy branches can explicitly preserve native absent/wrong-normal fallbacks without reading nonexistent data. Sources retain truthful geometry/attribute dependencies. |
 | `sop/context_seed` | intrinsic | A defnode body cook-context constant, specialized before core lowering. Its literal namespace and node label are UTF-8 FNV-1a hashed into 64 bits, multiplied by `0x9e3779b97f4a7c15`, xor-ed with the context seed, then xor-ed with the unsigned upper 32 bits and truncated to a signed native 63-bit int. Fixtures pass the implicit context as a record of decimal seed text and label; use outside a body or in a pure parameter validator is `E_NODE_CONTEXT`. |
 | `sop/uv_sphere` | refused on web | Native geometry factory. |
 | `split-level` | compiler rule | Inline checked definition: packed slices/concatenation, nested maps, `value/rand`, arithmetic and numeric branches. |

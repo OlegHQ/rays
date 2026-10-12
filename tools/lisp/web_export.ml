@@ -2,6 +2,7 @@ module W = Flow.Workspace
 module D = Flow.Diagnostic
 module Doc = Editor_document.Workspace_doc
 module C = Flow_ir.Core
+module E = Flow.Eval
 
 type lowered = { program : C.program; span : D.span; root : Flow.Eval.residual option; plan : Flow.Eval.plan }
 
@@ -50,6 +51,11 @@ let first_draw (doc : Doc.t) =
   | Some g -> Ok g
   | None -> Error (D.error ~code:"E_WEB_GRAPH" "The workspace has no draw graph to export.")
 
+let fixed_region (region : C.Region.t) =
+  not (Array.exists (fun (residual,term) ->
+    E.frame_dependent (E.Residual (E.Private.with_bindings residual ~term []))) region.sources
+    || Array.exists E.frame_dependent region.uniforms)
+
 let lower (doc : Doc.t) =
   let* draw = first_draw doc in
   let* () = match foreign doc draw with
@@ -61,7 +67,7 @@ let lower (doc : Doc.t) =
       ~inputs:doc.inputs doc.checked in
   let evaluated = lowered.evaluated in
   let value = List.assoc draw.name evaluated.results in
-  match Flow_ir.Core_draw.lower evaluated.plan value with
+  match Flow_ir.Core_draw.lower ~region_allowed:fixed_region evaluated.plan value with
   | Ok (program, root) -> Ok {program; span = draw.form.span; root; plan = evaluated.plan}
   | Error message ->
       Error (D.error ~span:draw.form.span ~code:"E_WEB_LOWER" ("This draw graph does not lower to the core: " ^ message))
@@ -87,44 +93,59 @@ let list f xs = "[" ^ String.concat ", " (List.map f xs) ^ "]"
 
 type files = (string * string) list
 
-(* A region is exported as data when nothing it reads changes with the frame: two probes with different
-   clocks, pointers, sizes and frame numbers must prepare the same inputs and captures. *)
-type fixed = { packed : Flow_ir.Packed.t; view : Flow_ir.Packed.Private.view; arrays : float array array;
-  uniforms : float array array; count : int; frame : (int * string) list }
+(* Only frame-independent inputs and captures can become export data. The two
+   different-frame probes below additionally check their prepared values. *)
+type fixed = { packed : Flow_ir.Packed.t; view : Flow_ir.Packed.Private.view; arrays : E.value array;
+  uniforms : E.value array; count : int; frame : (int * string * bool) list }
+
+let rec region_instruction = function C.Region.Guarded (_,body) -> region_instruction body | body -> body
+let uniform_components = function
+  | E.Vec2 (x,y) -> [|x;y|] | Vec3 (x,y,z) -> [|x;y;z|]
+  | Vec4 (x,y,z,w) -> [|x;y;z;w|] | value -> [|Flow.Value.num value|]
 
 let fixed_inputs (r : C.Region.t) =
   let refuse code message = Error (D.error ~span:(span_of_region r) ~code message) in
-  match Flow_ir.Packed.of_region r with
+  if not (fixed_region r) then
+    refuse "E_WEB_CAPTURE" "This region reads a value that changes from frame to frame; the web export needs its inputs fixed."
+  else match Flow_ir.Packed.of_region r with
   | Error (d :: _) -> Error d
   | Error [] -> refuse "E_WEB_REGION" "This region does not compile."
   | Ok packed ->
       let view = Flow_ir.Packed.Private.view packed in
       let probe t frame = { (Frame_input.at_time t) with dt = 0.25; frame; tick = frame; size = (640 + frame, 480);
         pointer = (100. +. t, 100.) } in
-      let prepare live = try Flow_ir.Packed.Private.prepare packed ~live with Not_found | Invalid_argument _ | Failure _ ->
+      let prepare live = try Flow_ir.Packed.Private.prepare_values packed ~live with Not_found | Invalid_argument _ | Failure _ ->
         Error (D.error ~span:(span_of_region r) ~code:"E_WEB_REGION" "This region could not be prepared.") in
       let* a = prepare (probe 0. 1) in
       let* b = prepare (probe 0.5 7) in
       if a.arrays <> b.arrays || a.uniforms <> b.uniforms || a.count <> b.count then
         refuse "E_WEB_CAPTURE" "This region reads a value that changes from frame to frame; the web export needs its inputs fixed."
-      else if Array.exists (Array.exists (fun x -> not (Float.is_finite x))) a.uniforms then
+      else if Array.exists (fun value -> match value with E.Int _ -> false | _ ->
+          Array.exists (fun x -> not (Float.is_finite x)) (uniform_components value)) a.uniforms then
         refuse "E_WEB_REGION" "This region captures a non-finite value."
       else begin
-        let frame = Array.to_list view.code |> List.mapi (fun slot -> function
-          | C.Region.Frame name -> [slot, name] | _ -> []) |> List.concat in
-        match List.find_opt (fun (_, name) -> not (List.mem name frame_facts)) frame with
-        | Some (_, name) -> refuse "E_WEB_REGION" ("This region reads the frame fact " ^ name ^ ", which the web runtime does not provide.")
+        let frame = Array.to_list view.code |> List.mapi (fun slot instruction -> match region_instruction instruction with
+          | C.Region.Frame name -> [slot,name,false] | Int_frame name -> [slot,name,true] | _ -> []) |> List.concat in
+        match List.find_opt (fun (_, name,_) -> not (List.mem name frame_facts)) frame with
+        | Some (_, name,_) -> refuse "E_WEB_REGION" ("This region reads the frame fact " ^ name ^ ", which the web runtime does not provide.")
         | None -> Ok {packed; view; arrays = a.arrays; uniforms = a.uniforms; count = a.count; frame}
       end
 
 (* The data of a region as the JSON members both the region table and the GPU table carry. *)
 let fixed_members ?kept ~data f =
   let placed = if Array.length f.arrays = 0 then "[]" else list (fun values ->
-    let offset, length = data values in Printf.sprintf "[%d, %d]" offset length) (Array.to_list f.arrays) in
+    let offset, length = data values in Printf.sprintf "[%d, %d, %b]" offset length
+      (match values with E.Int_array _ -> true | _ -> false)) (Array.to_list f.arrays) in
   Printf.sprintf "\"count\": %d, %s\"inputs\": %s, \"uniforms\": %s, \"frame\": %s" f.count
     (match kept with Some n -> Printf.sprintf "\"kept\": %d, " n | None -> "") placed
-    (list (fun u -> list number (Array.to_list u)) (Array.to_list f.uniforms))
-    (list (fun (slot, name) -> Printf.sprintf "[%d, %s]" slot (Flow_web.Kernel_table.json_string name)) f.frame)
+    (list (fun (index,value) ->
+      let integer=Array.exists (fun instruction -> match region_instruction instruction with
+        | C.Region.Int_uniform slot -> slot=index | _ -> false) f.view.code in
+      match integer,value with
+      | true,E.Int n -> "[" ^ Flow_web.Kernel_table.json_string (string_of_int n) ^ "]"
+      | _ -> list number (Array.to_list (uniform_components value)))
+      (Array.to_list(Array.mapi(fun i value->i,value)f.uniforms)))
+    (list (fun (slot, name,integer) -> Printf.sprintf "[%d, %s, %b]" slot (Flow_web.Kernel_table.json_string name) integer) f.frame)
 
 (* A region the web target can run as a kernel: a static count of at least 1,024 and nothing the target refuses
    (the legality [Flow_web.Target.web] gives a GPU region). *)
@@ -142,9 +163,10 @@ let region_entry ~data (r : C.Region.t) =
       "The web export runs collecting single-output regions only; this sum or fold needs a later release.")
   else
     let skipped = Array.to_list r.skip |> List.filter (fun i -> i >= 0 && i < f.count) |> List.length in
-    let prefix = Printf.sprintf "{\"source\": %s, %s, \"length\": %d, \"width\": %d"
+    let prefix = Printf.sprintf "{\"source\": %s, %s, \"length\": %d, \"width\": %d, \"integer\": %b"
       (Flow_web.Kernel_table.json_string (Flow_web.Js.region f.packed)) (fixed_members ~kept:(f.count - skipped) ~data f)
-      (Array.length f.view.code) (Array.length f.view.outputs.(0)) in
+      (Array.length f.view.code) (Array.length f.view.outputs.(0))
+      (Array.length f.view.outputs.(0)=1 && C.Region.integer_register f.view.code.(f.view.outputs.(0).(0))) in
     Ok {prefix; fixed = f; kernel = (if r.skip = [||] then web_kernel f else None); width = Array.length f.view.outputs.(0); region = r}
 
 (* ---- placement of mark sets on the GPU ---- *)
@@ -160,7 +182,7 @@ let draw_uses : C.draw -> int list = function
   | Pop -> []
 
 let expr_uses : C.expr -> int list = function
-  | Constant _ | Frame _ | Call_index _ -> []
+  | Constant _ | Frame _ | Call_index _ | Source _ -> []
   | Local n -> [n]
   | Prim (_, args) | Fields args -> List.map snd args
   | Vec ns | Items ns -> ns
@@ -325,9 +347,13 @@ let files (doc : Doc.t) (lowered : lowered) : (files, D.t) result =
   let stored = Hashtbl.create 16 in
   let store values =
     let offset = Buffer.length data in
-    Array.iter (fun x -> Buffer.add_int64_le data (Int64.bits_of_float x)) values;
-    Hashtbl.replace stored values (offset, Array.length values);
-    offset, Array.length values in
+    let length=match values with
+      | E.Int_array values -> Array.iter (fun x -> Buffer.add_int64_le data (Int64.of_int x)) values;Array.length values
+      | E.Float_array values | Vec2_array values | Vec3_array values | Vec4_array values ->
+          Array.iter (fun x -> Buffer.add_int64_le data (Int64.bits_of_float x)) values;Array.length values
+      | _ -> invalid_arg "Web region inputs must be packed arrays." in
+    Hashtbl.replace stored values (offset,length);
+    offset,length in
   (* A kernel's inputs are the data its regions already hold, when they are the same arrays. *)
   let shared values = match Hashtbl.find_opt stored values with Some placed -> placed | None -> store values in
   let kernels = ref [] and modules = ref [] and imports = ref [] in
@@ -347,7 +373,7 @@ let files (doc : Doc.t) (lowered : lowered) : (files, D.t) result =
   let group_of = Hashtbl.create 8 in
   List.iter (fun g -> List.iteri (fun output k -> Hashtbl.replace group_of k (g, output)) g.members) groups;
   let* js = Flow_web.Js.frame ~state_slot:(Array.get slots) ~gpu:(fun k -> Ints.mem k good) ~store:(fun values ->
-    let offset, length = store values in Printf.sprintf "new Float64Array(rt.data, %d, %d)" offset length) program in
+    let offset, length = store (E.Float_array values) in Printf.sprintf "new Float64Array(rt.data, %d, %d)" offset length) program in
   let region_text k (e : region_entry) = match Hashtbl.find_opt group_of k with
     | Some (g, output) -> Printf.sprintf "%s, \"kernel\": \"%s\", \"gpu\": {\"output\": %d}}" e.prefix g.id output
     | None -> Printf.sprintf "%s, \"kernel\": %s}" e.prefix

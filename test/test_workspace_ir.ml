@@ -12,6 +12,11 @@ let () =
     |> List.map (Filename.concat fixtures) in
   if List.length fixtures < 12 then failwith "missing generated workspace fixtures";
   let custom = ["sketches/voxel_wall/sketch.rays"] in
+  let selected path = match Sys.getenv_opt "RAYS_WORKSPACE_FILTER" with
+    | None -> true
+    | Some suffix -> Filename.check_suffix path suffix in
+  let paths = List.filter selected paths and fixtures = List.filter selected fixtures in
+  let custom = List.filter selected custom in
   let count = ref 0 in
   List.iter (fun path ->
     let name = String.sub path (String.length root + 1) (String.length path - String.length root - 1) in

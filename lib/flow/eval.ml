@@ -83,6 +83,8 @@ type ('f, 'r) payload = ('f, 'r) Value.t =
   | Vec3 of float * float * float
   | Vec4 of float * float * float * float
   | List of ('f, 'r) payload array
+  | Int_array of int array
+  | Text_array of string array
   | Float_array of float array
   | Vec2_array of float array
   | Vec3_array of float array
@@ -91,6 +93,7 @@ type ('f, 'r) payload = ('f, 'r) Value.t =
   | Deferred of Ty.t * int
   | No_geo
   | Struct of string * Ty.t * (string * ('f, 'r) payload) list
+  | Source of string * Ty.t * (string * ('f, 'r) payload) list
   | Fn of 'f
   | Residual of 'r
 
@@ -121,6 +124,7 @@ and st = {
   execute : (residual -> Frame_input.t -> (value, Diagnostic.t) result option) option;
   owner : unit ref;  (* identifies the executor behind [execute] *)
   compiled_residuals : bool;  (* offer every forced residual to [execute], not only map/loop roots *)
+  strict_executor : bool;
   mutable observe_kernel : (residual -> unit) option;
   mutable bulk : (residual -> value option) option;  (* the whole value of a large static packed map, see [hof] *)
   source : string Lazy.t;
@@ -274,15 +278,25 @@ let case_matches sv lv =
 
 let add_values a b = Value.arith "sum" ( +. ) a b
 
+let resolve_source resolve source =
+  match resolve source with
+  | Error (d : Diagnostic.t) -> raise (Fail (d.code, d.message, d.span))
+  | Ok value ->
+      (match value with Source _ | Struct (_, Ty.Array _, _) ->
+        fail "E_DATA_SOURCE" "The host returned an unresolved data source." | _ -> ());
+      if Value.ty_of source <> Ty.Any && Value.ty_of value <> Value.ty_of source then
+        fail "E_DATA_SOURCE" "The host returned a data source of the wrong type.";
+      Value.validate value;
+      value
+
 let rec concrete c v =
   match v with
   | Residual r -> (match c.st.time with None -> raise Needs_t | Some _ -> force_res c r)
-  | Struct (_, Ty.Array _, _) ->
+  | Source _ | Struct (_, Ty.Array _, _) ->
       (match c.st.time, c.st.resolve with
        | None, _ -> raise Needs_t
-       | Some _, Some resolve -> (match resolve v with Ok v -> v
-           | Error d -> raise (Fail (d.code, d.message, d.span)))
-       | Some _, None -> fail "E_DATA_SOURCE" "This packed source needs its host's cooked data.")
+       | Some _, Some resolve -> resolve_source resolve v
+       | Some _, None -> fail "E_DATA_SOURCE" "This data source needs its host's cooked data.")
   | v -> v
 
 and force_res c r =
@@ -299,13 +313,17 @@ and force_res c r =
         | Some live,Some execute when c.st.compiled_residuals ->
             r.live <- Some c.st;
             (match r.core with
-             | Some (owner, run, _) when owner == c.st.owner -> (match run live with Ok v -> v | Error d -> raise (Fail (d.code, d.message, d.span)))
+             | Some (owner, run, _) when owner == c.st.owner && not c.st.strict_executor -> (match run live with Ok v -> v | Error d -> raise (Fail (d.code, d.message, d.span)))
              | _ ->
                 let saved = Option.map fork_state c.st.state in
-                let result = try execute r live with _ -> None in
-                (match result with Some (Ok v) -> v | _ ->
+                let result = if c.st.strict_executor then execute r live else
+                  try execute r live with _ -> None in
+                (match result with Some (Ok v) -> v | result ->
                   Option.iter (fun saved -> restore_state (Option.get c.st.state) saved) saved;
-                  slow ()))
+                  match result with
+                  | Some (Error d) when c.st.strict_executor -> raise (Fail (d.code,d.message,d.span))
+                  | None when c.st.strict_executor -> fail "E_CORE_FORM" "This value needs a compiled executor."
+                  | _ -> slow ()))
         | _ -> slow () in
       Hashtbl.replace c.st.memo r.rid v;
       v
@@ -343,6 +361,7 @@ and ev c env (x : W.term) : value =
             (match execute r live with
              | Some (Ok v) -> v
              | Some (Error d) -> raise (Fail (d.code, d.message, d.span))
+             | None when st.strict_executor -> fail "E_CORE_FORM" "This numeric form needs a compiled executor."
              | None -> ev_raw c env x)
         | _ -> ev_raw c env x in
       (match concrete c (evaluate ()) with
@@ -586,7 +605,12 @@ and apply_op c ?(authored = 0) name (vals : (string * value) list) : value =
     | Some live -> live
     | None when o.live -> raise Needs_t
     | None -> empty_live in
-  o.body ~live ~node:(mk_node c ~authored ~ty:(o.out (List.map (fun (_, v) -> Value.ty_of v) vals))) vals
+  let scalar = function
+    | Int n -> Some (Param.Int_value n) | Float n -> Some (Param.Float_value n)
+    | Bool b -> Some (Param.Bool_value b) | Text text -> Some (Param.Text_value text)
+    | _ -> None in
+  let ty = Op.result_type o (List.map (fun (name, value) -> name, Value.ty_of value, scalar value) vals) in
+  o.body ~live ~node:(mk_node c ~authored ~ty) vals
 
 and apply_def ?body c name (vals : value list) : value =
   let d = match Hashtbl.find_opt c.st.defs name with
@@ -649,6 +673,7 @@ and call_fn ?body c f (vals : value list) : value =
 and hof c env term kind f rest =
   let out = term.W.ty in
   let packed = List.exists (fun (t : W.term) -> match t.ty with Ty.Array _ -> true | _ -> false) rest in
+  let numeric = out <> Ty.Array Ty.Text && not (List.exists (fun (t : W.term) -> t.ty = Ty.Array Ty.Text) rest) in
   let c = if packed then {c with data = true} else c in
   let saved_steps = c.st.steps and calls = ref 0 in
   let call fv values =
@@ -667,7 +692,7 @@ and hof c env term kind f rest =
   let lists_of ts = List.mapi (fun i t ->
     let v = concrete c (ev (sub c ("l" ^ string_of_int i)) env t) in
     match v with List xs -> Array.length xs, (fun k -> xs.(k))
-    | Float_array _ | Vec2_array _ | Vec3_array _ | Vec4_array _ -> array_length v, array_get v
+    | Text_array _ | Int_array _ | Float_array _ | Vec2_array _ | Vec3_array _ | Vec4_array _ -> array_length v, array_get v
     | _ -> fail "E_TYPE" "Expected a list or packed array.") ts in
   match kind, rest with
   | `Map, ls ->
@@ -676,7 +701,27 @@ and hof c env term kind f rest =
       let n = if ls = [] then 0 else n in
       let item k = call fv (List.map (fun (_, get) -> get k) ls) in
       (match out, c.st.time, c.st.bulk with
-       | Ty.Array e, None, Some bulk when n > max_iterations ->
+       | Ty.Array Ty.Int, None, Some bulk when numeric && n > max_iterations ->
+           let head = match array_init Ty.Int max_iterations (fun k -> concrete c (item k)) with
+             | Int_array data -> data | _ -> assert false in
+           let whole = bulk {rid = Atomic.fetch_and_add bulk_ids (-1); rterm = term;
+             renv = capture term env; rc = c; previous = false; live = None; core = None} in
+           (match whole with
+            | Some (Int_array data as value) when Array.length data = n
+                && Array.for_all2 Int.equal head (Array.sub data 0 max_iterations) ->
+                (match fv with Closure cl -> cl.calls := !(cl.calls) + (n - max_iterations)
+                 | Named f -> f.ncalls := !(f.ncalls) + (n - max_iterations));
+                value
+            | _ ->
+                if n > Sys.max_array_length then
+                  fail "E_ARRAY_RANGE" "Array length is outside native storage bounds.";
+                let data = Array.make n 0 in
+                Array.blit head 0 data 0 max_iterations;
+                for k = max_iterations to n - 1 do
+                  Value.int_array_put data k (concrete c (item k))
+                done;
+                Int_array data)
+       | Ty.Array e, None, Some bulk when numeric && n > max_iterations ->
            (* A large static packed map. The walker makes the first 4,096 elements as always (their
               records, call indices and failures are the ordinary ones); the host may then supply
               the whole array, which is taken only when it has the walked elements bit for bit. Any
@@ -766,9 +811,30 @@ and loop c env ~out kind accs clauses skip body zone =
   let n = Array.length clauses in
   let width = match out with Ty.Array Ty.Vec2 -> 2 | Ty.Array Ty.Vec3 -> 3
     | Ty.Array Ty.Vec4 -> 4 | Ty.Array _ -> 1 | _ -> 0 in
-  let data = ref (if width = 0 then [||] else Array.make (32 * width) 0.) and used = ref 0 in
+  let integer = out = Ty.Array Ty.Int in
+  let text = out = Ty.Array Ty.Text in
+  let integers = ref (if integer then Array.make 32 0 else [||]) in
+  let texts = ref (if text then Array.make 32 "" else [||]) in
+  let data = ref (if width = 0 || integer || text then [||] else Array.make (32 * width) 0.) and used = ref 0 in
+  let grow buffer zero =
+    if !used = Array.length !buffer then begin
+      let capacity = Array.length !buffer in
+      let next = min (Sys.max_array_length - capacity) capacity + capacity in
+      if next <= !used then fail "E_ARRAY_RANGE" "Array exceeds native storage bounds.";
+      let grown = Array.make next zero in
+      Array.blit !buffer 0 grown 0 capacity; buffer := grown
+    end in
   let collect v =
-    if width = 0 then outs := v :: !outs else begin
+    if integer then begin
+      grow integers 0;
+      Value.int_array_put !integers !used (concrete c v);
+      incr used
+    end else if text then begin
+      grow texts "";
+      (match concrete c v with Text value -> (!texts).(!used) <- value
+       | _ -> fail "E_ARRAY_TYPE" "Text arrays contain text values.");
+      incr used
+    end else if width = 0 then outs := v :: !outs else begin
       let v = concrete c v in
       if !used = Array.length !data / width then begin
         let next = Array.make (min Sys.max_floatarray_length (2 * Array.length !data)) 0. in
@@ -827,7 +893,7 @@ and loop c env ~out kind accs clauses skip body zone =
            over_geometry := Some (geometry_loop c cz env op fs p body zone)
        | v ->
            let count, get = match v with List xs -> Array.length xs, (fun i -> xs.(i))
-             | Float_array _ | Vec2_array _ | Vec3_array _ | Vec4_array _ -> array_length v, array_get v
+             | Text_array _ | Int_array _ | Float_array _ | Vec2_array _ | Vec3_array _ | Vec4_array _ -> array_length v, array_get v
              | _ -> fail "E_TYPE" "Expected a list or packed array." in
            for i = 0 to count - 1 do
              let item = get i in
@@ -841,7 +907,9 @@ and loop c env ~out kind accs clauses skip body zone =
   | `Fold -> Option.get !acc
   | `Sum -> (match !total with None -> Int 0 | Some t -> concrete c t)
   | `For | `Scan ->
-      if width = 0 then List (join_values (Array.of_list (List.rev !outs)))
+      if integer then Int_array (Array.sub !integers 0 !used)
+      else if text then Text_array (Array.sub !texts 0 !used)
+      else if width = 0 then List (join_values (Array.of_list (List.rev !outs)))
       else let data = Array.sub !data 0 (!used * width) in
         (match width with 2 -> Vec2_array data | 3 -> Vec3_array data
          | 4 -> Vec4_array data | _ -> Float_array data) in
@@ -945,7 +1013,7 @@ let new_state ~record ws =
   let graphs = Hashtbl.create 8 and defs = Hashtbl.create 8 in
   List.iter (fun (g : W.graph) -> Hashtbl.replace graphs g.name g) ws.W.graphs;
   List.iter (fun (g : W.graph) -> Hashtbl.replace defs g.name g) ws.W.defs;
-  { time = None; resolve = None; execute = None; owner = ref (); compiled_residuals = true; observe_kernel = None; bulk = None;
+  { time = None; resolve = None; execute = None; owner = ref (); compiled_residuals = true; strict_executor=false; observe_kernel = None; bulk = None;
     source = lazy (Digest.string (fst (Lisp.print ws.W.source))); state = None; states = [];
     nfns = 0; fn_calls = Hashtbl.create 1;
     steps = 0; nodes = []; authored = []; nnodes = 0; cells = []; cache = Hashtbl.create 8;
@@ -994,7 +1062,7 @@ let static ?record ?inputs ws = static_impl ?record ?inputs ws
 
 let rec is_live = function
   | Residual _ -> true
-  | Struct (_, Ty.Array _, _) -> true
+  | Source _ | Struct (_, Ty.Array _, _) -> true
   | List xs -> Array.exists is_live xs
   | Record fs | Struct (_, _, fs) -> List.exists (fun (_, v) -> is_live v) fs
   | _ -> false
@@ -1002,7 +1070,7 @@ let rec is_live = function
 let rec dependent frame = function
   | Residual r -> term_dependent frame r.rc.st r.renv r.rterm
   | List xs -> Array.exists (dependent frame) xs
-  | Record fs | Struct (_, _, fs) -> List.exists (fun (_, v) -> dependent frame v) fs
+  | Record fs | Struct (_, _, fs) | Source (_, _, fs) -> List.exists (fun (_, v) -> dependent frame v) fs
   | Fn (Closure cl) -> term_dependent frame cl.at.st cl.env cl.body
   | _ -> false
 
@@ -1045,7 +1113,7 @@ let frame_dependent = dependent true
 let state_dependent = dependent false
 
 (* one live state per call, made from the first residual met *)
-let with_live ?state ?elems ?resolve ?execute ?(owner = ref ()) ?(compiled = true) (l : live) (f : (residual -> ctx) -> 'a) : ('a, Diagnostic.t) result =
+let with_live ?state ?elems ?resolve ?execute ?(owner = ref ()) ?(compiled = true) ?(strict=false) (l : live) (f : (residual -> ctx) -> 'a) : ('a, Diagnostic.t) result =
   let state = Option.value ~default:(create_state ()) state in
   let saved = fork_state state in
   let elems = Option.map Smap.of_list elems in
@@ -1053,7 +1121,7 @@ let with_live ?state ?elems ?resolve ?execute ?(owner = ref ()) ?(compiled = tru
   let ctx_of r =
     let st = match !live with
       | Some s -> s
-      | None -> let s = { (live_state r.rc.st ~state ?elems l) with compiled_residuals = compiled; resolve; execute; owner } in
+      | None -> let s = { (live_state r.rc.st ~state ?elems l) with compiled_residuals = compiled; strict_executor=strict; resolve; execute; owner } in
           live := Some s; s in
     { r.rc with st } in
   match Frame_input.validate l with
@@ -1067,23 +1135,22 @@ let with_live ?state ?elems ?resolve ?execute ?(owner = ref ()) ?(compiled = tru
 let residual_eval r ~live =
   with_live live (fun ctx_of -> let c = ctx_of r in force_res c r)
 
-let force_with ?state ?elems ?resolve ?execute ?owner ?compiled v ~live =
+let force_with ?state ?elems ?resolve ?execute ?owner ?compiled ?strict v ~live =
   if not (is_live v) then Ok v
   else
-    let general () = with_live ?state ?elems ?resolve ?execute ?owner ?compiled live (fun ctx_of ->
+    let general () = with_live ?state ?elems ?resolve ?execute ?owner ?compiled ?strict live (fun ctx_of ->
       let rec go v = match v with
         | Residual r -> let c = ctx_of r in go (force_res c r)
-        | Struct (_, Ty.Array _, _) -> (match resolve with
-            | Some resolve -> (match resolve v with Ok v -> v
-                | Error d -> raise (Fail (d.code, d.message, d.span)))
-            | None -> fail "E_DATA_SOURCE" "This packed source needs its host's cooked data.")
+        | Source _ | Struct (_, Ty.Array _, _) -> (match resolve with
+            | Some resolve -> go (resolve_source resolve v)
+            | None -> fail "E_DATA_SOURCE" "This data source needs its host's cooked data.")
         | List xs -> List (Array.map go xs)
         | Record fs -> Record (List.map (fun (n, x) -> (n, go x)) fs)
         | Struct (n, ty, fs) -> Struct (n, ty, List.map (fun (k, x) -> (k, go x)) fs)
         | v -> v in
       go v) in
     match v, owner, execute, compiled with
-    | Residual r, Some owner, Some _, (None | Some true) ->
+    | Residual r, Some owner, Some _, (None | Some true) when strict<>Some true ->
         (match r.core with
          | Some (same, _, Some fast) when same == owner ->
              (match Frame_input.validate live with
@@ -1127,7 +1194,7 @@ module Private = struct
     if List.compare_lengths signature.params arrays <> 0
         || not (List.for_all2 (fun ty value -> Value.ty_of value = Ty.Array ty) signature.params arrays) then
       fail "E_ARRAY_TYPE" "Bulk function columns must match its declared parameter types.";
-    List.iter (function Float_array _ | Vec2_array _ | Vec3_array _ | Vec4_array _ -> ()
+    List.iter (function Text_array _ | Int_array _ | Float_array _ | Vec2_array _ | Vec3_array _ | Vec4_array _ -> ()
       | _ -> fail "E_ARRAY_TYPE" "Bulk function inputs must be packed arrays.") arrays;
     List.iter Value.validate arrays;
     let counts = List.map array_length arrays in
@@ -1136,8 +1203,8 @@ module Private = struct
     if not (Ty.fits cl.body.ty signature.result) then
       fail "E_KERNEL_FORM" "Bulk function body differs from its declared result type.";
     let result = match signature.result with
-      | Ty.Float | Vec2 | Vec3 | Vec4 as ty -> ty
-      | _ -> fail "E_KERNEL_FORM" "Bulk functions must return float, vec2, vec3 or vec4 data." in
+      | Ty.Int | Float | Vec2 | Vec3 | Vec4 as ty -> ty
+      | _ -> fail "E_KERNEL_FORM" "Bulk functions must return int, float, vec2, vec3 or vec4 data." in
     let binding name ty = W.{path = None; ty; node = Ref_binding (name, []); form = cl.body.form} in
     let inputs = List.mapi (fun i value -> "$kernel-input:" ^ string_of_int i, value) arrays in
     let function_name = "$kernel-function" in
@@ -1153,8 +1220,12 @@ module Private = struct
       rc = {at with data = true; rec_ = false}; previous = false; live = None; core = None})
   let free_names term = Names.elements (free_names term)
   let free_name_walks () = Atomic.get free_walks
-  let force_with_executor ?state ?elems ?resolve ?owner ?compiled ~execute v ~live =
-    force_with ?state ?elems ?resolve ?owner ?compiled ~execute v ~live
+  let with_bindings r ~term bindings =
+    let env=List.fold_left (fun env (name,value) -> Smap.add name value env) r.renv bindings in
+    {r with rid=Atomic.fetch_and_add bulk_ids (-1); rterm=term; renv=capture term env;
+      previous=false;live=None;core=None}
+  let force_with_executor ?state ?elems ?resolve ?owner ?compiled ?strict ~execute v ~live =
+    force_with ?state ?elems ?resolve ?owner ?compiled ?strict ~execute v ~live
   let function_bindings = function Closure cl -> Smap.bindings cl.env | Named _ -> []
   let remap_function_geometry ~sources fn =
     let rec value = function
@@ -1166,6 +1237,7 @@ module Private = struct
       | List values -> List (Array.map value values)
       | Record fields -> Record (List.map (fun (name, v) -> name, value v) fields)
       | Struct (name, ty, fields) -> Struct (name, ty, List.map (fun (name, v) -> name, value v) fields)
+      | Source (name, ty, fields) -> Source (name, ty, List.map (fun (name, v) -> name, value v) fields)
       | v -> v
     and function_value = function
       | Closure cl -> Closure {cl with env = Smap.map value cl.env}

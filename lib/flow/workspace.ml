@@ -175,8 +175,11 @@ let rec packed_body ~ops (term : term) =
   | Ref_binding _ -> Option.is_some (Packed_ops.scalar_width term.ty)
   | Vec terms -> List.mem (List.length terms) [2;3;4] && List.for_all body terms
   | Get (value, field) ->
-      List.mem (value.ty, field) [Ty.Vec2,"x"; Vec2,"y"; Vec3,"x"; Vec3,"y"; Vec3,"z";
-        Vec4,"x"; Vec4,"y"; Vec4,"z"; Vec4,"w"] && body value
+      (List.mem (value.ty, field) [Ty.Vec2,"x"; Vec2,"y"; Vec3,"x"; Vec3,"y"; Vec3,"z";
+        Vec4,"x"; Vec4,"y"; Vec4,"z"; Vec4,"w"]
+       || match value.ty with Ty.Record fields -> List.mem_assoc field fields | _ -> false) && body value
+  | Record fields -> List.for_all (fun (_,value) -> body value) fields
+  | Call_fn {args;body=Some specialized;_} -> List.for_all body args && body specialized
   | Op {op; args; _} ->
       (match Option.bind (Op.find ~extra:ops op Context.value) Op.packed_kind with
        | Some Op.Frame -> args = [] && List.mem term.ty [Ty.Float;Int;Bool]
@@ -184,10 +187,12 @@ let rec packed_body ~ops (term : term) =
            | "position", _ -> body t | "seed", Lit (Param.Int_value _) -> true
            | "octaves", Lit (Param.Int_value n) -> Packed_ops.supported_noise_octaves n
            | _ -> false) args
-       | Some Length -> (match args with [_, vector] -> vector.ty = Ty.Vec3 && body vector | _ -> false)
+       | Some (Length | Normalize) -> (match args with [_, vector] -> vector.ty = Ty.Vec3 && body vector | _ -> false)
+       | Some (Dot | Cross) -> List.length args = 2
+           && List.for_all (fun (_, (t : term)) -> t.ty = Ty.Vec3 && body t) args
        | Some Exact -> (match args with [_, t] -> body t | _ -> false)
-       | Some (Binary _) -> List.length args = 2 && List.for_all (fun (_, t) -> body t) args
-       | Some (Unary _) -> List.length args = 1 && List.for_all (fun (_, t) -> body t) args
+       | Some (Binary _ | Integer _ | Integer_compare _) -> List.length args = 2 && List.for_all (fun (_, t) -> body t) args
+       | Some (Unary _ | Convert _) -> List.length args = 1 && List.for_all (fun (_, t) -> body t) args
        | Some Constant_only | None -> false)
   | Let (bindings, result) -> List.for_all (fun (p, t) -> match p with Name _ -> body t | _ -> false) bindings
       && body result
@@ -950,7 +955,8 @@ let check ?(ops = []) ?(library = false) catalog forms =
       let ((_, _, _, _, bv) as r) = run acc_live0 in
       if init <> None && bv.live && not acc_live0 then run true else r in
     (* ponytail: literal counts only; a driven count is bounded when Eval runs the zone. *)
-    if List.for_all (fun l -> match l with Some n -> n <= max_iterations | None -> false) lens then begin
+    if not (List.exists (fun (_, (t : term)) -> match t.ty with Ty.Array _ -> true | _ -> false) clauses)
+       && List.for_all (fun l -> match l with Some n -> n <= max_iterations | None -> false) lens then begin
       let total = List.fold_left (fun a l -> min (max_iterations + 1) (a * Option.get l)) 1 lens in
       if total > max_iterations then
         err x "E_ITER_BOUND" (Printf.sprintf "%s runs more than 4,096 iterations." name)
@@ -965,8 +971,8 @@ let check ?(ops = []) ?(library = false) catalog forms =
     let packed = List.exists (fun (_, (t : term)) -> match t.ty with Ty.Array _ -> true | _ -> false) clauses in
     if packed && shape_ty bt.ty then
       err x "E_ARRAY_TYPE" "Packed-array loops produce data; their length cannot create graph nodes.";
-    let array_elem ty = match ty with Ty.Vec2 | Vec3 | Vec4 -> ty | Float | Int | Bool | Any -> Ty.Float
-      | _ -> err x "E_ARRAY_TYPE" "Packed arrays hold floats, vec2, vec3 or vec4 values."; Ty.Float in
+    let array_elem ty = match ty with Ty.Int | Vec2 | Vec3 | Vec4 | Text -> ty | Float | Bool | Any -> Ty.Float
+      | _ -> err x "E_ARRAY_TYPE" "Arrays hold ints, floats, vectors or text values."; Ty.Float in
     if kind = `Sum && not (match bt.ty with Ty.Int | Ty.Float | Ty.Vec2 | Ty.Vec3 | Ty.Vec4 | Ty.Any -> true | _ -> false) then
       err x "E_TYPE" (Printf.sprintf "sum adds numbers or matching-width vectors; the body returns %s." (show bt.ty));
     let ty = match kind, acc_ty with
@@ -1128,8 +1134,8 @@ let check ?(ops = []) ?(library = false) catalog forms =
         | "map" ->
             no_fn x rv.ty "The map result";
             let ty = if packed then
-              Ty.Array (match rv.ty with Ty.Vec2 | Vec3 | Vec4 -> rv.ty | Float | Int | Bool | Any -> Ty.Float
-                | _ -> err x "E_ARRAY_TYPE" "Packed arrays hold floats, vec2, vec3 or vec4 values."; Ty.Float)
+              Ty.Array (match rv.ty with Ty.Int | Vec2 | Vec3 | Vec4 | Text -> rv.ty | Float | Bool | Any -> Ty.Float
+                | _ -> err x "E_ARRAY_TYPE" "Arrays hold ints, floats, vectors or text values."; Ty.Float)
               else Ty.List rv.ty in
             (`Map, ty, any_len)
         | "filter" ->
@@ -1145,7 +1151,7 @@ let check ?(ops = []) ?(library = false) catalog forms =
             no_fn x rv.ty "The reduce result";
             if not (Ty.fits rv.ty it) then
               err x "E_TYPE" (Printf.sprintf "reduce's function must return the accumulator type %s; it returns %s." (show it) (show rv.ty));
-            (`Reduce, it, false) in
+            (`Reduce, Option.value ~default:it (Ty.join it rv.ty), false) in
       let v = derive ty (fv :: rv :: list_vs @ (match init with Some (_, iv) -> [ iv ] | None -> [])) in
       let specialized = match result.node with Call_fn {body = Some body; _} -> body | _ -> result in
       let eligible = packed_body ~ops specialized in
@@ -1358,11 +1364,10 @@ let check ?(ops = []) ?(library = false) catalog forms =
           (if o.signature.pos <> [] then " (" ^ String.concat ", " (List.map fst o.signature.pos) ^ ")" else "") np)
       else begin
         let nfix = if o.signature.rest <> None then List.length o.signature.pos else List.length slots in
-        let named = ref [] and ts = ref [] in
+        let named = ref [] in
         List.iteri (fun i a ->
           if i < nfix then begin
             let sname, sty = List.nth slots i in
-            ts := a.av.ty :: !ts;
             if not (o.any_num && (List.mem a.av.ty [Ty.Vec3;Ty.Int;Ty.Float]
               || Option.is_some o.arithmetic && List.mem a.av.ty [Ty.Vec2;Ty.Vec4])) then
               ignore (need a (Printf.sprintf "%s %s" o.name sname) sty);
@@ -1400,7 +1405,12 @@ let check ?(ops = []) ?(library = false) catalog forms =
               (String.concat " and " (List.map show vectors)))
         end;
         literal_checks x o args;
-        let ty = o.out (List.rev !ts) in
+        let rec literal (term : term) = match term.node with
+          | Lit value -> Some value | Text text -> Some (Param.Text_value text)
+          | Expanded {body;_} -> literal body | _ -> None in
+        let ty = try Op.result_type o (List.rev_map (fun (name, (term : term)) ->
+          name, term.ty, literal term) !named)
+          with Value.Fail (code, message, _) -> err x code message; Ty.Any in
         let avs = List.map (fun a -> a.av) args in
         let nth_live_len i = match List.nth_opt pos i with Some a -> a.av.live_len | None -> false in
         let live_len = match o.name with

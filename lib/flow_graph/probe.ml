@@ -158,6 +158,8 @@ let rec describe_value = function
           | Vec2 _ -> "vec2" | Vec3 _ -> "vec3" | Vec4 _ -> "vec4" | Bool _ -> "bool"
           | List _ -> "list" | Record _ -> "record" | Fn _ -> "function" | _ -> "value" in
       if n = 0 then "0 items" else Printf.sprintf "%d × %s" n what
+  | Int_array xs -> Printf.sprintf "%d × int" (Array.length xs)
+  | Text_array xs -> Printf.sprintf "%d × text" (Array.length xs)
   | Float_array xs -> Printf.sprintf "%d × float" (Array.length xs)
   | Vec2_array xs -> Printf.sprintf "%d × vec2" (Array.length xs / 2)
   | Vec3_array xs -> Printf.sprintf "%d × vec3" (Array.length xs / 3)
@@ -165,7 +167,7 @@ let rec describe_value = function
   | Record fs -> "{" ^ String.concat " · " (List.map (fun (f, v) -> f ^ " " ^ describe_value v) fs) ^ "}"
   | Deferred (ty, _) -> Flow.Ty.to_string ty
   | No_geo -> "nil"
-  | Struct (op, _, _) -> op
+  | Struct (op, _, _) | Source (op, _, _) -> op
   | Fn _ -> "function"
   | Residual _ -> "?"
 

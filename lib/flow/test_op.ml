@@ -26,21 +26,27 @@ let rec sample name = function
 let check (o : Op.t) args =
   try
     let made = ref [] in
-    let node name args = let id = List.length !made in made := (name,args) :: !made; Deferred (o.out (List.map (fun (_,v) -> Value.ty_of v) args), id) in
+    let result_type args = Op.result_type o (List.map (fun (name, v) ->
+      let literal = match v with Int n -> Some (Param.Int_value n)
+        | Float n -> Some (Param.Float_value n) | Bool b -> Some (Param.Bool_value b)
+        | Text s -> Some (Param.Text_value s) | _ -> None in
+      name, Value.ty_of v, literal) args) in
+    let node name args = let id = List.length !made in made := (name,args) :: !made; Deferred (result_type args, id) in
     let result = o.body ~live:(Frame_input.at_time 0.) ~node args in
-    assert (Ty.fits (Value.ty_of result) (o.out (List.map (fun (_,v) -> Value.ty_of v) args)));
+    assert (Ty.fits (Value.ty_of result) (result_type args));
     (match o.shape with Op.Struct _ -> assert (match result with
       | Struct _ -> true | Deferred (ty, _) -> Ty.is_cooked ty | _ -> false) | Scalar -> ());
     result
   with Value.Fail (code, msg, _) -> failwith (o.name ^ ": " ^ code ^ ": " ^ msg)
 
 let () =
-  assert (List.length Op.all = 114);
+  assert (List.length Op.all = 136);
   List.iter (fun (o : Op.t) ->
     assert (Option.get (Op.find o.name o.ctx) == o);
     assert (Option.is_some (Op.packed_kind o) = (o.ctx = Context.value && o.shape = Op.Scalar));
     let s = o.signature in
-    let base = List.map (fun (n,t) -> n, sample n t) s.pos in
+    let base = List.map (fun (n,t) -> n,
+      if List.mem o.name ["asin";"acos"] then Float 0.5 else sample n t) s.pos in
     let optional = [base; base @ List.map (fun (n,t) -> n, sample n t) s.opt] in
     List.iter (fun args ->
       ignore (check o args);
@@ -112,3 +118,96 @@ let () =
   assert(tail=Vec3_array[|4.;5.;6.|]);
   assert(apply "array/concat" ["first",tail;"second",tail]=Vec3_array[|4.;5.;6.;4.;5.;6.|]);
   assert(apply "equal?" ["a",Text "key-pressed";"b",Text "key-pressed"]=Bool true)
+
+let () =
+  let catalog = {Check.version=1; kinds=[]} in
+  let forms body = Result.get_ok (Syntax.parse
+    ("(workspace w (graph g :context host " ^ body ^ "))")) in
+  let checked ?(ops=[]) body = match Workspace.check ~ops catalog (forms body) with
+    | Some workspace, [] -> workspace
+    | _, diagnostics -> failwith (String.concat "; " (List.map Diagnostic.to_string diagnostics)) in
+  let value body = List.assoc "g" (Result.get_ok (Eval.run ~time:0. (checked body))).results in
+  let high = (1 lsl 53) + 1 in
+  let text = string_of_int high in
+  assert (value ("(array/int 3 " ^ text ^ ")") = Eval.Int_array [|high;high;high|]);
+  assert (value "(array/range 3 :type int)" = Eval.Int_array [|0;1;2|]);
+  assert (value "(array/range 3)" = Eval.Float_array [|0.;1.;2.|]);
+  assert (value ("(map (fn [x] (int/add x 1)) (array/int 3 " ^ text ^ "))")
+    = Eval.Int_array [|high+1;high+1;high+1|]);
+  assert (value ("(for [x (array/int 65 " ^ text ^ ")] x)")
+    = Eval.Int_array (Array.make 65 high));
+  assert (value "(scan [a 0] [x (array/int 3 2)] (int/add a x))"
+    = Eval.Int_array [|2;4;6|]);
+  assert (value "(scan [a 7] [x (array/int 0)] (int/add a x))" = Eval.Int_array [||]);
+  assert (value "(fold [a 7] [x (array/int 0)] (int/add a x))" = Eval.Int 7);
+  assert (value "(reduce int/add 7 (array/int 0))" = Eval.Int 7);
+  assert (value "(array/sum (array/int 0))" = Eval.Int 0);
+  assert (value (Printf.sprintf "(array/sum (array/int 2 %d))" max_int) = Eval.Int (-2));
+  assert (value ("(array/nth (array/concat (array/slice (array/int 3 " ^ text
+    ^ ") 1 1) (array/int 1 0)) 0)") = Eval.Int high);
+  let workspace = checked ("(map (fn [x] (int/add x 1)) (array/int 4097 " ^ text ^ "))") in
+  let expected = Array.make 4097 (high+1) in
+  let run bulk = List.assoc "g" (Result.get_ok
+    (Eval.Private.static_with_kernels ~bulk workspace)).results in
+  assert (run (fun _ -> Some (Eval.Int_array expected)) = Eval.Int_array expected);
+  (* A rounded prefix or wrong kind cannot replace exact integer evaluation. *)
+  assert (run (fun _ -> Some (Eval.Int_array (Array.make 4097 high))) = Eval.Int_array expected);
+  assert (run (fun _ -> Some (Eval.Float_array (Array.make 4097 (float (high+1)))))
+    = Eval.Int_array expected);
+  let typed_result args = match List.find_opt (fun (name,_,_) -> name="type") args with
+    | None | Some (_,_,Some (Param.Text_value "float")) -> Ty.Array Ty.Float
+    | Some (_,_,Some (Param.Text_value "vec3")) -> Ty.Array Ty.Vec3
+    | _ -> Value.fail "E_TEST_TYPE" "The type must be literal." in
+  let base = Option.get (Op.find "array/float" Context.value) in
+  let operator = {base with name="test/typed";
+    signature={pos=[];opt=[];rest=None;kw=["type",Ty.Text]}; choices=[];
+    out=(fun _ -> Ty.Array Ty.Float); out_args=Some typed_result;
+    body=(fun ~live:_ ~node:_ args ->
+      match List.assoc_opt "type" args with
+      | Some (Text "vec3") -> Vec3_array [|1.;2.;3.|]
+      | _ -> Float_array [|1.|])} in
+  List.iter (fun (body, expected, ty) ->
+    let workspace = checked ~ops:[operator] body in
+    assert ((List.hd workspace.graphs).body.ty=ty);
+    assert (List.assoc "g" (Result.get_ok (Eval.static workspace)).results=expected))
+    ["(test/typed)", Eval.Float_array [|1.|], Ty.Array Ty.Float;
+     "(test/typed :type \"vec3\")", Eval.Vec3_array [|1.;2.;3.|], Ty.Array Ty.Vec3];
+  let workspace, diagnostics = Workspace.check ~ops:[operator] catalog
+    (forms "(let* [kind \"vec3\"] (test/typed :type kind))") in
+  assert (workspace=None && List.exists (fun (d : Diagnostic.t) -> d.code="E_TEST_TYPE"
+    && Option.is_some d.span) diagnostics);
+  let source = {base with name="test/present";
+    signature={pos=[];opt=[];rest=None;kw=[]}; choices=[]; out_args=None;
+    out=(fun _ -> Ty.Bool);
+    body=(fun ~live:_ ~node:_ _ -> Source ("test/present",Ty.Bool,[]))} in
+  let static body = List.assoc "g" (Result.get_ok (Eval.static (checked ~ops:[source] body))).results in
+  let resolve = function Eval.Source ("test/present",Ty.Bool,[]) -> Ok (Eval.Bool false)
+    | _ -> assert false in
+  let marker = static "(test/present)" in
+  assert (Eval.is_live marker && not (Eval.frame_dependent marker));
+  assert (Eval.Private.force_reference ~resolve marker ~live:(Frame_input.at_time 0.) = Ok (Eval.Bool false));
+  assert (Eval.Private.force_reference ~resolve
+    (static "(if (test/present) (sqrt -1) 7)") ~live:(Frame_input.at_time 0.) = Ok (Eval.Int 7));
+  (match Eval.Private.force_reference marker ~live:(Frame_input.at_time 0.) with
+   | Error d -> assert (d.code="E_DATA_SOURCE") | Ok _ -> assert false);
+  List.iter (fun resolved ->
+    match Eval.Private.force_reference ~resolve:(fun _ -> Ok resolved) marker
+      ~live:(Frame_input.at_time 0.) with
+    | Error d -> assert (d.code="E_DATA_SOURCE") | Ok _ -> assert false)
+    [marker; Eval.Float 1.]
+
+let () =
+  let workspace = match Workspace.check {Check.version=1;kinds=[]}
+      (Result.get_ok (Syntax.parse "(workspace strict (graph g :context value (+ t 1.)))")) with
+    | Some workspace,[] -> workspace | _ -> assert false in
+  let value=List.assoc "g" (Result.get_ok (Eval.static workspace)).results in
+  let live=Frame_input.at_time 2. in
+  let force strict execute = Eval.Private.force_with_executor ~compiled:true ~strict
+    ~state:(Eval.create_state ()) ~execute value ~live in
+  assert (force false (fun _ _ -> None)=Ok (Eval.Float 3.));
+  (match force true (fun _ _ -> None) with
+   | Error d -> assert (d.code="E_CORE_FORM") | Ok _ -> assert false);
+  let refusal=Diagnostic.error ~code:"E_TEST_EXECUTOR" "Executor refused the body." in
+  (match force true (fun _ _ -> Some (Error refusal)) with
+   | Error d -> assert (d.code=refusal.code) | Ok _ -> assert false);
+  assert (force true (fun _ _ -> Some (Ok (Eval.Float 7.)))=Ok (Eval.Float 7.))

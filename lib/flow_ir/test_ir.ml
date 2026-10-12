@@ -31,7 +31,7 @@ let () =
       (List.assoc path qualified.approx_reasons)))
     ["[uv.x uv.y t 1]",true,"";
      "[(floor 2.5) uv.y t 1]",true,"";
-     "[(floor uv.x) uv.y t 1]",false,"E_PACKED_OPERATOR";
+     "[(floor uv.x) uv.y t 1]",false,"E_GPU_FORM";
      "[(+ uv.x 1e39) uv.y t 1]",false,"E_GPU_FORM"];
   let shared=check "(workspace pixels (graph img :context image
     (let* [f (fn [uv] [uv.x uv.y t 1]) held (fn [uv] [uv.x uv.y t 1])
@@ -115,6 +115,15 @@ let ok = function Ok x -> x | Error d -> failwith (Flow.Diagnostic.to_string d)
 let approx_error ir = match place ir with
   | Error d -> assert (d.Flow.Diagnostic.code = "E_APPROX_SINK")
   | Ok _ -> failwith "accepted an approximate exact-only sink"
+
+let () =
+  List.iter (fun (value, count) ->
+    let program = ok (Executor.compile value) in
+    let graph = Executor.graph program in
+    assert (graph.nodes.(graph.roots.(0)).count = Count.Static count))
+    [E.Int_array [|0; max_int; min_int|], 3;
+     E.Text_array [|""; "猫"|], 2;
+     E.Text_array [||], 0]
 
 let () =
   let shared = share (ir [constant "a" 1.; constant "b" 1.;
@@ -529,7 +538,7 @@ let () =
      "(map (fn [uv] [uv.x uv.y t 1]) (map (fn [x] [x 2]) (array/float 4)))";
      "(map (fn [x] (floor 2.5)) (array/float 4))"];
   List.iter (fun (body,code) -> ignore (expect (mapped body) false code))
-    ["(map (fn [x] (+ x (floor t))) (array/float 4))", "E_PACKED_OPERATOR";
+    ["(map (fn [x] (+ x (floor t))) (array/float 4))", "E_GPU_FORM";
      "(for [x (array/float 4)] :skip [0] (+ x t))", "E_GPU_FORM";
      "(for [x (array/float 4) y (array/float 4)] (+ x y))", "E_GPU_FORM";
      "(map sin (array/float 4 t))", "E_PACKED_FUNCTION";
@@ -586,10 +595,10 @@ let () =
     if producer = Some path then begin
       seen := true;
       List.iter (fun fusion -> match Packed.compile_result ~fusion residual (E.Private.residual_view residual).term with
-        | Ok packed -> assert (Packed.gpu_refusals packed = [])
+        | Ok packed -> assert (Packed.gpu_refusals packed <> [])
         | Error _ -> assert false) [true;false]
     end) boundary) in
-  assert (!seen && W.Paths.mem path qualified.approx
+  assert (!seen && not (W.Paths.mem path qualified.approx)
     && not (W.Paths.mem ["g";"blocked"] qualified.approx));
   let shared = check (text "(let* [f (fn [x] (sin (+ x t))) good (map f (array/float 4))
     bad (map f (list 1.0 2.0))] 0.0)") in

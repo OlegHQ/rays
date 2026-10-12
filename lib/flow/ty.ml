@@ -57,7 +57,7 @@ let of_string s =
       let* e, j = ty (i + 5) in Some (List e, j)
     else if starts i "array:" then
       let* e, j = ty (i + 6) in
-      if List.mem e [Float; Vec2; Vec3; Vec4; Any] then Some (Array e, j) else None
+      if List.mem e [Int; Float; Vec2; Vec3; Vec4; Text; Any] then Some (Array e, j) else None
     else if starts i "rec{" then fields (i + 4) []
     else if starts i "fn(" then parameters (i + 3) []
     else
@@ -111,7 +111,7 @@ let rec of_syntax (x : Syntax.t) = match x.node with
       Option.bind (types params) (fun params -> Option.map (fun result ->
         Fn (Some {params; result})) (of_syntax result))
   | List [{node = Sym "array"; _}; inner] ->
-      (match of_syntax inner with Some (Float | Vec2 | Vec3 | Vec4 as t) -> Some (Array t) | _ -> None)
+      (match of_syntax inner with Some (Int | Float | Vec2 | Vec3 | Vec4 | Text as t) -> Some (Array t) | _ -> None)
   | _ -> None
 
 let elem = function List e | Array e -> Some e | _ -> None

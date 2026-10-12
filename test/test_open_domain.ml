@@ -64,14 +64,14 @@ let () =
     "registered context did not resolve";
   let ops = [Flow.Op.{name = "toy/emit"; ctx = context;
     signature = {pos = ["number", T.Float]; opt = []; rest = None; kw = ["gain", T.Float]};
-    out = (fun _ -> toy); any_num = false; choices = []; shape = Scalar; live = false;
+    out = (fun _ -> toy); out_args = None; any_num = false; choices = []; shape = Scalar; live = false;
     check = (fun _ -> ()); body = (fun ~live:_ ~node args -> node "toy/emit" args);
     category = "Toy"; arithmetic = None; packed_extension = None}] in
   let catalog = Flow.Check.{version = 1; kinds = []} in
   let kernel = Flow.Op.{name = "toy/kernel"; ctx = context;
     signature = {pos = []; opt = []; rest = None;
       kw = ["field", T.Fn (Some {params = [T.Vec3]; result = T.Float})]};
-    out = (fun _ -> toy); any_num = false; choices = []; shape = Scalar; live = false;
+    out = (fun _ -> toy); out_args = None; any_num = false; choices = []; shape = Scalar; live = false;
     check = (fun _ -> ()); body = (fun ~live:_ ~node args -> node "toy/kernel" args);
     category = "Toy"; arithmetic = None; packed_extension = None} in
   let kernel_ops = kernel :: ops in

@@ -157,9 +157,15 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(k
     let kernel_source = lazy (Digest.string (fst (Lisp.print (checked.source @ checked.macros @
       List.map (fun (g : Workspace.graph) -> g.form) checked.defs @
       List.map (fun (d : Workspace.node_definition) -> d.body.form) checked.nodes)))) in
-    let attribute_node ?state ?elems ~name ~values ~sources inputs =
+    let attribute_options args =
+      let text key default code=match List.assoc_opt key args with
+        |None->default|Some(E.Text text)->text|_->fail code ("Attribute "^key^" must be static text") in
+      let owner=ok(Attribute_kernel.owner(text "owner" "point" "E_ATTR_OWNER"))
+      and kind=text "type" "vec3" "E_ATTR_TYPE" in
+      ignore(ok(Attribute_kernel.value_type kind));owner,kind in
+    let attribute_node ?state ?elems ?(owner=Rdk.Attribute.Point) ?(kind="vec3") ~name ~values ~sources inputs =
       if strict_body then ignore (ok (Attribute_kernel.prepare ~strict:true ~sources inputs values));
-      Attribute_kernel.node ?state ?elems ~strict:strict_body ~reference ~profile
+      Attribute_kernel.node ?state ?elems ~strict:strict_body ~reference ~profile ~owner ~kind
         ~source:(Lazy.force kernel_source) ~name ~values ~sources inputs in
     let plan = evaluated.plan in
     let external_kernel fn = List.find_map (fun (candidate,source) ->
@@ -476,6 +482,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(k
                     "This image needs an initial-domain image resolver.")))in
                 {cid;factory;slots=[];arity=0;changes=[];dynamic=[];zone=None;kernels=[]}
             | "sop/with_attr" ->
+                let owner,kind=attribute_options args in
                 let name = match List.assoc "attribute" args with
                   | E.Text name -> name | _ -> fail "E_LOWER" "Attribute name must be static text" in
                 let values = List.assoc "values" args in
@@ -483,7 +490,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(k
                   | E.No_geo -> -1 :: deps node | _ -> deps node in
                 let factory = Edit.factory ~key:"flow.with_attr" ~label:"Write attribute"
                   ~category:["Flow"] ~arity:(List.length sources)
-                  (attribute_node ~name ~values ~sources) in
+                  (attribute_node ~owner ~kind ~name ~values ~sources) in
                 {cid; factory; arity = List.length sources; changes = []; dynamic = []; zone = None; kernels = [];
                   slots = List.filter_map (fun (i, source) -> if source < 0 then None else Some (i, source))
                     (List.mapi (fun i source -> i, source) sources)}
@@ -696,7 +703,8 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(k
           | None when n.kind = "sop/with_attr" && List.assoc "geometry" n.args <> E.No_geo ->
               let name = match List.assoc "attribute" n.args with
                 | E.Text name -> name | _ -> fail "E_LOWER" "Attribute name must be static text" in
-              attribute_node ?state ~elems:outer ~name
+              let owner,kind=attribute_options n.args in
+              attribute_node ?state ~elems:outer ~owner ~kind ~name
                 ~values:(List.assoc "values" n.args) ~sources:(deps n)
                 (List.filter_map Fun.id options)
           | None -> edit (Edit.instantiate_optional p.factory options) in
@@ -800,7 +808,8 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(k
             |Some(Flow_ir.Executor.Gpu _)->assert false in
           if selected=None && not(E.state_dependent values) then Ok node else
           Ok(Sop.Node.Private.adopt_identity ~source:node
-            (attribute_node ~state:(E.fork_state state) ~name
+            (let owner,kind=attribute_options n.args in
+             attribute_node ~state:(E.fork_state state) ~owner ~kind ~name
               ~values ~sources:(deps n) (Sop.Node.inputs node))))) nodes)
         frame_nodes plan.nodes in
       let frame_nodes=Array.fold_left(fun nodes (n:E.node)->

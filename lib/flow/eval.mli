@@ -61,6 +61,8 @@ type ('f, 'r) payload = ('f, 'r) Value.t =
   | Vec3 of float * float * float
   | Vec4 of float * float * float * float
   | List of ('f, 'r) payload array
+  | Int_array of int array
+  | Text_array of string array
   | Float_array of float array
   | Vec2_array of float array
   | Vec3_array of float array
@@ -69,6 +71,7 @@ type ('f, 'r) payload = ('f, 'r) Value.t =
   | Deferred of Ty.t * int  (** a plan node *)
   | No_geo  (** [nil] *)
   | Struct of string * Ty.t * (string * ('f, 'r) payload) list
+  | Source of string * Ty.t * (string * ('f, 'r) payload) list
       (** a scene, world, settings or panel value: the head, its resolved type and its
           arguments; [scene/merge] and [ui/tile] splice their lists *)
   | Fn of 'f
@@ -154,8 +157,10 @@ val force : ?state:state -> ?elems:(string * value) list ->
 (** Every residual inside a value replaced by its value at the time.  [elems] binds
     the element of each geometry zone ({!element_key}) to its value (a point
     is a [Vec3]); a residual that reads an unbound element is an error.
-    [resolve] materializes host-owned packed [Struct] sources at the cook
-    boundary. Without a resolver these report [E_DATA_SOURCE]. *)
+    Private forcing with [resolve] materializes host-owned [Source] values and
+    packed [Struct] sources at the cook boundary. Without a resolver these
+    report [E_DATA_SOURCE]. Resolved values must have their declared type and
+    valid storage. *)
 
 val element_key : Workspace.path -> string
 (** The name under which {!force} binds the element of the zone at this path. *)
@@ -224,15 +229,22 @@ module Private : sig
   val free_name_walks : unit -> int
   (** Number of memo misses, for the checked-term reuse regression. *)
 
+  val with_bindings : residual -> term:Workspace.term -> (string * value) list -> residual
+  (** Specialize a checked subterm with immutable captured bindings. Retains
+      its evaluation scope and owns a fresh identity and compiled cache. *)
+
   val force_with_executor : ?state:state -> ?elems:(string * value) list ->
     ?resolve:(value -> (value, Diagnostic.t) result) -> ?owner:unit ref ->
     ?compiled:bool ->
+    ?strict:bool ->
     execute:(residual -> live -> (value, Diagnostic.t) result option) ->
     value -> live:live -> (value, Diagnostic.t) result
   (** Dispatch supported packed subterms inside an evaluator-owned frame fold.
       None retains the interpreter. The callback receives the current immutable
       bindings; the evaluator still owns cell identity and the frame transaction.
       [compiled:false] offers it only map, reduce and loop roots, not every forced residual.
+      [strict:true] propagates executor errors and refuses an unsupported
+      forced residual instead of interpreting it.
       Reference forcing never invokes this callback. *)
 
   val function_bindings : fn -> (string * value) list

@@ -25,17 +25,18 @@ program
   r3 = Frame "t"
   r4 = Const 0x0p+0
   r5 = Binary Gt 3 4
-  r6 = Binary Mul 0 0
-  r7 = Binary Mul 1 1
-  r8 = Binary Mul 2 2
-  r9 = Binary Add 6 7
-  r10 = Binary Add 9 8
-  r11 = Unary Sqrt 10
-  r12 = Const 0x1p+0
-  r13 = Binary Min 11 12
-  r14 = Select 5 13 4
+  r6 = Guarded 5:true (Binary Mul 0 0)
+  r7 = Guarded 5:true (Binary Mul 1 1)
+  r8 = Guarded 5:true (Binary Mul 2 2)
+  r9 = Guarded 5:true (Binary Add 6 7)
+  r10 = Guarded 5:true (Binary Add 9 8)
+  r11 = Guarded 5:true (Unary Sqrt 10)
+  r12 = Guarded 5:true (Const 0x1p+0)
+  r13 = Guarded 5:true (Binary Min 11 12)
+  r14 = Guarded 5:false (Const 0x0p+0)
+  r15 = Select 5 13 14
   widths [3]
-  output [14]
+  output [15]
   uniform_widths []
   collecting true
 
@@ -501,17 +502,6 @@ program
   uniform_widths []
   collecting true
 
-program
-  r0 = Input 0 1 0
-  r1 = Frame "t"
-  r2 = Binary Add 0 1
-  r3 = Const 0x1.e848p+19
-  r4 = Binary Pow 2 3
-  widths [1]
-  output [4]
-  uniform_widths []
-  collecting true
-
 refused E_PACKED_TYPE 60..65 "Packed accumulator a has unsupported seed type bool."
 
 program
@@ -532,7 +522,7 @@ refused E_PACKED_FORM 76..86 "Unsupported packed body form list."
 
 refused E_PACKED_FUNCTION 56..59 "Function value sin has no instantiated packed body."
 
-refused E_PACKED_OPERATOR 69..78 "Dynamic integer operation floor requires reference evaluation."
+refused E_PACKED_OPERATOR 69..87 "Dynamic operator value/rand has no packed instruction for 3 arguments at width 1."
 
 refused E_PACKED_CONSTANT 64..94 "Noise configuration seed must be constant."
 

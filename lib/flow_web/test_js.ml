@@ -17,12 +17,12 @@ let close a b = a = b || Float.abs (a -. b) <= 1e-12 *. Float.max (Float.abs a) 
 
 (* Runs the region in two ranges (to exercise the carried state) and returns
    the status and one array per output line. *)
-let run_node program =
-  let live = Frame_input.at_time 1. in
+let run_node_raw program =
+  let live = {(Frame_input.at_time 1.) with frame=3} in
   let region = P.to_region program and view = P.Private.view program in
-  let inputs = Test_program.ok (P.Private.prepare program ~live) in
+  let inputs = Test_program.ok (P.Private.prepare_values program ~live) in
   let count = if region.iteration = R.Product then
-      Array.fold_left ( * ) 1 (Array.mapi (fun i a -> Array.length a / view.widths.(i)) inputs.arrays) else inputs.count in
+      Array.fold_left ( * ) 1 (Array.map Flow.Value.array_length inputs.arrays) else inputs.count in
   let valid = List.sort_uniq compare (List.filter (fun i -> i >= 0 && i < count) (Array.to_list region.skip)) in
   let kept = count - List.length valid in
   let collecting = match region.result with R.Collect | R.Accumulate (_, true) -> true | _ -> false in
@@ -32,14 +32,33 @@ let run_node program =
   let script = Buffer.create 65536 in
   Buffer.add_string script (Flow_web.Js.region program);
   let array values = "Float64Array.from([" ^ numbers values ^ "])" in
-  Printf.bprintf script "const inputs = [%s];\n" (String.concat "," (List.map array (Array.to_list inputs.arrays)));
+  let value = function Flow.Eval.Int n -> string_of_int n ^ "n"
+    | Float f -> Printf.sprintf "%.17g" f | _ -> failwith "scalar frame fact expected" in
+  let packed = function Flow.Eval.Int_array values ->
+      "BigInt64Array.from([" ^ String.concat "," (Array.to_list (Array.map (fun n -> string_of_int n ^ "n") values)) ^ "])"
+    | v -> array (flatten v) in
+  let uniform index v =
+    let rec integer = function P.Int_uniform n -> n=index | Guarded (_,body) -> integer body | _ -> false in
+    if Array.exists integer view.code then "[" ^ value v ^ "]"
+    else array (match v with Flow.Eval.Int n -> [|float n|] | _ -> flatten v) in
+  Printf.bprintf script "const inputs = [%s];\n" (String.concat "," (List.map packed (Array.to_list inputs.arrays)));
   Printf.bprintf script "const uniforms = [%s];\n"
-    (String.concat "," (List.map array (Array.to_list inputs.uniforms @ [inputs.frame])));
+    (String.concat "," (Array.to_list (Array.mapi uniform inputs.uniforms)
+      @ ["[" ^ String.concat "," (Array.to_list (Array.map value inputs.frame)) ^ "]"]));
   Printf.bprintf script "const outputs = [%s];\n"
-    (String.concat "," (List.map (Printf.sprintf "new Float64Array(%d)") outputs));
+    (String.concat "," (List.mapi (fun k length ->
+      let integer=R.integer_register view.code.(view.outputs.(min k (Array.length view.outputs-1)).(0)) in
+      if integer && region.result<>R.Collect && k=List.length outputs-1 then Printf.sprintf "Array(%d).fill(0n)" length else Printf.sprintf "new %s(%d)"
+        (if integer then "BigInt64Array" else "Float64Array") length) outputs));
   (match region.result with
+   | R.Sum false -> Printf.bprintf script "outputs[outputs.length - 1][%d] = 0;\n" width
    | R.Sum zero -> if zero then Printf.bprintf script "outputs[outputs.length - 1][%d] = 1;\n" width
-   | R.Accumulate _ -> Printf.bprintf script "outputs[outputs.length - 1][%d] = 1;\n" width
+   | R.Accumulate (seed,_) ->
+       let seed=Test_program.ok (Flow.Eval.Private.eval_term region.residual seed ~live) in
+       let values=match seed with Flow.Eval.Int _ -> [|value seed|]
+         | _ -> Array.map (Printf.sprintf "%.17g") (flatten seed) in
+       Array.iteri (fun i seed -> Printf.bprintf script "outputs[outputs.length - 1][%d] = %s;\n" i seed) values;
+       Printf.bprintf script "outputs[outputs.length - 1][%d] = 1;\n" width
    | R.Collect -> ());
   Printf.bprintf script "let status = region(inputs, uniforms, outputs, 0, %d);\n" (count / 2);
   Printf.bprintf script "if (status === 0) status = region(inputs, uniforms, outputs, %d, %d);\n" (count / 2) count;
@@ -54,13 +73,31 @@ let run_node program =
   | status :: rest ->
       int_of_string status,
       List.filteri (fun i _ -> i < List.length outputs) rest
-      |> List.map (fun l -> String.split_on_char ' ' l |> List.filter ((<>) "") |> List.map float_of_string |> Array.of_list)
+      |> List.map (fun l -> String.split_on_char ' ' l |> List.filter ((<>) "") |> Array.of_list)
   | [] -> assert false
+
+let run_node program = let status,outputs=run_node_raw program in
+  status,List.map (Array.map float_of_string) outputs
+
+let compare_integer source =
+  let program=try Test_program.compile source with Failure message -> failwith (source ^ ": " ^ message) in
+  let live={(Frame_input.at_time 1.) with frame=3} in
+  let status,produced=run_node_raw program in
+  assert (status=0);
+  let expected=Test_program.ok (P.force_all ~strict:true program ~live) in
+  let output=match produced with output::_ -> output | _ -> assert false in
+  List.iter (fun value -> let values=match value with
+    | Flow.Eval.Int_array values -> values | Int n -> [|n|] | _ -> failwith "Integer result expected" in
+    assert (Array.length output>=Array.length values);
+    Array.iteri (fun i n -> if output.(i)<>string_of_int n then
+      failwith (Printf.sprintf "Integer JS mismatch at %d: %s <> %d" i output.(i) n)) values) expected;
+  let reference=P.reference program ~live |> Test_program.ok in
+  assert (expected=[reference])
 
 let compare_native name program =
   let status, produced = run_node program in
   assert (status = 0);
-  let live = Frame_input.at_time 1. in
+  let live = {(Frame_input.at_time 1.) with frame=3} in
   let expected = Test_program.ok (P.force_all program ~live) |> List.map flatten in
   let region = P.to_region program in
   let compared = ref 0 and exact = ref 0 in
@@ -112,6 +149,15 @@ let () =
   else begin
     print_endline "JS regions under node against native Packed.force_all:";
     List.iter (fun (name, program) -> compare_native name program) programs;
+    List.iter compare_integer [
+      "(map (fn [x] (int/add x (frame/index))) (array/int 32769 4611686018427387903))";
+      "(map (fn [x] (int/sub x (frame/index))) (array/int 32769 -4611686018427387904))";
+      "(map (fn [x] (int/xor x (int/add 9007199254740993 (frame/index)))) (array/range 32769 :type int))";
+      "(map (fn [x] (int/shr (int/add x (int/sub (frame/index) 9007199254740993)) 31)) (array/range 1025 :type int))";
+      "(map (fn [x] (floor (+ x t))) (array/range 1025))";
+      "(array/sum (map (fn [x] (int/add x (frame/index))) (array/int 1025 9007199254740993)))";
+      "(scan [a (frame/index)] [x (array/range 1025 :type int)] (int/add a x))";
+      "(fold [a (frame/index)] [x (array/range 1025 :type int)] (int/add a x))"];
     (* A non-finite value is a status, not an exception, and native refuses it too. *)
     let overflow = Test_program.compile "(map (fn [x] (pow (+ x t) 1000000)) (array/range 1024))" in
     assert (fst (run_node overflow) = 1);

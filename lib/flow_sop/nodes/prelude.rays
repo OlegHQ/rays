@@ -1,2 +1,154 @@
-; Shared node helpers belong here. Individual node bodies live beside this file.
-(workspace sop_nodes)
+; Shared value helpers. Matrices are row-major records and multiply column vectors.
+(workspace sop_nodes
+  ; Integer floor/ceil keep their existing contract. Guard the eager conversion
+  ; branch and preserve signed zero, including ceil of a small negative value.
+  (defn float_floor :context value [(value : float)]
+    (let* [large (>= (abs value) 4503599627370496.0)
+           rounded (float (floor (if large 0.0 value)))]
+      (if (or large (= value 0.0)) value rounded)))
+  (defn float_ceil :context value [(value : float)]
+    (let* [large (>= (abs value) 4503599627370496.0)
+           rounded (float (ceil (if large 0.0 value)))]
+      (if (or large (= value 0.0)) value
+        (if (and (< value 0.0) (= rounded 0.0)) -0.0 rounded))))
+
+  (defn vec3_dot :context value [(left : vec3) (right : vec3)]
+    (+ (+ (* left.x right.x) (* left.y right.y)) (* left.z right.z)))
+  (defn vec3_cross :context value [(left : vec3) (right : vec3)]
+    [(- (* left.y right.z) (* left.z right.y))
+     (- (* left.z right.x) (* left.x right.z))
+     (- (* left.x right.y) (* left.y right.x))])
+  ; Vec3.normalize uses a zero-only test and reciprocal multiplication.
+  (defn vec3_normalize :context value [(value : vec3)]
+    (let* [size (sqrt (vec3_dot value value))
+           reciprocal (/ 1.0 (if (= size 0.0) 1.0 size))]
+      (if (= size 0.0) [0.0 0.0 0.0] (* value reciprocal))))
+  ; Deform's frame construction rescales before taking the length, then divides.
+  (defn vec3_normalize_scaled :context value [(value : vec3)]
+    (let* [scale (max (abs value.x) (max (abs value.y) (abs value.z)))
+           scaled (/ value (if (= scale 0.0) 1.0 scale))
+           size (sqrt (vec3_dot scaled scaled))]
+      (if (= scale 0.0) [0.0 0.0 0.0]
+        (/ scaled (if (= size 0.0) 1.0 size)))))
+  ; Quat.normalize has its own 1e-12 identity threshold and direct division.
+  (defn quat_normalize :context value [(value : vec4)]
+    (let* [size (sqrt (+ (+ (+ (* value.x value.x) (* value.y value.y))
+                         (* value.z value.z)) (* value.w value.w)))]
+      (if (<= size 1e-12) [0.0 0.0 0.0 1.0]
+        (/ value (if (<= size 1e-12) 1.0 size)))))
+  (defn quat_mul :context value [(left : vec4) (right : vec4)]
+    [(- (+ (+ (* left.w right.x) (* left.x right.w)) (* left.y right.z)) (* left.z right.y))
+     (+ (+ (- (* left.w right.y) (* left.x right.z)) (* left.y right.w)) (* left.z right.x))
+     (+ (- (+ (* left.w right.z) (* left.x right.y)) (* left.y right.x)) (* left.z right.w))
+     (- (- (- (* left.w right.w) (* left.x right.x)) (* left.y right.y)) (* left.z right.z))])
+
+  (defn mat4_identity :context value []
+    {:r0 [1.0 0.0 0.0 0.0] :r1 [0.0 1.0 0.0 0.0]
+     :r2 [0.0 0.0 1.0 0.0] :r3 [0.0 0.0 0.0 1.0]})
+  (defn mat4_translation :context value [(value : vec3)]
+    {:r0 [1.0 0.0 0.0 value.x] :r1 [0.0 1.0 0.0 value.y]
+     :r2 [0.0 0.0 1.0 value.z] :r3 [0.0 0.0 0.0 1.0]})
+  (defn mat4_scaling :context value [(value : vec3)]
+    {:r0 [value.x 0.0 0.0 0.0] :r1 [0.0 value.y 0.0 0.0]
+     :r2 [0.0 0.0 value.z 0.0] :r3 [0.0 0.0 0.0 1.0]})
+  (defn mat4_rotation_x :context value [(angle : float)]
+    (let* [c (cos angle) s (sin angle)]
+      {:r0 [1.0 0.0 0.0 0.0] :r1 [0.0 c (* -1.0 s) 0.0]
+       :r2 [0.0 s c 0.0] :r3 [0.0 0.0 0.0 1.0]}))
+  (defn mat4_rotation_y :context value [(angle : float)]
+    (let* [c (cos angle) s (sin angle)]
+      {:r0 [c 0.0 s 0.0] :r1 [0.0 1.0 0.0 0.0]
+       :r2 [(* -1.0 s) 0.0 c 0.0] :r3 [0.0 0.0 0.0 1.0]}))
+  (defn mat4_rotation_z :context value [(angle : float)]
+    (let* [c (cos angle) s (sin angle)]
+      {:r0 [c (* -1.0 s) 0.0 0.0] :r1 [s c 0.0 0.0]
+       :r2 [0.0 0.0 1.0 0.0] :r3 [0.0 0.0 0.0 1.0]}))
+  (defn mat4_rotation :context value [(direction : vec3) (angle : float)]
+    (let* [axis (vec3_normalize direction) c (cos angle) s (sin angle) d (- 1.0 c)]
+      (if (= (vec3_dot axis axis) 0.0) (mat4_identity)
+        {:r0 [(+ c (* (* axis.x axis.x) d))
+              (- (* (* axis.x axis.y) d) (* axis.z s))
+              (+ (* (* axis.x axis.z) d) (* axis.y s)) 0.0]
+         :r1 [(+ (* (* axis.y axis.x) d) (* axis.z s))
+              (+ c (* (* axis.y axis.y) d))
+              (- (* (* axis.y axis.z) d) (* axis.x s)) 0.0]
+         :r2 [(- (* (* axis.z axis.x) d) (* axis.y s))
+              (+ (* (* axis.z axis.y) d) (* axis.x s))
+              (+ c (* (* axis.z axis.z) d)) 0.0]
+         :r3 [0.0 0.0 0.0 1.0]})))
+  (defn mat4_transpose :context value [(matrix : {:r0 vec4 :r1 vec4 :r2 vec4 :r3 vec4})]
+    {:r0 [matrix.r0.x matrix.r1.x matrix.r2.x matrix.r3.x]
+     :r1 [matrix.r0.y matrix.r1.y matrix.r2.y matrix.r3.y]
+     :r2 [matrix.r0.z matrix.r1.z matrix.r2.z matrix.r3.z]
+     :r3 [matrix.r0.w matrix.r1.w matrix.r2.w matrix.r3.w]})
+  ; Mat4.mul starts each accumulator at positive zero, unlike a dot product.
+  (defn mat4_mul_row :context value [(row : vec4) (right : {:r0 vec4 :r1 vec4 :r2 vec4 :r3 vec4})]
+    (+ (+ (+ (+ [0.0 0.0 0.0 0.0] (* row.x right.r0))
+             (* row.y right.r1)) (* row.z right.r2)) (* row.w right.r3)))
+  (defn mat4_mul :context value
+    [(left : {:r0 vec4 :r1 vec4 :r2 vec4 :r3 vec4})
+     (right : {:r0 vec4 :r1 vec4 :r2 vec4 :r3 vec4})]
+    {:r0 (mat4_mul_row left.r0 right) :r1 (mat4_mul_row left.r1 right)
+     :r2 (mat4_mul_row left.r2 right) :r3 (mat4_mul_row left.r3 right)})
+  (defn mat4_dot4 :context value [(row : vec4) (value : vec4)]
+    (+ (+ (+ (* row.x value.x) (* row.y value.y)) (* row.z value.z)) (* row.w value.w)))
+  (defn mat4_transform :context value
+    [(matrix : {:r0 vec4 :r1 vec4 :r2 vec4 :r3 vec4}) (value : vec4)]
+    [(mat4_dot4 matrix.r0 value) (mat4_dot4 matrix.r1 value)
+     (mat4_dot4 matrix.r2 value) (mat4_dot4 matrix.r3 value)])
+  (defn mat4_point_row :context value [(row : vec4) (value : vec3)]
+    (+ (+ (+ (* row.x value.x) (* row.y value.y)) (* row.z value.z)) row.w))
+  (defn mat4_transform_point :context value
+    [(matrix : {:r0 vec4 :r1 vec4 :r2 vec4 :r3 vec4}) (value : vec3)]
+    (let* [result [(mat4_point_row matrix.r0 value) (mat4_point_row matrix.r1 value)
+                  (mat4_point_row matrix.r2 value)]
+           w (mat4_point_row matrix.r3 value) raw (<= (abs w) 1e-12)]
+      (if raw result (/ result (if raw 1.0 w)))))
+  (defn mat4_direction_row :context value [(row : vec4) (value : vec3)]
+    (+ (+ (* row.x value.x) (* row.y value.y)) (* row.z value.z)))
+  (defn mat4_transform_direction :context value
+    [(matrix : {:r0 vec4 :r1 vec4 :r2 vec4 :r3 vec4}) (value : vec3)]
+    [(mat4_direction_row matrix.r0 value) (mat4_direction_row matrix.r1 value)
+     (mat4_direction_row matrix.r2 value)])
+
+  (defn vec4_component :context value [(value : vec4) (index : int)]
+    (case index 0 value.x 1 value.y 2 value.z :else value.w))
+  ; Partial-pivot Gauss-Jordan, matching Mat4.inverse's first-tie pivot rule.
+  ; Empty list denotes singular; a successful inverse is the single list item.
+  (defn mat4_inverse :context value [(matrix : {:r0 vec4 :r1 vec4 :r2 vec4 :r3 vec4})]
+    (let* [initial (list {:left matrix.r0 :right [1.0 0.0 0.0 0.0]}
+                        {:left matrix.r1 :right [0.0 1.0 0.0 0.0]}
+                        {:left matrix.r2 :right [0.0 0.0 1.0 0.0]}
+                        {:left matrix.r3 :right [0.0 0.0 0.0 1.0]})
+           reduced (fold [state {:rows initial :singular false}] [column (range 4)]
+             (let* [pivot (fold [best column] [candidate (range (+ column 1) 4)]
+                      (if (> (abs (vec4_component (get (nth state.rows candidate) :left) column))
+                             (abs (vec4_component (get (nth state.rows best) :left) column)))
+                        candidate best))
+                    pivot_row (nth state.rows pivot)
+                    divisor (vec4_component pivot_row.left column)]
+               (if (<= (abs divisor) 1e-12) (assoc state :singular true)
+                 (let* [normalized {:left (/ pivot_row.left divisor) :right (/ pivot_row.right divisor)}
+                        swapped (for [index (range 4)]
+                          (if (= index column) normalized
+                            (if (= index pivot) (nth state.rows column) (nth state.rows index))))
+                        eliminated (for [row (range 4)]
+                          (let* [entry (nth swapped row) factor (vec4_component entry.left column)]
+                            (if (= row column) entry
+                              {:left (- entry.left (* factor normalized.left))
+                               :right (- entry.right (* factor normalized.right))})))]
+                   (assoc state :rows eliminated)))))]
+      (if reduced.singular (list)
+        (list {:r0 (get (nth reduced.rows 0) :right) :r1 (get (nth reduced.rows 1) :right)
+               :r2 (get (nth reduced.rows 2) :right) :r3 (get (nth reduced.rows 3) :right)}))))
+
+  (defn rand_mix_index :context value [(value : int)]
+    (let* [a (int/xor value (int/shr value 30))
+           b (int/mul a 4564476756301768121)
+           c (int/xor b (int/shr b 27))
+           d (int/mul c 1499779743744070123)]
+      (int/xor d (int/shr d 31))))
+  (defn rand_at :context value [(seed : int) (index : int)]
+    (let* [key (int/xor seed (int/mul (int/add index 1276007651554290947)
+                                     2177342782468422677))]
+      (/ (float (int/shr (rand_mix_index key) 10)) 9007199254740992.0))))

@@ -6,6 +6,28 @@ let check ?(context = "value") body =
   | _, ds -> failwith (String.concat "; " (List.map Diagnostic.to_string ds))
 let value ?context body = List.assoc "g" (Result.get_ok (Eval.run ~time:0. (check ?context body))).results
 let () =
+  let integers=[|min_int;min_int+1;-(1 lsl 53)-1;0;(1 lsl 53)+1;max_int|] in
+  let packed=Value.array_init Ty.Int (Array.length integers) (fun i->Value.Int integers.(i)) in
+  assert (packed=Value.Int_array integers);
+  assert (Value.ty_of packed=Ty.Array Ty.Int);
+  assert (Value.array_length packed=Array.length integers);
+  Array.iteri (fun i n->assert (Value.array_get packed i=Value.Int n)) integers;
+  Value.validate packed;
+  assert (Value.show_with Fun.id packed="6 × int");
+  assert (Value.key_of ~residual:Fun.id packed<>
+    Value.key_of ~residual:Fun.id (Value.Float_array (Array.map float integers)));
+  assert (Value.array_init Ty.Int 0 (fun _->assert false)=Value.Int_array [||]);
+  List.iter (fun count->try ignore (Value.array_init Ty.Int count (fun _->assert false));assert false
+    with Value.Fail(code,_,_)->assert(code="E_ARRAY_RANGE")) [-1;Sys.max_array_length+1];
+  List.iter (fun index->try ignore (Value.array_get packed index);assert false
+    with Value.Fail(code,_,_)->assert(code="E_ARRAY_RANGE")) [-1;Array.length integers];
+  let source=Value.Source("typed",Ty.Array Ty.Int,["values",packed]) in
+  assert (Value.ty_of source=Ty.Array Ty.Int && Value.coerce_to Ty.Float source=source);
+  Value.validate source;
+  assert (Value.key_of ~residual:Fun.id source<>
+    Value.key_of ~residual:Fun.id (Value.Struct("typed",Ty.Array Ty.Int,["values",packed])))
+
+let () =
   let rejects packed code message =
     let before = Marshal.to_string packed [Marshal.No_sharing] in
     (try Value.validate packed; failwith "invalid packed input accepted"
@@ -85,7 +107,7 @@ let () =
   assert (export () = [|Eval.Float 1250.; Float 2500.; Float 3750.; Float 5000.; Float 6250.|]);
   assert (Marshal.to_string (export ()) [] = Marshal.to_string (export ()) []);
   assert (Ty.of_string "array:vec3" = Some (Ty.Array Ty.Vec3));
-  assert (Ty.of_string "array:text" = None);
+  assert (Ty.of_string "array:text" = Some (Ty.Array Ty.Text));
   assert (Result.is_error (Eval.static (check "(array/count (array/float -1))")));
   assert (Result.is_error (Eval.static (check "(array/nth (array/float 10) 10)")));
   assert (Result.is_error (Eval.run ~time:0. (check "(sum [x (array/float 2 1e308)] x)")));
@@ -111,3 +133,54 @@ let () =
     "(workspace w (graph g :context value (map + (list 1 2) (array/float 2))))") in
   let _, ds = Workspace.check {Check.version = 1; kinds = []} forms in
   assert (List.exists (fun (d : Diagnostic.t) -> d.code = "E_ARRAY_TYPE") ds)
+
+let () =
+  let strings=[|"";"猫";"a\000b";"é";"😀";"quote\"\\\n"|] in
+  let array=Value.array_init Ty.Text (Array.length strings) (fun i->Value.Text strings.(i)) in
+  assert (array=Value.Text_array strings && Value.ty_of array=Ty.Array Ty.Text);
+  assert (Value.array_length array=Array.length strings);
+  Array.iteri (fun i text->assert (Value.array_get array i=Value.Text text)) strings;
+  Value.validate array;
+  assert (Value.show_with Fun.id array="6 × text");
+  assert (Ty.of_syntax (Syntax.make (List [Syntax.make (Sym "array");Syntax.make (Sym "text")]))
+    =Some(Ty.Array Ty.Text));
+  assert (Value.array_init Ty.Text 0 (fun _->assert false)=Value.Text_array[||]);
+  let source=Value.Source("texts",Ty.Array Ty.Text,["values",array]) in
+  assert (Value.ty_of source=Ty.Array Ty.Text);
+  assert (Value.key_of ~residual:Fun.id source<>Value.key_of ~residual:Fun.id array);
+  let text=Syntax.make (Str "猫😀é") |> Lisp.flat in
+  let expected=Eval.Text_array (Array.make 5001 "猫😀é") in
+  assert (value ~context:"host" "(array/text 3)"=Eval.Text_array[|"";"";""|]);
+  List.iter (fun body->assert(value ~context:"host" body=expected))
+    ["(array/text 5001 "^text^")";
+     "(map (fn [x] x) (array/text 5001 "^text^"))";
+     "(for [x (array/text 5001 "^text^")] x)";
+     "(scan [a \"\"] [x (array/text 5001 "^text^")] x)"];
+  assert (value "(array/count (array/text 5001))"=Eval.Int 5001);
+  assert (value ~context:"host" "(for [x (array/text 2 \"猫\") y (array/text 2501 \"😀\")] :skip [5001] y)"
+    =Eval.Text_array(Array.make 5001 "😀"));
+  assert (value ~context:"host" "(scan [a \"seed\"] [x (array/text 2 \"猫\") y (array/text 2501 \"😀\")] y)"
+    =Eval.Text_array(Array.make 5002 "😀"));
+  assert (value ~context:"host" ("(array/concat (array/text 2 "^text^") (array/text 1 \"other\"))")
+    =Eval.Text_array[|"猫😀é";"猫😀é";"other"|]);
+  assert (value ~context:"host" ("(array/slice (array/text 5001 "^text^") 4999 2)")
+    =Eval.Text_array[|"猫😀é";"猫😀é"|]);
+  assert (value "(fold [a 0] [x (array/text 5001)] (int/add a 1))"=Eval.Int 5001);
+  assert (value "(reduce (fn [a x] (int/add a 1)) 0 (array/text 5001))"=Eval.Int 5001);
+  List.iter (fun body->assert(value ~context:"host" body=Eval.Text_array[||]))
+    ["(map (fn [x] x) (array/text 0))";"(for [x (array/text 0)] x)";
+     "(scan [a \"seed\"] [x (array/text 0)] x)";"(array/slice (array/text 1) 1 0)";
+     "(for [x (array/text 0) y (array/text -1)] y)";
+     "(for [x (array/text 2) y (array/text 0)] y)";
+     "(scan [a \"seed\"] [x (array/text 0) y (array/text -1)] y)";
+     "(array/concat (array/text 0) (array/text 0))"];
+  assert (value ~context:"host" "(fold [a \"seed\"] [x (array/text 0)] x)"=Eval.Text "seed");
+  let bulk_calls=ref 0 in
+  ignore (Result.get_ok(Eval.Private.static_with_kernels ~bulk:(fun _->incr bulk_calls;None)
+    (check ~context:"host" "(map (fn [x] x) (array/text 5001 \"猫\"))")));
+  assert(!bulk_calls=0);
+  List.iter (fun body->assert(Result.is_error(Eval.static(check ~context:"host" body))))
+    ["(array/text -1)";"(array/nth (array/text 0) 0)";
+     "(array/slice (array/text 1) 0 2)";"(array/concat (array/text 1) (array/int 1))";
+     "(array/sum (array/text 0))"];
+  print_endline "Text arrays: exact UTF-8 values, empty operations and interpreter map/for/scan/fold/reduce beyond 4,096 pass"

@@ -116,7 +116,7 @@ Every addition follows the repo's existing rules:
 
 | # | Addition | Proposed form | Unlocks |
 | --- | --- | --- | --- |
-| B1 | Typed attribute read and write | `(sop/attr geo :N :owner vertex :type vec3)`, `(sop/with_attr geo :Cd values :owner primitive)`. Owners `point vertex primitive detail`. Types `float int vec2 vec3 vec4 text`. Defaults stay `point` and `vec3`. | Every tier 2 node |
+| B1 | Typed attribute read and write | `(sop/attr geo :N :owner vertex :type vec3)`, `(sop/with_attr geo :Cd values :owner primitive)`. Owners `point vertex primitive detail`. Types `float int vec2 vec3 vec4 text float_array int_array`. CSR array-valued attributes are records of integer `offsets` and typed flat `values`; fixed 16-float matrix rows use this representation. `(sop/has_attr geo :N :owner point :type vec3)` is a cooked Boolean predicate for explicit native fallbacks. Defaults stay `point` and `vec3`; absent query type matches any storage. | Every tier 2 node |
 | B2 | Integer arrays | `(array int)` as a packed type, int registers in the kernel tier, `int/add sub mul div mod and or xor shl shr`, comparisons, `float`, `floor`, `round`. | Int attributes, masks, all of Phase C |
 | B3 | Text arrays | `(array text)`, interpreter tier only. | `groups_from_name`, `name_from_groups`, `material`, text modes of `enumerate`, `connectivity` |
 | B4 | Element counts | `(sop/count geo :points)`, also `:vertices :primitives :edges`. | Generators, masks |
@@ -126,7 +126,7 @@ Every addition follows the repo's existing rules:
 | B8 | Math | `tan atan2 acos asin exp log floor ceil sign dot cross normalize`, 4x4 matrix and quaternion helpers written in Lisp over `vec4`. | Deformers, generators |
 | B9 | Index-keyed random | `(rand/at seed index)` reproducing `Rand.float_at` bit for bit (`lib/rays_math/rand.ml:20-30`), and `noise3` fractal form matching `Noise.fbm3`. | `point_jitter`, `group_random`, `attribute_randomize`, `mountain`, `attribute_noise` |
 | B10 | Named reductions | `array/min`, `array/max`, componentwise, CPU kernel tier. | Bounds for `match_size`, `color_by_height` |
-| B11 | Segmented reduce | `(array/segment_sum values offsets)`, also `_min _max`: one result per primitive from its vertices. | `measure`, `group_non_planar`, `group_backface`, face normals |
+| B11 | Segmented reduce | `(array/segment_sum values offsets)`, also `_min _max`: one result per contiguous segment. Primitive-position inputs additionally need C1/C2; this operator does not supply indexed gathering. | `measure` with its C.15 prerequisites, `group_non_planar`, `group_backface`, face normals |
 
 ### Phase C: building and reindexing geometry
 
@@ -140,6 +140,13 @@ Every addition follows the repo's existing rules:
 | C6 | Scatter-add | `(array/scatter_add indices values size)`, ordered. | Point normals from face normals, `extract_centroid` |
 | C7 | Concatenation on the kernel tier | `array/concat` and `array/slice` lowered to the kernel tier for all element types. | `merge`, replication |
 | C8 | First-match lookup | `(array/index_of keys queries)` for int and text keys. | `group_copy`, `blend_shapes` by id, `point_velocity`, `enumerate` |
+
+C.15 additionally requires a generic canonical triangulation data capability
+with original-primitive mapping. It may reuse RDK's shared ear clipping, but
+must preserve its triangle emission order, projection/tolerance rules and
+refusals. A triangle fan, a hidden measure callback, or an unverified call to
+`sop/triangulate` does not satisfy this prerequisite: the latter has a
+collapsed-quad shortcut that `Analysis.measure` does not use.
 
 ### Phase D: adjacency and iteration
 
@@ -163,12 +170,12 @@ Three built-ins, each backed by the existing OCaml code and each needing a JavaS
 
 All 162 nodes, grouped by the phase that ports them. A node sits in the phase where its hardest non-tier-5 mode becomes expressible. "Needs" refers to the numbered language additions. Kernel paths are relative to `lib/rdk/` unless they start with `lib/`. The implementing agent re-reads each kernel before porting it and moves a node to a later phase when the read shows it needs more.
 
-### Phase B: elementwise, 45 nodes
+### Phase B: elementwise, 43 nodes
 
 | Node | Tier | Needs | Notes | OCaml kernel |
 | --- | --- | --- | --- | --- |
 | `noise_displace` | 1 | none | Pilot. Already proven byte-identical in `lib/flow_sop/test_attribute_kernel.ml:497-510`. | `mesh/deform.ml:586` |
-| `match_axis` | 1 | B8 | 22 lines. Second pilot. | `mesh/match_size.ml:25` |
+| `match_axis` | 1 | B1 B8 | Vertex N inverse transpose and explicit absent/wrong-storage fallback need typed attribute/query support. Second pilot. | `mesh/match_size.ml:25` |
 | `transform` | 1 | B1 B5 B8 | Vertex N by inverse transpose. | `mesh/transform_ops.ml:195` |
 | `match_size` | 1 | B5 B10 B11 | Perimeter, area and volume fit modes use B11. | `mesh/match_size.ml:207` |
 | `peak` | 1 | B1 B5 | Missing N calls `sop/normals`. | `mesh/deform.ml:244` |
@@ -178,7 +185,6 @@ All 162 nodes, grouped by the phase that ports them. A node sits in the phase wh
 | `point_jitter` | 1 | B1 B2 B9 | Hash keyed by an id attribute. | `gen/point_jitter.ml:31` |
 | `rest_position` | 1 | B1 | Rest normals mode calls `sop/normals`. | `mesh/motion.ml:135` |
 | `distance_from_target` | 2 | B1 | Analytic point, axis, plane. | `mesh/transform_ops.ml:626` |
-| `uv_project` | 2 | B1 B8 | Writes vertex vec2. | `mesh/uv_ops.ml:154` |
 | `uv_transform` | 2 | B1 |  | `mesh/uv_ops.ml:356` |
 | `attr_from_image` | 2 | B1 | Needs an image sample usable in a kernel body. Verify one exists before starting. | `attrib/attribute_image.ml:5` |
 | `attribute_noise` | 2 | B1 B9 |  | `attrib/attribute_generate.ml:1204` |
@@ -188,10 +194,9 @@ All 162 nodes, grouped by the phase that ports them. A node sits in the phase wh
 | `attribute_composite` | 2 | B1 | Several inputs. Sum order matters. | `attrib/attribute_composite.ml:421` |
 | `attribute_fade` | 2 | B1 |  | `attrib/attribute_fade.ml:130` |
 | `color_by_height` | 2 | B1 B10 | Writes vec4 `Cd`. | `attrib/color_by_height.ml:3` |
-| `measure` | 2 | B1 B11 | Primitive float, optional detail total. | `core/analysis.ml:521` |
-| `set_float`, `set_int`, `set_vector`, `set_orient` | 2 | B1 | Constant attributes. | `lib/sop/attributes.ml:1291`, `1322`, `1352`, `1482` |
+| `set_float`, `set_int`, `set_vector`, `set_orient` | 2 | B1 B4 | Constant attributes. B4 owner counts allow creating missing attributes at vertex/primitive/detail owners. | `lib/sop/attributes.ml:1291`, `1322`, `1352`, `1482` |
 | `set_color` | 2 | B1 B5 | Optional group. | `lib/sop/attributes.ml:1612` |
-| `set_transform` | 2 | B1 | Writes a 16-float array attribute per point. Verify B1 covers array-valued storage. | `lib/sop/attributes.ml:1523` |
+| `set_transform` | 2 | B1 B4 | Writes a 16-float array attribute per point. B1 CSR storage and B4 point counts cover absent attributes and empty geometry. | `lib/sop/attributes.ml:1523` |
 | `swap_attributes` | 2 | B1 B7 | Includes `P`. | `attrib/attribute_lifecycle.ml:371` |
 | `delete_attributes`, `rename_attributes` | 2 | B7 | Pattern rules. | `attrib/attribute_lifecycle.ml:43`, `156` |
 | `delete_edge_group`, `rename_edge_group` | 2 | B7 |  | `core/geometry.ml:168`, `175` |
@@ -206,10 +211,12 @@ All 162 nodes, grouped by the phase that ports them. A node sits in the phase wh
 | `groups_from_name`, `name_from_groups` | 2 | B3 B5 | Text attributes. | `attrib/group_ops.ml:2063`, `2197` |
 | `material` | 2 | B1 B3 | Primitive text and vec4. | `attrib/material_assign.ml:1` |
 
-### Phase C: building and reindexing, 40 nodes
+### Phase C: building and reindexing, 42 nodes
 
 | Node | Tier | Needs | Notes | OCaml kernel |
 | --- | --- | --- | --- | --- |
+| `uv_project` | 3 | B1 B8 B11 C1 C2 | Whole port moved from B: writes vertex vec2, with topology/gather and segmented seam/pole reductions. No projection mode omitted. | `mesh/uv_ops.ml:154` |
+| `measure` | 3 | B1 B5 B8 B10 B11 C1 C2; canonical triangulation + primitive mapping | Whole port moved from B. Primitive perimeter/area/signed volume, group selection, both accumulations, preserved unselected values and optional detail total; n-gons require the native ear-clipping data contract. | `core/analysis.ml:75-239`, `487-519` |
 | `line` | 3 | C1 | 91 lines. First generator. | `gen/line_geometry.ml:15` |
 | `points` | 3 | C1 |  | `gen/point_generate.ml:276` |
 | `circle`, `grid` | 3 | C1 |  | `gen/plane_generators.ml:95`, `188` |
@@ -315,7 +322,7 @@ Six of the spatial-index nodes (`group_transfer`, `attribute_mirror`, `soft_tran
 
 ## Phases and gates
 
-Five phases, 56 tasks, plus two optional GPU tasks in Placement and fusion. Each phase builds its language additions first, then ports its nodes in batches, then closes with a review task that runs the full gates. A phase does not start until the previous review task is ticked.
+Five phases, 58 tasks, plus two optional GPU tasks in Placement and fusion. Each phase builds its language additions first, then ports its nodes in batches, then closes with a review task that runs the full gates. A phase does not start until the previous review task is ticked.
 
 Task kinds: **L** adds language, **P** ports nodes with the recipe below, **R** reviews. The "Depends" column lists what must be ticked first.
 
@@ -353,11 +360,11 @@ delegated to the old `noise_displace` body or dropped.
 | A.6 | P | A.1 A.5 | `nodes/noise_displace.rays` | Pilot port of `noise_displace`. | Full Verification gate |
 | A.R | R | A.6 | `specification/sop.md`, `specification/flow.md`, `lib/sop_catalog/AGENTS.md` | Review the form against the pilot. Update the specs: "one declaration" now has a Lisp form. | `check.exe --ship`, `@runtest-native` |
 
-### Phase B: elementwise, 45 nodes
+### Phase B: elementwise, 43 nodes
 
 | Task | Kind | Depends | What | Gate |
 | --- | --- | --- | --- | --- |
-| B.1 | L | A.R | Typed attribute read and write for all owners and types (B1). | Round trip per owner and type; `E_ATTR_TYPE`, `E_ATTR_COUNT` cases |
+| B.1 | L | A.R B.2 B.3 | Typed attribute read and write for all owners and types (B1), CSR offsets/values and cooked presence/type queries. Float/tuple work may proceed alongside the integer/text foundations; completion waits for every storage type. | Round trip per owner and type; lazy query fallback, `E_ATTR_TYPE`, `E_ATTR_COUNT` cases |
 | B.2 | L | A.R | Integer arrays and int kernel ops (B2). | Fixtures in `tools/core_fixtures.ml`; 1 and 8 domain equality |
 | B.3 | L | B.2 | Text arrays, interpreter tier (B3). | Round trip of a text attribute |
 | B.4 | L | B.2 | Element counts (B4) and unique edges (B6). | Counts and edge arrays equal `Topology_index` on five fixtures |
@@ -367,16 +374,16 @@ delegated to the old `noise_displace` body or dropped.
 | B.8 | L | B.2 | `rand/at` and fractal `noise3` (B9). | Bit equality with `Rand.float_at` and `Noise.fbm3` over 100,000 indices |
 | B.9 | L | B.2 | `array/min`, `array/max` (B10) and segmented reduce (B11). | Equality with a reference fold; 1 and 8 domains |
 | B.10 | P | B.1 B.5 B.7 B.8 B.9 | Deformers: `match_axis`, `transform`, `match_size`, `peak`, `mountain`, `bend`, `snap_to_grid`, `point_jitter`, `rest_position`. | Recipe |
-| B.11 | P | B.1 B.5 | Setters: `set_float`, `set_int`, `set_vector`, `set_orient`, `set_color`, `set_transform`. | Recipe |
+| B.11 | P | B.1 B.4 B.5 | Setters: `set_float`, `set_int`, `set_vector`, `set_orient`, `set_color`, `set_transform`. | Recipe |
 | B.12 | P | B.6 | Metadata: `delete_attributes`, `rename_attributes`, `swap_attributes`, `delete_edge_group`, `rename_edge_group`, `group_delete`, `group_rename`. | Recipe |
 | B.13 | P | B.4 B.5 B.8 B.9 | Groups: `group_combine`, `group_invert`, `group_random`, `group_bounds`, `group_non_planar`, `group_backface`, `ordered_group`. | Recipe |
 | B.14 | P | B.3 B.5 | Text: `groups_from_name`, `name_from_groups`, `material`. | Recipe |
-| B.15 | P | B.1 B.7 B.8 B.9 | Attributes: `distance_from_target`, `uv_project`, `uv_transform`, `attr_from_image`, `attribute_noise`, `attribute_noise_quaternion`, `attribute_remap`, `attribute_composite`, `attribute_fade`, `color_by_height`, `measure`. | Recipe |
+| B.15 | P | B.1 B.7 B.8 B.9 | Attributes: `distance_from_target`, `uv_transform`, `attr_from_image`, `attribute_noise`, `attribute_noise_quaternion`, `attribute_remap`, `attribute_composite`, `attribute_fade`, `color_by_height`. Whole ports moved after their native prerequisite audits: `uv_project` to C.14 and `measure` to C.15. | Recipe |
 | B.16 | P | B.15 | `attribute_randomize`. | Recipe |
 | B.F | L | B.10 | Fuse adjacent Lisp-bodied nodes into one kernel pass (see Placement and fusion). | A chain of four deformers cooks with one kernel run; bytes equal to the unfused chain |
 | B.R | R | B.10–B.16 B.F | Review Phase B. Update `specification/core.md` and `flow.md`. | `check.exe --ship`, `@runtest-native`, `@qualification-web` |
 
-### Phase C: building and reindexing, 40 nodes
+### Phase C: building and reindexing, 42 nodes
 
 | Task | Kind | Depends | What | Gate |
 | --- | --- | --- | --- | --- |
@@ -393,7 +400,9 @@ delegated to the old `noise_displace` body or dropped.
 | C.11 | P | C.1 C.4 C.5 | Point generators: `point_generate`, `point_replicate`, `scatter`, `extract_point_from_curve`, `extract_centroid`. | Recipe |
 | C.12 | P | C.5 | Matching: `separate_pieces`, `enumerate`, `group_copy`, `blend_shapes`, `point_velocity`, `attribute_interpolate`. | Recipe |
 | C.13 | P | C.4 | `iso_surface`. | Recipe |
-| C.R | R | C.7–C.13 | Review Phase C. | `check.exe --ship`, `@runtest-native`, `@qualification-web` |
+| C.14 | P | B.1 B.7 B.9 C.1 C.2 | `uv_project`: complete native mode/axis/seam/pole behavior, advanced to this phase for topology, gather and segmented reductions (language B1/B8/B11+C1/C2). | Recipe |
+| C.15 | P | B.1 B.5 B.7 B.9 C.1 C.2; canonical triangulation + primitive mapping capability | `measure`: complete perimeter/area/signed-volume modes, primitive-group selection, per-element/throughout accumulation, preserved unselected values and optional detail total. Provide generic canonical native ear-clipping data with original-primitive mapping before this port; reuse shared RDK rather than a hidden measure callback. | Recipe; native concave/degenerate/curve, selected/empty-group, reversed-volume and original-primitive mapping cases |
+| C.R | R | C.7–C.15 | Review Phase C. | `check.exe --ship`, `@runtest-native`, `@qualification-web` |
 
 ### Phase D: adjacency and iteration, 31 nodes
 
@@ -543,7 +552,7 @@ The owner approved this plan on 2026-10-12. Questions 1 and 4 were decided expli
 
 | # | Question | Recommendation | If the answer is no |
 | --- | --- | --- | --- |
-| 1 | **Float gate.** Ports cannot match OCaml floats bit for bit because the OCaml compiler fuses multiply-add on arm64. Accept a last-bits tolerance (4 ulp default) with exact integer data? | Decided yes by the owner on 2026-10-12. Lisp's unfused arithmetic becomes the definition, as `specification/flow.md:1229-1232` already states and as JavaScript requires. | Add an `fma` operator and reproduce each fused site by hand from the disassembly. Bits then depend on a compiler choice and cannot be reproduced on the web. |
+| 1 | **Float gate.** Ports cannot match OCaml floats bit for bit because the OCaml compiler fuses multiply-add on arm64. Accept a last-bits tolerance (4 ulp default) with exact integer data? | Decided yes by the owner on 2026-10-12. Lisp's unfused arithmetic becomes the definition, as `specification/flow.md:1229-1232` already states. Explicit FMA is feasible on web: an isolated exact BigInt prototype matches native `Float.fma` bits in 10,011 cases. | Reproduce each compiler-selected fused site by hand from disassembly. Automatic Mul/Add contraction would change the rounding contract and remains undecided; explicit FMA feasibility does not authorize it. |
 | 2 | **Golden refresh.** Ports will change render-parity PNG bytes and path tracer digests. Allow a per-node refresh under recipe step 7? | Yes, one commit per node with the changed files listed. | No port can land that feeds a rendered golden. |
 | 3 | **Delegation.** May a Lisp body call an OCaml-bodied kind for one of its modes (`snap_to_grid` calling `fuse`)? | Yes. The manifest records `(calls ...)` so export readiness stays visible. | At least 5 more nodes stay OCaml: snap\_to\_grid, peak, mountain, rest\_position, extract\_centroid. |
 | 4 | **Built-ins backed by OCaml.** `sop/adjacency`, `sop/components`, `sop/remap` and the three `graph/` operators wrap existing OCaml code. Accept them as built-ins that will each need a JavaScript twin? | Decided yes by the owner on 2026-10-12. They are 6 fixed primitives against 43 nodes unlocked. | Phases D and E have no array formulation with identical output; 43 nodes stay OCaml. |
@@ -563,6 +572,14 @@ The owner approved this plan on 2026-10-12. Questions 1 and 4 were decided expli
 | Iteration bound | `fold` over `(range n)` is capped at 4,096 and needs a literal count. | D.3 adds `iterate`, whose count is a parameter. |
 | The cook cache keys on node identity and facts | A Lisp body with wrong kernel facts caches wrongly or never. | A.3 derives `reads`, `writes` and `topology` from the body, and the gate's cache-identity check covers each node. |
 | Scope growth | 28 language additions is a language release, not a port. | Each addition lists the nodes that need it. One with no remaining nodes is dropped. |
+
+Before shipping any production `defnode` with text-array work, derive and
+review its text execution exception in the manifest. B.3 currently supplies
+structured compiled Core loops for text arrays, with strict numeric regions
+still required and no silent interpreter fallback. The eventual marker must
+describe that execution truthfully; it must not imply that a text body ran as
+a numeric packed kernel. There is no production text-array port yet, so the
+foundation alone does not change the production manifest.
 
 ### Not in this round
 
@@ -603,14 +620,14 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 - [x] A.5 — structural card/inspector/gesture parity, actual menu addition and production source/editor rerun passed; evidence in `results.md`.
 - [x] A.6 — complete production noise_displace port; oracle, reference/domain/grain, metadata, cache, refusal, native and million-point timing gates passed; evidence in results.md.
 - [x] A.R — final check.exe --ship and @runtest-native passed after the integration audit; specs and declaration guidance updated.
-- [ ] B.1
-- [ ] B.2
-- [ ] B.3
+- [x] B.1 — all-owner/type attribute round trips, strict query guards, native/web and final integration gates passed; evidence in results.md.
+- [x] B.2 — exact integer arrays/operators, native/JavaScript fixtures and one/eight-domain checks passed; final shipping/native/web gates passed.
+- [x] B.3 — owned Text arrays, all-owner round trips and compiled structured Core/JavaScript checks passed; unsupported numeric producers retain strict refusals.
 - [ ] B.4
 - [ ] B.5
 - [ ] B.6
 - [ ] B.7
-- [ ] B.8
+- [x] B.8 — 100,000 exact random keys and 300,054 native noise samples passed with strict reference/domain/JavaScript parity; evidence in results.md.
 - [ ] B.9
 - [ ] B.10
 - [ ] B.11
@@ -634,6 +651,8 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 - [ ] C.11
 - [ ] C.12
 - [ ] C.13
+- [ ] C.14
+- [ ] C.15
 - [ ] C.R
 - [ ] D.1
 - [ ] D.2

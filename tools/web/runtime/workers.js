@@ -46,7 +46,7 @@ export async function spawnWorker() {
 
 const shared = a => {
   if (a.buffer instanceof SharedArrayBuffer) return a;
-  const copy = new Float64Array(new SharedArrayBuffer(a.byteLength)); copy.set(a); return copy;
+  const copy = new a.constructor(new SharedArrayBuffer(a.byteLength)); copy.set(a); return copy;
 };
 
 export async function createPool({ size = Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 4) - 1), spawn = spawnWorker } = {}) {
@@ -59,7 +59,7 @@ export async function createPool({ size = Math.max(1, (globalThis.navigator?.har
   let tail = Promise.resolve();
   const pool = {
     size,
-    alloc: n => new Float64Array(new SharedArrayBuffer(n * 8)),
+    alloc: (n, ArrayType = Float64Array) => new ArrayType(new SharedArrayBuffer(n * ArrayType.BYTES_PER_ELEMENT)),
     // Register a region under `id`; the same text is a no-op. Compiles locally first, so a bad source throws here.
     load(id, source) {
       if (sources.get(id) === source) return;

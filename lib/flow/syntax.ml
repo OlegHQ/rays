@@ -238,7 +238,19 @@ let renumber first x =
     {x with id; node} in
   let x = go x in (x, !next)
 (* Attribute selectors are positional text, including their keyword spelling. *)
-let attribute_args head args = match head, args with
-  | ("sop/attr" | "sop/with_attr" | "attr" | "with_attr"), g :: ({node = Kw name; _} as selector) :: rest ->
-      g :: {selector with node = Str name} :: rest
-  | _ -> args
+let attribute_args head args =
+  let attribute=List.mem head ["sop/attr";"sop/with_attr";"sop/has_attr";"attr";"with_attr";"has_attr"] in
+  if not attribute && head<>"array/range" then args else
+  let rec selectors position=function
+    |({node=Kw("owner"|"type");_}as key)::value::rest->key::value::selectors position rest
+    |({node=Kw name;_}as selector)::rest when position=1->
+        {selector with node=Str name}::selectors(position+1)rest
+    |first::rest->first::selectors(position+1)rest|[]->[] in
+  let args=if attribute then selectors 0 args else args in
+  let rec enums=function
+    | ({node=Kw kind;_}as key)::({node=Sym name;_}as value)::rest
+      when (attribute && kind="owner" && List.mem name ["point";"vertex";"primitive";"detail"])
+        || (kind="type" && List.mem name (if attribute then ["float";"int";"vec2";"vec3";"vec4";"text";"float_array";"int_array"] else ["float";"int"])) ->
+        key::{value with node=Str name}::enums rest
+    | first::rest->first::enums rest|[]->[] in
+  enums args

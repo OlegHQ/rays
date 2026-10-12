@@ -17,8 +17,16 @@ if (!fixtureDir || !primsPath) {
 }
 
 const prims = await import(pathToFileURL(resolve(primsPath)).href);
-const { Fail, PArray } = prims;
+const { Fail, PArray, TextArray } = prims;
 const TOLERANCE = 1e-12;
+
+for (const [name, args, expected] of [
+  ['sign', [-0], -0], ['sign', [0], 0], ['sign', [-Number.MIN_VALUE], -1],
+  ['atan2', [-0, 1], -0], ['atan2', [0, -0], Math.PI],
+  ['hypot', [-0, -0], 0], ['hypot', [Number.MIN_VALUE, Number.MIN_VALUE], Number.MIN_VALUE],
+]) {
+  if (!Object.is(prims[name](...args), expected)) throw new Error(`${name}: signed-zero/subnormal math mismatch`);
+}
 
 // ---- decoding the JSON encoding of core_fixtures.ml ----
 const decodeFloat = v => {
@@ -39,7 +47,10 @@ const decodeValue = v => {
   if ('float' in v) return decodeFloat(v);
   if ('vec' in v) return Float64Array.from(v.vec, decodeFloat);
   if ('record' in v) return new Map(v.record.map(([name, x]) => [name, decodeValue(x)]));
-  if ('array' in v) return new PArray(v.array, Float64Array.from(v.data, decodeFloat));
+  if ('array' in v && v.array === 'text') return new TextArray(v.data);
+  if ('array' in v) return v.array === 'int'
+    ? new PArray(1, BigInt64Array.from(v.data, BigInt))
+    : new PArray(v.array, Float64Array.from(v.data, decodeFloat));
   throw new Error(`bad value encoding ${JSON.stringify(v)}`);
 };
 // A coerce type is not a value: {list: T} and {record: [[name, T]...]} carry types, not values.
@@ -76,9 +87,12 @@ const diff = (expected, got, path = '') => {
     if (!(got instanceof PArray) || got.width !== expected.width || got.data.length !== expected.data.length)
       return mismatch();
     for (let i = 0; i < expected.data.length; i++)
-      if (!floatEqual(expected.data[i], got.data[i])) return mismatch();
+      if (typeof expected.data[i] === 'bigint' ? expected.data[i] !== got.data[i]
+        : typeof got.data[i] !== 'number' || !floatEqual(expected.data[i], got.data[i])) return mismatch();
     return null;
   }
+  if (expected instanceof TextArray) return got instanceof TextArray
+    && expected.data.length === got.data.length && expected.data.every((s, i) => s === got.data[i]) ? null : mismatch();
   if (Array.isArray(expected)) {
     if (!Array.isArray(got) || got.length !== expected.length) return mismatch();
     for (let i = 0; i < expected.length; i++) {
@@ -109,6 +123,7 @@ function show(v) {
   if (v instanceof Fail) return `error ${v.code} ${JSON.stringify(v.message)}`;
   if (v instanceof Float64Array) return `vec[${Array.from(v).join(', ')}]`;
   if (v instanceof PArray) return `array/${v.width}[${Array.from(v.data).join(', ')}]`;
+  if (v instanceof TextArray) return `array/text[${v.data.map(JSON.stringify).join(', ')}]`;
   if (Array.isArray(v)) return `[${v.map(show).join(', ')}]`;
   if (v instanceof Map) return `{${[...v].map(([k, x]) => `${k}: ${show(x)}`).join(', ')}}`;
   return String(v);

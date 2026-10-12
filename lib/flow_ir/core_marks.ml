@@ -109,6 +109,9 @@ let mark sink ~batch kind args (values : E.value array) =
         | E.Float_array xs ->
             if Array.length xs <> n then V.fail "E_DRAW_LENGTH" "Radii and positions have different lengths.";
             Buffer {id = Buffers.add sink.buffers xs; count = n; width = 1}
+        | E.Int_array xs ->
+            if Array.length xs <> n then V.fail "E_DRAW_LENGTH" "Radii and positions have different lengths.";
+            Buffer {id = Buffers.add sink.buffers (Array.map float_of_int xs); count = n; width = 1}
         | E.Int _ | Float _ as v -> Constant (V.num v)
         | _ -> V.fail "E_TYPE" "Radius is a number or packed float array." in
       check_colors n args;

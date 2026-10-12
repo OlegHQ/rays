@@ -62,7 +62,7 @@ window.__result = (async () => {
   const early = reports.length;
   await gpu.flush();
   report.overflow = { reportedSynchronously: early, reported: reports.map(e => e.code) };
-  // Overflow must still be reported when a select or clamp hides it in the output.
+  // Unselected branches stay unevaluated; min still evaluates its overflowing argument.
   report.hiddenOverflow = {};
   for (const name of ['hidden_select', 'hidden_min']) {
     reports.length = 0;
@@ -110,7 +110,8 @@ if (report.unavailable) { console.error(`gpu_check: WebGPU unavailable (${report
 console.log(JSON.stringify(report, null, 1));
 const good = !report.failure && NAMES.every(n => report.kernels[n]?.ok) && report.errors.length === 0
   && report.overflow.reportedSynchronously === 0 && report.overflow.reported.join() === 'E_KERNEL'
-  && Object.values(report.hiddenOverflow).every(errors => errors.join() === 'E_KERNEL')
+  && report.hiddenOverflow.hidden_select.length === 0
+  && report.hiddenOverflow.hidden_min.join() === 'E_KERNEL'
   && report.nonfiniteDeviceInput.join() === 'E_KERNEL'
   && report.nonfiniteInput === 'E_KERNEL' && report.replaced;
 console.log(good ? 'gpu_check: ok' : 'gpu_check: FAILED');

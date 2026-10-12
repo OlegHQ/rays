@@ -31,7 +31,12 @@ let () =
     let live = !current in
     let node = lowered.plan.nodes.(id - 1) in
     let args = List.map (fun (k, v) -> k, get (E.force ~state v ~live)) node.args in
-    let int name fallback = match List.assoc_opt name args with Some (E.Int n) -> n | _ -> fallback in
+    let int name fallback = match List.assoc_opt name args with
+      | Some (E.Int n) -> n
+      | Some (E.Float n) when Float.is_finite n && Float.is_integer n
+          && n >= float min_int && n < float max_int -> int_of_float n
+      | None -> fallback
+      | _ -> fail ("Image " ^ name ^ " must be an integer.") in
     let message = function Ok v -> v | Error e -> fail e in
     let image = match node.kind with
     | "image/load" ->

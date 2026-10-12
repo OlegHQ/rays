@@ -32,6 +32,70 @@ let compile ?fusion residual term =
    | _ -> assert false);
   legacy
 let () =
+  if Array.exists ((=) "--bench-guarded") Sys.argv then begin
+    I.Packed.Private.trace := ignore;
+    let count = 1_000_000 in
+    let packed = Test_program.compile (Printf.sprintf
+      "(map (fn [x] (if (< (mod x 2.0) 1.0)\n\
+         (if (< (mod x 4.0) 1.0) (+ (sin x) t) (- (cos x) t))\n\
+         (+ (* x 0.5) t))) (array/range %d))" count) in
+    List.iter (fun domains -> Rays_math.Parallel.run ~domains (fun () ->
+      let live = Frame_input.at_time 0.25 in
+      ignore (ok (I.Packed.force ~strict:true packed ~live));
+      let trials = Array.init 3 (fun _ ->
+        Gc.full_major ();
+        let allocated = Gc.allocated_bytes () and start = Unix.gettimeofday () in
+        ignore (ok (I.Packed.force ~strict:true packed ~live));
+        Unix.gettimeofday () -. start, Gc.allocated_bytes () -. allocated) in
+      Array.sort (fun (a, _) (b, _) -> Float.compare a b) trials;
+      let seconds, allocated = trials.(1) in
+      Printf.printf "guarded_float count=%d registers=%d domains=%d median_seconds=%.6f allocated_bytes=%.0f\n%!"
+        count (Array.length (I.Packed.Private.view packed).code) domains seconds allocated)) [1;4];
+    exit 0
+  end
+
+let () =
+  let trace = !I.Packed.Private.trace in
+  I.Packed.Private.trace := ignore;
+  let count = 32769 in
+  let bodies =
+    ["(if (< (mod x 2.0) 1.0) (if (< (mod x 4.0) 1.0) (+ (sin x) t) (- (cos x) t)) (+ x t))";
+     "(if (< (mod x 2.0) 1.0) (+ x t) (exp (* -1000.0 x)))";
+     "(if (< (mod x 2.0) 1.0) (noise3 (* [(* x 0.01) t 0.25] 0.5) :seed 31 :octaves 3) t)"] in
+  List.iter (fun body ->
+    let packed = Test_program.compile (Printf.sprintf
+      "(map (fn [x] %s) (array/range %d))" body count) in
+    let data = Array.init (count * 2) (fun i -> if i mod 2 = 0 then -99. else float (i / 2)) in
+    let source _ _ = Ok (Some [|I.Packed.{data; offset=1; stride=2}|]) in
+    List.iter (fun time ->
+      let live = Frame_input.at_time time in
+      let reference = I.Packed.reference packed ~live in
+      List.iter (fun domains -> Rays_math.Parallel.run ~domains (fun () ->
+        assert (same (I.Packed.force ~strict:true packed ~live) reference);
+        let output = Array.make count 0. in
+        ignore (ok (I.Packed.force_into ~strict:true ~column_source:source ~count
+          ~outputs:[|[|Some output|]|] packed ~live));
+        assert (same (Ok (E.Float_array output)) reference);
+        ignore (ok (I.Packed.force_into ~strict:true ~column_source:source ~count
+          ~outputs:[|[|None|]|] packed ~live)))) [1;8]) [0.;0.25;2.]) bodies;
+  List.iter (fun body ->
+    let packed = Test_program.compile (Printf.sprintf
+      "(map (fn [x] %s) (array/range %d))" body count) in
+    let live = Frame_input.at_time 0.25 in
+    let nonfinite = function Error (d : Flow.Diagnostic.t) -> assert (d.code="E_NONFINITE")
+      | Ok _ -> failwith "Selected or unconditional computation hid overflow" in
+    nonfinite (I.Packed.reference packed ~live);
+    List.iter (fun domains -> Rays_math.Parallel.run ~domains (fun () ->
+      nonfinite (I.Packed.force ~strict:true packed ~live);
+      nonfinite (I.Packed.force_into ~strict:true ~column_source:(fun _ _ -> Ok None) ~count
+        ~outputs:[|[|None|]|] packed ~live))) [1;8])
+    ["(if (< x 1.0) t (exp (* x 1000.0)))";
+     "(let* [q (* [x x x] 1.7976931348623157e308)] (if (< x -1.0) (noise3 q :seed 31) t))";
+     "(if (> x 1.0) (let* [q (* [x x x] 1.7976931348623157e308)] (if (< x -1.0) (noise3 q :seed 31) t)) t)"];
+  I.Packed.Private.trace := trace;
+  print_endline "Guarded float blocks: selected spans, nested branches, noise, borrowed columns and skipped sinks match reference at one/eight domains"
+
+let () =
   let snapshot_trace= !I.Packed.Private.trace in
   I.Packed.Private.trace:=ignore;
   let fn=match recorded
@@ -127,7 +191,7 @@ let () =
   let bad_columns=Array.map (fun (c:I.Packed.column)->{c with data=bad}) borrowed in
   (match I.Packed.force_into ~strict:true ~column_source:(fun _ _->Ok (Some bad_columns))
     ~count ~outputs:[|[|None;None;Some (Array.make count 0.)|]|] identity ~live with
-    |Error d->assert (d.code="E_KERNEL")|Ok _->failwith "Skipped output hid nonfinite borrowed lane");
+    |Error d->assert (d.code="E_NONFINITE")|Ok _->failwith "Skipped output hid nonfinite borrowed lane");
   let planes=Array.init 3 (fun _->Array.make count 0.) in
   ignore (ok (I.Packed.force_into ~strict:true ~column_source:(fun _ _->Ok None)
     ~count ~outputs:[|Array.map Option.some planes|] identity ~live));
@@ -337,7 +401,7 @@ let () =
      "(let* [bad (list 1 2)] (map (fn [x] (+ (+ x t) (first bad))) (array/range 3)))", "E_PACKED_CAPTURE";
      "(map (fn [x] (+ t (first (list x 1)))) (array/range 3))", "E_PACKED_FORM";
      "(map sin (array/float 3 t))", "E_PACKED_FUNCTION";
-     "(map (fn [x] (+ x (floor t))) (array/range 3))", "E_PACKED_OPERATOR";
+     "(map (fn [x] (+ x (value/rand t 1 2))) (array/range 3))", "E_PACKED_OPERATOR";
      "(fold [a false] [x (array/range 3)] (+ x t))", "E_PACKED_TYPE"];
   let residual, term = prepare ~ops:I.Operators.all
       "(map (fn [p] (noise3 p :seed (frame/index))) (array/vec3 3 [0 1 2]))" in
@@ -439,7 +503,7 @@ let () =
       (array/range 4))" in
   assert (I.Packed.gpu_refusals guards = []);
   assert (Array.fold_left (fun n check -> if check then n + 1 else n) 0
-    (I.Packed.Private.finite_checks guards) = 8);
+    (I.Packed.Private.finite_checks guards) = 9);
   print_endline "Packed sharing: repeated expressions fit the register budget, signed zero and domain parity preserved"
 
 let () =
@@ -455,8 +519,8 @@ let () =
     match I.Executor.compile ~strict:true (recorded body) with
     | Error diagnostic -> assert (diagnostic.code = "E_KERNEL_FORM")
     | Ok _ -> failwith ("strict numeric body accepted interpreter fallback: " ^ body))
-    ["(map (fn [x] (exp (+ x t))) (array/range 4))";
-     "(map (fn [x] (+ x t)) (map (fn [x] (exp (+ x t))) (array/range 4)))"];
+    ["(map (fn [x] (value/rand x t)) (array/range 4))";
+     "(map (fn [x] (+ x t)) (map (fn [x] (value/rand x t)) (array/range 4)))"];
   let overflow = Test_program.compile
     "(map (fn [x] (* (+ x t) 1e308)) (array/range 4))" in
   let references = ref [] in

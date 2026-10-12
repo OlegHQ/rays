@@ -238,7 +238,7 @@ let () = (* 1. function values *)
     is (value "(reduce + 0 (list 0.5 0.25))") (Eval.Float 0.75));
   t "fn: user HOF with a fn-typed defn input" (fun () ->
     let ring = "(defn ring :context sop [(n : int 8) (make : fn)] (sop/merge (map make (range n))))" in
-    let r = run (check ("(workspace w " ^ ring ^ " (defn dot :context sop [(i : int)] (sop/box :size (* 0.1 (+ i 1)))) (graph g :context sop (sop/merge (ring :n 3 :make dot) (let* [mk (fn [i] (sop/box))] (ring :n 2 :make mk)))))")) in
+    let r = run (check ("(workspace w " ^ ring ^ " (defn mark :context sop [(i : int)] (sop/box :size (* 0.1 (+ i 1)))) (graph g :context sop (sop/merge (ring :n 3 :make mark) (let* [mk (fn [i] (sop/box))] (ring :n 2 :make mk)))))")) in
     assert (count_of r "sop/box" = 5 && count_of r "sop/merge" = 3);
     (* the two ring call sites are distinct subtrees; mk's two calls are iterations 0 and 1 *)
     assert (List.sort compare (List.map (fun (n : Eval.node) -> n.iter) (nodes_of r "sop/box"))

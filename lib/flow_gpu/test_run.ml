@@ -58,7 +58,7 @@ let () = match Rays_execution.acquire_gpu () with
           let expected=Test_program.ok(Flow_ir.Packed.force_all program ~live)in
           List.iteri(fun index expected->
             assert(array(Test_program.ok(Flow_gpu.Run.readback ~index output))=array expected))expected));
-        List.iter (fun body ->
+        List.iter (fun (body,refuses) ->
         let hidden=Test_program.compile ("(map (fn [x] " ^ body ^ ") (array/range 1024))")in
         let msl=Test_program.ok(Flow_gpu.Emit.kernel hidden)in
         let runner=Flow_gpu.Run.create gpu pipelines msl in
@@ -66,10 +66,12 @@ let () = match Rays_execution.acquire_gpu () with
           let live=Frame_input.at_time 1. in
           assert(Array.for_all((=)0.)(array(Test_program.ok(Flow_ir.Packed.force hidden ~live))));
           let inputs=Test_program.ok(Flow_ir.Packed.Private.prepare hidden ~live)in
-          assert(match Flow_gpu.Run.dispatch runner inputs with
-            |Error diagnostic->diagnostic.Flow.Diagnostic.code="E_KERNEL"|Ok _->false)))
-          ["(if (> (+ x t) 0) 0 (* (* (+ x t) 1e20) (* (+ x t) 1e20)))";
-           "(min (* (* (+ x t) 1e20) (* (+ x t) 1e20)) 0)"]);
+          match Flow_gpu.Run.dispatch runner inputs with
+            |Error diagnostic->assert(refuses && diagnostic.Flow.Diagnostic.code="E_KERNEL")
+            |Ok output->assert(not refuses);
+                assert(Array.for_all((=)0.)(array(Test_program.ok(Flow_gpu.Run.readback output))))))
+          ["(if (> (+ x t) 0) 0 (* (* (+ x t) 1e20) (* (+ x t) 1e20)))",false;
+           "(min (* (* (+ x t) 1e20) (* (+ x t) 1e20)) 0)",true]);
         print_endline "GPU run: emitted kernels match the CPU tier within the recorded native noise tolerance"
       end)
 

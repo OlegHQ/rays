@@ -132,6 +132,21 @@ same([value.get('t'), value.get('dt'), value.get('index'), value.get('width'), v
 }
 
 
+// Integer export tables preserve all bits in data, captures, frame facts and results.
+{
+  const words = BigInt64Array.of(9007199254740993n, -4611686018427387904n, 4611686018427387903n);
+  const region = `function region(inputs, uniforms, outputs, start, stop) {
+    for (let i = start; i < stop; i++) outputs[0][i] = BigInt.asIntN(63, inputs[0][i] + uniforms[0][0] + uniforms[1][0]);
+    return 0; }`;
+  const program = { regions: [{ source: region, count: 3, kept: 3, inputs: [[0, 3, true]],
+    uniforms: [['9007199254740993']], frame: [[0, 'frame/index', true]], length: 1, width: 1, integer: true }],
+    async frame(input, state, rt) { return rt.invoke(0, []); } };
+  const rt = R.createRuntime(program, { fixedDt: 0.5, data: words.buffer });
+  const result = await rt.stepFrame();
+  same(result.data instanceof BigInt64Array, true, 'integer region output storage');
+  same(Array.from(result.data), Array.from(words, x => BigInt.asIntN(63, x + 9007199254740994n)), 'exact integer export data and uniforms');
+}
+
 // ---- reload: watch() against a fake server, rt.load, and gpu.update (plan P6.7) ----
 // Generated images: scalar frame captures, shared references, static reuse and reload invalidation.
 {

@@ -7,7 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { PArray } from '../runtime/prims.js';
+import { PArray, TextArray } from '../runtime/prims.js';
 import { eventRecord } from '../runtime/runtime.js';
 import { makeRt } from './rt_shim.mjs';
 
@@ -25,6 +25,7 @@ function canon(v) {
   if (Array.isArray(v)) return `L[ ${v.map(canon).join(' ')} ]`;
   if (v instanceof Map) return `R{ ${[...v].map(([k, x]) => `n:${hex(k)} ${canon(x)}`).join(' ')} }`;
   if (v instanceof PArray) return `A${v.width}[ ${Array.from(v.data, f).join(' ')} ]`;
+  if (v instanceof TextArray) return `AT[ ${v.data.map(s => 't:' + hex(s)).join(' ')} ]`;
   return '?';
 }
 const pos = p => p.constant.map(f).join(' ');

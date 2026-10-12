@@ -28,6 +28,46 @@ let kernel_json ?(cpu = "") name (w : Flow_web.Wgsl.wgsl) =
     w.uniform_bytes (json_ints w.table_seeds) (table_json w) (json_ints w.input_widths) (json_ints w.output_widths)
 
 let () =
+  let program=Test_program.compile
+    "(map (fn [x] (if (> x t) (+ x 1.0) (exp (* x 1000.0)))) (array/range 16))"in
+  let view=Flow_ir.Packed.Private.view program in
+  let wgsl=Test_program.ok(Flow_web.Wgsl.kernel program)in
+  let lines=String.split_on_char '\n' wgsl.source in
+  let guarded=ref false in
+  Array.iteri(fun slot->function
+    |Flow_ir.Packed.Guarded(guards,Flow_ir.Packed.Unary(Exp,_))->
+        guarded:=true;assert(guards<>[]);
+        let assignment=Printf.sprintf "    r%d ="slot in
+        let rec check=function
+          |line::next::_ when String.starts_with ~prefix:assignment line->
+              assert(next=Printf.sprintf "    if (!wfinite(r%d)) { atomicStore(&status, 1u); }"slot)
+          |_::rest->check rest|[]->assert false in check lines
+    |_->())view.code;
+  assert !guarded;
+  let nested=Test_program.compile
+    "(map (fn [x] (if (> x t) (noise3 [(pow (+ x t) 2.0) t 0.0] :seed 31) (+ x t))) (array/range 16))"in
+  let nested=Test_program.ok(Flow_web.Wgsl.kernel nested)in
+  assert(nested.table_seeds=[|31|]);
+  assert(List.exists(String.starts_with ~prefix:"fn wpow") (String.split_on_char '\n' nested.source));
+  List.iter(fun source->
+    let program=try Test_program.compile source with Invalid_argument message->failwith(source^": "^message)in
+    match Flow_web.Wgsl.kernel program with Error d->assert(d.code="E_GPU_FORM")|Ok _->assert false)
+    ["(map (fn [x] (+ (float x) t)) (array/range 16 :type \"int\"))";
+     "(let* [offset (frame/index)] (map (fn [x] (+ x (float offset))) (array/range 16)))"]
+
+let () =
+  List.iter (fun body ->
+    let program = Test_program.compile
+      ("(map (fn [x] " ^ body ^ ") (array/range 1024))") in
+    ignore (Test_program.ok (Flow_web.Wgsl.kernel program)))
+    ["(tan (+ (* x 0.0001) t))"; "(atan2 x t)";
+     "(asin (* (+ x t) 0.0001))"; "(acos (* (+ x t) 0.0001))";
+     "(exp (* (+ x t) 0.0001))"; "(log (+ (+ x t) 1.0))"; "(sign (- x t))"];
+  let hypot = Test_program.compile
+    "(map (fn [x] (hypot x t)) (array/range 1024))" in
+  (match Flow_web.Wgsl.kernel hypot with
+   | Error d -> assert (d.code = "E_GPU_FORM")
+   | Ok _ -> failwith "WGSL must refuse unsupported native-safe hypot");
   let writing = Array.to_list Sys.argv = [Sys.argv.(0); "--write-goldens"] in
   let programs = Test_program.fixtures 1024 @ ["two_outputs", Test_program.two_outputs ()] in
   (match Array.to_list Sys.argv with

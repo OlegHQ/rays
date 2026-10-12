@@ -28,11 +28,15 @@ module T = Flow.Ty
 let inventory = [
   C.Numeric P.Add; Numeric P.Sub; Numeric P.Mul; Numeric P.Div; Numeric P.Mod; Numeric P.Pow;
   Numeric P.Min; Numeric P.Max; Remainder; Math P.Sin; Math P.Cos; Math P.Sqrt; Exp; Math P.Abs;
+  Numeric P.Atan2; Numeric P.Hypot; Math P.Tan; Math P.Asin; Math P.Acos; Math P.Log; Math P.Sign;
   Floor; Ceil; Round; Int_convert; Float_convert;
   Numeric P.Lt; Numeric P.Le; Numeric P.Gt; Numeric P.Ge; Numeric P.Eq; Numeric P.And; Numeric P.Or; Math P.Not;
-  Integer C.Mul; Integer C.Div; Integer C.Mod; Integer C.And; Integer C.Xor;
+  Integer P.Iadd; Integer P.Isub; Integer P.Imul; Integer P.Idiv; Integer P.Imod;
+  Integer P.Iand; Integer P.Ior; Integer P.Ixor; Integer P.Ishl; Integer P.Ishr;
+  Integer_compare P.Ilt; Integer_compare P.Ile; Integer_compare P.Igt;
+  Integer_compare P.Ige; Integer_compare P.Ieq;
   Equal; Show; Text_concat; Sequence_length; Sequence_get; Sequence_build; Sequence_slice; Sequence_concat;
-  Array_range; Array_float; Array_vec3; Array_nth; Array_count; Array_slice; Array_concat;
+  Array_range; Array_int; Array_text; Array_float; Array_vec3; Array_nth; Array_count; Array_slice; Array_concat;
   Rand; Noise3; Color_parse; Color_byte Clamped; Coerce T.Any; Truthy; Fail ("", "") ]
 
 let export name = match name with
@@ -67,6 +71,8 @@ let rec json : E.value -> string = function
   | Record fs -> {|{"record":|} ^ seq (fun (n, v) -> "[" ^ str n ^ "," ^ json v ^ "]") fs ^ "}"
   | Float_array d -> packed 1 d | Vec2_array d -> packed 2 d
   | Vec3_array d -> packed 3 d | Vec4_array d -> packed 4 d
+  | Int_array d -> {|{"array":"int","data":|} ^ seq (fun n->str(string_of_int n)) (Array.to_list d) ^ "}"
+  | Text_array d -> {|{"array":"text","data":|} ^ seq str (Array.to_list d) ^ "}"
   | No_geo -> "null"
   | _ -> failwith "core_fixtures: unsupported value"
 and packed w d = Printf.sprintf {|{"array":%d,"data":%s}|} w (seq flt (Array.to_list d))
@@ -79,10 +85,12 @@ let rec ty_json : T.t -> string = function
 
 (* ---- native evaluation: one assignment through Core_exec ---- *)
 let arg_name prim i = match prim, i with
-  | C.Integer _, _ | Equal, _ | Remainder, _ -> if i = 0 then "a" else "b"
-  | Array_range, _ -> "count"
-  | Sequence_build, _ -> if i = 0 then "count" else "width"
-  | Array_float, _ | Array_vec3, _ -> if i = 0 then "count" else "value"
+  | C.Numeric _, _ | Integer _, _ | Integer_compare _, _ | Equal, _ | Remainder, _ -> if i = 0 then "a" else "b"
+  | Math P.Not, _ -> "a"
+  | Math _, _ | Floor, _ | Ceil, _ | Round, _ | Int_convert, _ | Float_convert, _ -> "x"
+  | Array_range, _ -> if i = 0 then "count" else "type"
+  | Sequence_build, _ -> [|"count";"width";"type"|].(i)
+  | Array_int, _ | Array_text, _ | Array_float, _ | Array_vec3, _ -> if i = 0 then "count" else "value"
   | Array_count, _ -> "array"
   | Array_nth, _ -> if i = 0 then "array" else "index"
   | Exp, _ -> "x"
@@ -117,6 +125,20 @@ let add ?(static = []) prim args =
 let add_host name args result =
   let r=match Hashtbl.find_opt cases name with Some r->r | None->let r=ref [] in Hashtbl.add cases name r;r in
   r:=Printf.sprintf {|{"static":[],"args":%s,"result":%s}|} (seq json args) result :: !r
+
+(* array/sum lowers to a typed loop, rather than a standalone Core primitive. *)
+let integer_sum values =
+  let st id node : C.statement = {id;source;node} in
+  let program : C.program = {
+    constants=[|Option.get(C.literal_of_value(E.Int_array values));C.Int 0|];
+    locals=[|T.Array T.Int;T.Int;T.Int;T.Int|];
+    body=[st 0 (Assign(0,Constant 0));st 1 (Assign(1,Constant 1));
+      st 2 (Iterate{sequence=0;index=2;item=3;limit=max_int;
+        body=[st 3 (Assign(1,Prim(Integer P.Iadd,["a",1;"b",3])))]})];
+    results=[|1|];state_slots=[||];regions=[||];call_slots=0} in
+  match Flow_ir.Core_exec.run program ~live:(Frame_input.at_time 0.) with
+  | Ok value -> json value
+  | Error d -> failwith (Flow.Diagnostic.to_string d)
 
 let int n = E.Int n and flt_ x = E.Float x and txt s = E.Text s
 let v2 x y = E.Vec2 (x, y) and v3 x y z = E.Vec3 (x, y, z) and v4 x y z w = E.Vec4 (x, y, z, w)
@@ -166,14 +188,26 @@ let () =
   add C.Remainder [flt_ 7.5; flt_ 2.]; add C.Remainder [flt_ (-7.5); flt_ 2.];
   add C.Remainder [flt_ 7.5; flt_ (-2.)]; add C.Remainder [flt_ 1e300; flt_ 3.];
   List.iter unary [C.Math P.Sin; Math P.Cos; Math P.Sqrt; Exp; Math P.Abs; Floor; Ceil; Round;
+    Math P.Tan; Math P.Asin; Math P.Acos; Math P.Log; Math P.Sign;
     Int_convert; Float_convert; Math P.Not; Truthy];
+  List.iter (fun p -> List.iter (add p) (pairs scalars scalars)) [C.Numeric P.Atan2; Numeric P.Hypot];
+  List.iter (fun (a,b) ->
+    add (C.Numeric P.Hypot) [flt_ a;flt_ b];
+    add (C.Numeric P.Atan2) [flt_ a;flt_ b])
+    [0.,0.;-0.,0.;0.,-0.;-0.,-0.;1e308,1e308;1e-300,1e-300;
+     Int64.float_of_bits 1L,Int64.float_of_bits 1L];
   (* integer operations: grid of boundary values, then conversions of non-Int operands *)
   List.iter (fun op -> let p = C.Integer op in
     List.iter (add p) (pairs (List.map int ints) (List.map int ints));
     List.iter (add p) (pairs [flt_ 2.5; flt_ (-2.5); flt_ 1e19; flt_ nan; E.Bool true; txt "x"; flt_ 3.5]
       [int 3; int (-2)]);
     List.iter (add p) (pairs [int 7; int (-7)] [flt_ 2.5; flt_ (-0.4); E.Bool true; flt_ infinity; txt "x"]))
-    [C.Mul; Div; Mod; And; Xor];
+    [P.Iadd; Isub; Imul; Idiv; Imod; Iand; Ior; Ixor; Ishl; Ishr];
+  List.iter (fun comparison -> List.iter (add(C.Integer_compare comparison))
+    (pairs (List.map int ints) (List.map int ints))) [P.Ilt;Ile;Igt;Ige;Ieq];
+  List.iter (fun shift -> List.iter(fun value ->
+    List.iter(fun amount -> add(C.Integer shift)[int value;int amount])
+      [-65;-64;-63;-1;0;1;62;63;64;65]) ints) [P.Ishl;Ishr];
   (* equal?, show, text/concat *)
   let eqs = [int 1; int 1; int max_int; int (max_int - 1); flt_ 1.; flt_ 0.; flt_ (-0.); flt_ nan;
     E.Bool true; E.Bool false; txt "a"; txt ""; txt "A"; v2 1. 2.; v3 1. 2. 3.; v3 1. 2. 4.;
@@ -215,7 +249,41 @@ let () =
     [digits [rec_ [("a", int 1); ("b", int 2)]]; digits [rec_ [("b", flt_ 1.); ("a", flt_ 2.)]]];
     [l3; int 4]; [bools 2048; bools 2048]; [bools 2048; bools 2049]; [bools 4096; E.List [||]]];
   (* packed arrays *)
+  List.iter (fun c -> add C.Array_text [c]) counts;
+  List.iter (fun value -> add C.Array_text [int 3; value])
+    [txt ""; txt "snow"; txt "\226\152\131"; int 1; E.Bool true];
+  let text_arrays = List.map (fun xs -> E.Text_array (Array.of_list xs))
+    [[]; [""]; ["a"; "\226\152\131"; "b"]] in
+  List.iter (fun array ->
+    add C.Array_count [array];
+    List.iter (fun index -> add C.Array_nth [array; int index]) [-1;0;1;3];
+    List.iter (fun (first,count) -> add C.Array_slice [array; int first; int count])
+      [0,0;0,1;1,2;0,19;-1,1;1,-1]) text_arrays;
+  List.iter (fun pair -> match pair with [a;b] -> add C.Array_concat [a;b] | _ -> assert false)
+    (pairs text_arrays (text_arrays @ [arr1 [1.]]));
   List.iter (fun c -> add C.Array_range [c]) counts;
+  List.iter (fun c -> add C.Array_range [c;txt "int"];
+    add C.Array_int [c]) (int 4097::counts);
+  List.iter(fun kind -> add C.Array_range[int 3;kind]) [txt "float";txt "invalid";int 1];
+  List.iter(fun value -> add C.Array_int[int 3;int value]) ints;
+  List.iter(fun value -> add C.Array_int[int 2;value])
+    [flt_ 2.5;flt_ (-2.5);flt_ nan;flt_ infinity;txt "x";E.Bool true];
+  List.iter(fun c -> add C.Sequence_build[c;int 1;txt "int"])
+    [int(-1);int 0;int 3;int 4097];
+  List.iter(fun width -> add C.Sequence_build[int 3;int width;txt "int"]) [0;2;3;4];
+  let integer_arrays=List.map(fun xs -> E.Int_array(Array.of_list xs))
+    [[];[0];[min_int;max_int;((1 lsl 53)+1)];ints] in
+  List.iter(fun array -> add C.Array_count[array];
+    List.iter(fun index -> add C.Array_nth[array;int index]) [-1;0;1;3;19];
+    List.iter(fun(first,count) -> add C.Array_slice[array;int first;int count])
+      [0,0;0,1;1,2;0,19;-1,1;1,-1];
+    match array with E.Int_array values -> add_host "array/sum" [array] (integer_sum values)
+      | _ -> assert false) integer_arrays;
+  List.iter(fun(a,b) -> add C.Array_concat[a;b])
+    (pairs integer_arrays (integer_arrays@[arr1[1.]])
+      |>List.map(function[a;b]->a,b|_->assert false));
+  List.iter(fun values -> add_host "array/sum" [E.Int_array values] (integer_sum values))
+    [Array.make 4097 max_int;[|max_int;1;min_int;-1|];[|(1 lsl 53)+1;1;-(1 lsl 53)|]];
   List.iter (fun (c, v) -> add C.Array_float [c; v]) [(int 3, flt_ 2.5); (int 2, int 7);
     (int 2, E.Bool true); (int 0, flt_ nan); (int 1, flt_ nan); (int 2, flt_ infinity);
     (int 2, v3 1. 2. 3.); (int 2, txt "x"); (flt_ 2.5, flt_ 1.); (int 3, flt_ (-0.))];
@@ -294,7 +362,7 @@ let () =
   List.iter (fun (c, m) -> add ~static:[str c; str m] (C.Fail (c, m)) [])
     [("E_X", "boom"); ("", ""); ("E_UNICODE", "é日\n\"q\"")];
   (* Geometry host operations have a separate immutable record protocol; they
-     are not frame-core primitives and do not enlarge the 54-entry inventory. *)
+     are not frame-core primitives and do not enlarge the intrinsic inventory. *)
   List.iter (fun seed -> List.iter (fun label ->
     let context=E.Record ["seed",E.Text (Int64.to_string seed);"label",E.Text label] in
     let result=Flow_sop.Operators.seed_for ~seed ~namespace:"noise_displace" ~label in
@@ -314,14 +382,28 @@ let () =
     let positions=Rdk.Packed.Float3.Private.view (Rdk.Geometry.positions geometry) in
     let positions=Array.init (Array.length positions.x*3) (fun i -> match i mod 3 with
       |0->positions.x.(i/3)|1->positions.y.(i/3)|_->positions.z.(i/3)) in
+    let tuple width planes =
+      let data=Array.init(Array.length planes.(0)*width)(fun i->planes.(i mod width).(i/width)) in
+      match width with 2->E.Vec2_array data|3->E.Vec3_array data|_->E.Vec4_array data in
+    let storage = function
+      | Rdk.Attribute.Float values -> "float",E.Float_array values
+      | Int values -> "int",E.Int_array values
+      | Text values -> "text",E.Text_array values
+      | Float2 values -> let v=Rdk.Packed.Float2.Private.view values in "vec2",tuple 2 [|v.x;v.y|]
+      | Float3 values -> let v=Rdk.Packed.Float3.Private.view values in "vec3",tuple 3 [|v.x;v.y;v.z|]
+      | Float4 values -> let v=Rdk.Packed.Float4.Private.view values in "vec4",tuple 4 [|v.x;v.y;v.z;v.w|]
+      | Float_array values -> let v=Rdk.Packed.Float_array.Private.view values in
+          "float_array",E.Record["offsets",E.Int_array v.offsets;"values",E.Float_array v.values]
+      | Int_array values -> let v=Rdk.Packed.Int_array.Private.view values in
+          "int_array",E.Record["offsets",E.Int_array v.offsets;"values",E.Int_array v.values] in
     E.Record ["positions",E.Vec3_array positions;
       "vertex_points",E.List (Array.map (fun n->E.Int n) topology.vertex_points);
       "primitive_offsets",E.List (Array.map (fun n->E.Int n) topology.primitive_offsets);
       "primitive_kinds",E.Text (Bytes.to_string topology.primitive_kinds);
       "attributes",E.List (Array.of_list (List.map (fun attribute->
-        let values=match Rdk.Attribute.storage attribute with Rdk.Attribute.Float values->values|_->assert false in
+        let kind,values=storage(Rdk.Attribute.Private.storage attribute) in
         E.Record ["owner",E.Text (owner_name (Rdk.Attribute.owner attribute));"name",E.Text (Rdk.Attribute.name attribute);
-          "values",E.Float_array values]) (Rdk.Geometry.attributes geometry)))] in
+          "type",E.Text kind;"values",values]) (Rdk.Geometry.attributes geometry)))] in
   let delete=List.find (fun (op:Flow.Op.t)->op.name="sop/delete_attr") Flow_sop.Operators.all in
   List.iter (fun owner->List.iter (fun pattern->
     let args=["geometry",E.No_geo;"attribute",E.Text pattern;"owner",E.Text owner] in
@@ -336,11 +418,88 @@ let () =
     add_host "sop/delete_attr" [geometry_value geometry;E.Text pattern;E.Text owner] result)
     ["N";"*";"mask_?";"mask_[1-2]";"mask_[!1]";"^N";"* ^mask_* mask_1";"a\\ b";"a\\*";
      "?";"??";"[a-z]*";"Cd N";"[";"\\";""]) ["point";"vertex";"primitive";"detail";"invalid"];
+  let diagnostic(d:Flow.Diagnostic.t)=Printf.sprintf {|{"error":{"code":%s,"message":%s}}|}(str d.code)(str d.message) in
+  let host_result f=try match f() with Ok value->json value|Error d->diagnostic d
+    with Flow.Value.Fail(code,message,_)->diagnostic(Flow.Diagnostic.error ~code message) in
+  let op name=List.find(fun(op:Flow.Op.t)->op.name=name)Flow_sop.Operators.all in
+  let read geometry name owner kind query =
+    let args=["geometry",E.Deferred(T.geometry,0);"attribute",E.Text name;"owner",E.Text owner]
+      @(if kind="" then [] else ["type",E.Text kind]) in
+    (op(if query then "sop/has_attr" else "sop/attr")).check args;
+    let resolve=Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->Some geometry) in
+    if query then resolve(E.Source("sop/has_attr",T.Bool,args)) else
+    if kind="float_array"||kind="int_array" then
+      Result.bind(resolve(E.Struct("sop/attr",T.Array T.Int,args@["component",E.Text"offsets"]))) (fun offsets->
+      Result.map(fun values->E.Record["offsets",offsets;"values",values])
+        (resolve(E.Struct("sop/attr",T.Any,args@["component",E.Text"values"]))))
+    else resolve(E.Struct("sop/attr",T.Any,args)) in
+  let write geometry name owner kind values =
+    (op "sop/with_attr").check ["geometry",E.No_geo;"attribute",E.Text name;
+      "owner",E.Text owner;"type",E.Text kind;"values",values];
+    Result.bind(Flow_sop.Attribute_kernel.owner owner)(fun owner->
+      let input=Sop.Node.Private.make_geometry ~operation:"core_fixture.attribute" ~version:1
+        ~parameters:"" ~cook_mode:Sop.Node.Generator ~dependencies:Sop.Context.Dependencies.static ~inputs:[||]
+        (fun ~node_id:_ _ _->Ok Sop.Node.Private.{geometry;diagnostics=[];instances=None}) in
+      let node=Flow_sop.Attribute_kernel.node ~owner ~kind ~reference:true ~source:"host_fixture"
+        ~name ~values ~sources:[0] [input] in
+      let session=Sop.Session.create ~max_entries:8 ~max_payload_bytes:1_000_000|>Result.get_ok in
+      Fun.protect ~finally:(fun()->Sop.Session.close session)(fun()->
+        let context=Sop.Context.create()|>Result.get_ok in
+        match Sop.Session.cook session ~context node with
+        |Error d->Error(Flow.Diagnostic.error ~code:d.code d.message)
+        |Ok output->Ok(geometry_value(Result.get_ok(Sop.Payload.geometry output.payload))))) in
+  List.iter(fun(owner,count)->List.iter(fun kind->
+    let floats width=Array.init(count*width)(fun i->if i mod 2=0 then -0. else float i+.0.25) in
+    let values=match kind with
+      |"float"->E.Float_array(floats 1)|"vec2"->E.Vec2_array(floats 2)
+      |"vec3"->E.Vec3_array(floats 3)|"vec4"->E.Vec4_array(floats 4)
+      |"int"->E.Int_array(Array.init count(fun i->if i mod 2=0 then max_int else min_int))
+      |"text"->E.Text_array(Array.init count(fun i->[|"";"é日本🐈";"line\n\"quote\""|].(i mod 3)))
+      |"float_array"|"int_array"->E.Record["offsets",E.Int_array(Array.init(count+1)(fun i->i*16));
+          "values",(if kind="float_array" then E.Float_array(floats 16)
+            else E.Int_array(Array.init(count*16)(fun i->max_int-i)))]
+      |_->assert false in
+    add_host "sop/with_attr" [geometry_value geometry;E.Text"typed";E.Text owner;E.Text kind;values]
+      (host_result(fun()->write geometry "typed" owner kind values));
+    let bad=match values with
+      |E.Record fields->E.Record(("offsets",E.Int_array[|0|])::List.remove_assoc "offsets" fields)
+      |E.Int_array _->E.Int_array[||]|Float_array _->E.Float_array[||]
+      |Text_array _->E.Text_array[||]
+      |Vec2_array _->E.Vec2_array[||]|Vec3_array _->E.Vec3_array[||]|Vec4_array _->E.Vec4_array[||]
+      |_->assert false in
+    let writes=("typed",bad)::(if kind="vec3" then ["P",values] else []) in
+    List.iter(fun(name,values)->add_host "sop/with_attr"
+      [geometry_value geometry;E.Text name;E.Text owner;E.Text kind;values]
+      (host_result(fun()->write geometry name owner kind values)))writes;
+    let fresh=match kind with
+      |"float"->Rdk.Attribute.Float(floats 1)|"int"->Int(Array.init count(fun i->max_int-i))
+      |"vec2"->Float2(Result.get_ok(Rdk.Packed.Float2.of_owned ~x:(floats 1) ~y:(floats 1)))
+      |"vec3"->Float3(Rdk.Packed.Float3.Private.of_owned_exn ~x:(floats 1) ~y:(floats 1) ~z:(floats 1))
+      |"vec4"->Float4(Result.get_ok(Rdk.Packed.Float4.of_owned ~x:(floats 1) ~y:(floats 1) ~z:(floats 1) ~w:(floats 1)))
+      |"float_array"->Float_array(Result.get_ok(Rdk.Packed.Float_array.create_owned
+          ~offsets:(Array.init(count+1)(fun i->if i=0 then 0 else 2)) ~values:[|(-0.);0.25|]))
+      |"int_array"->Int_array(Result.get_ok(Rdk.Packed.Int_array.create_owned
+          ~offsets:(Array.init(count+1)(fun i->if i=0 then 0 else 2)) ~values:[|max_int;min_int|]))
+      |"text"->Text(Array.init count(fun i->[|"";"é日本🐈";"line\n\"quote\""|].(i mod 3)))
+      |_->assert false in
+    let owner_enum=Flow_sop.Attribute_kernel.owner owner|>Result.get_ok in
+    let typed=Rdk.Geometry.with_attribute
+      (Rdk.Attribute.create_owned ~owner:owner_enum ~name:"typed" fresh|>Result.get_ok)geometry|>Result.get_ok in
+    let wrong=if kind="text" then "float" else "text" in
+    List.iter(fun name->List.iter(fun requested->
+      add_host "sop/attr" [geometry_value typed;E.Text name;E.Text owner;E.Text requested]
+        (host_result(fun()->read typed name owner requested false))) [kind;wrong]) ["typed";"missing"];
+    List.iter(fun name->List.iter(fun requested->
+      add_host "sop/has_attr" ([geometry_value typed;E.Text name;E.Text owner]
+        @(if requested="" then [] else [E.Text requested]))
+        (host_result(fun()->read typed name owner requested true))) [kind;wrong;""]) ["typed";"missing";"P"])
+    ["float";"int";"vec2";"vec3";"vec4";"text";"float_array";"int_array"])
+    ["point",3;"vertex",3;"primitive",1;"detail",1];
   (* write *)
-  assert (List.length inventory = 54);
+  assert (List.length inventory = 73);
   if not (Sys.file_exists outdir) then Sys.mkdir outdir 0o755;
   List.iter (fun name ->
     let body = String.concat ",\n" (List.rev !(Hashtbl.find cases name)) in
     Out_channel.with_open_bin (Filename.concat outdir (export name ^ ".json")) (fun oc ->
       Printf.fprintf oc "{\"primitive\":%s,\"export\":%s,\"cases\":[\n%s\n]}\n" (str name) (str (export name)) body))
-    (List.map C.primitive_name inventory @ ["sop/context_seed";"sop/delete_attr"])
+    (List.map C.primitive_name inventory @ ["array/sum";"sop/context_seed";"sop/delete_attr";"sop/attr";"sop/with_attr";"sop/has_attr"])

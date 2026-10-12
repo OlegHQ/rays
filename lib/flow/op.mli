@@ -6,10 +6,17 @@ type signature = {
 type shape = Scalar | Struct of { splice : bool }
 type arithmetic = { apply : 'f 'r. ('f, 'r) Value.t -> ('f, 'r) Value.t -> ('f, 'r) Value.t }
 type packed_kind = Binary of Packed_ops.binary | Unary of Packed_ops.unary
-  | Noise3 | Length | Exact | Frame | Constant_only
+  | Integer of Packed_ops.integer | Integer_compare of Packed_ops.comparison
+  | Convert of Packed_ops.conversion
+  | Noise3 | Length | Dot | Cross | Normalize | Exact | Frame | Constant_only
 type t = {
   name : string; ctx : Context.t; signature : signature;
-  out : Ty.t list -> Ty.t; any_num : bool;
+  out : Ty.t list -> Ty.t;
+  out_args : ((string * Ty.t * Param.value option) list -> Ty.t) option;
+  (** Optional result typing from named argument types and scalar literals.
+      A missing literal denotes a computed argument. Clear this callback when
+      copying a declaration with different result semantics. *)
+  any_num : bool;
   choices : (string * string list) list; shape : shape;
   live : bool;
   check : 'f 'r. (string * ('f, 'r) Value.t) list -> unit;
@@ -31,6 +38,9 @@ val finder : t list -> string -> Context.t -> t option
 
 val of_context : ?extra:t list -> Context.t -> t list
 (** Context-specific operators followed by the value operators, in declaration order. *)
+
+val result_type : t -> (string * Ty.t * Param.value option) list -> Ty.t
+(** Use [out_args] when supplied, otherwise [out] on positional argument types. *)
 
 val arith : string -> arithmetic option
 

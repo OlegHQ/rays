@@ -7,6 +7,8 @@ type ('f, 'r) t =
   | Vec3 of float * float * float
   | Vec4 of float * float * float * float
   | List of ('f, 'r) t array
+  | Int_array of int array
+  | Text_array of string array
   | Float_array of float array
   | Vec2_array of float array
   | Vec3_array of float array
@@ -15,6 +17,7 @@ type ('f, 'r) t =
   | Deferred of Ty.t * int
   | No_geo
   | Struct of string * Ty.t * (string * ('f, 'r) t) list
+  | Source of string * Ty.t * (string * ('f, 'r) t) list
   | Fn of 'f
   | Residual of 'r
 
@@ -85,6 +88,8 @@ let rec ty_of = function
   | Int _ -> Ty.Int | Float _ -> Ty.Float | Bool _ -> Ty.Bool | Text _ -> Ty.Text
   | Vec2 _ -> Ty.Vec2 | Vec3 _ -> Ty.Vec3 | Vec4 _ -> Ty.Vec4
   | List xs -> Ty.List (elem_ty xs)
+  | Int_array _ -> Ty.Array Ty.Int
+  | Text_array _ -> Ty.Array Ty.Text
   | Float_array _ -> Ty.Array Ty.Float
   | Vec2_array _ -> Ty.Array Ty.Vec2
   | Vec3_array _ -> Ty.Array Ty.Vec3
@@ -92,7 +97,7 @@ let rec ty_of = function
   | Record fs -> Ty.Record (List.map (fun (n, v) -> (n, ty_of v)) fs)
   | Deferred (ty, _) -> ty
   | No_geo -> Ty.geometry
-  | Struct (_, ty, _) -> ty
+  | Struct (_, ty, _) | Source (_, ty, _) -> ty
   | Fn _ -> (Ty.Fn None)
   | Residual _ -> Ty.Any
 and elem_ty xs =
@@ -101,7 +106,7 @@ and elem_ty xs =
 (* [need]: convert a value to a wanted static type (a residual is left for its own evaluation) *)
 let rec coerce_to want v =
   match want, v with
-  | Ty.Any, _ | _, Residual _ -> v
+  | Ty.Any, _ | _, (Residual _ | Source _) -> v
   | Ty.Int, Float f -> Int (to_int "int" (round f))
   | Ty.Int, Bool b -> Int (if b then 1 else 0)
   | Ty.Float, Int n -> Float (float_of_int n)
@@ -126,6 +131,8 @@ let rec show_with conc v =
   | Vec3 (x, y, z) -> "[" ^ String.concat " " [ fmt4 x; fmt4 y; fmt4 z ] ^ "]"
   | Vec4 (x, y, z, w) -> "[" ^ String.concat " " [fmt4 x; fmt4 y; fmt4 z; fmt4 w] ^ "]"
   | List xs -> "[" ^ String.concat " " (List.map (show_with conc) (Array.to_list xs)) ^ "]"
+  | Int_array xs -> Printf.sprintf "%d × int" (Array.length xs)
+  | Text_array xs -> Printf.sprintf "%d × text" (Array.length xs)
   | Float_array xs -> Printf.sprintf "%d × float" (Array.length xs)
   | Vec2_array xs -> Printf.sprintf "%d × vec2" (Array.length xs / 2)
   | Vec3_array xs -> Printf.sprintf "%d × vec3" (Array.length xs / 3)
@@ -144,6 +151,8 @@ let rec key_of ~residual = function
   | Vec3 (a, b, c) -> Printf.sprintf "v%h,%h,%h" a b c
   | Vec4 (a, b, c, d) -> Printf.sprintf "v4:%h,%h,%h,%h" a b c d
   | List xs -> "[" ^ String.concat "," (List.map (key_of ~residual) (Array.to_list xs)) ^ "]"
+  | Int_array xs -> "AI" ^ Marshal.to_string xs []
+  | Text_array xs -> "AT" ^ Marshal.to_string xs []
   | Float_array xs -> "A" ^ Marshal.to_string xs []
   | Vec2_array xs -> "V2" ^ Marshal.to_string xs []
   | Vec3_array xs -> "V" ^ Marshal.to_string xs []
@@ -154,6 +163,7 @@ let rec key_of ~residual = function
   | Deferred (ty, n) -> "node:" ^ Ty.to_string ty ^ ":" ^ string_of_int n
   | No_geo -> "G"
   | Struct (n, _, fs) -> "S" ^ n ^ key_of ~residual (Record fs)
+  | Source (n, ty, fs) -> "source:" ^ n ^ ":" ^ Ty.to_string ty ^ key_of ~residual (Record fs)
   | Fn _ -> "fn"
   | Residual r -> "r" ^ string_of_int (residual r)
 
@@ -186,6 +196,8 @@ let list_arg = function
   | _ -> fail "E_TYPE" "Expected a list."
 
 let array_length = function
+  | Int_array xs -> Array.length xs
+  | Text_array xs -> Array.length xs
   | Float_array xs -> Array.length xs
   | Vec2_array xs when Array.length xs mod 2 = 0 -> Array.length xs / 2
   | Vec3_array xs when Array.length xs mod 3 = 0 -> Array.length xs / 3
@@ -197,6 +209,8 @@ let array_length = function
 let array_get xs index =
   if index < 0 || index >= array_length xs then fail "E_ARRAY_RANGE" "Array index is outside its length.";
   match xs with
+  | Int_array xs -> Int xs.(index)
+  | Text_array xs -> Text xs.(index)
   | Float_array xs -> Float xs.(index)
   | Vec2_array xs -> let i = index * 2 in Vec2 (xs.(i), xs.(i + 1))
   | Vec3_array xs -> let i = index * 3 in Vec3 (xs.(i), xs.(i + 1), xs.(i + 2))
@@ -215,7 +229,23 @@ let array_put data width index v =
   | _, (Int _ | Float _ | Bool _) -> let x = fin "array" (num v) in
       for j = 0 to width - 1 do data.(at + j) <- x done
   | _ -> fail "E_ARRAY_TYPE" "Packed array element has the wrong vector width."
+let int_array_put data index value =
+  match coerce_to Ty.Int value with
+  | Int n -> data.(index) <- n
+  | _ -> fail "E_ARRAY_TYPE" "Packed integer arrays contain integer values."
 let array_init ty count f =
+  if ty = Ty.Text then begin
+    if count < 0 || count > Sys.max_array_length then
+      fail "E_ARRAY_RANGE" "Array length is outside native storage bounds.";
+    Text_array (Array.init count (fun i -> match f i with Text s -> s
+      | _ -> fail "E_ARRAY_TYPE" "Text arrays contain text values."))
+  end else if ty = Ty.Int then begin
+    if count < 0 || count > Sys.max_array_length then
+      fail "E_ARRAY_RANGE" "Array length is outside native storage bounds.";
+    let data = Array.make count 0 in
+    for i = 0 to count - 1 do int_array_put data i (f i) done;
+    Int_array data
+  end else begin
   let width = match ty with Ty.Vec2 -> 2 | Vec3 -> 3 | Vec4 -> 4 | Float | Any -> 1
     | _ -> fail "E_ARRAY_TYPE" "Packed arrays contain float, vec2, vec3 or vec4 values." in
   if count < 0 || count > Sys.max_floatarray_length / width then
@@ -223,6 +253,7 @@ let array_init ty count f =
   let data = Array.make (count * width) 0. in
   for i = 0 to count - 1 do array_put data width i (f i) done;
   match width with 2 -> Vec2_array data | 3 -> Vec3_array data | 4 -> Vec4_array data | _ -> Float_array data
+  end
 let rec validate = function
   | Float f -> ignore (fin "input" f)
   | Vec2 (x, y) -> List.iter (fun x -> ignore (fin "input" x)) [x; y]
@@ -237,5 +268,5 @@ let rec validate = function
       done;
       if !i < length then ignore (fin "array input" xs.(!i))
   | List xs -> Array.iter validate xs
-  | Record fs | Struct (_, _, fs) -> List.iter (fun (_, v) -> validate v) fs
+  | Record fs | Struct (_, _, fs) | Source (_, _, fs) -> List.iter (fun (_, v) -> validate v) fs
   | _ -> ()

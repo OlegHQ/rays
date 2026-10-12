@@ -9,6 +9,8 @@ let () =
   (* annotations *)
   assert (ty "float" = Some Float && ty "fn" = Some (Fn None) && ty "geometry" = Some Ty.geometry);
   assert (ty "(list int)" = Some (List Int));
+  assert (ty "(array int)" = Some (Array Int));
+  assert (of_string "array:int" = Some (Array Int));
   assert (ty "(list (list vec3))" = Some (List (List Vec3)));
   assert (ty "{:shape geometry :y float}" = Some (Record ["shape", Ty.geometry; "y", Float]));
   assert (ty "{}" = Some (Record []));

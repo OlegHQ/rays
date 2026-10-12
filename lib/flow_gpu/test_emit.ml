@@ -20,6 +20,36 @@ let () =
         (graph img :context image (render 0.125)))"]
 
 let () =
+  let source="(map (fn [x] (if (> x t) (+ x 1.0) (exp (* x 1000.0)))) (array/range 16))"in
+  let program=Test_program.compile source in
+  let view=Flow_ir.Packed.Private.view program in
+  let msl=Test_program.ok(Flow_gpu.Emit.kernel program)in
+  let lines=String.split_on_char '\n' msl.source in
+  let guarded=ref false in
+  Array.iteri(fun slot->function
+    |Flow_ir.Packed.Guarded(guards,Flow_ir.Packed.Unary(Exp,_))->
+        guarded:=true;
+        assert(guards<>[]);
+        let assignment=Printf.sprintf "    r%d="slot in
+        let rec check=function
+          |line::next::_ when String.starts_with ~prefix:assignment line->
+              assert(next=Printf.sprintf "    if(!isfinite(r%d)) atomic_store_explicit(status,1u,memory_order_relaxed);"slot)
+          |_::rest->check rest|[]->assert false in check lines
+    |_->())view.code;
+  assert !guarded;
+  let nested=Test_program.compile
+    "(map (fn [x] (if (> x t) (noise3 [(pow (+ x t) 2.0) t 0.0] :seed 31) (+ x t))) (array/range 16))"in
+  let nested=Test_program.ok(Flow_gpu.Emit.kernel nested)in
+  assert(nested.table_seeds=[|31|]);
+  assert(List.exists(fun(_,_,width)->width=1)nested.uniform_layout);
+  assert(Ogpu.Shader.validate_bindings nested.interface=Ok());
+  List.iter(fun source->
+    let program=try Test_program.compile source with Invalid_argument message->failwith(source^": "^message)in
+    match Flow_gpu.Emit.kernel program with Error d->assert(d.code="E_GPU_FORM")|Ok _->assert false)
+    ["(map (fn [x] (+ (float x) t)) (array/range 16 :type \"int\"))";
+     "(let* [offset (frame/index)] (map (fn [x] (+ x (float offset))) (array/range 16)))"]
+
+let () =
   let qualifies source =
     let program = Test_program.compile source in
     assert (Flow_ir.Packed.gpu_refusals program = []);
@@ -69,15 +99,30 @@ let () =
      "(case (> x t) 0 t 2 (+ x t) :else 0)"];
   List.iter (fun name ->
     let body=match name with
+      | name when Flow.Packed_ops.integer name <> None ->
+          "(if (> t 0.0) (" ^ name ^ " x 1) x)"
+      | name when Flow.Packed_ops.comparison name <> None ->
+          "(if (" ^ name ^ " x 1) (+ t 1.0) t)"
       | "noise3" -> "(noise3 [x t 0])"
       | "length" -> "(length [x t 0])"
+      | "dot" -> "(dot [x t 0] [1 2 3])"
+      | "cross" -> "(cross [x t 0] [1 2 3])"
+      | "normalize" -> "(normalize [x t 0])"
+      | "asin" | "acos" -> "(" ^ name ^ " (* (+ x t) 0.0001))"
+      | "log" -> "(log (+ (+ x t) 1.0))"
       | "and" | "or" -> "(if (" ^ name ^ " (> x t) (< x 8)) x t)"
       | "not" -> "(if (not (> x t)) x t)"
       | "<" | "<=" | ">" | ">=" | "=" -> "(if (" ^ name ^ " x t) x t)"
       | name when Flow.Packed_ops.unary name<>None -> "(" ^ name ^ " (+ x t))"
       | name -> "(" ^ name ^ " x t)" in
-    ignore (Test_program.ok (Flow_gpu.Emit.kernel
-      (Test_program.compile ("(map (fn [x] " ^ body ^ ") (array/range 1024))")))))
+    let integer = Flow.Packed_ops.integer name <> None || Flow.Packed_ops.comparison name <> None in
+    let array = if integer then "(array/range 1024 :type \"int\")" else "(array/range 1024)" in
+    let program = Test_program.compile ("(map (fn [x] " ^ body ^ ") " ^ array ^ ")") in
+    if integer || name = "hypot" then
+      (match Flow_gpu.Emit.kernel program with
+       | Error d -> assert (d.code = "E_GPU_FORM")
+       | Ok _ -> failwith ("Metal must refuse " ^ name))
+    else ignore (Test_program.ok (Flow_gpu.Emit.kernel program)))
     Flow_gpu.Emit.names;
   let writing=Array.to_list Sys.argv=[Sys.argv.(0);"--write-goldens"] in
   List.iter (fun (name,program) ->
@@ -112,5 +157,6 @@ let () =
     let slot=Scanf.sscanf line "  float r%d=" Fun.id in
     let guard=Printf.sprintf
       "  if(!isfinite(r%d)) atomic_store_explicit(status,1u,memory_order_relaxed);" slot in
-    assert((List.nth lines(index+1)=guard)=checks.(slot)))lines;
+    if not (match (Flow_ir.Packed.Private.view program).code.(slot)with Guarded _->true|_->false)then
+      assert((List.nth lines(index+1)=guard)=checks.(slot)))lines;
   print_endline "GPU emitter: shared operations, golden arithmetic/select/seeded fBm and typed ordered-loop refusals passed"

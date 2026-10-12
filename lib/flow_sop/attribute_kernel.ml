@@ -28,7 +28,7 @@ let sources value =
     | Fn f when not (Functions.mem functions f) ->
         Functions.add functions f ();
         List.iter (fun (_, v) -> visit v) (E.Private.function_bindings f)
-    | Record fs | Struct (_, _, fs) -> List.iter (fun (_, v) -> visit v) fs
+    | Record fs | Struct (_, _, fs) | Source(_,_,fs) -> List.iter (fun (_, v) -> visit v) fs
     | _ -> () in
   visit value; List.sort_uniq Int.compare !ids
 
@@ -49,7 +49,7 @@ let reads value =
     let rec scan (term : Flow.Workspace.term) =
       let all = List.iter scan and fields fields = List.iter (fun (_, term) -> scan term) fields in
       match term.node with
-      | Op {op="sop/attr";args;_} ->
+      | Op {op=("sop/attr"|"sop/has_attr");args;_} ->
           (match Option.bind (List.assoc_opt "attribute" args) (lookup bindings),
               Option.bind (List.assoc_opt "geometry" args) (lookup bindings) with
            | Some (E.Text name), Some (E.Deferred (ty, id)) when Flow.Ty.is_geometry ty ->
@@ -75,7 +75,7 @@ let reads value =
     scan term;
     List.filter (fun id -> not (List.mem id !unsafe)) !safe in
   let rec visit safe = function
-    | E.Struct ("sop/attr", _, args) ->
+    | E.Struct ("sop/attr", _, args) | E.Source("sop/has_attr",_,args) ->
         (match List.assoc_opt "attribute" args, List.assoc_opt "geometry" args with
          | Some (E.Text name), Some (E.Deferred (ty, _)) when Flow.Ty.is_geometry ty ->
              names := name :: !names
@@ -95,69 +95,158 @@ let reads value =
           | Some (_, body) -> checked_reads bindings body in
         List.iter (fun (_, value) -> visit safe value) bindings
     | E.List values -> Array.iter (visit safe) values
-    | E.Record fields | E.Struct (_, _, fields) -> List.iter (fun (_, value) -> visit safe value) fields
+    | E.Record fields | E.Struct (_, _, fields) | E.Source(_,_,fields) -> List.iter (fun (_, value) -> visit safe value) fields
     | _ -> () in
   visit [] value;
   if !opaque then ["*"] else List.sort_uniq String.compare !names
 
 let error code message = Error (Flow.Diagnostic.error ~code message)
+let owner = function
+  | "point" -> Ok A.Point | "vertex" -> Ok A.Vertex
+  | "primitive" -> Ok A.Primitive | "detail" -> Ok A.Detail
+  | _ -> error "E_ATTR_OWNER" "Attribute owner is point, vertex, primitive or detail."
+let owner_name = function A.Point->"point"|Vertex->"vertex"|Primitive->"primitive"|Detail->"detail"
+let value_type = function
+  | "float" -> Ok Flow.Ty.(Array Float) | "int" -> Ok Flow.Ty.(Array Int)
+  | "vec2" -> Ok Flow.Ty.(Array Vec2) | "vec3" -> Ok Flow.Ty.(Array Vec3)
+  | "vec4" -> Ok Flow.Ty.(Array Vec4) | "text" -> Ok Flow.Ty.(Array Text)
+  | "float_array" -> Ok Flow.Ty.(Record ["offsets",Array Int;"values",Array Float])
+  | "int_array" -> Ok Flow.Ty.(Record ["offsets",Array Int;"values",Array Int])
+  | _ -> error "E_ATTR_TYPE" "Attribute type is float, int, vec2, vec3, vec4, text, float_array or int_array."
+let owner_count geometry = function
+  | A.Point -> G.point_count geometry | Vertex -> G.vertex_count geometry
+  | Primitive -> G.primitive_count geometry | Detail -> 1
+let width = function "float"->1|"vec2"->2|"vec3"->3|"vec4"->4|_->0
+let options args =
+  let text key default code = match List.assoc_opt key args with
+    | None->Ok default|Some(E.Text text)->Ok text|_->error code ("Attribute "^key^" must be text.") in
+  Result.bind(text "owner" "point" "E_ATTR_OWNER")(fun name->
+  Result.bind(owner name)(fun owner->
+  Result.bind(text "type" "vec3" "E_ATTR_TYPE")(fun kind->
+  Result.map(fun _->owner,kind)(value_type kind))))
+let storage ~owner ~name geometry =
+  if owner=A.Point && name="P" then Some (A.Float3 (G.positions geometry))
+  else Option.map A.Private.storage (G.find_attribute ~owner name geometry)
+let storage_kind = function
+  | A.Float _->"float"|Int _->"int"|Float2 _->"vec2"|Float3 _->"vec3"
+  | Float4 _->"vec4"|Text _->"text"|Float_array _->"float_array"|Int_array _->"int_array"
+let columns = function
+  | A.Float data -> Some [|data|]
+  | Float2 data -> let p=Rdk.Packed.Float2.Private.view data in Some [|p.x;p.y|]
+  | Float3 data -> let p=P.Private.view data in Some [|p.x;p.y;p.z|]
+  | Float4 data -> let p=Rdk.Packed.Float4.Private.view data in Some [|p.x;p.y;p.z;p.w|]
+  | _ -> None
+let typed_storage ~owner ~name ~kind geometry =
+  match storage ~owner ~name geometry with
+  | Some storage when storage_kind storage=kind -> Ok storage
+  | _ -> error "E_ATTR_TYPE" (owner_name owner ^ " attribute " ^ name ^ " is missing or is not " ^ kind ^ ".")
 let ranges ~grain count f =
   let chunks = if count=0 then 0 else (count-1)/grain+1 in
   Rays_math.Parallel.for_ ~chunk_size:1 ~start:0 ~finish:(chunks-1) (fun chunk ->
     let first=chunk*grain in f ~first ~last:(min count (first+grain)))
 
-let read name geometry =
-  let positions = if name = "P" then Some (G.positions geometry) else
-    Option.bind (G.find_attribute ~owner:A.Point name geometry)
-      (A.get (A.key ~name ~owner:A.Point A.float3)) in
-  match positions with
-  | None -> error "E_ATTR_TYPE" ("Point attribute " ^ name ^ " is missing or is not vec3.")
-  | Some positions ->
-      let p = P.Private.view positions in
-      let count = G.point_count geometry in
-      let values = Array.make (count * 3) 0. in
+let read ?component ~owner ~kind name geometry =
+  Result.bind (typed_storage ~owner ~name ~kind geometry) (fun storage ->
+  match columns storage with
+  | None -> (match storage,component with
+      | A.Int data,None -> Ok(E.Int_array(Array.copy data))
+      | A.Text data,None -> Ok(E.Text_array(Array.copy data))
+      | A.Float_array data,Some "offsets" -> Ok(E.Int_array(Array.copy (Rdk.Packed.Float_array.Private.view data).offsets))
+      | A.Float_array data,Some "values" -> Ok(E.Float_array(Array.copy (Rdk.Packed.Float_array.Private.view data).values))
+      | A.Int_array data,Some "offsets" -> Ok(E.Int_array(Array.copy (Rdk.Packed.Int_array.Private.view data).offsets))
+      | A.Int_array data,Some "values" -> Ok(E.Int_array(Array.copy (Rdk.Packed.Int_array.Private.view data).values))
+      | _ -> error "E_ATTR_TYPE" "This attribute storage requires its typed array foundation.")
+  | Some planes ->
+      let count = owner_count geometry owner and width=Array.length planes in
+      if count>Sys.max_floatarray_length/width then error "E_ATTR_COUNT" "Attribute buffer exceeds array limits." else
+      let values = Array.make (count * width) 0. in
       ranges ~grain:16_384 count (fun ~first ~last ->
         for i = first to last - 1 do
-          values.(i * 3) <- p.x.(i);
-          values.(i * 3 + 1) <- p.y.(i);
-          values.(i * 3 + 2) <- p.z.(i)
+          for component=0 to width-1 do values.(i*width+component)<-planes.(component).(i) done
         done);
-      Ok (E.Vec3_array values)
+      Ok (match width with 1->E.Float_array values|2->E.Vec2_array values|3->E.Vec3_array values|_->E.Vec4_array values))
 
 let resolve ~geometry = function
   | E.Struct ("sop/attr", _, args) ->
       (match List.assoc_opt "geometry" args, List.assoc_opt "attribute" args with
        | Some (E.Deferred (ty, id)), Some (E.Text name) when Flow.Ty.is_geometry ty ->
-           (match geometry id with Some geometry -> read name geometry
+           (match geometry id with Some geometry -> Result.bind (options args) (fun (owner,kind)->
+             let component=match List.assoc_opt "component" args with Some(E.Text name)->Some name|_->None in
+             read ?component ~owner ~kind name geometry)
             | None -> error "E_DATA_SOURCE" "Attribute source has not been cooked.")
        | _ -> error "E_ATTR_TYPE" "sop/attr needs geometry and an attribute name.")
+  | E.Source("sop/has_attr",_,args) ->
+      (match List.assoc_opt "geometry" args,List.assoc_opt "attribute" args with
+       | Some(E.Deferred(ty,id)),Some(E.Text name) when Flow.Ty.is_geometry ty ->
+           (match geometry id with None->error "E_DATA_SOURCE" "Attribute source has not been cooked."
+            | Some geometry->Result.bind (options args) (fun(owner,_)->
+                let requested=match List.assoc_opt "type" args with Some(E.Text kind)->Some kind|_->None in
+                Ok(E.Bool(match storage ~owner ~name geometry with
+                  |None->false|Some storage->Option.fold ~none:true ~some:((=)(storage_kind storage))requested))))
+       | _->error "E_ATTR_TYPE" "sop/has_attr needs geometry and an attribute name.")
   | _ -> error "E_DATA_SOURCE" "Unknown packed data source."
 
-let write ~grain name values geometry = match values with
-  | E.Vec3_array values ->
-      let count = G.point_count geometry in
-      if Array.length values <> count * 3 then
-        error "E_ATTR_COUNT" (Printf.sprintf "%s needs %d point values; got %d."
-          name count (Array.length values / 3))
+let make_storage kind planes = match kind with
+  | "float" -> Ok (A.Float planes.(0))
+  | "vec2" -> Result.map (fun data->A.Float2 data) (Rdk.Packed.Float2.of_owned ~x:planes.(0) ~y:planes.(1))
+  | "vec3" -> Ok (A.Float3 (P.Private.of_shared_exn ~x:planes.(0) ~y:planes.(1) ~z:planes.(2)))
+  | "vec4" -> Result.map (fun data->A.Float4 data) (Rdk.Packed.Float4.of_owned ~x:planes.(0) ~y:planes.(1) ~z:planes.(2) ~w:planes.(3))
+  | _ -> Error "Unsupported floating attribute type"
+let install ~owner ~kind name planes geometry =
+  Result.map_error (Flow.Diagnostic.error ~code:"E_ATTR_TYPE")
+    (Result.bind (make_storage kind planes) (fun storage ->
+      if owner=A.Point && name="P" then match storage with
+        | A.Float3 positions -> G.with_positions positions geometry
+        | _ -> Error "Canonical point P requires vec3 storage."
+      else Result.bind (A.create_owned ~name ~owner storage) (fun attr -> G.with_attribute attr geometry)))
+let write ~grain ~owner ~kind name values geometry =
+  let owned storage = Result.map_error(Flow.Diagnostic.error ~code:"E_ATTR_TYPE")
+    (Result.bind (A.create_owned ~name ~owner storage)(fun attr->G.with_attribute attr geometry)) in
+  let count=owner_count geometry owner in
+  match kind,values with
+  | "int",E.Int_array data -> if Array.length data<>count then error "E_ATTR_COUNT" "Integer attribute count differs from owner count."
+      else owned(A.Int(Array.copy data))
+  | "text",E.Text_array data -> if Array.length data<>count then error "E_ATTR_COUNT" "Text attribute count differs from owner count."
+      else owned(A.Text(Array.copy data))
+  | ("float_array"|"int_array"),E.Record fields ->
+      (match List.assoc_opt "offsets" fields,List.assoc_opt "values" fields with
+       | Some(E.Int_array offsets),Some values ->
+           if Array.length offsets<>count+1 then error "E_ATTR_COUNT" "CSR row count differs from owner count." else
+           let offsets=Array.copy offsets in
+           (match kind,values with
+            | "float_array",E.Float_array data ->
+                if not(Array.for_all Float.is_finite data)then error "E_NONFINITE" "Attribute values must be finite." else
+                Result.bind (Result.map_error(Flow.Diagnostic.error ~code:"E_ATTR_COUNT")
+                  (Rdk.Packed.Float_array.create_owned ~offsets ~values:(Array.copy data))) (fun data->owned(A.Float_array data))
+            | "int_array",E.Int_array data ->
+                Result.bind(Result.map_error(Flow.Diagnostic.error ~code:"E_ATTR_COUNT")
+                  (Rdk.Packed.Int_array.create_owned ~offsets ~values:(Array.copy data))) (fun data->owned(A.Int_array data))
+            | _->error "E_ATTR_TYPE" "CSR values do not match the requested storage type.")
+       | _->error "E_ATTR_TYPE" "CSR attributes require integer offsets and typed values.")
+  | _ ->
+  let data = match kind,values with
+    | "float",E.Float_array data|"vec2",E.Vec2_array data|"vec3",E.Vec3_array data|"vec4",E.Vec4_array data->Some data
+    | _ -> None in
+  match data with
+  | Some values ->
+      let count = owner_count geometry owner and width=width kind in
+      if count>Sys.max_floatarray_length/width || Array.length values/width<>count || Array.length values mod width<>0 then
+        error "E_ATTR_COUNT" (Printf.sprintf "%s needs %d %s values; got %d."
+          name count (owner_name owner) (Array.length values / width))
       else
         let finite = Atomic.make true in
-        let x = Array.make count 0.
-        and y = Array.make count 0.
-        and z = Array.make count 0. in
+        let planes=Array.init width (fun _->Array.make count 0.) in
         ranges ~grain count (fun ~first ~last ->
           for i = first to last - 1 do
-            let vx=values.(i*3) and vy=values.(i*3+1) and vz=values.(i*3+2) in
-            if not (Float.is_finite vx && Float.is_finite vy && Float.is_finite vz) then
-              Atomic.set finite false;
-            x.(i)<-vx; y.(i)<-vy; z.(i)<-vz
+            for component=0 to width-1 do
+              let value=values.(i*width+component) in
+              if not(Float.is_finite value) then Atomic.set finite false;
+              planes.(component).(i)<-value
+            done
           done);
-        if not (Atomic.get finite) then error "E_NONFINITE" "Point attributes must be finite."
-        else let storage = P.Private.of_owned_exn ~x ~y ~z in
-          Result.map_error (Flow.Diagnostic.error ~code:"E_ATTR_TYPE")
-            (if name="P" then G.with_positions storage geometry else
-              Result.bind (A.create_owned ~name ~owner:A.Point (A.Float3 storage))
-                (fun attr -> G.with_attribute attr geometry))
-  | _ -> error "E_ATTR_TYPE" "sop/with_attr takes a packed vec3 array."
+        if not (Atomic.get finite) then error "E_NONFINITE" "Attribute values must be finite."
+        else install ~owner ~kind name planes geometry
+  | None -> error "E_ATTR_TYPE" ("sop/with_attr requires " ^ kind ^ " storage.")
 
 let source_origins ~sources inputs =
   if List.compare_lengths sources inputs <> 0 then
@@ -198,16 +287,29 @@ let rec captured bindings (term : Flow.Workspace.term) = match term.node with
 
 let prepare ?profile ?strict ?approx ?sink ~sources inputs values =
   Result.bind (source_origins ~sources inputs) (fun by_source ->
-  let attribute_source = function
-    | E.Struct ("sop/attr", _, args) -> List.assoc_opt "geometry" args | _ -> None in
   let count_source residual (term : Flow.Workspace.term) =
     let bindings = (E.Private.residual_view residual).bindings in
-    let geometry = match term.node with
-      | Op {op = "sop/attr"; args; _} -> Option.bind (List.assoc_opt "geometry" args) (captured bindings)
-      | _ -> Option.bind (captured bindings term) attribute_source in
+    let args = match term.node with
+      | Op {op="sop/attr";args;_} ->
+          let resolved=List.map(fun(name,term)->name,
+            (match term.Flow.Workspace.node with Text text->Some(E.Text text)|_->captured bindings term))args in
+          if List.exists(fun(name,value)->List.mem name ["owner";"type"] && value=None)resolved then None
+          else Some(List.filter_map(fun(name,value)->Option.map(fun value->name,value)value)resolved)
+      | _ -> (match captured bindings term with Some (E.Struct("sop/attr",_,args))->Some args|_->None) in
+    let geometry=Option.bind args (List.assoc_opt "geometry") in
     Option.bind geometry (function
       | E.Deferred (ty, id) when Flow.Ty.is_geometry ty ->
-          Option.map (fun origin -> ["@sop-points"; string_of_int origin], []) (List.assoc_opt id by_source)
+          Option.bind args (fun args -> match options args with
+            | Ok(owner,kind) when List.mem kind ["float";"int";"vec2";"vec3";"vec4";"text"] ->
+                Option.map (fun origin -> ["@sop-owner";owner_name owner;string_of_int origin], []) (List.assoc_opt id by_source)
+            | Ok(owner,kind) when List.mem kind ["float_array";"int_array"] ->
+                (match List.assoc_opt "component" args with
+                 |Some(E.Text "offsets")->Option.map(fun origin->
+                     ["@sop-csr-offsets";owner_name owner;string_of_int origin],[])(List.assoc_opt id by_source)
+                 |Some(E.Text "values")->Option.bind(List.assoc_opt "attribute" args)(function
+                     |E.Text name->Some(["@sop-csr-values";owner_name owner;name;kind;string_of_int id],[])|_->None)
+                 |_->None)
+            | _ -> None)
       | _ -> None) in
   Flow_ir.Executor.compile ?profile ?strict ?approx ?sink ~count_source values)
 
@@ -219,15 +321,9 @@ let borrowed_columns ~geometry residual term =
              (match geometry id with
               | None -> error "E_DATA_SOURCE" "Attribute source has not been cooked."
               | Some geometry ->
-                  let storage=if name="P" then Some (G.positions geometry) else
-                    Option.bind (G.find_attribute ~owner:A.Point name geometry)
-                      (A.get (A.key ~name ~owner:A.Point A.float3)) in
-                  (match storage with
-                   | None -> error "E_ATTR_TYPE" ("Point attribute " ^ name ^ " is missing or is not vec3.")
-                   | Some storage ->
-                       let p=P.Private.view storage in
-                       Ok (Some (Array.map (fun data -> Flow_ir.Packed.{data;offset=0;stride=1})
-                         [|p.x;p.y;p.z|]))))
+                  Result.bind (options args) (fun (owner,kind) ->
+                  Result.bind (typed_storage ~owner ~name ~kind geometry) (fun storage ->
+                    Ok (Option.map (Array.map (fun data -> Flow_ir.Packed.{data;offset=0;stride=1})) (columns storage)))))
          | _ -> Ok None)
     | E.Residual r -> source r (E.Private.residual_view r).term
     | _ -> Ok None
@@ -237,9 +333,11 @@ let borrowed_columns ~geometry residual term =
     | Op {op="sop/attr";args;_} ->
         let argument name=Option.bind (List.assoc_opt name args) (fun t -> match t.Flow.Workspace.node with
           | Text text -> Some (E.Text text) | _ -> captured bindings t) in
+        if List.exists(fun key->List.mem_assoc key args && argument key=None)["owner";"type"] then Ok None else
         (match argument "geometry",argument "attribute" with
          | Some geometry,Some attribute -> value (E.Struct ("sop/attr",term.ty,
-             ["geometry",geometry;"attribute",attribute]))
+             ["geometry",geometry;"attribute",attribute] @
+             List.filter_map (fun key->Option.map(fun v->key,v)(argument key)) ["owner";"type"]))
          | _ -> Ok None)
     | Expanded {body;_} -> source residual body
     | Bypass body -> (match Flow.Workspace.bypass_input body with
@@ -247,17 +345,17 @@ let borrowed_columns ~geometry residual term =
     | _ -> (match captured bindings term with Some v -> value v | None -> Ok None) in
   source residual term
 
-let write_planes ?state ?elems ~strict ~resolve ~geometry ~name program target ~live =
+let write_planes ?state ?elems ~strict ~resolve ~geometry ~owner ~kind ~name program target ~live =
   match Flow_ir.Executor.packed_root program with
   | Some packed when Flow_ir.Packed.elementwise packed ->
       let region=Flow_ir.Packed.to_region packed in
-      if Array.length region.outputs<>1 || Array.length region.outputs.(0)<>3 then Ok None else
+      if width kind=0 || Array.length region.outputs<>1 || Array.length region.outputs.(0)<>width kind then Ok None else
       let original=P.Private.view (G.positions target) in
       let original=[|original.x;original.y;original.z|] in
-      let count=G.point_count target in
+      let count=owner_count target owner in
       let column_source=borrowed_columns ~geometry in
       let unchanged component register =
-        if name<>"P" then false else match region.code.(register) with
+        if owner<>A.Point || kind<>"vec3" || name<>"P" then false else match region.code.(register) with
         | Flow_ir.Core.Region.Input (input,_,index) ->
             let residual,term=region.sources.(input) in
             (match column_source residual term with
@@ -268,24 +366,19 @@ let write_planes ?state ?elems ~strict ~resolve ~geometry ~name program target ~
       let planes=Array.mapi (fun component register ->
         if unchanged component register then original.(component) else Array.make count 0.) region.outputs.(0) in
       let outputs=[|Array.mapi (fun component data ->
-        if data==original.(component) then None else Some data) planes|] in
+        if owner=A.Point && kind="vec3" && name="P" && data==original.(component) then None else Some data) planes|] in
       Result.bind (Flow_ir.Executor.force_into ?state ?elems ~strict ~resolve
         ~column_source ~count ~outputs program ~live) (function
         | None -> Ok None
         | Some () ->
-            let storage=P.Private.of_shared_exn ~x:planes.(0) ~y:planes.(1) ~z:planes.(2) in
-            Result.map (fun geometry -> Some geometry)
-              (Result.map_error (Flow.Diagnostic.error ~code:"E_ATTR_TYPE")
-                (if name="P" then G.with_positions storage target else
-                  Result.bind (A.create_owned ~name ~owner:A.Point (A.Float3 storage))
-                    (fun attr -> G.with_attribute attr target))))
+            Result.map Option.some (install ~owner ~kind name planes target))
       |> Result.map_error (fun (d:Flow.Diagnostic.t) ->
           if d.code="E_ARRAY_COUNT" then {d with code="E_ATTR_COUNT"} else d)
   | _ -> Ok None
 
-let node ?state ?(reference = false) ?(strict = false) ?elems ?profile ~source ~name ~values ~sources inputs =
+let node ?state ?(reference = false) ?(strict = false) ?elems ?profile ?(owner=A.Point) ?(kind="vec3") ~source ~name ~values ~sources inputs =
   let program = prepare ?profile ~strict ~sources inputs values in
-  let parameters = source ^ ";" ^ name ^ ";" ^ Flow.Value.key_of ~residual:E.Private.residual_id values
+  let parameters = source ^ ";" ^ owner_name owner ^ ";" ^ kind ^ ";" ^ name ^ ";" ^ Flow.Value.key_of ~residual:E.Private.residual_id values
     ^ Option.fold ~none:"" ~some:(fun bindings -> Flow.Value.key_of
         ~residual:E.Private.residual_id (E.Record bindings)) elems
     ^ Option.fold ~none:"" ~some:E.state_stamp state in
@@ -304,14 +397,14 @@ let node ?state ?(reference = false) ?(strict = false) ?elems ?profile ~source ~
         else Result.bind program (fun program ->
           let live=Sop.Context.input context in
           Result.bind (if reference then Ok None else
-            write_planes ?state ?elems ~strict ~resolve ~geometry ~name program geometries.(0) ~live)
+            write_planes ?state ?elems ~strict ~resolve ~geometry ~owner ~kind ~name program geometries.(0) ~live)
             (fun direct -> if Sop.Context.cancelled context then error "E_CANCELLED" "Attribute kernel cancelled."
               else match direct with Some geometry -> Ok geometry | None ->
                 Result.bind (Flow_ir.Executor.force ?state ?elems ~reference ~strict ~resolve program ~live)
                   (fun values -> if Sop.Context.cancelled context then
                       error "E_CANCELLED" "Attribute kernel cancelled."
-                    else write ~grain:(Sop.Context.grain context) name values geometries.(0)))) in
+                    else write ~grain:(Sop.Context.grain context) ~owner ~kind name values geometries.(0)))) in
       Result.map_error (fun (d : Flow.Diagnostic.t) -> Sop.Diagnostic.error ~code:d.code d.message)
         (Result.map (fun geometry -> N.Private.{geometry; diagnostics = []; instances = None}) result)) in
-  N.Private.with_facts { (N.facts node) with elementwise = N.Points;
+  N.Private.with_facts { (N.facts node) with elementwise = (match owner with A.Point->N.Points|Primitive->Primitives|_->None);
     topology = N.Preserved; reads = reads values; writes = [name] } node

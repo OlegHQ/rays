@@ -529,7 +529,9 @@ let add ?(provenance = []) b id ty count kind args rate =
 let kernel body = Kernel {body; elementwise = true; requires_exact = false}
 let child (path, iter) name = path @ [name], iter
 let value_count = function
-  | E.Float_array xs -> Count.Static (Array.length xs)
+  | E.Int_array xs -> Count.Static (Array.length xs)
+  | Text_array xs -> Count.Static (Array.length xs)
+  | Float_array xs -> Count.Static (Array.length xs)
   | Vec2_array xs -> Count.Static (Array.length xs / 2)
   | Vec3_array xs -> Count.Static (Array.length xs / 3)
   | Vec4_array xs -> Count.Static (Array.length xs / 4)
@@ -676,14 +678,23 @@ let of_evaluation ws catalog evaluation =
 
 module Executor = struct
   type program = { ir : t; value : E.value; templates : Packed.t list Atomic.t;
-    core : (E.residual * Core_exec.prepared option) list Atomic.t; owner : unit ref;
+    core : (E.residual * bool * Core_exec.prepared option) list Atomic.t; owner : unit ref;
     count_source : Packed.count_source; profile : Profile.t option; approx:W.Paths.t;
     sink:sink option;mutable gpu_kernel:(Gpu.backend*Packed.t*Gpu.kernel)option }
   let compile ?profile ?(strict = false) ?(approx=W.Paths.empty) ?sink ?(count_source = fun _ _ -> None) v =
     let b = builder ~count_source W.Paths.empty W.Paths.empty in
     let root = value b (["@value"], []) v in
     let rec packed_sources packed =
-      Array.find_map (fun (r, term) -> source r term) (Packed.to_region packed).sources
+      let region = Packed.to_region packed in
+      match Array.find_map (fun (r, term) -> source r term) region.sources with
+      | Some _ as error -> error
+      | None -> Array.find_map captured region.uniforms
+    and captured = function
+      | E.Residual r -> source r (E.Private.residual_view r).term
+      | List values -> Array.find_map captured values
+      | Record fields | Struct (_, _, fields) | Source (_, _, fields) ->
+          List.find_map (fun (_, value) -> captured value) fields
+      | _ -> None
     and source r (term : W.term) =
       let children terms = List.find_map (source r) terms in
       match term.node with
@@ -695,17 +706,34 @@ module Executor = struct
           let captured = List.fold_left (fun value field -> Option.bind value (function
             | E.Record fields | Struct (_, _, fields) -> List.assoc_opt field fields
             | _ -> None)) (List.assoc_opt name (E.Private.residual_view r).bindings) fields in
-          (match captured with Some (E.Residual r) -> source r (E.Private.residual_view r).term | _ -> None)
+          Option.bind captured (function
+            | E.Residual r -> source r (E.Private.residual_view r).term
+            | _ -> None)
       | Op {args; _} | Record args -> children (List.map snd args)
       | Get (term, _) | Expanded {body = term; _} -> source r term
       | Bypass call -> Option.bind (W.bypass_input call) (source r)
       | Let (bindings, result) -> children (result :: List.map snd bindings)
       | If (a,b,c) -> children [a;b;c]
+      | Cond (arms,default) -> children(default::List.concat_map(fun(a,b)->[a;b])arms)
+      | Case (value,arms,default) -> children(value::default::List.map snd arms)
+      | Vec terms | List_lit terms | Str terms | List_op(_,terms) | Hof(_,terms) -> children terms
+      | Assoc (record,updates) -> children(record::List.map snd updates)
+      | Call_fn {args;body;_} -> children(args @ Option.to_list body)
+      | Graph_ref {inputs;_} | Call {args=inputs;_} -> children(List.map snd inputs)
+      | Fn {body;capture;_} -> children(body::Option.to_list capture)
+      | State {init;step;_} -> children[init;step]
       | _ -> None in
     Result.bind (optimize (finish b [|root|])) (fun ir ->
       match if strict then Array.find_map (fun node -> match node.kind with
-        | Kernel {body = Reference r; _} | Source (State_previous r) ->
-            Some (E.Private.residual_view r).term.form.span
+        | Kernel {body = Reference r; _} ->
+            let term=(E.Private.residual_view r).term in
+            (match Core_lower.lower ~strict:true r with
+             | Ok core -> Array.find_map (fun region ->
+                 match Packed.of_region region with
+                 | Ok packed -> packed_sources packed
+                 | Error _ -> Some term.form.span) core.Core.regions
+             | Error _ -> Some term.form.span)
+        | Source (State_previous r) -> Some (E.Private.residual_view r).term.form.span
         | Kernel {body = Packed_map packed; _} -> packed_sources packed
         | _ -> None) ir.nodes else None with
       | Some span ->
@@ -750,31 +778,34 @@ module Executor = struct
       let execute r live =
         let core = try
           let cached = Atomic.get program.core in
-          let rec find = function [] -> None | (key,p)::rest -> if key == r then Some p else find rest in
+          let rec find = function [] -> None | (key,mode,p)::rest -> if key == r && mode=strict then Some p else find rest in
           let prepared = match find cached with
             | Some p -> p
             | None ->
-                let prepared = Option.map Core_exec.prepare (Result.to_option (Core_lower.lower r)) in
+                let prepared = Option.bind (Result.to_option (Core_lower.lower ~strict r)) (fun core ->
+                  (* Placement declines before execution, while state is untouched. *)
+                  let declined = not strict && Array.exists (fun (region : Core.Region.t) ->
+                    Option.fold ~none:false ~some:(fun count -> Cost.packed ~count <> Cpu_kernel)
+                      region.count) core.Core.regions in
+                  if declined then None else Some (Core_exec.prepare core)) in
                 (* ponytail: linear lookup bounded to 64 immutable residuals;
                    use an identity map if profiling finds lookup significant. *)
                 let rec take n = function [] -> [] | _ when n=0 -> [] | x::xs -> x::take (n-1) xs in
-                ignore (Atomic.compare_and_set program.core cached ((r,prepared)::take 63 cached));
+                ignore (Atomic.compare_and_set program.core cached ((r,strict,prepared)::take 63 cached));
                 prepared in
           match prepared with
           | None -> None
           | Some p when not (Core_exec.has_regions p) ->
               let root = if strict then None else Some r in
-              let run live = Core_exec.execute ?root p ~live in
+              let run live = Core_exec.execute ?root ?resolve p ~live in
               E.Private.set_core r ~owner:program.owner ?fast:(Core_exec.fast p) run;
               Some (run live)
-          | Some p -> Some (Core_exec.execute ?root:(if strict then None else Some r) ~force:(fun packed ->
-              if not strict && Option.fold ~none:false ~some:(fun count -> Cost.packed ~count <> Cpu_kernel) (Packed.static_count packed) then
-                Error (Flow.Diagnostic.error ~code:"E_CORE_REGION" "Region is not placed on the CPU.")
-              else Packed.force ~strict ~state ?elems ?resolve ?measure packed ~live) p ~live)
+          | Some p -> Some (Core_exec.execute ?root:(if strict then None else Some r) ?resolve ~force:(fun packed ->
+              Packed.force ~strict ~state ?elems ?resolve ?measure packed ~live) p ~live)
           with _ -> None in
         match core with Some _ -> core | None -> execute_packed r live in
       E.Private.force_with_executor ~state ?elems ?resolve ~owner:program.owner
-        ~compiled:(not strict) ~execute value ~live in
+        ~compiled:true ~strict ~execute value ~live in
     let run () = if reference then fallback () else force_with_packed program.value ~live in
     let started = Option.map (fun profile -> profile.Profile.clock ()) program.profile in
     let result = run () in

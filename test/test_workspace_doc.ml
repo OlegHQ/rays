@@ -744,7 +744,9 @@ let part_imports () =
   let text = "(workspace local (graph result :context value (+ (ref shared) (twice 2))))\n;; library stays separate\n(import \"lib.rays\")\n" in
   let imports = ["lib.rays", library] in
   let doc = Doc.of_text ~imports catalog text |> Result.get_ok in
-  check (List.length doc.checked.graphs = 2 && List.length doc.checked.defs = 1) "import children were not checked together";
+  check (List.length doc.checked.graphs = 2 &&
+    List.length (List.filter (fun (g : Flow.Workspace.graph) -> g.name = "twice") doc.checked.defs) = 1)
+    "import children were not checked together";
   check (Doc.import_texts doc = imports) "raw import text was lost (reload digest)";
   check (Doc.imported_file doc ["shared"; "@result"] = Some "lib.rays"
     && Doc.imported_file doc ["def:twice"] = Some "lib.rays") "import provenance was lost";

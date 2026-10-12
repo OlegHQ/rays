@@ -5,6 +5,8 @@ type ('f, 'r) t =
   | Vec3 of float * float * float
   | Vec4 of float * float * float * float
   | List of ('f, 'r) t array
+  | Int_array of int array
+  | Text_array of string array
   | Float_array of float array
   | Vec2_array of float array  (** interleaved xy coordinates *)
   | Vec3_array of float array  (** interleaved xyz coordinates *)
@@ -12,6 +14,8 @@ type ('f, 'r) t =
   | Record of (string * ('f, 'r) t) list
   | Deferred of Ty.t * int | No_geo
   | Struct of string * Ty.t * (string * ('f, 'r) t) list
+  | Source of string * Ty.t * (string * ('f, 'r) t) list
+      (** A typed host source; its fields describe resolution rather than the result. *)
   | Fn of 'f | Residual of 'r
 
 exception Fail of string * string * Diagnostic.span option
@@ -35,5 +39,6 @@ val list_arg : ('f, 'r) t -> ('f, 'r) t array
 val array_length : ('f, 'r) t -> int
 val array_get : ('f, 'r) t -> int -> ('f, 'r) t
 val array_put : float array -> int -> int -> ('f, 'r) t -> unit
+val int_array_put : int array -> int -> ('f, 'r) t -> unit
 val array_init : Ty.t -> int -> (int -> ('f, 'r) t) -> ('f, 'r) t
 val validate : ('f, 'r) t -> unit

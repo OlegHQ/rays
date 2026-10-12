@@ -97,8 +97,11 @@ let () =
   let packed=match value with Flow.Eval.Residual r->
     Flow_ir.Packed.compile r (Flow.Eval.Private.residual_view r).term |> Option.get
     |_->assert false in
-  assert (Result.is_error (Flow_ir.Packed.force ~strict:true packed ~live:(Frame_input.at_time 1e308)));
-  print_endline "Packed scaled noise retains overflow refusal in a nonselected branch"
+  (match Flow_ir.Packed.force ~strict:true packed ~live:(Frame_input.at_time 1e308) with
+   | Ok (Flow.Eval.Float_array values) -> assert (Array.for_all ((=) 0.) values)
+   | _ -> failwith "Untaken scaled noise branch was evaluated");
+  assert (Result.is_error (Flow_ir.Packed.force ~strict:true packed ~live:(Frame_input.at_time Float.max_float)));
+  print_endline "Packed scaled noise skips untaken overflow and refuses selected overflow"
 
 let () =
   let noise = Flow_ir.Operators.noise3 in

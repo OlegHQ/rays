@@ -15,7 +15,7 @@ let noise3 : Flow.Op.t = {
   name = "noise3"; ctx = Flow.Context.value;
   signature = {pos = ["position", Flow.Ty.Vec3]; opt = []; rest = None;
     kw = ["seed",Flow.Ty.Int;"octaves",Flow.Ty.Int]};
-  out = (fun _ -> Flow.Ty.Float); any_num = false; choices = [];
+  out = (fun _ -> Flow.Ty.Float); out_args = None; any_num = false; choices = [];
   shape = Flow.Op.Scalar; live = false; category = "Noise"; arithmetic = None;
   packed_extension = Some Flow.Packed_ops.Noise3;
   check = (fun args ->

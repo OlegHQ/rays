@@ -5,16 +5,18 @@ type literal =
   | Vector of float array | List of literal array
   | Record of (string * literal) list
   | Array of { width : int; data : float array }
+  | Int_array of int array
+  | Text_array of string array
   | Empty_geometry
 
-type integer = Mul | Div | Mod | And | Xor
+type integer = Flow.Packed_ops.integer = Iadd | Isub | Imul | Idiv | Imod | Iand | Ior | Ixor | Ishl | Ishr
 type byte_mode = Clamped | Unclamped
 type primitive =
   | Numeric of Flow.Packed_ops.binary | Math of Flow.Packed_ops.unary
   | Remainder | Exp | Floor | Ceil | Round | Int_convert | Float_convert
-  | Integer of integer | Equal | Show | Text_concat
+  | Integer of integer | Integer_compare of Flow.Packed_ops.comparison | Equal | Show | Text_concat
   | Sequence_length | Sequence_get | Sequence_build | Sequence_slice | Sequence_concat
-  | Array_range | Array_float | Array_vec3 | Array_nth | Array_count | Array_slice | Array_concat
+  | Array_range | Array_int | Array_text | Array_float | Array_vec3 | Array_nth | Array_count | Array_slice | Array_concat
   | Rand | Noise3 | Color_parse | Color_byte of byte_mode
   | Coerce of Flow.Ty.t | Truthy | Fail of string * string
 
@@ -23,6 +25,10 @@ type frame_field = Time | Dt | Index | Tick | Width | Height | Pointer_x | Point
 type expr =
   | Constant of int | Local of int | Frame of frame_field
   | Call_index of int
+  | Source of Flow.Eval.value
+      (** Immutable host-owned source capture, materialized only when this
+          expression executes. Native hosts supply the resolver; the current
+          2D web exporter refuses these captures. *)
   | Prim of primitive * (string * int) list
   | Vec of int list | Fields of (string * int) list | Items of int list
   | Field of int * string
@@ -81,11 +87,20 @@ type state_slot = {
 (* A region: a pure numeric loop body over packed arrays, as a register program
     (instruction [n] defines register [n] from earlier registers). *)
 module Region : sig
+  type conversion = Flow.Packed_ops.conversion = To_float | Truncate | Floor | Ceil | Round | Coerce_int | Integer_result of string
   type instruction =
     | Const of float | Input of int * int * int  (** source, width, component *)
     | Uniform of int * int | Frame of string | Accumulator of int
     | Binary of Flow.Packed_ops.binary * int * int | Unary of Flow.Packed_ops.unary * int
     | Noise3 of int * int * int * int * int | Select of int * int * int
+    | Int_const of int | Int_input of int | Int_uniform of int | Int_frame of string | Int_accumulator
+    | Int_binary of Flow.Packed_ops.integer * int * int
+    | Int_compare of Flow.Packed_ops.comparison * int * int | Int_abs of int
+    | Convert of conversion * int | Int_select of int * int * int
+    | Guarded of (int * bool) list * instruction
+    | Raise of Flow.Ty.t * string * string
+  val integer_register : instruction -> bool
+  val operands : instruction -> int list
   type iteration = Zip | Product
   type result = Collect | Sum of bool | Accumulate of Flow.Workspace.term * bool
   type origin = Flow.Workspace.path * int list

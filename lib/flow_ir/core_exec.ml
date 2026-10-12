@@ -6,6 +6,7 @@ type state = {
   values : E.value array; mutable builders : bool ref option array;  (* allocated by the first builder, so a call that builds nothing pays nothing *) calls : int array;
   live : Frame_input.t; root : E.residual option;
   force : (Packed.t -> (E.value, Flow.Diagnostic.t) result) option;
+  resolve : (E.value -> (E.value, Flow.Diagnostic.t) result) option;
   marks : Core_marks.sink option;  (* the table the draw statements of a draw program fill *)
   device : (Packed.t -> ((int * int * int) option, Flow.Diagnostic.t) result) option;
 }
@@ -35,7 +36,7 @@ let static_invokes (program : C.program) =
     | Prim (op, args) -> op <> Rand && List.for_all (fun (_, a) -> static.(a)) args
     | Vec ns | Items ns -> List.for_all (fun a -> static.(a)) ns
     | Fields fs -> List.for_all (fun (_, a) -> static.(a)) fs
-    | Frame _ | Call_index _ -> false in
+    | Frame _ | Call_index _ | Source _ -> false in
   let region_static (r : C.region) =
     not (E.frame_dependent (E.Residual r.residual)) && not (E.state_dependent (E.Residual r.residual))
     && Array.for_all (fun (source, _) -> not (E.frame_dependent (E.Residual source))) r.sources in
@@ -56,7 +57,7 @@ let device_regions (program : C.program) =
   let eligible = Array.make n false and other = Array.make n false in
   let use l = other.(l) <- true in
   let expression : C.expr -> unit = function
-    | Constant _ | Frame _ | Call_index _ -> ()
+    | Constant _ | Frame _ | Call_index _ | Source _ -> ()
     | Local a | Field (a, _) -> use a
     | Prim (_, args) | Fields args -> List.iter (fun (_, a) -> use a) args
     | Vec ns | Items ns -> List.iter use ns in
@@ -199,21 +200,31 @@ let primitive ~track ~locals op args =
           | _ -> slow st)
     | Sequence_get -> generic_named "nth" args | Sequence_length -> generic_named "count" args
     | Sequence_build ->
-        let count = List.assoc "count" args and width = List.assoc_opt "width" args in
+        let count = List.assoc "count" args and width = List.assoc_opt "width" args
+        and integer = List.assoc_opt "type" args in
         (* With a width the builder is packed storage, which has no list cap. *)
         fun st ->
           let count=V.int_of st.values.(count) in
+          let element=match integer with None -> Flow.Ty.Float
+            | Some n -> (match st.values.(n) with V.Text "int" -> Flow.Ty.Int
+              | Text "float" -> Float | Text "text" -> Text
+              | _ -> V.fail "E_ARRAY_TYPE" "Core array type is int, float or text.") in
           (match width with
            | None ->
+               if element<>Flow.Ty.Float then V.fail "E_ARRAY_TYPE" "Typed builders require width one.";
                if count<0 || count>4096 then V.fail "E_ITER_BOUND" "Core list length exceeds its bound.";
                V.List (Array.make count V.No_geo)
            | Some width ->
                let width=V.int_of st.values.(width) in
+               if width<1 || width>4 || element<>Flow.Ty.Float && width<>1 then
+                 V.fail "E_ARRAY_TYPE" "Core packed width is one to four; integers require width one.";
+               if element=Flow.Ty.Int then V.array_init Flow.Ty.Int count (fun _ -> V.Int 0)
+               else if element=Flow.Ty.Text then V.array_init Flow.Ty.Text count (fun _ -> V.Text "") else begin
                if count<0 || count>Sys.max_floatarray_length/width then
                  V.fail "E_ARRAY_RANGE" "Array length is outside native storage bounds.";
                let data=Array.make (count*width) 0. in
                (match width with 2 -> V.Vec2_array data | 3 -> Vec3_array data | 4 -> Vec4_array data
-                | _ -> Float_array data))
+                | _ -> Float_array data) end)
     | Sequence_slice ->
         let list = List.assoc "list" args and first = List.assoc "first" args and count = List.assoc "count" args in
         fun st ->
@@ -330,7 +341,7 @@ let counted_kernel (program : C.program) loop_id index item body =
   let written=Array.make n false and escaped=Array.make n false in
   let use n=escaped.(n)<-true in
   let expr use : C.expr -> unit = function
-    | Constant _ | Frame _ | Call_index _ -> ()
+    | Constant _ | Frame _ | Call_index _ | Source _ -> ()
     | Local n | Field (n,_) -> use n
     | Prim (_,args) | Fields args -> List.iter (fun (_,n) -> use n) args
     | Vec ns | Items ns -> List.iter use ns in
@@ -469,14 +480,17 @@ let counted_kernel (program : C.program) loop_id index item body =
                      | Lt->if x<y then 1. else 0. | Le->if x<=y then 1. else 0.
                      | Gt->if x>y then 1. else 0. | Ge->if x>=y then 1. else 0.
                      | Eq->if x=y then 1. else 0. | And->if x<>0. && y<>0. then 1. else 0.
-                     | Or->if x<>0. || y<>0. then 1. else 0. in
+                     | Or->if x<>0. || y<>0. then 1. else 0.
+                     | Atan2->Float.atan2 x y | Hypot->Float.hypot x y in
                    if not (Float.is_finite value) then raise Non_finite;
                    scratch.(d+c*block_size+i)<-value done done
            | Prim (Math op,[_,a]) ->
                if w<>1 || width a<>1 then raise Exit;let a=scalar a in
                fun (scratch,_,_,_) _ lanes count -> for j=0 to count-1 do let i=lanes.(j) in
                  let x=scratch.(a+i) in let value=match op with
-                   | Sin->sin x | Cos->cos x | Sqrt->sqrt (Float.abs x) | Abs->Float.abs x | Not->if x=0. then 1. else 0. in
+                   | Sin->sin x | Cos->cos x | Sqrt->sqrt (Float.abs x) | Abs->Float.abs x | Not->if x=0. then 1. else 0.
+                   | Tan->tan x | Asin->asin x | Acos->acos x | Exp->exp x | Log->log x
+                   | Sign->if x>0. then 1. else if x<0. then -1. else x in
                  if not (Float.is_finite value) then raise Non_finite;scratch.(d+i)<-value done
            | Prim (Truthy,[_,src]) ->
                let a=scalar src in fun (scratch,_,_,_) _ lanes count -> for j=0 to count-1 do
@@ -554,6 +568,9 @@ let prepare ?(fused=true) (program : C.program) =
   let constants = Array.map C.value_of_literal program.constants in
   let expression : C.expr -> state -> E.value = function
     | C.Constant n -> let v=constants.(n) in fun _ -> v
+    | Source value -> fun st ->
+        (match E.Private.force_reference ?resolve:st.resolve value ~live:st.live with
+         | Ok value -> value | Error d -> raise (V.Fail (d.code,d.message,d.span)))
     | Local n -> fun st -> st.values.(n)
     | Call_index slot -> fun st -> let n=st.calls.(slot) in st.calls.(slot)<-n+1; V.Int n
     | Frame field ->
@@ -694,6 +711,13 @@ let prepare ?(fused=true) (program : C.program) =
             V.fail "E_CORE_OWNERSHIP" "Core stores require an unpublished local builder.";
           let i=V.int_of st.values.(index) in
           (match st.values.(sequence) with
+           | V.Text_array data ->
+               if i<0 || i>=Array.length data then V.fail "E_LIST_RANGE" "Core store is outside its sequence.";
+               (match st.values.(value) with V.Text text -> data.(i)<-text
+                | _ -> V.fail "E_ARRAY_TYPE" "Text arrays contain text values.")
+           | V.Int_array data ->
+               if i<0 || i>=Array.length data then V.fail "E_LIST_RANGE" "Core store is outside its sequence.";
+               V.int_array_put data i st.values.(value)
            | V.Float_array data | Vec2_array data | Vec3_array data | Vec4_array data as packed ->
                if i<0 || i>=V.array_length packed then V.fail "E_LIST_RANGE" "Core store is outside its sequence.";
                V.array_put data (Array.length data/V.array_length packed) i st.values.(value)
@@ -748,7 +772,7 @@ let prepare ?(fused=true) (program : C.program) =
 
 let has_regions prepared = Array.length prepared.program.regions>0
 
-let general root force prepared live =
+let general root force resolve prepared live =
   let program=prepared.program in
   match Frame_input.validate live with
     | Error message -> Error (Flow.Diagnostic.error ~code:"E_FRAME" message)
@@ -760,7 +784,7 @@ let general root force prepared live =
         let release () = if pooled then Atomic.set prepared.pool (Some values) in
         let st = {values;
           builders=[||]; calls=Array.make program.call_slots 0;
-          live; root; force; marks=None; device=None} in
+          live; root; force; resolve; marks=None; device=None} in
         let result = try prepared.body st;
           if Array.length program.results<>1 then V.fail "E_CORE" "Expected one core result.";
           Ok st.values.(program.results.(0))
@@ -768,34 +792,35 @@ let general root force prepared live =
           | Not_found | Invalid_argument _ | Failure _ -> Error (Flow.Diagnostic.error ~code:"E_CORE" "Invalid core program.") in
         release (); result
 
-let attempt ?root ?force prepared ~live =
+let attempt ?root ?force ?resolve prepared ~live =
   (* The postfix code reads only the time and every step is finite-checked, so frame facts it
      never reads need no validation: an invalid frame ends in the walker's own result anyway. *)
   match prepared.code with
-  | None -> general root force prepared live
+  | None -> general root force resolve prepared live
   | Some code -> (match code_value code live.t with r -> Ok (V.Float r)
-      | exception Non_finite -> general root force prepared live)
+      | exception Non_finite -> general root force resolve prepared live)
 
 let fast prepared = if prepared.stateless then Some (fun live -> attempt prepared ~live) else None
 
 (* Any failure restores the evaluation state and reports the tree walker's own diagnostic,
    as the evaluator's own fallback does. Without a residual there is no walker to ask. *)
-let execute ?root ?force prepared ~live = match root with
-  | None -> attempt ?force prepared ~live
+let execute ?root ?force ?resolve prepared ~live = match root with
+  | None -> attempt ?force ?resolve prepared ~live
   | Some r ->
       let restore = if prepared.stateless then ignore else E.Private.checkpoint r in
-      (match (try attempt ~root:r ?force prepared ~live with _ ->
+      (match (try attempt ~root:r ?force ?resolve prepared ~live with _ ->
          Error (Flow.Diagnostic.error ~code:"E_CORE" "Core execution failed.")) with
        | Ok _ as ok -> ok
+       | Error _ as error when resolve<>None -> restore (); error
        | Error _ -> restore (); E.Private.rerun r)
 
-let run ?root ?force program ~live = execute ?root ?force (prepare program) ~live
+let run ?root ?force ?resolve program ~live = execute ?root ?force ?resolve (prepare program) ~live
 
 module Buffers = Core_marks.Buffers
 
 (* A draw program (Core_draw.lower) fills a mark table. A failure is the core's own
    diagnostic: there is no walker for a drawing, so nothing is rerun. *)
-let draw ?root ?force ?device ?image prepared ~live ~size ~buffers =
+let draw ?root ?force ?resolve ?device ?image prepared ~live ~size ~buffers =
   match Frame_input.validate live with
   | Error message -> Error (Flow.Diagnostic.error ~code:"E_FRAME" message)
   | Ok () ->
@@ -805,7 +830,7 @@ let draw ?root ?force ?device ?image prepared ~live ~size ~buffers =
         | Ok resource -> resource
         | Error (d : Flow.Diagnostic.t) -> raise (V.Fail (d.code,d.message,d.span))) image) ~size buffers in
       let st = {values=Array.make (Array.length program.locals) E.No_geo;
-        builders=[||]; calls=Array.make program.call_slots 0; live; root; force; marks=Some sink; device} in
+        builders=[||]; calls=Array.make program.call_slots 0; live; root; force; resolve; marks=Some sink; device} in
       (try prepared.body st; Ok (Core_marks.finish sink)
        with V.Fail (code,message,span) -> Error (Flow.Diagnostic.error ?span ~code message)
          | Not_found | Invalid_argument _ | Failure _ -> Error (Flow.Diagnostic.error ~code:"E_CORE" "Invalid core program."))

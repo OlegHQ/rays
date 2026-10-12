@@ -44,9 +44,6 @@ let number x =
   if Float.is_nan x then "NaN" else if x = Float.infinity then "Infinity"
   else if x = Float.neg_infinity then "-Infinity" else Printf.sprintf "%.17g" x
 let register index = "r" ^ string_of_int index
-let checked = function
-  | P.Binary ((Add | Sub | Mul | Div | Mod | Pow | Min | Max), _, _) | Unary ((Sin | Cos), _) -> true
-  | _ -> false
 let flag condition = "(" ^ condition ^ " ? 1 : 0)"
 let binary operation a b = match operation with
   | P.Add -> a ^ " + " ^ b | Sub -> a ^ " - " ^ b | Mul -> a ^ " * " ^ b
@@ -57,14 +54,19 @@ let binary operation a b = match operation with
   | Lt -> flag (a ^ " < " ^ b) | Le -> flag (a ^ " <= " ^ b) | Gt -> flag (a ^ " > " ^ b)
   | Ge -> flag (a ^ " >= " ^ b) | Eq -> flag (a ^ " === " ^ b)
   | And -> flag (a ^ " !== 0 && " ^ b ^ " !== 0") | Or -> flag (a ^ " !== 0 || " ^ b ^ " !== 0")
+  | Atan2 -> "Math.atan2("^a^", "^b^")" | Hypot -> "Math.hypot("^a^", "^b^")"
 let unary operation a = match operation with
   | P.Sin -> "Math.sin(" ^ a ^ ")" | Cos -> "Math.cos(" ^ a ^ ")"
   | Sqrt -> "Math.sqrt(Math.abs(" ^ a ^ "))" | Abs -> "Math.abs(" ^ a ^ ")" | Not -> flag (a ^ " === 0")
+  | Tan -> "Math.tan("^a^")" | Asin -> "Math.asin("^a^")" | Acos -> "Math.acos("^a^")"
+  | Exp -> "Math.exp("^a^")" | Log -> "Math.log("^a^")" | Sign -> "Math.sign("^a^")"
 let region program =
   let view = P.Private.view program and region = P.to_region program in
   let line = Buffer.create 4096 in
   let add format = Printf.bprintf line format in
-  let seeds = Array.to_list view.code |> List.filter_map (function P.Noise3 (_,_,_,seed,_) -> Some seed | _ -> None)
+  let rec unguarded = function P.Guarded (_,body) -> unguarded body | instruction -> instruction in
+  let checks = P.Private.finite_checks program in
+  let seeds = Array.to_list view.code |> List.filter_map (fun instruction -> match unguarded instruction with P.Noise3 (_,_,_,seed,_) -> Some seed | _ -> None)
     |> List.sort_uniq Int.compare in
   let collecting = match region.result with R.Collect | R.Accumulate (_, true) -> true | _ -> false in
   let accumulating = region.result <> R.Collect in
@@ -74,6 +76,11 @@ let region program =
   let product = region.iteration = R.Product && sources > 1 in
   let skip = Array.to_list region.skip |> List.filter (fun index -> index >= 0) in
   add "function region(inputs, uniforms, outputs, start, stop) {\n";
+  add "  const fail = (code, message) => { const e = new Error(message); e.code = code; throw e; };\n";
+  add "  const wrap = x => BigInt.asIntN(63, x);\n";
+  add "  const convert = (name, x) => Number.isFinite(x) && Math.abs(x) < 4e18 ? BigInt(Math.trunc(x)) : fail('E_NONFINITE', name + ' produced a nonfinite value.');\n";
+  add "  const divide = (a, b, mod) => b === 0n ? fail('E_RANGE', 'Integer division by zero.') : wrap(mod ? a %% b : a / b);\n";
+  add "  const shift = (a, b, right) => b < 0n || b > 62n ? fail('E_RANGE', 'Integer shift count must be within [0, 62].') : wrap(right ? BigInt.asUintN(63, a) >> b : a << b);\n";
   if seeds <> [] then begin
     add "%s" perlin;
     List.iter (fun seed ->
@@ -99,27 +106,59 @@ let region program =
   else add "    const o = i;\n";
   if product then Array.iteri (fun k _ -> add "    const j%d = Math.floor(i / s%d) %% n%d;\n" k k k) view.widths
   else Array.iteri (fun k _ -> add "    const j%d = i;\n" k) view.widths;
-  Array.iteri (fun slot instruction ->
-    let expression = match instruction with
+  let numeric r=if R.integer_register view.code.(r) then "Number("^register r^")" else register r in
+  let rec expression slot instruction = match instruction with
       | P.Const value -> number value
-      | Input (input, w, component) -> Printf.sprintf "in%d[j%d * %d + %d]" input input w component
-      | Uniform (index, component) -> Printf.sprintf "uniforms[%d][%d]" index component
+      | Input (input, w, component) -> Printf.sprintf "Number(in%d[j%d * %d + %d])" input input w component
+      | Uniform (index, component) -> Printf.sprintf "Number(uniforms[%d][%d])" index component
       | Frame _ -> Printf.sprintf "uniforms[%d][%d]" (Array.length view.uniform_widths) slot
       | Accumulator component -> Printf.sprintf "st[%d]" component
-      | Binary (op, a, b) -> binary op (register a) (register b)
-      | Unary (op, a) -> unary op (register a)
-      | Select (c, yes, no) -> Printf.sprintf "%s !== 0 ? %s : %s" (register c) (register yes) (register no)
+      | Binary (op, a, b) -> binary op (numeric a) (numeric b)
+      | Unary (op, a) -> unary op (numeric a)
+      | Select (c, yes, no) -> Printf.sprintf "%s !== 0 ? %s : %s" (numeric c) (numeric yes) (numeric no)
       | Noise3 (x, y, z, seed, octaves) -> Printf.sprintf "fbm(table%d, %s, %s, %s, %d)" seed
-          (register x) (register y) (register z) octaves in
-    add "    const r%d = %s;\n" slot expression;
-    if checked instruction then add "    if (!Number.isFinite(r%d)) return 1;\n" slot) view.code;
+          (numeric x) (numeric y) (numeric z) octaves
+      | Int_const n->string_of_int n^"n" | Int_input i->Printf.sprintf "in%d[j%d]" i i
+      | Int_uniform i->Printf.sprintf "uniforms[%d][0]" i | Int_accumulator->"st[0]"
+      | Int_frame _->Printf.sprintf "uniforms[%d][%d]"(Array.length view.uniform_widths)slot
+      | Int_binary(op,a,b)->let a=register a and b=register b in
+          (match op with Iadd->"wrap("^a^" + "^b^")"|Isub->"wrap("^a^" - "^b^")"
+           |Imul->"wrap("^a^" * "^b^")"|Idiv->"divide("^a^", "^b^", false)"|Imod->"divide("^a^", "^b^", true)"
+           |Iand->"wrap("^a^" & "^b^")"|Ior->"wrap("^a^" | "^b^")"|Ixor->"wrap("^a^" ^ "^b^")"
+           |Ishl->"shift("^a^", "^b^", false)"|Ishr->"shift("^a^", "^b^", true)")
+      | Int_compare(op,a,b)->flag(register a^(match op with Ilt->" < "|Ile->" <= "|Igt->" > "|Ige->" >= "|Ieq->" === ")^register b)
+      | Int_abs a->Printf.sprintf "%s < 0n ? wrap(-%s) : %s"(register a)(register a)(register a)
+      | Int_select(c,a,b)->Printf.sprintf "%s !== 0 ? %s : %s"(numeric c)(register a)(register b)
+      | Convert(To_float,a)->numeric a
+      | Convert(op,a)->let name,x=match op with
+          |Truncate->"int","Math.trunc("^numeric a^")"|Floor->"floor","Math.floor("^numeric a^")"
+          |Ceil->"ceil","Math.ceil("^numeric a^")"|Round->"round",
+              "Math.trunc("^numeric a^") + (Math.abs("^numeric a^" - Math.trunc("^numeric a^")) >= 0.5 ? Math.sign("^numeric a^") : 0)"
+          |Coerce_int->"int","Math.floor("^numeric a^" + 0.5)"
+          |Integer_result n->n,"Math.floor("^numeric a^" + 0.5)"|To_float->assert false in
+          Printf.sprintf "convert(%S, %s)" name x
+      | Raise(_,code,message)->Printf.sprintf "fail(%S, %S)" code message
+      | Guarded(_,body)->expression slot body in
+  Array.iteri (fun slot instruction ->
+    let guards,body=match instruction with P.Guarded(g,b)->g,b|b->[],b in
+    let guard=String.concat " && "(List.map(fun(r,yes)->numeric r^(if yes then " !== 0" else " === 0"))guards)in
+    add "    let r%d;\n" slot;
+    if guards<>[] then add "    if (%s) {\n" guard;
+    add "    r%d = %s;\n" slot (expression slot body);
+    if not(R.integer_register body) && checks.(slot) then add "    if (!Number.isFinite(r%d)) return 1;\n" slot;
+    if guards<>[] then add "    }\n") view.code;
   Array.iteri (fun k registers -> Array.iteri (fun component slot ->
-    add "    if (!Number.isFinite(r%d)) return 1;\n" slot;
+    if not(R.integer_register view.code.(slot)) then add "    if (!Number.isFinite(r%d)) return 1;\n" slot;
     (match region.result with
      | R.Collect | R.Accumulate _ -> ()
+     | R.Sum true when R.integer_register view.code.(slot) ->
+         add "    st[%d] = st[%d] !== 0 ? wrap(st[%d] + r%d) : r%d;\n" component width component slot slot
+     | R.Sum false when R.integer_register view.code.(slot) ->
+         add "    st[%d] = st[%d] !== 0 ? convert('+', Math.floor(Number(st[%d]) + Number(r%d) + 0.5)) : r%d;\n" component width component slot slot
      | R.Sum _ -> add "    st[%d] = st[%d] !== 0 ? st[%d] + r%d : r%d;\n    if (!Number.isFinite(st[%d])) return 1;\n"
          component width component slot slot component);
-    if collecting then add "    out%d[o * %d + %d] = r%d;\n" k (Array.length registers) component slot) registers)
+    if collecting then add "    out%d[o * %d + %d] = %s;\n" k (Array.length registers) component
+      (if Array.length registers=1 && R.integer_register view.code.(slot) then register slot else numeric slot)) registers)
     view.outputs;
   (match region.result with
    | R.Accumulate _ -> Array.iteri (fun component slot -> add "    st[%d] = r%d;\n" component slot) view.outputs.(0)
@@ -155,6 +194,8 @@ let rec literal ?store : C.literal -> string = function
       | Some store -> Printf.sprintf "new rt.PArray(%d, %s)" width (store data)
       | None -> Printf.sprintf "new rt.PArray(%d, Float64Array.of(%s))" width
           (String.concat ", " (List.map number (Array.to_list data))))
+  | Int_array data -> "new rt.PArray(1, BigInt64Array.of("^String.concat ", "(Array.to_list(Array.map(fun n->string_of_int n^"n")data))^"))"
+  | Text_array data -> "new rt.TextArray([" ^ String.concat ", " (Array.to_list (Array.map escape data)) ^ "])"
   | Empty_geometry -> "null"
 
 let rec ty_json : Flow.Ty.t -> string = function
@@ -173,14 +214,14 @@ let export_name primitive = match C.primitive_name primitive with
 
 (* Fixed-arity primitives: the argument names, in prims.js's parameter order. *)
 let signature : C.primitive -> string list option = function
-  | Numeric _ | Remainder | Integer _ | Equal -> Some ["a"; "b"]
+  | Numeric _ | Remainder | Integer _ | Integer_compare _ | Equal -> Some ["a"; "b"]
   | Math Not -> Some ["a"]
   | Math _ | Exp | Floor | Ceil | Round | Int_convert | Float_convert | Color_byte _ -> Some ["x"]
   | Show | Truthy | Coerce _ -> Some ["value"]
   | Sequence_length -> Some ["list"] | Sequence_get -> Some ["list"; "index"]
-  | Sequence_build -> Some ["count"; "width"]
+  | Sequence_build -> Some ["count"; "width"; "type"]
   | Sequence_slice -> Some ["list"; "first"; "count"]
-  | Array_range -> Some ["count"] | Array_float | Array_vec3 -> Some ["count"; "value"]
+  | Array_range -> Some ["count";"type"] | Array_int | Array_text | Array_float | Array_vec3 -> Some ["count"; "value"]
   | Array_count -> Some ["array"] | Array_nth -> Some ["array"; "index"]
   | Array_slice -> Some ["array"; "first"; "count"] | Array_concat -> Some ["first"; "second"]
   | Noise3 -> Some ["position"; "seed"; "octaves"]
@@ -196,9 +237,19 @@ let helpers = [
 |};
   "store", {|const store = (rt, s, index, value) => {
   const i = Number(rt.coerce("int", index));
-  if (s instanceof rt.PArray) {
+  if (s instanceof rt.TextArray) {
+    if (i < 0 || i >= s.data.length) rt.fail("E_LIST_RANGE", "Core store is outside its sequence.");
+    if (typeof value !== 'string') rt.fail("E_ARRAY_TYPE", "Text arrays contain text values.");
+    s.data[i] = value;
+  } else if (s instanceof rt.PArray) {
     const n = s.data.length / s.width;
     if (i < 0 || i >= n) rt.fail("E_LIST_RANGE", "Core store is outside its sequence.");
+    if (s.data instanceof BigInt64Array) {
+      if (typeof value !== 'number' && typeof value !== 'bigint' && typeof value !== 'boolean')
+        rt.fail("E_ARRAY_TYPE", "Packed integer arrays contain integer values.");
+      s.data[i] = rt.coerce("int", value);
+      return;
+    }
     const comps = value instanceof Float64Array ? value : Array(s.width).fill(rt.float(value));
     if (comps.length !== s.width) rt.fail("E_ARRAY_TYPE", "Packed array element has the wrong vector width.");
     for (let j = 0; j < s.width; j++)
@@ -361,6 +412,7 @@ let expression ctx : C.expr -> string = function
   | Constant n -> Printf.sprintf "K[%d]" n
   | Local n -> local n
   | Call_index slot -> Printf.sprintf "BigInt(calls[%d]++)" slot
+  | Source _ -> raise (Refused ("E_WEB_SOURCE", "This host-owned source is outside the 2D web target.", None))
   | Frame field -> (match field with
       | Time -> "input.t" | Dt -> "input.dt" | Index -> "BigInt(input.frame)" | Tick -> "BigInt(input.tick)"
       | Width -> "BigInt(input.size[0])" | Height -> "BigInt(input.size[1])"

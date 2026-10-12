@@ -1,12 +1,18 @@
 (** Specialized numeric packed maps, loops and reductions with scalar registers
     in 1,024-element blocks. Accumulators retain reference evaluation order. *)
 type t
-type binary = Flow.Packed_ops.binary = Add | Sub | Mul | Div | Mod | Pow | Min | Max | Lt | Le | Gt | Ge | Eq | And | Or
-type unary = Flow.Packed_ops.unary = Sin | Cos | Sqrt | Abs | Not
+type binary = Flow.Packed_ops.binary = Add | Sub | Mul | Div | Mod | Pow | Min | Max | Lt | Le | Gt | Ge | Eq | And | Or | Atan2 | Hypot
+type unary = Flow.Packed_ops.unary = Sin | Cos | Sqrt | Abs | Not | Tan | Asin | Acos | Exp | Log | Sign
+type conversion = Core.Region.conversion = To_float | Truncate | Floor | Ceil | Round | Coerce_int | Integer_result of string
 type instruction = Core.Region.instruction = Const of float | Input of int * int * int
   | Uniform of int * int | Frame of string | Accumulator of int
   | Binary of binary * int * int | Unary of unary * int
   | Noise3 of int * int * int * int * int | Select of int * int * int
+  | Int_const of int | Int_input of int | Int_uniform of int | Int_frame of string | Int_accumulator
+  | Int_binary of Flow.Packed_ops.integer * int * int
+  | Int_compare of Flow.Packed_ops.comparison * int * int | Int_abs of int
+  | Convert of conversion * int | Int_select of int * int * int
+  | Guarded of (int * bool) list * instruction | Raise of Flow.Ty.t * string * string
 type origin = Flow.Workspace.path * int list
 type count_source = Flow.Eval.residual -> Flow.Workspace.term -> origin option
 (** Hosts may prove equal source cardinality from instantiated domain facts.
@@ -92,6 +98,13 @@ module Private : sig
   (* Borrowed immutable arrays for downstream compilation. *)
   type inputs = {arrays : float array array; uniforms : float array array;
     frame : float array; count : int}
+  type value_inputs = {arrays : Flow.Eval.value array; uniforms : Flow.Eval.value array;
+    frame : Flow.Eval.value array; count : int}
+  (* Materialize CPU inputs while preserving exact integer storage. *)
+  val prepare_values : ?state:Flow.Eval.state ->
+    ?resolve:(Flow.Eval.value -> (Flow.Eval.value,Flow.Diagnostic.t) result) ->
+    ?measure:((unit -> float) * (t -> seconds:float -> reference:bool -> unit)) ->
+    t -> live:Flow.Eval.live -> (value_inputs,Flow.Diagnostic.t) result
   val prepare : ?state:Flow.Eval.state -> ?resolve:(Flow.Eval.value -> (Flow.Eval.value, Flow.Diagnostic.t) result) ->
     ?measure:((unit -> float) * (t -> seconds:float -> reference:bool -> unit)) ->
     t -> live:Flow.Eval.live -> (inputs, Flow.Diagnostic.t) result

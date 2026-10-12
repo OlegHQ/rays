@@ -1,0 +1,134 @@
+module E = Flow.Eval
+module P = Flow_ir.Packed
+let ok = function Ok x -> x | Error d -> failwith (Flow.Diagnostic.to_string d)
+let sources =
+  let text = In_channel.with_open_text "nodes/prelude.rays" In_channel.input_all in
+  let workspace = ok (Flow.Syntax.parse text) |> List.hd in
+  Flow.Syntax.children workspace |> List.filter (fun form -> Flow.Syntax.head form = Some "defn")
+let checked ?seed body =
+  let binding=match seed with None->"" | Some seed->Printf.sprintf "seed %d " seed in
+  let source = ok (Flow.Syntax.parse
+    ("(workspace random (graph g :context host (let* [" ^ binding ^ "tested " ^ body ^ "] 0.0)))")) in
+  match Flow_sop.Catalog.check_workspace ~ops:Flow_sop.Operators.all ~library:false ~sources
+    Flow.Check.{version=1;kinds=[]} source with
+  | Some workspace, [] -> workspace
+  | _, ds -> failwith (String.concat "\n" (List.map Flow.Diagnostic.to_string ds))
+let value ?seed body = snd (List.hd (List.assoc ["g";"tested"]
+  (ok (E.static ~record:true (checked ?seed body))).records))
+let same expected actual = match actual with
+  | E.Float_array actual ->
+      assert (Array.length actual=Array.length expected);
+      Array.iteri (fun i expected ->
+        if Int64.bits_of_float expected <> Int64.bits_of_float actual.(i) then
+          failwith (Printf.sprintf "rand_at differs at index %d: %h <> %h" i expected actual.(i))) expected
+  | _ -> failwith "rand_at map must return a float array"
+let compile = function
+  | E.Residual residual ->
+      (match P.compile_result residual (E.Private.residual_view residual).term with
+       | Ok program -> program
+       | Error ds -> failwith (String.concat "\n" (List.map Flow.Diagnostic.to_string ds)))
+  | _ -> failwith "mapped live value must be residual"
+let map ?seed ty input body =
+  let source = "(fn [(i : " ^ Flow.Ty.to_string ty ^ ")] " ^ body ^ ")" in
+  let fn = match value ?seed source with
+    | E.Fn fn -> fn | _ -> assert false in
+  let mapped = ok (E.Private.map_function ~signature:Flow.Ty.{params=[ty];result=Float} fn [input]) in
+  mapped,compile mapped
+let js_atom = function
+  | E.Int value -> string_of_int value ^ "n"
+  | E.Float value -> Flow.Lisp.float value
+  | _ -> failwith "numeric JS input expected"
+let js_array values = "[" ^ String.concat "," (Array.to_list (Array.map js_atom values)) ^ "]"
+let js_input = function
+  | E.Int_array values -> "BigInt64Array.from([" ^
+      String.concat "," (Array.to_list (Array.map (fun n -> string_of_int n ^ "n") values)) ^ "])"
+  | _ -> failwith "rand_at requires an exact integer JS input"
+let compare_js program ~live expected =
+  let inputs = ok (P.Private.prepare_values program ~live) in
+  let script = Buffer.create (Array.length expected * 48) in
+  Buffer.add_string script (Flow_web.Js.region program);
+  Printf.bprintf script "const inputs=[%s], uniforms=[%s], outputs=[new Float64Array(%d)];\n"
+    (String.concat "," (Array.to_list (Array.map js_input inputs.arrays)))
+    (String.concat "," (Array.to_list (Array.map (fun value -> js_array [|value|]) inputs.uniforms)
+      @ [js_array inputs.frame])) inputs.count;
+  Printf.bprintf script "if(region(inputs,uniforms,outputs,0,%d)!==0 || region(inputs,uniforms,outputs,%d,%d)!==0) throw Error('region failed');\n"
+    (inputs.count/2) (inputs.count/2) inputs.count;
+  Buffer.add_string script "const expected=[";
+  Array.iteri (fun i x -> if i>0 then Buffer.add_char script ',';
+    Printf.bprintf script "0x%Lxn" (Int64.bits_of_float x)) expected;
+  Buffer.add_string script "]; const bits=new DataView(outputs[0].buffer);\nfor(let i=0;i<expected.length;i++) if(bits.getBigUint64(i*8,true)!==expected[i]) throw Error('rand_at JS bits at '+i);\n";
+  let file = Filename.temp_file "rand_at" ".js" in
+  Fun.protect ~finally:(fun () -> Sys.remove file) (fun () ->
+    Out_channel.with_open_bin file (fun channel -> output_string channel (Buffer.contents script));
+    assert (Sys.command ("node " ^ Filename.quote file)=0))
+let () =
+  let count=100000 in
+  let mapped=value (Printf.sprintf
+    "(map (fn [i] (rand_at (frame/index) i)) (array/range %d :type int))" count) in
+  let packed=compile mapped in
+  List.iter (fun seed ->
+    let live={(Frame_input.at_time 0.) with frame=seed} in
+    let expected=Array.init count (fun index -> Rays_math.Rand.float_at (Rays_math.Rand.seed seed) ~index) in
+    same expected (ok (E.Private.force_reference mapped ~live));
+    List.iter (fun domains -> Rays_math.Parallel.run ~domains (fun () ->
+      same expected (ok (P.force ~strict:true packed ~live)))) [1;8]) [0;1;42;max_int];
+  List.iter (fun seed -> List.iter (fun index ->
+    let actual=value (Printf.sprintf "(rand_at %d %d)" seed index) in
+    match actual with E.Float actual ->
+      assert (Int64.bits_of_float actual=Int64.bits_of_float
+        (Rays_math.Rand.float_at (Rays_math.Rand.seed seed) ~index))
+    | _ -> assert false) [min_int;min_int+1;-(1 lsl 53)-1;0;(1 lsl 53)+1;max_int])
+    [min_int;min_int+1;0;1;42;max_int];
+  let bases = [|min_int;min_int+1;-(1 lsl 53)-1;0;(1 lsl 53)+1;max_int|] in
+  let indices = Array.init count (fun i -> bases.(i mod Array.length bases) + i/Array.length bases) in
+  let mapped,program = map Flow.Ty.Int (E.Int_array indices) "(rand_at (frame/index) i)" in
+  List.iter (fun seed ->
+    (* Frame indices are nonnegative; signed seeds remain exact captured Int
+       uniforms rather than invalid frame facts. *)
+    let mapped,program,live = if seed<0 then
+        let mapped,program=map ~seed Flow.Ty.Int (E.Int_array indices) "(rand_at seed i)" in
+        mapped,program,Frame_input.at_time 0.
+      else mapped,program,{(Frame_input.at_time 0.) with frame=seed} in
+    let expected=Array.map (fun index -> Rays_math.Rand.float_at (Rays_math.Rand.seed seed) ~index) indices in
+    same expected (ok (E.Private.force_reference mapped ~live));
+    List.iter (fun domains -> Rays_math.Parallel.run ~domains (fun () ->
+      same expected (ok (P.force ~strict:true program ~live)))) [1;8];
+    compare_js program ~live expected) [min_int;0;42;max_int];
+  print_endline "rand_at: 100,000 native/reference/packed/JavaScript exact integer keys agree at one/eight domains; signed boundaries and indices beyond 2^53 agree"
+
+let () =
+  let count=100000 in
+  let tiny=Int64.float_of_bits 1L in
+  let special=[|0.,0.,0.;-0.,-0.,-0.;tiny,-.tiny,tiny;
+    1e-300,-1e-300,1e-300;-.0.37,0.73,-1.25;-1.,-2.,-3.|] in
+  let points = Array.init count (fun i -> if i<Array.length special then special.(i)
+    else float i *. 0.137 -. 256.2,sin (float i *. 0.37),float (i mod 19) *. (-0.31)) in
+  let native_samples=ref 0 and native_bit_differences=ref 0 and native_max_ulps=ref 0. in
+  let check points seed octaves =
+    let input = E.Vec3_array (Array.init (Array.length points*3) (fun i ->
+      let x,y,z=points.(i/3) in match i mod 3 with 0->x|1->y|_->z)) in
+    let mapped,program = map Flow.Ty.Vec3 input
+      (Printf.sprintf "(noise3 (+ i [t 0.0 0.0]) :seed %d :octaves %d)" seed octaves) in
+    let live=Frame_input.at_time 0. in
+    let expected=match ok (E.Private.force_reference mapped ~live) with
+      | E.Float_array values->values | _->assert false in
+    List.iter (fun domains -> Rays_math.Parallel.run ~domains (fun () ->
+      same expected (ok (P.force ~strict:true program ~live)))) [1;8];
+    let noise=Rays_math.Noise.create seed in
+    Array.iteri (fun i (x,y,z) ->
+      let native=Rays_math.Noise.fbm3 ~octaves noise ~x ~y ~z in
+      incr native_samples;
+      if Int64.bits_of_float native <> Int64.bits_of_float expected.(i) then incr native_bit_differences;
+      let _,exponent=Float.frexp (max (abs_float native) (abs_float expected.(i))) in
+      let ulps=abs_float (native-.expected.(i)) /. Float.ldexp 1. (max (-1074) (exponent-53)) in
+      native_max_ulps:=max !native_max_ulps ulps;
+      if ulps>4. then failwith (Printf.sprintf "noise3 seed%d/octaves%d/index%d native %.17g vs Lisp %.17g: %.17g ULP"
+        seed octaves i native expected.(i) ulps)) points in
+  List.iter (check points 42) [1;4;32];
+  List.iter (fun seed -> List.iter (check special seed) [1;4;32]) [0;1;42];
+  List.iter (fun octaves ->
+    match value (Printf.sprintf "(noise3 [0.1 -0.2 0.3] :octaves %d)" octaves) with
+    | exception Failure message when String.starts_with ~prefix:"E_NOISE_RANGE" message -> ()
+    | _ -> failwith "out-of-range noise octaves accepted") [0;33];
+  Printf.printf "noise3: %d native/reference samples, %d native bit differences, max %.17g ULP; strict packed/reference bytes agree at one/eight domains for octaves1/4/32 and seeds0/1/42\n"
+    !native_samples !native_bit_differences !native_max_ulps

@@ -14,16 +14,19 @@ val fast : prepared -> (Frame_input.t -> (Flow.Eval.value, Flow.Diagnostic.t) re
 (* Stateless attempt for the evaluator's owner-checked shortcut. Errors must reenter the
     normal evaluator to restore the walker's diagnostics. *)
 val execute : ?root:Flow.Eval.residual ->
-  ?force:(Packed.t -> (Flow.Eval.value, Flow.Diagnostic.t) result) -> prepared -> live:Frame_input.t ->
+  ?force:(Packed.t -> (Flow.Eval.value, Flow.Diagnostic.t) result) ->
+  ?resolve:(Flow.Eval.value -> (Flow.Eval.value, Flow.Diagnostic.t) result) -> prepared -> live:Frame_input.t ->
   (Flow.Eval.value, Flow.Diagnostic.t) result
 val run : ?root:Flow.Eval.residual ->
-  ?force:(Packed.t -> (Flow.Eval.value, Flow.Diagnostic.t) result) -> Core.program -> live:Frame_input.t ->
+  ?force:(Packed.t -> (Flow.Eval.value, Flow.Diagnostic.t) result) ->
+  ?resolve:(Flow.Eval.value -> (Flow.Eval.value, Flow.Diagnostic.t) result) -> Core.program -> live:Frame_input.t ->
   (Flow.Eval.value, Flow.Diagnostic.t) result
 (** [prepare] then [execute]. *)
 
 module Buffers = Core_marks.Buffers
 val draw : ?root:Flow.Eval.residual ->
   ?force:(Packed.t -> (Flow.Eval.value, Flow.Diagnostic.t) result) ->
+  ?resolve:(Flow.Eval.value -> (Flow.Eval.value, Flow.Diagnostic.t) result) ->
   ?device:(Packed.t -> ((int * int * int) option, Flow.Diagnostic.t) result) ->
   ?image:(Flow.Eval.value -> (int, Flow.Diagnostic.t) result) -> prepared -> live:Frame_input.t ->
   size:int * int -> buffers:Buffers.t -> (Scene_command.Marks.t, Flow.Diagnostic.t) result

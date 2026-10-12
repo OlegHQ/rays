@@ -50,6 +50,22 @@ for (const [name, widths] of Object.entries(GOLDENS)) {
   check(await pool.collect('inf', inputs, uniforms, [pool.alloc(n)], n) === 1, 'non-finite status');
 }
 
+// Integer inputs must retain their constructor when copied into shared memory.
+{
+  const n = 100003;
+  const input = BigInt64Array.from({ length: n }, (_, i) => BigInt.asIntN(63, 9007199254740993n + BigInt(i) * 4611686018427387903n));
+  const source = `function region(inputs, uniforms, outputs, start, stop) {
+    for (let i = start; i < stop; i++) outputs[0][i] = BigInt.asIntN(63, inputs[0][i] + uniforms[0][0]);
+    return 0; }`;
+  const expected = BigInt64Array.from(input, x => BigInt.asIntN(63, x + 9007199254740993n));
+  for (const [size, pool] of Object.entries(pools)) {
+    pool.load('int', source);
+    const output = pool.alloc(n, BigInt64Array);
+    check(await pool.collect('int', [input], [BigInt64Array.of(9007199254740993n)], [output], n) === 0, `integer status workers=${size}`);
+    check(bytes(output).equals(bytes(expected)), `integer bytes workers=${size}`);
+  }
+}
+
 // Results do not depend on the order the workers finish: queue several calls at once.
 {
   const source = readFileSync(join(goldenDir, 'noise.js'), 'utf8'), n = 5 * CHUNK + 7, pool = pools[8];

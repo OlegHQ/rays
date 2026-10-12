@@ -18,8 +18,20 @@ The scoped phase-timing API snapshot was accepted separately as `e5ea583c`
 (`Accept scoped phase timing API`). Its implementation retains exactly one
 workspace evaluation/lowering invocation while attributing internal compilation
 duration to that phase; the test also checks restoration after an exception.
+The complete production pilot and Phase A review were committed as `32d64042`.
+Final shipping session 83244 and native session 33890 both exited 0.
 
 ## Task evidence
+
+B.11's native declaration census adds B.4 owner counts as a prerequisite:
+constant setters must create missing point, vertex, primitive and detail
+attributes without reading a nonexistent attribute to discover its count.
+Set Transform requires genuine 16-value CSR rows, including empty geometry;
+Set Color additionally waits for B.5 group selection. Drafts retain all modes
+and metadata; no setter registration has changed. Set Orient's extreme finite
+components also expose a numeric boundary: native sum-of-squares overflow
+normalizes to zero, while strict compiled arithmetic refuses the intermediate
+infinity. That case remains a whole-port gate before registration changes.
 
 | Task | Current evidence | Remaining gate |
 | --- | --- | --- |
@@ -32,7 +44,69 @@ duration to that phase; the test also checks restoration after an exception.
 | A.6 | The complete pilot implements both noise modes and explicit/context seed selection. Its context-seed and attribute-delete prerequisites have moved forward from later work. Whole-mode geometry/domain/grain/cache/schema checks passed (checker agent session 60089). Real-parallel 32,769-point fixtures cover both modes at 1/4/8 domains and grains 97/4096, with 4-ULP oracle and byte-exact strict-reference comparisons after clearing the session (session 48781). The quiet one-million-point timing gate passed (session 59246, measurements below). Production now embeds `noise_displace.rays` and removes its native catalog registration while retaining `Sop.Nodes` as the oracle. The reviewed promoted manifest has digest `ef85cfb9f1560f4b8d7456cbcf6af521`; labels/defaults remain unchanged and the entry records a Lisp body. Production pilot/catalog/checker gates exited 0 (checker agent sessions 68500 and 99460); actual source-save/editor/catalog/dependency refresh passed (session 21186). Final pilot and legacy node gates passed after repairing the native factory's default cook-label protocol (session 45407), including relabel/cache/parameter-rebuild checks with ASCII and UTF-8 labels at context seeds 42 and 999. | Complete: full Verification and final shipping/native gates passed; committed with the production port. |
 | A.R | `specification/sop.md` and `lib/sop_catalog/AGENTS.md` now describe the Lisp declaration alternative and runtime ownership. `specification/flow.md` describes `defnode`. Root focused `@API @test/dependency_gate @lib/flow/runtest @lib/flow_sop/runtest @test/test_rays_editor @test/test_workspace_start @runtest-native` exited 0 (session 36479), including actual native rendering/pathtracer gates. Native reruns 41613 and 34796 passed; the latter covers 23 SOP graphs with exact one/four-domain PNG comparisons. Render goldens remain unchanged. `opam exec -- _build/default/tools/check.exe @lib/flow_sop/runtest @lib/sop/test_nodes` exited 0 (session 86865), covering selective attribute/deletion facts and the combined native/Lisp factory census. Shipping runs 15355/25500 exposed narrow catalog injection and the generated-source digest expectation; fixes are recorded below. | Complete: final `check.exe --ship` (session 83244) and `@runtest-native` (session 33890) exited 0; committed with the production port. |
 | B–E | No port evidence recorded here yet. | All language, port and phase review gates. |
+| B.1 | Owner-aware Float/Vec2/Vec3/Vec4/Int/Text/CSR attributes, literal-selected result types and a cooked Boolean `sop/has_attr` predicate are implemented. Focused `@lib/flow_sop/runtest @tools/lisp/runtest` exited 0 (session 98738): all-owner strict/reference Text round trips, exact UTF-8/empty strings, copied read/write ownership, count/type errors, a strict 4,097-element authored text map, empty geometry/detail counts, exact one/eight-domain bytes, graph type edits through Text, numeric multi-block fixtures, distinct owner/CSR count origins and strict compiled lazy query guards pass. Native-to-JavaScript census including Text attributes passes 15,152 cases across 79 contracts. Shared structured Core resolves genuine host sources without interpreter fallback. No new port is claimed. | Complete: focused, shipping, native and web foundation gates passed; final commands and coverage below. |
+| B.2 | The expanded native-to-JavaScript primitive census passes 15,029 cases across 78 contracts: all ten exact integer operations, five comparisons, typed integer construction/range/build/count/get/slice/concat/sum and the existing floating/host contracts. Signed bounds, values above 2^53, wrapping sums beyond 4,096 elements, invalid shifts, selectors and element types retain exact integer/error checks. The census exposed and repaired shared native range-selector and JavaScript integer builder/error boundaries. | Complete: focused, shipping, native and web foundation gates passed; final commands and coverage below. |
+| C.15 | Full native Measure wrapper and kernel audit establishes topology/indexed position access and canonical n-gon triangulation with original-primitive mapping as prerequisites. The whole node moves from B.15 to C.15; no mode, registration or target is removed. | B.1/B.5/B.7/B.9/C.1/C.2 and a generic canonical triangulation + primitive mapping capability, then the complete port Verification gate. No implementation or completion claimed. |
 | G.1–G.2 | Optional tasks; no placement evidence recorded here yet. | Measured placement and CPU/GPU tolerance checks. |
+
+The typed integer/text/source Core API snapshot was accepted separately in
+commit `621113d2` after API/dependency gate 37921 exited 0. Foundation
+implementation has passed the final focused compiler, shipping, native and web
+gates. B.1/B.2/B.3/B.8 are complete; B.7 and all remaining ports stay unchecked.
+
+Final foundation shipping gate 39576 (`check.exe --ship`, log
+`/tmp/rays-sop-lisp-phase-b-foundation-ship-2.log`) exited 0: all builds, tests,
+smoke runs and diff checks passed, including 43 standard workspaces, one custom
+catalog executable and 13 fixtures at four times and one/eight domains. Native
+gate 59873 (`@runtest-native`, log
+`/tmp/rays-sop-lisp-phase-b-native-final-2.log`) exited 0, including 23 SOP
+graphs with byte-identical one/four-domain PNGs. Web qualification 47917 also
+exited 0. No render PNG or path tracer digest was refreshed.
+
+The final quiet pilot benchmark 24502 exited 0 after the shared compiler
+changes. Machine, command, million-point size, grain 4096 and median-of-three
+method match the pilot evidence below; four-domain allocations measure only
+the main domain. All complete modes remain below the 2× cook-time ceiling.
+
+| Mode | Domains | OCaml seconds | Lisp seconds | Lisp / OCaml | OCaml allocated bytes | Lisp allocated bytes |
+| --- | --- | --- | --- | --- | --- | --- |
+| Normal 3D | 1 | 0.032055 | 0.037070 | 1.156 | 24,107,808 | 25,768,256 |
+| Normal 3D | 4 | 0.010761 | 0.010586 | 0.984 | 24,135,832 | 24,447,192 |
+| Default height 2D | 1 | 0.015357 | 0.022616 | 1.473 | 8,078,088 | 9,749,856 |
+| Default height 2D | 4 | 0.004686 | 0.006259 | 1.336 | 8,117,944 | 8,414,360 |
+
+Benchmark log: `/tmp/rays-sop-lisp-phase-b-pilot-bench-final-quiet.log`.
+
+Final focused gates 92981 (`@lib/flow_ir/runtest @lib/flow_sop/runtest
+@lib/flow_web/runtest`) and 6927 (`@lib/flow_ir/runtest @lib/flow_web/runtest
+@lib/flow/runtest @lib/flow_graph/runtest`) exited 0. Text maps and collecting
+loops preserve 5,001/5,002 exact UTF-8 values, including multiple clauses,
+skips and empty results, at one/eight domains and in emitted JavaScript.
+Dependent inner Text collections retain their explicit strict Core refusal.
+Strict Executor qualification now applies the existing recursive producer and
+uniform check to every region inside structured Core; an accepted outer
+reduction cannot hide an unsupported numeric producer inside a Text map.
+
+The first broad runs exposed a placement error in a 13-element tick map inside
+`million_marks`: declining CPU placement was reported as `E_CORE_REGION` after
+starting the structured program. Core placement now declines before executing
+any statement, while state remains untouched. The new recorded-call record
+regression passes ordinary and strict execution at one/eight domains (14242).
+The actual workspace passes 141 values at four times and one/eight domains
+(34715). Temporary diagnostic storage was removed; a file filter remains for
+focused workspace checks. The compiler snapshot loses the standalone nested
+map that this earlier placement decline no longer compiles; no render golden
+changed.
+
+B.1's Text extension passes focused gate 98738 and host twins (15,152 cases,
+79 contracts). Text arrays preserve exact decoded contents and immutable
+ownership for point/vertex/primitive/detail, including empty owners and one
+detail row. The all-owner strict/reference comparisons and 4,097-element
+authored transformation use genuine typed arrays and compiled structured
+Core; no numeric-kernel or interpreter fallback is claimed. Before any
+production text-array port ships, its execution exception must be derived and
+reviewed in the manifest, as the plan requires. There is no production Text
+port yet, so this foundation does not alter that manifest.
 
 The production source/editor gate was repeated after fixing shared completion
 and catalog-order integration: dummy-driver `@test/test_workspace_source
@@ -116,11 +190,132 @@ and schema (`Polywire.sweep_factory`); its manifest entry was counted separately
    91419; later ports must retain each native call shape.
 7. `set_transform` writes 16-float array-valued attributes, and
    `attribute_interpolate` handles array-valued attributes. B.1's proposed scalar
-   attribute list does not express this storage. The capability must be extended
-   or those nodes explicitly moved; silently dropping these modes is forbidden.
+   attribute list does not express this storage. The authorized B.1 extension
+   exposes `float_array`/`int_array` as records of integer CSR `offsets` and
+   typed flattened `values`; 16-float transform rows use the same representation.
+   Owner arrays, offsets and flattened values have distinct count origins.
+   Text remains gated on B.3; no storage mode or node is dropped.
 8. The inventory already calls out `Float.next_after` for `separate_pieces` and
    explicit `Float.fma` for `iso_surface`; neither is in B.8's proposed math
    list. Resolve these prerequisites before those ports and retain their oracles.
+9. `Transform` and `Match_axis` preserve missing or non-Float3 normals. Strict
+   typed reads cannot express that fallback alone; B.1 advances a genuine
+   cooked `sop/has_attr` Boolean predicate with optional storage matching and
+   lazy branches. It must report truthful attribute reads, including owner.
+10. Matrix/quaternion recipes need native `hypot` behavior, and normal work must
+    preserve vertex-owned normals. `uv_project` requires topology and indexed
+    gather from C.1/C.2 plus segmented seam/pole reductions (language additions
+    B1/B8/B11+C1/C2). Its whole port moves from B.15 to C.14. `match_axis` also advances
+    its B1 typed vertex-N/query prerequisite. No mode is partially substituted.
+11. The whole `measure` port moves from B.15 to C.15 after reading all three
+    native modes and the SOP wrapper (`lib/sop/attributes.ml:236-290`,
+    `lib/rdk/core/analysis.ml:75-239`, `487-519`). Perimeter follows each
+    primitive's ordered vertex-to-point indices; area and signed volume use
+    canonical ear clipping for n-gons. Signed volume anchors on the bounds of
+    all points, including free and unselected points. Selection, both
+    accumulations, existing values outside the selection, optional detail
+    totals and native curve/degeneracy errors remain required. C.15 depends on
+    B.1/B.5/B.7/B.9/C.1/C.2 plus generic canonical triangulation data with
+    original-primitive mapping. The shared RDK ear clipper fixes projection,
+    tolerances and emission order; a fan or an unverified `sop/triangulate`
+    substitution is insufficient because its collapsed-quad shortcut differs
+    (`lib/rdk/mesh/triangulate.ml:27-63`, `175-190`). A hidden measure callback
+    would not provide the required language capability.
+
+A pure OCaml inventory/task census accounts for all 128 target keys exactly
+once, with no missing assignments or aliases: A.6 pilot 1, Phase B port tasks
+42, Phase C 42, Phase D 31 and Phase E 12. The inventory counts include the
+pilot under Phase B, giving B 43/C 42/D 31/E 12. C.15 remains unchecked and C.R
+now includes it; both whole-node moves retain the original target count.
+
+B.1's native-to-JavaScript host fixture check exited 0 after building
+`tools/core_fixtures.exe` through the shared launcher: the generator followed
+by `node tools/web/test/prims.mjs FIXTURES tools/web/runtime/prims.js` checked
+10,780 cases across 66 primitive contracts. This includes owner-aware numeric,
+integer and CSR reads/writes, exact BigInt payloads, count failures, strict
+missing/type errors and presence predicates. Compiled lazy query guards now
+pass separately in the full numeric attribute executable (session 79843).
+
+The expanded integer census adds exact add/sub/or/shifts/comparisons and
+integer build/range/count/get/slice/concat/sum, including values above 2^53,
+signed bounds, wrapping prefixes and more than 4,096 elements. Its initial
+nine runtime-boundary failures were repaired in shared native/JavaScript
+functions. After focused build 22740, regenerating fixtures and running the
+native-to-JavaScript twin command exited 0: **15,029 cases, 78 contracts**.
+Error comparisons and exact integer checks remain unchanged. The combined
+22740 alias request still failed two independent compiler/export regressions:
+a 32,769-element floating sum sign mismatch in `test_uniforms`, and the
+existing `flow_contours` web export refusing integer sources with `E_GPU_FORM`.
+Its full B.1 numeric, random/noise and other SOP tests passed; no failed
+expectation was promoted.
+
+Focused browser repair passed build 90444 and real Chrome run 29357 for
+`examples/generative` (frame 5→35, ten marks) and `examples/noise` (frame 7→37,
+two marks), with no frame or presenter errors. Export metadata now derives
+integer storage from consuming uniform banks and requires scalar width for
+integer outputs. Region inputs/captures must pass the existing evaluator's
+frame-dependency proof before becoming fixed export data; frame-dependent
+sources retain compiled structured loops. This repairs noise's frozen
+3,120-element position table against its real 3,600-element color table.
+The shared JavaScript loop store preserves integer array elements, and the
+presenter's numeric GPU boundary converts integer values explicitly. Runtime
+Node tests pass. Earlier `flow_contours` image export refused integer
+instructions in gate 38010; explicit floating pixel alpha and dimensions
+resolved that refusal. Broad web run 45015 then exposed the native oracle's
+dimension decoder silently substituting 256 for exact Float dimensions.
+The decoder now accepts finite integral Float arguments, keeps defaults for
+absent keys and rejects malformed values. Focused build 53253 and the existing
+contour pixel harness (session 53682) exited 0: at 640×480/frame 3 and
+800×600/frame 7, zero pixels differ by more than eight channel units, worst
+channel difference one, mean 0.0002; dispatch counts remain 18/42 with zero
+CPU invokes. No render golden or comparison threshold changed. Final
+`opam exec -- _build/default/tools/check.exe @tools/qualification-web`
+(session 47917, `/tmp/rays-sop-lisp-phase-b-web-final-2.log`) exited 0.
+It covers GPU kernels/status and hidden overflow, actual exported browser
+sketches, native pixel parity, generated/loaded/live/nested images, shared
+state, render regions and watch reload/repair behavior.
+
+Native image qualification's former overflow fixture selected a finite zero
+and expected failure from its untaken branch. With lazy guarded execution,
+that image must render successfully. The test now verifies its CPU/GPU render
+parity and selects the overflow in a separate fixture, retaining both repeated
+`E_KERNEL` assertions, recovery, resource ownership and exact domain checks.
+Focused executable build 20046 and native run 23312 exited 0; all logged
+resident image/canvas channel differences were zero. No error assertion or
+render threshold was relaxed.
+
+B.7's partial math gate 71202 passes the compiler's exact unfused oracle.
+The independent native 4-ULP audit still fails 15 of 1,863 cases: fourteen
+cross-product cancellations near zero and one matrix product at 16 ULP.
+B.7 remains unchecked until that native parity gate passes.
+
+An isolated JavaScript BigInt FMA prototype matches native `Float.fma` bits
+for 10,011 cases. Explicit FMA therefore has a viable web implementation;
+this does not authorize automatic Mul/Add contraction or change the current
+unfused arithmetic policy. B.7's native four-ULP gate remains unresolved.
+
+The focused `@lib/flow_sop/runtest` gate 2800 exited 0, including B.1's numeric
+attribute regressions and B.8's random/noise foundations. B.8 checks 100,000
+random integer keys (signed boundaries and values above 2^53), native/reference/
+strict packed one/eight domains and emitted JavaScript with exact float bits;
+typed prepared inputs use BigInt64Array. Its 300,054 noise samples cover seeds
+0/1/42 and octaves 1/4/32, including 100,000 per octave at seed 42, with zero
+native bit differences (maximum 0 ULP) and exact packed one/eight-domain bytes.
+Invalid octaves 0/33 produce `E_NOISE_RANGE`. This does not resolve B.7's
+independent native math failures or complete the B.1/B.3 foundation review.
+
+The generic guarded floating executor's focused regressions pass at one/eight
+domains, including lazy overflow, scaled-noise guard scopes, borrowed strided
+columns and omitted output lanes. On Apple M1 / OCaml 5.3.0, one million scalar
+elements with 21 registers and nested alternating guards, median of three
+after one warm run, changed from 0.761815 s / 1,648,012,168 bytes to 0.153040 s /
+43,751,592 bytes at one domain (4.98× faster), and from 0.413755 s /
+1,648,012,168 bytes to 0.042226 s / 22,988,136 bytes at four domains (9.80×).
+Allocation figures measure the main domain only. Command:
+`opam exec -- _build/default/lib/flow_ir/test_packed.exe --bench-guarded`;
+logs `/tmp/rays-sop-lisp-guard-before.log` and
+`/tmp/rays-sop-lisp-guard-after-2.log`. Combined gate 68199 still failed newly
+added text-array cases; these timings do not complete that gate.
 
 The per-node table uses `b/i/f/t/c` for bool/int/float/text/choice field counts.
 Vec3 groups count presentation groups, not additional fields. Slot types default
@@ -322,6 +517,7 @@ OCaml/Lisp times and validation result before its plan checkbox is marked.
 | --- | --- | --- |
 | A.6 pilot audit | `sop/context_seed` exposes the cook's keyed seed inside a Lisp body, preserving its Seed context dependency. Parameter validators reject context seed directly or through a helper. The initial cook label is the kind key, while the declaration label remains menu/inspector text, matching native factories. | Direct/helper checker/IR regressions passed in 93829; final production seed, relabel and parameter-rebuild parity passed in 45407. |
 | A.6 pilot audit | Owner/pattern `sop/delete_attr` advances the subset of B.6 required to invalidate point and vertex N after displacement. Literal names have no read dependency and named writes; patterns retain wildcard reads/writes. | Both pilot modes passed 60089; selective same-name owner/cache refresh and pattern conservatism passed 86865. Production source is registered; B.6 remains incomplete. |
+| B.15 native prerequisite audit | `uv_project` moves whole to C.14 for topology/indexed gather and segmented seam/pole work. `measure` moves whole to C.15 for B.1/B.5/B.7/B.9/C.1/C.2 plus canonical native triangulation data and original-primitive mapping. C.R includes C.15. | Prerequisites recorded; both complete ports remain required and unchecked. No registration changed and all 128 target keys remain assigned exactly once. |
 
 ## A.6 pilot performance evidence
 
@@ -387,7 +583,8 @@ reviewed and updated only for the catalog digest, from
 The authored source digest, generated source text and refusal diagnostics are
 unchanged; the catalog digest changed with the accepted production declaration.
 
-No node classification move has been accepted yet. The known array-valued
+The whole `uv_project` and `measure` moves to C.14/C.15 are accepted and retain
+every mode and the 128-node target scope. The known array-valued
 attribute, `next_after`, `fma`, encoded-decoder and partial-subdivide requirements
 above must be resolved by implementation or an explicit recorded move. They are
 scope requirements, not evidence that a node has been completed.

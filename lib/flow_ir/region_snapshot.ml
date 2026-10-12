@@ -2,7 +2,7 @@
 module P = Flow_ir.Packed
 let buffer = Buffer.create 4096
 
-let instruction : P.instruction -> string = function
+let rec instruction : P.instruction -> string = function
   | Const x -> Printf.sprintf "Const %h" x
   | Input (i, w, c) -> Printf.sprintf "Input %d %d %d" i w c
   | Uniform (i, c) -> Printf.sprintf "Uniform %d %d" i c
@@ -11,11 +11,23 @@ let instruction : P.instruction -> string = function
   | Binary (op, a, b) -> Printf.sprintf "Binary %s %d %d" (Flow.Packed_ops.(match op with
       | Add -> "Add" | Sub -> "Sub" | Mul -> "Mul" | Div -> "Div" | Mod -> "Mod" | Pow -> "Pow"
       | Min -> "Min" | Max -> "Max" | Lt -> "Lt" | Le -> "Le" | Gt -> "Gt" | Ge -> "Ge"
-      | Eq -> "Eq" | And -> "And" | Or -> "Or")) a b
+      | Eq -> "Eq" | And -> "And" | Or -> "Or" | Atan2->"Atan2" | Hypot->"Hypot")) a b
   | Unary (op, a) -> Printf.sprintf "Unary %s %d" (Flow.Packed_ops.(match op with
-      | Sin -> "Sin" | Cos -> "Cos" | Sqrt -> "Sqrt" | Abs -> "Abs" | Not -> "Not")) a
+      | Sin -> "Sin" | Cos -> "Cos" | Sqrt -> "Sqrt" | Abs -> "Abs" | Not -> "Not"
+      |Tan->"Tan"|Asin->"Asin"|Acos->"Acos"|Exp->"Exp"|Log->"Log"|Sign->"Sign")) a
   | Noise3 (x, y, z, seed, octaves) -> Printf.sprintf "Noise3 %d %d %d seed=%d octaves=%d" x y z seed octaves
   | Select (c, a, b) -> Printf.sprintf "Select %d %d %d" c a b
+  | Int_const n->Printf.sprintf "Int_const %d" n
+  | Int_input n->Printf.sprintf "Int_input %d" n | Int_uniform n->Printf.sprintf "Int_uniform %d" n
+  | Int_accumulator->"Int_accumulator"
+  | Int_frame name->Printf.sprintf "Int_frame %S" name
+  | Int_binary(op,a,b)->Printf.sprintf "Int_binary %s %d %d" (Flow.Packed_ops.integer_name op) a b
+  | Int_compare(op,a,b)->Printf.sprintf "Int_compare %s %d %d" (Flow.Packed_ops.comparison_name op) a b
+  | Int_abs a->Printf.sprintf "Int_abs %d" a
+  | Int_select(c,a,b)->Printf.sprintf "Int_select %d %d %d" c a b
+  | Convert(op,a)->Printf.sprintf "Convert %s %d" (match op with To_float->"float"|Truncate->"int"|Floor->"floor"|Ceil->"ceil"|Round->"round"|Coerce_int->"coerce:int"|Integer_result n->"int-result:"^n) a
+  | Guarded(guards,body)->Printf.sprintf "Guarded %s (%s)" (String.concat ";" (List.map(fun(r,b)->Printf.sprintf "%d:%b" r b)guards))(instruction body)
+  | Raise(ty,code,message)->Printf.sprintf "Raise %s %S %S"(Flow.Ty.to_string ty)code message
 
 let ints a = "[" ^ String.concat ";" (Array.to_list (Array.map string_of_int a)) ^ "]"
 

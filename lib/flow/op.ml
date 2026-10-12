@@ -6,10 +6,14 @@ type signature = {
 type shape = Scalar | Struct of { splice : bool }
 type arithmetic = { apply : 'f 'r. ('f, 'r) Value.t -> ('f, 'r) Value.t -> ('f, 'r) Value.t }
 type packed_kind = Binary of Packed_ops.binary | Unary of Packed_ops.unary
-  | Noise3 | Length | Exact | Frame | Constant_only
+  | Integer of Packed_ops.integer | Integer_compare of Packed_ops.comparison
+  | Convert of Packed_ops.conversion
+  | Noise3 | Length | Dot | Cross | Normalize | Exact | Frame | Constant_only
 type t = {
   name : string; ctx : Context.t; signature : signature;
-  out : Ty.t list -> Ty.t; any_num : bool;
+  out : Ty.t list -> Ty.t;
+  out_args : ((string * Ty.t * Param.value option) list -> Ty.t) option;
+  any_num : bool;
   choices : (string * string list) list; shape : shape;
   live : bool;
   check : 'f 'r. (string * ('f, 'r) Value.t) list -> unit;
@@ -25,7 +29,7 @@ let max_iterations = 4096
 let mk ?(ctx = Context.value) ?(opt = []) ?rest ?(kw = []) ?(any_num = false)
     ?(choices = []) ?(shape = Scalar) ?(check = { validate = fun _ _ -> () })
     ?(category = "Math") ?arithmetic name pos out (body : implementation) =
-  { name; ctx; signature = {pos; opt; rest; kw}; out; any_num; choices; shape; live = false;
+  { name; ctx; signature = {pos; opt; rest; kw}; out; out_args = None; any_num; choices; shape; live = false;
     check = (fun args -> check.validate choices args);
     body = (fun ~live:_ ~node args -> body.run ~name ~node args); category; arithmetic;
     packed_extension = None }
@@ -42,6 +46,16 @@ let binary name f =
       | [a;b] -> arithmetic.apply a b
       | _ -> failf "E_ARITY" "%s got the wrong number of inputs." name}
 let unary ~category name out = mk ~category name ["x", fl] out
+let float_unary name operation = unary ~category:"Math" name (fun _ -> fl)
+  {run=fun ~name ~node:_ args -> Float (fin name (operation (num (List.assoc "x" args))))}
+let float_binary name operation = mk ~category:"Math" name ["a",fl;"b",fl] (fun _ -> fl)
+  {run=fun ~name ~node:_ args -> Float (fin name
+    (operation (num (List.assoc "a" args)) (num (List.assoc "b" args))))}
+let dot3 (x,y,z) (a,b,c) =
+  let xa = Sys.opaque_identity (x *. a)
+  and yb = Sys.opaque_identity (y *. b)
+  and zc = Sys.opaque_identity (z *. c) in
+  (xa +. yb) +. zc
 let compare_op ~category name = mk ~category name ["a", fl; "b", fl] (fun _ -> Ty.Bool)
 let bool_op ~category name pos = mk ~category name pos (fun _ -> Ty.Bool)
 let concrete f = function Residual _ -> () | v -> f v
@@ -170,19 +184,41 @@ let frame = [
     | _ -> fail "E_TYPE" "key/down takes a key name."};
 ]
 
-let array_count name v =
-  let n = num v in
-  if n < 0. || n <> Float.floor n || n > float Sys.max_floatarray_length then
-    failf "E_ARRAY_RANGE" "%s needs a non-negative whole length." name;
-  int_of_float n
+let array_count ?(limit = Sys.max_floatarray_length) name v =
+  let invalid () = failf "E_ARRAY_RANGE" "%s needs a non-negative whole length." name in
+  match v with
+  | Int n -> if n < 0 || n > limit then invalid () else n
+  | _ ->
+      let n = num v in
+      if n < 0. || n <> Float.floor n || n > float limit then invalid ();
+      let n = int_of_float n in if n > limit then invalid () else n
+let range_type args = match List.find_opt (fun (name,_,_) -> name="type") args with
+  | None -> Ty.Array Ty.Float
+  | Some (_,_,Some (Param.Text_value "int")) -> Ty.Array Ty.Int
+  | Some (_,_,Some (Param.Text_value "float")) -> Ty.Array Ty.Float
+  | _ -> fail "E_ARRAY_TYPE" "Array range type is the literal int or float."
 let arrays = [
-  mk ~category:"Array" "array/range" ["count", Ty.Int] (fun _ -> Ty.Array fl)
+  (let op = mk ~category:"Array" ~kw:["type",Ty.Text] ~choices:["type",["float";"int"]]
+    "array/range" ["count", Ty.Int] (fun _ -> Ty.Array fl)
     {run = fun ~name ~node:_ args ->
+      (match List.assoc_opt "type" args with None | Some (Text ("int"|"float")) -> ()
+       | _ -> fail "E_ARRAY_TYPE" "array/range type is float or int.");
+      if List.assoc_opt "type" args = Some (Text "int") then
+        Int_array (Array.init (array_count ~limit:Sys.max_array_length name (List.assoc "count" args)) Fun.id)
+      else
       (* [array_init]'s result without a boxed value per index (40 bytes each at 1,000,000);
          [array_count] has already bounded the length, and an index is always finite. *)
       let data = Array.make (array_count name (List.assoc "count" args)) 0. in
       for i = 0 to Array.length data - 1 do Array.unsafe_set data i (float i) done;
-      Float_array data};
+      Float_array data} in {op with out_args=Some range_type});
+  mk ~category:"Array" ~opt:["value",Ty.Int] "array/int" ["count",Ty.Int] (fun _ -> Ty.Array Ty.Int)
+    {run=fun ~name ~node:_ args ->
+      let value=Option.value ~default:(Int 0) (List.assoc_opt "value" args) in
+      array_init Ty.Int (array_count ~limit:Sys.max_array_length name (List.assoc "count" args)) (fun _ -> value)};
+  mk ~category:"Array" ~opt:["value",Ty.Text] "array/text" ["count",Ty.Int] (fun _ -> Ty.Array Ty.Text)
+    {run=fun ~name ~node:_ args ->
+      let value=Option.value ~default:(Text "") (List.assoc_opt "value" args) in
+      array_init Ty.Text (array_count ~limit:Sys.max_array_length name (List.assoc "count" args)) (fun _ -> value)};
   mk ~category:"Array" ~opt:["value", fl] "array/float" ["count", Ty.Int] (fun _ -> Ty.Array fl)
     {run = fun ~name ~node:_ args ->
       let value = Option.value ~default:(Float 0.) (List.assoc_opt "value" args) in
@@ -196,7 +232,7 @@ let arrays = [
   mk ~category:"Array" "array/nth" ["array", Ty.Array Ty.Any; "index", Ty.Int]
     (function Ty.Array e :: _ -> e | _ -> Ty.Any)
     {run = fun ~name ~node:_ args -> array_get (List.assoc "array" args)
-      (array_count name (List.assoc "index" args))};
+      (array_count ~limit:Sys.max_array_length name (List.assoc "index" args))};
   mk ~category:"Array" "array/slice" ["array",Ty.Array Ty.Any;"first",Ty.Int;"count",Ty.Int]
     (function (Ty.Array _ as ty)::_ ->ty|_->Ty.Array Ty.Any)
     {run=fun ~name ~node:_ args->
@@ -204,13 +240,17 @@ let arrays = [
       let slice width values=if first>Array.length values/width || count>Array.length values/width-first
         then fail "E_ARRAY_RANGE" "An array slice must be within its source.";
         Array.sub values (first*width)(count*width)in
-      match List.assoc "array" args with Float_array xs->Float_array(slice 1 xs)
+      match List.assoc "array" args with Int_array xs->Int_array(slice 1 xs)
+        |Text_array xs->Text_array(slice 1 xs)
+        |Float_array xs->Float_array(slice 1 xs)
         |Vec2_array xs->Vec2_array(slice 2 xs)
         |Vec3_array xs->Vec3_array(slice 3 xs)|Vec4_array xs->Vec4_array(slice 4 xs)
         |_->fail "E_TYPE" "Expected a packed array."};
   mk ~category:"Array" "array/concat" ["first",Ty.Array Ty.Any;"second",Ty.Array Ty.Any]
     (function (Ty.Array _ as ty)::_ ->ty|_->Ty.Array Ty.Any)
     {run=fun ~name:_ ~node:_ args->match List.assoc "first" args,List.assoc "second" args with
+      |Int_array a,Int_array b->Int_array(Array.append a b)
+      |Text_array a,Text_array b->Text_array(Array.append a b)
       |Float_array a,Float_array b->Float_array(Array.append a b)
       |Vec2_array a,Vec2_array b->Vec2_array(Array.append a b)
       |Vec3_array a,Vec3_array b->Vec3_array(Array.append a b)
@@ -220,7 +260,11 @@ let arrays = [
     (function Ty.Array e :: _ -> e | _ -> Ty.Any)
     {run = fun ~name:_ ~node:_ args ->
       let xs = List.assoc "array" args in
-      let sum = ref (match xs with Vec2_array _ -> Vec2 (0., 0.)
+      match xs with
+      | Text_array _ -> fail "E_TYPE" "array/sum adds numbers or matching-width vectors."
+      | Int_array values -> Int (Array.fold_left (Packed_ops.integer_apply Packed_ops.Iadd) 0 values)
+      | _ ->
+      let sum = ref (match xs with Int_array _ -> Int 0 | Vec2_array _ -> Vec2 (0., 0.)
         | Vec3_array _ -> Vec3 (0., 0., 0.) | Vec4_array _ -> Vec4 (0., 0., 0., 0.) | _ -> Float 0.) in
       for i = 0 to array_length xs - 1 do sum := Value.arith "array/sum" ( +. ) !sum (array_get xs i) done;
       !sum};
@@ -270,13 +314,22 @@ let host = [
     ~choices:["waveform",["sine";"square";"triangle";"sawtooth"]] "audio/synth" [] "sample";
   host_op "audio/load" ["path",Ty.Text] "sample";
 ]
-let integers = List.map(fun(name,operation)->
+let integers = List.map(fun operation ->
+  let name = Packed_ops.integer_name operation in
   mk ~category:"Integer" name ["a",Ty.Int;"b",Ty.Int] (fun _->Ty.Int)
     {run=fun ~name:_ ~node:_ args->
       let integer=function Int value->value|value->int_of value in
       let a=integer(List.assoc "a" args)and b=integer(List.assoc "b" args)in
-      try Int(operation a b)with Division_by_zero->fail "E_RANGE" "Integer division by zero."})
-  ["int/mul",( * );"int/div",( / );"int/mod",( mod );"int/and",( land );"int/xor",( lxor )]
+      Int (Packed_ops.integer_apply operation a b)})
+  Packed_ops.[Iadd; Isub; Imul; Idiv; Imod; Iand; Ior; Ixor; Ishl; Ishr]
+  @ List.map (fun comparison ->
+    let name = Packed_ops.comparison_name comparison in
+    mk ~category:"Integer" name ["a",Ty.Int;"b",Ty.Int] (fun _ -> Ty.Bool)
+      {run=fun ~name:_ ~node:_ args ->
+        let integer=function Int value->value|value->int_of value in
+        Bool (Packed_ops.comparison_apply comparison
+          (integer (List.assoc "a" args)) (integer (List.assoc "b" args)))})
+    Packed_ops.[Ilt; Ile; Igt; Ige; Ieq]
 
 (* Constructor arguments remain typed values, including live fields; [node]
    creates the deferred payload instead of residualizing the whole call. *)
@@ -293,6 +346,29 @@ let images = [
 ]
 
 let all = frame @ arrays @ draw @ host @ integers @ images @ [
+  float_unary "tan" tan;
+  float_unary "asin" asin;
+  float_unary "acos" acos;
+  float_unary "log" log;
+  float_unary "sign" (fun x -> if x > 0. then 1. else if x < 0. then -1. else x);
+  float_binary "atan2" atan2;
+  float_binary "hypot" Float.hypot;
+  mk ~category:"Vector" "dot" ["a",Ty.Vec3;"b",Ty.Vec3] (fun _ -> fl)
+    {run=fun ~name ~node:_ args ->
+      Float (fin name (dot3 (comps (List.assoc "a" args)) (comps (List.assoc "b" args))))};
+  mk ~category:"Vector" "cross" ["a",Ty.Vec3;"b",Ty.Vec3] (fun _ -> Ty.Vec3)
+    {run=fun ~name ~node:_ args ->
+      let x,y,z = comps (List.assoc "a" args) and a,b,c = comps (List.assoc "b" args) in
+      let product x y = Sys.opaque_identity (x *. y) in
+      Vec3 (fin name (product y c -. product z b),
+        fin name (product z a -. product x c), fin name (product x b -. product y a))};
+  mk ~category:"Vector" "normalize" ["vector",Ty.Vec3] (fun _ -> Ty.Vec3)
+    {run=fun ~name ~node:_ args ->
+      let x,y,z = comps (List.assoc "vector" args) in
+      let size = fin name (sqrt (dot3 (x,y,z) (x,y,z))) in
+      if size = 0. then Vec3 (0.,0.,0.)
+      else let reciprocal = 1. /. size in
+        Vec3 (fin name (x *. reciprocal),fin name (y *. reciprocal),fin name (z *. reciprocal))};
   mk ~category:"Vector" "length" ["vector", Ty.Vec3] (fun _ -> fl)
     {run = fun ~name ~node:_ args -> match List.assoc "vector" args with
       | Vec3 (x,y,z) ->
@@ -525,13 +601,19 @@ let of_context ?(extra = []) ctx =
   let all = all @ extra in
   (if ctx = Context.value then [] else List.filter (fun o -> o.ctx = ctx) all)
   @ List.filter (fun o -> o.ctx = Context.value) all
+let result_type op args = match op.out_args with
+  | Some out -> out args
+  | None ->
+      let positional = List.map fst (op.signature.pos @ op.signature.opt) in
+      op.out (List.filter_map (fun (name, ty, _) ->
+        if List.mem name positional then Some ty else None) args)
 let arith name = Option.bind (Hashtbl.find_opt table name) (fun o -> o.arithmetic)
 
 let valid_extension op = match op.packed_extension with
   | None -> true
   | Some Packed_ops.Noise3 ->
       op.name = "noise3" && op.ctx = Context.value && op.shape = Scalar
-      && not op.live && not op.any_num && op.arithmetic = None
+      && not op.live && not op.any_num && op.arithmetic = None && op.out_args = None
       && op.signature.pos = ["position", Ty.Vec3]
       && op.signature.opt = [] && op.signature.rest = None
       && List.sort Stdlib.compare op.signature.kw = ["octaves", Ty.Int; "seed", Ty.Int]
@@ -544,7 +626,15 @@ let packed_kind op =
     match Packed_ops.binary op.name, Packed_ops.unary op.name with
     | Some binary, _ -> Some (Binary binary)
     | _, Some unary -> Some (Unary unary)
+    | _ when Option.is_some (Packed_ops.integer op.name) -> Some (Integer (Option.get (Packed_ops.integer op.name)))
+    | _ when Option.is_some (Packed_ops.comparison op.name) -> Some (Integer_compare (Option.get (Packed_ops.comparison op.name)))
+    | _ when List.mem op.name ["float";"int";"floor";"ceil";"round"] ->
+        Some (Convert (match op.name with "float" -> Packed_ops.To_float | "floor" -> Floor
+          | "ceil" -> Ceil | "round" -> Round | _ -> Truncate))
     | _ when op.name = "length" -> Some Length
+    | _ when op.name = "dot" -> Some Dot
+    | _ when op.name = "cross" -> Some Cross
+    | _ when op.name = "normalize" -> Some Normalize
     | _ when op.name = "exact" -> Some Exact
     | _ when op.live -> Some Frame
     | _ -> Some Constant_only

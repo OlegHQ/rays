@@ -12,7 +12,8 @@ val rebind : Core.Region.t -> Flow.Eval.residual -> Core.Region.t option
 
 (** Helpers shared with [Packed] and [Core_fuse]. *)
 val instruction_key : Core.Region.instruction ->
-  [ `Constant of int64 | `Instruction of Core.Region.instruction ]
+  [ `Constant of int64 | `Guarded_constant of (int * bool) list * int64
+  | `Instruction of Core.Region.instruction ]
 (** Sharing preserves the binary64 bits of constants, including signed zero. *)
 
 val width_of : Flow.Ty.t -> int

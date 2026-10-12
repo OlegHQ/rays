@@ -271,6 +271,8 @@ let ()=
       reload 30.(text 65 17 "[uv.x uv.y (* t 0.5) 1]");
       verify 0.5;
       reload 40.(text 65 17 "[(if (> uv.x 0) 0 (* (* uv.x 1e20) (* uv.x 1e20))) uv.y 0.5 1]");
+      verify 0.5;
+      reload 45.(text 65 17 "[(if (< uv.x 0) 0 (* (* uv.x 1e20) (* uv.x 1e20))) uv.y 0.5 1]");
       let _,_,value=value()in
       List.iter(fun time->
         let failed=Editor.Private.with_images ~live:(live time) !owner(fun ~image ~texture:_->image value)in

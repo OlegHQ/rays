@@ -50,7 +50,7 @@ export const compose = (a, b) => ({
   yy: a.xy * b.yx + a.yy * b.yy, tx: a.xx * b.tx + a.yx * b.ty + a.tx, ty: a.xy * b.tx + a.yy * b.ty + a.ty });
 
 const rgba = c => [(c >>> 24) / 255, ((c >>> 16) & 255) / 255, ((c >>> 8) & 255) / 255, (c & 255) / 255];
-const f32 = (a, n) => Float32Array.from(a.subarray ? a.subarray(0, n) : a.slice(0, n));
+const f32 = (a, n) => Float32Array.from(a.subarray ? a.subarray(0, n) : a.slice(0, n), Number);
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 
 // A decoded image for an `images` resolver: straight alpha, no colour conversion, as SDL_image gives.

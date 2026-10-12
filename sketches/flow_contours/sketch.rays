@@ -14,7 +14,7 @@
   (defmacro glyph [field level share_from share_to narrow radius stroke diagonal grey]
     `(let* [field# ~field]
        (draw/image (image/map (fn [uv#]
-                                (let* [one# 1
+                                (let* [one# 1.0
                                        half# 0.5
                                        spread# 0.37
                                        x# (* uv#.x field#.columns)
@@ -39,7 +39,7 @@
                                                        ~stroke)
                                                     (< (abs (- a# b#)) ~diagonal))
                                        grey# ~grey]
-                                  [grey# grey# grey# (if (and chosen# inside#) one# 0)]))
+                                  [grey# grey# grey# (if (and chosen# inside#) one# 0.0)]))
                               :width field#.width
                               :height field#.height)
                    :at [0 0 0])))
@@ -49,7 +49,7 @@
   (defmacro lines [field count grey]
     `(let* [field# ~field]
        (draw/image (image/map (fn [uv#]
-                                (let* [one# 1
+                                (let* [one# 1.0
                                        half# 0.5
                                        pixel# (/ (* field#.scale field#.columns)
                                                  field#.width)
@@ -69,7 +69,7 @@
                                                      (sqrt (+ (* slope_x# slope_x#)
                                                               (* slope_y# slope_y#)))))
                                        grey# ~grey]
-                                  [grey# grey# grey# (if (and (> band# (- 0 half#)) (< band# (+ ~count half#))) (max 0 (- one# (* pixels# 0.8))) 0)]))
+                                  [grey# grey# grey# (if (and (> band# (- 0 half#)) (< band# (+ ~count half#))) (max 0 (- one# (* pixels# 0.8))) 0.0)]))
                               :width field#.width
                               :height field#.height)
                    :at [0 0 0])))
@@ -88,8 +88,8 @@
            base 24.0
            ; the one height field every layer reads, and the picture it is drawn on: the
            ; whole viewport, cut into square cells
-           field {:width (frame/width)
-                  :height (frame/height)
+           field {:width (float (frame/width))
+                  :height (float (frame/height))
                   :columns (/ (frame/width) cell)
                   :rows (/ (frame/height) cell)
                   :drift (* t speed)

@@ -84,7 +84,11 @@ let () =
   List.iter (fun (width,height) ->
     assert (Result.is_error (Flow_sop.Image_kernel.prepare ~identity:0 ~width ~height
       ~fn:(fn text) ~sources:[] []))) [0,1;1,0;max_int,2;1,max_int];
-  let unsupported = fn "(workspace w (graph img :context image (image/map (fn [uv] [(floor uv.x) 0 0 1]))))" in
+  let converted = fn "(workspace w (graph img :context image
+    (image/map (fn [uv] [(floor uv.x) (floor uv.y) 0 1]))))" |> prepare ~width:65 ~height:3 in
+  let expected = Bytes.init (65*3*4) (fun i -> if i mod 4=3 then Char.chr 255 else Char.chr 0) in
+  List.iter (fun domains -> assert (bytes (cook domains converted)=expected)) [1;8];
+  let unsupported = fn "(workspace w (graph img :context image (image/map (fn [uv] [(value/rand uv.x) 0 0 1]))))" in
   assert (Result.is_error (Flow_sop.Image_kernel.prepare ~identity:0 ~width:1 ~height:1
     ~fn:unsupported ~sources:[] []));
   let stateful = fn "(workspace w (graph img :context image

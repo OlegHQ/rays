@@ -6,12 +6,14 @@ module V = Flow.Value
 module Ty = Flow.Ty
 open Core.Region
 
-type expression = { registers : int array; constant : E.value option }
+type expression = { registers : int array; constant : E.value option;
+  fields : (string * expression) list }
 exception Unsupported
 exception Compile_refused of Flow.Diagnostic.t
 
 let instruction_key = function
   | Const value -> `Constant (Int64.bits_of_float value)
+  | Guarded (guards,Const value) -> `Guarded_constant (guards,Int64.bits_of_float value)
   | instruction -> `Instruction instruction
 
 let width_of ty = match Flow.Packed_ops.scalar_width ty with
@@ -25,6 +27,9 @@ let captured_value bindings name fields =
   List.fold_left (fun value field -> match value, field with
     | E.Record fs, field | Struct (_, _, fs), field ->
         (match List.assoc_opt field fs with Some v -> v | None -> raise Unsupported)
+    | E.Fn fn, field ->
+        (match List.assoc_opt field (E.Private.function_bindings fn) with
+         | Some v -> v | None -> raise Unsupported)
     | E.Vec3 (x, _, _), "x" | Vec3 (_, x, _), "y" | Vec3 (_, _, x), "z" -> E.Float x
     | E.Vec2 (x,_), "x" | Vec2 (_,x), "y" -> E.Float x
     | E.Vec4 (x,_,_,_), "x" | Vec4 (_,x,_,_), "y"
@@ -34,9 +39,9 @@ let captured_value bindings name fields =
 let count_of residual (s : W.term) = match s.node with
   | W.Ref_binding (name, fields) ->
       (try match captured_value (E.Private.residual_view residual).bindings name fields with
-       | E.Float_array _ | Vec2_array _ | Vec3_array _ | Vec4_array _ as v -> Some (V.array_length v) | _ -> None
+       | E.Int_array _ | Float_array _ | Vec2_array _ | Vec3_array _ | Vec4_array _ as v -> Some (V.array_length v) | _ -> None
        with Unsupported -> None)
-  | Op {op = ("array/float" | "array/vec3" | "array/range"); args; _} ->
+  | Op {op = ("array/int" | "array/float" | "array/vec3" | "array/range"); args; _} ->
       (match List.assoc_opt "count" args with
        | Some {node = W.Lit (Param.Int_value n); _} when n >= 0 -> Some n | _ -> None)
   | _ -> None
@@ -155,7 +160,9 @@ let lower ?(fusion = true) ?(dynamic = false)
         (Array.length sources) (List.length params));
     let code = ref [] and size = ref 0 and uniforms = ref [] and nuniforms = ref 0 and uniform_names = ref [] in
     let shared = Hashtbl.create 16 in
+    let guards = ref [] and integer_registers = Hashtbl.create 16 in
     let emit instruction =
+      let instruction = if !guards=[] then instruction else Guarded (!guards,instruction) in
       (* As in fusion, compare constant bits too: +0 and -0 remain distinct. *)
       let key = instruction_key instruction in
       match Hashtbl.find_opt shared key with
@@ -165,30 +172,46 @@ let lower ?(fusion = true) ?(dynamic = false)
           if !size >= Flow.Packed_ops.register_limit then
             refuse "E_PACKED_LIMIT" (Printf.sprintf "Packed kernel exceeds %d registers." Flow.Packed_ops.register_limit);
           let id = !size in incr size; code := instruction :: !code;
+          Hashtbl.add integer_registers id (Core.Region.integer_register instruction);
           Hashtbl.add shared key id;
           id in
     let literal ?(at = term) v =
-      let data = match v with
-        | E.Int _ | Float _ | Bool _ | Vec2 _ | Vec3 _ | Vec4 _ -> components v
+      let registers = match v with
+        | E.Int _ -> [||] (* Emit a constant only after its integer/float use is known. *)
+        | Float _ | Bool _ | Vec2 _ | Vec3 _ | Vec4 _ -> Array.map (fun f -> emit (Const f)) (components v)
         | _ -> refuse ~at "E_PACKED_TYPE" ("Packed constant has unsupported type " ^ Ty.to_string (V.ty_of v) ^ ".") in
-      {registers = Array.map (fun f -> emit (Const f)) data; constant = Some v} in
-    let input i width = {registers = Array.init width (fun j -> emit (Input (i, width, j))); constant = None} in
+      {registers; constant = Some v; fields=[]} in
+    let as_float e = match e.constant with
+      | Some (E.Int n) -> literal (E.Float (float n))
+      | _ -> {e with registers=Array.map (fun register ->
+          if Hashtbl.find integer_registers register then emit (Convert(To_float,register)) else register) e.registers} in
+    let as_int e = match e.constant with
+      | Some value ->
+          let value=V.coerce_to Ty.Int value in
+          (match value with E.Int n -> {registers=[|emit (Int_const n)|];constant=Some value;fields=[]}
+           | _ -> assert false)
+      | None -> {e with registers=Array.map (fun register ->
+          if Hashtbl.find integer_registers register then register else emit (Convert(Coerce_int,register))) e.registers} in
+    let input i width = {registers = Array.init width (fun j ->
+      if sources.(i).W.ty=Ty.Array Ty.Int then emit (Int_input i) else emit (Input (i, width, j))); constant = None;fields=[]} in
     let uniform at name v = match v with
-      | E.Residual _ | E.Int _ | Float _ | Bool _ | Vec2 _ | Vec3 _ | Vec4 _ when dynamic || E.is_live v ->
+      | E.Residual _ | E.Source _ | E.Int _ | Float _ | Bool _ | Vec2 _ | Vec3 _ | Vec4 _
+        when dynamic || E.is_live v || (match v with E.Source _ -> true | _ -> false) ->
           let ty = match v with E.Residual r -> (E.Private.residual_view r).term.ty | v -> V.ty_of v in
           let width = try width_of ty with Unsupported ->
             refuse ~at "E_PACKED_CAPTURE" ("Capture " ^ String.concat "." (fst name :: snd name)
               ^ " has unsupported type " ^ Ty.to_string ty ^ ".") in
           let i = !nuniforms in incr nuniforms; uniforms := v :: !uniforms;
           uniform_names := name :: !uniform_names;
-          {registers = Array.init width (fun j -> emit (Uniform (i, j))); constant = None}
+          {registers = Array.init width (fun j ->
+            if ty=Ty.Int then emit (Int_uniform i) else emit (Uniform (i, j))); constant = None;fields=[]}
       | E.Int _ | Float _ | Bool _ | Vec2 _ | Vec3 _ | Vec4 _ -> literal ~at v
       | _ -> refuse ~at "E_PACKED_CAPTURE" ("Capture " ^ String.concat "." (fst name :: snd name)
           ^ " has unsupported type " ^ Ty.to_string (V.ty_of v) ^ ".") in
     let env = List.mapi (fun i (pattern, annotation) ->
       match pattern with
       | W.Name name when annotation = None || annotation = Some
-          (match widths.(i) with 2 -> Ty.Vec2 | 3 -> Ty.Vec3 | 4 -> Ty.Vec4 | _ -> Ty.Float) ->
+          (Option.get (Ty.elem sources.(i).W.ty)) ->
           name, input i widths.(i)
       | W.Name name -> refuse "E_PACKED_TYPE" (Printf.sprintf
           "Packed parameter %s annotation %s does not match its %d-component source."
@@ -204,24 +227,54 @@ let lower ?(fusion = true) ?(dynamic = false)
             refuse ~at:seed "E_PACKED_TYPE" (Printf.sprintf
               "Packed accumulator %s annotation %s does not match seed type %s."
               name (Option.fold ~none:"none" ~some:Ty.to_string annotation) (Ty.to_string seed.ty));
-          (name, {registers = Array.init width (fun i -> emit (Accumulator i)); constant = None}) :: env
+          let integer=seed.ty=Ty.Int && body.ty=Ty.Int in
+          (name, {registers = Array.init width (fun i -> emit (if integer then Int_accumulator else Accumulator i)); constant = None;fields=[]}) :: env
       | None, _ -> env | _ -> refuse "E_PACKED_FORM" "Packed accumulator requires a name pattern." in
     let captures = Hashtbl.create 16 in
-    let captured at name fields = match Hashtbl.find_opt captures (name, fields) with
+    let capture_scope = ref None and call_depth = ref 0 in
+    let capture_path name fields = match !capture_scope with
+      | None -> name,fields | Some (root,path) -> root,path @ (name :: fields) in
+    let rec capture at name fields = match Hashtbl.find_opt captures (name, fields, !guards) with
       | Some e -> e
       | None ->
           let value = try captured_value bindings name fields with Unsupported ->
             refuse ~at "E_PACKED_CAPTURE" ("Captured binding or field " ^ String.concat "." (name :: fields) ^ " is unavailable.") in
-          let e = uniform at (name, fields) value in
-          Hashtbl.add captures (name, fields) e; e in
-    let field at e = function
-      | "x" when Array.length e.registers >= 2 -> {registers = [|e.registers.(0)|]; constant = None}
-      | "y" when Array.length e.registers >= 2 -> {registers = [|e.registers.(1)|]; constant = None}
-      | "z" when Array.length e.registers >= 3 -> {registers = [|e.registers.(2)|]; constant = None}
-      | "w" when Array.length e.registers = 4 -> {registers = [|e.registers.(3)|]; constant = None}
+          let e = match value with
+            | E.Record fs -> {registers=[||];constant=None;
+                fields=List.map (fun (key,_) -> key,capture at name (fields @ [key])) fs}
+            | _ -> uniform at (name, fields) value in
+          Hashtbl.add captures (name, fields, !guards) e; e in
+    let captured at name fields = let name,fields = capture_path name fields in
+      capture at name fields in
+    let field at e name = match List.assoc_opt name e.fields with
+      | Some value -> value
+      | None -> match name with
+      | "x" when Array.length e.registers >= 2 -> {registers = [|e.registers.(0)|]; constant = None;fields=[]}
+      | "y" when Array.length e.registers >= 2 -> {registers = [|e.registers.(1)|]; constant = None;fields=[]}
+      | "z" when Array.length e.registers >= 3 -> {registers = [|e.registers.(2)|]; constant = None;fields=[]}
+      | "w" when Array.length e.registers = 4 -> {registers = [|e.registers.(3)|]; constant = None;fields=[]}
       | name -> refuse ~at "E_PACKED_TYPE" (Printf.sprintf "Component %s is unavailable on a %d-component packed value."
           name (Array.length e.registers)) in
     let component e i = e.registers.(if Array.length e.registers = 1 then 0 else i) in
+    let rec coerce at ty value = match ty,value.constant with
+      | Ty.Int,Some _ -> as_int value
+      | _,Some constant -> literal ~at (V.coerce_to ty constant)
+      | Ty.Record fields,_ -> {value with fields=List.map (fun (name,ty) ->
+          name,coerce at ty (field at value name)) fields}
+      | Ty.Int,_ -> as_int value
+      | Ty.Float,_ -> as_float value
+      | Ty.Bool,_ ->
+          let value = as_float value in
+          if Array.length value.registers <> 1 then
+            refuse ~at "E_PACKED_TYPE" "Packed boolean argument requires a scalar.";
+          {value with registers=[|emit(Unary(Not,emit(Unary(Not,value.registers.(0)))))|]}
+      | (Ty.Vec2 | Vec3 | Vec4),_ ->
+          let value = as_float value and width = width_of ty in
+          if Array.length value.registers=width then value
+          else if Array.length value.registers=1 then
+            {value with registers=Array.make width value.registers.(0)}
+          else refuse ~at "E_PACKED_TYPE" "Packed function argument has the wrong vector width."
+      | _ -> refuse ~at "E_PACKED_TYPE" ("Packed function argument has unsupported type " ^ Ty.to_string ty ^ ".") in
     let rec expression env (t : W.term) =
       try match t.node with
       | W.Lit (Param.Int_value n) -> literal ~at:t (E.Int n)
@@ -233,18 +286,27 @@ let lower ?(fusion = true) ?(dynamic = false)
            | None ->
                (* A record may contain a deferred vector. Bind that vector as a
                   uniform before projecting its component. *)
-               let direct = try ignore (captured_value bindings name fields); true
+               let direct = try let name,fields = capture_path name fields in
+                 ignore (captured_value bindings name fields); true
                  with Unsupported -> false in
                if direct then captured t name fields else
                match List.rev fields with
                | component :: prefix -> field t (captured t name (List.rev prefix)) component
                | [] -> refuse ~at:t "E_PACKED_CAPTURE" ("Captured binding " ^ name ^ " is unavailable."))
-      | Time -> {registers = [|emit (Frame "t")|]; constant = None}
+      | Time -> {registers = [|emit (Frame "t")|]; constant = None;fields=[]}
       | Vec ts when List.mem (List.length ts) [2;3;4] ->
-          let components = List.map (expression env) ts in
+          let components = List.map (fun t -> as_float (expression env t)) ts in
           if not (List.for_all (fun e -> Array.length e.registers = 1) components) then
             refuse ~at:t "E_PACKED_TYPE" "Packed vector components must be scalar values.";
-          {registers = Array.of_list (List.map (fun e -> e.registers.(0)) components); constant = None}
+          {registers = Array.of_list (List.map (fun e -> e.registers.(0)) components); constant = None;fields=[]}
+      | Record fs -> {registers=[||];constant=None;
+          fields=List.map (fun (name,value) -> name,expression env value) fs}
+      | Assoc (value,updates) ->
+          let value = expression env value in
+          let updates = List.map (fun (name,term) -> name,expression env term) updates in
+          let fields = List.map (fun (name,old) -> name,
+            Option.value ~default:old (List.assoc_opt name updates)) value.fields in
+          {value with fields=fields @ List.filter (fun (name,_) -> not (List.mem_assoc name fields)) updates}
       | Get (value, f) -> field t (expression env value) f
       | Cond (arms, default) ->
           expression env (List.fold_right (fun (condition, yes) no ->
@@ -265,18 +327,53 @@ let lower ?(fusion = true) ?(dynamic = false)
               node = Op {op = "="; args = ["a", left; "b", right]; skip = []}} in
             {t with node = If (condition, yes, no)}) arms default)
       | If (condition, yes, no) ->
-          (* ponytail: eager pure branches; nonfinite untaken arms rerun the reference.
-             Add masked execution if such bodies appear in profiles. *)
-          let condition = expression env condition in
+          let condition = as_float (expression env condition) in
           (match condition.constant with
            | Some v -> expression env (if V.truthy v then yes else no)
            | None ->
-               let yes = expression env yes and no = expression env no in
+               let branch selected body =
+                 let previous = !guards in
+                 guards := previous @ [condition.registers.(0),selected];
+                 Fun.protect ~finally:(fun()->guards:=previous) (fun()->expression env body) in
+               let yes = branch true yes and no = branch false no in
                if Array.length condition.registers <> 1 then
                  refuse ~at:t "E_PACKED_TYPE" "Packed conditions require a scalar value.";
-               let width = max (Array.length yes.registers) (Array.length no.registers) in
-               {registers = Array.init width (fun i ->
-                 emit (Select (condition.registers.(0), component yes i, component no i))); constant = None})
+               let rec select ty yes no = match ty with
+                 | Ty.Record fields -> {registers=[||];constant=None;
+                     fields=List.map (fun (name,ty) -> name,select ty (field t yes name) (field t no name)) fields}
+                 | _ ->
+                     let yes,no=if ty=Ty.Int then coerce t ty yes,coerce t ty no else as_float yes,as_float no in
+                     let width = max (Array.length yes.registers) (Array.length no.registers) in
+                     {registers = Array.init width (fun i ->
+                       emit ((if ty=Ty.Int then fun c a b->Int_select(c,a,b) else fun c a b->Select(c,a,b))
+                         condition.registers.(0) (component yes i) (component no i))); constant = None;fields=[]} in
+               select t.ty yes no)
+      | Call_fn {fn;args;body=specialized} ->
+          if !call_depth >= 64 then refuse ~at:t "E_PACKED_LIMIT" "Packed helper call depth exceeds 64.";
+          let values = List.map (expression env) args in
+          let name,path = capture_path fn [] in
+          let callable = try Some (captured_value bindings name path) with Unsupported -> None in
+          let definition name = match E.Private.residual_definition residual name with
+            | Some definition ->
+                List.map (fun (name,ty,_) -> W.Name name,Some ty) definition.inputs,
+                definition.body,None
+            | None -> refuse ~at:t "E_PACKED_FUNCTION" ("Packed helper " ^ name ^ " is unavailable.") in
+          let params,body,scope = match callable with
+            | Some (E.Fn callable) -> (match E.Private.function_body callable with
+                | Some (params,body) -> params,body,Some(name,path)
+                | None -> (match E.Private.function_name callable with
+                    | Some name -> definition name
+                    | None -> refuse ~at:t "E_PACKED_FUNCTION" "Captured helper has no checked body."))
+            | _ -> definition fn in
+          if List.compare_lengths params values <> 0 then
+            refuse ~at:t "E_PACKED_FUNCTION" "Packed helper arguments do not match its checked parameters.";
+          let env = List.map2 (fun (pattern,ty) value -> match pattern with
+            | W.Name name -> name,Option.fold ~none:value ~some:(fun ty -> coerce t ty value) ty
+            | _ -> refuse ~at:t "E_PACKED_FORM" "Packed helper parameters require name patterns.") params values in
+          let previous = !capture_scope in
+          capture_scope := scope; incr call_depth;
+          Fun.protect ~finally:(fun () -> capture_scope := previous; decr call_depth)
+            (fun () -> expression env (Option.value ~default:body specialized))
       | Op {op; args; _} ->
           let declaration, kind = match Flow.Op.find ~extra:(E.Private.residual_ops residual) op Flow.Context.value with
             | Some o -> (match Flow.Op.packed_kind o with
@@ -289,11 +386,18 @@ let lower ?(fusion = true) ?(dynamic = false)
               ~node:(fun name _ -> refuse ~at:t "E_PACKED_CONSTANT" ("Constant operator " ^ op ^ " attempted to create node " ^ name ^ "."))
               (List.map2 (fun (name, _) e -> name, Option.get e.constant) args expressions))
           else if declaration.live && args = [] && List.mem t.ty [Ty.Float; Ty.Int; Ty.Bool] then
-            {registers = [|emit (Frame declaration.name)|]; constant = None}
+            {registers = [|emit (if t.ty=Ty.Int then Int_frame declaration.name else Frame declaration.name)|]; constant = None;fields=[]}
           else begin
             let width = List.fold_left (fun n e -> max n (Array.length e.registers)) 1 expressions in
-            if t.ty = Ty.Int then refuse ~at:t "E_PACKED_OPERATOR" ("Dynamic integer operation " ^ op ^ " requires reference evaluation.");
             let registers = match kind, expressions with
+              | Flow.Op.Integer operation, [a;b] ->
+                  let a=as_int a and b=as_int b in
+                  [|emit (Int_binary(operation,a.registers.(0),b.registers.(0)))|]
+              | Flow.Op.Integer_compare operation, [a;b] ->
+                  let a=as_int a and b=as_int b in
+                  [|emit (Int_compare(operation,a.registers.(0),b.registers.(0)))|]
+              | Flow.Op.Convert conversion, [a] ->
+                  [|emit (Convert(conversion,a.registers.(0)))|]
               | Flow.Op.Noise3, a::rest when Array.length a.registers=3 ->
                   let configuration=List.map2(fun (name,_) expression ->
                     name,match expression.constant with Some value->value|None->
@@ -311,13 +415,36 @@ let lower ?(fusion = true) ?(dynamic = false)
                   let xy = emit (Binary (Add, xx, yy)) in
                   let sum = emit (Binary (Add, xy, zz)) in
                   [|emit (Unary (Sqrt, sum))|]
+              | Flow.Op.Dot, [a;b] when Array.length a.registers=3 && Array.length b.registers=3 ->
+                  let product i=emit(Binary(Mul,a.registers.(i),b.registers.(i)))in
+                  let x=product 0 and y=product 1 and z=product 2 in
+                  let xy=emit(Binary(Add,x,y))in [|emit(Binary(Add,xy,z))|]
+              | Flow.Op.Cross, [a;b] when Array.length a.registers=3 && Array.length b.registers=3 ->
+                  let component i j=let p=emit(Binary(Mul,a.registers.(i),b.registers.(j)))
+                    and q=emit(Binary(Mul,a.registers.(j),b.registers.(i)))in emit(Binary(Sub,p,q))in
+                  [|component 1 2;component 2 0;component 0 1|]
+              | Flow.Op.Normalize, [a] when Array.length a.registers=3 ->
+                  let square i=emit(Binary(Mul,a.registers.(i),a.registers.(i)))in
+                  let x=square 0 and y=square 1 and z=square 2 in
+                  let xy=emit(Binary(Add,x,y))in let norm=emit(Unary(Sqrt,emit(Binary(Add,xy,z))))in
+                  let zero=emit(Const 0.)in let empty=emit(Binary(Eq,norm,zero))in
+                  let previous = !guards in
+                  let scaled = Fun.protect ~finally:(fun () -> guards:=previous) (fun () ->
+                    guards:=previous @ [empty,false];
+                    let inverse=emit(Binary(Div,emit(Const 1.),norm))in
+                    Array.map(fun r -> emit(Binary(Mul,r,inverse)))a.registers) in
+                  Array.map(fun r -> emit(Select(empty,zero,r)))scaled
               | Flow.Op.Binary op, [a; b] ->
-                  Array.init width (fun i -> emit (Binary (op, component a i, component b i)))
+                  let a=as_float a and b=as_float b in
+                  Array.init width (fun i ->
+                    let register=emit (Binary (op, component a i, component b i)) in
+                    if t.ty=Ty.Int then emit (Convert(Integer_result declaration.name,register)) else register)
+              | Flow.Op.Unary Abs, [a] when t.ty=Ty.Int -> [|emit (Int_abs a.registers.(0))|]
               | Flow.Op.Unary op, [a] when width = 1 ->
-                  [|emit (Unary (op, a.registers.(0)))|]
+                  let a=as_float a in [|emit (Unary (op, a.registers.(0)))|]
               | _ -> refuse ~at:t "E_PACKED_OPERATOR" (Printf.sprintf
                   "Dynamic operator %s has no packed instruction for %d arguments at width %d." op (List.length expressions) width) in
-            {registers; constant = None}
+            {registers; constant = None;fields=[]}
           end
       | Let (bindings, result) ->
           let env = List.fold_left (fun env (p, t) -> match p with
@@ -327,24 +454,28 @@ let lower ?(fusion = true) ?(dynamic = false)
       | Expanded {body; _} -> expression env body
       | Bypass call ->
           (match W.bypass_input call with
-           | Some input when input.ty=t.ty
-               || t.ty=Ty.Float && List.mem input.ty [Ty.Int;Bool] -> expression env input
+           | Some input when input.ty=t.ty -> expression env input
+           | Some input when t.ty=Ty.Float && List.mem input.ty [Ty.Int;Bool] -> as_float(expression env input)
            | Some input when List.mem t.ty [Ty.Vec2;Vec3;Vec4]
                && List.mem input.ty [Ty.Int;Float] ->
-               let e=expression env input in
-               {registers=Array.make (width_of t.ty) e.registers.(0);constant=None}
+               let e=as_float(expression env input) in
+               {registers=Array.make (width_of t.ty) e.registers.(0);constant=None;fields=[]}
            | _ -> refuse ~at:t "E_PACKED_TYPE" "Bypass coercion requires reference evaluation.")
       | _ -> refuse ~at:t "E_PACKED_FORM" ("Unsupported packed body form " ^
           Option.value ~default:(Ty.to_string t.ty) (Flow.Syntax.head t.form) ^ ".")
       with V.Fail (code, message, span) ->
-        raise (Compile_refused (Flow.Diagnostic.error ~span:(Option.value ~default:t.form.span span) ~code message)) in
-    let output = (expression env body).registers in
+        if !guards<>[] then {registers=[|emit(Raise(t.ty,code,message))|];constant=None;fields=[]}
+        else raise (Compile_refused (Flow.Diagnostic.error ~span:(Option.value ~default:t.form.span span) ~code message)) in
     let result_ty = match term.ty with Ty.Array ty -> ty | ty -> ty in
-    if not (List.mem result_ty [Ty.Float;Ty.Vec2;Ty.Vec3;Ty.Vec4]) then
+    let output_expression = expression env body in
+    let output = (if result_ty=Ty.Int && body.ty=Ty.Int then as_int output_expression
+      else if body.ty=Ty.Float && term.ty=Ty.Int then output_expression
+      else as_float output_expression).registers in
+    if not (List.mem result_ty [Ty.Int;Ty.Float;Ty.Vec2;Ty.Vec3;Ty.Vec4]) then
       refuse "E_PACKED_TYPE" ("Packed result must be float or vector, got " ^ Ty.to_string result_ty ^ ".");
     let width = width_of result_ty in
     (match result with
-     | Sum _ | Accumulate _ when not (List.mem body.ty [Ty.Float;Ty.Vec2;Ty.Vec3;Ty.Vec4]) ->
+     | Sum _ | Accumulate _ when not (List.mem body.ty [Ty.Int;Ty.Float;Ty.Vec2;Ty.Vec3;Ty.Vec4]) ->
          refuse ~at:body "E_PACKED_TYPE" ("Packed reduction body has unsupported type " ^ Ty.to_string body.ty ^ ".")
      | _ -> ());
     (* array_init also broadcasts a scalar to the requested vector width. *)
@@ -377,9 +508,20 @@ let lower ?(fusion = true) ?(dynamic = false)
       match List.rev tuple with
       | k :: prefix when List.rev prefix = view.iter -> Some k | _ -> None) skip
       |> List.sort_uniq Int.compare |> Array.of_list in
+    let code = Array.of_list (List.rev !code) in
+    let rec integer_work = function
+      | Int_const _ -> false
+      | Int_input _ | Int_uniform _ | Int_frame _ | Int_accumulator | Int_binary _ | Int_compare _
+      | Int_abs _ | Convert _ | Int_select _ | Raise _ -> true
+      | Guarded (_,instruction) -> integer_work instruction
+      | _ -> false in
+    let code = if Array.exists integer_work code then code else Array.map (function
+      | Guarded (guards,Int_const n) -> Guarded (guards,Const(float n))
+      | Int_const n -> Const(float n)
+      | instruction -> instruction) code in
     let program = {residual; term; sources = Array.map (fun t -> residual, t) sources;
       widths; uniforms = Array.of_list (List.rev !uniforms);
-      code = Array.of_list (List.rev !code);
+      code;
       outputs = [|output|]; count; iteration; result; skip; stages = [residual, term]; fusion; dynamic; body; binding_fn;
       uniform_names = Array.of_list (List.rev !uniform_names); count_source;
       origin = None; sites} in

@@ -4,11 +4,9 @@ program
   r2 = Binary Mul 0 1
   r3 = Frame "t"
   r4 = Const 0x1p-2
-  r5 = Const 0x1.fp+4
-  r6 = Const 0x1.8p+1
-  r7 = Noise3 2 3 4 seed=31 octaves=3
+  r5 = Noise3 2 3 4 seed=31 octaves=3
   widths [1]
-  output [7]
+  output [5]
   uniform_widths []
   collecting true
 
@@ -16,12 +14,13 @@ program
   r0 = Input 0 1 0
   r1 = Frame "t"
   r2 = Binary Lt 0 1
-  r3 = Const 0x1p+0
-  r4 = Binary Add 0 3
-  r5 = Binary Sub 0 3
-  r6 = Select 2 4 5
+  r3 = Guarded 2:true (Const 0x1p+0)
+  r4 = Guarded 2:true (Binary Add 0 3)
+  r5 = Guarded 2:false (Const 0x1p+0)
+  r6 = Guarded 2:false (Binary Sub 0 5)
+  r7 = Select 2 4 6
   widths [1]
-  output [6]
+  output [7]
   uniform_widths []
   collecting true
 

@@ -5,16 +5,18 @@ type literal =
   | Vector of float array | List of literal array
   | Record of (string * literal) list
   | Array of { width : int; data : float array }
+  | Int_array of int array
+  | Text_array of string array
   | Empty_geometry
 
-type integer = Mul | Div | Mod | And | Xor
+type integer = Flow.Packed_ops.integer = Iadd | Isub | Imul | Idiv | Imod | Iand | Ior | Ixor | Ishl | Ishr
 type byte_mode = Clamped | Unclamped
 type primitive =
   | Numeric of Flow.Packed_ops.binary | Math of Flow.Packed_ops.unary
   | Remainder | Exp | Floor | Ceil | Round | Int_convert | Float_convert
-  | Integer of integer | Equal | Show | Text_concat
+  | Integer of integer | Integer_compare of Flow.Packed_ops.comparison | Equal | Show | Text_concat
   | Sequence_length | Sequence_get | Sequence_build | Sequence_slice | Sequence_concat
-  | Array_range | Array_float | Array_vec3 | Array_nth | Array_count | Array_slice | Array_concat
+  | Array_range | Array_int | Array_text | Array_float | Array_vec3 | Array_nth | Array_count | Array_slice | Array_concat
   | Rand | Noise3 | Color_parse | Color_byte of byte_mode
   | Coerce of Flow.Ty.t | Truthy | Fail of string * string
 
@@ -23,6 +25,7 @@ type frame_field = Time | Dt | Index | Tick | Width | Height | Pointer_x | Point
 type expr =
   | Constant of int | Local of int | Frame of frame_field
   | Call_index of int
+  | Source of Flow.Eval.value
   | Prim of primitive * (string * int) list
   | Vec of int list | Fields of (string * int) list | Items of int list
   | Field of int * string
@@ -72,11 +75,30 @@ type state_slot = {
   plane : [ `Frame | `Host ]; ty : Flow.Ty.t;
 }
 module Region = struct
+  type conversion = Flow.Packed_ops.conversion = To_float | Truncate | Floor | Ceil | Round | Coerce_int | Integer_result of string
   type instruction =
     | Const of float | Input of int * int * int
     | Uniform of int * int | Frame of string | Accumulator of int
     | Binary of Flow.Packed_ops.binary * int * int | Unary of Flow.Packed_ops.unary * int
     | Noise3 of int * int * int * int * int | Select of int * int * int
+    | Int_const of int | Int_input of int | Int_uniform of int | Int_frame of string | Int_accumulator
+    | Int_binary of Flow.Packed_ops.integer * int * int
+    | Int_compare of Flow.Packed_ops.comparison * int * int | Int_abs of int
+    | Convert of conversion * int | Int_select of int * int * int
+    | Guarded of (int * bool) list * instruction
+    | Raise of Flow.Ty.t * string * string
+  let rec integer_register = function
+    | Int_const _ | Int_input _ | Int_uniform _ | Int_frame _ | Int_accumulator
+    | Int_binary _ | Int_abs _ | Int_select _ | Raise (Flow.Ty.Int,_,_) -> true
+    | Convert (To_float,_) -> false | Convert _ -> true
+    | Guarded (_,instruction) -> integer_register instruction
+    | _ -> false
+  let rec operands = function
+    | Binary (_,a,b) | Int_binary (_,a,b) | Int_compare (_,a,b) -> [a;b]
+    | Unary (_,a) | Int_abs a | Convert (_,a) -> [a]
+    | Noise3 (a,b,c,_,_) | Select (a,b,c) | Int_select (a,b,c) -> [a;b;c]
+    | Guarded (guards,instruction) -> List.map fst guards @ operands instruction
+    | _ -> []
   type iteration = Zip | Product
   type result = Collect | Sum of bool | Accumulate of Flow.Workspace.term * bool
   type origin = Flow.Workspace.path * int list
@@ -107,15 +129,18 @@ let primitive_name = function
   | Numeric op -> (match op with
       | Add -> "+" | Sub -> "-" | Mul -> "*" | Div -> "/" | Mod -> "mod" | Pow -> "pow"
       | Min -> "min" | Max -> "max" | Lt -> "<" | Le -> "<=" | Gt -> ">" | Ge -> ">="
-      | Eq -> "=" | And -> "and" | Or -> "or")
-  | Math op -> (match op with Sin -> "sin" | Cos -> "cos" | Sqrt -> "sqrt" | Abs -> "abs" | Not -> "not")
+      | Eq -> "=" | And -> "and" | Or -> "or" | Atan2 -> "atan2" | Hypot -> "hypot")
+  | Math op -> (match op with Sin -> "sin" | Cos -> "cos" | Sqrt -> "sqrt" | Abs -> "abs" | Not -> "not"
+      | Tan -> "tan" | Asin -> "asin" | Acos -> "acos" | Exp -> "exp" | Log -> "log" | Sign -> "sign")
   | Remainder -> "remainder" | Exp -> "exp" | Floor -> "floor" | Ceil -> "ceil" | Round -> "round"
   | Int_convert -> "int" | Float_convert -> "float"
-  | Integer op -> "int/" ^ (match op with Mul -> "mul" | Div -> "div" | Mod -> "mod" | And -> "and" | Xor -> "xor")
+  | Integer op -> Flow.Packed_ops.integer_name op
+  | Integer_compare op -> Flow.Packed_ops.comparison_name op
   | Equal -> "equal?" | Show -> "show" | Text_concat -> "text/concat"
   | Sequence_length -> "sequence/length" | Sequence_get -> "sequence/get"
   | Sequence_build -> "sequence/build" | Sequence_slice -> "sequence/slice" | Sequence_concat -> "sequence/concat"
-  | Array_range -> "array/range" | Array_float -> "array/float" | Array_vec3 -> "array/vec3"
+  | Array_range -> "array/range" | Array_int -> "array/int" | Array_float -> "array/float" | Array_vec3 -> "array/vec3"
+  | Array_text -> "array/text"
   | Array_nth -> "array/nth" | Array_count -> "array/count" | Array_slice -> "array/slice" | Array_concat -> "array/concat"
   | Rand -> "value/rand" | Noise3 -> "noise3" | Color_parse -> "color/parse" | Color_byte _ -> "color/byte"
   | Coerce _ -> "coerce" | Truthy -> "truthy" | Fail _ -> "fail"
@@ -132,6 +157,8 @@ let literal_of_value value =
     | Vec4 (x,y,z,w) -> Vector [|x;y;z;w|]
     | List xs when Array.length xs <= 4096 -> List (Array.map convert xs)
     | Record xs -> Record (List.map (fun (n,v) -> n,convert v) xs)
+    | Int_array data -> Int_array data
+    | Text_array data -> Text_array data
     | Float_array data -> Array {width=1;data} | Vec2_array data -> Array {width=2;data}
     | Vec3_array data -> Array {width=3;data} | Vec4_array data -> Array {width=4;data}
     | No_geo -> Empty_geometry | _ -> raise Not_literal in
@@ -143,6 +170,8 @@ let rec value_of_literal : literal -> Flow.Eval.value = function
   | Vector [|x;y;z;w|] -> Vec4 (x,y,z,w)
   | List xs -> List (Array.map value_of_literal xs)
   | Record xs -> Record (List.map (fun (n,v) -> n,value_of_literal v) xs)
+  | Int_array data -> Int_array data
+  | Text_array data -> Text_array data
   | Array {width=1;data} -> Float_array data | Array {width=2;data} -> Vec2_array data
   | Array {width=3;data} -> Vec3_array data | Array {width=4;data} -> Vec4_array data
   | Empty_geometry -> No_geo | Vector _ | Array _ -> invalid_arg "Core.value_of_literal: width"
@@ -157,12 +186,15 @@ let pp fmt p =
     | Vector xs -> out "vec["; separated (fun x -> out "%s" (Flow.Lisp.float x)) (Array.to_list xs); out "]"
     | List xs -> out "list["; separated literal (Array.to_list xs); out "]"
     | Record xs -> out "record{"; separated (fun (n,v) -> out "%S:" n; literal v) xs; out "}"
+    | Int_array data -> out "array:int["; separated (fun n -> out "%d" n) (Array.to_list data); out "]"
+    | Text_array data -> out "array:text["; separated (fun s -> out "%S" s) (Array.to_list data); out "]"
     | Array {width;data} -> out "array%d[" width;
         separated (fun x -> out "%s" (Flow.Lisp.float x)) (Array.to_list data); out "]"
     | Empty_geometry -> out "nil" in
   let expression = function
     | Constant n -> out "$%d" n | Local n -> local n | Frame f -> out "frame.%s" (frame_name f)
     | Call_index n -> out "call[%d]++" n
+    | Source value -> out "source<%s>" (Flow.Ty.to_string (Flow.Value.ty_of value))
     | Prim (op,args) ->
         out "%s" (primitive_name op);
         (match op with Coerce ty -> out "<%s>" (Flow.Ty.to_string ty)
@@ -237,9 +269,7 @@ let pp fmt p =
         | Accumulate (_, scan) -> if scan then "scan" else "fold")
       (match r.count with Some c -> string_of_int c | None -> "?")
       (names r.widths) (String.concat " | " (Array.to_list (Array.map names r.outputs))) (Array.length r.uniforms) (names r.skip) (List.length r.stages);
-    Array.iteri (fun i (x : Region.instruction) ->
-      out "    r%d = " i;
-      (match x with
+    let rec instruction (x : Region.instruction) = match x with
        | Const f -> out "%s" (Flow.Lisp.float f)
        | Input (s, w, c) -> out "input[%d].%d/%d" s c w
        | Uniform (u, c) -> out "uniform[%d].%d" u c
@@ -248,7 +278,20 @@ let pp fmt p =
        | Binary (op, a, b) -> out "%s(r%d r%d)" (primitive_name (Numeric op)) a b
        | Unary (op, a) -> out "%s(r%d)" (primitive_name (Math op)) a
        | Noise3 (x, y, z, seed, octaves) -> out "noise3(r%d r%d r%d seed=%d octaves=%d)" x y z seed octaves
-       | Select (c, a, b) -> out "select(r%d r%d r%d)" c a b);
+       | Select (c, a, b) | Int_select (c,a,b) -> out "select(r%d r%d r%d)" c a b
+       | Int_const n -> out "int:%d" n | Int_input i -> out "input:int[%d]" i
+       | Int_uniform i -> out "uniform:int[%d]" i | Int_accumulator -> out "accumulator:int"
+       | Int_frame name -> out "frame:int[%s]" name
+       | Int_binary (op,a,b) -> out "%s(r%d r%d)" (Flow.Packed_ops.integer_name op) a b
+       | Int_compare (op,a,b) -> out "%s(r%d r%d)" (Flow.Packed_ops.comparison_name op) a b
+       | Int_abs a -> out "int:abs(r%d)" a
+       | Convert (op,a) -> out "%s(r%d)" (match op with
+           | To_float -> "float" | Truncate -> "int" | Floor -> "floor" | Ceil -> "ceil"
+           | Round -> "round" | Coerce_int -> "coerce:int" | Integer_result name -> "int-result:"^name) a
+       | Guarded (guards,body) -> out "guard[";
+           separated (fun (c,yes)->out "r%d=%b" c yes) guards;out "] ";instruction body
+       | Raise (ty,code,message) -> out "error<%s %S %S>" (Flow.Ty.to_string ty) code message in
+    Array.iteri (fun i x ->out "    r%d = " i;instruction x;
       out "\n") r.code) p.regions;
   statements 1 p.body;
   out "  return "; separated local (Array.to_list p.results); out "\n"

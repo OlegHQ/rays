@@ -37,11 +37,18 @@ let fixture ?override ?seed ty reducer=
   let uv=E.Vec2_array(Array.init(32769*2)(fun i->float(i mod 17)/.16.))in
   let value=ok(E.Private.map_function ~signature:Flow.Ty.{params=[Vec2];result=Vec4} fn [uv])in
   let packed=match value with E.Residual r->
-    P.compile r(E.Private.residual_view r).term |> Option.get|_->assert false in
+    (match P.compile_result r(E.Private.residual_view r).term with
+      |Ok packed->packed|Error ds->failwith(Printf.sprintf "uniform compile %s reducer=%s seed=%s: %s"
+          (Flow.Ty.to_string ty)reducer seed (String.concat "; "(List.map Flow.Diagnostic.to_string ds))))
+    |_->assert false in
   value,sum,packed
 let observed ?fast counter=Some((fun()->0.),(fun packed ~seconds:_ ~reference->
   if not reference && not(P.Private.view packed).collecting then begin
-    incr counter;Option.iter(fun expected->assert(P.Private.ordered_add packed=expected))fast
+    incr counter;Option.iter(fun expected->if P.Private.ordered_add packed<>expected then
+      failwith(Printf.sprintf "uniform ordered-add expected=%b actual=%b result=%s body=%s"
+        expected(P.Private.ordered_add packed)
+        (Flow.Ty.to_string(P.to_region packed).term.ty)
+        (Flow.Ty.to_string(P.to_region packed).body.ty)))fast
   end))
 let cancellation i=match i mod 5 with 0->1e16|1->1.|2-> -1e16|3->1.|_-> -0.
 let data ty count time=
@@ -55,6 +62,52 @@ let data ty count time=
 let resolve_source current=function
   |E.Struct("probe/data",_,_)->Ok !current
   |_->Error(Flow.Diagnostic.error ~code:"E_DATA_SOURCE" "Unexpected source.")
+let () =
+  let fn = match evaluate (workspace []
+    "(fn [(x : float)] [(* (- x 6.0) 50.0) t 0.0])") with
+    | E.Fn fn -> fn | _ -> assert false in
+  let call = ok (E.Private.map_function ~signature:Flow.Ty.{params=[Float];result=Vec3}
+    fn [E.Float_array (Array.init 13 float)]) in
+  (* Recorded map calls are nested in this record. Tiny maps use the ordinary
+     interpreter placement; strict numeric bodies still require packed execution. *)
+  let value = E.Record ["offset", E.Int 0; "call", call] in
+  List.iter (fun strict ->
+    let program = ok (Flow_ir.Executor.compile ~strict value) in
+    List.iter (fun time ->
+      let live = Frame_input.at_time time in
+      let expected = E.Private.force_reference value ~live in
+      List.iter (fun domains -> Rays_math.Parallel.run ~domains (fun () ->
+        assert (same (Flow_ir.Executor.force ~strict program ~live) expected))) [1;8]) [0.;0.25]) [false;true];
+  print_endline "Tiny maps in recorded-call records preserve reference results and strict packed execution at one/eight domains"
+let () =
+  List.iter (fun reducer -> List.iter (fun wrapped -> List.iter (fun integer ->
+    let reduction = "(reduce " ^ reducer ^ " 0.0 data)" in
+    let uniform = if wrapped then "(+ t " ^ reduction ^ ")" else reduction in
+    let body = if integer then "(int (+ x u))" else "(+ x u)" in
+    let fn = match evaluate (workspace ~bindings:("data (probe/data) u " ^ uniform)
+      [source Flow.Ty.Float] ("(fn [(x : float)] " ^ body ^ ")")) with
+      | E.Fn fn -> fn | _ -> assert false in
+    let value = ok (E.Private.map_function
+      ~signature:Flow.Ty.{params=[Float];result=(if integer then Int else Float)} fn
+      [E.Float_array (Array.init 32769 (fun i -> float (i mod 11)))]) in
+    let packed = match value with E.Residual residual ->
+      Option.get (P.compile residual (E.Private.residual_view residual).term)
+      | _ -> assert false in
+    let current = ref (E.Float_array [|1.;2.;3.;4.|]) in
+    let resolve = resolve_source current and live = Frame_input.at_time 0.25 in
+    let reference = E.Private.force_reference ~resolve value ~live in
+    List.iter (fun domains -> Rays_math.Parallel.run ~domains (fun () ->
+      let actual = P.force ~strict:true ~resolve packed ~live in
+      let compiled = Flow_ir.Executor.compile ~strict:true value in
+      if reducer = "+" then begin
+        assert (same actual reference);
+        assert (same (Flow_ir.Executor.force ~strict:true ~resolve (ok compiled) ~live) reference)
+      end else begin
+        let refused = function Error (d : Flow.Diagnostic.t) -> assert (d.code="E_KERNEL_FORM")
+          | Ok _ -> failwith "Strict captured reduction used the interpreter" in
+        refused actual; refused compiled
+      end)) [1;8]) [false;true]) [false;true]) ["+";"min"];
+  print_endline "Strict uniforms: direct/wrapped unsupported reductions refuse; Float/Int outputs and supported add match reference at one/eight domains"
 let ()=
   let addition=Option.get(Flow.Op.find "+" Flow.Context.value)in
   let custom={addition with arithmetic=None;
@@ -75,11 +128,17 @@ let ()=
       List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
         let cpu=ref 0 and gpu=ref 0 in
         assert(same(P.force ~resolve:(resolve_source current) ?measure:(observed ~fast cpu) packed ~live)expected);
-        assert(same(Flow_ir.Executor.force ~resolve:(resolve_source current)
-          (ok(Flow_ir.Executor.compile sum)) ~live)(Ok scalar));
+        let actual=Flow_ir.Executor.force ~resolve:(resolve_source current)
+          (ok(Flow_ir.Executor.compile sum)) ~live in
+        if not(same actual (Ok scalar))then
+          failwith(Printf.sprintf "uniform executor %s reducer=%s seed=%s count=%d time=%g domains=%d expected=%s actual=%s"
+            (Flow.Ty.to_string ty)reducer(Option.value ~default:"default" seed)count time domains
+            (E.show scalar)(match actual with Ok value->E.show value|Error d->Flow.Diagnostic.to_string d));
         let prepared=ok(P.Private.prepare ~resolve:(resolve_source current) ?measure:(observed ~fast gpu) packed ~live)in
         assert(Array.exists(fun actual->bytes actual=bytes uniform)prepared.uniforms);
-        assert((!cpu>0)=packed_expected && (!gpu>0)=packed_expected);
+        if (!cpu>0)<>packed_expected || (!gpu>0)<>packed_expected then
+          failwith(Printf.sprintf "uniform %s reducer=%s seed=%s count=%d time=%g domains=%d CPU=%d GPU=%d expected=%b"
+            (Flow.Ty.to_string ty)reducer(Option.value ~default:"default" seed)count time domains !cpu !gpu packed_expected);
         assert(bytes !current=original))) [1;8]) [0.;0.25;0.5]) counts)
     [Flow.Ty.Float,"+",None,None,true,true;
      Float,"(fn [a x] (+ a x))",None,None,true,true;
@@ -91,7 +150,7 @@ let ()=
      Vec3,"(fn [a x] (+ x a))",None,None,true,false;
      Float,"min",None,None,false,false;
      Float,"+",Some custom,None,false,false;
-     Float,"+",None,Some "0",false,false];
+     Float,"+",None,Some "0",true,true];
   List.iter(fun body->
     let value=evaluate(workspace [] body)in
     let packed=match value with E.Residual r->P.compile r(E.Private.residual_view r).term

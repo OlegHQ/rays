@@ -98,7 +98,8 @@ let coverage programs =
   let rec statements l = List.iter (fun (s : C.statement) -> match s.node with
     | Assign (_, e) -> mark (match e with
         | C.Constant _ -> "constant" | Local _ -> "local" | Frame _ -> "frame" | Call_index _ -> "call_index"
-        | Prim _ -> "prim" | Vec _ -> "vec" | Fields _ -> "fields" | Items _ -> "items" | Field _ -> "field")
+        | Prim _ -> "prim" | Vec _ -> "vec" | Fields _ -> "fields" | Items _ -> "items" | Field _ -> "field"
+        | Source _ -> "source")
     | Reset_call _ -> mark "reset_call"
     | Draw d -> mark (match d with
         | C.Background _ -> "background" | Point _ -> "point" | Mark _ -> "mark" | Batch _ -> "batch" | Points _ -> "points"
@@ -125,6 +126,7 @@ let rec value b : E.value -> unit = fun v ->
   match v with
   | Int n -> add (Printf.sprintf "i:%d" n) | Float x -> add (f x) | Bool x -> add (Printf.sprintf "b:%b" x)
   | Text s -> add ("t:" ^ hex s)
+  | Text_array xs -> add "AT[ "; Array.iter (fun s->add("t:"^hex s^" ")) xs;add "]"
   | Vec2 (x, y) -> arr "v2" [|x; y|] | Vec3 (x, y, z) -> arr "v3" [|x; y; z|] | Vec4 (x, y, z, w) -> arr "v4" [|x; y; z; w|]
   | List xs -> add "L[ "; Array.iter (fun x -> value b x; add " ") xs; add "]"
   | Record fs -> add "R{ "; List.iter (fun (n, x) -> add ("n:" ^ hex n ^ " "); value b x; add " ") fs; add "}"
@@ -240,6 +242,40 @@ let rec has_invoke l = List.exists (fun (s : C.statement) -> match s.node with
 let prims_gaps = ["primitives_packed-map-int"; "primitives_packed-filter"]
 (* A draw graph with state runs natively inside the editor, which owns its evaluation state. *)
 let no_native_state = ["workspace_basic"]
+
+let () =
+  let cases=List.mapi(fun i body->
+    let name="text_array_"^string_of_int i in
+    let r,_=wrapped name body in
+    let program=match I.Core_lower.lower ~strict:true r with
+      |Ok program->program|Error form->failwith("Text Core refused "^form) in
+    assert(Array.length program.regions=0);
+    let case=value_case name (r,program) in
+    List.iter(fun live->assert(ok(I.Core_exec.run program ~live)=ok(E.Private.force_reference(E.Residual r)~live))) case.lives;
+    case)
+    ["(array/text (+ 5001 (frame/index)) \"猫😀é\")";
+     "(map (fn [x] (if (> t 0.) x \"😀\")) (array/text 5001 \"猫\"))";
+     "(for [x (array/text 5001 \"猫\")] (if (> t 0.) x \"😀\"))";
+     "(scan [a \"seed\"] [x (array/text 5001 \"猫\")] (if (> t 0.) x \"😀\"))";
+     "(for [x (array/text 2 \"猫\") y (array/text 2501 \"😀\")] :skip [5001] (if (> t 0.) x y))";
+     "(scan [a \"seed\"] [x (array/text 2 \"猫\") y (array/text 2501 \"😀\")] (if (> t 0.) x y))";
+     "(for [x (array/text 0) y (array/text -1)] (if (> t 0.) x y))";
+     "(for [x (array/text 2) y (array/text 0)] (if (> t 0.) x y))";
+     "(scan [a \"seed\"] [x (array/text 0) y (array/text -1)] (if (> t 0.) x y))";
+     "(fold [a 0] [x (array/text 5001)] (int/add a (if (> t 0.) 1 2)))";
+     "(filter (fn [x] (> t 0.)) (array/text 5001 \"猫\"))";
+     "(array/concat (array/slice (array/text 5001 \"猫\") 4999 2) (array/text 1 \"😀\"))";
+     "(map (fn [x] x) (array/text 0))";
+     "(for [x (array/text 0)] x)";
+     "(scan [a \"seed\"] [x (array/text 0)] x)"] in
+  if node then begin
+    let produced=run_node cases in
+    List.iter(fun case->List.iteri(fun frame expected->
+      let actual=List.assoc(case.name,frame)produced in
+      if not(same_text actual expected) then
+        failwith(Printf.sprintf "%s frame%d: native %s; JavaScript %s" case.name frame expected actual))case.expected)cases;
+    print_endline "Text arrays: emitted JavaScript structured map/for/scan/fold/filter, empty storage and UTF-8 bytes match native/reference"
+  end
 
 let () =
   let programs = List.map (fun (n, (_, p)) -> n, p) values @ List.map (fun (n, (_, p)) -> n, p) state_programs

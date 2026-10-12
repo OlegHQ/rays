@@ -89,6 +89,23 @@ vec4)` annotations accept them. The Metal emitter uses the same scalar register
 instructions for each component. There are no new array constructors or kernel
 instructions; GPU eligibility remains governed by the checker.
 
+`(array int)` stores native signed 63-bit integers without converting through
+double precision. `array/int count [value]` fills this storage (zero by default),
+and `array/range count :type int` emits exact indices; omitting `:type` retains
+the float range. Map, for, scan, filtering, sorting, slice and concatenation
+preserve integer storage. Integer `array/sum` folds `int/add` in element order,
+including signed wrap, and returns integer zero for empty input. Empty scans
+retain their declared array type; empty folds and reductions retain their seed.
+
+`(array text)` stores decoded strings with their exact UTF-8 contents.
+`array/text count [value]` fills fresh storage with the supplied string, defaulting
+to `""`. Count, indexing, slice and concatenation operate on elements; slice and
+concatenation copy their storage. Map, for, scan, filter, fold and reduce use the
+structured CPU interpreter tier, with no 4,096-element list cap. Empty collecting
+operations retain `(array text)`; empty folds and reductions return their seed.
+Text arrays never enter numeric packed regions or GPU kernels. Graph probes show
+their element count and text type, and graph input gestures create `array/text`.
+
 A catalog parameter's port type is `Flow.Port_type.t` (`Geometry | Float | Int | Bool |
 Vec3 | Image | Fn of Ty.fn_signature`); text and choice fields have none and take literals only.
 A function signature declares parameter and result types, including records and arrays.
@@ -1396,6 +1413,12 @@ validated `Packed_ops.Noise3` capability. This capability asserts intrinsic
 semantics; code copying an operator and changing its behavior clears it.
 An ordinary custom operator with the same name keeps its custom behavior.
 Canonical operators without dynamic packed instructions still constant-fold.
+An operator's optional `Op.out_args` callback receives each named argument's
+type and optional scalar literal. Checker and evaluator both use
+`Op.result_type`; declarations without the callback retain their positional
+and optional type-based result rule. A literal-dependent selector rejects a
+computed value during checking rather than guessing its output type. The
+ordinary operator card and editable argument rows retain those declarations.
 `sop/noise_displace :mode "normal_3d"` computes
 `P + N * (amplitude * noise3(P * frequency))` at seed 0. The default
 `"height_2d"` mode adds signed X/Z noise to Y. Both preserve topology and
@@ -1407,6 +1430,15 @@ Missing or non-vec3 storage is `E_ATTR_TYPE`. Reads are deferred until the
 host has cooked the source geometry. The reference evaluator and packed
 executor receive the same immutable attribute resolver; Flow itself has no
 geometry dependency.
+
+Host-owned scalar predicates use `Value.Source (name, type, fields)`; packed
+sources retain their existing `Struct` representation. Both remain deferred
+until the host materializes them, and they participate in captures and probes.
+The resolver must return concrete, valid storage of the declared type;
+unresolved or incorrectly typed results report `E_DATA_SOURCE`. An untaken
+conditional branch does not resolve its sources. Source fields determine
+frame and state dependencies; being a cooked source alone does not imply a
+frame dependency.
 
 `(sop/iso_surface :field (fn [p] (- (length p) 1)) :resolution [64 64 64])`
 samples an exact float field on a static 65³ XYZ lattice, x fastest. Resolutions
@@ -1594,7 +1626,8 @@ dropped from Finder (§7.12).
 
 `draw/circle`, `draw/rect` and `draw/line` preserve fractional logical coordinates and use the
 same 64-byte SDF instance layout as their plural forms. `draw/circles positions :radius` accepts
-a scalar radius or packed float radii; `draw/rects positions sizes` accepts one vec3 size or
+a scalar radius or packed float/int radii; integer radii convert to floats at the drawing
+boundary. `draw/rects positions sizes` accepts one vec3 size or
 packed vec3 sizes; `draw/lines from to :color :width` accepts equal-length packed vec3 arrays.
 Lengths and finite float32 bounds are checked before publication. Circles and rectangles accept
 one `:fill`/`:stroke` color or a packed RGB array with exactly one entry per position. The latter

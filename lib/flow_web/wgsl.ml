@@ -73,6 +73,9 @@ fn wfbm(p: vec3<f32>, octaves: i32, o: i32) -> f32 {
 exception Unsupported of string
 let fail message = raise (Unsupported message)
 let register index = "r" ^ string_of_int index
+let rec guarded guards = function
+  | P.Guarded (more, body) -> guarded (guards @ more) body
+  | instruction -> guards, instruction
 let truth condition = "select(0.0, 1.0, " ^ condition ^ ")"
 let binary operation a b =
   let infix operator = truth ("(" ^ a ^ operator ^ b ^ ")") in
@@ -85,9 +88,18 @@ let binary operation a b =
   | Lt -> infix " < " | Le -> infix " <= " | Gt -> infix " > " | Ge -> infix " >= " | Eq -> infix " == "
   | And -> truth ("(" ^ a ^ " != 0.0 && " ^ b ^ " != 0.0)")
   | Or -> truth ("(" ^ a ^ " != 0.0 || " ^ b ^ " != 0.0)")
+  | Atan2 -> "atan2(" ^ a ^ ", " ^ b ^ ")"
+  | Hypot -> fail "Native-safe hypot is not supported by the WGSL kernel target."
 let unary operation a = match operation with
   | P.Sin -> "sin(" ^ a ^ ")" | Cos -> "cos(" ^ a ^ ")"
   | Sqrt -> "sqrt(abs(" ^ a ^ "))" | Abs -> "abs(" ^ a ^ ")" | Not -> truth ("(" ^ a ^ " == 0.0)")
+  | Tan -> "tan(" ^ a ^ ")"
+  | Asin | Acos -> "select(" ^ (if operation=P.Asin then "asin" else "acos")
+      ^ "(clamp(" ^ a ^ ", -1.0, 1.0)), bitcast<f32>(0x7fc00000u), abs(" ^ a ^ ") > 1.0)"
+  | Exp -> "exp(" ^ a ^ ")"
+  | Log -> "select(log(select(1.0, " ^ a ^ ", " ^ a
+      ^ " > 0.0)), bitcast<f32>(0x7fc00000u), " ^ a ^ " <= 0.0)"
+  | Sign -> "select(" ^ a ^ ", select(-1.0, 1.0, " ^ a ^ " > 0.0), " ^ a ^ " != 0.0)"
 let kernel ?(image = false) program = try
   let view = P.Private.view program in
   (match P.gpu_refusals program with [] -> () | reason :: _ -> fail reason.message);
@@ -98,15 +110,15 @@ let kernel ?(image = false) program = try
     let first = !offset in offset := first+width*4;
     uniform_layout := (name,first,width) :: !uniform_layout; first/4 in
   let uniforms = Array.mapi (fun index width -> uniform ("uniform:" ^ string_of_int index) width) view.uniform_widths in
-  let frames = Array.mapi (fun index -> function
+  let frames = Array.mapi (fun index instruction -> match snd(guarded [] instruction)with
     | P.Frame name -> uniform (Printf.sprintf "frame:%d:%s" index name) 1 | _ -> 0) view.code in
   let image_width = if image then uniform "image:width" 1 else 0 in
   let image_height = if image then uniform "image:height" 1 else 0 in
   let used = P.Private.output_reachable program in
   let finite_checks = P.Private.finite_checks program in
   let word index = Printf.sprintf "uniforms[%d].%c" (index/4) "xyzw".[index mod 4] in
-  let has operation = Array.exists Fun.id (Array.mapi (fun slot instruction -> used.(slot) && operation instruction) view.code) in
-  let table_seeds = Array.to_list(Array.mapi(fun index instruction->index,instruction)view.code)
+  let has operation = Array.exists Fun.id (Array.mapi (fun slot instruction -> used.(slot) && operation (snd(guarded [] instruction))) view.code) in
+  let table_seeds = Array.to_list(Array.mapi(fun index instruction->index,snd(guarded [] instruction))view.code)
     |> List.filter_map (function
       | index,P.Noise3 (_,_,_,seed,_) when used.(index) -> Some seed | _ -> None)
     |> List.sort_uniq Int.compare |> Array.of_list in
@@ -114,6 +126,7 @@ let kernel ?(image = false) program = try
   let body = Buffer.create 4096 in
   Array.iteri (fun slot instruction ->
     if used.(slot) then begin
+    let guards,instruction=guarded [] instruction in
     let expression = match instruction with
       | P.Const value -> Printf.sprintf "bitcast<f32>(0x%lxu)" (Int32.bits_of_float value)
       | Input (_,_,component) when image ->
@@ -128,10 +141,18 @@ let kernel ?(image = false) program = try
       | Unary (op,a) -> unary op (register a)
       | Select (condition,yes,no) -> Printf.sprintf "select(%s, %s, %s != 0.0)" (register no) (register yes) (register condition)
       | Noise3 (x,y,z,seed,octaves) -> Printf.sprintf "wfbm(vec3<f32>(%s, %s, %s), %d, %d)"
-          (register x) (register y) (register z) octaves (table seed) in
-    Printf.bprintf body "  let r%d: f32 = %s;\n" slot expression;
+          (register x) (register y) (register z) octaves (table seed)
+      | _ -> fail "Integer instructions and conversions are not supported by the WGSL kernel target." in
+    let indentation=if guards=[] then "  " else "    " in
+    if guards=[] then Printf.bprintf body "  let r%d: f32 = %s;\n" slot expression else begin
+      Printf.bprintf body "  var r%d: f32 = 0.0;\n" slot;
+      Printf.bprintf body "  if (%s) {\n" (String.concat " && " (List.map(fun(condition,selected)->
+        Printf.sprintf "r%d %s 0.0" condition (if selected then "!=" else "=="))guards));
+      Printf.bprintf body "    r%d = %s;\n" slot expression
+    end;
     if finite_checks.(slot) then
-      Printf.bprintf body "  if (!wfinite(r%d)) { atomicStore(&status, 1u); }\n" slot
+      Printf.bprintf body "%sif (!wfinite(r%d)) { atomicStore(&status, 1u); }\n" indentation slot;
+    if guards<>[] then Buffer.add_string body "  }\n"
     end) view.code;
   let outputs = Array.length view.outputs in
   let output_name k = if outputs = 1 then "outbuf" else "outbuf" ^ string_of_int k in
@@ -140,7 +161,7 @@ let kernel ?(image = false) program = try
       (output_name k) (Array.length registers) component slot) registers) view.outputs;
   let count = if image then 0 else Array.length view.widths in
   let input_used=Array.make count false in
-  Array.iteri(fun slot->function P.Input(input,_,_)when used.(slot) && not image->input_used.(input)<-true|_->())view.code;
+  Array.iteri(fun slot instruction->match snd(guarded [] instruction)with P.Input(input,_,_)when used.(slot) && not image->input_used.(input)<-true|_->())view.code;
   let uniform_words = (!offset + 15) / 16 in
   let declarations = Buffer.create 512 in
   let declare binding kind decl =

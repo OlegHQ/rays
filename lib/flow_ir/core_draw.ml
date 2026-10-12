@@ -15,7 +15,7 @@ let rec find_residual : E.value -> E.residual option = function
   | Record fields | Struct (_, _, fields) -> List.find_map (fun (_, v) -> find_residual v) fields
   | _ -> None
 
-let lower (plan : E.plan) (value : E.value) =
+let lower ?region_allowed (plan : E.plan) (value : E.value) =
   let root = find_residual value |> function
     | Some r -> Some r
     | None -> Array.find_map (fun (n : E.node) -> List.find_map (fun (_, v) -> find_residual v) n.args) plan.nodes in
@@ -109,7 +109,7 @@ let lower (plan : E.plan) (value : E.value) =
         | kind -> fail source "E_DRAW_KIND" (Printf.sprintf "No native drawing implementation for %s." kind)
       with Missing message -> fail source "E_DRAW_INPUT" message in
     drawing value in
-  match Core_lower.lower_draw ~root:(lazy (Option.get root)) build with
+  match Core_lower.lower_draw ?region_allowed ~root:(lazy (Option.get root)) build with
   | Ok program -> Ok (program, root)
   | Error name -> Error name
   | exception Refused name -> Error name

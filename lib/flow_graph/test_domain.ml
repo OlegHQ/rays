@@ -4,6 +4,24 @@ let catalog = {Check.version = 1; kinds = []}
 let ok = function Ok x -> x | Error d -> failwith (Diagnostic.to_string d)
 
 let () =
+  let source = ok (Syntax.parse
+    "(workspace integers (graph g :context host (let* [v (array/int 1)] v)))") in
+  let workspace = match Workspace.check catalog source with Some w, [] -> w | _ -> assert false in
+  let card = Option.get (Projection.find (Projection.of_graph catalog workspace "g") ["g";"v"]) in
+  let probe = Probe.make (ok (Eval.static ~record:true workspace)) in
+  assert ((Probe.footer probe card ~probes:[]).value = "1 × int")
+
+let () =
+  let source=ok(Syntax.parse "(workspace texts (graph g :context host (let* [v (array/text 5001 \"猫\")] v)))") in
+  let workspace=match Workspace.check catalog source with Some w,[]->w|_->assert false in
+  let card=Option.get(Projection.find(Projection.of_graph catalog workspace "g")["g";"v"]) in
+  assert(card.ty=Ty.Array Ty.Text);
+  let default=Option.get(Flow_edit.default_for (Ty.Array Ty.Text) "texts") in
+  assert(Syntax.head default=Some "array/text");
+  let probe=Probe.make(ok(Eval.static ~record:true workspace)) in
+  assert((Probe.footer probe card ~probes:[]).value="5001 × text")
+
+let () =
   List.iter (fun (literal, ty, width, expected) ->
     let source = ok (Syntax.parse ("(workspace vectors (graph g :context host (let* [v " ^ literal ^ "] v)))")) in
     let workspace = match Workspace.check catalog source with Some w, [] -> w | _, ds ->

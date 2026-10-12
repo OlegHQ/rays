@@ -12,6 +12,13 @@
 
 export class Fail extends Error { constructor(code, message) { super(message); this.code = code; } }
 export class PArray { constructor(width, data) { this.width = width; this.data = data; } }
+export class TextArray {
+  constructor(data) {
+    if (!Array.isArray(data) || !data.every(x => typeof x === 'string'))
+      throw new Fail('E_ARRAY_TYPE', 'Text arrays contain text values.');
+    this.data = data;
+  }
+}
 
 const err = (code, message) => { throw new Fail(code, message); };
 const num = v => typeof v === 'number' ? v : typeof v === 'bigint' ? Number(v)
@@ -55,6 +62,13 @@ export const max = (a, b) => arith('max', Math.max, a, b);
 export const remainder = (a, b) => fin('remainder', num(a) % num(b));
 export const sin = x => fin('sin', Math.sin(num(x)));
 export const cos = x => fin('cos', Math.cos(num(x)));
+export const tan = x => fin('tan', Math.tan(num(x)));
+export const asin = x => fin('asin', Math.asin(num(x)));
+export const acos = x => fin('acos', Math.acos(num(x)));
+export const log = x => fin('log', Math.log(num(x)));
+export const sign = x => fin('sign', Math.sign(num(x)));
+export const atan2 = (a, b) => fin('atan2', Math.atan2(num(a), num(b)));
+export const hypot = (a, b) => fin('hypot', Math.hypot(num(a), num(b)));
 export const sqrt = x => Math.sqrt(Math.abs(num(x)));
 export const exp = x => fin('exp', Math.exp(num(x)));
 export const abs = x => typeof x === 'bigint' ? (x < 0n ? wrap(-x) : x) : Math.abs(num(x));
@@ -80,10 +94,22 @@ const operand = v => typeof v === 'bigint' ? v : intOf(v);
 const nonzero = (a, b) => { const x = operand(a), y = operand(b);
   return y === 0n ? err('E_RANGE', 'Integer division by zero.') : [x, y]; };
 export const int_mul = (a, b) => wrap(operand(a) * operand(b));
+export const int_add = (a, b) => wrap(operand(a) + operand(b));
+export const int_sub = (a, b) => wrap(operand(a) - operand(b));
 export const int_div = (a, b) => { const [x, y] = nonzero(a, b); return wrap(x / y); };
 export const int_mod = (a, b) => { const [x, y] = nonzero(a, b); return wrap(x % y); };
 export const int_and = (a, b) => wrap(operand(a) & operand(b));
+export const int_or = (a, b) => wrap(operand(a) | operand(b));
 export const int_xor = (a, b) => wrap(operand(a) ^ operand(b));
+const shiftCount = b => { const n = operand(b); return n < 0n || n > 62n
+  ? err('E_RANGE', 'Integer shift count must be within [0, 62].') : n; };
+export const int_shl = (a, b) => wrap(operand(a) << shiftCount(b));
+export const int_shr = (a, b) => wrap(BigInt.asUintN(63, operand(a)) >> shiftCount(b));
+export const int_lt = (a, b) => operand(a) < operand(b);
+export const int_le = (a, b) => operand(a) <= operand(b);
+export const int_gt = (a, b) => operand(a) > operand(b);
+export const int_ge = (a, b) => operand(a) >= operand(b);
+export const int_eq = (a, b) => operand(a) === operand(b);
 
 // ---- equality, display, text ----
 export function equal(a, b) {
@@ -92,6 +118,7 @@ export function equal(a, b) {
   const same = (x, y) => x.length === y.length && x.every((c, i) => c === y[i]);
   if (isVec(a)) return isVec(b) && same(a, b);
   if (a instanceof PArray) return b instanceof PArray && a.width === b.width && same(a.data, b.data);
+  if (a instanceof TextArray) return b instanceof TextArray && same(a.data, b.data);
   if (Array.isArray(a)) return Array.isArray(b) && a.length === b.length && a.every((c, i) => equal(c, b[i]));
   if (a instanceof Map) {
     if (!(b instanceof Map) || a.size !== b.size) return false;
@@ -135,9 +162,10 @@ export function show(v) {
     case 'string': return v;
   }
   if (isVec(v)) return '[' + Array.from(v, display).join(' ') + ']';
+  if (v instanceof TextArray) return `${v.data.length} × text`;
   if (Array.isArray(v)) return '[' + v.map(show).join(' ') + ']';
   if (v instanceof Map) return '{' + [...v].map(([k, x]) => ':' + k + ' ' + show(x)).join(' ') + '}';
-  return `${Math.floor(v.data.length / v.width)} × ${['float', 'vec2', 'vec3', 'vec4'][v.width - 1]}`;
+  return `${Math.floor(v.data.length / v.width)} × ${v.data instanceof BigInt64Array ? 'int' : ['float', 'vec2', 'vec3', 'vec4'][v.width - 1]}`;
 }
 export const text_concat = (...parts) =>
   parts.map(p => typeof p === 'string' ? p : err('E_TYPE', 'Expected text.')).join('');
@@ -161,10 +189,25 @@ export function sequence_get(l, index) {
   return i < 0n || i >= BigInt(xs.length)
     ? err('E_LIST_RANGE', `nth index ${i} is out of range for a list of length ${xs.length}.`) : xs[Number(i)];
 }
-export function sequence_build(count, width) {
+export function sequence_build(count, width, type) {
+  if (type !== undefined && type !== 'int' && type !== 'float' && type !== 'text')
+    err('E_ARRAY_TYPE', 'Core array type is int, float or text.');
+  if (type === 'text') {
+    if (width === undefined || intOf(width) !== 1n) err('E_ARRAY_TYPE', 'Typed builders require width one.');
+    const n = intOf(count);
+    return n < 0n || n > MAX_LENGTH ? err('E_ARRAY_RANGE', 'Array length is outside native storage bounds.')
+      : array_text(n);
+  }
+  if (type === 'int' && (width === undefined || intOf(width) !== 1n))
+    err('E_ARRAY_TYPE', 'Core packed width is one to four; integers require width one.');
+  if (type === 'int') {
+    const n = intOf(count);
+    return n < 0n || n > MAX_LENGTH ? err('E_ARRAY_RANGE', 'Array length is outside native storage bounds.') : buildInt(Number(n), () => 0n);
+  }
   const n = intOf(count);
   if (width !== undefined) { // packed storage: no list cap
     const w = Number(intOf(width));
+    if (w < 1 || w > 4) err('E_ARRAY_TYPE', 'Core packed width is one to four; integers require width one.');
     return n < 0n || n > MAX_LENGTH / BigInt(w) ? err('E_ARRAY_RANGE', 'Array length is outside native storage bounds.')
       : new PArray(w, new Float64Array(Number(n) * w));
   }
@@ -178,7 +221,7 @@ export function sequence_slice(l, first, count) {
 const tyOf = v => typeof v === 'bigint' ? 'int' : typeof v === 'number' ? 'float'
   : typeof v === 'boolean' ? 'bool' : typeof v === 'string' ? 'text' : v === null ? 'other'
   : isVec(v) ? 'vec' + v.length : Array.isArray(v) ? { list: elementType(v) }
-  : v instanceof PArray ? { array: ['float', 'vec2', 'vec3', 'vec4'][v.width - 1] }
+  : v instanceof PArray ? { array: v.data instanceof BigInt64Array ? 'int' : ['float', 'vec2', 'vec3', 'vec4'][v.width - 1] }
   : { record: [...v].map(([k, x]) => [k, tyOf(x)]) };
 function join(a, b) {
   if (JSON.stringify(a) === JSON.stringify(b)) return a;
@@ -233,6 +276,7 @@ function count(name, v) {
     ? err('E_ARRAY_RANGE', `${name} needs a non-negative whole length.`) : n;
 }
 function length(a) {
+  if (a instanceof TextArray) return a.data.length;
   if (!(a instanceof PArray)) err('E_ARRAY_TYPE', 'Expected a packed array.');
   if (a.width > 1 && a.data.length % a.width)
     err('E_ARRAY_TYPE', `Packed vec${a.width} storage has ${['', '', 'two', 'three', 'four'][a.width]} coordinates per element.`);
@@ -251,26 +295,62 @@ function build(width, n, element) {
   }
   return new PArray(width, data);
 }
-export const array_range = n => build(1, count('array/range', n), i => i);
+function buildInt(n, element) {
+  if (BigInt(n) > MAX_LENGTH) err('E_ARRAY_RANGE', 'Array length is outside native storage bounds.');
+  const data = new BigInt64Array(n);
+  for (let i = 0; i < n; i++) {
+    const value = element(i);
+    if (!isNum(value) && typeof value !== 'boolean') err('E_ARRAY_TYPE', 'Packed integer arrays contain integer values.');
+    data[i] = typeof value === 'bigint' ? wrap(value) : intOf(value);
+  }
+  return new PArray(1, data);
+}
+export const array_range = (n, type = 'float') => type === 'int'
+  ? buildInt(count('array/range', n), i => BigInt(i)) : type === 'float'
+  ? build(1, count('array/range', n), i => i) : err('E_ARRAY_TYPE', 'array/range type is float or int.');
+export const array_int = (n, value = 0n) => buildInt(count('array/int', n), () => value);
+export const array_text = (n, value = '') => {
+  const length = count('array/text', n);
+  if (typeof value !== 'string') err('E_ARRAY_TYPE', 'Text arrays contain text values.');
+  return new TextArray(new Array(length).fill(value));
+};
 export const array_float = (n, value = 0) => build(1, count('array/float', n), () => value);
 export const array_vec3 = (n, value = new Float64Array(3)) => build(3, count('array/vec3', n), () => value);
 export const array_count = a => BigInt(length(a));
+export function array_sum(a) {
+  if (a instanceof TextArray) err('E_TYPE', 'array/sum adds numbers or matching-width vectors.');
+  const n = length(a);
+  if (a.data instanceof BigInt64Array) {
+    let total = 0n;
+    for (const value of a.data) total = wrap(total + value);
+    return total;
+  }
+  const total = new Float64Array(a.width);
+  for (let i = 0; i < n; i++) for (let c = 0; c < a.width; c++) total[c] = fin('array/sum', total[c] + a.data[i * a.width + c]);
+  return a.width === 1 ? total[0] : total;
+}
 export function array_nth(a, index) {
   const i = count('array/nth', index), n = length(a);
   if (i >= n) err('E_ARRAY_RANGE', 'Array index is outside its length.');
+  if (a instanceof TextArray) return a.data[i];
   return a.width === 1 ? a.data[i] : a.data.slice(i * a.width, (i + 1) * a.width);
 }
 export function array_slice(a, first, n) {
   const f = count('array/slice', first), c = count('array/slice', n);
+  if (a instanceof TextArray) {
+    if (f > a.data.length || c > a.data.length - f) err('E_ARRAY_RANGE', 'An array slice must be within its source.');
+    return new TextArray(a.data.slice(f, f + c));
+  }
   if (!(a instanceof PArray)) err('E_TYPE', 'Expected a packed array.');
   const len = Math.floor(a.data.length / a.width);
   if (f > len || c > len - f) err('E_ARRAY_RANGE', 'An array slice must be within its source.');
   return new PArray(a.width, a.data.slice(f * a.width, (f + c) * a.width));
 }
 export function array_concat(a, b) {
-  if (!(a instanceof PArray && b instanceof PArray && a.width === b.width))
+  if (a instanceof TextArray && b instanceof TextArray) return new TextArray(a.data.concat(b.data));
+  if (!(a instanceof PArray && b instanceof PArray && a.width === b.width && a.data.constructor === b.data.constructor))
     err('E_ARRAY_TYPE', 'Concatenated arrays must have the same element type.');
-  const data = new Float64Array(a.data.length + b.data.length);
+  const data = new a.data.constructor(a.data.length + b.data.length);
   data.set(a.data); data.set(b.data, a.data.length);
   return new PArray(a.width, data);
 }
@@ -486,4 +566,78 @@ export function sop_delete_attr(geometry, pattern, owner = 'point') {
   const attributes = geometry.get('attributes').filter(a => a.get('owner') !== owner || !matches(a.get('name')));
   if (attributes.length === geometry.get('attributes').length) return geometry;
   const result = new Map(geometry); result.set('attributes', attributes); return result;
+}
+
+// Geometry host contracts; SOP graphs remain outside the 2D export target.
+const attributeTypes = ['float', 'int', 'vec2', 'vec3', 'vec4', 'text', 'float_array', 'int_array'];
+function attributeArgs(name, owner, type) {
+  if (typeof name !== 'string' || !name.trim()) err('E_ATTR_NAME', 'An attribute needs a nonblank name.');
+  if (!['point', 'vertex', 'primitive', 'detail'].includes(owner))
+    err('E_ATTR_OWNER', 'Attribute owner is point, vertex, primitive or detail.');
+  if (type !== undefined && !attributeTypes.includes(type))
+    err('E_ATTR_TYPE', 'Attribute type is float, int, vec2, vec3, vec4, text, float_array or int_array.');
+}
+function attributeStorage(geometry, name, owner) {
+  if (owner === 'point' && name === 'P') return new Map([['type', 'vec3'], ['values', geometry.get('positions')]]);
+  return geometry.get('attributes').find(a => a.get('owner') === owner && a.get('name') === name);
+}
+const copyAttribute = value => value instanceof PArray ? new PArray(value.width, value.data.slice())
+  : value instanceof TextArray ? new TextArray(value.data.slice())
+  : value instanceof Map ? new Map([...value].map(([key, v]) => [key, copyAttribute(v)])) : value.slice();
+export function sop_attr(geometry, name, owner = 'point', type = 'vec3') {
+  attributeArgs(name, owner, type);
+  const storage = attributeStorage(geometry, name, owner);
+  if (!storage || storage.get('type') !== type)
+    err('E_ATTR_TYPE', `${owner} attribute ${name} is missing or is not ${type}.`);
+  return copyAttribute(storage.get('values'));
+}
+export function sop_has_attr(geometry, name, owner = 'point', type) {
+  attributeArgs(name, owner, type);
+  const storage = attributeStorage(geometry, name, owner);
+  return !!storage && (type === undefined || storage.get('type') === type);
+}
+export function sop_with_attr(geometry, name, owner, type, values) {
+  attributeArgs(name, owner, type);
+  const count = owner === 'point' ? length(geometry.get('positions'))
+    : owner === 'vertex' ? geometry.get('vertex_points').length
+    : owner === 'primitive' ? geometry.get('primitive_offsets').length - 1 : 1;
+  const integer = value => value instanceof PArray && value.width === 1 && value.data instanceof BigInt64Array;
+  const width = { float: 1, vec2: 2, vec3: 3, vec4: 4 }[type];
+  if (type === 'int' && integer(values)) {
+    if (values.data.length !== count) err('E_ATTR_COUNT', 'Integer attribute count differs from owner count.');
+  } else if (type === 'text' && values instanceof TextArray) {
+    if (values.data.length !== count) err('E_ATTR_COUNT', 'Text attribute count differs from owner count.');
+  } else if ((type === 'float_array' || type === 'int_array') && values instanceof Map) {
+    const offsets = values.get('offsets'), data = values.get('values');
+    if (!integer(offsets) || !(data instanceof PArray))
+      err('E_ATTR_TYPE', 'CSR attributes require integer offsets and typed values.');
+    if (offsets.data.length !== count + 1) err('E_ATTR_COUNT', 'CSR row count differs from owner count.');
+    if (data.width !== 1 || (type === 'int_array' ? !integer(data) : !(data.data instanceof Float64Array)))
+      err('E_ATTR_TYPE', 'CSR values do not match the requested storage type.');
+    if (type === 'float_array' && !data.data.every(Number.isFinite)) err('E_NONFINITE', 'Attribute values must be finite.');
+    const packed = type === 'float_array' ? 'Float_array' : 'Int_array';
+    if (offsets.data[0] !== 0n) err('E_ATTR_COUNT', `Packed.${packed}: first offset must be zero`);
+    for (let i = 1; i < offsets.data.length; i++)
+      if (offsets.data[i] < offsets.data[i - 1] || offsets.data[i] > BigInt(data.data.length))
+        err('E_ATTR_COUNT', `Packed.${packed}: offsets must be monotone and within the value buffer`);
+    if (offsets.data[offsets.data.length - 1] !== BigInt(data.data.length))
+      err('E_ATTR_COUNT', `Packed.${packed}: final offset must equal value count`);
+  } else if (width && values instanceof PArray && values.width === width && values.data instanceof Float64Array) {
+    if (values.data.length !== count * width)
+      err('E_ATTR_COUNT', `${name} needs ${count} ${owner} values; got ${Math.floor(values.data.length / width)}.`);
+    if (!values.data.every(Number.isFinite)) err('E_NONFINITE', 'Attribute values must be finite.');
+  } else err('E_ATTR_TYPE', `sop/with_attr requires ${type} storage.`);
+  const result = new Map(geometry), copied = copyAttribute(values);
+  if (owner === 'point' && name === 'P') {
+    if (type !== 'vec3') err('E_ATTR_TYPE', width ? 'Canonical point P requires vec3 storage.'
+      : 'Geometry.with_attribute: use with_positions to replace canonical P');
+    result.set('positions', copied);
+  } else {
+    const attributes = geometry.get('attributes').slice();
+    const attribute = new Map([['owner', owner], ['name', name], ['type', type], ['values', copied]]);
+    const index = attributes.findIndex(a => a.get('owner') === owner && a.get('name') === name);
+    if (index < 0) attributes.push(attribute); else attributes[index] = attribute;
+    result.set('attributes', attributes);
+  }
+  return result;
 }

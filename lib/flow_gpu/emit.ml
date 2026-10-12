@@ -35,6 +35,9 @@ float fbm(float3 p, int octaves, device const int* table) {
 exception Unsupported of string
 let fail message = raise (Unsupported message)
 let register index = "r" ^ string_of_int index
+let rec guarded guards = function
+  | P.Guarded (more, body) -> guarded (guards @ more) body
+  | instruction -> guards, instruction
 let binary operation a b =
   let infix operator = "(" ^ a ^ operator ^ b ^ ")" in
   match operation with
@@ -46,9 +49,17 @@ let binary operation a b =
   | Lt -> infix "<" | Le -> infix "<=" | Gt -> infix ">" | Ge -> infix ">=" | Eq -> infix "=="
   | And -> "(" ^ a ^ "!=0.0f&&" ^ b ^ "!=0.0f)"
   | Or -> "(" ^ a ^ "!=0.0f||" ^ b ^ "!=0.0f)"
+  | Atan2 -> "atan2(" ^ a ^ "," ^ b ^ ")"
+  | Hypot -> fail "Native-safe hypot is not supported by the Metal kernel target."
 let unary operation a = match operation with
   | P.Sin -> "sin(" ^ a ^ ")" | Cos -> "cos(" ^ a ^ ")"
   | Sqrt -> "sqrt(fabs(" ^ a ^ "))" | Abs -> "fabs(" ^ a ^ ")" | Not -> "(" ^ a ^ "==0.0f)"
+  | Tan -> "tan(" ^ a ^ ")"
+  | Asin | Acos -> "(fabs(" ^ a ^ ")>1.0f?as_type<float>(0x7fc00000u):"
+      ^ (if operation=P.Asin then "asin" else "acos") ^ "(" ^ a ^ "))"
+  | Exp -> "exp(" ^ a ^ ")"
+  | Log -> "(" ^ a ^ "<=0.0f?as_type<float>(0x7fc00000u):log(" ^ a ^ "))"
+  | Sign -> "(" ^ a ^ ">0.0f?1.0f:(" ^ a ^ "<0.0f?-1.0f:" ^ a ^ "))"
 let kernel program = try
   let view = P.Private.view program in
   (match P.gpu_refusals program with [] -> () | reason :: _ -> fail reason.message);
@@ -57,11 +68,11 @@ let kernel program = try
     let first = !offset in offset := first+width*4;
     uniform_layout := (name,first,width) :: !uniform_layout; first/4 in
   let uniforms = Array.mapi (fun index width -> uniform ("uniform:" ^ string_of_int index) width) view.uniform_widths in
-  let frames = Array.mapi (fun index -> function
+  let frames = Array.mapi (fun index instruction -> match snd (guarded [] instruction) with
     | P.Frame name -> uniform (Printf.sprintf "frame:%d:%s" index name) 1 | _ -> 0) view.code in
   let used = P.Private.output_reachable program in
   let finite_checks = P.Private.finite_checks program in
-  let table_seeds = Array.to_list(Array.mapi(fun index instruction->index,instruction)view.code)
+  let table_seeds = Array.to_list(Array.mapi(fun index instruction->index,snd(guarded [] instruction))view.code)
     |> List.filter_map (function
       | index,P.Noise3 (_,_,_,seed,_) when used.(index) ->
           Some seed | _ -> None) |> List.sort_uniq Int.compare |> Array.of_list in
@@ -69,6 +80,7 @@ let kernel program = try
   let body = Buffer.create 4096 in
   Array.iteri (fun slot instruction ->
     if used.(slot) then begin
+    let guards,instruction=guarded [] instruction in
     let expression = match instruction with
       | P.Const value ->
           Printf.sprintf "as_type<float>(0x%lxu)" (Int32.bits_of_float value)
@@ -80,10 +92,18 @@ let kernel program = try
       | Unary (op,a) -> unary op (register a)
       | Select (condition,yes,no) -> Printf.sprintf "(%s!=0.0f?%s:%s)" (register condition) (register yes) (register no)
       | Noise3 (x,y,z,seed,octaves) -> Printf.sprintf "fbm(float3(%s,%s,%s),%d,table+%d)"
-          (register x) (register y) (register z) octaves (table seed) in
-    Printf.bprintf body "  float r%d=%s;\n" slot expression;
+          (register x) (register y) (register z) octaves (table seed)
+      | _ -> fail "Integer instructions and conversions are not supported by the Metal kernel target." in
+    let indentation=if guards=[] then "  " else "    " in
+    if guards=[] then Printf.bprintf body "  float r%d=%s;\n" slot expression else begin
+      Printf.bprintf body "  float r%d=0.0f;\n" slot;
+      Printf.bprintf body "  if(%s) {\n" (String.concat "&&" (List.map(fun(condition,selected)->
+        Printf.sprintf "r%d%s0.0f" condition (if selected then "!=" else "=="))guards));
+      Printf.bprintf body "    r%d=%s;\n" slot expression
+    end;
     if finite_checks.(slot) then
-      Printf.bprintf body "  if(!isfinite(r%d)) atomic_store_explicit(status,1u,memory_order_relaxed);\n" slot
+      Printf.bprintf body "%sif(!isfinite(r%d)) atomic_store_explicit(status,1u,memory_order_relaxed);\n" indentation slot;
+    if guards<>[] then Buffer.add_string body "  }\n"
     end) view.code;
   let outputs = Array.length view.outputs in
   let output_name k = if outputs = 1 then "output" else "output" ^ string_of_int k in
@@ -106,7 +126,7 @@ let kernel program = try
   let entry = "kernel_" ^ digest in
   let source = prefix ^ "kernel void " ^ entry ^ "(\n  " ^ signature ^ ") {\n" ^ body ^ "}\n" in
   let input_used=Array.make count false in
-  Array.iteri(fun slot->function P.Input(input,_,_)when used.(slot)->input_used.(input)<-true|_->())view.code;
+  Array.iteri(fun slot instruction->match snd(guarded [] instruction)with P.Input(input,_,_)when used.(slot)->input_used.(input)<-true|_->())view.code;
   let interface = List.init (count+outputs+2+(if table_seeds=[||] then 0 else 1)) Fun.id
     |>List.filter(fun binding->binding>=count || input_used.(binding))
     |>List.map(fun binding->S.{group=0;binding;kind=(if binding=count+outputs then Uniform_buffer else Storage_buffer);visibility=[Compute]})in

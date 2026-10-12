@@ -154,12 +154,13 @@ export function createRuntime(program, { now = () => performance.now() / 1000, f
     async invoke(k, args) {
       rt.counts.invoke++;
       const r = this.program.regions[k] ?? prims.fail('E_CORE', 'Unknown region.'), input = rt.current;
-      const inputs = r.inputs.map(([offset, length]) => new Float64Array(rt.data, offset, length));
-      const facts = new Float64Array(r.length);
-      for (const [slot, name] of r.frame) facts[slot] = Number(FACTS[name](input));
-      const uniforms = [...r.uniforms.map(u => Float64Array.from(u)), facts];
+      const inputs = r.inputs.map(([offset, length, integer]) => new (integer ? BigInt64Array : Float64Array)(rt.data, offset, length));
+      const facts = Array(r.length).fill(0);
+      for (const [slot, name, integer] of r.frame) facts[slot] = integer ? BigInt(FACTS[name](input)) : Number(FACTS[name](input));
+      const uniforms = [...r.uniforms.map(u => typeof u[0] === 'string' ? BigInt64Array.from(u, BigInt) : Float64Array.from(u)), facts];
       const pool = rt.pool;
-      const outputs = [pool ? pool.alloc(r.kept * r.width) : new Float64Array(r.kept * r.width)];
+      const ArrayType = r.integer ? BigInt64Array : Float64Array;
+      const outputs = [pool ? pool.alloc(r.kept * r.width, ArrayType) : new ArrayType(r.kept * r.width)];
       const status = pool ? await pool.collect(r.id ?? k, inputs, uniforms, outputs, r.count)
         : this.region(k)(inputs, uniforms, outputs, 0, r.count);
       if (status !== 0) prims.fail('E_KERNEL', 'Kernel needs reference evaluation.');
