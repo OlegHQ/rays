@@ -382,5 +382,7 @@ let set_int ()=setter_port "set_int"
 
 let set_vector ()=setter_port "set_vector"
 
+let set_orient ()=setter_port "set_orient"
+
 let ()=if Array.exists ((=) "--bench") Sys.argv then benchmark ()
-  else (noise_displace ();set_float ();set_int ();set_vector ())
+  else (noise_displace ();set_float ();set_int ();set_vector ();set_orient ())

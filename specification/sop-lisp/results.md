@@ -1301,3 +1301,47 @@ Four-domain allocations record the initial domain only. Both ratios pass
 the unchanged 2× gate. The complete log is
 `/tmp/rays-set-vector-production-bench.log`. B.11 stays unchecked while
 the remaining whole setter ports are incomplete.
+
+### Set Orient production port
+
+Candidate request 18401 exited 0 for the authoritative `set_orient` recipe
+with explicit pending declarations and unchanged native registration.
+Production source `nodes/set_orient.rays` and native unregister were then
+applied together; only Set Orient was removed from the pending declarations.
+`Sop.Nodes.Set_orient.factory` remains the independent native oracle.
+
+The recipe covers defaults and all physical parameter edits, zero and
+ordinary quaternions, huge finite components, empty/single/grid/mixed/32,769
+point geometry, native 4-ULP comparison, exact reference/strict and
+1/4/8-domain bytes at grains 1/97/4096, metadata and cache identity,
+non-finite parameter errors and wrong input types. The guarded shared
+quaternion helper preserves native overflow and signed-zero behavior.
+Reviewed manifest request 60728 and scoped promotion 26512 change only
+declaration order, native facts and Lisp body/calls markers, with digest
+`80b7a3be25fff983be87f27d139b6b0f`. Parameter labels, defaults, ranges,
+slots and operation are unchanged. The rebuilt CLI catalog hash is
+`b34b777fce2c4c63cb57b2c159cc08ffc23ad62197f33617aa05d951b72604f9`;
+only that generated-source expectation line changes in `tools/lisp/test/ml.t`.
+Production request 44932 exited 0 for `@lib/sop/runtest`
+`@lib/flow_sop/runtest @lib/sop_catalog/runtest`
+`@tools/api_manifest/runtest @test/dependency_gate @tools/lisp/test/runtest`.
+This includes native graph-card/inspector parity and gestures for every
+physical field, plus 60 quaternion overflow/threshold checks and exact
+strict/reference bytes on 32,769 quaternions at one/eight domains.
+Native request 7810 exited 0, including exact PNGs for 23 SOP graphs at
+one/four domains. No rendered golden changed.
+
+`opam exec -- ./test_setters.exe --bench-orient` from
+`_build/default/lib/flow_sop` exited 0. Apple M1, OCaml 5.3.0,
+1,000,000 points, grain 4096, median of three fresh-session cold cooks,
+quaternion `[1 2 3 -4]`:
+
+| Domains | Native seconds | Lisp seconds | Ratio | Native allocated bytes | Lisp allocated bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.002353 | 0.000610 | 0.259 | 32,007,032 | 32,024,152 |
+| 4 | 0.000631 | 0.000699 | 1.108 | 32,007,264 | 32,024,384 |
+
+Four-domain allocations record the initial domain only. Both ratios pass
+the unchanged 2× gate. The complete log is
+`/tmp/rays-set-orient-production-bench.log`. B.11 stays unchecked while
+Set Color and Set Transform remain incomplete.

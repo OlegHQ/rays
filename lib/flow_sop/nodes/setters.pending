@@ -2,15 +2,6 @@
 ; DRAFT: not embedded or registered. Requires B4 sop/count and pure text/blank?.
 ; Quaternion overflow follows the guarded shared helper, preserving native signed zeros.
 ; Metadata copied from the full native declarations, including soft ranges.
-(defnode sop/set_orient :label "Set Orient" :category ["Attribute" "Set"]
-  [(in0 : geometry)
-   (x : float 0.0 :label "X" :min -1 :max 1)
-   (y : float 0.0 :label "Y" :min -1 :max 1)
-   (z : float 0.0 :label "Z" :min -1 :max 1)
-   (w : float 1.0 :label "W" :min -1 :max 1)]
-  (sop/with_attr in0 "orient"
-    (array/vec4 (sop/count in0 :points) (quat_normalize [x y z w])) :owner "point" :type vec4))
-
 (defnode sop/set_transform :label "Set Transform" :category ["Attribute" "Set"]
   :validate (and (and (<= (abs m30) 1e-12) (<= (abs m31) 1e-12))
                  (and (<= (abs m32) 1e-12) (<= (abs (- m33 1.0)) 1e-12)))

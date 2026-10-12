@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "74605783d22049a09c4cae625a8af185")
+  (digest "80b7a3be25fff983be87f27d139b6b0f")
   (kinds
     (kind "sop/box"
       (key "box")
@@ -3223,20 +3223,6 @@
         (field "text_prefix" "Text prefix" (folder "Output") (text) (text "piece") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/set_orient"
-      (key "set_orient")
-      (aliases)
-      (operation "set_orient")
-      (label "Set Orient")
-      (category "Attribute" "Set")
-      (slots (slot "in0" required))
-      (fields
-        (field "x" "X" (folder) (float (soft -1 1) (hard nil nil)) (float 0) (primary false) (vec3))
-        (field "y" "Y" (folder) (float (soft -1 1) (hard nil nil)) (float 0) (primary false) (vec3))
-        (field "z" "Z" (folder) (float (soft -1 1) (hard nil nil)) (float 0) (primary false) (vec3))
-        (field "w" "W" (folder) (float (soft -1 1) (hard nil nil)) (float 1) (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/set_transform"
       (key "set_transform")
       (aliases)
@@ -3487,6 +3473,21 @@
         (field "owner" "Owner" (folder) (choice "Point" "Vertex" "Primitive" "Detail") (choice "Point") (primary false) (vec3))
         (field "name" "Attribute" (folder) (text) (text "value") (primary false) (vec3))
         (field "value" "Value" (folder) (int (soft -100 100) (hard nil nil)) (int 0) (primary false) (vec3)))
+      (outputs (output "geo" geometry))
+      (body lisp)
+      (calls))
+    (kind "sop/set_orient"
+      (key "set_orient")
+      (aliases)
+      (operation "set_orient")
+      (label "Set Orient")
+      (category "Attribute" "Set")
+      (slots (slot "in0" required))
+      (fields
+        (field "x" "X" (folder) (float (soft -1 1) (hard nil nil)) (float 0) (primary false) (vec3))
+        (field "y" "Y" (folder) (float (soft -1 1) (hard nil nil)) (float 0) (primary false) (vec3))
+        (field "z" "Z" (folder) (float (soft -1 1) (hard nil nil)) (float 0) (primary false) (vec3))
+        (field "w" "W" (folder) (float (soft -1 1) (hard nil nil)) (float 1) (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (body lisp)
       (calls))
