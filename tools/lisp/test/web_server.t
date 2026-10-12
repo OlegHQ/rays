@@ -2,8 +2,8 @@ The development server of `rays-lisp web --watch`: it exports, serves 127.0.0.1 
 headers, and re-exports when the file changes. A refusal keeps the last good export.
 
   $ cp ../../../sketches/flow_vectors/sketch.rays live.rays && chmod u+w live.rays
-  $ rays-lisp web --watch live.rays -o out --port 0 > log 2> err &
-  $ until grep -q '^serving' log 2>/dev/null; do sleep 0.1; done
+  $ rays-lisp web --watch live.rays -o out --port 0 > log 2> err & server_pid=$!
+  $ for i in $(seq 100); do grep -q '^serving' log 2>/dev/null && break; kill -0 "$server_pid" 2>/dev/null || break; sleep 0.1; done; grep -q '^serving' log || { cat err; kill "$server_pid" 2>/dev/null; false; }
   $ port=$(sed -n 's|^serving http://127.0.0.1:\([0-9]*\)/$|\1|p' log)
   $ get() { ./http_get.exe "$port" "$@"; }
 
