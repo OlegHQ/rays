@@ -296,6 +296,57 @@ let edge_projection key =
   metadata_projection key (if key="delete_edge_group" then ["name",P.Text_value "old_edges"]
     else ["from",P.Text_value "old_edges";"into",P.Text_value "é猫\""])
 
+let group_delete_projection () =
+  metadata_projection "group_delete"
+    ["rules",P.Text_value(table[[" POINTS ";"old_*"]]);"delete_unused",P.Bool_value true]
+
+let group_delete_exact () =
+  let key="group_delete" in
+  let base=fixture() in
+  let raw=Geometry.with_attribute(Attribute.create_owned ~owner:Point ~name:"raw"
+    (Float[|nan;infinity;neg_infinity;-0.;0.;1.|])|>get_string_ok)base|>get_string_ok in
+  let positions=Packed.Float3.Private.view(Geometry.positions raw) in
+  let x=Array.copy positions.x in x.(0)<-nan;x.(1)<-infinity;x.(2)<-neg_infinity;
+  let raw=Geometry.with_positions(Packed.Float3.of_owned ~x ~y:(Array.copy positions.y)
+    ~z:(Array.copy positions.z)|>get_string_ok)raw|>get_string_ok in
+  let raw=List.fold_left(fun geometry name->Geometry.with_group
+    (Group.ordered ~owner:Point ~length:6 ~name[|4;1;3|]|>get_string_ok)geometry|>get_string_ok)
+    raw ["é猫";"a b";"*";"[x]";"back\\slash"] in
+  let configs=[]::List.concat_map(fun owner->List.map(fun pattern->[[owner;pattern]])
+    ["old_*";"*";"* ^target";"missing";" \t ";"[";"\\"])
+      [" POINTS ";"vertices";"primitives";"edges";"any";"*"]@
+    [[["point";"old_*"];["vertex";"old_*"];["edge";"old_*"]];
+     [["any";"old_*"];["any";"*"]];[["point";"["];["edge";"\\"]];
+     [["edge";"\\"];["point";"["]];[["point";"é猫"]];[["point";"a\\ b"]];
+     [["point";"\\*"]];[["point";"\\[x\\]"]];[["point";"back\\\\slash"]]] in
+  List.iter(fun geometry->let before=geometry_bytes geometry and input=Lisp_sop.snapshot geometry in
+    List.iter(fun rows->List.iter(fun unused->
+      let keywords,changes=rules rows in
+      let keywords=keywords^" :delete_unused "^string_of_bool unused
+      and changes=changes@["delete_unused",P.Bool_value unused] in
+      let expected=native input key changes in
+      let session=Sop.Session.create ~max_entries:32 ~max_payload_bytes:64_000_000|>get_string_ok in
+      Fun.protect ~finally:(fun()->Sop.Session.close session)(fun()->
+        let expected=cook session 1 97 expected in
+        List.iter(fun reference->let actual=node ~reference input key keywords in
+          List.iter(fun domains->List.iter(fun grain->Sop.Session.clear session;
+            check(same expected(cook session domains grain actual))
+              (Printf.sprintf "Group Delete native bytes/error cause: rules=%S unused=%b"(table rows)unused))
+            [1;97;4096])[1;4;8])[false;true]))[false;true])configs;
+    check(before=geometry_bytes geometry)"Group Delete input mutation")
+    [points 0;points 1;base;raw;grid();points 32769];
+  let input=Lisp_sop.snapshot base in
+  let actual=node ~reference:false input key "" and expected=native input key [] in
+  List.iter(fun encoded->
+    let apply node=match N.apply_parameters node ["rules",P.Text_value encoded] with
+      |Error message->Error message|Ok _->Ok() in
+    let observed=apply actual in
+    check(Result.is_error observed && observed=apply expected)
+      "Group Delete encoded constructor diagnostics")
+    ["point";"point\twrong\\q";"point\twrong\\";table[["WHAT 猫";"*"]];
+      table[["point";"["];["WHAT 猫";"*"]]];
+  print_endline "Group Delete: all owners, patterns, unused/order/raw payload and first-error parity"
+
 let rename_attributes_cases =
   [] :: List.concat_map(fun owner->List.concat_map(fun policy->
     List.map(fun(pattern,replacement)->[[owner;pattern;replacement;policy]])
@@ -555,14 +606,52 @@ let edge_benchmark ?(batch=1) key =
           key group_count name domains batch native_time time(time/.native_time)native_bytes bytes)[1;4])
       ["edges";"absent"])[0;1;8]
 
+let group_delete_benchmark () =
+  let geometry=Plane_generators.grid ~connectivity:Grid_quads ~columns:999 ~rows:999 ~size:8.()|>get_ok in
+  check(Geometry.point_count geometry=1_000_000)"Group Delete million-point grid";
+  let geometry=List.fold_left(fun geometry(owner,count)->
+    List.fold_left(fun geometry(name,empty)->
+      Geometry.with_group(Group.init ~owner ~name count(fun i->not empty && i mod 3=0))geometry|>get_string_ok)
+      geometry ["old_selected",false;"keep_selected",false;"unused",true])geometry
+    [Group.Point,Geometry.point_count geometry;Vertex,Geometry.vertex_count geometry;
+      Primitive,Geometry.primitive_count geometry] in
+  let topology=Geometry.topology geometry and index=Topology_index.create(Geometry.topology geometry) in
+  let geometry=List.fold_left(fun geometry(name,empty)->
+    Geometry.with_edge_group(Edge_group.init ~topology ~index ~name(fun i->not empty && i mod 3=0))geometry|>get_string_ok)
+    geometry ["old_selected",false;"keep_selected",false;"unused",true] in
+  let input=Lisp_sop.snapshot geometry in
+  let configs=["default",[];"unused",["delete_unused",P.Bool_value true]]@
+    List.map(fun owner->owner,["rules",P.Text_value(table[[owner;"old_*"]])])
+      ["point";"vertex";"primitive";"edge";"any"]@
+    List.map(fun(label,rows,unused)->label,["rules",P.Text_value(table rows);"delete_unused",P.Bool_value unused])
+      ["all",[["any";"*"]],false;"exclusions",[["any";"* ^keep_*"]],false;
+       "blank",[["any";" \t "]],false;"missing",[["any";"missing"]],false;
+       "selected_unused",[["any";"old_*"]],true;
+       "successive",[["points";"old_*"];["vertices";"old_*"];["primitives";"old_*"];["edges";"old_*"]],true] in
+  List.iter(fun(label,changes)->
+    let keywords=String.concat " "(List.map(fun(field,value)->":"^field^" "^(match value with
+      |P.Bool_value value->string_of_bool value|P.Text_value value->quoted value|_->assert false))changes) in
+    let actual=node ~reference:false input "group_delete" keywords and expected=native input "group_delete" changes in
+    List.iter(fun domains->
+      let preflight=Sop.Session.create ~max_entries:32 ~max_payload_bytes:512_000_000|>get_string_ok in
+      Fun.protect ~finally:(fun()->Sop.Session.close preflight)(fun()->
+        check(same(cook preflight domains 4096 actual)(cook preflight domains 4096 expected))
+          "Group Delete million-point native preflight");
+      let native_time,native_bytes=cold_sample ~batch:1000 ~domains expected
+      and time,bytes=cold_sample ~batch:1000 ~domains actual in
+      Printf.printf "group_delete points=1000000 quads=998001 groups=12 mode=%s domains=%d grain=4096 cold_sessions=1000 native=%.6f lisp=%.6f ratio=%.3f native_bytes=%.0f lisp_bytes=%.0f\n%!"
+        label domains native_time time(time/.native_time)native_bytes bytes)[1;4])configs
+
 let edges ()=List.iter(fun key->edge_exact key;edge_projection key)["delete_edge_group";"rename_edge_group"]
 let ()=if Array.exists((=)"--bench-edge")Sys.argv then edge_benchmark "delete_edge_group"
   else if Array.exists((=)"--bench-delete-attributes")Sys.argv then delete_attributes_benchmark()
+  else if Array.exists((=)"--bench-group-delete")Sys.argv then group_delete_benchmark()
+  else if Array.exists((=)"--group-delete")Sys.argv then (group_delete_exact();group_delete_projection())
   else if Array.exists((=)"--bench-rename-attributes")Sys.argv then rename_attributes_benchmark()
   else if Array.exists((=)"--rename-attributes")Sys.argv then (rename_attributes_exact();rename_attributes_projection())
   else if Array.exists((=)"--bench-rename-edge")Sys.argv then edge_benchmark "rename_edge_group"
   else if Array.exists((=)"--bench-rename-edge-batch")Sys.argv then edge_benchmark ~batch:1000 "rename_edge_group"
-  else if Array.exists((=)"--edge")Sys.argv then (delete_attributes_projection();rename_attributes_projection();edges())
+  else if Array.exists((=)"--edge")Sys.argv then (delete_attributes_projection();rename_attributes_projection();group_delete_projection();edges())
   else if Array.exists((=)"--huge")Sys.argv then large_rules 100001
   else if Array.exists((=)"--large")Sys.argv then large_rules 5001
   else(declaration_metadata();verify();edits();invalid_parameters();reference_input();delete_attributes_projection();edges())

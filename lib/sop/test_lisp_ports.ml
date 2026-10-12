@@ -431,7 +431,18 @@ let metadata_port ?reference_input ?(extra_geometries=[]) ~key ~native_factory ~
       let s=session() in Fun.protect ~finally:(fun()->Sop.Session.close s)(fun()->
         let baseline=cooked_bytes s(context 1 97)expected in
         List.iter(fun domains->List.iter(fun grain->Sop.Session.clear s;
-          check(baseline=cooked_bytes s(context domains grain)actual)(key^": native/domain/grain bytes/errors");
+          let observed=cooked_bytes s(context domains grain)actual in
+          if baseline<>observed then begin
+            let describe=function
+              |Ok bytes->Digest.to_hex(Digest.string bytes)
+              |Error(code,message,cause)->code^": "^message^Option.value ~default:"" cause in
+            let write suffix value=Out_channel.with_open_bin ("/tmp/rays-port-"^key^"-"^suffix^".marshal")
+              (fun channel->output_string channel(Marshal.to_string value [])) in
+            write "native" baseline;write "actual" observed;
+            fail(Printf.sprintf "%s: native/domain/grain bytes/errors points=%d vertices=%d primitives=%d domains=%d grain=%d keywords=%S native=%s actual=%s"
+              key (Geometry.point_count geometry) (Geometry.vertex_count geometry)
+              (Geometry.primitive_count geometry) domains grain keywords (describe baseline) (describe observed))
+          end;
           check(baseline=cooked_bytes s(context domains grain)walked)(key^": reference bytes/errors"))
           [1;97;4096])[1;4;8]))cases;
     check(before=geometry_bytes geometry)(key^": input mutation"))
@@ -553,5 +564,29 @@ let rename_attributes () =
     ~extra_geometries:[extra;raw] ~initial_changes:[]
     ~edit:["rules",P.Text_value(table[[" POINTS ";"id";"identifier";" SKIP "]])] ()
 
+let group_delete () =
+  let encoded rows=Param.String_table.encode rows in
+  let rows=[]::List.concat_map(fun owner->List.map(fun pattern->[[owner;pattern]])
+    ["*";"absent";"alternating corners polygon selected_edges";"* ^alternating";" \t ";"[";"\\"])
+    [" POINTS ";"vertices";"primitives";"edges";"any";"*"]@
+    [[["points";"alternating"];["vertices";"corners"];["edges";"selected_edges"]];
+     [["any";"*"];["any";"*"]];[["point";"["];["edge";"\\"]];
+     [["edge";"\\"];["point";"["]]] in
+  let cases=List.concat_map(fun rows->List.map(fun unused->
+    let text=encoded rows in
+    Printf.sprintf ":rules %s :delete_unused %b"(Flow.Lisp.flat(Flow.Syntax.make(Str text)))unused,
+    ["rules",P.Text_value text;"delete_unused",P.Bool_value unused])[false;true])rows in
+  let extra=mixed() in
+  let extra=List.fold_left(fun geometry(owner,count)->
+    Geometry.with_group(Group.ordered ~owner ~name:"ordered" ~length:count[|count-1;0|]|>get_string_ok)geometry|>get_string_ok)
+    extra [Group.Point,6;Vertex,7;Primitive,2] in
+  let extra=Geometry.with_group(Group.init ~owner:Point ~name:"unused" 6(fun _->false))extra|>get_string_ok in
+  let extra=Geometry.with_attribute(Attribute.create_owned ~owner:Point ~name:"raw"
+    (Float[|nan;infinity;neg_infinity;-0.;0.;1.|])|>get_string_ok)extra|>get_string_ok in
+  metadata_port ~key:"group_delete" ~native_factory:Sop.Nodes.Group_delete.factory
+    ~extra_geometries:[extra] ~cases ~initial_changes:[]
+    ~edit:["rules",P.Text_value(encoded[["points";"alternating"]])] ()
+
 let ()=if Array.exists ((=) "--bench") Sys.argv then benchmark ()
-  else (noise_displace ();set_float ();set_int ();set_vector ();set_orient ();set_transform ();delete_edge_group ();rename_edge_group ();delete_attributes ();rename_attributes ())
+  else if Array.exists ((=) "--rename-attributes") Sys.argv then rename_attributes ()
+  else (noise_displace ();set_float ();set_int ();set_vector ();set_orient ();set_transform ();delete_edge_group ();rename_edge_group ();delete_attributes ();rename_attributes ();group_delete ())

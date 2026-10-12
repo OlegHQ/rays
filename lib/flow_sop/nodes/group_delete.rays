@@ -1,0 +1,24 @@
+(workspace group_delete_node
+(defn group_delete_owner :context value [(raw : text)]
+  (let* [token (text/lower (text/trim raw))]
+    (case token
+      "point" "point" "points" "point"
+      "vertex" "vertex" "vertices" "vertex"
+      "primitive" "primitive" "primitives" "primitive"
+      "edge" "edge" "edges" "edge" "any" "any" "*" "any"
+      :else (error "E_PARAM" (str "unknown group owner " (text/repr token))))))
+
+(defn metadata_group_delete_normalize :context value [(raw : text)]
+  (text/table_encode (map (fn [(row : (list text))]
+    (if (= (count row) 2) (list (group_delete_owner (nth row 0)) (nth row 1))
+      (error "E_PARAM" (str "Group Delete rule needs owner and pattern, got " (count row) " columns"))))
+    (text/table_decode raw))))
+
+(defnode sop/group_delete :label "Group Delete" :category ["Group" "Edit"]
+  [(in0 : geometry)
+   (rules : text "" :label "Rules (owner, pattern)" :kind encoded :normalize metadata_group_delete_normalize)
+   (delete_unused : bool false :label "Delete unused groups")]
+  (let* [selected (reduce (fn [geometry row]
+    (sop/delete_group geometry (nth row 1) :owner (nth row 0))) in0 (text/table_decode rules))]
+    (if delete_unused (sop/delete_group selected "" :unused true) selected)))
+)

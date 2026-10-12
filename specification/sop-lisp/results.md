@@ -3123,3 +3123,162 @@ Logs: `/tmp/rays-text-one-lane-guard-focused.log` and
 | successive | 4 | 12.144 | 17.120 | 1.410 | 33992 | 50872 |
 | overwrite_order | 1 | 10.637 | 13.991 | 1.315 | 25120 | 40336 |
 | overwrite_order | 4 | 9.243 | 13.097 | 1.417 | 25352 | 40568 |
+
+### Group Delete candidate: all modes and no-op finalization
+
+Native wrapper audit: `lib/sop/groups.ml:505-549`; kernel and local store
+`lib/rdk/attrib/group_ops.ml:1809-1877,3836-3852`. The rule table retains
+native owner aliases, encoded diagnostics and canonical keys. Group patterns
+are compiled during cooking, blank patterns select nothing, and unused-group
+selection counts ordinary and edge memberships. Metadata commits preserve
+surviving group order, ordered indices, topology and all attribute storage.
+The draft composes existing generic metadata primitives without calling the
+old SOP body.
+
+Original-body focused request 57986 exited 0 for
+`@lib/flow_sop/metadata_ports_draft` and the benchmark executable. Log:
+`/tmp/rays-group-delete-draft-focused.log`. Existing tests cover required
+geometries, all eight attribute storage types, native schema/key/identity,
+strict/reference/domain/grain bytes and causes, encoded refusals and every
+physical parameter edit/cache. Additional Group Delete-only cases and graph
+checks have been authored; their current focused validation is pending.
+
+Quiet first full table request 46431 exited 0. Apple M1, OCaml 5.3.0 dev,
+1,000,000 points, 998,001 quads, 12 groups across all four owners, grain 4096,
+domains 1/4. Each sample uses 1,000 fresh cold sessions, median of three;
+session creation/close and major GC are outside the clock. Every row first
+passes exact native geometry-byte preflight. Four-domain allocation figures
+cover the initial domain only. Log:
+`/tmp/rays-group-delete-bench-before.log`.
+
+| Mode | Domains | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---|---:|---:|---:|---:|---:|---:|
+| default | 1 | 0.000006 | 0.000007 | 1.287× | 14120 | 23128 |
+| default | 4 | 0.000007 | 0.000012 | 1.677× | 14352 | 23360 |
+| unused | 1 | 0.009196 | 0.009191 | 0.999× | 17424 | 26072 |
+| unused | 4 | 0.009195 | 0.009209 | 1.002× | 17656 | 26304 |
+| point | 1 | 0.000007 | 0.000011 | 1.590× | 18336 | 34584 |
+| point | 4 | 0.000008 | 0.000011 | 1.343× | 18568 | 34816 |
+| vertex | 1 | 0.000007 | 0.000011 | 1.516× | 18352 | 34600 |
+| vertex | 4 | 0.000008 | 0.000011 | 1.476× | 18584 | 34832 |
+| primitive | 1 | 0.000007 | 0.000016 | **2.343× — fails** | 18352 | 34608 |
+| primitive | 4 | 0.000007 | 0.000012 | 1.687× | 18584 | 34840 |
+| edge | 1 | 0.000008 | 0.000011 | 1.413× | 18384 | 34680 |
+| edge | 4 | 0.000007 | 0.000012 | 1.766× | 18616 | 34912 |
+| any | 1 | 0.000008 | 0.000010 | 1.366× | 17712 | 32464 |
+| any | 4 | 0.000007 | 0.000011 | 1.503× | 17944 | 32696 |
+| all | 1 | 0.000006 | 0.000010 | 1.642× | 15616 | 26616 |
+| all | 4 | 0.000006 | 0.000009 | 1.403× | 15848 | 26848 |
+| exclusions | 1 | 0.000007 | 0.000012 | 1.697× | 17264 | 30184 |
+| exclusions | 4 | 0.000008 | 0.000011 | 1.294× | 17496 | 30416 |
+| blank | 1 | 0.000007 | 0.000011 | 1.596× | 14200 | 30904 |
+| blank | 4 | 0.000006 | 0.000009 | 1.613× | 14432 | 31136 |
+| missing | 1 | 0.000006 | 0.000010 | 1.595× | 15240 | 31960 |
+| missing | 4 | 0.000007 | 0.000010 | 1.454× | 15472 | 32192 |
+| selected_unused | 1 | 0.009221 | 0.005835 | 0.633× | 17536 | 34568 |
+| selected_unused | 4 | 0.009209 | 0.005820 | 0.632× | 17768 | 34800 |
+| successive | 1 | 0.009203 | 0.005840 | 0.635× | 20432 | 67832 |
+| successive | 4 | 0.009226 | 0.005846 | 0.634× | 20664 | 68064 |
+
+25 of 26 rows pass the unchanged 2× gate. Primitive deletion at one domain
+fails at 2.343×, so Group Delete remains unregistered and uncounted. Earlier
+intermediate progress text incorrectly called the first 22 rows passing;
+the complete-table audit found the missed row and corrected that statement.
+All 26 measurements are retained here without an unchanged-code repeat.
+
+The body has now been changed to execute its final unused-group deletion
+only when `delete_unused` is true. The old body always performed a generic
+metadata cook even when that option was false and the final operation did
+nothing. Validation and a new full 26-row table are pending; this candidate
+change does not claim that the remaining timing gate has passed.
+
+## Group Delete production port
+
+The full body is now in `nodes/group_delete.rays`: ordered generic group
+deletion followed by unused-group deletion only when requested. The former
+unconditional final no-op cook is removed; all native owner aliases, rule
+order, cooked pattern failures, encoded diagnostics and Bool metadata remain.
+The native catalog registration is removed with this declaration. The RDK
+kernel and native SOP factory remain independent test oracles.
+
+Focused requests 92200 and 78499 exited 0 before production extraction;
+78499 covered Group Delete and Group Rename all-owner/raw-storage/error-order
+cases and direct card/inspector edits and bypass cooks. The Group Delete
+production function adds every required input plus ordered ordinary groups,
+unused groups and raw floating attributes; the focused proof also covers all
+eight storages, literal escaped names and exact causes at domains 1/4/8 and
+grains 1/97/4096. Production raw-position and constructor precedence checks
+are prepared; final integration remains pending until recorded below.
+
+Quiet revised-body request 81739 exited 0. Same Apple M1/OCaml 5.3.0 dev,
+1,000,000-point quad-grid, 998,001 quads, 12 groups/all four owners and
+median-three samples of 1,000 fresh cold sessions as the retained negative
+baseline above. Session creation/close and major GC stay outside the clock;
+context creation and the whole cook stay inside. All 26 exact native-byte
+preflights passed. Four-domain allocations observe the initial domain only.
+Log: `/tmp/rays-group-delete-bench-after.log`.
+
+| Mode | Domains | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---|---:|---:|---:|---:|---:|---:|
+| default | 1 | 0.000006 | 0.000007 | 1.293× | 14120 | 19264 |
+| default | 4 | 0.000007 | 0.000007 | 1.064× | 14352 | 19496 |
+| unused | 1 | 0.009165 | 0.009196 | 1.003× | 17424 | 26072 |
+| unused | 4 | 0.009197 | 0.009190 | 0.999× | 17656 | 26304 |
+| point | 1 | 0.000009 | 0.000009 | 0.994× | 18336 | 27232 |
+| point | 4 | 0.000008 | 0.000012 | 1.458× | 18568 | 27464 |
+| vertex | 1 | 0.000009 | 0.000011 | 1.278× | 18352 | 27248 |
+| vertex | 4 | 0.000007 | 0.000010 | 1.354× | 18584 | 27480 |
+| primitive | 1 | 0.000008 | 0.000010 | 1.356× | 18352 | 27256 |
+| primitive | 4 | 0.000007 | 0.000010 | 1.351× | 18584 | 27488 |
+| edge | 1 | 0.000007 | 0.000012 | 1.568× | 18384 | 27304 |
+| edge | 4 | 0.000008 | 0.000013 | 1.569× | 18616 | 27536 |
+| any | 1 | 0.000007 | 0.000010 | 1.394× | 17712 | 26344 |
+| any | 4 | 0.000008 | 0.000010 | 1.237× | 17944 | 26576 |
+| all | 1 | 0.000007 | 0.000008 | 1.204× | 15616 | 23504 |
+| all | 4 | 0.000006 | 0.000009 | 1.495× | 15848 | 23736 |
+| exclusions | 1 | 0.000007 | 0.000009 | 1.231× | 17264 | 25544 |
+| exclusions | 4 | 0.000007 | 0.000009 | 1.320× | 17496 | 25776 |
+| blank | 1 | 0.000006 | 0.000008 | 1.322× | 14200 | 23176 |
+| blank | 4 | 0.000006 | 0.000009 | 1.568× | 14432 | 23408 |
+| missing | 1 | 0.000007 | 0.000010 | 1.521× | 15240 | 24232 |
+| missing | 4 | 0.000006 | 0.000008 | 1.354× | 15472 | 24464 |
+| selected_unused | 1 | 0.009219 | 0.005831 | 0.633× | 17536 | 34568 |
+| selected_unused | 4 | 0.009212 | 0.005830 | 0.633× | 17768 | 34800 |
+| successive | 1 | 0.009230 | 0.005828 | 0.631× | 20432 | 67832 |
+| successive | 4 | 0.009221 | 0.005841 | 0.633× | 20664 | 68064 |
+
+All 26 rows pass the unchanged 2× gate; the worst is 1.569×. The previously
+failing primitive/one-domain row is 1.356×; the old 2.343× failure is retained
+in the candidate table.
+
+Production request 35825 passed all SOP tests (including the whole Group Delete
+recipe), FlowSOP, both group drafts, IR/Web and the dependency gate; its only
+failure was the intended catalog diff. The reviewed diff preserves operation,
+slot, full fields/defaults/labels and output; the declaration moves to Lisp.
+The promoted manifest digest is `2420a90dc3d2ca7e3240d62d51bfc657`.
+
+Full integration request 57881 exited 0 for `@runtest-native`, the whole SOP
+port recipe, FlowSOP/catalog/CLI, workspace source/shell, live node menu,
+public API and dependency checks. The actual native suites executed in 36290;
+57881 reused their successful results and ran the updated whole-port recipe
+and CLI snapshot. The sole CLI change is `tools/lisp/test/ml.t` catalog hash
+`f0d64222246d76c5a26d05323a658867ce426611b8534b68b9f2b4007fae919c`.
+No render fixtures or public APIs changed. Logs are
+`/tmp/rays-group-delete-production-focused.log` and
+`/tmp/rays-group-delete-native-integration2.log`.
+
+One verification concern remains recorded for phase review: 36290 also failed
+the existing Rename Attributes comparison with no case context. Focused
+diagnostic request 35016 and full request 57881 subsequently passed both
+Rename Attributes and Group Delete. Read-only audits found no unordered
+rename iteration or shared per-cook tables; the original mismatch remains
+unexplained. The shared test now reports input counts, exact rule text,
+domains/grain and digests, saves mismatched native/actual results under
+`/tmp/rays-port-<key>-*.marshal`, and has a direct `--rename-attributes` entry
+for reproducing this concern. The failed log is retained at
+`/tmp/rays-group-delete-native-integration.log`; this paragraph does not claim
+that the underlying issue was fixed.
+
+Group Delete is completed port 11/128 (8.59%); 117 whole ports remain.
+B.12 remains unchecked until all seven metadata ports and its boundary gate
+are complete.

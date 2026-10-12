@@ -44,11 +44,6 @@
         (metadata_group_conflict (nth row 3)))
       (error "E_PARAM" (str "Group Rename rule needs owner, pattern, replacement, and conflict; got " (count row) " columns"))))
     (text/table_decode raw))))
-(defn metadata_group_delete_normalize :context value [(raw : text)]
-  (text/table_encode (map (fn [(row : (list text))]
-    (if (= (count row) 2) (list (metadata_group_owner (nth row 0)) (nth row 1))
-      (error "E_PARAM" (str "Group Delete rule needs owner and pattern, got " (count row) " columns"))))
-    (text/table_decode raw))))
 
 (defn metadata_rewrite_validate :context value [(operation : text) (pattern : text) (replacement : text)]
   (let* [message (text/glob_rewrite_error pattern replacement)]
@@ -71,13 +66,5 @@
      :normalize metadata_group_rename_normalize)]
   (reduce (fn [geometry row]
     (sop/rename_group geometry (nth row 1) (nth row 2) :owner (nth row 0) :conflict (nth row 3))) in0 (text/table_decode rules)))
-
-(defnode sop/group_delete :label "Group Delete" :category ["Group" "Edit"]
-  [(in0 : geometry)
-   (rules : text "" :label "Rules (owner, pattern)" :kind encoded :normalize metadata_group_delete_normalize)
-   (delete_unused : bool false :label "Delete unused groups")]
-  (let* [selected (reduce (fn [geometry row]
-    (sop/delete_group geometry (nth row 1) :owner (nth row 0))) in0 (text/table_decode rules))]
-    (sop/delete_group selected "" :unused delete_unused)))
 
 )

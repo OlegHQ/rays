@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "59dcfe1be5f12f620e25c7b6214bc158")
+  (digest "2420a90dc3d2ca7e3240d62d51bfc657")
   (kinds
     (kind "sop/box"
       (key "box")
@@ -2131,18 +2131,6 @@
         (field "conflict" "Conflict" (folder) (choice "Skip" "Error" "Overwrite" "Union") (choice "Overwrite") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/group_delete"
-      (key "group_delete")
-      (aliases)
-      (operation "group_delete")
-      (label "Group Delete")
-      (category "Group" "Edit")
-      (slots (slot "in0" required))
-      (fields
-        (field "rules" "Rules (owner, pattern)" (folder) (text) (text "") (primary false) (vec3))
-        (field "delete_unused" "Delete unused groups" (folder) (bool) (bool false) (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/group_rename"
       (key "group_rename")
       (aliases)
@@ -3381,6 +3369,19 @@
       (slots (slot "in0" required))
       (fields
         (field "name" "Edge group" (folder) (text) (text "edges") (primary false) (vec3)))
+      (outputs (output "geo" geometry))
+      (body lisp)
+      (calls))
+    (kind "sop/group_delete"
+      (key "group_delete")
+      (aliases)
+      (operation "group_delete")
+      (label "Group Delete")
+      (category "Group" "Edit")
+      (slots (slot "in0" required))
+      (fields
+        (field "rules" "Rules (owner, pattern)" (folder) (text) (text "") (primary false) (vec3))
+        (field "delete_unused" "Delete unused groups" (folder) (bool) (bool false) (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (body lisp)
       (calls))
