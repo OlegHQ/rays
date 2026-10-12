@@ -105,7 +105,9 @@ let () =
         if count>0 then begin
           invalid(E.Int_array(Array.make count 2))default values "E_ATTR_SELECTION";
           let bad=Array.copy replacements in bad.(0)<-nan;
-          invalid(E.Int_array(Array.make count 0))default(array width bad)"E_NONFINITE"
+          invalid(E.Int_array(Array.make count 0))default(array width bad)"E_NONFINITE";
+          let late=Array.make count 0 in late.(count-1)<- -1;
+          invalid(E.Int_array late)default(array width bad)"E_ATTR_SELECTION"
         end)["absent";"wrong";"matching"])
       ["float",1;"vec2",2;"vec3",3;"vec4",4])owners)[0;6;32769];
   print_endline "Selected attribute writes: all numeric owners, native nonfinite untouched bytes, explicit defaults, strict/reference and one/eight-domain ownership/refusals pass"

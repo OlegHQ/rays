@@ -2230,3 +2230,153 @@ and actual frame checks. Detailed evidence and limitations are recorded in
 
 This is a prerequisite for the required Text kernel leaf extension. It does
 not complete Text gather, Name From Groups or C.2.
+
+### Selected mask validation uses an inline scan
+
+The shared `Attribute_kernel.write_selected` scans integer selections with
+a local while loop, reading each value once and stopping at the first value
+other than zero or one. Destination/value cardinality and selection length
+checks still precede this scan, which still precedes finite-value validation
+and output allocation. Dense, validated constant-descriptor and cooked-source
+callers use the same boundary, as do the native host fixtures for JavaScript
+twins. No API or selection semantics change.
+
+Focused **40734** exited 0 with `@lib/flow_sop/runtest` and
+`@lib/flow_sop/set_color_draft`. The regular trust-boundary test includes a
+last-element invalid mask together with a NaN replacement, preserving
+`E_ATTR_SELECTION` priority over `E_NONFINITE`. Existing empty/count/type,
+raw nonfinite untouched storage, cancellation, strict/reference, owner,
+immutable input, domain/grain and cache/UI checks remain green. Fresh current
+Color semantic/relink **1178** also exited 0. Logs:
+`/tmp/rays-selected-mask-inline-focused.log`,
+`/tmp/rays-selected-mask-inline-current.log`. `git diff --check` passes.
+
+Quiet direct host attribution **41442** exited 0. The complete 24-row
+comparison below retains baseline **55274** and uses the same million-Vertex
+fixture, matching old Float4 Cd, one/four domains, grain 4096 and median
+three samples with major GC before each sample. This separately measures
+mask resolution, the actual validation scan, copying owned old planes and
+the complete descriptor writer; allocation counts are initial-domain only.
+Validation falls from roughly 2.0–2.7 ms to 0.7–0.8 ms. Selected/full/empty
+writer times at one domain fall from 7.640/9.232/4.151 ms to
+5.379/8.027/2.478 ms. Logs: `/tmp/rays-color-writer-attribution.log`,
+`/tmp/rays-color-writer-inline-attribution.log`.
+
+| Group | Domains | Stage | Before seconds | After seconds | Before bytes | After bytes |
+|---|---:|---|---:|---:|---:|---:|
+| selected | 1 | group_source | 0.001981 | 0.001938 | 8000936 | 8000936 |
+| selected | 1 | selection_validation | 0.002668 | 0.000828 | 224 | 176 |
+| selected | 1 | owned_plane_copy | 0.001357 | 0.002093 | 32000248 | 32000248 |
+| selected | 1 | descriptor_selected_writer | 0.007640 | 0.005379 | 32002272 | 32002224 |
+| selected | 4 | group_source | 0.002185 | 0.001925 | 8006192 | 8001168 |
+| selected | 4 | selection_validation | 0.002676 | 0.000802 | 456 | 408 |
+| selected | 4 | owned_plane_copy | 0.001222 | 0.001153 | 32000480 | 32000480 |
+| selected | 4 | descriptor_selected_writer | 0.005457 | 0.003113 | 32013640 | 32049608 |
+| full | 1 | group_source | 0.002663 | 0.002514 | 8000936 | 8000936 |
+| full | 1 | selection_validation | 0.002022 | 0.000828 | 224 | 176 |
+| full | 1 | owned_plane_copy | 0.001316 | 0.001173 | 32000248 | 32000248 |
+| full | 1 | descriptor_selected_writer | 0.009232 | 0.008027 | 32002272 | 32002224 |
+| full | 4 | group_source | 0.002522 | 0.002498 | 8001168 | 8001168 |
+| full | 4 | selection_validation | 0.001894 | 0.000802 | 456 | 408 |
+| full | 4 | owned_plane_copy | 0.001157 | 0.001216 | 32000480 | 32000480 |
+| full | 4 | descriptor_selected_writer | 0.004731 | 0.003684 | 32049032 | 32048976 |
+| empty | 1 | group_source | 0.001114 | 0.001156 | 8000936 | 8000936 |
+| empty | 1 | selection_validation | 0.002222 | 0.000701 | 224 | 176 |
+| empty | 1 | owned_plane_copy | 0.001372 | 0.001114 | 32000248 | 32000248 |
+| empty | 1 | descriptor_selected_writer | 0.004151 | 0.002478 | 32002272 | 32002224 |
+| empty | 4 | group_source | 0.001175 | 0.001123 | 8001168 | 8001168 |
+| empty | 4 | selection_validation | 0.002372 | 0.000684 | 456 | 408 |
+| empty | 4 | owned_plane_copy | 0.001280 | 0.001137 | 32000480 | 32000480 |
+| empty | 4 | descriptor_selected_writer | 0.003985 | 0.002076 | 32054568 | 32055792 |
+
+The unchanged quiet complete whole-node table **66283** exited 0 on the
+fresh **1178** binary, with median three cold cooks/fresh Sessions, a million
+ordinary-owner elements and one Detail element on a million-point input,
+one/four domains and grain 4096. No other builds or timings ran during the
+window. All 78 rows follow; all earlier tables remain intact.
+**Seven rows still exceed 2×**: five full-group/one-domain cases, maximum
+**2.091×**, and two Detail/one-domain microcases, maximum **2.759×**. All
+selected-group and empty-group rows now pass. The whole gate remains unmet;
+Set Color is unregistered and B.11 incomplete. No failed case was omitted.
+Log: `/tmp/rays-set-color-inline-mask-bench.log`.
+
+| Owner | Elements | Cd | Group | Domains | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---|---:|---|---|---:|---:|---:|---:|---:|---:|
+| Point | 1000000 | absent | all | 1 | 0.001173 | 0.000606 | 0.517 | 32010016 | 32032200 |
+| Point | 1000000 | absent | all | 4 | 0.001281 | 0.000657 | 0.513 | 32015272 | 32032432 |
+| Point | 1000000 | absent | selected | 1 | 0.003743 | 0.007349 | 1.963 | 32010432 | 40030272 |
+| Point | 1000000 | absent | selected | 4 | 0.003764 | 0.004729 | 1.256 | 32010664 | 40078072 |
+| Point | 1000000 | absent | full | 1 | 0.004823 | 0.010083 | 2.091 | 32010424 | 40030264 |
+| Point | 1000000 | absent | full | 4 | 0.004917 | 0.005663 | 1.152 | 32010656 | 40076328 |
+| Point | 1000000 | absent | empty | 1 | 0.002859 | 0.003071 | 1.074 | 32010424 | 40030264 |
+| Point | 1000000 | absent | empty | 4 | 0.002837 | 0.002648 | 0.933 | 32010656 | 40083312 |
+| Point | 1000000 | vec4 | all | 1 | 0.001155 | 0.000693 | 0.600 | 32010168 | 32047240 |
+| Point | 1000000 | vec4 | all | 4 | 0.001224 | 0.000648 | 0.529 | 32010400 | 32033736 |
+| Point | 1000000 | vec4 | selected | 1 | 0.004353 | 0.007650 | 1.757 | 32010776 | 40030544 |
+| Point | 1000000 | vec4 | selected | 4 | 0.004425 | 0.005476 | 1.238 | 32011008 | 40082696 |
+| Point | 1000000 | vec4 | full | 1 | 0.005519 | 0.010568 | 1.915 | 32010768 | 40030536 |
+| Point | 1000000 | vec4 | full | 4 | 0.005332 | 0.006106 | 1.145 | 32011000 | 40078032 |
+| Point | 1000000 | vec4 | empty | 1 | 0.003430 | 0.003581 | 1.044 | 32010768 | 40030536 |
+| Point | 1000000 | vec4 | empty | 4 | 0.003343 | 0.003096 | 0.926 | 32011000 | 40083128 |
+| Point | 1000000 | wrong_float | all | 1 | 0.001233 | 0.000634 | 0.514 | 32010168 | 32033504 |
+| Point | 1000000 | wrong_float | all | 4 | 0.001258 | 0.000643 | 0.511 | 32010400 | 32033736 |
+| Point | 1000000 | wrong_float | selected | 1 | 0.003790 | 0.006850 | 1.807 | 32010600 | 40030616 |
+| Point | 1000000 | wrong_float | selected | 4 | 0.004003 | 0.004662 | 1.165 | 32010832 | 40078072 |
+| Point | 1000000 | wrong_float | full | 1 | 0.005168 | 0.010075 | 1.950 | 32010592 | 40030608 |
+| Point | 1000000 | wrong_float | full | 4 | 0.004964 | 0.005812 | 1.171 | 32010824 | 40077088 |
+| Point | 1000000 | wrong_float | empty | 1 | 0.002910 | 0.003145 | 1.081 | 32010592 | 40030544 |
+| Point | 1000000 | wrong_float | empty | 4 | 0.002897 | 0.002687 | 0.927 | 32010824 | 40084312 |
+| Vertex | 1000000 | absent | all | 1 | 0.001400 | 0.000670 | 0.479 | 32010024 | 32045944 |
+| Vertex | 1000000 | absent | all | 4 | 0.001218 | 0.000668 | 0.548 | 32010256 | 32032440 |
+| Vertex | 1000000 | absent | selected | 1 | 0.003751 | 0.006832 | 1.821 | 32010440 | 40030272 |
+| Vertex | 1000000 | absent | selected | 4 | 0.003775 | 0.004587 | 1.215 | 32010672 | 40077864 |
+| Vertex | 1000000 | absent | full | 1 | 0.004797 | 0.009961 | 2.076 | 32010424 | 40030328 |
+| Vertex | 1000000 | absent | full | 4 | 0.004926 | 0.005738 | 1.165 | 32010656 | 40076896 |
+| Vertex | 1000000 | absent | empty | 1 | 0.002859 | 0.003060 | 1.070 | 32010432 | 40030328 |
+| Vertex | 1000000 | absent | empty | 4 | 0.002838 | 0.002733 | 0.963 | 32010664 | 40082624 |
+| Vertex | 1000000 | vec4 | all | 1 | 0.001276 | 0.000703 | 0.551 | 32010176 | 32033520 |
+| Vertex | 1000000 | vec4 | all | 4 | 0.001265 | 0.000729 | 0.576 | 32010408 | 32033752 |
+| Vertex | 1000000 | vec4 | selected | 1 | 0.004474 | 0.007315 | 1.635 | 32010784 | 40030544 |
+| Vertex | 1000000 | vec4 | selected | 4 | 0.004238 | 0.005073 | 1.197 | 32011016 | 40077360 |
+| Vertex | 1000000 | vec4 | full | 1 | 0.005316 | 0.010396 | 1.956 | 32010768 | 40030536 |
+| Vertex | 1000000 | vec4 | full | 4 | 0.005403 | 0.006092 | 1.128 | 32011000 | 40077528 |
+| Vertex | 1000000 | vec4 | empty | 1 | 0.003367 | 0.003528 | 1.048 | 32010776 | 40030600 |
+| Vertex | 1000000 | vec4 | empty | 4 | 0.003362 | 0.003153 | 0.938 | 32011008 | 40084200 |
+| Vertex | 1000000 | wrong_float | all | 1 | 0.001140 | 0.000731 | 0.641 | 32010176 | 32033520 |
+| Vertex | 1000000 | wrong_float | all | 4 | 0.001346 | 0.000720 | 0.535 | 32010408 | 32033752 |
+| Vertex | 1000000 | wrong_float | selected | 1 | 0.003866 | 0.006913 | 1.788 | 32010608 | 40030552 |
+| Vertex | 1000000 | wrong_float | selected | 4 | 0.003789 | 0.004585 | 1.210 | 32010840 | 40078552 |
+| Vertex | 1000000 | wrong_float | full | 1 | 0.005151 | 0.010159 | 1.972 | 32010592 | 40030544 |
+| Vertex | 1000000 | wrong_float | full | 4 | 0.004986 | 0.005837 | 1.171 | 32010824 | 40077552 |
+| Vertex | 1000000 | wrong_float | empty | 1 | 0.002896 | 0.003103 | 1.071 | 32010600 | 40030544 |
+| Vertex | 1000000 | wrong_float | empty | 4 | 0.002855 | 0.002706 | 0.948 | 32010832 | 40075440 |
+| Primitive | 1000000 | absent | all | 1 | 0.001282 | 0.000700 | 0.546 | 32010040 | 32045976 |
+| Primitive | 1000000 | absent | all | 4 | 0.001217 | 0.000671 | 0.552 | 32010272 | 32032472 |
+| Primitive | 1000000 | absent | selected | 1 | 0.003895 | 0.007033 | 1.806 | 32010456 | 40030296 |
+| Primitive | 1000000 | absent | selected | 4 | 0.003741 | 0.004644 | 1.241 | 32010688 | 40078096 |
+| Primitive | 1000000 | absent | full | 1 | 0.004952 | 0.010316 | 2.083 | 32010432 | 40030336 |
+| Primitive | 1000000 | absent | full | 4 | 0.004928 | 0.005640 | 1.145 | 32010664 | 40077576 |
+| Primitive | 1000000 | absent | empty | 1 | 0.002894 | 0.003342 | 1.155 | 32010440 | 40030272 |
+| Primitive | 1000000 | absent | empty | 4 | 0.002877 | 0.002690 | 0.935 | 32010672 | 40083136 |
+| Primitive | 1000000 | vec4 | all | 1 | 0.001256 | 0.000657 | 0.523 | 32010200 | 32033560 |
+| Primitive | 1000000 | vec4 | all | 4 | 0.001303 | 0.000746 | 0.573 | 32010432 | 32033792 |
+| Primitive | 1000000 | vec4 | selected | 1 | 0.004395 | 0.007343 | 1.671 | 32010808 | 40030576 |
+| Primitive | 1000000 | vec4 | selected | 4 | 0.004217 | 0.005042 | 1.196 | 32011040 | 40078208 |
+| Primitive | 1000000 | vec4 | full | 1 | 0.005446 | 0.011251 | 2.066 | 32010784 | 40030552 |
+| Primitive | 1000000 | vec4 | full | 4 | 0.005447 | 0.006647 | 1.220 | 32011016 | 40078152 |
+| Primitive | 1000000 | vec4 | empty | 1 | 0.003495 | 0.003610 | 1.033 | 32010792 | 40030552 |
+| Primitive | 1000000 | vec4 | empty | 4 | 0.003582 | 0.003726 | 1.040 | 32011024 | 40123744 |
+| Primitive | 1000000 | wrong_float | all | 1 | 0.001259 | 0.000703 | 0.558 | 32010200 | 32033560 |
+| Primitive | 1000000 | wrong_float | all | 4 | 0.001168 | 0.000672 | 0.575 | 32010432 | 32033792 |
+| Primitive | 1000000 | wrong_float | selected | 1 | 0.003721 | 0.006913 | 1.858 | 32010632 | 40030584 |
+| Primitive | 1000000 | wrong_float | selected | 4 | 0.003686 | 0.004584 | 1.244 | 32010864 | 40078104 |
+| Primitive | 1000000 | wrong_float | full | 1 | 0.004781 | 0.009921 | 2.075 | 32010608 | 40030560 |
+| Primitive | 1000000 | wrong_float | full | 4 | 0.004850 | 0.005651 | 1.165 | 32010840 | 40077192 |
+| Primitive | 1000000 | wrong_float | empty | 1 | 0.002875 | 0.003183 | 1.107 | 32010616 | 40030624 |
+| Primitive | 1000000 | wrong_float | empty | 4 | 0.002888 | 0.002659 | 0.921 | 32010848 | 40084456 |
+| Detail | 1 | absent | all | 1 | 0.000017 | 0.000040 | 2.366 | 10064 | 26360 |
+| Detail | 1 | absent | all | 4 | 0.000020 | 0.000028 | 1.393 | 10296 | 27248 |
+| Detail | 1 | vec4 | all | 1 | 0.000014 | 0.000038 | 2.759 | 10216 | 27088 |
+| Detail | 1 | vec4 | all | 4 | 0.000028 | 0.000039 | 1.402 | 10448 | 27976 |
+| Detail | 1 | wrong_float | all | 1 | 0.000023 | 0.000024 | 1.052 | 10216 | 27088 |
+| Detail | 1 | wrong_float | all | 4 | 0.000027 | 0.000038 | 1.416 | 10448 | 27976 |

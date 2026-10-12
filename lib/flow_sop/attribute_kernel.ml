@@ -414,12 +414,16 @@ let write_selected ~grain ~owner ~kind name ~values ~selection ~default geometry
         let i=ref 0 in
         while !i<Array.length data && Float.is_finite data.(!i) do incr i done;
         !i=Array.length data in
+      let valid_selection ()=
+        let length=Array.length selection and i=ref 0 in
+        while !i<length && (let value=selection.(!i) in value=0 || value=1) do incr i done;
+        !i=length in
       let value_count=Option.value ~default:(Array.length values/width)constant_count in
       if count>Sys.max_floatarray_length/width || value_count<>count || (constant_count=None && Array.length values mod width<>0) then
         error "E_ATTR_COUNT" (Printf.sprintf "%s needs %d %s values; got %d."
           name count (owner_name owner) value_count)
       else if Array.length selection<>count then error "E_ATTR_COUNT" "Attribute selection count differs from owner count."
-      else if Array.exists(fun value->value<>0 && value<>1)selection then
+      else if not(valid_selection()) then
         error "E_ATTR_SELECTION" "Attribute selection must contain only zero or one."
       else if not(finite values && finite default) then
         error "E_NONFINITE" "Attribute values must be finite."
