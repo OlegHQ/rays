@@ -24,6 +24,49 @@ const cases = [
   { name: 'flow_contours', dir: 'sketches/flow_contours', sizes: [[640, 480], [800, 600]], frames: 3, perFrame: 6, static: 0 },
   { name: 'flow_image_kernel', dir: 'sketches/flow_image_kernel', sizes: [[320, 280]], frames: 3, perFrame: 1, static: 0 },
   { name: 'flow_shader', dir: 'sketches/flow_shader', sizes: [[760, 760]], frames: 3, perFrame: 19, static: 6 },
+  { name: 'flow_image', dir: 'sketches/flow_image', sizes: [[640, 480]], frames: 3, perFrame: 0, static: 0 },
+  { name: 'loaded', source: `(workspace w (graph picture :context draw
+      (draw/merge (draw/background "#142030") ${['sample.png', 'sample.jpg', 'sample.bmp', 'palette.gif', 'sample.qoi', 'sample.webp', 'sample.tga', 'orientation-6.jpg']
+        .map((f, i) => `(draw/image (image/load ${JSON.stringify(join(root, 'test/sdl3_image_fixtures', f))}) :at [${(i % 4) * 60 + 3} ${Math.floor(i / 4) * 60 + 4} 0] :scale 5 :angle 0.1)`).join('\n')})))`,
+    sizes: [[256, 160]], frames: 3, perFrame: 0, static: 0 },
+  { name: 'noise_live', source: `(workspace w (graph picture :context draw
+      (draw/merge (draw/background "#142030")
+        (draw/image (image/noise :width (frame/width) :height (frame/height)
+          :freq (+ 0.07 t) :seed (- (frame/index) 5)))
+        (draw/image (image/noise :width 11 :height 7 :frequency 0.31 :seed 4611686018427387903) :at [3 4 0]))))`,
+    sizes: [[65, 43], [97, 51]], frames: 3, perFrame: 0, static: 0 },
+  { name: 'nested', source: `(workspace w (graph picture :context draw
+    (let* [p (image/map (fn [uv] [uv.x uv.y 0.5 0.5]) :width 13 :height 9)
+           n (image/noise :width 9 :height 7 :seed 31 :frequency 0.12)
+           a (image/render (draw/merge (draw/image p :at [2 1 0])
+                (draw/image n :at [21 5 0])
+                (draw/rect [(/ (frame/width) 4) (/ (frame/height) 4) 0] [3 4 0] :fill "#aaff0080")
+                (draw/circle [(+ 10 (* t 10)) 18 0] 7 :fill "#ff803080")) :width 37 :height 29)
+           b (image/render (draw/merge (draw/background "#23344580")
+                (draw/image a :at [3 2 0] :scale 1.1 :angle 0.3)))
+           s (image/render (draw/merge (draw/background "#33445580")
+                (draw/rect [1 2 0] [7 5 0] :fill "#00ffaa80")) :width 111 :height 89)]
+      (draw/merge (draw/background "#142030") (draw/image b)
+        (draw/image a :at [35 20 0] :scale 0.7) (draw/image s :at [3 4 0] :scale 0.25)))))`,
+    sizes: [[65, 43], [97, 51]], frames: 3, perFrame: 0, static: 1 },
+  { name: 'shared_state', source: `(workspace w (graph picture :context draw
+    (let* [n (state [s 0] (+ s 1))
+           p (image/map (fn [uv] [uv.x uv.y 0.5 0.7]) :width (+ 9 n) :height 7)
+           a (image/render (draw/merge (draw/image p)
+                (draw/circle [(* n 3) 20 0] 5 :fill "#ffaa4080")) :width (+ 40 n) :height 31)]
+      (draw/merge (draw/background "#142030")
+        (draw/circle [(* n 3) 35 0] 3 :fill "#ffaa40")
+        (draw/image a) (draw/image a :at [40 15 0] :scale 0.6)))))`,
+    sizes: [[65, 43], [97, 51]], frames: 3, perFrame: 1, static: 0 },
+  { name: 'render_regions', source: `(workspace w (graph picture :context draw
+    (let* [p (map (fn [i] [(* i 0.03) (+ 3 (* t 2)) 0]) (array/range 2048))
+           q (map (fn [i] [(* i 0.001) (+ 35 t) 0]) (array/range 32768))
+           a (image/render (draw/merge (draw/circles p :radius 0.3 :fill "#ffaa4080")
+                (draw/circles q :radius 1 :fill "#40aaff80")
+                (draw/circle (array/nth q 0) 1 :fill "#ffaa4080")) :width 65 :height 43)]
+      (draw/merge (draw/background "#142030") (draw/image a)
+        (draw/circles p :radius 0.1 :fill "#ffffff")))))`,
+    sizes: [[65, 43]], frames: 3, perFrame: 2, static: 0, invokePerFrame: 1 },
 ];
 const read = dir => Object.fromEntries(readdirSync(dir, { recursive: true }).filter(f => statSync(join(dir, f)).isFile())
   .map(f => ['/' + f, readFileSync(join(dir, f))]));
@@ -39,6 +82,13 @@ window.__result = (async () => {
   const rt = await start(canvas, program, { fixedDt: 1 / 60, data });
   if (!rt) return { unavailable: true };
   rt.halt(); rt.presenter.dpr = 1;
+  const produced = {};
+  const bump = id => { produced[id] = (produced[id] ?? 0) + 1; };
+  for (const method of ['image', 'uploadImage']) {
+    const run = rt.gpu[method]; rt.gpu[method] = (...args) => { bump(args[0]); return run(...args); };
+  }
+  const present = rt.presenter.present;
+  rt.presenter.present = (marks, size, target) => { if (target) bump(target.texture.label); return present(marks, size, target); };
   const results = [], references = [];
   for (let round = 0; round < sizes.length; round++) {
     const [W, H] = sizes[round];
@@ -47,24 +97,27 @@ window.__result = (async () => {
     rt.presenter.present(rt.marks, [W, H]);
     const g = new OffscreenCanvas(W, H).getContext('2d', { willReadFrequently: true });
     g.drawImage(canvas, 0, 0);
-    results.push({ raw: Array.from(g.getImageData(0, 0, W, H).data), counts: { ...rt.counts }, frame: rt.current.frame });
-    const image = Object.values(program.images)[0].kernel;
-    const texture = rt.gpu.imageTexture(image).texture;
+    results.push({ raw: Array.from(g.getImageData(0, 0, W, H).data), counts: { ...rt.counts }, produced: { ...produced }, frame: rt.current.frame });
+    const image = 'image' + Object.keys(program.images)[0];
+    const before = rt.gpu.imageTexture(image), texture = before.texture;
     await rt.stepFrame({ size: [W, H] });
-    references.push(texture === rt.gpu.imageTexture(image).texture);
+    const after = rt.gpu.imageTexture(image);
+    references.push((texture === after.texture) === (before.w === after.w && before.h === after.h));
   }
   const table = await (await fetch('kernels.json')).json();
-  const old = rt.gpu.imageTexture(Object.values(program.images)[0].kernel).texture;
+  const old = rt.gpu.imageTexture('image' + Object.keys(program.images)[0]).texture;
   await rt.gpu.update(table); rt.load(program);
   await rt.stepFrame({ size: sizes.at(-1) }); await rt.gpu.flush();
-  const reloaded = old !== rt.gpu.imageTexture(Object.values(program.images)[0].kernel).texture;
+  const reloaded = old !== rt.gpu.imageTexture('image' + Object.keys(program.images)[0]).texture;
   const bounds = [];
   for (const width of [0, -1, 1.5, Infinity, rt.gpu.device.limits.maxTextureDimension2D + 1]) {
-    try { rt.gpu.image(Object.values(program.images)[0].kernel, { width, height: 1, uniforms: {} }); }
+    try { rt.gpu.image('image' + Object.keys(program.images)[0], { width, height: 1, uniforms: {} }); }
+    catch (e) { bounds.push(e.code); }
+    try { rt.gpu.imageTarget('invalid target', width, 1); }
     catch (e) { bounds.push(e.code); }
   }
   let ties = null;
-  const t = Object.values(program.images).map(i => rt.gpu.imageTexture(i.kernel)).find(t => t.w === 3 && t.h === 5);
+  const t = Object.keys(program.images).map(i => rt.gpu.imageTexture('image' + i)).find(t => t.w === 3 && t.h === 5);
   if (t) {
     const device = rt.gpu.device, buffer = device.createBuffer({ size: 256 * 5, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
     const encoder = device.createCommandEncoder();
@@ -72,14 +125,15 @@ window.__result = (async () => {
     device.queue.submit([encoder.finish()]); await buffer.mapAsync(GPUMapMode.READ);
     ties = Array.from(new Uint8Array(buffer.getMappedRange()).slice(0, 4)); buffer.unmap(); buffer.destroy();
   }
-  return { results, references, reloaded, bounds, ties, errors: [...rt.presenter.errors, ...rt.gpuErrors.map(e => e.message)] };
+  return { results, references, reloaded, bounds, ties, rates: Object.fromEntries(Object.entries(program.images).map(([id, i]) => ['image' + id, i.animated])),
+    errors: [...rt.presenter.errors, ...rt.gpuErrors.map(e => e.message)] };
 })().catch(e => ({ failure: String(e.stack ?? e) }));
 </script>`;
 const wait = '(async () => { while (!window.__result) await new Promise(r => setTimeout(r, 50)); return window.__result; })()';
 for (const c of cases) {
   const tmp = mkdtempSync(join(tmpdir(), 'gpu-images-'));
   let dir = c.dir;
-  if (!dir) { dir = join(tmp, 'src'); mkdirSync(dir); writeFileSync(join(dir, 'sketch.rays'), synthetic); }
+  if (!dir) { dir = join(tmp, 'src'); mkdirSync(dir); writeFileSync(join(dir, 'sketch.rays'), c.source ?? synthetic); }
   execFileSync(lisp, ['web', join(dir, 'sketch.rays'), '-o', join(tmp, 'out')], { cwd: root, stdio: 'inherit' });
   const files = read(join(tmp, 'out')); files['/test.html'] = page(c.sizes, c.frames);
   const server = await serve(files, ISOLATION), browser = await launch(server.url + 'test.html');
@@ -90,7 +144,7 @@ for (const c of cases) {
   assert.deepEqual(r.errors, [], `${c.name}: GPU validation`);
   assert(r.references.every(Boolean), `${c.name}: unchanged dimensions must reuse texture`);
   assert(r.reloaded, `${c.name}: reload must replace image storage`);
-  assert.deepEqual(r.bounds, Array(5).fill('E_IMAGE'));
+  assert.deepEqual(r.bounds, Array(10).fill('E_IMAGE'));
   if (c.name === 'synthetic') assert.deepEqual(r.ties, [0, 2, 2, 128], 'RGBA8 rounding must use ties to even');
   for (let round = 0; round < c.sizes.length; round++) {
     const [W, H] = c.sizes[round], got = r.results[round];
@@ -106,8 +160,9 @@ for (const c of cases) {
     }
     console.log(`${m.ok ? 'ok' : 'FAIL'} ${c.name} ${W}x${H} frame ${got.frame}: ${m.over} pixels differ by >8, worst ${m.worst}, mean ${m.mean.toFixed(4)}; ${got.counts.gpu} GPU dispatches, ${got.counts.invoke} CPU invokes`);
     assert(m.ok, `${c.name}: native pixel parity`);
-    assert.equal(got.counts.invoke, 0);
+    assert.equal(got.counts.invoke, got.frame * (c.invokePerFrame ?? 0));
     assert.equal(got.counts.gpu, got.frame * c.perFrame + c.static);
+    for (const [id, animated] of Object.entries(r.rates)) assert.equal(got.produced[id], animated ? got.frame : 1, `${c.name}: ${id} rate/sharing`);
   }
 }
 
@@ -115,9 +170,13 @@ for (const c of cases) {
 // capture leaves WGSL unchanged but must import the new argument module instead of its cached predecessor.
 {
   const tmp = mkdtempSync(join(tmpdir(), 'image-watch-')), source = join(tmp, 'sketch.rays');
+  const asset = join(tmp, 'picture.ppm');
+  const picture = rgb => Buffer.concat([Buffer.from('P6\n1 1\n255\n'), Buffer.from(rgb)]);
+  writeFileSync(asset, picture([20, 40, 60]));
   const sketch = factor => `(workspace live (graph picture :context draw
     (let* [bias (* t ${factor})]
-      (draw/image (image/map (fn [uv] [(+ uv.x bias) uv.y 0.5 1]) :width 13 :height 9)))))`;
+      (draw/merge (draw/image (image/map (fn [uv] [(+ uv.x bias) uv.y 0.5 1]) :width 13 :height 9))
+        (draw/image (image/load ${JSON.stringify(asset)}) :at [2 3 0])))))`;
   writeFileSync(source, sketch(0.1));
   const proc = spawn(lisp, ['web', '--watch', source, '-o', join(tmp, 'out'), '--port', '0'], { cwd: root });
   let log = '', err = '', browser;
@@ -152,11 +211,31 @@ for (const c of cases) {
     assert(Math.abs(r.red - (0.5 / 13 + 0.2)) < 1e-6, 'watch must update live captures');
     assert(r.samePipeline, 'capture-only edits reuse the pixel pipeline');
     assert.deepEqual(r.errors, []);
+    writeFileSync(asset, picture([200, 100, 50]));
+    await ready('(__rays.reloads ?? 0) === 2');
+    const pixels = await browser.evaluate(`(async () => {
+      const rt = __rays; await rt.stepFrame({ size: [13, 9] });
+      const n = Object.keys(rt.program.images).find(n => rt.program.images[n].kind === 'load');
+      const device = rt.gpu.device, buffer = device.createBuffer({ size: 256, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+      const encoder = device.createCommandEncoder();
+      encoder.copyTextureToBuffer({ texture: rt.gpu.imageTexture('image' + n).texture }, { buffer, bytesPerRow: 256 }, [1, 1]);
+      device.queue.submit([encoder.finish()]); await buffer.mapAsync(GPUMapMode.READ);
+      const pixels = Array.from(new Uint8Array(buffer.getMappedRange()).slice(0, 4)); buffer.unmap(); buffer.destroy(); return pixels;
+    })()`);
+    assert.deepEqual(pixels, [200, 100, 50, 255], 'asset-only edits update resident pixels');
     const version = await (await fetch(new URL('version', url))).text();
+    writeFileSync(asset, 'not an image');
+    await new Promise(r => setTimeout(r, 1200));
+    assert.equal(await (await fetch(new URL('version', url))).text(), version, 'bad image keeps the last good export');
+    const successfulExports = (log.match(/web: exported/g) ?? []).length;
+    writeFileSync(asset, picture([200, 100, 50]));
+    await new Promise(r => setTimeout(r, 1200));
+    assert.equal(await (await fetch(new URL('version', url))).text(), version, 'repair retries and restores the same deterministic export');
+    assert.equal((log.match(/web: exported/g) ?? []).length, successfulExports + 1, 'asset repair actually re-exports');
     writeFileSync(source, '(workspace broken');
     await new Promise(r => setTimeout(r, 1200));
     assert.equal(await (await fetch(new URL('version', url))).text(), version, 'refusal keeps the last successful image export');
     assert.match(err, /web: refused/);
-    console.log('ok image watch: live captures reload, pipeline reused, refused edit keeps last good export');
+    console.log('ok image watch: live captures and asset-only edits reload; pipeline reused; bad images and syntax keep last good export; asset repair retries');
   } finally { browser?.close(); proc.kill(); }
 }

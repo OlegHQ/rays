@@ -33,17 +33,27 @@ val files : Editor_document.Workspace_doc.t -> lowered -> (files, Flow.Diagnosti
       one set with equal count and rate are merged by {!Flow_ir.Core_fuse.merge} into one kernel with an output
       each (id of the first member). Any other region is invoked on the CPU, since a frame that reads a value
       would need an in-frame readback, which is illegal on the web.
-    - Generated [image/map] producers compile through the packed compiler to WGSL vec4 output. Pixel-center UVs
-      are derived on the GPU without a UV buffer. [program.js] exports [images], keyed by plan id, with [kernel],
-      [args] (a core-compiled function for dimensions and scalar captures), [animated] and [frame]. The argument
-      functions are imported from content-addressed [image<ID>-<digest>.js] modules so watch reload cannot reuse
-      stale captures. The shared device converts output to straight-alpha RGBA8 (clamp, ties to even) and presents
-      its resident texture. Static images dispatch once per load, shared images at most once per frame. Capacity 64.
-    - [data.bin]: little-endian doubles; offsets are multiples of 8.
+    - [program.js] exports [images], keyed by plan id, with [kind] and [animated]. [image/map] adds [kernel],
+      [args] and [frame]: its packed pixel body emits WGSL vec4 output with GPU-derived pixel-center UVs and a
+      resident straight-alpha RGBA8 sink (clamp, ties to even). [image/noise] adds [args] and preserves native
+      double noise, defaults, frequency alias and seeds before uploading RGBA8. [image/render] adds [args] and
+      [drawing], both core-compiled modules: the drawing resolves nested images and uses the same GPU/CPU region
+      placement and presenter with an owned RGBA8 offscreen target at DPR 1. Backgrounds use the target size;
+      frame facts retain the main frame size. All modules share folds by native source identity. Modules are
+      content-addressed so watch reload cannot reuse stale captures or constant views. [image/load] adds [offset],
+      [length], [width] and [height]: its static file asset is bundled using the native SDL3_image decoder,
+      preserving formats, EXIF orientation and straight alpha without relying on browser codecs.
+      Static images run once per load, shared/animated images at most once per frame. Capacity 64; textures are
+      reused, resized or released on reload/stop, with device bounds checked before allocation.
+    - [data.bin]: little-endian doubles followed by decoded RGBA8 assets; every view starts at a multiple of 8.
     - [index.html] and [runtime/*.js].
-    Refused: an image other than [image/map], image arguments requiring packed regions or state ([E_WEB_IMAGE]),
+    Refused: a file path not known at export time, missing/invalid file images, an unsupported image pixel body
+    or more than 64 image producers ([E_WEB_IMAGE] or the pixel compiler's actual diagnostic),
     a region that is not a collecting single-output one
     ([E_WEB_REGION]), or one whose inputs change from frame to frame ([E_WEB_CAPTURE]), each with a span. *)
 
 val load : string -> string * (Editor_document.Workspace_doc.t, Flow.Diagnostic.t list) result
 (** The text of a [.rays] file and its checked document (imports read beside it). *)
+
+val dependencies : lowered -> string list
+(** Static file image paths, relative to the process working directory as on native. *)

@@ -10,7 +10,7 @@
 (library
  (name web_export)
  (modules web_export web_runtime)
- (libraries flow flow_ir flow_web flow_sop editor_document sop_catalog frame_input scene_command))
+ (libraries flow flow_ir flow_web flow_sop editor_document sop_catalog frame_input scene_command sdl3_image))
 
 (executable
  (name lisp)

@@ -4,7 +4,7 @@
 // (lib/rays_execution/rays_execution.ml: transform stack, clip, affine) and `Scene_execution.blends`.
 //
 //   const presenter = await createPresenter(canvas, {dpr, images, clear, shader})   // null (one message) without WebGPU
-//   presenter.present(marks, [width, height])   // the table of rt.marks, painter order; logical points
+//   presenter.present(marks, [width, height], target = null)   // optional owned RGBA8 image target at DPR 1
 //   presenter.dpr = 2                            // optional: the pixel ratio of the next present
 //   presenter.constants = data                   // optional: data.bin; attribute arrays that are views of it are uploaded once
 //   presenter.errors                             // WebGPU validation messages (empty when all is well)
@@ -71,12 +71,12 @@ export async function createPresenter(canvas, { dpr, images = () => null, clear 
   const problems = (await module.getCompilationInfo()).messages.filter(m => m.type === 'error');
   if (problems.length) throw new Error(`WGSL error in marks.wgsl: ${problems.map(m => `${m.lineNum}:${m.linePos} ${m.message}`).join('; ')}`);
   const pipelines = new Map();
-  const pipeline = (name, blend) => {
-    const key = `${name}:${blend}`;
+  const pipeline = (name, blend, targetFormat = format) => {
+    const key = `${name}:${blend}:${targetFormat}`;
     if (!pipelines.has(key)) pipelines.set(key, device.createRenderPipeline({ label: key, layout: 'auto',
       vertex: { module, entryPoint: `vs_${name}`, buffers: name === 'geometry'
         ? [{ arrayStride: 8, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x2' }] }] : [] },
-      fragment: { module, entryPoint: `fs_${name}`, targets: [{ format, blend: BLENDS[blend] }] },
+      fragment: { module, entryPoint: `fs_${name}`, targets: [{ format: targetFormat, blend: BLENDS[blend] }] },
       primitive: { topology: 'triangle-list', cullMode: 'none' } }));
     return pipelines.get(key);
   };
@@ -165,10 +165,10 @@ export async function createPresenter(canvas, { dpr, images = () => null, clear 
     return [pos[0], ext[0], fill[0], stroke[0], width[0], params].map(x => x instanceof Object && x.buffer && !ArrayBuffer.isView(x) ? x : { buffer: store(x) });
   };
 
-  const present = (marks, size) => {
-    const W = Math.round(size[0]), H = Math.round(size[1]), scale = self.dpr ?? win.devicePixelRatio ?? 1;
+  const present = (marks, size, target = null) => {
+    const W = Math.round(size[0]), H = Math.round(size[1]), scale = target ? 1 : self.dpr ?? win.devicePixelRatio ?? 1;
     const pw = Math.max(1, Math.round(W * scale)), ph = Math.max(1, Math.round(H * scale));
-    if (canvas.width !== pw || canvas.height !== ph) { canvas.width = pw; canvas.height = ph; }
+    if (!target && (canvas.width !== pw || canvas.height !== ph)) { canvas.width = pw; canvas.height = ph; }
     const projection = { xx: 2 / W, xy: 0, yx: 0, yy: -2 / H, tx: -1, ty: 1 };
     const transforms = [IDENTITY], clips = [[0, 0, W, H]];
     let blend = 'alpha';
@@ -245,10 +245,10 @@ export async function createPresenter(canvas, { dpr, images = () => null, clear 
     garbage.push(uniforms);
     draws.forEach((d, i) => device.queue.writeBuffer(uniforms, i * 256, d.u));
     const encoder = device.createCommandEncoder();
-    const pass = encoder.beginRenderPass({ colorAttachments: [{ view: context.getCurrentTexture().createView(),
-      clearValue: clear, loadOp: 'clear', storeOp: 'store' }] });
+    const pass = encoder.beginRenderPass({ colorAttachments: [{ view: target?.view ?? context.getCurrentTexture().createView(),
+      clearValue: target ? [0, 0, 0, 0] : clear, loadOp: 'clear', storeOp: 'store' }] });
     draws.forEach((d, i) => {
-      const p = pipeline(d.name, d.blend);
+      const p = pipeline(d.name, d.blend, target ? 'rgba8unorm' : format);
       pass.setPipeline(p);
       pass.setBindGroup(0, device.createBindGroup({ layout: p.getBindGroupLayout(0), entries: [
         ...d.resources.map(([binding, resource]) => ({ binding, resource })),

@@ -1535,3 +1535,63 @@ Shipping (`@all`, `@runtest`, `@smoke`, `git diff --check`) exits 0. The native 
 43 standard files and 13 fixtures at four times with one/eight domains; one custom-catalog executable is
 checked separately. Native GPU kernel and image qualification checks exit 0, including ties/clipping,
 live colors, reuse/resize, stale generations, resident image/mesh consumers and ownership.
+
+## Remaining image producers: P6.4d/P6.4e (2026-10-12)
+
+`image/load`, `image/noise` and `image/render` now export. Loaded files are decoded at build time by the
+same SDL3_image decoder as native, including EXIF orientation, and bundled as straight-alpha RGBA8 bytes
+in `data.bin`. The browser needs neither the source file nor its codec. Paths must be known at export
+time and retain native working-directory resolution. Missing/invalid files return `E_WEB_IMAGE` before
+writing output. Unbounded runtime file paths cannot be packaged into a standalone application and are
+refused explicitly. Existing unsupported pixel-body and region diagnostics remain in force.
+
+Noise uses the existing JavaScript double-precision noise implementation and native RGBA8 ties-even
+conversion, preserving defaults, `:frequency`/`:freq`, negative seeds and the full integer seed value.
+Rendered images use the same WebGPU presenter with an owned transparent RGBA8 target at DPR 1, including
+recursively resolved images, CPU/GPU regions, transforms and alpha. Target dimensions govern backgrounds;
+frame facts inside a drawing still describe the main frame. Every emitted module shares folds by the
+native instance/path/plane identity. Nested CPU regions use the shared worker pool and old regions are
+retired on reload. Text retains the existing browser-font parity limits recorded in P6.5.
+
+Machine and metric as in P6.4b/P6.4c: Apple M1, macOS 27.0.1, Node 24.19.0, Chrome 154 Metal WebGPU,
+fixed dt 1/60, pointer (100,100), DPR 1. At most 0.5% of pixels may differ by >8, none by >64; this metric
+is unchanged. Native snapshots use the native decoder, `Sop.Image_nodes.noise`, and `Drawing`/Metal Canvas.
+The native oracle advances image folds on each frame and resolves shared child images once per frame.
+
+| New fixture | Size | Frame | Pixels differing by >8 | Worst RGB channel difference | GPU dispatches | CPU region invokes |
+| --- | --- | --- | --- | --- | --- | --- |
+| flow_image | 640×480 | 3 | 0 | 0 | 0 | 0 |
+| loaded: PNG, JPEG, BMP, GIF, QOI, WebP, TGA, EXIF JPEG | 256×160 | 3 | 0 | 0 | 0 | 0 |
+| live noise, alias and negative/wide seeds | 65×43 | 3 | 0 | 0 | 0 | 0 |
+| live noise after resize | 97×51 | 7 | 0 | 0 | 0 | 0 |
+| nested render/map/noise, transparent transforms and static target | 65×43 | 3 | 0 | 0 | 1 | 0 |
+| nested render after resize | 97×51 | 7 | 0 | 0 | 1 | 0 |
+| shared fold in main drawing, image dimensions and offscreen drawing | 65×43 | 3 | 0 | 0 | 3 | 0 |
+| shared fold after resize | 97×51 | 7 | 0 | 0 | 7 | 0 |
+| offscreen GPU regions plus a 32,768-element CPU worker region | 65×43 | 3 | 0 | 0 | 6 | 3 |
+
+All nine new pictures match RGB byte for byte. The six existing generated-image comparisons retain their
+P6.4b/P6.4c results (contours worst 1, gradient worst 3); RGBA ties remain `[0,2,2,128]`. Production counts
+prove that each static producer runs once per load and each shared animated producer once per frame.
+Unchanged dimensions reuse textures; resized dimensions replace them. Both generated-image and generic
+offscreen-target APIs return `E_IMAGE` for zero, negative, fractional, nonfinite and over-limit dimensions.
+
+The actual watch command reloads a scalar capture while reusing its unchanged pixel pipeline, then an
+asset-only edit changes resident RGBA bytes to `[200,100,50,255]`. A corrupt image leaves `/version` and
+the last successful export intact; repairing it actually re-exports the same deterministic bundle.
+Malformed sketch text also preserves the last good bundle. A gated runtime test proves that replacement
+waits for an asynchronous drawing and that the next frame waits for replacement to finish.
+
+Validation, from the repository root:
+
+```sh
+_build/default/tools/check.exe @lib/flow_web/runtest @tools/lisp/test/runtest @tools/runtest @qualification-web
+_build/default/tools/check.exe --ship
+_build/default/tools/web_parity.exe examples/audio examples/basic examples/drawing examples/file_dialog examples/generative examples/noise examples/particles examples/pxui examples/recursive_rectangles sketches/flow_contours sketches/flow_image sketches/flow_image_kernel sketches/flow_particles_gpu sketches/flow_shader sketches/flow_vectors
+```
+
+All pass. The entire 15-workspace corpus exports, runs 120 frames with matching native mark tables and
+opens/continues in Chrome without errors. All prior GPU, presenter, reload, particle and image checks
+remain green. Shipping includes `@all`, `@runtest`, `@smoke` and `git diff --check`. No native product code
+or WGSL golden changes; six JS frame goldens change only for asynchronous image resolution or background
+target size. `flow_web` retains its portable dependency boundary; SDL decoding stays in the export tool.

@@ -7,9 +7,9 @@ loop iteration. Every file and line reference was read at commit `923dcecf`
 ledger at the end. Do not code against a name this file introduces until the
 task that creates it is ticked there.
 
-Current image scope: generated `image/map` images are part of the 2D export, with a resident
-WebGPU texture path (P6.4b/P6.4c). File-backed images, `image/noise` and `image/render` remain
-explicit refusals; the historical P5/P6 refusal tables below describe their original runs.
+Current image scope: the 2D export supports `image/map`, `image/noise`, `image/render` and static
+`image/load` assets (P6.4b–P6.4e). File paths must be known when building the standalone bundle.
+The historical P5/P6 refusal tables below describe their original runs.
 
 ## The design in one page
 
@@ -435,6 +435,8 @@ sketch. Phase 7 produces the numbers for the paper.
 | P6.4a | S | P6.5 | `lib/flow_web/js.ml`, `.mli`, `tools/lisp/web_export.ml`, `tools/web/runtime/{runtime,gpu,present}.js` | Repair (found building P6.8): the export ran every region on the CPU and `start` created no `gpu.js` device. A mark set whose region attributes are all GPU-legal on the web target (never read by the frame) is not invoked on the CPU: the frame prints `rt.gpuArray(k)` (a packed array of a device reference), the runtime dispatches the kernel once per frame (once per load when static; fused attributes are one multi-output kernel), one `GPUDevice` is shared by `gpu.js` and `present.js`, and the presenter binds the kernel's output buffer. A set not wholly GPU keeps the CPU path | `web_parity.exe` still passes the 10; `@qualification-web` renders `flow_particles_gpu` and a synthetic set against `marks_shot`, with `window.__rays` counters showing GPU dispatches and no CPU invoke |
 | P6.4b | S | P6.4a, P6.7 | `lib/flow_web/wgsl.ml`, `.mli`, `tools/lisp/web_export.ml`, `.mli`, `tools/web/runtime/{runtime,gpu,present}.js` | Repair: generated `image/map` images are 2D canvas work, not a host file resolver. Compile their instantiated pixel body with `Packed`, derive pixel-center UVs in WGSL (refine division to match native f32 UVs), compile live dimensions/captures with `Core_lower` and `Js.frame`, and publish a GPU-resident straight-alpha RGBA8 texture (clamp, ties to even, padded rows) on the shared device. No pixel readback or CPU pixel loop. Reuse one texture per image, replace on resize, release on reload/stop; capacity 64, checked WebGPU limits. Content-address argument modules so watch reload cannot use stale captures. Keep explicit refusals for other image kinds and unsupported pixel bodies | `@lib/flow_web/runtest`, `@tools/lisp/test/runtest`; `flow_contours`, `flow_image_kernel`, `flow_shader` export deterministically |
 | P6.4c | H | P6.4b | `tools/marks_shot.ml`, `tools/web_parity.ml`, `tools/web/test/{frames,runtime,gpu_images_e2e}.mjs`, `tools/dune`, `results.md` | Pin image resource identities/transforms in 120-frame parity. Compare generated pixels in Chrome with native `Image_kernel` and, for hard edges/pow, native `Flow_gpu.Run` plus `Image_sink`, using the unchanged pixel metric. Check animation, static/shared reuse, odd row width, RGBA clamp/rounding, transformed alpha layers, resize, reload and dimension failures. Keep all prior web checks and native regression checks | `@qualification-web` and `_build/default/tools/check.exe --ship`; record results and commands |
+| P6.4d | S | P6.4c | `lib/flow_web/js.ml`, `.mli`, `tools/lisp/{web_export,lisp,web_server}.ml`, `tools/web/runtime/{gpu,present,prims,runtime}.js` | Complete image producers: bundle native-decoded static file assets in data.bin, preserve seeded double noise and ties-even conversion, and lower recursive offscreen drawings through the same core/JS/GPU region placement and presenter. Namespace kernels, share folds by native source identity, distinguish frame size from image target size, preserve transparent RGBA8 output and DPR 1 image pixels. Own/reuse/resize/release textures under capacity 64 and device bounds. Watch imports/assets, keep last good exports after decoder errors, retry repairs and synchronize resource replacement with in-flight frames | Focused compiler/runtime checks and deterministic exports |
+| P6.4e | H | P6.4d | `tools/marks_shot.ml`, `tools/web/test/{gpu_images_e2e,runtime}.mjs`, `tools/lisp/test/web.t`, `tools/dune`, `results.md` | Compare native decoder fixtures (including EXIF JPEG), static/live noise (alias, negative and wide seeds), nested transparent renders, CPU/GPU regions and shared folds with native pixels. Pin static/shared reuse, resizing, texture ownership, typed failures, asset-only watch updates and repairs, plus all existing generated image regressions | `@qualification-web`, 120-frame full corpus parity and `tools/check.exe --ship` |
 | P6.6 | S | P5.10 | `tools/lisp/web_server.ml`, `.mli`, `lisp.ml` | `rays-lisp web --watch FILE`: poll the file's SHA-256 every 0.5 s as `lib/rays_editor/source_file.ml` does (`interval`, line 13), re-export on change, and serve the output directory on localhost with `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`. Serve `/version` as the export digest. Standard library and `unix` only | Cram test starts the server on a free port, fetches `/version` and a file with an OCaml client, and checks both headers |
 | P6.7 | H | P6.6 | `tools/web/runtime/runtime.js` | Reload: poll `/version` every 0.5 s; when it changes, re-import `program.js`, recompile only kernels whose text changed, reset state slots, keep the canvas | Manual check recorded: save in the native editor, the page updates |
 | P6.8 | S | P6.5, P6.7 | `tools/web_shot.ml`, `test/dune` | Pixel parity in a real browser, under a new alias `@qualification-web`: launch the local Chrome headless with WebGPU against the development server, capture the canvas for `examples/particles` at fixed-step frames, and compare with the native fixed-step export within a stated tolerance. If headless WebGPU is unavailable, the tool says so and exits with a distinct code | `dune build @qualification-web` |
@@ -473,8 +475,8 @@ until then the tasks after it are provisional.
 
 ## Ledger
 
-The original 95 tasks (63 for Sonnet, 25 for Haiku, 7 reviews) plus the two generated-image
-repairs P6.4b/P6.4c. Phases 0 to 4 are 68 of the original tasks
+The original 95 tasks (63 for Sonnet, 25 for Haiku, 7 reviews) plus the four image
+tasks P6.4b–P6.4e. Phases 0 to 4 are 68 of the original tasks
 and touch no browser code. Tick a task in the commit that completes it; add
 `note:` lines under a task that stopped.
 
@@ -911,6 +913,26 @@ Phases 6 and 7
   passes 120 frames for 14 of the original 15 workspaces, with one explicit `image/noise` refusal. All previous
   `@qualification-web` checks, `--ship` and `@lib/flow_gpu/runtest-native` pass. The shipping workspace sweep covers
   43 standard files, one custom-catalog executable and 13 fixtures, at four times and one/eight domains.
+- [x] P6.4d S
+  2026-10-12. All three remaining image producers export. Static `image/load` paths resolve as on native;
+  SDL3_image decodes every supported format, including EXIF orientation, into bundled RGBA8 bytes.
+  `image/noise` reuses double noise with native defaults, frequency alias, wide/negative seeds and ties-even
+  conversion. `image/render` uses the existing presenter on transparent RGBA8 offscreen targets at DPR 1,
+  recursively resolving images and keeping main-frame facts distinct from target size. Scalar arguments and
+  drawings share core/JS lowering, namespaced GPU regions and the shared CPU worker pool. Folds share slots
+  by native instance/path/plane. Static/shared rates, texture ownership and device bounds remain explicit.
+  Watch tracks imports/assets and synchronizes replacement with executing frames; bad assets preserve the
+  last good export, repaired assets retry, and edits during export cannot be swallowed by its fingerprint.
+- [x] P6.4e H
+  2026-10-12. New file/noise/render fixtures match native RGB pixels exactly at all tested sizes and frames.
+  The eight native decoder fixtures include PNG/JPEG/BMP/GIF/QOI/WebP/TGA and EXIF-rotated JPEG. Live noise,
+  shared folds, nested alpha/transforms, image dimensions differing from main-frame facts, oversized target
+  backgrounds, GPU/worker regions, static/shared counts, reuse/resize/reload and target bounds are pinned.
+  Asset-only watch edits update resident pixels; corruption preserves the bundle and repair actually retries.
+  Runtime tests pin in-flight frame/reload ordering; workers retire removed regions and reload byte-exactly.
+  Focused aliases, all web qualification checks and `--ship` pass. Full 15-workspace 120-frame mark parity
+  passes; all 15 open in Chrome. Existing WGSL goldens are unchanged; six JS frame goldens change only for
+  awaited image resolution or explicit drawing-target background size. Commands and results in `results.md`.
 - [x] P6.6 S
   2026-10-11. `rays-lisp web --watch FILE [-o DIR] [--port N]` (`tools/lisp/web_server.ml`, `.mli`; `lisp.ml`; stdlib and `unix`): one `select` loop on 127.0.0.1 (default port 8000, 0 picks a free one and the banner `serving http://127.0.0.1:PORT/` says which), polls the SHA-256 of FILE every 0.5 s, re-exports on change (`web_files` = check, `Web_export.lower`, `Web_export.files`; the files are renamed into DIR), and on a refusal prints the diagnostic and keeps serving the last good export (a refused text is not retried until it changes). GET only (405), paths with `..` or outside DIR are 404, every response carries COOP `same-origin` and COEP `require-corp`, `/version` is the SHA-256 of the export files. Imports of FILE are not watched. Gate `tools/lisp/test/web_server.t` (client `http_get.exe`): headers on 200, 404 and 405, content types, traversal attempts, version change on edit, refusal keeps the version. `@tools/lisp/test/runtest` green.
 - [x] P6.7 H

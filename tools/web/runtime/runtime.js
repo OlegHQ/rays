@@ -114,16 +114,26 @@ export function createRuntime(program, { now = () => performance.now() / 1000, f
   if (fixedDt !== undefined && !(Number.isFinite(fixedDt) && fixedDt > 0)) throw new RangeError('fixedDt must be finite and positive');
   const origin = now(), compiled = new Map();
   let last = origin, count = 0;
-  const regionOf = k => rt.program.regions[k] ?? prims.fail('E_CORE', 'Unknown region.');
   const stamps = new Map(), deviceInputs = new Map();   // GPU kernel groups: the frame each last ran, and their uploaded inputs
   const held = new Map();   // region id -> the source the pool holds, so a reload sends only the changed ones
+  const activeImages = new Set();
+  const scope = (program, marks = [], drawSize) => Object.assign(Object.create(rt), { program, marks, drawSize });
   const load = () => {
     stamps.clear();
+    activeImages.clear();
     for (const buffers of deviceInputs.values()) for (const b of buffers) b.destroy();
     deviceInputs.clear();
-    const live = new Set(rt.program.regions.map(r => r.source));
+    const programs = [rt.program, ...Object.values(rt.program.images ?? {}).flatMap(i => [i.args, i.drawing].filter(p => p?.regions))];
+    const live = new Set(programs.flatMap(p => p.regions.map(r => r.source)));
     for (const source of compiled.keys()) if (!live.has(source)) compiled.delete(source);
-    if (rt.pool) rt.program.regions.forEach((r, k) => { if (held.get(k) !== r.source) { rt.pool.load(k, r.source); held.set(k, r.source); } });
+    if (rt.pool) {
+      const ids = new Set();
+      for (const program of programs) program.regions.forEach((r, k) => {
+        const id = r.id ?? k; ids.add(id);
+        if (held.get(id) !== r.source) { rt.pool.load(id, r.source); held.set(id, r.source); }
+      });
+      for (const id of held.keys()) if (!ids.has(id)) { rt.pool.unload(id); held.delete(id); }
+    }
   };
   const FACTS = { t: input => input.t, 'frame/dt': input => input.dt, 'frame/index': input => input.frame,
     'frame/width': input => input.size[0], 'frame/height': input => input.size[1] };
@@ -133,7 +143,7 @@ export function createRuntime(program, { now = () => performance.now() / 1000, f
     counts: { invoke: 0, gpu: 0 },   // CPU region invocations and GPU dispatches, for tests
     // A region as a function, compiled once per source text; calls run on the calling thread.
     region(id) {
-      const source = regionOf(id).source;
+      const source = (this.program.regions[id] ?? prims.fail('E_CORE', 'Unknown region.')).source;
       if (!compiled.has(source)) compiled.set(source, new Function(`${source}\nreturn region;`)());
       return compiled.get(source);
     },
@@ -143,14 +153,15 @@ export function createRuntime(program, { now = () => performance.now() / 1000, f
     // there is none here, so it is E_KERNEL.
     async invoke(k, args) {
       rt.counts.invoke++;
-      const r = regionOf(k), input = rt.current;
+      const r = this.program.regions[k] ?? prims.fail('E_CORE', 'Unknown region.'), input = rt.current;
       const inputs = r.inputs.map(([offset, length]) => new Float64Array(rt.data, offset, length));
       const facts = new Float64Array(r.length);
       for (const [slot, name] of r.frame) facts[slot] = Number(FACTS[name](input));
       const uniforms = [...r.uniforms.map(u => Float64Array.from(u)), facts];
-      const outputs = [rt.pool ? rt.pool.alloc(r.kept * r.width) : new Float64Array(r.kept * r.width)];
-      const status = rt.pool ? await rt.pool.collect(k, inputs, uniforms, outputs, r.count)
-        : rt.region(k)(inputs, uniforms, outputs, 0, r.count);
+      const pool = rt.pool;
+      const outputs = [pool ? pool.alloc(r.kept * r.width) : new Float64Array(r.kept * r.width)];
+      const status = pool ? await pool.collect(r.id ?? k, inputs, uniforms, outputs, r.count)
+        : this.region(k)(inputs, uniforms, outputs, 0, r.count);
       if (status !== 0) prims.fail('E_KERNEL', 'Kernel needs reference evaluation.');
       return new prims.PArray(r.width, outputs[0]);
     },
@@ -158,7 +169,7 @@ export function createRuntime(program, { now = () => performance.now() / 1000, f
     // per load when no frame fact feeds it, with the inputs uploaded once; the value is a packed array of device references
     // {gpu, output, length} that only a mark set attribute can hold, which the presenter binds (present.js `elements`).
     gpuRun(id) {
-      const g = rt.program.gpu?.[id] ?? prims.fail('E_CORE', 'Unknown GPU kernel.');
+      const g = this.program.gpu?.[id] ?? prims.fail('E_CORE', 'Unknown GPU kernel.');
       const input = rt.current, stamp = g.frame.length ? input.frame : 0;
       if (stamps.get(id) === stamp) return g;
       if (!rt.gpu) prims.fail('E_KERNEL', 'This region runs on the GPU and there is no GPU.');
@@ -173,23 +184,44 @@ export function createRuntime(program, { now = () => performance.now() / 1000, f
       return g;
     },
     gpuArray(k) {
-      const r = regionOf(k), g = rt.gpuRun(r.kernel);
+      const r = this.program.regions[k] ?? prims.fail('E_CORE', 'Unknown region.'), g = this.gpuRun(r.kernel);
       return new prims.PArray(r.width, { gpu: r.kernel, output: r.gpu.output, length: g.count * r.width });
     },
     // One resident image per plan node. Its scalar arguments use the core frame printer; the pixel
     // function uses the packed WGSL printer. Static images run once per load; shared draws run once per frame.
-    image(n) {
+    async image(n) {
       const image = rt.program.images?.[n] ?? prims.fail('E_IMAGE', 'Unknown generated image.');
-      const stamp = image.animated ? rt.current.frame : 0, id = image.kernel;
+      const stamp = image.animated ? rt.current.frame : 0, id = `image${n}`;
       if (stamps.get(id) !== stamp) {
         if (!rt.gpu) prims.fail('E_IMAGE', 'Generated images need WebGPU.');
-        const [w, h, ...captures] = image.args(rt.current, rt.slots, rt);
-        const uniforms = {};
-        captures.forEach((u, i) => { uniforms[`uniform:${i}`] = ArrayBuffer.isView(u) ? u : Number(u); });
-        for (const [slot, name] of image.frame) uniforms[`frame:${slot}:${name}`] = Number(FACTS[name](rt.current));
-        rt.gpu.image(id, { width: Number(w), height: Number(h), uniforms });
-        stamps.set(id, stamp);
-        rt.counts.gpu++;
+        if (activeImages.has(n)) prims.fail('E_IMAGE', 'An image/render dependency cycle cannot be drawn.');
+        activeImages.add(n);
+        try {
+          if (image.kind === 'load') {
+            rt.gpu.uploadImage(id, image.width, image.height, new Uint8Array(rt.data, image.offset, image.length));
+          } else {
+            const argsRt = scope(image.args);
+            const [w, h, ...captures] = await image.args.frame(rt.current, rt.slots, argsRt);
+            const width = Number(w), height = Number(h);
+            if (image.kind === 'map') {
+              const uniforms = {};
+              captures.forEach((u, i) => { uniforms[`uniform:${i}`] = ArrayBuffer.isView(u) ? u : Number(u); });
+              for (const [slot, name] of image.frame) uniforms[`frame:${slot}:${name}`] = Number(FACTS[name](rt.current));
+              rt.gpu.image(image.kernel, { width, height, uniforms });
+              rt.counts.gpu++;
+            } else if (image.kind === 'noise') {
+              rt.gpu.imageTarget(id, width, height);   // validate dimensions before allocating CPU pixels
+              rt.gpu.uploadImage(id, width, height, prims.image_noise(width, height, Number(captures[0]), captures[1]));
+            } else if (image.kind === 'render') {
+              const target = rt.gpu.imageTarget(id, width, height);
+              if (!rt.presenter) prims.fail('E_IMAGE', 'Image drawings need a WebGPU presenter.');
+              const drawingRt = scope(image.drawing, [], [width, height]);
+              await image.drawing.frame(rt.current, rt.slots, drawingRt);
+              rt.presenter.present(drawingRt.marks, [width, height], target);
+            } else prims.fail('E_IMAGE', 'Unknown image producer.');
+          }
+          stamps.set(id, stamp);
+        } finally { activeImages.delete(n); }
       }
       return n + 1;
     },
@@ -200,20 +232,25 @@ export function createRuntime(program, { now = () => performance.now() / 1000, f
     // eventRecord Maps); the live events are drained either way. Resolves to program.frame's result. A frame that
     // throws leaves no pending state write behind, as native `Eval.transaction` rolls them back.
     async stepFrame(override) {
-      const t = now(), delta = Math.min(t - last, 0.1);
-      last = t; count++;
-      rt.gpu?.poll();   // gpu.js: status words of last frame's dispatches
-      if (rt.gpuErrors.length) { const e = rt.gpuErrors.shift(); prims.fail(e.code, e.message); }
-      const dt = fixedDt ?? delta;
-      const input = { ...rt.input.snapshot(), t: fixedDt !== undefined ? count * dt : t - origin, dt, frame: count, tick: count, ...override };
-      rt.marks.length = 0;
-      rt.current = input;
-      try { return await rt.program.frame(input, rt.slots, rt); }
-      catch (error) {
+      while (rt.reloadReady) await rt.reloadReady;
+      let finish;
+      rt.frameDone = new Promise(resolve => { finish = resolve; });
+      let input;
+      try {
+        const t = now(), delta = Math.min(t - last, 0.1);
+        last = t; count++;
+        rt.gpu?.poll();   // gpu.js: status words of last frame's dispatches
+        if (rt.gpuErrors.length) { const e = rt.gpuErrors.shift(); prims.fail(e.code, e.message); }
+        const dt = fixedDt ?? delta;
+        input = { ...rt.input.snapshot(), t: fixedDt !== undefined ? count * dt : t - origin, dt, frame: count, tick: count, ...override };
+        rt.marks.length = 0;
+        rt.current = input;
+        return await rt.program.frame(input, rt.slots, rt);
+      } catch (error) {
         for (const cells of rt.slots) for (const c of cells?.values() ?? [])
-          if (c.pending !== undefined && (c.stamp === input.frame || c.stamp === input.tick)) c.pending = undefined;
+          if (c.pending !== undefined && (c.stamp === input?.frame || c.stamp === input?.tick)) c.pending = undefined;
         throw error;
-      }
+      } finally { finish(); }
     },
   };
   load();
@@ -241,11 +278,15 @@ export function watch(rt, { fetch = globalThis.fetch?.bind(globalThis), load = u
       version = text;   // a failed reload is retried at the next change, not every interval
       const [program, data, table] = await Promise.all([load(url('program.js', text)),
         fetch(url('data.bin', text)).then(r => r.arrayBuffer()), fetch(url('kernels.json', text)).then(r => r.json())]);
-      await rt.gpu?.update(table);
-      rt.data = data;
-      if (rt.presenter) rt.presenter.constants = data;   // present.js keeps the constants of the old data.bin no longer
-      rt.load(program);
-      rt.reloads = (rt.reloads ?? 0) + 1;
+      rt.reloadReady = (async () => {
+        await rt.frameDone;   // an offscreen drawing must finish before its textures are destroyed
+        await rt.gpu?.update(table);
+        rt.data = data;
+        if (rt.presenter) rt.presenter.constants = data;
+        rt.load(program);
+        rt.reloads = (rt.reloads ?? 0) + 1;
+      })();
+      try { await rt.reloadReady; } finally { rt.reloadReady = null; }
       rt.resume?.();
       return true;
     } catch (error) { console.error(error); return false; }

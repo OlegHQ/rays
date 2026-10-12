@@ -269,14 +269,32 @@ await start(document.getElementById("canvas"), program, { data });
 (* Image maps share the packed compiler with native images. One dummy UV is enough to compile the
    body; WGSL derives the real UV from the pixel index. Dimensions and scalar captures use the same
    core/JS lowering as the frame, so animated captures are evaluated rather than frozen at export. *)
-let image_entry (lowered : lowered) id =
+let image_arguments ?(canvas=false) (lowered : lowered) (node : Flow.Eval.node) values =
+  let results = ref [] in
+  let source : C.source = {site=node.site; owner=node.site; instance=node.inst;
+    prefix=[]; iter=List.map (fun i -> C.Static_index i) node.iter; span=Some lowered.span} in
+  let rec residual = function
+    | Flow.Eval.Residual r -> Some r
+    | List xs -> Array.find_map residual xs
+    | Record fields | Struct (_, _, fields) -> List.find_map (fun (_, v) -> residual v) fields
+    | _ -> None in
+  let root = List.find_map residual values in
+  let root = match root with Some r -> Some r | None -> lowered.root in
+  let* args = Flow_ir.Core_lower.lower_draw ~root:(lazy (Option.get root)) (fun ctx ->
+    results := List.mapi (fun i value ->
+      let dimension = if i = 0 then "width" else "height" in
+      if canvas && i < 2 && not (List.mem_assoc dimension node.args) then begin
+        let n = ctx.local Flow.Ty.Int in
+        ctx.emit source (C.Assign (n, Frame (if i = 0 then Width else Height))); n
+      end else ctx.value source value) values)
+    |> Result.map_error (fun name -> D.error ~span:lowered.span ~code:"E_WEB_IMAGE" ("Image arguments do not lower to the core: " ^ name)) in
+  Ok {args with results=Array.of_list !results}
+
+let map_entry (lowered : lowered) id =
   let module E = Flow.Eval in
   let span = lowered.span in
   let refuse message = Error (D.error ~span ~code:"E_WEB_IMAGE" message) in
   let node = lowered.plan.nodes.(id) in
-  if node.kind <> "image/map" then
-    refuse ("The web export supports generated image/map images; " ^ node.kind ^ " is not supported yet.")
-  else
   let arg name fallback = Option.value (List.assoc_opt name node.args) ~default:fallback in
   match arg "function" (E.Int 0) with
   | E.Fn fn ->
@@ -290,18 +308,7 @@ let image_entry (lowered : lowered) id =
            let* () = match Flow_web.Target.region packed ~count:None with d :: _ -> Error d | [] -> Ok () in
            let* wgsl = Flow_web.Wgsl.kernel ~image:true packed in
            let values = [arg "width" (E.Int 256); arg "height" (E.Int 256)] @ Array.to_list region.uniforms in
-           let results = ref [] in
-           let source : C.source = {site=node.site; owner=node.site; instance=node.inst;
-             prefix=[]; iter=List.map (fun i -> C.Static_index i) node.iter; span=Some span} in
-           let* args = Flow_ir.Core_lower.lower_draw ~root:(lazy r) (fun ctx ->
-             results := List.map (ctx.value source) values)
-             |> Result.map_error (fun name -> D.error ~span ~code:"E_WEB_IMAGE" ("Image arguments do not lower to the core: " ^ name)) in
-           if args.regions <> [||] || args.state_slots <> [||] then
-             refuse "Image dimensions and captures must be scalar frame values, without packed regions or state."
-           else
-           let args = {args with results=Array.of_list !results} in
-           let* js = Flow_web.Js.frame args in
-           let module_file = Printf.sprintf "image%d-%s.js" id (Digest.to_hex (Digest.string js)) in
+           let* args = image_arguments {lowered with root=Some r} node values in
            let animated = List.exists E.frame_dependent values
              || Array.exists (function C.Region.Frame _ -> true | _ -> false) region.code in
            let frames = Array.to_list region.code |> List.mapi (fun slot -> function
@@ -309,22 +316,11 @@ let image_entry (lowered : lowered) id =
            let* () = match List.find_opt (fun (_, name) -> not (List.mem name frame_facts)) frames with
              | None -> Ok ()
              | Some (_, name) -> refuse ("Image kernel reads an unavailable frame fact: " ^ name) in
-           let metadata = Printf.sprintf "\"%d\": {kernel: \"image%d\", args: image%d, animated: %b, frame: %s}"
-             id id id animated (list (fun (slot, name) -> Printf.sprintf "[%d, %s]" slot (Flow_web.Kernel_table.json_string name)) frames) in
-           Ok (Printf.sprintf "import { frame as image%d } from \"./%s\";\n" id module_file,
-             (module_file, js), metadata, (Printf.sprintf "image%d" id, wgsl))
+           Ok (args, animated, frames, wgsl)
        | _ -> refuse "Image map did not produce a packed pixel body.")
   | _ -> refuse "Image map needs a pixel function."
 
 let files (doc : Doc.t) (lowered : lowered) : (files, D.t) result =
-  let program = lowered.program in
-  let statements = all_statements program.body in
-  let image_ids = List.filter_map (fun (s : C.statement) -> match s.node with
-    | Draw (Image {source=(_, id); _}) -> Some id | _ -> None) statements |> List.sort_uniq Int.compare in
-  let* images = if List.length image_ids > 64 then
-    Error (D.error ~span:lowered.span ~code:"E_WEB_IMAGE" "A web workspace owns at most 64 generated images.")
-    else List.fold_left (fun acc id -> let* acc = acc in let* entry = image_entry lowered id in Ok (entry :: acc)) (Ok []) image_ids
-      |> Result.map List.rev in
   let data = Buffer.create 4096 in
   let stored = Hashtbl.create 16 in
   let store values =
@@ -334,39 +330,114 @@ let files (doc : Doc.t) (lowered : lowered) : (files, D.t) result =
     offset, Array.length values in
   (* A kernel's inputs are the data its regions already hold, when they are the same arrays. *)
   let shared values = match Hashtbl.find_opt stored values with Some placed -> placed | None -> store values in
+  let kernels = ref [] and modules = ref [] and imports = ref [] in
+  let states = Hashtbl.create 16 in
+  let kernel id (w : Flow_web.Wgsl.wgsl) =
+    kernels := !kernels @ [Flow_web.Kernel_table.entry ~id w, "// kernel " ^ id ^ "\n" ^ w.source] in
+  let emit_program prefix (program : C.program) =
+  let slots = Array.map (fun (slot : C.state_slot) ->
+    let key = slot.source.instance, slot.prefix @ slot.zone, slot.plane in
+    match Hashtbl.find_opt states key with Some id -> id | None ->
+      let id = Hashtbl.length states in Hashtbl.add states key id; id) program.state_slots in
   let* entries = Array.to_list program.regions
     |> List.fold_left (fun acc r -> let* acc = acc in let* entry = region_entry ~data:store r in Ok (entry :: acc)) (Ok [])
     |> Result.map (fun l -> Array.of_list (List.rev l)) in
   let good, per_batch = gpu_regions program ~width:(fun k -> Option.map (fun _ -> entries.(k).width) entries.(k).kernel) in
-  let groups = groups entries per_batch in
+  let groups = groups entries per_batch |> List.map (fun g -> {g with id=prefix ^ g.id}) in
   let group_of = Hashtbl.create 8 in
   List.iter (fun g -> List.iteri (fun output k -> Hashtbl.replace group_of k (g, output)) g.members) groups;
-  let* js = Flow_web.Js.frame ~gpu:(fun k -> Ints.mem k good) ~store:(fun values ->
+  let* js = Flow_web.Js.frame ~state_slot:(Array.get slots) ~gpu:(fun k -> Ints.mem k good) ~store:(fun values ->
     let offset, length = store values in Printf.sprintf "new Float64Array(rt.data, %d, %d)" offset length) program in
   let region_text k (e : region_entry) = match Hashtbl.find_opt group_of k with
     | Some (g, output) -> Printf.sprintf "%s, \"kernel\": \"%s\", \"gpu\": {\"output\": %d}}" e.prefix g.id output
     | None -> Printf.sprintf "%s, \"kernel\": %s}" e.prefix
-        (match e.kernel with Some _ -> Printf.sprintf "\"k%d\"" k | None -> "null") in
-  let regions = "export const regions = [" ^ String.concat ",\n  " (Array.to_list (Array.mapi region_text entries)) ^ "];\n" in
+        (match e.kernel with Some _ -> Printf.sprintf "\"%sk%d\"" prefix k | None -> "null") in
+  let regions = "export const regions = [" ^ String.concat ",\n  " (Array.to_list (Array.mapi (fun k e ->
+    let text = region_text k e in
+    if prefix = "" then text else "{\"id\": " ^ Flow_web.Kernel_table.json_string (Printf.sprintf "%sr%d" prefix k)
+      ^ ", " ^ String.sub text 1 (String.length text - 1)) entries)) ^ "];\n" in
   let table = if groups = [] then "" else
     "export const gpu = {" ^ String.concat ",\n  " (List.map (fun g ->
       Printf.sprintf "\"%s\": {%s}" g.id (fixed_members ~data:shared g.fixed)) groups) ^ "};\n" in
-  let kernel id (w : Flow_web.Wgsl.wgsl) = Flow_web.Kernel_table.entry ~id w, "// kernel " ^ id ^ "\n" ^ w.source in
-  let kernels = List.concat (List.mapi (fun k (e : region_entry) -> match Hashtbl.find_opt group_of k with
-    | Some (g, _) -> if List.hd g.members = k then [kernel g.id g.wgsl] else []
-    | None -> (match e.kernel with Some w -> [kernel (Printf.sprintf "k%d" k) w] | None -> [])) (Array.to_list entries)) in
-  let image_imports = String.concat "" (List.map (fun (imports, _, _, _) -> imports) images) in
-  let image_table = if images = [] then "" else "export const images = {"
-    ^ String.concat ",\n  " (List.map (fun (_, _, metadata, _) -> metadata) images) ^ "};\n" in
-  let kernels = kernels @ List.map (fun (_, _, _, (id, w)) -> kernel id w) images in
+  Array.iteri (fun k (e : region_entry) -> match Hashtbl.find_opt group_of k with
+    | Some (g, _) -> if List.hd g.members = k then kernel g.id g.wgsl
+    | None -> Option.iter (kernel (Printf.sprintf "%sk%d" prefix k)) e.kernel) entries;
+  Ok (js ^ "\n" ^ regions ^ table) in
+  let emit_module name program =
+    let* js = emit_program (name ^ ":") program in
+    let file = name ^ "-" ^ Digest.to_hex (Digest.string (js ^ Buffer.contents data)) ^ ".js" in
+    modules := (file, js) :: !modules;
+    imports := Printf.sprintf "import * as %s from \"./%s\";\n" name file :: !imports;
+    Ok name in
+  let image_ids program = all_statements program.C.body |> List.filter_map (fun (s : C.statement) -> match s.node with
+    | Draw (Image {source=(_, id); _}) -> Some id | _ -> None) |> List.sort_uniq Int.compare in
+  let live program = program.C.state_slots <> [||]
+    || List.exists (fun (s : C.statement) -> match s.node with Assign (_, Frame _) -> true | _ -> false) (all_statements program.body)
+    || Array.exists (fun (r : C.Region.t) -> Array.exists (function C.Region.Frame _ -> true | _ -> false) r.code) program.regions in
+  let images = Hashtbl.create 16 and order = ref [] and assets = ref [] in
+  let refuse message = Error (D.error ~span:lowered.span ~code:"E_WEB_IMAGE" message) in
+  let rec image active id =
+    if List.mem id active then refuse "An image/render dependency cycle cannot be exported."
+    else if Hashtbl.mem images id then Ok ()
+    else if Hashtbl.length images + List.length active >= 64 then refuse "A web workspace owns at most 64 images."
+    else
+    let node = lowered.plan.nodes.(id) in
+    let arg name fallback = Option.value (List.assoc_opt name node.args) ~default:fallback in
+    let args values = image_arguments lowered node values in
+    let name = Printf.sprintf "image%d" id in
+    let* animated, metadata = match node.kind with
+      | "image/map" ->
+          let* args, animated, frames, wgsl = map_entry lowered id in
+          let* module_name = emit_module name args in
+          kernel name wgsl;
+          Ok (animated || live args, Printf.sprintf "kind: 'map', kernel: '%s', args: %s, frame: %s" name module_name
+            (list (fun (slot, fact) -> Printf.sprintf "[%d, %s]" slot (Flow_web.Kernel_table.json_string fact)) frames))
+      | "image/noise" ->
+          let* args = args [arg "width" (Flow.Eval.Int 256); arg "height" (Int 256);
+            arg "frequency" (arg "freq" (Float 0.02)); arg "seed" (Int 0)] in
+          let* module_name = emit_module name args in
+          Ok (live args, "kind: 'noise', args: " ^ module_name)
+      | "image/render" ->
+          let* drawing, _ = Flow_ir.Core_draw.lower lowered.plan (arg "drawing" (Flow.Eval.Int 0))
+            |> Result.map_error (fun message -> D.error ~span:lowered.span ~code:"E_WEB_IMAGE" ("Image drawing does not lower to the core: " ^ message)) in
+          let* () = List.fold_left (fun acc child -> let* () = acc in image (id :: active) child) (Ok ()) (image_ids drawing) in
+          let* args = image_arguments ~canvas:true lowered node [arg "width" (Flow.Eval.Int 0); arg "height" (Int 0)] in
+          let* args_name = emit_module name args in
+          let* drawing_name = emit_module ("drawing" ^ string_of_int id) drawing in
+          let animated = live args || live drawing || List.exists (fun child -> fst (Hashtbl.find images child)) (image_ids drawing) in
+          Ok (animated, Printf.sprintf "kind: 'render', args: %s, drawing: %s" args_name drawing_name)
+      | "image/load" ->
+          (match arg "path" (Flow.Eval.Int 0) with
+           | Flow.Eval.Text path ->
+               let* decoded = Sdl3_image.load_file path |> Result.map_error (fun e ->
+                 D.error ~span:lowered.span ~code:"E_WEB_IMAGE" (Format.asprintf "Cannot bundle image %S: %a" path Sdl3_image.pp_error e)) in
+               assets := (id, decoded) :: !assets;
+               Ok (false, "kind: 'load'")
+           | _ -> refuse "A standalone export needs image/load paths known at export time.")
+      | kind -> refuse ("Unknown image producer: " ^ kind) in
+    Hashtbl.add images id (animated, metadata); order := id :: !order; Ok () in
+  let* () = List.fold_left (fun acc id -> let* () = acc in image [] id) (Ok ()) (image_ids lowered.program) in
+  let* js = emit_program "" lowered.program in
+  (* Native-decoded bytes preserve every supported codec, EXIF orientation and straight alpha.
+     Store them after all f64 constants so every constant view remains aligned to eight bytes. *)
+  List.iter (fun (id, (decoded : Sdl3.rgba)) ->
+    while Buffer.length data mod 8 <> 0 do Buffer.add_char data '\000' done;
+    let offset = Buffer.length data in
+    Buffer.add_bytes data decoded.pixels;
+    let animated, metadata = Hashtbl.find images id in
+    Hashtbl.replace images id (animated, metadata ^ Printf.sprintf ", offset: %d, length: %d, width: %d, height: %d"
+      offset (Bytes.length decoded.pixels) decoded.width decoded.height)) (List.rev !assets);
+  let image_table = if Hashtbl.length images = 0 then "" else "export const images = {"
+    ^ String.concat ",\n  " (List.map (fun id -> let animated, metadata = Hashtbl.find images id in
+      Printf.sprintf "'%d': {%s, animated: %b}" id metadata animated) (List.rev !order)) ^ "};\n" in
   let name = Doc.name doc in
-  Ok ([ "program.js", image_imports ^ js ^ "\n" ^ regions ^ table ^ image_table;
-        "program.map", Flow_web.Js.frame_map program;
-        "kernels.json", Flow_web.Kernel_table.table (List.map fst kernels);
-        "kernels.wgsl", String.concat "\n" (List.map snd kernels);
+  Ok ([ "program.js", String.concat "" (List.rev !imports) ^ js ^ image_table;
+        "program.map", Flow_web.Js.frame_map lowered.program;
+        "kernels.json", Flow_web.Kernel_table.table (List.map fst !kernels);
+        "kernels.wgsl", String.concat "\n" (List.map snd !kernels);
         "data.bin", Buffer.contents data;
         "index.html", index_html name ]
-      @ List.map (fun (_, file, _, _) -> file) images
+      @ List.rev !modules
       @ List.map (fun (file, text) -> "runtime/" ^ file, text) Web_runtime.files)
 
 let load path =
@@ -382,3 +453,9 @@ let load path =
         match Editor_document.Contexts.catalog ~version:Flow_sop.Manifest.version Sop_catalog.Editor.factories with
         | Error d -> Error [d]
         | Ok catalog -> Result.map fst (Doc.check_text ~imports catalog text))
+
+let dependencies (lowered : lowered) =
+  Array.to_list lowered.plan.nodes |> List.filter_map (fun (node : Flow.Eval.node) ->
+    if node.kind = "image/load" then match List.assoc_opt "path" node.args with
+      | Some (Flow.Eval.Text path) -> Some path | _ -> None
+    else None) |> List.sort_uniq String.compare

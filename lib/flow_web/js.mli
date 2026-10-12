@@ -34,10 +34,13 @@ val region : Flow_ir.Packed.t -> string
     Skipped indices are not evaluated and do not occupy an output slot. Noise
     permutation tables are embedded in the source. *)
 
-val frame : ?store:(float array -> string) -> ?gpu:(int -> bool) -> Flow_ir.Core.program -> (string, Flow.Diagnostic.t) result
+val frame : ?store:(float array -> string) -> ?gpu:(int -> bool) -> ?state_slot:(int -> int) -> Flow_ir.Core.program -> (string, Flow.Diagnostic.t) result
 (** [store], when given, prints every packed-array constant: it receives the elements and returns a JavaScript
     expression for a [Float64Array] of them (the export keeps them in [data.bin]); without it the elements
     are written inline.
+
+    [state_slot] maps program-local slots into a shared workspace slot array. The default is identity;
+    the web exporter shares a fold read by the main drawing and any image argument or nested drawing.
 
     [gpu region], when given and true for a region index, prints the region's [Invoke] as [await rt.gpuArray(k)] instead of
     [await rt.invoke(k, [])]: the export placed the region on the GPU, and the runtime answers with a packed array whose
@@ -46,7 +49,7 @@ val frame : ?store:(float array -> string) -> ?gpu:(int -> bool) -> Flow_ir.Core
     the output is exactly as before.
 
     The frame level as one ES module exporting [frame(input, state, rt)] (an [async] function
-    exactly when the program invokes a region). It returns the program's single result, or an array
+    exactly when the program invokes a region or resolves an image). It returns the program's single result, or an array
     of results when there are not exactly one (a draw program returns [[]]). A failure is thrown
     as [rt.Fail] (or a JavaScript error) with the executing statement's {!C.statement} [id] set as
     [error.statement]; {!frame_map} turns it into a source span. Errors are
@@ -72,7 +75,8 @@ val frame : ?store:(float array -> string) -> ?gpu:(int -> bool) -> Flow_ir.Core
           {- [rt.marks]: the mark table, an array the runtime empties before each frame;}
           {- [rt.invoke(k, args)]: the value (a [PArray] or number, as [Packed.force]) of region
              [k] of the exporter's region table, possibly a promise; [args] is always [[]];}
-          {- [rt.image(n)]: the host resource id (positive integer) of plan image node [n];}
+          {- [rt.image(n)]: the host resource id (positive integer), or its promise, of plan image node [n];}
+          {- [rt.drawSize]: optional logical target size for backgrounds; defaults to [input.size];}
           {- [rt.polygon(points, fill, stroke)], [rt.polyline(points, color)] and
              [rt.rounded_rect(width, height, radius, fill, stroke)]: the pure
              [Scene_command.Shape2] tessellation, each returning an array of geometry entries

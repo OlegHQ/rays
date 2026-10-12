@@ -59,6 +59,12 @@ for (const [name, widths] of Object.entries(GOLDENS)) {
   const outs = Array.from({ length: 4 }, () => pool.alloc(n));
   await Promise.all(outs.map(o => pool.collect('noise', inputs, uniforms, [o], n)));
   check(outs.every(o => bytes(o).equals(bytes(expected))), 'concurrent calls');
+  pool.unload('noise');
+  check(pool.region('noise') === undefined, 'reload retires unused regions');
+  pool.load('noise', source);
+  const restored = pool.alloc(n);
+  await pool.collect('noise', inputs, uniforms, [restored], n);
+  check(bytes(restored).equals(bytes(expected)), 'retired region reloads on every worker');
 }
 for (const pool of Object.values(pools)) pool.close();
 

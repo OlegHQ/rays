@@ -1,4 +1,4 @@
-// The 54 frame primitives of specification/core.md and nothing more. No dependencies.
+// The frame primitives of specification/core.md and the image/noise host generator. No dependencies.
 // Each export is named after its primitive: "+" add, "-" sub, "*" mul, "/" div, "<" lt, "<=" le,
 // ">" gt, ">=" ge, "=" eq, "equal?" equal, and every "/" becomes "_" (int/mul -> int_mul).
 //
@@ -342,6 +342,21 @@ export function noise3(position, seed, octaves) {
     frequency *= 2; amplitude *= 0.5;
   }
   return fin('noise3', weights === 0 ? 0 : sum / weights);
+}
+
+// image/noise is the native 64-bit sample3 generator, not an f32 image/map approximation.
+export function image_noise(width, height, frequency, seed) {
+  if (!Number.isFinite(frequency) || frequency < 0) err('E_IMAGE', 'Noise frequency must be finite and nonnegative.');
+  const p = permutation(typeof seed === 'bigint' ? seed : intOf(seed)), pixels = new Uint8Array(width * height * 4);
+  for (let i = 0; i < width * height; i++) {
+    const sample = clamp01((raw3(p, (i % width) * frequency, Math.floor(i / width) * frequency, 0) + 1) / 2);
+    if (!Number.isFinite(sample)) err('E_IMAGE', 'Image RGBA samples must be finite and within [0,1].');
+    const q = sample * 255;
+    const n = Math.floor(q), f = q - n, c = n + (f > 0.5 || (f === 0.5 && (n & 1)) ? 1 : 0);
+    const offset = i * 4;
+    pixels[offset] = c; pixels[offset + 1] = c; pixels[offset + 2] = c; pixels[offset + 3] = 255;
+  }
+  return pixels;
 }
 
 // Native float-to-int conversion of c*255+0.5: truncate, saturate at int64, keep 63 bits, clamp to a byte.

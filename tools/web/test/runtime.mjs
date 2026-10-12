@@ -137,10 +137,10 @@ same([value.get('t'), value.get('dt'), value.get('index'), value.get('width'), v
 {
   const calls = [];
   const images = {
-    0: { kernel: 'image0', animated: true, frame: [[2, 't']], args: input => [BigInt(input.size[0]), 3n, input.t, input.t > 0] },
-    1: { kernel: 'image1', animated: false, frame: [], args: () => [5n, 7n, Float64Array.of(1, 2, 3)] },
+    0: { kind: 'map', kernel: 'image0', animated: true, frame: [[2, 't']], args: { regions: [], frame: input => [BigInt(input.size[0]), 3n, input.t, input.t > 0] } },
+    1: { kind: 'map', kernel: 'image1', animated: false, frame: [], args: { regions: [], frame: () => [5n, 7n, Float64Array.of(1, 2, 3)] } },
   };
-  const program = { regions: [], images, frame(input, state, rt) { return [rt.image(0), rt.image(0), rt.image(1)]; } };
+  const program = { regions: [], images, async frame(input, state, rt) { return [await rt.image(0), await rt.image(0), await rt.image(1)]; } };
   const rt = R.createRuntime(program, { fixedDt: 0.5, size: [65, 3], gpu: { poll() {}, image: (id, args) => calls.push([id, args]) } });
   same(await rt.stepFrame(), [1, 1, 2], 'shared image resource identity');
   same(calls[0], ['image0', { width: 65, height: 3, uniforms: { 'uniform:0': 0.5, 'uniform:1': 1, 'frame:2:t': 0.5 } }], 'image scalar captures use this frame');
@@ -251,6 +251,29 @@ same([value.get('t'), value.get('dt'), value.get('index'), value.get('width'), v
   const bare = R.createRuntime(program, { data: bytes });
   let none = null; try { await bare.stepFrame(); } catch (e) { none = e.code; }
   same(none, 'E_KERNEL', 'gpu: a GPU region without a device is an error, never a silent CPU run');
+}
+
+// Reload cannot destroy a texture while an asynchronous image drawing still uses it, or let
+// the next frame start with a partly replaced program/device table.
+{
+  let releaseFrame, releaseUpdate, updates = 0, version = '1';
+  const drawing = new Promise(resolve => { releaseFrame = resolve; });
+  const updating = new Promise(resolve => { releaseUpdate = resolve; });
+  const before = { regions: [], async frame() { await drawing; return 'old'; } };
+  const after = { regions: [], frame() { return 'new'; } };
+  const rt = R.createRuntime(before, { fixedDt: 0.5, gpu: { poll() {}, async update() { updates++; await updating; } } });
+  const w = R.watch(rt, { interval: 0, load: async () => after,
+    fetch: async () => ({ ok: true, text: async () => version, arrayBuffer: async () => new ArrayBuffer(0), json: async () => ({ kernels: [] }) }) });
+  await w.poll();
+  const first = rt.stepFrame(); version = '2'; const reload = w.poll();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  same(updates, 0, 'reload waits for the image drawing to finish');
+  releaseFrame(); await first;
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const second = rt.stepFrame();
+  same([updates, rt.current.frame], [1, 1], 'the next frame waits for resource replacement');
+  releaseUpdate(); await reload;
+  same(await second, 'new', 'the next frame uses the complete replacement program');
 }
 
 if (failures.length) { console.error(failures.join('\n')); process.exit(1); }

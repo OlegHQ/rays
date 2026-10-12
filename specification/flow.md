@@ -1047,10 +1047,23 @@ WebGPU texture, storage and dispatch bounds are checked before allocation. No im
 production frames. A recent WebGPU browser and HTTPS (or localhost) are required; serve with
 `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` for workers.
 
+The same export includes `image/load`, `image/noise` and `image/render`. File paths must be known at export
+time and resolve relative to the process working directory, as on native. The compiler uses the native
+SDL3_image decoder, including EXIF orientation, and bundles its straight-alpha RGBA8 bytes in `data.bin`;
+the browser needs neither the source files nor their codecs. Noise preserves the native seeded double
+calculation, its defaults and `:freq` alias, then uploads RGBA8 rounded ties to even. A render image lowers
+its complete drawing through the core compiler, recursively resolves child images, and renders to an
+owned offscreen RGBA8 texture with transparent clear and logical image pixels (DPR 1). Its default dimensions
+track the logical frame size; frame facts inside its drawing retain the main frame's values. Backgrounds
+cover the offscreen target. Static images run once per load, animated/shared producers at most once per
+frame. All modules share folds by their native source identity. The same 64-image cap and texture bounds
+apply to loaded, noisy and rendered images. Watch mode tracks imports and file assets, retries repaired
+assets after a refusal, and waits for an executing frame before replacing GPU resources.
+
 Refusals, all
 with the span of the form: `E_WEB_GRAPH` (the draw graph reaches a `sop` or `scene` graph), `E_WEB_LOWER` (the
-draw graph does not lower to the core), `E_WEB_IMAGE` (image kinds other than `image/map`, or image dimensions/captures
-requiring packed regions or state), `E_WEB_REGION` (a sum or fold region, a frame fact the runtime lacks) and
+draw graph does not lower to the core), `E_WEB_IMAGE` (unavailable or undecodable file assets, file paths
+not known at export time, image capacity or unsupported pixel bodies), `E_WEB_REGION` (a sum or fold region, a frame fact the runtime lacks) and
 `E_WEB_CAPTURE` (a region input that changes from frame to frame). `tools/web_parity.exe DIR...` runs the
 exported program under `node` for 120 fixed-step frames and compares each frame's mark table with the native
 core executor's (structure exactly, floats within 1e-6); results are in `specification/web-export/results.md`.

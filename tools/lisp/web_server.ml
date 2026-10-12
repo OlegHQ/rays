@@ -57,18 +57,21 @@ let contains text sub =
   let rec at i = i + n <= String.length text && (String.sub text i n = sub || at (i + 1)) in
   at 0
 
-let run ?(port = 8000) ~dir ~file ~export () =
+let run ?(port = 8000) ?(dependencies = fun () -> []) ~dir ~file ~export () =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   mkdir dir;
   let source = ref "" and version = ref "" in
+  let fingerprint () = digest (List.map (fun path -> path,
+    try In_channel.with_open_bin path In_channel.input_all with Sys_error message -> message)
+    (List.sort_uniq String.compare (file :: dependencies ()))) in
   let refresh () =
-    match In_channel.with_open_bin file In_channel.input_all with
-    | exception Sys_error _ -> ()
-    | text ->
-        let sha = Editor_document.Contexts.sha256 text in
+        let sha = fingerprint () in
         if sha <> !source then begin
           source := sha;   (* a refused text is not retried until it changes *)
-          match export () with
+          let result = try export () with Sys_error message -> prerr_endline message; Error () in
+          (* New dependencies trigger another poll; retain the pre-export digest so an edit
+             made during export cannot be swallowed by the last-good write. *)
+          match result with
           | Error () -> prerr_endline "web: refused; still serving the last good export"
           | Ok files -> write dir files; version := digest files; Printf.printf "web: exported, version %s\n%!" !version
         end in

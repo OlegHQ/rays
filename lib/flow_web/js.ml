@@ -334,7 +334,7 @@ const transform = (rt, kind, v) => {
 |}]
 
 type context = { program : C.program; body : Buffer.t; used : (string, unit) Hashtbl.t;
-  mutable map : (int * Flow.Diagnostic.span) list; mutable async : bool; gpu : int -> bool }
+  mutable map : (int * Flow.Diagnostic.span) list; mutable async : bool; gpu : int -> bool; state_slot : int -> int }
 
 let local n = "l" ^ string_of_int n
 let use ctx name = Hashtbl.replace ctx.used name ()
@@ -378,7 +378,7 @@ let kind_name = function C.Rect -> "rect" | C.Circle -> "circle" | C.Line -> "li
 let draw ctx : C.draw -> string = fun d ->
   use ctx "num";
   match d with
-  | Background c -> Printf.sprintf "emitAll(rt, rt.polygon([[0, 0], [input.size[0], 0], [input.size[0], input.size[1]], [0, input.size[1]]], rgba(rt, %s), null));" (local c)
+  | Background c -> Printf.sprintf "{ const size = rt.drawSize ?? input.size; emitAll(rt, rt.polygon([[0, 0], [size[0], 0], [size[0], size[1]], [0, size[1]]], rgba(rt, %s), null)); }" (local c)
   | Point {at; ink} -> Printf.sprintf "{ const [x, y] = point(rt, %s); emitAll(rt, rt.polygon([[x, y], [x + 1, y], [x + 1, y + 1], [x, y + 1]], ink(rt, %s), null)); }" (local at) (local ink)
   | Mark {mark; args} -> Printf.sprintf "markSet(rt, false, %s, %s);" (escape (kind_name mark)) (object_of args)
   | Batch {mark; args} -> Printf.sprintf "markSet(rt, true, %s, %s);" (escape (kind_name mark)) (object_of args)
@@ -387,7 +387,9 @@ let draw ctx : C.draw -> string = fun d ->
       (escape (match path with C.Rounded_rect -> "rounded_rect" | Polygon -> "polygon" | Polyline -> "polyline")) (object_of args)
   | Text_run {at; text; ink; size} -> Printf.sprintf "if (typeof %s !== \"string\") rt.fail(\"E_TYPE\", \"Drawing text is text.\"); else if (%s !== \"\") { const [x, y] = point(rt, %s); emit(rt, {type: \"text\", x, y, size: Number(rt.coerce(\"int\", %s)), color: ink(rt, %s), text: %s}); }"
       (local text) (local text) (local at) (local size) (local ink) (local text)
-  | Image {source = (_, id); at; scale; angle} -> Printf.sprintf "{ const resource = rt.image(%d); const [x, y] = point(rt, %s), scale = num(rt, %s), angle = num(rt, %s); if (!Number.isFinite(scale) || !Number.isFinite(angle) || scale <= 0) rt.fail(\"E_DRAW_RANGE\", \"Scene.image: invalid transform\"); emit(rt, {type: \"image\", resource, x, y, scale, angle}); }" id (local at) (local scale) (local angle)
+  | Image {source = (_, id); at; scale; angle} ->
+      ctx.async <- true;
+      Printf.sprintf "{ const resource = await rt.image(%d); const [x, y] = point(rt, %s), scale = num(rt, %s), angle = num(rt, %s); if (!Number.isFinite(scale) || !Number.isFinite(angle) || scale <= 0) rt.fail(\"E_DRAW_RANGE\", \"Scene.image: invalid transform\"); emit(rt, {type: \"image\", resource, x, y, scale, angle}); }" id (local at) (local scale) (local angle)
   | Push (t, n) -> Printf.sprintf "transform(rt, %s, %s);" (escape (match t with C.Translate -> "translate" | Rotate -> "rotate" | Scale -> "scale")) (local n)
   | Pop -> "emit(rt, {type: \"pop_transform\"});"
 
@@ -405,7 +407,7 @@ and statement ctx depth (s : C.statement) =
     let key = if iter = [] then {|""|} else "[" ^ String.concat ", " (List.map (function
       | C.Static_index i -> string_of_int i | Local_index l -> local l ^ ".toString()") iter) ^ "].join(\",\")" in
     use ctx "cell";
-    Printf.sprintf "cell(state, %d, %s, %s)" slot key stamp in
+    Printf.sprintf "cell(state, %d, %s, %s)" (ctx.state_slot slot) key stamp in
   match s.node with
   | Assign (n, e) -> line "%s%s = %s;" at (local n) (expression ctx e)
   | Reset_call slot -> line "%scalls[%d] = 0;" at slot
@@ -452,9 +454,9 @@ and statement ctx depth (s : C.statement) =
       if ctx.gpu region then line "%s%s = await rt.gpuArray(%d);" at (local result) region
       else line "%s%s = await rt.invoke(%d, [%s]);" at (local result) region (String.concat ", " (List.map local args))
 
-let frame_result ?store ?(gpu = fun _ -> false) (program : C.program) =
+let frame_result ?store ?(gpu = fun _ -> false) ?(state_slot = Fun.id) (program : C.program) =
   let body = Buffer.create 4096 in
-  let ctx = { program; body; used = Hashtbl.create 8; map = []; async = false; gpu } in
+  let ctx = { program; body; used = Hashtbl.create 8; map = []; async = false; gpu; state_slot } in
   statements ctx 2 program.body;
   let code = Buffer.contents body in
   let mentions name = Hashtbl.mem ctx.used name in
@@ -485,8 +487,8 @@ let frame_result ?store ?(gpu = fun _ -> false) (program : C.program) =
   Buffer.add_string out "}\n";
   Buffer.contents out, List.rev ctx.map
 
-let frame ?store ?gpu program =
-  match frame_result ?store ?gpu program with
+let frame ?store ?gpu ?state_slot program =
+  match frame_result ?store ?gpu ?state_slot program with
   | result -> Ok (fst result)
   | exception Refused (code, message, span) -> Error (Flow.Diagnostic.error ?span ~code message)
 

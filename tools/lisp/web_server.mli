@@ -6,10 +6,12 @@ val digest : (string * string) list -> string
 (** SHA-256 of an export's files (path and contents, in order): the body of [/version]. The export is
     deterministic, so the digest changes exactly when the output does. *)
 
-val run : ?port:int -> dir:string -> file:string -> export:(unit -> ((string * string) list, unit) result) -> unit -> unit
+val run : ?port:int -> ?dependencies:(unit -> string list) -> dir:string -> file:string -> export:(unit -> ((string * string) list, unit) result) -> unit -> unit
 (** Export once ([export] prints its own diagnostics) into [dir]; if that is refused, exit 1. Then print
-    ["serving http://127.0.0.1:PORT/"] and loop forever: poll the SHA-256 of [file] every 0.5 s and, when it
-    changes, [export] again. A refusal keeps the last good export. [port] defaults to 8000;
+    ["serving http://127.0.0.1:PORT/"] and loop forever: poll the SHA-256 of [file] and [dependencies ()]
+    every 0.5 s and, when it changes, [export] again. Imports and static image assets are dependencies;
+    their list is refreshed after export. A refusal keeps the last good export; repairs of a missing or
+    invalid asset are retried. [port] defaults to 8000;
     0 picks a free port. Requests: [GET] only (405 otherwise); the file is looked up under [dir],
     and a path with [..] or outside [dir] is 404. [/version] is {!digest} of the last good export. Every response
     carries [Cross-Origin-Opener-Policy: same-origin] and [Cross-Origin-Embedder-Policy: require-corp]. *)

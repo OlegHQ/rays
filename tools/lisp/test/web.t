@@ -48,10 +48,11 @@ A draw graph that reaches a sop graph is refused, with the span of the reference
   $ test -e refused && echo written || echo nothing written
   nothing written
 
-An image kind without a web implementation is refused explicitly.
+The built-in noise image exports with native seeded scalar arguments.
 
-  $ rays-lisp web ../../../sketches/flow_image/sketch.rays -o image 2>&1 | sed -n 2p
-  Error [E_WEB_IMAGE]: The web export supports generated image/map images; image/noise is not supported yet.
+  $ rays-lisp web ../../../sketches/flow_image/sketch.rays -o image
+  $ grep -c "kind: 'noise'" image/program.js
+  1
 
 Generated images export deterministically, with kernels and compiled live arguments, without UV data.
 
@@ -65,6 +66,44 @@ Generated images export deterministically, with kernels and compiled live argume
   UVs are computed on the GPU
   $ rays-lisp web ../../../sketches/flow_image_kernel/sketch.rays -o image_kernel
   $ rays-lisp web ../../../sketches/flow_shader/sketch.rays -o shader
+
+File images are decoded into the standalone bundle; nested render targets export deterministically.
+
+  $ printf 'P3\n2 1\n255\n255 0 0 0 255 0\n' > pixels.ppm
+  $ cat > loaded.rays <<'X'
+  > (workspace w (graph picture :context draw
+  >   (draw/image (image/render (draw/image (image/load "pixels.ppm")) :width 3 :height 5))))
+  > X
+  $ rays-lisp web loaded.rays -o loaded
+  $ rays-lisp web loaded.rays -o loaded_again
+  $ diff -r loaded loaded_again && echo identical
+  identical
+  $ test -s loaded/data.bin && grep -c "kind: 'load'" loaded/program.js
+  1
+  $ grep -c "kind: 'render'" loaded/program.js
+  1
+
+Missing or invalid assets fail before writing any export.
+
+  $ printf 'bad image\n' > pixels.ppm
+  $ rays-lisp web loaded.rays -o bad 2>&1 | sed -n 's/^Error \[\([^]]*\)\].*/\1/p'
+  E_WEB_IMAGE
+  $ test -e bad && echo written || echo nothing written
+  nothing written
+  $ rm pixels.ppm
+  $ rays-lisp web loaded.rays -o missing 2>&1 | sed -n 's/^Error \[\([^]]*\)\].*/\1/p'
+  E_WEB_IMAGE
+  $ test -e missing && echo written || echo nothing written
+  nothing written
+
+A standalone application's file assets must be known at export time.
+
+  $ cat > dynamic_path.rays <<'X'
+  > (workspace w (graph picture :context draw
+  >   (draw/image (image/load (str "image-" (frame/index) ".png")))))
+  > X
+  $ rays-lisp web dynamic_path.rays -o bad 2>&1 | sed -n 2p
+  Error [E_WEB_IMAGE]: A standalone export needs image/load paths known at export time.
 
 A mark set whose attributes are GPU regions never invokes them on the CPU: the frame names a device array, and two
 attributes of equal count and rate share one kernel with an output each.

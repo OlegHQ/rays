@@ -7,6 +7,11 @@ not select an alternate renderer through environment variables or public API.
 Web export is a separate compiler target emitted from a Lisp workspace (`flow_web`, `specification/web-export/plan.md`), not a fallback: the native program never selects it.
 Generated `image/map` pixels use the shared packed compiler and WGSL target, then a GPU RGBA8 conversion and the
 existing textured-quad presenter on one WebGPU device; no native renderer or geometry dependency enters `flow_web`.
+`image/render` uses that presenter with an owned RGBA8 offscreen target on the same device. The export tool
+decodes `image/load` assets through the existing SDL3_image decoder and bundles straight-alpha RGBA8 bytes;
+this native dependency stays in `tools/lisp`, outside `flow_web`. `image/noise` uses the shared JavaScript
+noise implementation at double precision, matching the native CPU generator before uploading its pixels.
+Every image producer shares the workspace state slots by native source identity (instance, path and plane).
 An absent system-default Metal device maps to OGPU `No_adapter`. A failure reading the
 device's registry identifier remains `Device_lost`, with source operation
 `Metal.Device.registry_id`; other native failures and typed guard errors keep their kinds.

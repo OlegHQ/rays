@@ -102,12 +102,16 @@ let fmt path =
   | _, None, _ -> exit 1
 
 (* The web export: check, lower the draw graph, return the files. A refusal prints its diagnostic. *)
-let web_files path =
+let web_files ?dependencies path =
   let text, doc, passed = check_file path in
+  Option.iter (fun deps -> deps := match Doc.import_paths text with
+    | Ok paths -> List.map (Filename.concat (Filename.dirname path)) paths | Error _ -> []) dependencies;
   if not passed then Error ()
   else
     let doc = Option.get doc in
-    match Result.bind (Web_export.lower doc) (Web_export.files doc) with
+    match Result.bind (Web_export.lower doc) (fun lowered ->
+      Option.iter (fun deps -> deps := !deps @ Web_export.dependencies lowered) dependencies;
+      Web_export.files doc lowered) with
     | Error d -> prerr_endline (D.report ~file:path ~source:text d); Error ()
     | Ok files -> Ok files
 
@@ -125,7 +129,9 @@ let watch file args =
     | _ -> die "usage: rays-lisp web --watch FILE [-o DIR] [--port N]" in
   let dir, port = options None 8000 args in
   let dir = match dir with Some d -> d | None -> Filename.temp_dir "rays-web" "" in
-  Web_server.run ~port ~dir ~file ~export:(fun () -> web_files file) ()
+  let dependencies = ref [] in
+  Web_server.run ~port ~dir ~file ~dependencies:(fun () -> !dependencies)
+    ~export:(fun () -> web_files ~dependencies file) ()
 
 let () = match Array.to_list Sys.argv with
   | _ :: "check" :: (_ :: _ as files) -> check_all files

@@ -230,14 +230,7 @@ export async function createGpu(table, { onError = e => console.error(e), win = 
       if (!imagePipeline) imagePipeline = device.createComputePipeline({ layout: 'auto',
         compute: { module: device.createShaderModule({ code: IMAGE_SINK, label: 'image RGBA8' }), entryPoint: 'image_rgba8' } });
       const { outputs } = gpu.dispatch(kernelId, { count, uniforms: { ...uniforms, 'image:width': width, 'image:height': height } });
-      let t = images.get(kernelId);
-      if (!t || t.w !== width || t.h !== height) {
-        const texture = device.createTexture({ label: kernelId, size: [width, height], format: 'rgba8unorm',
-          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC });
-        t?.texture.destroy();
-        t = { texture, view: texture.createView(), w: width, h: height };
-        images.set(kernelId, t);
-      }
+      const t = gpu.imageTarget(kernelId, width, height);
       const pixels = own(`${kernelId}:pixels`, pitch * height, U.STORAGE | U.COPY_SRC);
       const size = own(`${kernelId}:size`, 16, U.UNIFORM | U.COPY_DST);
       device.queue.writeBuffer(size.buffer, 0, Uint32Array.of(count, width, pitch / 4, 0));
@@ -255,6 +248,28 @@ export async function createGpu(table, { onError = e => console.error(e), win = 
       return t;
     },
     imageTexture: id => images.get(id) ?? null,
+    // File/noise uploads and offscreen drawings share the same owned RGBA8 textures.
+    imageTarget(id, width, height) {
+      if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0
+        || width > device.limits.maxTextureDimension2D || height > device.limits.maxTextureDimension2D)
+        throw Object.assign(new Error('Image dimensions exceed WebGPU texture bounds.'), { code: 'E_IMAGE' });
+      let t = images.get(id);
+      if (!t || t.w !== width || t.h !== height) {
+        const texture = device.createTexture({ label: id, size: [width, height], format: 'rgba8unorm',
+          usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC });
+        t?.texture.destroy();
+        t = { texture, view: texture.createView(), w: width, h: height };
+        images.set(id, t);
+      }
+      return t;
+    },
+    uploadImage(id, width, height, pixels) {
+      if (!(pixels instanceof Uint8Array) || pixels.byteLength !== width * height * 4)
+        throw Object.assign(new Error('Image RGBA8 storage must contain four bytes per pixel.'), { code: 'E_IMAGE' });
+      const t = gpu.imageTarget(id, width, height);
+      device.queue.writeTexture({ texture: t.texture }, pixels, { bytesPerRow: width * 4, rowsPerImage: height }, [width, height]);
+      return t;
+    },
     // Tests only: a copy of the buffer's used bytes as f32. Production frames never read back.
     async readback(id) {
       const o = owned.get(id);

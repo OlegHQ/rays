@@ -29,6 +29,7 @@ const regions = new Map();
 listen(m => {
   try {
     if (m.op === 'load') regions.set(m.id, new Function(m.source + '\\nreturn region;')());
+    else if (m.op === 'unload') regions.delete(m.id);
     else port.postMessage({ status: regions.get(m.id)(m.inputs, m.uniforms, m.outputs, m.start, m.stop) });
   } catch (error) { port.postMessage({ error: String(error) }); }
 });`;
@@ -67,6 +68,10 @@ export async function createPool({ size = Math.max(1, (globalThis.navigator?.har
       for (const s of slots) s.w.post({ op: 'load', id, source });
     },
     region: id => compiled.get(id),
+    unload(id) {
+      sources.delete(id); compiled.delete(id);
+      for (const s of slots) s.w.post({ op: 'unload', id });
+    },
     // Run a Collect region over [0, count) -> 0 | 1. Calls are served in order.
     collect(id, inputs, uniforms, outputs, count) {
       const run = () => new Promise((resolve, reject) => {
