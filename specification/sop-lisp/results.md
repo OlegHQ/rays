@@ -1605,3 +1605,44 @@ Set Color remains unregistered: its actual grouped body still bypasses the
 visible constant-constructor shortcut and retains the large allocation in a
 fresh bounded diagnostic. Its failed full 78-row tables remain above, and
 performance tracing continues. Completion stays six of 128 target nodes.
+
+### Selected host dispatch and finite-scan allocation
+
+The actual grouped Set Color body reaches a dynamic host call with an already
+computed Vec4 array and a deferred group-mask source. The concrete writer
+previously declined that source, then the fallback hydrated arguments and built
+a fresh checked attribute node around the dense data. Descriptor trace
+`57782` confirmed concrete Vec4/Int data at that new node and no constructor
+residual; extending the visible-constructor recognizer could not solve it.
+
+The common `Lower.call` boundary now reuses its existing source hydration in
+authored argument order before dispatching a selected write with concrete
+numeric values. It checks cancellation before hydration and preserves ordinary
+host fallback handling. The selected writer also uses a direct finite scan,
+removing one boxed Float callback argument per component. No node-specific
+callback, new language operation or public signature was introduced.
+
+The bounded `--trace-grouped` diagnostic uses 65,538 vertex elements on Apple
+M1/OCaml 5.3, one domain, grain 4096, cold cooking. Whole allocation fell from
+88,515,968 bytes / 0.030771 seconds to 8,942,520 bytes / 0.002896 seconds after
+host hydration, then 4,747,928 bytes / 0.002131 seconds after the finite scan.
+The standalone writer fell from 6,298,960 to 2,103,504 bytes. These are stage
+samples, not million-element medians; commands and full tables stay in the
+Set Color section above.
+
+A 32,769-element cooked-branch regression executes the actual deferred-mask
+host route at one/eight domains, checks selected output, and bounds cook
+allocation below 512 bytes per element so rebuilding and serializing a dense
+node cannot silently return. Generic selected/native/reference/error checks,
+canonical raw P bytes and all 72 raw-Cd Set Color cases remain green.
+Final shared launcher `86627` exited 0 for
+`@lib/flow_sop/runtest @lib/flow_sop/set_color_draft`
+(`/tmp/rays-selected-host-final.log`); `75121` also passed before the explicit
+cancellation guard. `git diff --check` passed.
+
+The complete million-element table `72712` exited 0 with all 78 rows retained.
+Grouped allocation is now about 72 MB instead of 1.23 GB, but all 54 grouped
+rows remain above the strict 2x speed gate (maximum 10.377x). The other 24 rows
+pass that table; earlier failures are retained. Set Color remains unregistered
+and the ledger stays six complete ports out of 128. The measured constructor
+and selected writer loops remain the next performance work.

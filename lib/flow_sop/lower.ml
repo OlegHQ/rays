@@ -240,12 +240,28 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
                 if List.for_all Option.is_some values then Some Workspace.{path=None;ty;form=Syntax.make(List[]);
                   node=List_lit(List.map Option.get values)} else None
             |_->None in
+          let rec deferred=function
+            |E.Source _|E.Struct(_,Ty.Array _,_)->true
+            |E.Record fields->List.exists(fun(_,value)->deferred value)fields
+            |E.List values->Array.exists deferred values
+            |_->false in
+          let force_args args=List.map(fun(name,value)->name,if deferred value then
+              ok(E.Private.force_reference ~resolve:(Attribute_kernel.resolve ~geometry)
+                value ~live:(Sop.Context.input context)) else value)args in
           let call ty catalog name args =
             if catalog && not(List.exists(fun(n:Workspace.node_definition)->n.kind.qualified=name)checked.nodes)
               && not(List.exists(fun factory->"sop/"^Edit.factory_key factory=name)factories)
               then fail "E_DATA_SOURCE" "A host call has no checked catalog kind.";
             if not catalog && Option.is_none(Flow.Op.find ~extra:checked.ops name Context.sop)
               then fail "E_DATA_SOURCE" "A host call has no checked operator.";
+            let args=if not catalog && name="sop/with_attr"
+                && (List.mem_assoc "selection" args || List.mem_assoc "default" args)
+                && (match List.assoc_opt "values" args with
+                    |Some(E.Float_array _|Vec2_array _|Vec3_array _|Vec4_array _)->true|_->false)
+              then begin
+                if Sop.Context.cancelled context then fail "E_CANCELLED" "Attribute kernel cancelled.";
+                force_args args
+              end else args in
             let borrowed=if catalog || name<>"sop/with_attr" then Ok None else
               match List.assoc_opt "geometry" args,List.assoc_opt "attribute" args,List.assoc_opt "values" args with
               |Some(E.Deferred(actual,id)),Some(E.Text name),Some values when actual=Ty.geometry->
@@ -281,14 +297,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
                     register_output Ty.geometry {output with payload=Sop.Payload.Geometry geometry;instances=None})result)))
               |_->Ok None in
             Result.bind borrowed(function Some result->Ok result|None->
-            let rec deferred=function
-              |E.Source _|E.Struct(_,Ty.Array _,_)->true
-              |E.Record fields->List.exists(fun(_,value)->deferred value)fields
-              |E.List values->Array.exists deferred values
-              |_->false in
-            let args=List.map(fun(name,value)->name,if deferred value then
-                ok(E.Private.force_reference ~resolve:(Attribute_kernel.resolve ~geometry)
-                  value ~live:(Sop.Context.input context)) else value)args in
+            let args=force_args args in
             let call_context=if ty=Ty.image then Flow.Context.image else Context.sop in
             let form=Syntax.make(List[]) in
             let capture_factories=ref [] and overrides=ref [] in

@@ -387,13 +387,17 @@ let write_selected ~grain ~owner ~kind name ~values ~selection ~default geometry
     |"vec4",E.Vec4(x,y,z,w)->Some[|x;y;z;w|]|_->None in
   match values,selection,default with
   |Some values,E.Int_array selection,Some default->
+      let finite data=
+        let i=ref 0 in
+        while !i<Array.length data && Float.is_finite data.(!i) do incr i done;
+        !i=Array.length data in
       if count>Sys.max_floatarray_length/width || Array.length values/width<>count || Array.length values mod width<>0 then
         error "E_ATTR_COUNT" (Printf.sprintf "%s needs %d %s values; got %d."
           name count (owner_name owner) (Array.length values/width))
       else if Array.length selection<>count then error "E_ATTR_COUNT" "Attribute selection count differs from owner count."
       else if Array.exists(fun value->value<>0 && value<>1)selection then
         error "E_ATTR_SELECTION" "Attribute selection must contain only zero or one."
-      else if not(Array.for_all Float.is_finite values && Array.for_all Float.is_finite default) then
+      else if not(finite values && finite default) then
         error "E_NONFINITE" "Attribute values must be finite."
       else
         let old=Option.bind(storage ~owner ~name geometry)(fun storage->

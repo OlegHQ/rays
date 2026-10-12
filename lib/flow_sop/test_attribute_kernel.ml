@@ -170,6 +170,31 @@ let () =
   print_endline "Selected canonical P: overwritten NaN and untouched infinity/signed-zero bytes match native positions without mutating input"
 
 let () =
+  let count=32769 in
+  let original=Line_geometry.points(Array.init count(fun i->float i,0.,0.)) in
+  let original=Geometry.with_group(Group.init ~owner:Point ~name:"chosen" count(fun i->i mod 2=0))original|>get_string_ok in
+  let input=Lisp_sop.snapshot original in
+  let factories=Edit.factory ~key:"ext_selected_allocation" ~label:"Selected input" ~category:["Test"] ~arity:0(fun _->input)::factories in
+  let forms=Flow.Syntax.parse{|(workspace selected_host
+    (defnode sop/selected_host [(geo : geometry)]
+      (if (> (array/count (sop/group_names geo "")) 0)
+        (sop/with_attr geo :selected (array/vec4 (sop/count geo :points) [0.2 -0.0 0.6 0.8]) :type vec4
+          :selection (sop/group geo :name "chosen") :default [1.0 1.0 1.0 1.0]) geo))
+    (graph g :context sop (sop/selected_host (sop/ext_selected_allocation))))|}|>flow_ok in
+  let node=L.workspace ~factories forms|>flow_ok|>compiled in
+  List.iter(fun domains->let session=session() in
+    Fun.protect ~finally:(fun()->Session.close session)(fun()->
+      Gc.full_major();let bytes=Gc.allocated_bytes() in
+      let output=cook session ~domains ~time:0. node|>geometry in
+      let bytes=Gc.allocated_bytes()-.bytes in
+      assert(bytes<512.*.float count);
+      let colors=Geometry.find_attribute ~owner:Point "selected" output|>Option.get|>Attribute.storage in
+      match colors with Float4 colors->let colors=Packed.Float4.Private.view colors in
+        for i=0 to count-1 do assert(colors.x.(i)=(if i mod 2=0 then 0.2 else 1.)) done
+      |_->assert false))[1;8];
+  print_endline "Selected host dispatch: deferred masks hydrate before concrete writes without serializing a new dense node"
+
+let () =
   let evaluate body =
     let forms=Flow.Syntax.parse ("(workspace checked_attribute (graph g :context sop [(geo : geometry nil)] "^
       "(let* [tested "^body^"] geo)))") |>flow_ok in
