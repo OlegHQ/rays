@@ -460,7 +460,7 @@ let ordered_add t =
   | _ -> false
 
 let rec run_all ?column_source ?plane_outputs ?expected_count ?state ?elems ?resolve ?measure ?(strict = false) t ~live =
-  let state = Option.value ~default:(E.create_state ()) state in
+  let state = match state with Some state -> state | None -> E.create_state () in
   let work () =
     let rec evaluate residual (term : W.term) =
       let nested = match term.node with
@@ -1182,7 +1182,7 @@ module Private = struct
   type value_inputs = {arrays : E.value array; uniforms : E.value array;
     frame : E.value array; count : int}
   let prepare_values ?state ?resolve ?measure (t : t) ~live =
-    let state = Option.value ~default:(E.create_state ()) state in
+    let state = match state with Some state -> state | None -> E.create_state () in
     E.transaction state (fun () -> try
       let rec evaluate residual term =
         match term.W.node with

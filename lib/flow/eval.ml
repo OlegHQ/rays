@@ -1133,7 +1133,7 @@ let state_dependent = dependent false
 
 (* one live state per call, made from the first residual met *)
 let with_live ?state ?elems ?resolve ?execute ?(owner = ref ()) ?(compiled = true) ?(strict=false) (l : live) (f : (residual -> ctx) -> 'a) : ('a, Diagnostic.t) result =
-  let state = Option.value ~default:(create_state ()) state in
+  let state = match state with Some state -> state | None -> create_state () in
   let saved = fork_state state in
   let elems = Option.map Smap.of_list elems in
   let live = ref None in
@@ -1154,7 +1154,7 @@ let with_live ?state ?elems ?resolve ?execute ?(owner = ref ()) ?(compiled = tru
 let residual_eval r ~live =
   with_live live (fun ctx_of -> let c = ctx_of r in force_res c r)
 
-let force_with ?state ?elems ?resolve ?execute ?owner ?compiled ?strict v ~live =
+let rec force_with ?state ?elems ?resolve ?execute ?owner ?compiled ?strict v ~live =
   if not (is_live v) then Ok v
   else
     let general () = with_live ?state ?elems ?resolve ?execute ?owner ?compiled ?strict live (fun ctx_of ->
@@ -1168,7 +1168,15 @@ let force_with ?state ?elems ?resolve ?execute ?owner ?compiled ?strict v ~live 
         | Struct (n, ty, fs) -> Struct (n, ty, List.map (fun (k, x) -> (k, go x)) fs)
         | v -> v in
       go v) in
-    match v, owner, execute, compiled with
+    match v, state, elems, resolve with
+    | (Source (_, _, fields) | Struct (_, Ty.Array _, fields)), None, None, Some resolve
+        when List.for_all (fun (_, value) -> not (is_live value)) fields ->
+        (match Frame_input.validate live with
+         | Error message -> Error (Diagnostic.error ~code:"E_FRAME" message)
+         | Ok () -> Result.bind (protect (fun () -> resolve_source resolve v)) (fun value ->
+             if is_live value then force_with ~resolve ?execute ?owner ?compiled ?strict value ~live
+             else Ok value))
+    | _ -> match v, owner, execute, compiled with
     | Residual r, Some owner, Some _, (None | Some true) when strict<>Some true ->
         (match r.core with
          | Some (same, _, Some fast) when same == owner ->
@@ -1183,7 +1191,7 @@ let force_with ?state ?elems ?resolve ?execute ?owner ?compiled ?strict v ~live 
 let force ?state ?elems v ~live = force_with ?state ?elems v ~live
 
 let run ?record ?inputs ?state ?live ~time ws =
-  let state = Option.value ~default:(create_state ()) state in
+  let state = match state with Some state -> state | None -> create_state () in
   match static ?record ?inputs ws with
   | Error _ as e -> e
   | Ok s ->

@@ -938,7 +938,7 @@ module Executor = struct
         Ok {graph; programs; units; profile}
   let marks_graph m = m.graph
   let force_marks ?state m ~live =
-    let state = Option.value ~default:(E.create_state ()) state in
+    let state = match state with Some state -> state | None -> E.create_state () in
     let ( let* ) = Result.bind in
     let separate names = List.fold_right (fun name rest ->
       let* rest = rest in

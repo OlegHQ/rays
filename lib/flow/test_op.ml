@@ -221,3 +221,52 @@ let () =
   (match force true (fun _ _ -> Some (Error refusal)) with
    | Error d -> assert (d.code=refusal.code) | Ok _ -> assert false);
   assert (force true (fun _ _ -> Some (Ok (Eval.Float 7.)))=Ok (Eval.Float 7.))
+
+let () =
+  let live=Frame_input.at_time 2. in
+  let state=Eval.create_state() in
+  let marker=Eval.Source("test/array",Ty.Array Ty.Float,["count",Eval.Int 2]) in
+  let legacy=Eval.Struct("test/array",Ty.Array Ty.Float,["count",Eval.Int 2]) in
+  let data=Eval.Float_array[|0.;-0.|] in
+  List.iter(fun marker->List.iter(fun supplied->
+    let before=Eval.state_stamp state and calls=ref 0 in
+    let resolve _=incr calls;Ok data in
+    let actual=Result.get_ok(Eval.Private.force_reference ?state:supplied ~resolve marker ~live) in
+    assert(actual==data && !calls=1 && Eval.state_stamp state=before);
+    List.iter(fun(resolved,code)->match Eval.Private.force_reference ?state:supplied
+        ~resolve:(fun _->Ok resolved) marker ~live with
+      |Error d->assert(d.code=code)|Ok _->assert false)
+      [marker,"E_DATA_SOURCE";Eval.Int_array[|0;1|],"E_DATA_SOURCE";
+       Eval.Float_array[|0.;nan|],"E_NONFINITE"];
+    let reason=Diagnostic.error ~cause:"host cause" ~code:"E_HOST" "host failure" in
+    assert(Eval.Private.force_reference ?state:supplied ~resolve:(fun _->Error reason) marker ~live=Error reason);
+    calls:=0;
+    (match Eval.Private.force_reference ?state:supplied ~resolve marker
+        ~live:{live with dt=nan} with
+     |Error d->assert(d.code="E_FRAME" && !calls=0)|Ok _->assert false))
+    [None;Some state]) [marker;legacy];
+  let forms=Result.get_ok(Syntax.parse "(workspace nested_source (graph g :context value (+ t 1.)))") in
+  let workspace=match Workspace.check {Check.version=1;kinds=[]} forms with
+    |Some workspace,[]->workspace|_->assert false in
+  let dynamic=List.assoc "g" (Result.get_ok(Eval.static workspace)).results in
+  let fields=["value",dynamic] in
+  let marker=Eval.Source("test/nested",Ty.Any,[]) in
+  let calls=ref 0 in
+  let resolve _=incr calls;Ok(Eval.Record fields) in
+  assert(Eval.Private.force_reference ~resolve marker ~live=Ok(Eval.Record["value",Eval.Float 3.]));
+  assert(!calls=1);
+  let marker=Eval.Source("test/live_argument",Ty.Float,fields) in
+  let resolve actual=assert(actual==marker);Ok(Eval.Float 7.) in
+  assert(Eval.Private.force_reference ~resolve marker ~live=Ok(Eval.Float 7.));
+  let forms=Result.get_ok(Syntax.parse
+    "(workspace source_state (graph g :context value (state [previous 0.0] (+ previous 1.0))))") in
+  let workspace=match Workspace.check {Check.version=1;kinds=[]} forms with
+    |Some workspace,[]->workspace|_->assert false in
+  let fold=List.assoc "g" (Result.get_ok(Eval.static workspace)).results in
+  let before=Eval.state_stamp state in
+  let reason=Diagnostic.error ~cause:"rollback cause" ~code:"E_HOST" "stateful host failure" in
+  let resolve _=ignore(Result.get_ok(Eval.force ~state fold ~live));
+    assert(Eval.state_stamp state<>before);Error reason in
+  assert(Eval.Private.force_reference ~state ~resolve marker ~live=Error reason);
+  assert(Eval.state_stamp state=before);
+  print_endline "Host forcing: concrete/legacy sources, validation/cause/frame failures and live nested fallback agree with supplied state"
