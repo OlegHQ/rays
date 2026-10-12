@@ -3282,3 +3282,20 @@ that the underlying issue was fixed.
 Group Delete is completed port 11/128 (8.59%); 117 whole ports remain.
 B.12 remains unchecked until all seven metadata ports and its boundary gate
 are complete.
+
+### Typed one-lane fills and copies retain bulk spans
+
+The typed runner directly stores one-element Int/Float/Text fills and copies
+one-element contiguous Int inputs, retaining original bulk operations for
+longer spans. IR/Web/SOP/lowering request 35825 passed its new boundary,
+lazy-source and exact-byte regression at 1/4/8 domains. No public API changed.
+
+Quiet request 92162 exited 0. One million rows, strict Packed Collect, native
+byte preflight and median-three force-only protocol: domains 1 Native
+0.006332 s / 8000168 B, Packed 0.065951 s / 17211496 B, **10.416×**; domains 4
+Native 0.006226 s / 8000168 B, Packed 0.018644 s / 10396176 initial-domain B,
+**2.995×**. Packed times improve about 17% against 99638. The one-domain
+allocation increase of 30888 B is retained; no allocation-free claim is made.
+Both 2× gates still fail. Full measured profile/caveats and before/after
+evidence are in `text-gather-validation.md`; no whole node is counted.
+Log: `/tmp/rays-text-one-lane-fill-bench.log`.

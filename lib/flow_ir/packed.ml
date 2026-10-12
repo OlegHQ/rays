@@ -392,6 +392,12 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
     let integer=Array.make (Array.length t.code*block_size) 0
     and floats=Array.make (Array.length t.code*block_size) 0. in
     let texts=Array.make (!text_count*block_size) "" in
+    let[@inline always] fill_int offset count value =
+      if count=1 then integer.(offset)<-value else Array.fill integer offset count value in
+    let[@inline always] fill_float offset count value =
+      if count=1 then floats.(offset)<-value else Array.fill floats offset count value in
+    let[@inline always] fill_text offset count value =
+      if count=1 then texts.(offset)<-value else Array.fill texts offset count value in
     let[@inline always] numeric r j=let at=r*block_size+j in if banks.(r) then float integer.(at) else floats.(at) in
     let rec selected j=function []->true|(r,yes)::rest->(numeric r j<>0.)=yes && selected j rest in
     let frame=Array.map(fun instruction->lazy(match unguarded instruction with
@@ -425,12 +431,12 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
       let rec execute slot instruction first last =
         let at=slot*block_size in
         match instruction with
-        | Text_const value -> Array.fill texts (text_offsets.(slot)*block_size+first) (last-first) value
+        | Text_const value -> fill_text (text_offsets.(slot)*block_size+first) (last-first) value
         | Text_uniform i ->
             if first<last then begin
               let value=match Lazy.force uniforms.(i) with E.Text text->text
                 |_->V.fail "E_ARRAY_TYPE" "Kernel input changed its packed element type." in
-              Array.fill texts (text_offsets.(slot)*block_size+first) (last-first) value
+              fill_text (text_offsets.(slot)*block_size+first) (last-first) value
             end
         | Text_input i ->
             let input=match inputs.(i) with E.Text_array data->data
@@ -500,11 +506,12 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
               let index=row array integer.(index*block_size+j) in
               floats.(at+j)<-finite data.(index*width+component)
             done
-        | Int_const n->Array.fill integer (at+first) (last-first) n
-        | Const x->if first<last then Array.fill floats (at+first) (last-first) (finite x)
+        | Int_const n->fill_int (at+first) (last-first) n
+        | Const x->if first<last then fill_float (at+first) (last-first) (finite x)
         | Int_input i when contiguous->(match ranges.(i),inputs.(i) with
             |Some _,_->for j=first to last-1 do integer.(at+j)<-start+j done
-            |None,E.Int_array data->Array.blit data (start+first) integer (at+first) (last-first)
+            |None,E.Int_array data->if last=first+1 then integer.(at+first)<-data.(start+first)
+                else Array.blit data (start+first) integer (at+first) (last-first)
             |None,value->for j=first to last-1 do integer.(at+j)<-(match V.array_get value (start+j) with
                 |E.Int n->n|_->V.fail "E_ARRAY_TYPE" "Kernel input changed its packed element type.") done)
         | Int_input i->for j=first to last-1 do integer.(at+j)<-(match ranges.(i),inputs.(i)with
@@ -533,16 +540,16 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
                  floats.(at+j)<-finite(components(V.array_get value (source j i))).(component)
                done)
         | Int_uniform i->if first<last then (match Lazy.force uniforms.(i)with
-            |E.Int n->Array.fill integer (at+first) (last-first) n
+            |E.Int n->fill_int (at+first) (last-first) n
             |_->V.fail "E_ARRAY_TYPE" "Kernel uniform changed its integer type.")
         | Int_frame _->if first<last then (match Lazy.force frame.(slot)with
-            |E.Int n->Array.fill integer (at+first) (last-first) n|_->raise Unsupported)
-        | Uniform(i,c)->if first<last then Array.fill floats (at+first) (last-first)
+            |E.Int n->fill_int (at+first) (last-first) n|_->raise Unsupported)
+        | Uniform(i,c)->if first<last then fill_float (at+first) (last-first)
             (finite(Lazy.force uniform_components.(i)).(c))
-        | Frame _->if first<last then Array.fill floats (at+first) (last-first)
+        | Frame _->if first<last then fill_float (at+first) (last-first)
             (finite(V.num(Lazy.force frame.(slot))))
-        | Int_accumulator->(match !accumulator with E.Int n->Array.fill integer (at+first) (last-first) n|_->assert false)
-        | Accumulator c->Array.fill floats (at+first) (last-first) (finite(components !accumulator).(c))
+        | Int_accumulator->(match !accumulator with E.Int n->fill_int (at+first) (last-first) n|_->assert false)
+        | Accumulator c->fill_float (at+first) (last-first) (finite(components !accumulator).(c))
         | Int_binary(op,a,b)->let a=a*block_size and b=b*block_size in
             for j=first to last-1 do integer.(at+j)<-Flow.Packed_ops.integer_apply op integer.(a+j) integer.(b+j) done
         | Int_compare(op,a,b)->let a=a*block_size and b=b*block_size in

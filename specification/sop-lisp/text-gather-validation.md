@@ -157,3 +157,70 @@ fail 2×. The original feature and sampled follow-up tables remain above;
 this change does not qualify a whole port. The optional `--profile-text`
 mode now ends after its repeated force loop, so later median samples cannot
 spill into a subsequent OS capture. No production profiling hooks remain.
+
+## Remaining dispatch profile
+
+After guard commit `dba8d974`, unchanged-binary profile request 5676 completed
+94 forces in 8.041067 seconds, averaging 17,180,515 bytes per force. Its OS
+sample started near process exit and captured only 173 main-thread samples;
+the short capture is retained at `/tmp/rays-text-dispatch-profile.sample.txt`
+and is not presented as a five-second profile.
+
+Follow-up 40879 starts the OS sample immediately after the profile marker in
+one tool orchestration. Force loop and five-second OS sample 56725 both exited
+zero. The full loop performed 77 forces in 8.003143 seconds, averaging
+17,180,516 bytes per force. Logs are
+`/tmp/rays-text-dispatch-profile-full.log` and
+`/tmp/rays-text-dispatch-profile-full.sample.txt`. These sampled loop timings
+are attribution evidence, not another quiet speed-gate table.
+
+The full capture contains 2,724 main-thread samples. Explicit C-call subtrees
+account for 344 samples under `Array.blit`/`caml_array_blit` and 142 under
+`Array.fill`/`caml_array_fill`, including their barrier and thread-local work:
+about 18% combined. Counting only leaf wrapper samples misses that work.
+Conversely, the sampler shows some OCaml fill/blit ancestors above direct
+Text bank stores; those ambiguous unwind paths are excluded from this
+attribution. The largest leaf count is still typed instruction execution
+(946 samples). Neither these counts nor the unboxed ARM predicate supports
+attributing the remaining cost to numeric truth boxing.
+
+This supports testing shared one-element stores in place of bulk fill/blit
+calls, preserving the existing bulk path for longer spans. It does not
+predict that such a cut alone will meet 2×. No subsequent executor change or
+speed qualification follows from the profile itself.
+
+The prepared follow-up uses three private typed fill helpers: a one-element
+span writes directly to its Int/Float/Text bank; every other span retains
+`Array.fill`. Constants, uniforms, frame values and accumulators share these
+helpers. Contiguous `Int_input` similarly loads/stores one element directly
+and retains `Array.blit` for longer spans. Float and Text inputs already use
+direct typed stores. Existing finite checks and lazy uniform forcing remain
+at their original call sites.
+
+The roughly 18% sampled component is a ceiling for the work addressed by this
+candidate, not a predicted end-to-end gain: bulk calls and their necessary
+stores remain, and instruction dispatch is the largest measured component.
+The added regression checks empty/single/block-tail/multi-block typed copies,
+exact integers above 2^53, signed zero/subnormal Float bytes, arbitrary Text
+bytes, and once-only initial-domain scalar uniforms at one/four/eight domains.
+Source and tests are prepared while the Group Delete quiet window runs;
+compilation, runnable proof and after-change timing remain pending.
+## One-lane typed fill and copy measurements
+
+Shared typed fills now directly store one lane for Int, Float and Text; longer
+spans retain Array.fill. A contiguous one-lane Int input directly copies its
+element; longer spans retain Array.blit. Request 35825 passed IR/Web and all
+SOP/lowering checks. The regression covers empty/one/block/chunk boundaries,
+exact large Int values, signed zeros, subnormals, byte Text, lazy initial-domain
+uniform forcing and 1/4/8 domains. Existing error-order and untaken-arm cases
+remain active.
+
+Quiet request 92162 exited 0 with million-row native-byte preflight and the
+same median-three force-only protocol. Domains 1: Native 0.006332 s / 8000168 B,
+Packed 0.065951 s / 17211496 B, **10.416×**. Domains 4: Native 0.006226 s /
+8000168 B, Packed 0.018644 s / 10396176 initial-domain B, **2.995×**. Compared
+with 99638, Packed time fell from 0.079464/0.022348 s, roughly 17% in each
+configuration. One-domain allocations rose 30888 B; the new local helpers
+therefore do not claim allocation-free execution. Both unchanged 2× gates
+still fail and no Text node is qualified. Log:
+`/tmp/rays-text-one-lane-fill-bench.log`.

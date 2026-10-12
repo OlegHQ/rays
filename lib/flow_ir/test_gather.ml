@@ -204,6 +204,32 @@ let ()=
     assert(E.state_stamp state=before && E.state_stamp reference=before)))[1;8];
   print_endline "Numeric gather: independent tables, exact Int/vector bytes, lazy preparation, first-error order and one/four/eight domains pass"
 
+let () =
+  let live=Frame_input.at_time 0.25 in
+  List.iter(fun(ty,table,constant,scalar)->
+    List.iter(fun count->
+      let value=instantiate ~table (Flow.Ty.Array ty)
+        ("(fn [(index : int)] (if (int/lt index 0) "^constant^" (array/nth data index)))")
+        (Array.init count(fun i->if i mod 2=0 then -1 else 0))in
+      let reference=ok(E.Private.force_reference value ~live)in
+      List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+        assert(bytes(ok(P.force ~strict:true(packed value)~live))=bytes reference))) [1;4;8])
+      [0;1;1025;32769];
+    List.iter(fun count->
+      let value=recorded ty
+        (Printf.sprintf "(map (fn [(index : int)] (if (int/ge index 0) data (error \"E_UNTAKEN\" \"unused\"))) (array/range %d :type int))"count)in
+      List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+        let calls=ref 0 and domain=Domain.self()in
+        let resolve _=assert(Domain.self()=domain);incr calls;Ok scalar in
+        let result=ok(P.force ~strict:true ~resolve(packed value)~live)in
+        assert(!calls=1);
+        assert(bytes result=bytes(ok(E.Private.force_reference ~resolve:(fun _->Ok scalar)value ~live)))))
+        [1;4;8]) [1;1025])
+    [Flow.Ty.Int,E.Int_array[|max_int|],string_of_int min_int,E.Int 9007199254740993;
+     Flow.Ty.Float,E.Float_array[|Float.next_after 0. 1.|],"-0.0",E.Float(-0.);
+     Flow.Ty.Text,E.Text_array[|"\255\000"|],"\"constant\"",E.Text "\128\000uniform"];
+  print_endline "Typed one-lane copies: constants, initial-domain uniforms, signed zeros/exact Int/native bytes and one/four/eight domains pass"
+
 let ()=if Array.exists((=)"--bench")Sys.argv then begin
   let count=1_000_000 and indices=Array.init 1_000_000 Fun.id in
   Printf.printf "Numeric gather: OCaml %s, direct strict Packed, block1024/chunk16384, million rows, median3; allocations observe the initial domain only\n%!"Sys.ocaml_version;
