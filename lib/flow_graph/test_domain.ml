@@ -23,6 +23,17 @@ let () =
   assert(List.assoc "g"(ok(Eval.run ~time:0. edited)).results=Eval.Int_array[|2;2;2|])
 
 let () =
+  let source=ok(Syntax.parse "(workspace lookup (graph g :context host (let* [table (array/text 3 \"é日本😀\") picked (map (fn [(i : int)] (array/nth table i)) (array/range 3 :type int))] picked)))")in
+  let workspace=match Workspace.check catalog source with Some w,[]->w|_->assert false in
+  let rec lookup(scope:Projection.scope)=List.find_map(fun(node:Projection.node)->
+    if node.head="array/nth"then Some node else Option.bind node.zone(fun zone->lookup zone.scope))scope.nodes in
+  let card=Option.get(lookup(Projection.of_graph catalog workspace "g"))in
+  assert(card.ty=Ty.Text);
+  let _,edited=ok(Flow_edit.apply_checked catalog source
+    (Set_arg{node=card.path;key=Pos 1;sub=[];value=Syntax.make(Num "2")}))in
+  assert(List.assoc "g"(ok(Eval.run ~time:0. edited)).results=Eval.Text_array[|"é日本😀";"é日本😀";"é日本😀"|])
+
+let () =
   List.iter(fun(name,args,index)->
     let source=ok(Syntax.parse("(workspace checked (graph g :context value (let* [status ("^name^" "^args^")] status.value)))")) in
     let workspace=match Workspace.check catalog source with Some w,[]->w|_,ds->

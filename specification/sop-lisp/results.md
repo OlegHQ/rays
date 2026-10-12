@@ -2858,3 +2858,30 @@ pass, maximum 1.621×. Log: `/tmp/rays-delete-attributes-bench-first.log`.
 | exclusions | selected | 4 | 1000 | 0.000009 | 0.000011 | 1.257 | 24384 | 34912 |
 | exclusions_inverse | selected | 1 | 1000 | 0.000010 | 0.000011 | 1.160 | 20000 | 30624 |
 | exclusions_inverse | selected | 4 | 1000 | 0.000009 | 0.000012 | 1.407 | 24584 | 35208 |
+
+### Text gather compiler foundation accepted
+
+C.2 now combines the numeric implementation `8319b320` with immutable Text
+leaves. Public additions were reviewed separately in `03437c73`: five Text
+instructions and `text_register`, without new Value/Ty storage or a numeric
+Text width. The body compiler, separate bank, Collect ownership, fusion,
+source/capture snapshots, strict Core execution, GPU refusal and actual
+JavaScript/export/worker paths are recorded in
+[text-gather-validation.md](text-gather-validation.md). Unsupported Text
+transformations retain structured Core or explicit qualification refusals.
+
+Final feature requests 60211 and 31650 exited 0, including actual one/eight
+worker execution, arbitrary byte/NUL tables and causes, independent Text
+Cartesian sources, skipped chunk boundaries and error ordering. Earlier
+46783 passed Flow/Graph/GPU/dependency checks; its JavaScript quoting failure
+is retained and fixed with the existing reversible codec. Root full-native,
+production catalog/editor/source/CLI/API/dependency request 93275 exited 0.
+Existing numeric region goldens and render fixtures remain unchanged.
+
+Quiet million-row assignment request 90509 exited 0 with exact native bytes.
+Median-three costs at one/four domains are 14.377×/4.117× the direct native
+indexed loop, with all timings and initial-domain allocations retained in
+the evidence document. These measurements do not qualify Name From Groups
+or any other whole SOP. C.2's language checks are complete; the whole-node
+2× gate and B.13/B.14 remain open. This acceptance excludes the independently
+measured 43-line Float-span optimization in `Packed.run_typed`.

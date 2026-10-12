@@ -16,6 +16,8 @@ type instruction = Core.Region.instruction = Const of float | Input of int * int
   | Checked_mul of projection * int * int | Checked_fma of projection * int * int * int
   | Array_prepare of int * Ty.t
   | Gather of int * int * int * int | Int_gather of int * int
+  | Text_const of string | Text_input of int | Text_uniform of int
+  | Text_gather of int * int | Text_select of int * int * int
   | Int_const of int | Int_input of int | Int_uniform of int | Int_frame of string | Int_accumulator
   | Int_binary of Flow.Packed_ops.integer * int * int
   | Int_compare of Flow.Packed_ops.comparison * int * int | Int_abs of int
@@ -36,9 +38,9 @@ type t = { residual : E.residual; term : W.term; sources : (E.residual * W.term)
   sites : (int * W.path * int list) list }
 let rec operands = function
   | Binary (_,a,b) | Int_binary (_,a,b) | Int_compare (_,a,b) | Rand_at (a,b) | Checked_mul(_,a,b)
-  | Gather(a,b,_,_) | Int_gather(a,b) -> [a;b]
+  | Gather(a,b,_,_) | Int_gather(a,b) | Text_gather(a,b) -> [a;b]
   | Unary (_,a) | Int_abs a | Convert (_,a) -> [a]
-  | Noise3 (a,b,c,_,_) | Fma (a,b,c) | Select (a,b,c) | Int_select (a,b,c) | Checked_fma(_,a,b,c) -> [a;b;c]
+  | Noise3 (a,b,c,_,_) | Fma (a,b,c) | Select (a,b,c) | Int_select (a,b,c) | Text_select(a,b,c) | Checked_fma(_,a,b,c) -> [a;b;c]
   | Guarded (guards,body) -> List.map fst guards @ operands body
   | _ -> []
 
@@ -54,7 +56,8 @@ let rec typed_instruction = function
   | Int_const _ -> false (* compile-time configuration literals may be unused *)
   | Int_input _ | Int_uniform _ | Int_frame _ | Int_accumulator | Int_binary _ | Int_compare _
   | Int_abs _ | Convert _ | Int_select _ | Raise _ | Rand_at _
-  | Array_prepare _ | Gather _ | Int_gather _ -> true
+  | Array_prepare _ | Gather _ | Int_gather _
+  | Text_const _ | Text_input _ | Text_uniform _ | Text_gather _ | Text_select _ -> true
   | Guarded (_,body) -> typed_instruction body
   | _ -> false
 let integer_program t = Array.exists typed_instruction t.code
@@ -91,16 +94,19 @@ let of_region (r : Core.Region.t) =
   let array_handle id = id>=0 && id<Array.length r.code &&
     (match bare r.code.(id) with Array_prepare _->true|_->false) in
   let table_type id = match bare r.code.(id) with Array_prepare(_,ty)->ty|_->Ty.Any in
+  let text id=id>=0 && id<Array.length r.code && Core.Region.text_register r.code.(id) in
   let rec guards = function Guarded(gs,body)->gs @ guards body|_->[] in
   let prepared_for selected array = List.for_all(fun guard->List.mem guard selected)(guards r.code.(array)) in
   let rec valid ?(selected=[]) slot instruction =
     if not (List.for_all (ok slot) (operands instruction)) then operands_ok:=false;
-    (match instruction with Gather _|Int_gather _|Guarded _->()
+    (match instruction with Gather _|Int_gather _|Text_gather _|Guarded _->()
       | _ -> if List.exists array_handle (operands instruction) then operands_ok:=false);
+    (match instruction with Text_select _|Guarded _->()
+      |_->if List.exists text (operands instruction) then operands_ok:=false);
     match instruction with
     | Array_prepare(input,ty) ->
         if input<0 || input>=Array.length r.uniforms ||
-          not (match ty with Ty.Array(Ty.Int|Float|Vec2|Vec3|Vec4)->true|_->false)
+          not (match ty with Ty.Array(Ty.Int|Text|Float|Vec2|Vec3|Vec4)->true|_->false)
         then operands_ok:=false
         else let actual=match r.uniforms.(input) with E.Residual residual ->
             (E.Private.residual_view residual).term.ty|value->V.ty_of value in
@@ -115,14 +121,31 @@ let of_region (r : Core.Region.t) =
         if not(ok slot array && ok slot index && array_handle array)
           || not(Core.Region.integer_register r.code.(index)) then operands_ok:=false
         else if not(prepared_for selected array) || table_type array<>Ty.Array Ty.Int then operands_ok:=false
+    | Text_gather(array,index) ->
+        if not(ok slot array && ok slot index && array_handle array)
+          || not(Core.Region.integer_register r.code.(index)) then operands_ok:=false
+        else if not(prepared_for selected array) || table_type array<>Ty.Array Ty.Text then operands_ok:=false
+    | Text_select(condition,yes,no) ->
+        if array_handle condition || text condition || not(text yes && text no) then operands_ok:=false
+    | Text_input input ->
+        if input<0 || input>=Array.length r.sources || input>=Array.length r.widths
+          || r.widths.(input)<>1 || (snd r.sources.(input)).W.ty<>Ty.Array Ty.Text then operands_ok:=false
+    | Text_uniform input ->
+        if input<0 || input>=Array.length r.uniforms then operands_ok:=false
+        else let ty=match r.uniforms.(input) with E.Residual residual ->
+            (E.Private.residual_view residual).term.ty | value -> V.ty_of value in
+          if ty<>Ty.Text then operands_ok:=false
     | Input (input,width,component) ->
         if input<0 || input>=Array.length r.widths || width<>r.widths.(input)
-          || component<0 || component>=width then operands_ok:=false
+          || component<0 || component>=width
+          || input<Array.length r.sources && (snd r.sources.(input)).W.ty=Ty.Array Ty.Text then operands_ok:=false
     | Int_input input ->
         if input<0 || input>=Array.length r.sources || input>=Array.length r.widths
           || r.widths.(input)<>1 || (snd r.sources.(input)).W.ty<>Ty.Array Ty.Int then operands_ok:=false
     | Uniform (input,component) ->
         if input<0 || input>=Array.length r.uniforms || component<0 || component>=4 then operands_ok:=false
+        else if (match r.uniforms.(input) with E.Residual residual ->
+            (E.Private.residual_view residual).term.ty | value -> V.ty_of value)=Ty.Text then operands_ok:=false
     | Int_uniform input ->
         if input<0 || input>=Array.length r.uniforms then operands_ok:=false
         else let ty=match r.uniforms.(input) with E.Residual residual ->
@@ -130,7 +153,7 @@ let of_region (r : Core.Region.t) =
           if ty<>Ty.Int then operands_ok:=false
     | Accumulator component -> if component<0 || component>=4 then operands_ok:=false
     | Guarded (guards,body) ->
-        if List.exists(fun(id,_)->array_handle id)guards then operands_ok:=false;
+        if List.exists(fun(id,_)->array_handle id || text id)guards then operands_ok:=false;
         valid ~selected:(selected @ guards) slot body
     | _ -> () in
   Array.iteri valid r.code;
@@ -143,7 +166,10 @@ let of_region (r : Core.Region.t) =
   else if r.outputs = [||] || (Array.length r.outputs > 1 && r.result <> Collect) then
     invalid "A region has one output, or several only when it collects."
   else if not (Array.for_all (fun output -> Array.length output>=1 && Array.length output<=4
-      && Array.for_all (fun id->ok (Array.length r.code) id && not(array_handle id)) output) r.outputs) then invalid "Region output needs 1 to 4 existing scalar registers."
+      && Array.for_all (fun id->ok (Array.length r.code) id && not(array_handle id)) output
+      && (not(Array.exists text output) || Array.length output=1)) r.outputs) then invalid "Region output needs 1 to 4 existing scalar registers."
+  else if r.result<>Collect && Array.exists Core.Region.text_register r.code then
+    invalid "Text leaves require collecting kernels."
   else Ok {residual = r.residual; term = r.term; sources = r.sources; widths = r.widths;
     uniforms = r.uniforms; code = r.code; dependent = dependent_of r.code; outputs = r.outputs;
     count = r.count; iteration = r.iteration; result = r.result; skip = r.skip; stages = r.stages;
@@ -181,15 +207,18 @@ let finite_checks t =
     | Const _ | Select _ | Array_prepare _ | Unary ((Abs | Sqrt | Not), _)
     | Checked_mul _ | Checked_fma _
     | Binary ((Min | Max | Lt | Le | Gt | Ge | Eq | And | Or), _, _) -> false
+    | body when Core.Region.text_register body -> false
     | _ -> true) t.code
 
 let gpu_refusals t =
   let reasons = ref [] in
   let refuse message = reasons := Flow.Diagnostic.error ~code:"E_GPU_FORM" message :: !reasons in
+  if Array.exists Core.Region.text_register t.code then refuse "Text kernels stay on the CPU.";
   if Array.exists(fun instruction->match unguarded instruction with
     |Array_prepare _|Gather _|Int_gather _->true|_->false)t.code then
     refuse "Indexed array reads stay on the CPU.";
-  if integer_program t then refuse "Integer sources, uniforms and instructions stay on the CPU.";
+  if integer_program t && not(Array.exists Core.Region.text_register t.code) then
+    refuse "Integer sources, uniforms and instructions stay on the CPU.";
   if Array.exists (fun instruction -> match unguarded instruction with Binary (Hypot,_,_) -> true | _ -> false) t.code then
     refuse "Hypot requires the CPU binary64 implementation.";
   if Array.exists (fun instruction -> match unguarded instruction with Fma _ -> true | _ -> false) t.code then
@@ -260,23 +289,29 @@ let rec integer_range residual (term : W.term) = match term.node with
 
 let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~seed t ~live =
   let gather=Array.exists(fun instruction->match unguarded instruction with
-    | Array_prepare _|Gather _|Int_gather _->true|_->false)t.code in
+    | Array_prepare _|Gather _|Int_gather _->true
+    | body->Core.Region.text_register body)t.code in
   let cache_guards=t.result=Collect && not gather
     && Array.exists(function Guarded _->true|_->false)t.code in
   let borrowed=Array.make (Array.length t.sources) None in
   let ranges=Array.make (Array.length t.sources) None in
+  let empty_product=ref false in
+  let lengths=Array.make (Array.length t.sources) 0 in
   let inputs=Array.mapi (fun i (r,term)->
+    if !empty_product then E.No_geo else begin
     borrowed.(i)<-(match column_source,term.W.ty with
       |Some source,Ty.Array (Ty.Float|Vec2|Vec3|Vec4)->get(source r term)
       |_->None);
-    if borrowed.(i)<>None then E.No_geo else match integer_range r term with
+    let value=if borrowed.(i)<>None then E.No_geo else match integer_range r term with
     | Some(r,count) ->
         ranges.(i)<-Some(Flow.Op.Private.array_count ~limit:Sys.max_array_length
           "array/range" (evaluate r count)); E.No_geo
-    | None -> evaluate r term) t.sources in
-  let lengths=Array.mapi(fun i value->match ranges.(i),borrowed.(i)with
+    | None -> evaluate r term in
+    lengths.(i)<-(match ranges.(i),borrowed.(i)with
     |Some count,_->count|None,None->V.array_length value
-    |None,Some columns->borrowed_count t.widths.(i) columns)inputs in
+    |None,Some columns->borrowed_count t.widths.(i) columns);
+    if t.iteration=Product && lengths.(i)=0 then empty_product:=true;
+    value end) t.sources in
   let count=if inputs=[||] then 0 else if t.iteration=Product && Array.exists ((=)0) lengths then 0 else
     Array.fold_left (fun n length->match t.iteration with Zip->min n length | Product->
       if length<>0 && n>max_int/length then V.fail "E_ARRAY_RANGE" "Kernel iteration count exceeds native bounds.";
@@ -295,12 +330,18 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
   Option.iter(fun n->if n<>kept then V.fail "E_ARRAY_COUNT" "Column sink count differs from the kernel count.")expected_count;
   let collecting=match t.result with Collect|Accumulate(_,true)->true|_->false in
   let integer_outputs=Array.map(fun regs->Array.length regs=1 && Core.Region.integer_register t.code.(regs.(0)))t.outputs in
+  let text_outputs=Array.map(fun regs->Array.length regs=1 && Core.Region.text_register t.code.(regs.(0)))t.outputs in
   Option.iter(fun outputs->
     if t.result<>Collect || Array.length outputs<>Array.length t.outputs then V.fail "E_ARRAY_TYPE" "Column sinks require matching Collect outputs.";
     Array.iteri(fun k lanes->
+      if text_outputs.(k) then V.fail "E_ARRAY_TYPE" "Float column sinks cannot store Text outputs.";
       if integer_outputs.(k) || Array.length lanes<>Array.length t.outputs.(k) then V.fail "E_ARRAY_TYPE" "Float column sinks cannot store integer outputs.";
       Array.iter(Option.iter(fun a->if Array.length a<>kept then V.fail "E_ARRAY_COUNT" "Column sink count differs from the kernel count."))lanes)outputs)plane_outputs;
   let outputs=Array.mapi(fun k registers->if not collecting || plane_outputs<>None then E.No_geo
+    else if text_outputs.(k) then begin
+      if kept>Sys.max_array_length then V.fail "E_ARRAY_RANGE" "Array length is outside native storage bounds.";
+      E.Text_array(Array.make kept "")
+    end
     else if integer_outputs.(k) then begin
       if kept>Sys.max_array_length then V.fail "E_ARRAY_RANGE" "Array length is outside native storage bounds.";
       E.Int_array(Array.make kept 0)
@@ -310,10 +351,13 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
       let data=Array.make (kept*width) 0. in
       match width with 2->E.Vec2_array data|3->E.Vec3_array data|4->E.Vec4_array data|_->E.Float_array data)t.outputs in
   let banks=Array.map Core.Region.integer_register t.code in
+  let text_count=ref 0 in
+  let text_offsets=Array.map(fun instruction->if Core.Region.text_register instruction then
+      let i= !text_count in incr text_count;i else -1)t.code in
   let[@inline always] finite x=if Float.is_finite x then x
     else V.fail "E_NONFINITE" "packed produced a nonfinite value." in
-  let concrete=function E.Int _|Float _|Bool _|Vec2 _|Vec3 _|Vec4 _
-    | Int_array _|Float_array _|Vec2_array _|Vec3_array _|Vec4_array _->true|_->false in
+  let concrete=function E.Int _|Text _|Float _|Bool _|Vec2 _|Vec3 _|Vec4 _
+    | Int_array _|Text_array _|Float_array _|Vec2_array _|Vec3_array _|Vec4_array _->true|_->false in
   let scalar=function E.Int _|Float _|Bool _|Vec2 _|Vec3 _|Vec4 _->true|_->false in
   let uniforms=Array.map(fun value->if concrete value then Lazy.from_val value
     else lazy(uniform value))t.uniforms in
@@ -347,6 +391,7 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
   let chunk chunk =
     let integer=Array.make (Array.length t.code*block_size) 0
     and floats=Array.make (Array.length t.code*block_size) 0. in
+    let texts=Array.make (!text_count*block_size) "" in
     let[@inline always] numeric r j=let at=r*block_size+j in if banks.(r) then float integer.(at) else floats.(at) in
     let frame=Array.map(fun instruction->lazy(match unguarded instruction with
       | Int_frame name | Frame name ->
@@ -379,6 +424,28 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
       let rec execute slot instruction first last =
         let at=slot*block_size in
         match instruction with
+        | Text_const value -> Array.fill texts (text_offsets.(slot)*block_size+first) (last-first) value
+        | Text_uniform i ->
+            if first<last then begin
+              let value=match Lazy.force uniforms.(i) with E.Text text->text
+                |_->V.fail "E_ARRAY_TYPE" "Kernel input changed its packed element type." in
+              Array.fill texts (text_offsets.(slot)*block_size+first) (last-first) value
+            end
+        | Text_input i ->
+            let input=match inputs.(i) with E.Text_array data->data
+              |_->V.fail "E_ARRAY_TYPE" "Kernel input changed its packed element type." in
+            for j=first to last-1 do texts.(text_offsets.(slot)*block_size+j)<-input.(source j i) done
+        | Text_gather(array,index) ->
+            let array=table array in
+            let data=match array with E.Text_array data->data|_->assert false in
+            for j=first to last-1 do
+              texts.(text_offsets.(slot)*block_size+j)<-data.(row array integer.(index*block_size+j))
+            done
+        | Text_select(condition,yes,no) ->
+            for j=first to last-1 do
+              let register=if numeric condition j<>0. then yes else no in
+              texts.(text_offsets.(slot)*block_size+j)<-texts.(text_offsets.(register)*block_size+j)
+            done
         | Guarded(guards,body)->
           (* Publish spans after their first execution: scanning ahead of a
              failing body would change lazy predicate evaluation. *)
@@ -510,6 +577,7 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
       if t.result=Collect then Array.iteri(fun k registers->
         let output_index=start-before in
         match plane_outputs,outputs.(k) with
+        |None,E.Text_array data->Array.blit texts (text_offsets.(registers.(0))*block_size) data output_index length
         |None,E.Int_array data->Array.blit integer (registers.(0)*block_size) data output_index length
         |None,E.Float_array data when not banks.(registers.(0))->
             Array.blit floats (registers.(0)*block_size) data output_index length
@@ -911,6 +979,7 @@ let rec run_all ?column_source ?plane_outputs ?expected_count ?state ?elems ?res
         | Int_const n -> Array.fill scratch (at + first) (last - first) (float n)
         | Const x -> Array.fill scratch (at + first) (last - first) x
         | Array_prepare _|Gather _|Int_gather _ -> raise Unsupported
+        | Text_const _|Text_input _|Text_uniform _|Text_gather _|Text_select _->raise Unsupported
         | Input (input, width, component) ->
             let source = inputs.(input) in
             if borrowed.(input)<>None then
@@ -1369,12 +1438,23 @@ module Private = struct
         match compile_impl ~fusion:t.fusion ~dynamic:t.dynamic ~count_source:t.count_source residual term with
         | Ok program -> get (force ~state ?resolve ?measure program ~live)
         | Error _ -> get (E.Private.eval_term ~state ?resolve residual term ~live) in
-      let arrays = Array.map (fun (residual,term) -> evaluate residual term) t.sources in
+      let empty_product=ref false in
+      let arrays = Array.map (fun (residual,term) ->
+        let value=if !empty_product then (match term.W.ty with
+          |Ty.Array Ty.Int->E.Int_array[||]|Array Text->Text_array[||]
+          |Array Float->Float_array[||]|Array Vec2->Vec2_array[||]
+          |Array Vec3->Vec3_array[||]|Array Vec4->Vec4_array[||]|_->raise Unsupported)
+          else evaluate residual term in
+        if t.iteration=Product && V.array_length value=0 then empty_product:=true;
+        value) t.sources in
       Array.iteri (fun index value ->
         if V.ty_of value<>(snd t.sources.(index)).W.ty then
           V.fail "E_ARRAY_TYPE" "Kernel input changed its packed element type.") arrays;
-      let count = if arrays=[||] then 0 else Array.fold_left min max_int
-        (Array.map V.array_length arrays) in
+      let count = if arrays=[||] || !empty_product then 0 else
+        Array.fold_left(fun count value->let length=V.array_length value in
+          match t.iteration with Zip->min count length|Product->
+            if length<>0 && count>max_int/length then V.fail "E_ARRAY_RANGE" "Kernel iteration count exceeds native bounds.";
+            count*length)(if t.iteration=Zip then max_int else 1)arrays in
       let execute residual _live = Some (Ok (evaluate residual (E.Private.residual_view residual).term)) in
       let uniforms = match get (E.Private.force_with_executor ~state ?resolve ~compiled:false ~execute
           (E.List t.uniforms) ~live) with E.List values -> values | _ -> assert false in
@@ -1393,7 +1473,8 @@ module Private = struct
       | Out_of_memory -> Error (Flow.Diagnostic.error ~code:"E_ARRAY_MEMORY" "Frame data exceeds available memory."))
   let prepare ?state ?resolve ?measure (t : t) ~live =
     if integer_program t then Error (Flow.Diagnostic.error ~code:"E_GPU_FORM"
-      "Integer sources, uniforms and instructions stay on the CPU.") else
+      (if Array.exists Core.Region.text_register t.code then "Text kernels stay on the CPU."
+       else "Integer sources, uniforms and instructions stay on the CPU.")) else
     Result.map (fun (values : value_inputs) ->
       let arrays=Array.map (function E.Float_array values | Vec2_array values
           | Vec3_array values | Vec4_array values -> values | _ -> assert false) values.arrays in

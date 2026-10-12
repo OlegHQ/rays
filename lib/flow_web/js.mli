@@ -26,6 +26,10 @@ val region : Flow_ir.Packed.t -> string
       an empty iteration means the integer 0), [Accumulate] at the seed
       components with flag 1. [Accumulate (_, true)] ([scan]) also collects.
 
+    Text leaf regions use immutable strings and string arrays, collect only,
+    and accept an optional sixth [outputBase = 0] argument for worker-local
+    output slices. Their inputs, captures and outputs never use float buffers.
+
     Covers every result kind: [Collect], [Sum] and [Accumulate], one or several
     outputs ([Collect] only), [Zip] and [Product] iteration, and [skip].
     Sums and accumulators fold elements strictly in index order, so successive

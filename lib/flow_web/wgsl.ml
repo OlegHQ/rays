@@ -141,6 +141,7 @@ let kernel ?(image = false) program = try
       | Unary (op,a) -> unary op (register a)
       | Checked_mul _ | Checked_fma _ -> fail "Checked arithmetic requires binary64 overflow status."
       | Array_prepare _ | Gather _ | Int_gather _ -> fail "Indexed array reads stay on the CPU."
+      | Text_const _ | Text_input _ | Text_uniform _ | Text_gather _ | Text_select _ -> fail "Text kernels stay on the CPU."
       | Select (condition,yes,no) -> Printf.sprintf "select(%s, %s, %s != 0.0)" (register no) (register yes) (register condition)
       | Noise3 (x,y,z,seed,octaves) -> Printf.sprintf "wfbm(vec3<f32>(%s, %s, %s), %d, %d)"
           (register x) (register y) (register z) octaves (table seed)

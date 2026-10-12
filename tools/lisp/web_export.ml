@@ -124,7 +124,7 @@ let fixed_inputs (r : C.Region.t) =
       let* b = prepare (probe 0.5 7) in
       if a.arrays <> b.arrays || a.uniforms <> b.uniforms || a.count <> b.count then
         refuse "E_WEB_CAPTURE" "This region reads a value that changes from frame to frame; the web export needs its inputs fixed."
-      else if Array.exists (fun value -> match value with E.Int _ | Int_array _ -> false | _ ->
+      else if Array.exists (fun value -> match value with E.Int _ | Int_array _ | Text _ | Text_array _ -> false | _ ->
           Array.exists (fun x -> not (Float.is_finite x)) (uniform_components value)) a.uniforms then
         refuse "E_WEB_REGION" "This region captures a non-finite value."
       else begin
@@ -137,7 +137,9 @@ let fixed_inputs (r : C.Region.t) =
 
 (* The data of a region as the JSON members both the region table and the GPU table carry. *)
 let fixed_members ?kept ~data f =
+  let texts values = "{\"texts\":" ^ list Flow_web.Kernel_table.json_string (Array.to_list values) ^ "}" in
   let placed = if Array.length f.arrays = 0 then "[]" else list (fun values ->
+    match values with E.Text_array values -> texts values | _ ->
     let offset, length = data values in Printf.sprintf "[%d, %d, %b]" offset length
       (match values with E.Int_array _ -> true | _ -> false)) (Array.to_list f.arrays) in
   Printf.sprintf "\"count\": %d, %s\"inputs\": %s, \"uniforms\": %s, \"frame\": %s" f.count
@@ -146,6 +148,8 @@ let fixed_members ?kept ~data f =
       let integer=Array.exists (fun instruction -> match region_instruction instruction with
         | C.Region.Int_uniform slot -> slot=index | _ -> false) f.view.code in
       match integer,value with
+      | _,E.Text_array values -> texts values
+      | _,E.Text value -> "{\"text\":" ^ Flow_web.Kernel_table.json_string value ^ "}"
       | _,(E.Int_array _|Float_array _|Vec2_array _|Vec3_array _|Vec4_array _) ->
           let offset,length=data value in Printf.sprintf "{\"table\":[%d,%d,%b]}" offset length
             (match value with E.Int_array _->true|_->false)
@@ -169,11 +173,14 @@ let region_entry ~data (r : C.Region.t) =
     Error (D.error ~span:(span_of_region r) ~code:"E_WEB_REGION"
       "The web export runs collecting single-output regions only; this sum or fold needs a later release.")
   else
-    let skipped = Array.to_list r.skip |> List.filter (fun i -> i >= 0 && i < f.count) |> List.length in
+    let skip = Array.to_list r.skip |> List.filter (fun i -> i >= 0 && i < f.count) |> List.sort_uniq Int.compare in
+    let skipped = List.length skip in
+    let textual = Array.exists C.Region.text_register f.view.code in
     let prefix = Printf.sprintf "{\"source\": %s, %s, \"length\": %d, \"width\": %d, \"integer\": %b"
       (Flow_web.Kernel_table.json_string (Flow_web.Js.region f.packed)) (fixed_members ~kept:(f.count - skipped) ~data f)
       (Array.length f.view.code) (Array.length f.view.outputs.(0))
-      (Array.length f.view.outputs.(0)=1 && C.Region.integer_register f.view.code.(f.view.outputs.(0).(0))) in
+      (Array.length f.view.outputs.(0)=1 && C.Region.integer_register f.view.code.(f.view.outputs.(0).(0))) ^
+      (if textual then ",\"text\":true,\"skip\":" ^ list string_of_int skip else "") in
     Ok {prefix; fixed = f; kernel = (if r.skip = [||] then web_kernel f else None); width = Array.length f.view.outputs.(0); region = r}
 
 (* ---- placement of mark sets on the GPU ---- *)

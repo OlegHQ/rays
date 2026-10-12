@@ -1236,8 +1236,8 @@ module Private = struct
     if not (Ty.fits cl.body.ty signature.result) then
       fail "E_KERNEL_FORM" "Bulk function body differs from its declared result type.";
     let result = match signature.result with
-      | Ty.Int | Float | Vec2 | Vec3 | Vec4 as ty -> ty
-      | _ -> fail "E_KERNEL_FORM" "Bulk functions must return int, float, vec2, vec3 or vec4 data." in
+      | Ty.Int | Float | Vec2 | Vec3 | Vec4 | Text as ty -> ty
+      | _ -> fail "E_KERNEL_FORM" "Bulk functions must return int, float, vec2, vec3, vec4 or text data." in
     let binding name ty = W.{path = None; ty; node = Ref_binding (name, []); form = cl.body.form} in
     let inputs = List.mapi (fun i value -> "$kernel-input:" ^ string_of_int i, value) arrays in
     let function_name = "$kernel-function" in

@@ -645,7 +645,7 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 - [ ] B.F
 - [ ] B.R
 - [ ] C.1
-- [ ] C.2
+- [x] C.2 — numeric and immutable Text gathers pass typed bounds, lazy/error-order, ownership, strict/reference/domain, actual JavaScript/export/worker and GPU refusal checks; separate Text cost evidence remains above 2× and qualifies no whole port.
 - [ ] C.3
 - [ ] C.4
 - [ ] C.5

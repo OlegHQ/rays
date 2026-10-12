@@ -8,7 +8,8 @@
 //   - Sum/Accumulate run one ascending range on the calling thread with one state array (packed.ml:347-354,
 //     js.mli): `pool.region(id)(inputs, uniforms, outputs, 0, count)`.
 // Workers are asynchronous, so `collect` returns a promise and a frame that uses it is `async`.
-// Outputs must be SharedArrayBuffer-backed (`pool.alloc`); inputs are copied into shared memory if they are not.
+// Numeric outputs are SharedArrayBuffer-backed (`pool.alloc`). Immutable Text tables are staged once
+// per execution; workers return disjoint chunk-local string arrays into a fresh caller-owned output.
 
 export const CHUNK = 16 * 1024;
 
@@ -26,11 +27,19 @@ const WORKER = `
 const port = typeof require === 'function' ? require('node:worker_threads').parentPort : self;
 const listen = f => port.on ? port.on('message', f) : (port.onmessage = e => f(e.data));
 const regions = new Map();
+let prepared;
 listen(m => {
   try {
     if (m.op === 'load') regions.set(m.id, new Function(m.source + '\\nreturn region;')());
     else if (m.op === 'unload') regions.delete(m.id);
-    else port.postMessage({ status: regions.get(m.id)(m.inputs, m.uniforms, m.outputs, m.start, m.stop) });
+    else if (m.op === 'prepare') prepared = m;
+    else if (m.op === 'release') prepared = undefined;
+    else {
+      const p = prepared ?? m;
+      const outputs = m.outputs.map(o => o === null ? Array(m.kept).fill('') : o);
+      const status = regions.get(m.id)(p.inputs, p.uniforms, outputs, m.start, m.stop, m.base);
+      port.postMessage({ status, texts: outputs.map((o, i) => m.outputs[i] === null ? o : null) });
+    }
   } catch (error) { port.postMessage({ error: { message: error?.message ?? String(error), code: error?.code, cause: error?.cause } }); }
 });`;
 
@@ -45,6 +54,7 @@ export async function spawnWorker() {
 }
 
 const shared = a => {
+  if (Array.isArray(a)) return a;
   if (a.buffer instanceof SharedArrayBuffer) return a;
   const copy = new a.constructor(new SharedArrayBuffer(a.byteLength)); copy.set(a); return copy;
 };
@@ -73,29 +83,40 @@ export async function createPool({ size = Math.max(1, (globalThis.navigator?.har
       for (const s of slots) s.w.post({ op: 'unload', id });
     },
     // Run a Collect region over [0, count) -> 0 | 1. Calls are served in order.
-    collect(id, inputs, uniforms, outputs, count) {
+    collect(id, inputs, uniforms, outputs, count, skip = []) {
       const run = () => new Promise((resolve, reject) => {
         const chunks = Math.ceil(count / CHUNK);
         if (chunks <= 1) return resolve(compiled.get(id)(inputs, uniforms, outputs, 0, count));
-        if (!outputs.every(o => o.buffer instanceof SharedArrayBuffer)) return reject(new TypeError('collect outputs must be pool.alloc arrays'));
+        if (!outputs.every(o => Array.isArray(o) || o.buffer instanceof SharedArrayBuffer)) return reject(new TypeError('collect outputs must be pool.alloc arrays or Text arrays'));
         const ins = inputs.map(shared);
         const captures = uniforms.map(u => ArrayBuffer.isView(u) ? shared(u) : u);
+        // Stage immutable tables once per execution, not once per chunk.
+        for (const slot of slots) slot.w.post({ op: 'prepare', inputs: ins, uniforms: captures });
+        const lower = n => { let lo = 0, hi = skip.length; while (lo < hi) {
+          const mid = (lo + hi) >>> 1; if (skip[mid] < n) lo = mid + 1; else hi = mid;
+        } return lo; };
+        const sinks = outputs.map(o => Array.isArray(o) ? null : o);
         let next = 0, left = chunks, status = 0, failure = null, failureStart = Infinity;
         const feed = slot => {
           if (next >= chunks) return;
           const start = next++ * CHUNK;
+          const stop = Math.min(count, start + CHUNK), base = start - lower(start);
           slot.done = m => {
             if (m.error) {
               if (start < failureStart) { failure = m.error; failureStart = start; }
               left -= chunks - next; next = chunks;
-            } else status |= m.status;
+            } else {
+              status |= m.status;
+              m.texts?.forEach((text, i) => { if (text) for (let j = 0; j < text.length; j++) outputs[i][base + j] = text[j]; });
+            }
             if (--left === 0) {
+              for (const s of slots) s.w.post({ op: 'release' });
               if (failure) { const e = new Error(failure.message); if (failure.code !== undefined) e.code = failure.code;
                 if (failure.cause !== undefined) e.cause = failure.cause; reject(e); }
               else resolve(status);
             } else feed(slot);
           };
-          slot.w.post({ op: 'run', id, inputs: ins, uniforms: captures, outputs, start, stop: Math.min(count, start + CHUNK) });
+          slot.w.post({ op: 'run', id, outputs: sinks, start, stop, base, kept: stop - start - lower(stop) + lower(start) });
         };
         slots.forEach(feed);
       });

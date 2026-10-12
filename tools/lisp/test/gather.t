@@ -53,3 +53,64 @@ Integer lookup captures keep their low bits through the actual exported data wri
   > X
   $ node integer.mjs
   integer lookup export: exact signed63 data and actual frame pass
+
+Text leaves keep their native bytes through exported captures and worker results.
+
+  $ cat > text.rays <<'X'
+  > (workspace lookup (graph picture :context draw
+  >   (let* [names (array/text 7 "é日本😀")
+  >          selected (map (fn [(i : int)] (if (> t 0.) (array/nth names (int/mod i 7)) "safe")) (array/range 32769 :type int))]
+  >     (draw/text [0 0 0] (array/nth selected 0)))))
+  > X
+  $ rays-lisp web text.rays -o text
+  $ printf '{"type":"module"}\n' > text/package.json
+  $ cat > text.mjs <<'X'
+  > import {readFileSync} from 'node:fs';import * as program from './text/program.js';
+  > import {createRuntime} from './text/runtime/runtime.js';import {createPool} from './text/runtime/workers.js';
+  > import {textBytes,textOfBytes} from './text/runtime/prims.js';
+  > const file=readFileSync('text/data.bin'),data=file.buffer.slice(file.byteOffset,file.byteOffset+file.byteLength);
+  > const region=program.regions.findIndex(r=>r.text&&r.source.includes('const table ='));
+  > if(region<0||!program.regions[region].uniforms.some(u=>u.texts))throw Error('text capture transport');
+  > for(const size of [0,1,8]){const pool=size?await createPool({size}):null;try{
+  >   const rt=createRuntime(program,{data,pool});rt.current={t:.25,dt:0,frame:2,size:[1,1]};
+  >   const values=(await rt.invoke(region,[])).data;if(values.length!==32769||values.some(s=>s!=='é日本😀'))throw Error('text table values');
+  >   await rt.stepFrame({t:.25,frame:2});if(rt.counts.gpu!==0||rt.marks.find(m=>m.type==='text')?.text!=='é日本😀')throw Error('text table frame');
+  >   const raw=textOfBytes(Uint8Array.of(0xff,0,0x80));
+  >   const r=program.regions[region],uniforms=r.uniforms.map(u=>u.texts?{texts:u.texts.map(()=>raw)}:u);
+  >   rt.load({...program,regions:program.regions.map((r,i)=>i===region?{...r,uniforms}:r)});
+  >   rt.current={t:.25,dt:0,frame:3,size:[1,1]};
+  >   if((await rt.invoke(region,[])).data.some(s=>!Buffer.from(textBytes(s)).equals(Buffer.from([255,0,128]))))throw Error('text worker bytes');
+  > }finally{pool?.close()}}
+  > console.log('text lookup export: immutable captures, exact bytes, actual frame and one/eight workers pass');
+  > X
+  $ node text.mjs
+  text lookup export: immutable captures, exact bytes, actual frame and one/eight workers pass
+
+Cartesian Text leaves transport a Text source separately from the lookup table;
+skips compact worker outputs without changing either source count.
+
+  $ cat > product.rays <<'X'
+  > (workspace lookup (graph picture :context draw
+  >   (let* [names (array/text 7 "picked")
+  >          selected (for [i (array/range 2 :type int) old (array/text 16385 "old")]
+  >            :skip [0 16384 32769]
+  >            (if (> t 0.) (if (int/eq i 0) old (array/nth names i)) "safe"))]
+  >     (draw/text [0 0 0] (array/nth selected 0)))))
+  > X
+  $ rays-lisp web product.rays -o product
+  $ printf '{"type":"module"}\n' > product/package.json
+  $ cat > product.mjs <<'X'
+  > import {readFileSync} from 'node:fs';import * as program from './product/program.js';
+  > import {createRuntime} from './product/runtime/runtime.js';import {createPool} from './product/runtime/workers.js';
+  > const file=readFileSync('product/data.bin'),data=file.buffer.slice(file.byteOffset,file.byteOffset+file.byteLength);
+  > const region=program.regions.findIndex(r=>r.text&&r.count===32770);
+  > if(region<0||program.regions[region].kept!==32767||!program.regions[region].inputs.some(i=>i.texts))throw Error('Text Product count');
+  > for(const size of [0,1,8]){const pool=size?await createPool({size}):null;try{
+  >   const rt=createRuntime(program,{data,pool});rt.current={t:.25,dt:0,frame:0,size:[1,1]};
+  >   const output=(await rt.invoke(region,[])).data;
+  >   if(output.length!==32767||output.some((s,i)=>s!==(i<16383?'old':'picked')))throw Error('Text Product values');
+  > }finally{pool?.close()}}
+  > console.log('Text Product export: independent Text source, counts, skipped chunks and one/eight workers pass');
+  > X
+  $ node product.mjs
+  Text Product export: independent Text source, counts, skipped chunks and one/eight workers pass

@@ -1,9 +1,12 @@
 # Kernel gather design and scheduling move
 
-Status: reviewed design; numeric implementation is in progress. C.2 is advanced
-before the Phase B review in `plan.md`. No capability or port is marked complete,
-and no public API change or speed claim is accepted by this note. No build or
-benchmark was run for the original audit.
+Status: C.2 is complete. Numeric implementation was accepted in `8319b320`,
+with evidence in `gather-validation.md`; the required Text leaf extension is
+verified in `text-gather-validation.md`. Its public API was accepted in
+`03437c73`. C.2 is advanced before the Phase B review in `plan.md`. No whole
+port or speed qualification follows from this foundation; the retained Text
+timings still exceed 2× native. No build or benchmark was run for the original
+audit below.
 
 ## Why C.2 belongs before the Phase B review
 
@@ -37,7 +40,7 @@ area and volume modes still require canonical triangulation and primitive
 mapping from C.15 in addition to indexed reads; bounds-only fitting does not
 establish those prerequisites. No mode may be omitted to bypass them.
 
-## Existing path and the missing part
+## Original audit: existing path and the missing part
 
 `Flow.Op` already declares `array/nth : (array a, int) -> a`.
 `Value.array_get` supports Int, Text, Float and Vec2/3/4 arrays. Scalar Core's
@@ -150,9 +153,9 @@ optimization; eager preflight can change lazy error precedence. There is no
 ## Text is an explicit additional scope
 
 Name From Groups requires Text table reads, Text identity inputs and a guarded
-Text output. The current packed register/result path has no Text bank. Keeping
-its existing structured Core route is correct, but numeric C.2 cannot be
-reported as closing that performance gap.
+Text output. At the initial audit the packed register/result path had no Text
+bank. Its structured Core route remained correct, but numeric C.2 alone could
+not close that compilation gap or establish a whole-node speed qualification.
 
 After the numeric gather proof, add only Text leaf storage to the same typed
 runner for that B.14 draft: Text constant/input/uniform,

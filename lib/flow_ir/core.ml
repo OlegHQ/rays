@@ -89,6 +89,8 @@ module Region = struct
     | Checked_mul of projection * int * int | Checked_fma of projection * int * int * int
     | Array_prepare of int * Flow.Ty.t
     | Gather of int * int * int * int | Int_gather of int * int
+    | Text_const of string | Text_input of int | Text_uniform of int
+    | Text_gather of int * int | Text_select of int * int * int
     | Int_const of int | Int_input of int | Int_uniform of int | Int_frame of string | Int_accumulator
     | Int_binary of Flow.Packed_ops.integer * int * int
     | Int_compare of Flow.Packed_ops.comparison * int * int | Int_abs of int
@@ -101,11 +103,16 @@ module Region = struct
     | Convert (To_float,_) -> false | Convert _ -> true
     | Guarded (_,instruction) -> integer_register instruction
     | _ -> false
+  let rec text_register = function
+    | Text_const _ | Text_input _ | Text_uniform _ | Text_gather _ | Text_select _
+    | Raise (Flow.Ty.Text,_,_,_) -> true
+    | Guarded (_,instruction) -> text_register instruction
+    | _ -> false
   let rec operands = function
     | Binary (_,a,b) | Int_binary (_,a,b) | Int_compare (_,a,b) | Rand_at(a,b) | Checked_mul(_,a,b)
-    | Gather(a,b,_,_) | Int_gather(a,b) -> [a;b]
+    | Gather(a,b,_,_) | Int_gather(a,b) | Text_gather(a,b) -> [a;b]
     | Unary (_,a) | Int_abs a | Convert (_,a) -> [a]
-    | Noise3 (a,b,c,_,_) | Fma(a,b,c) | Select (a,b,c) | Int_select (a,b,c) | Checked_fma(_,a,b,c) -> [a;b;c]
+    | Noise3 (a,b,c,_,_) | Fma(a,b,c) | Select (a,b,c) | Int_select (a,b,c) | Text_select(a,b,c) | Checked_fma(_,a,b,c) -> [a;b;c]
     | Guarded (guards,instruction) -> List.map fst guards @ operands instruction
     | _ -> []
   type iteration = Zip | Product
@@ -306,6 +313,11 @@ let pp fmt p =
        | Array_prepare(i,ty) -> out "array_prepare u%d:%s" i (Flow.Ty.to_string ty)
        | Gather(a,i,w,c) -> out "gather(r%d r%d width=%d component=%d)" a i w c
        | Int_gather(a,i) -> out "int_gather(r%d r%d)" a i
+       | Text_const s -> out "text_const %S" s
+       | Text_input i -> out "text_input in%d" i
+       | Text_uniform i -> out "text_uniform u%d" i
+       | Text_gather(a,i) -> out "text_gather(r%d r%d)" a i
+       | Text_select(c,a,b) -> out "text_select(r%d r%d r%d)" c a b
        | Checked_fma(p,a,b,c) -> out "fma_checked.%s(r%d r%d r%d)" (match p with Value->"value"|Valid->"valid") a b c
        | Select (c, a, b) | Int_select (c,a,b) -> out "select(r%d r%d r%d)" c a b
        | Int_const n -> out "int:%d" n | Int_input i -> out "input:int[%d]" i

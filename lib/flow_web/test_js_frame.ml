@@ -250,8 +250,12 @@ let () =
     let r,_=wrapped name body in
     let program=match I.Core_lower.lower ~strict:true r with
       |Ok program->program|Error form->failwith("Text Core refused "^form) in
-    assert(Array.length program.regions=0);
-    let case=value_case name (r,program) in
+    (* Leaf Text maps/loops can invoke Collect regions; Text transformations
+       and scans still use structured Core. *)
+    (* This frame shim has no region table. Exercise its structured printer;
+       test_gather runs the strict Text region through the actual runtime/pool. *)
+    let frame_program=match I.Core_lower.lower r with Ok p->p|Error form->failwith form in
+    let case=value_case name (r,frame_program) in
     List.iter(fun live->match I.Core_exec.run program ~live,E.Private.force_reference(E.Residual r)~live with
       |Ok actual,Ok expected->assert(actual=expected)
       |Error actual,Error expected->assert(actual.code=expected.code && actual.message=expected.message)

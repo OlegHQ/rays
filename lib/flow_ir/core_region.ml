@@ -39,9 +39,9 @@ let captured_value bindings name fields =
 let count_of residual (s : W.term) = match s.node with
   | W.Ref_binding (name, fields) ->
       (try match captured_value (E.Private.residual_view residual).bindings name fields with
-       | E.Int_array _ | Float_array _ | Vec2_array _ | Vec3_array _ | Vec4_array _ as v -> Some (V.array_length v) | _ -> None
+       | E.Int_array _ | Text_array _ | Float_array _ | Vec2_array _ | Vec3_array _ | Vec4_array _ as v -> Some (V.array_length v) | _ -> None
        with Unsupported -> None)
-  | Op {op = ("array/int" | "array/float" | "array/vec3" | "array/vec4" | "array/range"); args; _} ->
+  | Op {op = ("array/int" | "array/text" | "array/float" | "array/vec3" | "array/vec4" | "array/range"); args; _} ->
       (match List.assoc_opt "count" args with
        | Some {node = W.Lit (Param.Int_value n); _} when n >= 0 -> Some n | _ -> None)
   | _ -> None
@@ -152,7 +152,8 @@ let lower ?(fusion = true) ?(dynamic = false)
     (* ponytail: correlated clauses stay interpreted; lower their changing source counts before tiling them. *)
     if iteration = Product && Array.exists (reads_names names) sources then
       refuse "E_PACKED_FORM" "Correlated product sources require reference evaluation.";
-    let widths = Array.map (fun (s : W.term) -> match Flow.Packed_ops.array_width s.ty with
+    let widths = Array.map (fun (s : W.term) -> match
+        (if s.ty=Ty.Array Ty.Text then Some 1 else Flow.Packed_ops.array_width s.ty) with
       | Some width -> width
       | None -> refuse ~at:s "E_PACKED_TYPE" ("Packed source must be a float/vector array, got " ^ Ty.to_string s.ty ^ ".")) sources in
     if Array.length sources <> List.length params then
@@ -160,7 +161,8 @@ let lower ?(fusion = true) ?(dynamic = false)
         (Array.length sources) (List.length params));
     let code = ref [] and size = ref 0 and uniforms = ref [] and nuniforms = ref 0 and uniform_names = ref [] in
     let shared = Hashtbl.create 16 in
-    let guards = ref [] and integer_registers = Hashtbl.create 16
+    let guards = ref [] and integer_registers = Hashtbl.create 16 and text_registers = Hashtbl.create 8
+    and bottom_registers = Hashtbl.create 4
     and array_registers = Hashtbl.create 8 in
     let table_uniforms = Hashtbl.create 8 in
     let emit instruction =
@@ -175,6 +177,9 @@ let lower ?(fusion = true) ?(dynamic = false)
             refuse "E_PACKED_LIMIT" (Printf.sprintf "Packed kernel exceeds %d registers." Flow.Packed_ops.register_limit);
           let id = !size in incr size; code := instruction :: !code;
           Hashtbl.add integer_registers id (Core.Region.integer_register instruction);
+          Hashtbl.add text_registers id (Core.Region.text_register instruction);
+          let rec bottom = function Raise(Ty.Any,_,_,_)->true|Guarded(_,body)->bottom body|_->false in
+          Hashtbl.add bottom_registers id (bottom instruction);
           (match instruction with Array_prepare(_,ty) | Guarded(_,Array_prepare(_,ty)) ->
             Hashtbl.add array_registers id ty | _ -> ());
           Hashtbl.add shared key id;
@@ -183,7 +188,7 @@ let lower ?(fusion = true) ?(dynamic = false)
       | value -> V.ty_of value in
     let table at name value =
       let ty=array_type value in
-      (match ty with Ty.Array (Ty.Int|Float|Vec2|Vec3|Vec4) -> ()
+      (match ty with Ty.Array (Ty.Int|Text|Float|Vec2|Vec3|Vec4) -> ()
        | _ -> refuse ~at "E_PACKED_CAPTURE" "Kernel lookup tables require integer, float or vector arrays.");
       let i=match if fst name="" then None else Hashtbl.find_opt table_uniforms name with
         |Some i->i
@@ -194,21 +199,24 @@ let lower ?(fusion = true) ?(dynamic = false)
     let is_table e=Array.length e.registers=1 && Hashtbl.mem array_registers e.registers.(0) in
     let rec literal ?(at = term) v =
       match v with
-      | E.Int_array _ | Float_array _ | Vec2_array _ | Vec3_array _ | Vec4_array _ -> table at ("",[]) v
+      | E.Int_array _ | Text_array _ | Float_array _ | Vec2_array _ | Vec3_array _ | Vec4_array _ -> table at ("",[]) v
       | E.Record fields -> {registers=[||];constant=Some v;
           fields=List.map(fun(name,value)->name,literal ~at value)fields}
       | _ ->
       let registers = match v with
         | E.Int _ -> [||] (* Emit a constant only after its integer/float use is known. *)
+        | E.Text text -> [|emit(Text_const text)|]
         | Float _ | Bool _ | Vec2 _ | Vec3 _ | Vec4 _ -> Array.map (fun f -> emit (Const f)) (components v)
         | _ -> refuse ~at "E_PACKED_TYPE" ("Packed constant has unsupported type " ^ Ty.to_string (V.ty_of v) ^ ".") in
       {registers; constant = Some v; fields=[]} in
     let as_float e = if is_table e then refuse "E_PACKED_TYPE" "An array handle cannot be used as a number.";
+      if Array.exists(fun r->Hashtbl.find text_registers r)e.registers then refuse "E_PACKED_TYPE" "A Text leaf cannot be used as a number.";
       match e.constant with
       | Some (E.Int n) -> literal (E.Float (float n))
       | _ -> {e with registers=Array.map (fun register ->
           if Hashtbl.find integer_registers register then emit (Convert(To_float,register)) else register) e.registers} in
     let as_int e = if is_table e then refuse "E_PACKED_TYPE" "An array handle cannot be used as an integer.";
+      if Array.exists(fun r->Hashtbl.find text_registers r)e.registers then refuse "E_PACKED_TYPE" "A Text leaf cannot be used as an integer.";
       match e.constant with
       | Some value ->
           let value=V.coerce_to Ty.Int value in
@@ -216,22 +224,34 @@ let lower ?(fusion = true) ?(dynamic = false)
            | _ -> assert false)
       | None -> {e with registers=Array.map (fun register ->
           if Hashtbl.find integer_registers register then register else emit (Convert(Coerce_int,register))) e.registers} in
+    let as_text e =
+      if Array.length e.registers=1 && Hashtbl.find bottom_registers e.registers.(0) then
+        (* The guarded Raise has already run before this unreachable value.
+           A typed placeholder keeps bottom branches out of numeric banks. *)
+        {registers=[|emit(Text_const "")|];constant=None;fields=[]}
+      else begin
+      if Array.length e.registers<>1 || not(Hashtbl.find text_registers e.registers.(0)) then
+        refuse "E_PACKED_TYPE" "Packed Text leaves require text values.";
+      e end in
     let input i width = {registers = Array.init width (fun j ->
-      if sources.(i).W.ty=Ty.Array Ty.Int then emit (Int_input i) else emit (Input (i, width, j))); constant = None;fields=[]} in
+      if sources.(i).W.ty=Ty.Array Ty.Int then emit (Int_input i)
+      else if sources.(i).W.ty=Ty.Array Ty.Text then emit(Text_input i)
+      else emit (Input (i, width, j))); constant = None;fields=[]} in
     let uniform at name v = match array_type v with
       | Ty.Array _ -> table at name v
       | _ -> match v with
-      | E.Residual _ | E.Source _ | E.Int _ | Float _ | Bool _ | Vec2 _ | Vec3 _ | Vec4 _
+      | E.Residual _ | E.Source _ | E.Int _ | Text _ | Float _ | Bool _ | Vec2 _ | Vec3 _ | Vec4 _
         when dynamic || E.is_live v || (match v with E.Source _ -> true | _ -> false) ->
           let ty = match v with E.Residual r -> (E.Private.residual_view r).term.ty | v -> V.ty_of v in
-          let width = try width_of ty with Unsupported ->
+          let width = try if ty=Ty.Text then 1 else width_of ty with Unsupported ->
             refuse ~at "E_PACKED_CAPTURE" ("Capture " ^ String.concat "." (fst name :: snd name)
               ^ " has unsupported type " ^ Ty.to_string ty ^ ".") in
           let i = !nuniforms in incr nuniforms; uniforms := v :: !uniforms;
           uniform_names := name :: !uniform_names;
           {registers = Array.init width (fun j ->
-            if ty=Ty.Int then emit (Int_uniform i) else emit (Uniform (i, j))); constant = None;fields=[]}
-      | E.Int _ | Float _ | Bool _ | Vec2 _ | Vec3 _ | Vec4 _ -> literal ~at v
+            if ty=Ty.Int then emit (Int_uniform i)
+            else if ty=Ty.Text then emit(Text_uniform i) else emit (Uniform (i, j))); constant = None;fields=[]}
+      | E.Int _ | Text _ | Float _ | Bool _ | Vec2 _ | Vec3 _ | Vec4 _ -> literal ~at v
       | _ -> refuse ~at "E_PACKED_CAPTURE" ("Capture " ^ String.concat "." (fst name :: snd name)
           ^ " has unsupported type " ^ Ty.to_string (V.ty_of v) ^ ".") in
     let env = List.mapi (fun i (pattern, annotation) ->
@@ -289,6 +309,7 @@ let lower ?(fusion = true) ?(dynamic = false)
       | Ty.Record fields,_ -> {value with fields=List.map (fun (name,ty) ->
           name,coerce at ty (field at value name)) fields}
       | Ty.Int,_ -> as_int value
+      | Ty.Text,_ -> as_text value
       | Ty.Float,_ -> as_float value
       | Ty.Bool,_ ->
           let value = as_float value in
@@ -307,6 +328,7 @@ let lower ?(fusion = true) ?(dynamic = false)
       | W.Lit (Param.Int_value n) -> literal ~at:t (E.Int n)
       | Lit (Param.Float_value f) -> literal ~at:t (E.Float f)
       | Lit (Param.Bool_value b) -> literal ~at:t (E.Bool b)
+      | Text text -> literal ~at:t(E.Text text)
       | Ref_binding (name, fields) ->
           (match List.assoc_opt name env with
            | Some e -> List.fold_left (field t) e fields
@@ -369,10 +391,11 @@ let lower ?(fusion = true) ?(dynamic = false)
                  | Ty.Record fields -> {registers=[||];constant=None;
                      fields=List.map (fun (name,ty) -> name,select ty (field t yes name) (field t no name)) fields}
                  | _ ->
-                     let yes,no=if ty=Ty.Int then coerce t ty yes,coerce t ty no else as_float yes,as_float no in
+                     let yes,no=if ty=Ty.Int || ty=Ty.Text then coerce t ty yes,coerce t ty no else as_float yes,as_float no in
                      let width = max (Array.length yes.registers) (Array.length no.registers) in
                      {registers = Array.init width (fun i ->
-                       emit ((if ty=Ty.Int then fun c a b->Int_select(c,a,b) else fun c a b->Select(c,a,b))
+                       emit ((if ty=Ty.Int then fun c a b->Int_select(c,a,b)
+                         else if ty=Ty.Text then fun c a b->Text_select(c,a,b) else fun c a b->Select(c,a,b))
                          condition.registers.(0) (component yes i) (component no i))); constant = None;fields=[]} in
                select t.ty yes no)
       | Call_fn {fn;args;body=specialized} ->
@@ -432,6 +455,7 @@ let lower ?(fusion = true) ?(dynamic = false)
                 if Array.length index.registers<>1 then refuse ~at:t "E_PACKED_TYPE" "Array indices require a scalar integer.";
                 let prepared=array.registers.(0) and index=index.registers.(0) in
                 let registers=if t.ty=Ty.Int then [|emit(Int_gather(prepared,index))|]
+                  else if t.ty=Ty.Text then [|emit(Text_gather(prepared,index))|]
                   else let width=width_of t.ty in Array.init width(fun component->emit(Gather(prepared,index,width,component))) in
                 {registers;constant=None;fields=[]}
             | _ -> refuse ~at:t "E_PACKED_CAPTURE" "Array lookup requires an invariant numeric table."
@@ -538,12 +562,13 @@ let lower ?(fusion = true) ?(dynamic = false)
         else raise(Compile_refused {d with span=Some(Option.value ~default:t.form.span d.span)}) in
     let result_ty = match term.ty with Ty.Array ty -> ty | ty -> ty in
     let output_expression = expression env body in
-    let output = (if result_ty=Ty.Int && body.ty=Ty.Int then as_int output_expression
+    let output = (if result_ty=Ty.Text then as_text output_expression
+      else if result_ty=Ty.Int && body.ty=Ty.Int then as_int output_expression
       else if body.ty=Ty.Float && term.ty=Ty.Int then output_expression
       else as_float output_expression).registers in
-    if not (List.mem result_ty [Ty.Int;Ty.Float;Ty.Vec2;Ty.Vec3;Ty.Vec4]) then
+    if not (List.mem result_ty [Ty.Int;Ty.Text;Ty.Float;Ty.Vec2;Ty.Vec3;Ty.Vec4]) then
       refuse "E_PACKED_TYPE" ("Packed result must be float or vector, got " ^ Ty.to_string result_ty ^ ".");
-    let width = width_of result_ty in
+    let width = if result_ty=Ty.Text then 1 else width_of result_ty in
     (match result with
      | Sum _ | Accumulate _ when not (List.mem body.ty [Ty.Int;Ty.Float;Ty.Vec2;Ty.Vec3;Ty.Vec4]) ->
          refuse ~at:body "E_PACKED_TYPE" ("Packed reduction body has unsupported type " ^ Ty.to_string body.ty ^ ".")
@@ -583,7 +608,8 @@ let lower ?(fusion = true) ?(dynamic = false)
       | Int_const _ -> false
       | Int_input _ | Int_uniform _ | Int_frame _ | Int_accumulator | Int_binary _ | Int_compare _
       | Int_abs _ | Convert _ | Int_select _ | Rand_at _ | Raise _
-      | Array_prepare _ | Gather _ | Int_gather _ -> true
+      | Array_prepare _ | Gather _ | Int_gather _
+      | Text_const _ | Text_input _ | Text_uniform _ | Text_gather _ | Text_select _ -> true
       | Guarded (_,instruction) -> integer_work instruction
       | _ -> false in
     let code = if Array.exists integer_work code then code else Array.map (function

@@ -179,7 +179,8 @@ let rec packed_body ~ops (term : term) =
   let body = packed_body ~ops in
   match term.node with
   | Lit (Param.Int_value _ | Float_value _ | Bool_value _) | Time -> true
-  | Ref_binding _ -> Option.is_some (Packed_ops.scalar_width term.ty)
+  | Text _ -> true
+  | Ref_binding _ -> term.ty=Ty.Text || Option.is_some (Packed_ops.scalar_width term.ty)
   | Vec terms -> List.mem (List.length terms) [2;3;4] && List.for_all body terms
   | Get (value, field) ->
       (List.mem (value.ty, field) [Ty.Vec2,"x"; Vec2,"y"; Vec3,"x"; Vec3,"y"; Vec3,"z";
@@ -201,7 +202,7 @@ let rec packed_body ~ops (term : term) =
        | Some (Fma | Checked_fma) -> List.length args = 3 && List.for_all (fun (_, t) -> body t) args
        | Some Checked_mul -> List.length args = 2 && List.for_all (fun (_, t) -> body t) args
        | Some Gather -> (match args with
-           | [_,array;_,index] -> Option.is_some(Packed_ops.array_width array.ty) && body index
+           | [_,array;_,index] -> (array.ty=Ty.Array Ty.Text || Option.is_some(Packed_ops.array_width array.ty)) && body index
            | _ -> false)
        | Some (Binary _ | Integer _ | Integer_compare _ | Rand_at) -> List.length args = 2 && List.for_all (fun (_, t) -> body t) args
        | Some (Unary _ | Convert _) -> List.length args = 1 && List.for_all (fun (_, t) -> body t) args

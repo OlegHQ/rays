@@ -21,6 +21,11 @@ let rec instruction : P.instruction -> string = function
   | Array_prepare(i,ty) -> Printf.sprintf "Array_prepare %d %s" i (Flow.Ty.to_string ty)
   | Gather(a,i,w,c) -> Printf.sprintf "Gather %d %d %d %d" a i w c
   | Int_gather(a,i) -> Printf.sprintf "Int_gather %d %d" a i
+  | Text_const s -> Printf.sprintf "Text_const %S" s
+  | Text_input i -> Printf.sprintf "Text_input %d" i
+  | Text_uniform i -> Printf.sprintf "Text_uniform %d" i
+  | Text_gather(a,i) -> Printf.sprintf "Text_gather %d %d" a i
+  | Text_select(c,a,b) -> Printf.sprintf "Text_select %d %d %d" c a b
   | Checked_fma(p,a,b,c) -> Printf.sprintf "Checked_fma %s %d %d %d" (match p with Value->"value"|Valid->"valid") a b c
   | Rand_at (seed, index) -> Printf.sprintf "Rand_at %d %d" seed index
   | Select (c, a, b) -> Printf.sprintf "Select %d %d %d" c a b

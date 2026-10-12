@@ -228,3 +228,138 @@ let ()=if Array.exists((=)"--bench")Sys.argv then begin
         (Flow.Ty.to_string ty)domains nt nb pt pb(pt/.nt)))[1;4])
     [Flow.Ty.Int;Float;Vec2;Vec3;Vec4]
 end
+
+let () =
+  let strings=[|"";"é日本😀";"nul\000tail";"\255\128";"\237\160\128";"quote\"\\";"\239\187\191BOM"|] in
+  let table=E.Text_array strings and live=Frame_input.at_time 0.25 in
+  List.iter(fun count->
+    let value=instantiate ~table (Flow.Ty.Array Flow.Ty.Text)
+      "(fn [(index : int)] (if (int/ge index 0) (array/nth data (int/mod index 7)) \"untaken\"))"
+      (Array.init count Fun.id)in
+    let reference=ok(E.Private.force_reference value ~live)in
+    List.iter(fun fusion->let p=packed ~fusion value in
+      assert(P.static_count p=Some count && P.gpu_refusals p<>[]);
+      let core=ok(I.Executor.compile ~strict:true value)in
+      List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+        let got=ok(P.force ~strict:true p ~live)in
+        assert(bytes got=bytes reference);
+        assert(bytes(ok(I.Executor.force ~strict:true core ~live))=bytes reference);
+        match got with E.Text_array output->assert(output!=strings);
+          Array.iteri(fun i s->assert(s==strings.(i mod 7)))output|_->assert false))[1;4;8]) [false;true])
+    [0;1;13;32769];
+  let value=instantiate ~table ~bindings:"lookup (fn [(names : (array text)) (index : int)] (array/nth names index))"
+    (Flow.Ty.Array Flow.Ty.Text)"(fn [(index : int)] (let* [alias data] (lookup alias (int/mod index 7))))"
+    (Array.init 5001 Fun.id)in
+  assert(bytes(ok(P.force ~strict:true(packed value)~live))=bytes(ok(E.Private.force_reference value ~live)));
+  let closure=fn (Flow.Ty.Array Flow.Ty.Text)
+    "(fn [(index : int) (old : text)] (if (int/ge index 0) (array/nth data (int/mod index 7)) old))"in
+  let closure=E.Private.map_function_bindings(function
+    |E.Source("probe/table",_,_)->table|v->v)closure in
+  let indices=Array.init 32769(fun i->if i mod 5=0 then -1 else i)in
+  let old=Array.init 32769(fun i->strings.((i+2)mod 7))in
+  let selected=ok(E.Private.map_function ~signature:Flow.Ty.{params=[Int;Text];result=Text}
+    closure [E.Int_array indices;E.Text_array old])in
+  List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+    let got=ok(P.force ~strict:true(packed selected)~live)in
+    assert(bytes got=bytes(ok(E.Private.force_reference selected ~live)));
+    match got with E.Text_array output->assert(output!=old);
+      Array.iteri(fun i s->assert(s==(if indices.(i)<0 then old.(i)else strings.(indices.(i)mod 7))))output
+    |_->assert false))[1;4;8];
+  List.iter(fun indices->let value=instantiate ~table (Flow.Ty.Array Flow.Ty.Text)
+    "(fn [(index : int)] (array/nth data index))"indices in
+    List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->same_error
+      (P.force ~strict:true(packed value)~live)(E.Private.force_reference value ~live)))[1;4;8])
+    [[|-1|];[|7|];[|max_int|];Array.init 32769(fun i->if i=3 then 7 else if i=20000 then -1 else 0)];
+  let value=instantiate ~table (Flow.Ty.Array Flow.Ty.Text)
+    "(fn [(index : int)] (if (int/lt index 0) \"safe\" (array/nth data index)))"[|-1;0|]in
+  assert(ok(P.force ~strict:true(packed value)~live)=E.Text_array[|"safe";""|]);
+  let identity=recorded(Flow.Ty.Array Flow.Ty.Text)"(map (fn [(old : text)] old) data)"in
+  assert(P.gpu_refusals(packed identity)<>[]);
+  let calls=ref 0 and domain=Domain.self()in
+  let resolve _=assert(Domain.self()=domain);incr calls;Ok table in
+  List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->calls:=0;
+    assert(ok(P.force ~strict:true ~resolve(packed identity)~live)=table);assert(!calls=1)))[1;8];
+  let uniform=recorded Flow.Ty.Text
+    "(map (fn [(index : int)] (if (int/ge index 0) data \"safe\")) (array/range 5001 :type int))"in
+  calls:=0;let resolve _=assert(Domain.self()=domain);incr calls;Ok(E.Text strings.(3))in
+  assert(ok(P.force ~strict:true ~resolve(packed uniform)~live)=E.Text_array(Array.make 5001 strings.(3)));assert(!calls=1);
+  let bad=instantiate(Flow.Ty.Array Flow.Ty.Text)
+    "(fn [(index : int)] (array/nth data (int/div index 0)))"[|0|]in
+  let failing _=Error(Flow.Diagnostic.error ~code:"E_DATA_SOURCE" ~cause:strings.(3) "Text source failed")in
+  same_error(P.force ~strict:true ~resolve:failing(packed bad)~live)(E.Private.force_reference ~resolve:failing bad ~live);
+  let error=instantiate ~table(Flow.Ty.Array Flow.Ty.Text)
+    "(fn [(index : int)] (if (int/lt index 0) (error \"E_TEXT\" \"selected\" :cause \"raw\255\000cause\") (array/nth data index)))"[|-1;0|]in
+  List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->same_error
+    (P.force ~strict:true(packed error)~live)(E.Private.force_reference error ~live)))[1;4;8];
+  List.iter(fun returned->let resolve _=Ok returned in
+    same_error(P.force ~strict:true ~resolve(packed bad)~live)
+      (E.Private.force_reference ~resolve bad ~live))
+    [E.Float_array[|0.|];E.Source("probe/table",Flow.Ty.Array Flow.Ty.Text,[])];
+  let advancing=recorded(Flow.Ty.Array Flow.Ty.Text)"(state [a 0] (int/add a 1))"in
+  let rollback=instantiate(Flow.Ty.Array Flow.Ty.Text)
+    "(fn [(index : int)] (array/nth data index))"[|-1|]in
+  List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+    let state=E.create_state()and reference=E.create_state()in
+    let before=E.state_stamp state in
+    let resolve state _=ignore(ok(E.Private.force_reference ~state advancing ~live));Ok table in
+    same_error(P.force ~strict:true ~state ~resolve:(resolve state)(packed rollback)~live)
+      (E.Private.force_reference ~state:reference ~resolve:(resolve reference)rollback ~live);
+    assert(E.state_stamp state=before && E.state_stamp reference=before)))[1;8];
+  let product=recorded(Flow.Ty.Array Flow.Ty.Text)
+    "(for [i (array/range 5001 :type int) j (array/range 3 :type int)] :skip [4] (if (int/eq i 1) (if (int/eq j 1) (array/nth data -1) \"old\") (array/nth data (int/mod i 7))))"in
+  let resolve _=Ok table in
+  List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+    assert(bytes(ok(P.force ~strict:true ~resolve(packed product)~live))=
+      bytes(ok(E.Private.force_reference ~resolve product ~live)))))[1;4;8];
+  let changing=recorded(Flow.Ty.Array Flow.Ty.Text)
+    "(let* [table (array/text 7 (if (> t 0.) \"é日本😀\" \"other\")) nested {:names table}] (map (fn [(index : int)] (array/nth nested.names (int/mod index 7))) (array/range 5001 :type int)))"in
+  let program=ok(I.Executor.compile ~strict:true changing)in
+  let residual=match changing with E.Residual r->r|_->assert false in
+  let template=Option.get(P.compile_template residual(E.Private.residual_view residual).term)in
+  let rebound=Option.get(P.rebind template residual)in
+  List.iter(fun time->let live=Frame_input.at_time time in
+    let expected=bytes(ok(E.Private.force_reference changing ~live))in
+    assert(bytes(ok(I.Executor.force ~strict:true program ~live))=expected);
+    assert(bytes(ok(P.force ~strict:true rebound ~live))=expected))[-1.;1.];
+  let fused=recorded(Flow.Ty.Array Flow.Ty.Text)
+    "(map (fn [(old : text)] (if (> t 0.) old \"other\")) (map (fn [(index : int)] (array/nth data (int/mod index 7))) (array/range 5001 :type int)))"in
+  List.iter(fun fusion->List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+    assert(bytes(ok(P.force ~strict:true ~resolve(packed ~fusion fused)~live))=
+      bytes(ok(E.Private.force_reference ~resolve fused ~live)))))[1;4;8])[false;true];
+  let middle=instantiate ~table(Flow.Ty.Array Flow.Ty.Text)
+    "(fn [(index : int)] (str (array/nth data index)))"[|0|]in
+  (match middle with E.Residual r->assert(Result.is_error(P.compile_result r(E.Private.residual_view r).term))|_->assert false);
+  let value=instantiate ~table(Flow.Ty.Array Flow.Ty.Text)
+    "(fn [(index : int)] (array/nth data index))"[|0|]in
+  let p=packed value in
+  assert(Result.is_error(P.force_into ~strict:true p ~live ~count:1 ~outputs:[|[|None|]|]
+    ~column_source:(fun _ _->Ok None)));
+  let region=P.to_region p in
+  let output=region.outputs.(0).(0)in
+  let code=Array.append region.code[|I.Core.Region.Unary(Flow.Packed_ops.Not,output)|]in
+  assert(Result.is_error(P.of_region{region with code;outputs=[|[|Array.length code-1|]|]}));
+  print_endline "Text gather: immutable byte leaves, identity/uniform/select/helper, strict Core and one/four/eight domains pass"
+
+let ()=if Array.exists((=)"--bench-text")Sys.argv then begin
+  let count=1_000_000 and strings=[|"";"é日本😀";"a\000b";"\255\128"|]in
+  let indices=Array.init 1_000_000(fun i->if i mod 5=0 then -1 else i mod 4)in
+  let old=Array.init count(fun i->strings.((i+1)mod 4))in
+  let closure=fn (Flow.Ty.Array Flow.Ty.Text)
+    "(fn [(index : int) (old : text)] (if (int/ge index 0) (array/nth data index) old))"in
+  let closure=E.Private.map_function_bindings(function
+    |E.Source("probe/table",_,_)->E.Text_array strings|v->v)closure in
+  let value=ok(E.Private.map_function ~signature:Flow.Ty.{params=[Int;Text];result=Text}
+    closure [E.Int_array indices;E.Text_array old])in
+  let p=packed value and live=Frame_input.at_time 0.25 in
+  let native()=E.Text_array(Array.init count(fun i->if indices.(i)<0 then old.(i)else strings.(indices.(i))))in
+  let measure f=let samples=Array.init 3(fun _->Gc.full_major();let before=Gc.allocated_bytes()and started=Unix.gettimeofday()in
+    ignore(f());Unix.gettimeofday()-.started,Gc.allocated_bytes()-.before)in
+    Array.sort(fun(a,_)(b,_)->Float.compare a b)samples;samples.(1)in
+  Printf.printf "Text gather: OCaml %s, strict Packed Collect, block1024/chunk16384, million rows, median3; allocations observe the initial domain only\n%!"Sys.ocaml_version;
+  List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+    let run()=ok(P.force ~strict:true p ~live)in
+    assert(bytes(run())=bytes(native()));
+    let nt,nb=measure native and pt,pb=measure run in
+    Printf.printf "Text domains%d native %.6f/%.0fB packed %.6f/%.0fB ratio %.3f\n%!"
+      domains nt nb pt pb(pt/.nt)))[1;4]
+end

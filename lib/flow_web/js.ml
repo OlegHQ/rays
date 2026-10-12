@@ -103,11 +103,13 @@ let region program =
   let collecting = match region.result with R.Collect | R.Accumulate (_, true) -> true | _ -> false in
   let accumulating = region.result <> R.Collect in
   let outputs = Array.length view.outputs and width = Array.length view.outputs.(0) in
+  let textual=Array.exists R.text_register view.code in
   let state = if collecting then outputs else 0 in
   let sources = Array.length view.widths in
   let product = region.iteration = R.Product && sources > 1 in
-  let skip = Array.to_list region.skip |> List.filter (fun index -> index >= 0) in
-  add "function region(inputs, uniforms, outputs, start, stop) {\n";
+  let skip = Array.to_list region.skip |> List.filter (fun index -> index >= 0) |> List.sort_uniq Int.compare in
+  add "%s" (if textual then "function region(inputs, uniforms, outputs, start, stop, outputBase = 0) {\n"
+    else "function region(inputs, uniforms, outputs, start, stop) {\n");
   if Array.exists(fun instruction->match unguarded instruction with P.Raise(_,_,_,Some _)->true|_->false)view.code then
     add "  const fail = (code, message, cause) => { const e = new Error(message); e.code = code; if (cause !== undefined) e.cause = cause; throw e; };\n"
   else add "  const fail = (code, message) => { const e = new Error(message); e.code = code; throw e; };\n";
@@ -115,13 +117,16 @@ let region program =
   if Array.exists(fun instruction->match unguarded instruction with P.Array_prepare _->true|_->false)view.code then begin
     add "  const tables = new Map();\n";
     add "  const table = (slot, integer, width) => { if (tables.has(slot)) return tables.get(slot); const data = uniforms[slot];\n";
-    add "    if (!(data instanceof (integer ? BigInt64Array : Float64Array))) fail('E_ARRAY_TYPE', 'Kernel lookup table changed its packed element type.');\n";
+    add "    const text = integer === 'text';\n";
+    add "    if (text ? !Array.isArray(data) : !(data instanceof (integer ? BigInt64Array : Float64Array))) fail('E_ARRAY_TYPE', 'Kernel lookup table changed its packed element type.');\n";
+    add "    if (text && !data.every(x => typeof x === 'string')) fail('E_ARRAY_TYPE', 'Text arrays contain text values.');\n";
     add "    if (data.length %% width !== 0) fail('E_ARRAY_TYPE', `Packed vec${width} storage has ${['','','two','three','four'][width]} coordinates per element.`);\n";
     add "    if (!integer) for (const x of data) if (!Number.isFinite(x)) fail('E_NONFINITE', 'array input produced a nonfinite value.');\n";
     add "    tables.set(slot, data); return data; };\n";
     add "  const row = (array, index, width) => { if (index < 0n || index > %sn) fail('E_ARRAY_RANGE', 'array/nth needs a non-negative whole length.');\n" (string_of_int Sys.max_array_length);
     add "    if (index >= BigInt(array.length / width)) fail('E_ARRAY_RANGE', 'Array index is outside its length.'); return Number(index); };\n"
   end;
+  if textual then add "  const text = value => typeof value === 'string' ? value : fail('E_ARRAY_TYPE', 'Kernel input changed its packed element type.');\n";
   if Array.exists (fun instruction -> match unguarded instruction with P.Fma _ | Checked_fma _ -> true | _ -> false) view.code then
     add "%s" fused;
   if Array.exists(fun instruction->match unguarded instruction with P.Checked_mul _ | Checked_fma _ -> true | _ -> false)view.code then
@@ -171,11 +176,17 @@ let region program =
       | Fma (a,b,c) -> Printf.sprintf "fused(%s, %s, %s)" (numeric a) (numeric b) (numeric c)
       | Checked_mul(p,a,b) -> Printf.sprintf "checked(%b, %s * %s)" (p=P.Valid) (numeric a) (numeric b)
       | Checked_fma(p,a,b,c) -> Printf.sprintf "checked(%b, fused(%s, %s, %s))" (p=P.Valid) (numeric a) (numeric b) (numeric c)
-      | Array_prepare(i,ty) -> Printf.sprintf "table(%d, %b, %d)" i (ty=Flow.Ty.Array Flow.Ty.Int)
-          (Option.get(Flow.Packed_ops.array_width ty))
+      | Array_prepare(i,ty) -> if ty=Flow.Ty.Array Flow.Ty.Text then Printf.sprintf "table(%d, 'text', 1)" i
+          else Printf.sprintf "table(%d, %b, %d)" i (ty=Flow.Ty.Array Flow.Ty.Int)
+            (Option.get(Flow.Packed_ops.array_width ty))
       | Gather(array,index,width,component) -> Printf.sprintf "%s[row(%s, %s, %d) * %d + %d]"
           (register array)(register array)(register index)width width component
       | Int_gather(array,index) -> Printf.sprintf "%s[row(%s, %s, 1)]" (register array)(register array)(register index)
+      | Text_const value -> Text_literal.quote value
+      | Text_input input -> Printf.sprintf "text(in%d[j%d])" input input
+      | Text_uniform input -> Printf.sprintf "text(uniforms[%d])" input
+      | Text_gather(array,index) -> Printf.sprintf "%s[row(%s, %s, 1)]" (register array)(register array)(register index)
+      | Text_select(condition,yes,no) -> Printf.sprintf "(%s !== 0 ? %s : %s)" (numeric condition)(register yes)(register no)
       | Rand_at(seed,index) -> Printf.sprintf "randAt(%s, %s)" (register seed) (register index)
       | Int_const n->string_of_int n^"n" | Int_input i->Printf.sprintf "in%d[j%d]" i i
       | Int_uniform i->Printf.sprintf "uniforms[%d][0]" i | Int_accumulator->"st[0]"
@@ -196,8 +207,9 @@ let region program =
           |Coerce_int->"int","Math.floor("^numeric a^" + 0.5)"
           |Integer_result n->n,"Math.floor("^numeric a^" + 0.5)"|To_float->assert false in
           Printf.sprintf "convert(%S, %s)" name x
-      | Raise(_,code,message,cause)->Printf.sprintf "fail(%S, %S%s)" code message
-          (Option.fold ~none:"" ~some:(Printf.sprintf ", %S")cause)
+      | Raise(_,code,message,cause)->Printf.sprintf "fail(%s, %s%s)"
+          (Text_literal.quote code)(Text_literal.quote message)
+          (Option.fold ~none:"" ~some:(fun cause->", "^Text_literal.quote cause)cause)
       | Guarded(_,body)->expression slot body in
   Array.iteri (fun slot instruction ->
     let guards,body=match instruction with P.Guarded(g,b)->g,b|b->[],b in
@@ -212,7 +224,7 @@ let region program =
     if not(R.integer_register body) && checks.(slot) then add "    if (!Number.isFinite(r%d)) %s\n" slot nonfinite;
     if guards<>[] then add "    }\n") view.code;
   Array.iteri (fun k registers -> Array.iteri (fun component slot ->
-    if not(R.integer_register view.code.(slot)) then add "    if (!Number.isFinite(r%d)) %s\n" slot nonfinite;
+    if not(R.integer_register view.code.(slot) || R.text_register view.code.(slot)) then add "    if (!Number.isFinite(r%d)) %s\n" slot nonfinite;
     (match region.result with
      | R.Collect | R.Accumulate _ -> ()
      | R.Sum true when R.integer_register view.code.(slot) ->
@@ -221,8 +233,10 @@ let region program =
          add "    st[%d] = st[%d] !== 0 ? convert('+', Math.floor(Number(st[%d]) + Number(r%d) + 0.5)) : r%d;\n" component width component slot slot
      | R.Sum _ -> add "    st[%d] = st[%d] !== 0 ? st[%d] + r%d : r%d;\n    if (!Number.isFinite(st[%d])) return 1;\n"
          component width component slot slot component);
-    if collecting then add "    out%d[o * %d + %d] = %s;\n" k (Array.length registers) component
-      (if Array.length registers=1 && R.integer_register view.code.(slot) then register slot else numeric slot)) registers)
+    if collecting then
+      if R.text_register view.code.(slot) then add "    out%d[o - outputBase] = r%d;\n" k slot
+      else add "    out%d[o * %d + %d] = %s;\n" k (Array.length registers) component
+        (if Array.length registers=1 && R.integer_register view.code.(slot) then register slot else numeric slot)) registers)
     view.outputs;
   (match region.result with
    | R.Accumulate _ -> Array.iteri (fun component slot -> add "    st[%d] = r%d;\n" component slot) view.outputs.(0)

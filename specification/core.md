@@ -47,13 +47,14 @@ scalar and bounded structured data, advances state slots, invokes regions, and
 produces ordered drawing statements and host effects. A static subexpression
 is retained; a changed view transform must not recompute unchanged attributes.
 
-A **region** is a pure numeric loop over packed arrays. It has explicit input
-buffers, captured uniforms, an iteration domain, a numeric body and output
+A **region** is a pure data loop over packed arrays. It has explicit input
+buffers, captured uniforms, an iteration domain, a checked body and output
 slots. Independent elements run in disjoint 1,024-element CPU blocks, through
 the shared native pool or required web workers. GPU placement emits that body
 as Metal or WGSL. Ordered reductions and accumulator loops preserve iteration
-order; they are not parallel tree reductions. Text, lists of records, host
-effects and frame state are not region values.
+order; they are not parallel tree reductions. Collect regions may copy immutable
+Text leaves in a separate bank. Lists of records, host effects and frame state
+are not region values, and shaders accept numeric registers only.
 
 Native frame and CPU-region results must be bit-identical to the tree walker,
 including coercions, evaluation order and integer/float tags. GPU regions have
@@ -106,12 +107,12 @@ by their owner, on the initial domain or browser main thread.
 | Float | One binary64 frame/CPU component; a binary32 GPU-region component. Non-finite inputs and results fail at the existing checked boundaries. |
 | Int | The native signed 63-bit integer domain; distinct from Float even when their numeric values match. Explicit integer operations retain integer semantics. |
 | Bool | One boolean frame value; region comparisons encode false as 0 and true as 1. |
-| Text | A decoded string value; no quotes are added on a text read or concatenation. It stays at frame level. |
+| Text | A decoded byte string; no quotes are added on a text read or concatenation. Collect regions may copy, select and gather immutable Text leaves. |
 | Vec2, Vec3, Vec4 | Two, three or four floating components. Field names are static `x`, `y`, `z`, `w`; a scalar broadcast is explicit. |
 | Record | Ordered, statically named fields. Nested records flatten to ordered field locals; layout retains names, nesting and field order for reconstruction, `show` and equality. |
 | List | An element layout and a length no greater than 4,096; a static length or a bounded dynamic length. Elements may contain records, text and other bounded lists. |
 | Packed array | Contiguous numeric storage, element width 1, 2, 3 or 4 and an element count. Counts may exceed 4,096. Lists and packed arrays remain different value kinds. |
-| Text array | Owned string storage with an element count that may exceed 4,096. Strings retain exact decoded contents. Structured frame operations handle this storage; numeric regions and shaders refuse it. |
+| Text array | Owned string storage with an element count that may exceed 4,096. Strings retain exact native bytes. Collect regions use a separate immutable Text bank; numeric operations and shaders refuse Text registers. |
 | Image | A resource id and its description or producer, resolved by the host; no pixels or GPU handle are smuggled into a scalar value. |
 | Drawing | An ordered sequence of drawing entries, possibly grouped by a transform. It is not a state value or a numeric region value. |
 | Effect/sample | A typed intrinsic description, legal only when the target implements that intrinsic. |
@@ -264,8 +265,9 @@ caller must qualify those region sources and captured uniforms before accepting
 strict execution; the Executor applies the same recursive check to regions inside
 structured Core and to top-level packed kernels. A text consumer cannot bypass
 qualification of a nested numeric producer.
-Text-array maps, filters and collecting loops execute as structured Core, including
-empty inputs and multiple invariant array clauses. The builder checks the product
+Text-array maps and collecting loops may compile immutable leaves into Collect
+regions. Text transformations, filters and scans execute as structured Core,
+including empty inputs and multiple invariant array clauses. The builder checks the product
 of clause counts before allocation and leaves inner collections unevaluated when
 an outer clause is empty. A dependent inner collecting clause requires a growing
 builder and currently returns `text_collect_dependent_clause` from Core lowering;
@@ -292,7 +294,7 @@ unlisted calls in `prims.js`.
 | `equal?`, `show`, `text/concat` | 3 | Typed structural equality, source value display, and ordered text concatenation. `show` has display formatting, distinct from workspace source-number printing. |
 | `text/blank?` | 1 | True exactly when `String.trim` yields empty text: only ASCII space, tab, LF, CR and form feed are whitespace. Vertical tab, NUL and Unicode spaces remain nonblank; wrong input storage is `E_TYPE`. |
 | `text/trim`, `text/lower` | 2 | `String.trim` removes only ASCII space, tab, LF, CR and form feed at either end. `String.lowercase_ascii` changes only ASCII A–Z; non-ASCII UTF-8 bytes are unchanged. Both accept text storage only (`E_TYPE`) and execute as structured text operations, never numeric packed instructions. |
-| `text/repr` | 1 | Text to quoted text with exactly `Printf.%S` byte escaping: ASCII quotes and backslashes escape, backspace/tab/LF/CR use named escapes, and every other nonprintable byte uses three decimal digits. UTF-8 is quoted byte by byte, yielding ASCII output. Native text includes arbitrary bytes; the existing JavaScript Unicode transport represents valid UTF-8 text, quoted through UTF-8 encoding. Wrong storage is `E_TYPE`. This is a structured text operation. |
+| `text/repr` | 1 | Text to quoted text with exactly `Printf.%S` byte escaping: ASCII quotes and backslashes escape, backspace/tab/LF/CR use named escapes, and every other nonprintable byte uses three decimal digits. UTF-8 is quoted byte by byte, yielding ASCII output. Native text includes arbitrary bytes; JavaScript quotes their reversible byte representation. Wrong storage is `E_TYPE`. This is a structured text operation. |
 | `text/table_decode`, `text/table_encode` | 2 | Exact ordered text-cell tables, with tab-separated cells, LF-separated rows and only backslash, `t` and `n` escapes. Empty text decodes to an empty table; encoding empty rows retains the native codec's empty-row ambiguity. Invalid escapes are `E_TABLE`, invalid cell storage is `E_TYPE`. |
 | `sequence/length`, `sequence/get`, `sequence/build`, `sequence/slice`, `sequence/concat` | 5 | Element count, checked list element access, fresh bounded-list storage, checked copying slice, and ordered concatenation with the 4,096-element cap. Element layouts and nested record field order are explicit. Given an element width of 1 to 4, `sequence/build` allocates packed storage with no list cap, filled by the same ordered stores (the walker's `array_init` checks per element). Integer and text builders require width one and explicit type `int` or `text`. Text builders store strings and do not create packed numeric storage. |
 | `array/range`, `array/int`, `array/text`, `array/float`, `array/vec3`, `array/vec4`, `array/nth`, `array/count`, `array/slice`, `array/concat` | 10 | Typed-array construction, indexing, length and copying operations, including exact integer and decoded text storage. Range defaults to float and accepts the literal type `int`. Vector constructors accept the matching vector or broadcast a scalar; omitted values are typed zero. Count is in elements, not components; all products and offsets are checked before allocation or access. An array is not converted to a list. |
@@ -570,7 +572,7 @@ a count just below the ceiling but above that quotient fails with `E_ARRAY_RANGE
 | --- | --- |
 | `array/range(count :type float\|int)` | Fresh width-1 storage containing values 0 through count-1. Default type is Float; explicit `int` retains exact integer storage. |
 | `array/int(count,value)` | Fresh exact integer storage, with Int zero when value is omitted. Values use the ordinary Int coercion boundary and must then be Int. |
-| `array/text(count,value)` | Fresh typed string-array storage, with empty text when value is omitted. Count/get/slice/concat preserve exact decoded string contents and copying ownership. Text array maps use structured compiled loops, outside the numeric region tier and bounded-list cap. |
+| `array/text(count,value)` | Fresh typed string-array storage, with empty text when value is omitted. Count/get/slice/concat preserve exact decoded string contents and copying ownership. Maps may collect immutable Text leaves in a separate region bank; Text transformations use structured compiled loops. Neither storage has the bounded-list cap. |
 | `array/float(count,value)` | Fresh width-1 storage filled with the numeric value; omitted value is Float zero. |
 | `array/vec3(count,value)` | Fresh width-3 storage; omitted value is Vec3 zero. A Vec3 fills its components; a scalar Int/Float/Bool broadcasts numerically. Other widths fail with `E_ARRAY_TYPE`. |
 | `array/vec4(count,value)` | Fresh width-4 storage with the corresponding Vec4 zero, matching-vector fill and scalar broadcasting. Other vector widths fail with `E_ARRAY_TYPE`. Empty arrays retain the existing constructor's value-validation order. |
@@ -671,8 +673,10 @@ Text values retain decoded contents, with no quoting, escaping, Unicode
 normalization, case folding or trimming at runtime. `str` evaluates its
 arguments in order, concretizes each, applies `show` and joins the results
 with no separator. The exporter must preserve text contents through its
-JavaScript string encoding; a value it cannot encode losslessly requires a
-located refusal, not replacement characters. Text never enters a region.
+JavaScript string encoding. Valid UTF-8 uses ordinary JavaScript strings;
+exceptional native bytes use reversible low-surrogate escapes, including
+through worker structured cloning. Text leaf registers never enter a numeric
+operation or a shader.
 
 | Value kind | `show` result |
 | --- | --- |
@@ -767,8 +771,9 @@ new collection of shader operations:
 | `Fma(a,b,c)` | Explicit binary64 single-rounding multiply-add of three numeric registers. Input conversion is explicit where needed; untaken guarded instructions do not execute. CPU and JavaScript match `Float.fma` bits; GPU qualification refuses unavailable binary64 arithmetic. Ordinary multiply/add instructions retain their separate rounding. |
 | `Checked_mul(projection,a,b)`, `Checked_fma(projection,a,b,c)` | `Value` emits the finite binary64 result or positive zero; `Valid` emits exactly one or zero. Compiler-only record fields connect the two registers. Both projections use existing guards, so untaken branches do not execute. No nonfinite register is published. The single-destination representation computes each projection separately; duplicate FMA work is a measured optimization candidate, not a speed claim. GPU targets refuse these instructions. |
 | `Rand_at(seed,index)` | Exact signed63 integer registers to the native `Rand.float_at` Float result. CPU and emitted JavaScript retain all integer bits; GPU qualification refuses this instruction explicitly. |
-| `Array_prepare(uniform,type)` | Lazily materialize a checked invariant Int/Float/Vec2/3/4 table at its argument's evaluation position. Its compiler-local handle is neither a numeric register nor an output. The table is separate from iteration sources and count/origin proofs. |
+| `Array_prepare(uniform,type)` | Lazily materialize a checked invariant Int/Float/Vec2/3/4/Text table at its argument's evaluation position. Its compiler-local handle is neither a numeric register nor an output. The table is separate from iteration sources and count/origin proofs. |
 | `Gather(table,index,width,component)`, `Int_gather(table,index)` | Read one component or exact signed63 integer from a prepared immutable table. Check the integer element index against native bounds and row count before component address multiplication. GPU targets refuse table preparation and indexed reads, including Float-output kernels. |
+| `Text_const(text)`, `Text_input(source)`, `Text_uniform(capture)`, `Text_gather(table,index)`, `Text_select(condition,yes,no)` | Immutable Text leaves in Collect regions: constants, source/capture reads, exact indexed lookup and selected copying. Text has a separate register bank, not a numeric width. Outputs allocate a fresh string array while sharing immutable strings. Text arithmetic, transformations and reductions remain unsupported in regions and use structured Core where eligible. GPU targets refuse all Text registers. |
 | `Select(condition,yes,no)` | Selects by condition unequal to zero; branch instructions carry their execution guards. |
 | `Guarded(conditions,instruction)` | Executes the instruction and its finite checks only when every condition selects this branch. Metal and WGSL declare the result outside the conditional and assign it inside, so later selections retain the same lazy behavior. An unselected overflow is unevaluated; `min` and `max` still evaluate both arguments. |
 
@@ -798,8 +803,11 @@ keeps each chunk's first diagnostic and reports the lowest failing chunk,
 preserving code, message and cause. Iteration `:skip` omits the body; a discarded
 output plane still executes selected reads and finite checks. New outputs stay
 private until success, and source buffers remain immutable. Ordered folds,
-scans and reductions retain their accumulator order. Text lookup banks are a
-separate extension and are not accepted in numeric regions.
+scans and reductions retain their accumulator order. Text leaves use an
+immutable bank in Collect only. Native outputs copy string references without
+publishing a source array. JavaScript workers receive invariant string tables
+once per execution and return disjoint chunk-local string arrays; the calling
+thread assembles a fresh result. Worker tables are released after execution.
 
 Fusion may combine equal-count/equal-origin elementwise producers and several
 outputs, with provenance retained. It declines when qualification or register
@@ -946,7 +954,7 @@ operation. A user function/macro row is not a new runtime primitive.
 | `and` | primitive | `and`; eager arguments. |
 | `array/concat` | primitive | `array/concat` |
 | `array/count` | primitive | `array/count` |
-| `array/nth` | primitive | Scalar `array/nth`; numeric invariant captures use `Array_prepare` and `Gather`/`Int_gather`, with lazy preparation, independent counts and CPU/JavaScript execution. |
+| `array/nth` | primitive | Scalar `array/nth`; invariant numeric/Text captures use `Array_prepare` and `Gather`/`Int_gather`/`Text_gather`, with lazy preparation, independent counts and CPU/JavaScript execution. |
 | `array/range` | primitive | `array/range` |
 | `array/slice` | primitive | `array/slice` |
 | `array/vec3` | primitive | `array/vec3` |
@@ -1053,7 +1061,7 @@ operation. A user function/macro row is not a new runtime primitive.
 | `sop/group` | intrinsic | Cooked point/vertex/primitive/edge group mask as an owned exact integer array of zeros and ones. Missing groups report `E_GROUP_MISSING`. Geometry host groups preserve owner, name, membership and optional explicit traversal order. Outside the current 2D export scope. |
 | `sop/group_names` | intrinsic | Owner-filtered names in native insertion order using the shared Houdini-style wildcard, class, escape and exclusion rules. Invalid patterns report `E_GROUP_PATTERN`; names remain exact text arrays. |
 | `sop/group_entries` | intrinsic | `(sop/group_entries geometry pattern :owner "any")` returns ordered parallel text arrays in `{:owners ... :names ...}`. Ordinary groups retain global insertion order across owners, followed by edge groups. Owner filtering and patterns use the same rules as `sop/group_names`; invalid owner/type/pattern or unavailable geometry retain the existing group-source diagnostics. Arrays have no 4,096-entry bound. The native and JavaScript host protocols agree; reached cooked sources remain outside 2D web export. |
-| `text/glob_literal` | intrinsic | Pure nonempty Text-to-Text quoting for the native attribute/group pattern parser. Escapes wildcard/class/escape/exclusion syntax and its ASCII separators (space, TAB, LF, CR, FF); hyphens, VT and other bytes retain their literal spelling. Empty input is `E_METADATA_PATTERN`; wrong input type is `E_METADATA_TEXT`. Native bytes remain exact, including UTF-8. The JavaScript twin accepts Unicode text; arbitrary invalid native UTF-8 bytes are outside that transport. Dynamic native sources use `Host_source`; 2D web export refuses those sources with `E_WEB_SOURCE`. |
+| `text/glob_literal` | intrinsic | Pure nonempty Text-to-Text quoting for the native attribute/group pattern parser. Escapes wildcard/class/escape/exclusion syntax and its ASCII separators (space, TAB, LF, CR, FF); hyphens, VT and other bytes retain their literal spelling. Empty input is `E_METADATA_PATTERN`; wrong input type is `E_METADATA_TEXT`. Native bytes remain exact, including invalid UTF-8, through the shared reversible JavaScript Text codec. Dynamic native sources use `Host_source`; 2D web export refuses those sources with `E_WEB_SOURCE`. |
 | `text/glob_rewrite` | intrinsic | Pure `(text/glob_rewrite pattern replacement text)` uses the same compiled wildcard captures and replacement rules as native metadata renaming, returning the original text when no term matches. Invalid pattern/replacement pairs are `E_METADATA_PATTERN` with the native parser message; wrong arguments are `E_METADATA_TEXT`. Native/JavaScript fixtures preserve classes, exclusions, escaped literals and UTF-8. Dynamic native sources use `Host_source`; 2D web export refuses those sources with `E_WEB_SOURCE`. |
 | `sop/group_order` | intrinsic | Record of Boolean `ordered` and exact integer `indices`, preserving ordered-empty versus unordered groups. Edge groups return false and an empty index array. |
 | `sop/with_group` | intrinsic | Immutable owner-aware mask write, preserving topology and unrelated payloads. Optional integer order must enumerate selected elements once, or an order record preserves the query's ordering state. Edge explicit order is `E_GROUP_OWNER`; wrong cardinality, mask or order is `E_GROUP_COUNT`, `E_GROUP_MASK` or `E_GROUP_ORDER`. |

@@ -154,19 +154,19 @@ export function createRuntime(program, { now = () => performance.now() / 1000, f
     async invoke(k, args) {
       rt.counts.invoke++;
       const r = this.program.regions[k] ?? prims.fail('E_CORE', 'Unknown region.'), input = rt.current;
-      const inputs = r.inputs.map(([offset, length, integer]) => new (integer ? BigInt64Array : Float64Array)(rt.data, offset, length));
+      const inputs = r.inputs.map(spec => spec.texts ?? new (spec[2] ? BigInt64Array : Float64Array)(rt.data, spec[0], spec[1]));
       const facts = Array(r.length).fill(0);
       for (const [slot, name, integer] of r.frame) facts[slot] = integer ? BigInt(FACTS[name](input)) : Number(FACTS[name](input));
-      const uniforms = [...r.uniforms.map(u => u.table
+      const uniforms = [...r.uniforms.map(u => u.texts ?? (u.text !== undefined ? u.text : u.table
         ? new (u.table[2] ? BigInt64Array : Float64Array)(rt.data, u.table[0], u.table[1])
-        : typeof u[0] === 'string' ? BigInt64Array.from(u, BigInt) : Float64Array.from(u)), facts];
+        : typeof u[0] === 'string' ? BigInt64Array.from(u, BigInt) : Float64Array.from(u))), facts];
       const pool = rt.pool;
       const ArrayType = r.integer ? BigInt64Array : Float64Array;
-      const outputs = [pool ? pool.alloc(r.kept * r.width, ArrayType) : new ArrayType(r.kept * r.width)];
-      const status = pool ? await pool.collect(r.id ?? k, inputs, uniforms, outputs, r.count)
+      const outputs = [r.text ? Array(r.kept).fill('') : pool ? pool.alloc(r.kept * r.width, ArrayType) : new ArrayType(r.kept * r.width)];
+      const status = pool ? await pool.collect(r.id ?? k, inputs, uniforms, outputs, r.count, r.skip)
         : this.region(k)(inputs, uniforms, outputs, 0, r.count);
       if (status !== 0) prims.fail('E_KERNEL', 'Kernel needs reference evaluation.');
-      return new prims.PArray(r.width, outputs[0]);
+      return r.text ? new prims.TextArray(outputs[0]) : new prims.PArray(r.width, outputs[0]);
     },
     // A region the compiler placed on the GPU (program.js `gpu`, plan P6.4a): its kernel group runs once per frame, or once
     // per load when no frame fact feeds it, with the inputs uploaded once; the value is a packed array of device references

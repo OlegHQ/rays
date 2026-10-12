@@ -271,13 +271,18 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
       | ty when ty=Flow.Ty.geometry -> true
       | Flow.Ty.Record fields -> List.exists(fun(_,ty)->geometry_accumulator ty)fields
       | _ -> false in
-    let candidate=x.ty<>Flow.Ty.Array Flow.Ty.Text && x.ty<>Flow.Ty.Text && (match x.node with
+    let numeric_candidate=x.ty<>Flow.Ty.Array Flow.Ty.Text && x.ty<>Flow.Ty.Text && (match x.node with
       | Loop {kind=`Fold;_} when geometry_accumulator x.ty -> false
       | W.Hof (_, _::rest) when text_input rest -> false
       | Loop {clauses;_} when text_input (List.map snd clauses) -> false
       | W.Hof ((`Map|`Reduce),_::rest) -> List.exists (fun (t:W.term)->match t.ty with Flow.Ty.Array _->true|_->false) rest
       | Loop {clauses;_} -> List.exists (fun (_, (t:W.term))->match t.ty with Flow.Ty.Array _->true|_->false) clauses
       | Op {op="array/sum";_} -> true | _ -> false) in
+    let text_candidate=match x.node with
+      | W.Hof (`Map,_::rest) -> x.ty=Flow.Ty.Array Flow.Ty.Text || text_input rest
+      | Loop {kind=`For;clauses;_} -> x.ty=Flow.Ty.Array Flow.Ty.Text || text_input(List.map snd clauses)
+      | _ -> false in
+    let candidate=numeric_candidate || text_candidate in
     let packed=if not strict || not candidate then None else Option.bind !current (fun parent ->
       let names=E.Private.free_names x in
       let arguments=ref [] in
@@ -302,7 +307,7 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
     match packed with
     | Some (r,packed,args) -> region ~args statements packed (E.Private.residual_view r)
     | None ->
-    if candidate && strict then refuse "packed_kernel";
+    if numeric_candidate && strict then refuse "packed_kernel";
     match x.node with
     | W.Lit (Param.Int_value n) -> Known (V.Int n)
     | Lit (Param.Float_value f) -> Known (V.Float f)

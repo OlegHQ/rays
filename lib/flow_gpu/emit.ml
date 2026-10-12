@@ -92,6 +92,7 @@ let kernel program = try
       | Unary (op,a) -> unary op (register a)
       | Checked_mul _ | Checked_fma _ -> fail "Checked arithmetic requires binary64 overflow status."
       | Array_prepare _ | Gather _ | Int_gather _ -> fail "Indexed array reads stay on the CPU."
+      | Text_const _ | Text_input _ | Text_uniform _ | Text_gather _ | Text_select _ -> fail "Text kernels stay on the CPU."
       | Select (condition,yes,no) -> Printf.sprintf "(%s!=0.0f?%s:%s)" (register condition) (register yes) (register no)
       | Noise3 (x,y,z,seed,octaves) -> Printf.sprintf "fbm(float3(%s,%s,%s),%d,table+%d)"
           (register x) (register y) (register z) octaves (table seed)

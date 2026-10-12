@@ -125,7 +125,8 @@ let () =
     let residual=match value with E.Residual r->r|_->failwith "live text result expected" in
     let core=match I.Core_lower.lower ~strict:true residual with
       |Ok core->core|Error form->failwith(body^": strict Core refused "^form) in
-    assert(Array.length core.regions=0);
+    (* Text leaves may collect in a region; Text transformations and scans
+       retain the structured Core path. Both execute without a walker retry. *)
     let program=ok(I.Executor.compile ~strict:true value) in
     List.iter(fun time->
       let live=Frame_input.at_time time in

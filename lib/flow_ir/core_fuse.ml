@@ -47,6 +47,13 @@ let builder () =
         | Array_prepare(n,ty) -> Array_prepare(uniform+n,ty)
         | Gather(a,i,w,c) -> Gather(at a,at i,w,c)
         | Int_gather(a,i) -> Int_gather(at a,at i)
+        | Text_gather(a,i) -> Text_gather(at a,at i)
+        | Text_select(c,a,b) -> Text_select(at c,at a,at b)
+        | Text_uniform n -> Text_uniform(uniform+n)
+        | Text_input source ->
+            let instruction=Hashtbl.find emitted (input source 1 0) in
+            if not (Core.Region.text_register instruction) then raise Core_region.Unsupported;
+            instruction
         | Int_uniform n -> Int_uniform (uniform+n)
         | Binary (op, a, b) -> Binary (op, at a, at b)
         | Int_binary (op,a,b) -> Int_binary(op,at a,at b)
@@ -70,6 +77,10 @@ let builder () =
         | Int_input s ->
             let register=input s 1 0 in
             if not (Core.Region.integer_register (Hashtbl.find emitted register)) then raise Core_region.Unsupported;
+            register
+        | Text_input s ->
+            let register=input s 1 0 in
+            if not (Core.Region.text_register (Hashtbl.find emitted register)) then raise Core_region.Unsupported;
             register
         | _ -> emit(remap instruction))) p.code;
     Array.map (Array.map (Array.get registers)) p.outputs in
