@@ -109,6 +109,8 @@ module Region : sig
     | Gather of int * int * int * int
       (** Prepared table register, exact integer index, width and component. *)
     | Int_gather of int * int
+    | Text_const of string | Text_input of int | Text_uniform of int
+    | Text_gather of int * int | Text_select of int * int * int
     | Int_const of int | Int_input of int | Int_uniform of int | Int_frame of string | Int_accumulator
     | Int_binary of Flow.Packed_ops.integer * int * int
     | Int_compare of Flow.Packed_ops.comparison * int * int | Int_abs of int
@@ -116,6 +118,9 @@ module Region : sig
     | Guarded of (int * bool) list * instruction
     | Raise of Flow.Ty.t * string * string * string option
   val integer_register : instruction -> bool
+  val text_register : instruction -> bool
+  (* Text leaf registers are separate from numeric and array-handle registers. *)
+
   val operands : instruction -> int list
   type iteration = Zip | Product
   type result = Collect | Sum of bool | Accumulate of Flow.Workspace.term * bool
