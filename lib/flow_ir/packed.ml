@@ -312,6 +312,21 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
     |None,Some columns->borrowed_count t.widths.(i) columns);
     if t.iteration=Product && lengths.(i)=0 then empty_product:=true;
     value end) t.sources in
+  (* A leading total prefix only writes private banks. Keep every potentially
+     failing instruction and lazy capture in the existing reference lane order. *)
+  let rec total = function
+    | Int_const _ | Text_const _ | Int_abs _ | Int_compare _ | Int_select _ | Text_select _ -> true
+    | Const x -> Float.is_finite x
+    | Int_input i -> ranges.(i)<>None || (match inputs.(i) with E.Int_array _->true|_->false)
+    | Text_input i -> (match inputs.(i) with E.Text_array _->true|_->false)
+    | Int_binary((Iadd|Isub|Imul|Iand|Ior|Ixor),_,_) -> true
+    | Guarded(_,body) -> total body
+    | _ -> false in
+  let total_prefix=if gather && t.result=Collect then begin
+      let length=ref 0 in
+      while !length<Array.length t.code && total t.code.(!length) do incr length done;
+      !length
+    end else 0 in
   let count=if inputs=[||] then 0 else if t.iteration=Product && Array.exists ((=)0) lengths then 0 else
     Array.fold_left (fun n length->match t.iteration with Zip->min n length | Product->
       if length<>0 && n>max_int/length then V.fail "E_ARRAY_RANGE" "Kernel iteration count exceeds native bounds.";
@@ -622,10 +637,12 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
         for slot=0 to Array.length t.code-1 do
           if t.dependent.(slot)=dependent then execute slot t.code.(slot) first last
         done in
-      if gather && t.result=Collect then
+      if gather && t.result=Collect then begin
+        for slot=0 to total_prefix-1 do execute slot t.code.(slot) 0 length done;
         for j=0 to length-1 do
-          for slot=0 to Array.length t.code-1 do execute slot t.code.(slot) j (j+1) done
+          for slot=total_prefix to Array.length t.code-1 do execute slot t.code.(slot) j (j+1) done
         done
+      end
       else if not gather then execute_all false 0 length;
       (* Instructions validate selected float results before collection. *)
       if t.result=Collect then Array.iteri(fun k registers->

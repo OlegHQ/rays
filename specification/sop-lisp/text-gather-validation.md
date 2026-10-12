@@ -224,3 +224,47 @@ configuration. One-domain allocations rose 30888 B; the new local helpers
 therefore do not claim allocation-free execution. Both unchanged 2× gates
 still fail and no Text node is qualified. Log:
 `/tmp/rays-text-one-lane-fill-bench.log`.
+
+## Leading total-prefix experiment
+
+The next candidate reuses the existing typed span executor for only the leading
+proven-total instructions of Gather/Text Collect. The whitelist admits finite
+constants, actual Int/Text array inputs or checked Int ranges, wrapping Int
+arithmetic/bitwise operations, absolute value, exact comparisons/selections and
+guards around these operations. Runtime input tags are inspected without
+forcing additional values. A wrong tag stops batching instead of raising an
+earlier error. Lazy uniforms/frame values, table preparation, indexing, float
+loads/math, checked conversions/division/modulus/shifts, diagnostics and ordered
+accumulators remain barriers. The entire suffix keeps reference lane order.
+
+This avoids an error-cutoff algorithm: choosing the correct first diagnostic
+would still allow later-row host resolution ahead of an earlier-row error.
+Private total register writes have no such observable forcing or failure.
+The new regression checks wrapping Int and native Text bytes across block/chunk
+boundaries, malformed selected/untaken public-region storage and conflicting
+row errors with fusion off/on and domains 1/4/8. Existing table forcing, rollback,
+Product/skip, discarded sink and worker/export checks remain in the focused
+suite. Request 69619 failed only the new fixture's nonexistent `int/abs`
+spelling; the canonical `abs` declaration emits `Int_abs` for Int. Corrected
+request 50119 exited 0 for IR, Web and FlowSop. The new malformed-storage and
+earliest-row cases passed alongside existing source/cause/rollback and worker
+checks. No public declaration changed.
+
+Quiet request 72326 exited 0 using the same Apple M1 / OCaml 5.3.0 dev profile,
+million-row native-byte preflight, block1024/chunk16384, strict Packed Collect,
+median-three force-only protocol. No other build or timing process was active
+before launch. The complete rows are:
+
+| Domains | Native seconds / bytes | Packed seconds / bytes | Ratio |
+|---|---|---|---|
+| 1 | 0.006232 / 8,000,168 | 0.055121 / 17,211,544 | **8.845× FAIL** |
+| 4 | 0.006342 / 8,000,168 | 0.015340 / 10,396,088 | **2.419× FAIL** |
+
+Four-domain allocations observe the initial domain only. Compared with 92162,
+Packed time fell from 0.065951/0.018644 seconds, approximately 16.4%/17.7%.
+One-domain allocations rose 48 B and four-domain initial-domain allocations
+fell 88 B; this change removes dispatch work rather than register-bank storage.
+Both 2× gates remain unmet. This qualifies the shared semantic optimization,
+not a whole Text node. Logs: `/tmp/rays-text-total-prefix-focused.log`,
+`/tmp/rays-text-total-prefix-focused2.log`,
+`/tmp/rays-text-total-prefix-bench.log`.

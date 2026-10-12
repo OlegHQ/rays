@@ -3422,3 +3422,25 @@ API changed. Group Rename is whole port **12/128 (9.375%)**; 116 remain.
 B.12 stays open until Swap Attributes completes. The earlier unexplained
 Rename Attributes failure remains recorded under Group Delete for phase review;
 this integration passed with the mismatch diagnostics enabled.
+
+### Proven-total prefixes reuse typed spans
+
+Gather/Text Collect now batches only its leading proven-total instructions
+through the existing span executor. Fallible instructions and lazy captures
+retain reference lane order; malformed actual input storage declines batching.
+Private register writes preserve guarded forcing, first-error code/message/cause,
+rollback, Product/skip, ordered accumulators and discarded sinks. Focused 69619
+failed only a new fixture's `int/abs` spelling; canonical `abs` corrected it.
+Request 50119 exited 0 for IR/Web/FlowSop with wrapping Int, arbitrary native Text
+bytes, malformed selected/untaken storage and block/chunk error regressions at
+domains 1/4/8 with fusion off/on. No public API changed.
+
+Quiet 72326 exited 0: Apple M1, OCaml 5.3.0 dev profile, strict Packed Collect,
+one million rows, exact native-byte preflight, median-three force-only timing.
+Domain 1 Native 0.006232 s / 8000168 B, Packed 0.055121 s / 17211544 B,
+**8.845× FAIL**; domain 4 Native 0.006342 s / 8000168 B, Packed 0.015340 s /
+10396088 initial-domain B, **2.419× FAIL**. Compared with 92162, Packed time
+improved approximately 16.4%/17.7%; allocation changes were +48 B/-88 B.
+Both unchanged 2× gates remain unmet and no Text port is counted. Full protocol,
+complete rows and retained failures are in `text-gather-validation.md`;
+log `/tmp/rays-text-total-prefix-bench.log`.

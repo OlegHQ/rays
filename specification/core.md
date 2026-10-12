@@ -798,7 +798,14 @@ resolve on the initial domain once per selected execution; concrete immutable
 tables can be read by workers. No table length truncates the iteration count.
 Numeric source validation retains the whole-table finite/type boundary.
 
-Gather programs execute instructions in reference lane order. Parallel Collect
+Gather programs keep fallible instructions and lazy captures in reference lane
+order. Native Collect may execute a leading proven-total prefix over a whole
+block: finite constants, checked Int/Text storage loads, wrapping Int arithmetic
+and exact comparisons/selections, including guards whose operands precede them
+in that prefix. These instructions only write private register banks. Source
+resolution, table preparation, float finite checks and potentially failing
+arithmetic end the prefix; inspecting a malformed input tag declines batching
+without changing the selected instruction's error. Parallel Collect
 keeps each chunk's first diagnostic and reports the lowest failing chunk,
 preserving code, message and cause. Iteration `:skip` omits the body; a discarded
 output plane still executes selected reads and finite checks. New outputs stay

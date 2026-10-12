@@ -230,6 +230,52 @@ let () =
      Flow.Ty.Text,E.Text_array[|"\255\000"|],"\"constant\"",E.Text "\128\000uniform"];
   print_endline "Typed one-lane copies: constants, initial-domain uniforms, signed zeros/exact Int/native bytes and one/four/eight domains pass"
 
+let () =
+  let live=Frame_input.at_time 0.25 and table=E.Text_array[|"raw\255\000"|]in
+  let body="(fn [(index : int)] (let* [wrapped (int/add index 4611686018427387903) recovered (int/sub wrapped 4611686018427387903) magnitude (abs recovered) bit (int/and (int/or (int/xor magnitude 0) 0) 1)] (if (int/lt recovered 0) (if (int/eq bit 0) \"even\255\000\" \"odd\128\000\") (array/nth data 0))))"in
+  List.iter(fun count->
+    let value=instantiate ~table (Flow.Ty.Array Flow.Ty.Text)body
+      (Array.init count(fun i->[|min_int;max_int;9007199254740993;-2;-1;0|].(i mod 6)))in
+    let reference=ok(E.Private.force_reference value ~live)in
+    List.iter(fun fusion->let p=packed ~fusion value in
+      let code=(P.to_region p).code in
+      let rec bare=function I.Core.Region.Guarded(_,body)->bare body|body->body in
+      let boundary=Option.get(Array.find_index(fun instruction->match bare instruction with
+        |I.Core.Region.Array_prepare _->true|_->false)code)in
+      assert(boundary>0 && Array.exists(function I.Core.Region.Int_input _->true|_->false)(Array.sub code 0 boundary));
+      List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+        assert(bytes(ok(P.force ~strict:true p ~live))=bytes reference)))[1;4;8]) [false;true])
+    [0;1;1023;1024;1025;16383;16384;16385;32769];
+  (* A malformed public-region input is still checked at its selected
+     instruction, even when earlier total instructions have been batched. *)
+  let template=P.to_region(packed(instantiate ~table(Flow.Ty.Array Flow.Ty.Text)
+    "(fn [(index : int)] (array/nth data 0))"[|0|]))in
+  let residual,term=template.sources.(0)in
+  let term={term with Flow.Workspace.node=Flow.Workspace.Ref_binding("bad_storage",[])}in
+  List.iter(fun count->let residual=E.Private.with_bindings residual ~term
+      ["bad_storage",E.Float_array(Array.make count 0.)]in
+    List.iter(fun selected->
+      let region={template with sources=[|residual,term|];widths=[|1|];uniforms=[||];
+        code=[|I.Core.Region.Const(if selected then 1. else 0.);
+          Guarded([0,true],Int_input 0);Text_const "safe\255\000"|];outputs=[|[|2|]|];count=Some count}in
+      let p=match P.of_region region with Ok p->p|Error ds->
+        failwith(String.concat "; "(List.map Flow.Diagnostic.to_string ds))in
+      List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+        match P.force ~strict:true p ~live with
+        |Ok result->assert(not selected && result=E.Text_array(Array.make count "safe\255\000"))
+        |Error d->assert(selected && d.code="E_ARRAY_TYPE" && d.message="Kernel input changed its packed element type.")))[1;4;8])
+      [false;true]) [1;32769];
+  (* The later lane's earlier division may not beat this lane's lookup.
+     Both block and worker chunk boundaries must keep the reference cause. *)
+  List.iter(fun first->let value=instantiate ~table(Flow.Ty.Array Flow.Ty.Text)
+    "(fn [(index : int)] (let* [divisor (if (int/eq index 2) 0 1) before (int/div 1 divisor)] (array/nth data index)))"
+    (Array.init 32769(fun i->if i=first then 1 else if i=first+1 then 2 else 0))in
+    let reference=E.Private.force_reference value ~live in
+    List.iter(fun fusion->List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+      same_error(P.force ~strict:true(packed ~fusion value)~live)reference))[1;4;8]) [false;true])
+    [0;1023;1024;16383;16384];
+  print_endline "Typed total prefix: wrapping Int/native Text bytes, guarded storage checks and earliest-row block/chunk errors pass"
+
 let ()=if Array.exists((=)"--bench")Sys.argv then begin
   let count=1_000_000 and indices=Array.init 1_000_000 Fun.id in
   Printf.printf "Numeric gather: OCaml %s, direct strict Packed, block1024/chunk16384, million rows, median3; allocations observe the initial domain only\n%!"Sys.ocaml_version;
