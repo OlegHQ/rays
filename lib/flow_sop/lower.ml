@@ -577,8 +577,9 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
           | None -> fail "E_LOWER" "A Lisp node body must return geometry" in
         let compiled = edit (Edit.compile_node graph.network.geometry ~node_id:root) in
         let dependencies = Sop.Graph.dependencies compiled in
-        let dependencies = if graph.network.states<>[] || not(Port.Map.is_empty graph.network.drives)
-            || not(Network.Int_map.is_empty graph.network.frame_nodes) then
+        let driven = graph.network.states<>[] || not(Port.Map.is_empty graph.network.drives)
+            || not(Network.Int_map.is_empty graph.network.frame_nodes) in
+        let dependencies = if driven then
           Sop.Context.Dependencies.union dependencies (Sop.Context.Dependencies.one Input)
           else dependencies in
         let dependencies = if Context_kernel.depends ~inputs:parameters ~defs:checked.defs definition.body then
@@ -606,6 +607,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
           exact=Option.fold ~none:true ~some:(fun (facts : Check.kernel_facts) -> facts.exact)
             definition.kind.facts && List.for_all (fun (node : Sop.Graph.info) -> node.facts.exact) owned} in
         let body context =
+          if not driven then Ok compiled else
           let lane = Value_lane.create () in
           Result.map_error (fun (d : Diagnostic.t) -> Sop.Diagnostic.error ?cause:d.cause ~code:d.code d.message)
             (Result.bind (Value_lane.resolve ~live:(Sop.Context.input context) lane

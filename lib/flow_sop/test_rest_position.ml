@@ -257,5 +257,18 @@ let benchmark () =
         mode count domains native_seconds lisp_seconds (lisp_seconds/.native_seconds) native_bytes lisp_bytes)
       [1;4]) ["Store";"Extract";"Swap"]
 
-let () = if Array.exists((=)"--bench")Sys.argv then benchmark()
+let profile () =
+  let input=Lisp_sop.snapshot(payload(points 1_000_000 0.)) in
+  let actual=node ~reference:false input None ":mode \"Swap\"" in
+  with_session(fun session->
+    let until=Unix.gettimeofday()+.8. and count=ref 0 in
+    while Unix.gettimeofday()<until do
+      Sop.Session.clear session;
+      ignore(cook session 1 4096 actual);
+      incr count
+    done;
+    Printf.printf "Rest Swap wrapper profile: %d cleared-session cooks\n%!" !count)
+
+let () = if Array.exists((=)"--profile")Sys.argv then profile()
+  else if Array.exists((=)"--bench")Sys.argv then benchmark()
   else (verify(); errors(); parameter_edits(); typed_refusals(); exceptional_storage())

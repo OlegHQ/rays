@@ -1154,6 +1154,12 @@ let with_live ?state ?elems ?resolve ?execute ?(owner = ref ()) ?(compiled = tru
 let residual_eval r ~live =
   with_live live (fun ctx_of -> let c = ctx_of r in force_res c r)
 
+let rec static_source_fields = function
+  | Source (_, _, fields) | Struct (_, _, fields) | Record fields ->
+      List.for_all (fun (_, value) -> static_source_fields value) fields
+  | List values -> Array.for_all static_source_fields values
+  | value -> not (is_live value)
+
 let rec force_with ?state ?elems ?resolve ?execute ?owner ?compiled ?strict v ~live =
   if not (is_live v) then Ok v
   else
@@ -1170,7 +1176,7 @@ let rec force_with ?state ?elems ?resolve ?execute ?owner ?compiled ?strict v ~l
       go v) in
     match v, state, elems, resolve with
     | (Source (_, _, fields) | Struct (_, Ty.Array _, fields)), None, None, Some resolve
-        when List.for_all (fun (_, value) -> not (is_live value)) fields ->
+        when List.for_all (fun (_, value) -> static_source_fields value) fields ->
         (match Frame_input.validate live with
          | Error message -> Error (Diagnostic.error ~code:"E_FRAME" message)
          | Ok () -> Result.bind (protect (fun () -> resolve_source resolve v)) (fun value ->

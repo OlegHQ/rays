@@ -258,6 +258,25 @@ let () =
   let marker=Eval.Source("test/live_argument",Ty.Float,fields) in
   let resolve actual=assert(actual==marker);Ok(Eval.Float 7.) in
   assert(Eval.Private.force_reference ~resolve marker ~live=Ok(Eval.Float 7.));
+  let descriptor=Eval.Source("test/borrowed",Ty.Array Ty.Float,
+    ["geometry",Eval.Deferred(Ty.geometry,17);"owner",Eval.Text "point"])
+  and legacy=Eval.Struct("test/borrowed",Ty.Array Ty.Int,["count",Eval.Int 2]) in
+  let nested=Eval.Source("test/write",Ty.Array Ty.Float,
+    ["values",Eval.Record["offsets",legacy;"values",descriptor]]) in
+  List.iter(fun supplied->
+    let calls=ref 0 in
+    let resolve actual=assert(actual==nested);incr calls;Ok data in
+    assert(Result.get_ok(Eval.Private.force_reference ?state:supplied ~resolve nested ~live)==data);
+    assert(!calls=1);
+    (match Eval.Private.force_reference ?state:supplied ~resolve:(fun actual->
+      assert(actual==nested);Ok(Eval.Int 0)) nested ~live with
+     |Error d->assert(d.code="E_DATA_SOURCE")|Ok _->assert false);
+    let reason=Diagnostic.error ~cause:"nested host cause" ~code:"E_HOST" "nested host failure" in
+    assert(Eval.Private.force_reference ?state:supplied ~resolve:(fun actual->
+      assert(actual==nested);Error reason) nested ~live=Error reason);
+    calls:=0;
+    (match Eval.Private.force_reference ?state:supplied ~resolve nested ~live:{live with dt=nan} with
+     |Error d->assert(d.code="E_FRAME" && !calls=0)|Ok _->assert false)) [None;Some state];
   let forms=Result.get_ok(Syntax.parse
     "(workspace source_state (graph g :context value (state [previous 0.0] (+ previous 1.0))))") in
   let workspace=match Workspace.check {Check.version=1;kinds=[]} forms with
