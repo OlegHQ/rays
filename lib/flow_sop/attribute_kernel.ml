@@ -435,8 +435,10 @@ let write_selected ~grain ~owner ~kind name ~values ~selection ~default geometry
           |None->Array.map(Array.make count)default in
         ranges ~grain count(fun ~first ~last->
           for i=first to last-1 do
-            if selection.(i)=1 then
-              for c=0 to width-1 do planes.(c).(i)<-values.((if constant_count=None then i*width else 0)+c) done
+            if selection.(i)=1 then begin
+              let row=if constant_count=None then i*width else 0 in
+              for c=0 to width-1 do planes.(c).(i)<-values.(row+c) done
+            end
           done);
         install ~owner ~kind name planes geometry
   |_->(match constant with Some(Error d)->Error d|_->error "E_ATTR_TYPE" "Selected writes require numeric arrays, an integer selection and a matching default value.")
