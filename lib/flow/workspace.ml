@@ -128,6 +128,12 @@ let rec shape_ty = function
   | List e -> shape_ty e
   | Record fs -> List.exists (fun (_, t) -> shape_ty t) fs
   | _ -> false
+let rec geometry_accumulator = function
+  | ty when ty=Ty.geometry -> true
+  | Ty.Record fields ->
+      List.exists (fun (_,ty)->geometry_accumulator ty) fields
+      && List.for_all (fun (_,ty)->not(shape_ty ty) || geometry_accumulator ty) fields
+  | _ -> false
 let last_segment id = match List.rev id with s :: _ -> s | [] -> ""
 let path_text id = String.concat "/" id
 let sym_of (x : S.t) = match x.node with S.Sym s -> Some s | _ -> None
@@ -971,7 +977,10 @@ let check ?(ops = []) ?(library = false) catalog forms =
     (* an int seed does not round a float body: the accumulator is the wider of the two *)
     let acc_ty = Option.map (fun at -> Option.value ~default:at (Ty.join at bt.ty)) acc_ty in
     let packed = List.exists (fun (_, (t : term)) -> match t.ty with Ty.Array _ -> true | _ -> false) clauses in
-    if packed && shape_ty bt.ty then
+    let result_ty=match kind,acc_ty with `Fold,Some ty->ty|_->bt.ty in
+    let cooked_fold = kind=`Fold && cx.ctx=Context.sop && geometry_accumulator result_ty
+      && List.exists (Hashtbl.mem node_sources) cx.stack in
+    if packed && shape_ty result_ty && not cooked_fold then
       err x "E_ARRAY_TYPE" "Packed-array loops produce data; their length cannot create graph nodes.";
     let array_elem ty = match ty with Ty.Int | Vec2 | Vec3 | Vec4 | Text -> ty | Float | Bool | Any -> Ty.Float
       | _ -> err x "E_ARRAY_TYPE" "Arrays hold ints, floats, vectors or text values."; Ty.Float in

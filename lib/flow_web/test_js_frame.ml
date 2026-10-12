@@ -278,7 +278,13 @@ let () =
      "(array/concat (array/slice (array/text 5001 \"猫\") 4999 2) (array/text 1 \"😀\"))";
      "(map (fn [x] x) (array/text 0))";
      "(for [x (array/text 0)] x)";
-     "(scan [a \"seed\"] [x (array/text 0)] x)"] in
+     "(scan [a \"seed\"] [x (array/text 0)] x)";
+     {|(fold [state {:n 0}] [i (range 3)]
+         (if (> t 0.) (error "E_RECORD" "selected record error" :cause "record cause")
+           (assoc state :n (int/add state.n 1))))|};
+     {|(fold [state {:n 0}] [i (range 3)]
+         (assoc (if (> t 0.) (error "E_RECORD" "selected record error" :cause "record cause") state)
+           :n (int/add state.n 1)))|}] in
   if node then begin
     let produced=run_node cases in
     List.iter(fun case->List.iteri(fun frame expected->

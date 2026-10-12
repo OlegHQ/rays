@@ -811,7 +811,12 @@ and hof c env term kind f rest =
 
 and loop c env ~out kind accs clauses skip body zone =
   let packed = List.exists (fun (_, (e : W.term)) -> match e.ty with Ty.Array _ -> true | _ -> false) clauses in
-  let c = if packed then {c with data = true} else c in
+  let rec geometry_accumulator = function
+    | ty when ty=Ty.geometry -> true
+    | Ty.Record fields -> List.exists(fun(_,ty)->geometry_accumulator ty)fields
+    | _ -> false in
+  let cooked_fold=kind=`Fold && geometry_accumulator out in
+  let c = if packed && not cooked_fold then {c with data = true} else c in
   let saved_steps = c.st.steps in
   let cz = { c with base = zone; route = [] } in
   let init = match accs with

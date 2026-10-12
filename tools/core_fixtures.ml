@@ -502,6 +502,21 @@ let () =
      "*","?";"??","?";"*?","*";"","";"a b","x";
      "^a","x";"a","^x";"*","x";"a","*";"[","x";"a","[";"a\\","x";"a","x\\"];
   List.iter(validation "text/glob_rewrite_error") [[E.Int 0;E.Text "x"];[E.Text "x";E.Int 0]];
+  let text_operation name keys args =
+    add_host name args (host_result(fun()->Ok((op name).body
+      ~live:(Frame_input.at_time 0.) ~node:(fun _ _->assert false) (List.combine keys args)))) in
+  List.iter(fun text->text_operation "text/glob_literal" ["text"] [E.Text text])
+    (["";"ordinary";"-";"[a-z]";"\\";"\\\\";"^*?[]";"é猫😀";"\011"]
+     @List.init 128(fun byte->"p"^String.make 1(Char.chr byte)^"q"));
+  List.iter(text_operation "text/glob_literal" ["text"]) [[E.Int 0];[E.Bool false]];
+  List.iter(fun(pattern,replacement,text)->text_operation "text/glob_rewrite"
+    ["pattern";"replacement";"text"] [E.Text pattern;E.Text replacement;E.Text text])
+    ["*_???","old_???_*","tag_abc";"[a-c]*","*[a-c]","aé猫";
+     "a\\*","b","a*";"*","x*","";"a*","x*","unmatched";
+     "é*","猫*","é😀";"*","x","name";"[","x","name";"a b","x","a";
+     "^a","x","a";"a","x\\","a"];
+  List.iter(text_operation "text/glob_rewrite" ["pattern";"replacement";"text"])
+    [[E.Int 0;E.Text "x";E.Text "a"];[E.Text "a";E.Int 0;E.Text "a"];[E.Text "a";E.Text "x";E.Int 0]];
   let read geometry name owner kind query =
     let args=["geometry",E.Deferred(T.geometry,0);"attribute",E.Text name;"owner",E.Text owner]
       @(if kind="" then [] else ["type",E.Text kind]) in
@@ -701,6 +716,29 @@ let () =
     List.fold_left(fun geometry name->Rdk.Geometry.with_edge_group
       (Rdk.Edge_group.init ~topology ~index:(Rdk.Topology_index.create topology) ~name (fun i->i=0)) geometry |>Result.get_ok)
       geometry ["wall_a";"wall_b";"literal*"] in
+  let entries geometry pattern owner =
+    let resolve=Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->Some geometry) in
+    let column component=resolve(E.Source("sop/group_entries",T.Array T.Text,
+      ["geometry",E.Deferred(T.geometry,0);"pattern",pattern;"owner",owner;"component",E.Text component])) in
+    Result.bind(column "owners")(fun owners->Result.map(fun names->E.Record["owners",owners;"names",names])(column "names")) in
+  List.iter(fun owner->List.iter(fun pattern->add_host "sop/group_entries"
+    [geometry_value metadata_geometry;E.Text pattern;E.Text owner]
+    (host_result(fun()->entries metadata_geometry(E.Text pattern)(E.Text owner))))
+    ["";"*";"wall*";"* ^wall_a";"literal\\*";"missing";"[";"\\";"[z-a]"])
+    ["any";"point";"vertex";"primitive";"edge";" Points ";"invalid"];
+  List.iter(fun(pattern,owner)->add_host "sop/group_entries"
+    [geometry_value metadata_geometry;pattern;owner]
+    (host_result(fun()->entries metadata_geometry pattern owner)))
+    [E.Int 0,E.Text "any";E.Text "*",E.Int 0];
+  add_host "sop/group_entries" [E.No_geo;E.Text "*"]
+    (host_result(fun()->Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->None)
+      (E.Source("sop/group_entries",T.Array T.Text,["geometry",E.No_geo;"pattern",E.Text"*";"component",E.Text"names"]))));
+  let large_inventory=Rdk.Geometry.create ~positions:(Rdk.Geometry.positions geometry)
+    ~topology:(Rdk.Geometry.topology geometry)
+    ~groups:(List.init 5001(fun i->Rdk.Group.init ~owner:Rdk.Group.Point ~name:("entry_"^string_of_int i) 3(fun _->false)))()
+    |>Result.get_ok in
+  add_host "sop/group_entries" [geometry_value large_inventory;E.Text "*";E.Text "any"]
+    (host_result(fun()->entries large_inventory(E.Text "*")(E.Text "any")));
   let metadata_result name args native = host_result(fun()->
     (op name).check (("geometry",E.No_geo)::args);
     Result.map geometry_value (Result.map_error(fun error->Flow.Diagnostic.error ~code:(Rdk.Error.code error)
@@ -782,4 +820,5 @@ let () =
     (List.map C.primitive_name inventory @ ["array/sum";"sop/context_seed";"sop/delete_attr";"sop/attr";"sop/with_attr";"sop/has_attr";"sop/count";"sop/edges";
       "sop/group";"sop/group_names";"sop/group_order";"sop/with_group";
       "sop/attr_type";"sop/attr_names";"sop/rename_attr";"sop/swap_attr";"sop/delete_attrs";
-      "sop/rename_group";"sop/delete_group";"sop/rename_edge";"sop/delete_edge";"text/glob_error";"text/glob_rewrite_error"])
+      "sop/rename_group";"sop/delete_group";"sop/rename_edge";"sop/delete_edge";"text/glob_error";"text/glob_rewrite_error";
+      "text/glob_literal";"text/glob_rewrite";"sop/group_entries"])

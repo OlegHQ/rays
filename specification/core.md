@@ -167,6 +167,10 @@ branch whose records have different field order retains that order in its
 selected structured value. A joined numeric local may still hold an Int from
 one branch: explicit Float coercion must convert it, and `assoc` must use the
 selected old value's tag rather than the checker's joined type.
+A record branch joined with an error evaluates the selected branch before
+projecting or coercing accumulator fields; an error has no record fields to
+compile. Native and JavaScript execution retain the error's code, message and
+optional cause.
 
 `if` evaluates its condition and only the selected branch. `cond` tests arms in
 order and stops at the first true test. `case` evaluates its scrutinee once;
@@ -176,6 +180,14 @@ expands these cases with `=`, `equal?` and `truthy`; it must not substitute
 structural equality for numeric case matching. `and` and `or` are ordinary
 eager source operators: both operand expressions evaluate before the result
 is formed.
+
+Within a compiled SOP `defnode`, a Fold over typed arrays may carry a geometry
+handle or a record containing geometry and data. It runs as ordered structured
+Core with no 4,096-item array bound. The actual accumulator type controls this
+capability, including a body typed `Any` because it raises an error. Public
+graph geometry-array folds and collecting geometry forms remain refused.
+Nested numeric producers still require strict packed qualification; this
+capability does not admit geometry to numeric regions.
 
 Loops have explicit induction and accumulator locals. A list loop has at most
 4,096 attempted iterations, including skipped iterations. Product clauses
@@ -987,6 +999,9 @@ operation. A user function/macro row is not a new runtime primitive.
 | `sop/edges` | intrinsic | Cooked topology source returning separate exact integer arrays `a`, `b`, with normalized endpoint pairs in first outgoing-corner occurrence order; self-edges remain and open polylines have no outgoing final corner. Arrays are owned copies. Native indexing uses `Topology_index`; JavaScript preserves the same order. Unavailable geometry is `E_DATA_SOURCE`. Outside the current 2D export scope. |
 | `sop/group` | intrinsic | Cooked point/vertex/primitive/edge group mask as an owned exact integer array of zeros and ones. Missing groups report `E_GROUP_MISSING`. Geometry host groups preserve owner, name, membership and optional explicit traversal order. Outside the current 2D export scope. |
 | `sop/group_names` | intrinsic | Owner-filtered names in native insertion order using the shared Houdini-style wildcard, class, escape and exclusion rules. Invalid patterns report `E_GROUP_PATTERN`; names remain exact text arrays. |
+| `sop/group_entries` | intrinsic | `(sop/group_entries geometry pattern :owner "any")` returns ordered parallel text arrays in `{:owners ... :names ...}`. Ordinary groups retain global insertion order across owners, followed by edge groups. Owner filtering and patterns use the same rules as `sop/group_names`; invalid owner/type/pattern or unavailable geometry retain the existing group-source diagnostics. Arrays have no 4,096-entry bound. The native and JavaScript host protocols agree; reached cooked sources remain outside 2D web export. |
+| `text/glob_literal` | intrinsic | Pure nonempty Text-to-Text quoting for the native attribute/group pattern parser. Escapes wildcard/class/escape/exclusion syntax and its ASCII separators (space, TAB, LF, CR, FF); hyphens, VT and other bytes retain their literal spelling. Empty input is `E_METADATA_PATTERN`; wrong input type is `E_METADATA_TEXT`. Native bytes remain exact, including UTF-8. The JavaScript twin accepts Unicode text; arbitrary invalid native UTF-8 bytes are outside that transport. Dynamic native sources use `Host_source`; 2D web export refuses those sources with `E_WEB_SOURCE`. |
+| `text/glob_rewrite` | intrinsic | Pure `(text/glob_rewrite pattern replacement text)` uses the same compiled wildcard captures and replacement rules as native metadata renaming, returning the original text when no term matches. Invalid pattern/replacement pairs are `E_METADATA_PATTERN` with the native parser message; wrong arguments are `E_METADATA_TEXT`. Native/JavaScript fixtures preserve classes, exclusions, escaped literals and UTF-8. Dynamic native sources use `Host_source`; 2D web export refuses those sources with `E_WEB_SOURCE`. |
 | `sop/group_order` | intrinsic | Record of Boolean `ordered` and exact integer `indices`, preserving ordered-empty versus unordered groups. Edge groups return false and an empty index array. |
 | `sop/with_group` | intrinsic | Immutable owner-aware mask write, preserving topology and unrelated payloads. Optional integer order must enumerate selected elements once, or an order record preserves the query's ordering state. Edge explicit order is `E_GROUP_OWNER`; wrong cardinality, mask or order is `E_GROUP_COUNT`, `E_GROUP_MASK` or `E_GROUP_ORDER`. |
 | `sop/context_seed` | intrinsic | A defnode body cook-context constant, specialized before core lowering. Its literal namespace and node label are UTF-8 FNV-1a hashed into 64 bits, multiplied by `0x9e3779b97f4a7c15`, xor-ed with the context seed, then xor-ed with the unsigned upper 32 bits and truncated to a signed native 63-bit int. Fixtures pass the implicit context as a record of decimal seed text and label; use outside a body or in a pure parameter validator is `E_NODE_CONTEXT`. |

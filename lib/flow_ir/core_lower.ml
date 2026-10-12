@@ -215,7 +215,12 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
     let source = {source with C.site=Option.value x.path ~default:source.site;span=Some x.form.span} in
     let compile = term statements cache source env in
     let text_input ts = List.exists (fun (t:W.term) -> t.ty=Flow.Ty.Array Flow.Ty.Text) ts in
+    let rec geometry_accumulator = function
+      | ty when ty=Flow.Ty.geometry -> true
+      | Flow.Ty.Record fields -> List.exists(fun(_,ty)->geometry_accumulator ty)fields
+      | _ -> false in
     let candidate=x.ty<>Flow.Ty.Array Flow.Ty.Text && x.ty<>Flow.Ty.Text && (match x.node with
+      | Loop {kind=`Fold;_} when geometry_accumulator x.ty -> false
       | W.Hof (_, _::rest) when text_input rest -> false
       | Loop {clauses;_} when text_input (List.map snd clauses) -> false
       | W.Hof ((`Map|`Reduce),_::rest) -> List.exists (fun (t:W.term)->match t.ty with Flow.Ty.Array _->true|_->false) rest
@@ -862,6 +867,9 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
     match resolve statements cache value with
     | Record_fields fields -> fields
     | Known (V.Record fields) -> List.map (fun (name,v) -> name,Known v) fields
+    | Record_choice _ as value ->
+        record_fields statements cache source
+          (Computed (ensure statements cache source value,type_of value))
     | Computed (_,Flow.Ty.Record fields) as value ->
         List.map (fun (name,ty) -> name,field statements cache source ty value name) fields
     | _ -> refuse "record"
@@ -869,9 +877,11 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
     match resolve statements cache value with
     | Selected (items,index) -> select statements cache source (type_of value) items index
         (fun body cache v -> map_fields body cache source v f)
-    | Record_choice (condition,yes,no) -> branch statements cache source (type_of value) condition
-        (fun body cache -> map_fields body cache source yes f)
-        (fun body cache -> map_fields body cache source no f)
+    | Record_choice (condition,yes,no) when
+        (match type_of yes,type_of no with Flow.Ty.Record _,Record _ -> true | _ -> false) ->
+        branch statements cache source (type_of value) condition
+          (fun body cache -> map_fields body cache source yes f)
+          (fun body cache -> map_fields body cache source no f)
     | value -> Record_fields (f statements cache (record_fields statements cache source value))
   and coerce_like statements cache source old value =
     let old=resolve statements cache old and value=resolve statements cache value in

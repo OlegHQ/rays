@@ -821,6 +821,17 @@ export function text_glob_rewrite_error(pattern, replacement) {
   try { metadataRewrite(pattern, replacement); return ''; }
   catch (failure) { if (failure instanceof Fail) return failure.message; throw failure; }
 }
+export function text_glob_rewrite(pattern, replacement, text) {
+  if ([pattern, replacement, text].some(value => typeof value !== 'string'))
+    err('E_METADATA_TEXT', 'Metadata names and patterns must be text.');
+  try { return metadataRewrite(pattern, replacement)(text) ?? text; }
+  catch (failure) { if (failure instanceof Fail) err('E_METADATA_PATTERN', failure.message); throw failure; }
+}
+export function text_glob_literal(text) {
+  if (typeof text !== 'string') err('E_METADATA_TEXT', 'Metadata names and patterns must be text.');
+  if (text === '') err('E_METADATA_PATTERN', 'A literal glob must not be empty.');
+  return text.replace(/[\*?\[\]\\^ \t\n\r\f]/g, character => '\\' + character);
+}
 function metadataPolicy(value, groups = false) {
   const policy = text_lower(metadataTrim(value));
   if (!['skip', 'error', 'overwrite', ...(groups ? ['union'] : [])].includes(policy)) err('E_METADATA_CONFLICT',
@@ -1111,6 +1122,24 @@ export function sop_group_names(geometry, pattern, owner = 'point') {
   const groups = geometry.get(owner === 'edge' ? 'edge_groups' : 'groups') ?? [];
   return new TextArray(groups.filter(group => (owner === 'edge' || group.get('owner') === owner)
     && matches(group.get('name'))).map(group => group.get('name')));
+}
+export function sop_group_entries(geometry, pattern, owner = 'any') {
+  if (typeof owner !== 'string') err('E_GROUP_TYPE', 'Group owner must be text.');
+  if (typeof pattern !== 'string') err('E_GROUP_TYPE', 'Group pattern must be text.');
+  groupGeometry(geometry); owner = metadataOwner(owner, true);
+  let matches;
+  try { matches = attributePattern(pattern); }
+  catch (e) { if (e instanceof Fail) err('E_GROUP_PATTERN', e.message); throw e; }
+  const names = [], owners = [];
+  for (const group of geometry.get('groups') ?? []) {
+    if ((owner === 'any' || group.get('owner') === owner) && matches(group.get('name'))) {
+      names.push(group.get('name')); owners.push(group.get('owner'));
+    }
+  }
+  if (owner === 'any' || owner === 'edge') for (const group of geometry.get('edge_groups') ?? []) {
+    if (matches(group.get('name'))) { names.push(group.get('name')); owners.push('edge'); }
+  }
+  return new Map([['owners', new TextArray(owners)], ['names', new TextArray(names)]]);
 }
 export function sop_with_group(geometry, mask, name, owner = 'point', order) {
   groupOwner(owner); groupName(name); groupGeometry(geometry);

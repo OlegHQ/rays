@@ -1,3 +1,13 @@
+let glob_rewrite ~pattern ~replacement text =
+  Result.map_error(Flow.Diagnostic.error ~code:"E_METADATA_PATTERN")
+    (Result.map(fun rewrite->Option.value ~default:text(Rdk.Attribute_pattern.rewrite rewrite text))
+      (Rdk.Attribute_pattern.compile_rewrite ~pattern ~replacement))
+let glob_literal text =
+  if text="" then Error(Flow.Diagnostic.error ~code:"E_METADATA_PATTERN" "A literal glob must not be empty.") else
+  let out=Buffer.create(String.length text) in
+  String.iter(fun c->(match c with '*'|'?'|'['|']'|'\\'|'^'|' '| '\t'|'\n'|'\r'|'\012'->Buffer.add_char out '\\'|_->());
+    Buffer.add_char out c)text;
+  Ok(Buffer.contents out)
 let delete ~owner ~pattern input =
   let literal = pattern<>"" && not (String.exists (function
     | '*' | '?' | '[' | '\\' | '^' | ' ' | '\t' | '\n' | '\r' | '\012' -> true

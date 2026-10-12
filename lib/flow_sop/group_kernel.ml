@@ -41,6 +41,22 @@ let names ~owner ~pattern geometry =
             if Group.owner group = owner then Some (Group.name group) else None)
         | Edge -> List.map Edge.name (G.edge_groups geometry) in
       Ok (E.Text_array (Array.of_list (List.filter (Rdk.Attribute_pattern.matches pattern) names)))
+let entries ~selected_owner ~pattern ~component geometry =
+  Result.bind(Attribute_metadata.group_owner selected_owner)(fun selected->
+  Result.bind(Result.map_error(Flow.Diagnostic.error ~code:"E_GROUP_PATTERN")(Rdk.Attribute_pattern.compile pattern))(fun pattern->
+    let visit f =
+      List.iter(fun group->let owner=match Group.owner group with
+        |Group.Point->Rdk.Group_ops.Group_points|Vertex->Group_vertices|Primitive->Group_primitives in
+        f owner(Group.name group))(G.groups geometry);
+      List.iter(fun group->f Rdk.Group_ops.Group_edges(Edge.name group))(G.edge_groups geometry) in
+    let matches owner name=(selected=None || selected=Some owner) && Rdk.Attribute_pattern.matches pattern name in
+    let count=ref 0 in visit(fun owner name->if matches owner name then incr count);
+    let values=Array.make !count "" and index=ref 0 in
+    visit(fun owner name->if matches owner name then begin
+      values.(!index)<-(if component="names" then name else match owner with
+        |Rdk.Group_ops.Group_points->"point"|Group_vertices->"vertex"|Group_primitives->"primitive"|Group_edges->"edge");incr index
+    end);
+    Ok(E.Text_array values)))
 let write ?order ~owner ~name:group_name mask geometry =
   Result.bind (name group_name) (fun () ->
   if Array.length mask <> count geometry owner then error "E_GROUP_COUNT" "Group mask must match its owner element count."
@@ -64,6 +80,24 @@ let write ?order ~owner ~name:group_name mask geometry =
           else map_error (G.with_group group geometry)))
 
 let resolve ~geometry = function
+  |E.Source(("text/glob_rewrite"|"text/glob_literal" as operation),_,args)->
+      let text key=match List.assoc_opt key args with Some(E.Text text)->Ok text
+        |_->error "E_METADATA_TEXT" "Metadata names and patterns must be text." in
+      Result.bind(text "text")(fun value->if operation="text/glob_literal" then
+        Result.map(fun value->E.Text value)(Attribute_metadata.glob_literal value) else
+        Result.bind(text "pattern")(fun pattern->Result.bind(text "replacement")(fun replacement->
+          Result.map(fun value->E.Text value)(Attribute_metadata.glob_rewrite ~pattern ~replacement value))))
+  |E.Source("sop/group_entries",_,args)->
+      let text key default=match List.assoc_opt key args with None->Ok default|Some(E.Text text)->Ok text
+        |_->error "E_GROUP_TYPE"("Group "^key^" must be text.") in
+      Result.bind(text "component" "")(fun component->
+      if not(List.mem component["owners";"names"]) then error "E_GROUP_TYPE" "Group entry component is owners or names."
+      else Result.bind(text "owner" "any")(fun selected_owner->Result.bind(text "pattern" "")(fun pattern->
+        match List.assoc_opt "geometry" args with
+        |Some(E.Deferred(ty,id)) when Flow.Ty.is_geometry ty->
+            (match geometry id with None->error "E_DATA_SOURCE" "Group source has not been cooked."
+             |Some geometry->entries ~selected_owner ~pattern ~component geometry)
+        |_->error "E_DATA_SOURCE" "Group source requires cooked geometry.")))
   | E.Source (("sop/group"|"sop/group_names"|"sop/group_order" as operation),_,args) ->
       let text key default = match List.assoc_opt key args with
         | None -> Ok default | Some(E.Text value) -> Ok value

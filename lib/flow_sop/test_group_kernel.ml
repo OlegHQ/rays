@@ -240,3 +240,135 @@ let () =
           (Array.make(G.point_count original)((frame+1)mod 2))original in
         assert(bytes(get node)=bytes expected)) [0;1;2])) [1;8];
   print_endline "Group frame folds snapshot on the initial domain and recook exact masks at one/eight domains"
+
+module Prerequisites = struct
+(* Proposed focused regression after the source freeze. No registration. *)
+module E=Flow.Eval
+let checked=function Ok value->value|Error d->failwith(Flow.Diagnostic.to_string d)
+let op name args=(Option.get(Flow.Op.find ~extra:Flow_sop.Operators.all name Flow.Context.value)).body
+  ~live:(Frame_input.at_time 0.) ~node:(fun _ _->assert false)args
+let ()=
+  List.iter(fun name->let quoted=match op "text/glob_literal"["text",E.Text name] with
+    |E.Text text->text|_->assert false in
+    let pattern=Rdk.Attribute_pattern.compile quoted|>Result.get_ok in
+    assert(Rdk.Attribute_pattern.matches pattern name);
+    assert(not(Rdk.Attribute_pattern.matches pattern(name^"x"))))
+    (["ordinary";"-";"a-z";"[a-z]";"\\";"\\\\";"*?[]^\\";
+      " name\t\n\r\012";"\011";"a\011b";"é猫😀";"a\000b"]
+     @ List.init 256(fun byte->"p"^String.make 1(Char.chr byte)^"q"));
+  List.iter(fun(pattern,replacement,text)->let native=Rdk.Attribute_pattern.compile_rewrite ~pattern ~replacement|>Result.get_ok in
+    assert(op "text/glob_rewrite"["pattern",E.Text pattern;"replacement",E.Text replacement;"text",E.Text text]
+      =E.Text(Option.value ~default:text(Rdk.Attribute_pattern.rewrite native text))))
+    ["*_???","old_???_*","tag_abc";"[a-c]*","*[a-c]","aé猫";"a\\*","b","a*";"*","x*","";"a*","x*","unmatched"];
+  let base=Rdk.Line_geometry.points[|(0.,0.,0.);(1.,0.,0.);(0.,1.,0.)|] in
+  let topology=Rdk.Topology.create_owned ~point_count:3 ~vertex_points:[|0;1;2|]
+    ~primitive_offsets:[|0;3|] ~primitive_kinds:[|Rdk.Topology.Polygon|]|>Result.get_ok in
+  let geometry=Rdk.Geometry.create ~positions:(Rdk.Geometry.positions base) ~topology()|>Result.get_ok in
+  let groups=[Rdk.Group.Vertex,"before";Rdk.Group.Point,"before";Rdk.Group.Vertex,"same";
+    Rdk.Group.Point,"same";Rdk.Group.Primitive,"middle";Rdk.Group.Point,"after"] in
+  let geometry=List.fold_left(fun geometry(owner,name)->let count=match owner with
+    |Rdk.Group.Point->3|Vertex->3|Primitive->1 in
+    Rdk.Geometry.with_group(Rdk.Group.init ~owner ~name count(fun i->i=0))geometry|>Result.get_ok)geometry groups in
+  let geometry=Rdk.Geometry.with_edge_group(Rdk.Edge_group.init ~topology ~index:(Rdk.Topology_index.create topology)
+    ~name:"edge"(fun i->i=0))geometry|>Result.get_ok in
+  let resolve=Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->Some geometry) in
+  let column component=checked(resolve(E.Source("sop/group_entries",Flow.Ty.Array Flow.Ty.Text,
+    ["geometry",E.Deferred(Flow.Ty.geometry,0);"pattern",E.Text"*";"component",E.Text component]))) in
+  assert(column "owners"=E.Text_array[|"vertex";"point";"vertex";"point";"primitive";"point";"edge"|]);
+  assert(column "names"=E.Text_array[|"before";"before";"same";"same";"middle";"after";"edge"|]);
+  (* The native first-conflict oracle is the global entry order, not owner order. *)
+  let error=Rdk.Group_ops.invert ~pattern:"same" ~new_name:"before" ~conflict:Rdk.Group_ops.Rename_error geometry in
+  match error with Error error->assert(Rdk.Error.message error="Group Rename: destination vertex group \"before\" already exists")
+  |Ok _->assert false
+
+(* Later selected destinations keep their original identity. Overwrite removes
+   that identity; Union leaves it live and it is processed again. *)
+let ()=
+  let geometry=Rdk.Line_geometry.points[|(0.,0.,0.);(1.,0.,0.);(2.,0.,0.)|] in
+  let put name selected geometry=Rdk.Geometry.with_group
+    (Rdk.Group.ordered ~owner:Rdk.Group.Point ~name ~length:3 [|selected|]|>Result.get_ok)
+    geometry|>Result.get_ok in
+  let geometry=put "dest_a" 1(put "a" 0 geometry) in
+  let names geometry=List.map Rdk.Group.name(Rdk.Geometry.groups geometry) in
+  let mask name geometry=let group=Option.get(Rdk.Geometry.find_group ~owner:Rdk.Group.Point name geometry) in
+    Array.init 3(fun i->Rdk.Group.mem i group) in
+  let invert conflict=Rdk.Group_ops.invert ~owner:Rdk.Group_ops.Group_points
+    ~pattern:"*" ~new_name:"dest_*" ~conflict geometry|>Result.get_ok in
+  let overwrite=invert Rdk.Group_ops.Rename_overwrite in
+  assert(names overwrite=["dest_a"]);
+  assert(mask "dest_a" overwrite=[|false;true;true|]);
+  let skip=invert Rdk.Group_ops.Rename_skip in
+  assert(names skip=["a";"dest_dest_a"]);
+  assert(mask "a" skip=[|true;false;false|]);
+  assert(Rdk.Group.is_ordered(Option.get(Rdk.Geometry.find_group ~owner:Rdk.Group.Point "a" skip)));
+  assert(mask "dest_dest_a" skip=[|true;false;true|]);
+  let union=invert Rdk.Group_ops.Rename_union in
+  assert(names union=["dest_dest_a"]);
+  assert(mask "dest_dest_a" union=[|true;false;false|]);
+  let unchanged=Rdk.Group_ops.invert ~pattern:"unmatched" geometry|>Result.get_ok in
+  assert(unchanged==geometry);
+  assert(Rdk.Group.is_ordered(Option.get(Rdk.Geometry.find_group ~owner:Rdk.Group.Point "a" geometry)))
+
+end
+
+let () =
+  let geometry=List.nth(fixtures())1 in
+  exact geometry {|(map (fn [(value : text)] (text/glob_literal value)) (array/text 5001 "a*"))|}
+    (E.Text_array(Array.make 5001 "a\\*"));
+  exact geometry {|(map (fn [(value : text)] (text/glob_rewrite "a*" "b*" value)) (array/text 5001 "a猫"))|}
+    (E.Text_array(Array.make 5001 "b猫"));
+  let catalog=Flow.Check.{version=1;kinds=[]} in
+  let checker=Flow.Workspace.check ~ops:Flow_sop.Operators.all in
+  let forms=Flow.Syntax.parse {|(workspace glob_cards (graph g :context sop [(geo : geometry nil)]
+    (let* [literal (text/glob_literal "a*") rewritten (text/glob_rewrite "a*" "b*" "abc")
+      entries (sop/group_entries geo "*" :owner "any")] geo)))|} |>flow_ok in
+  let checked=match checker catalog forms with Some checked,[]->checked
+    |_,ds->failwith(String.concat "; "(List.map Flow.Diagnostic.to_string ds)) in
+  let pane=Flow_graph.Projection.of_graph catalog checked "g" in
+  List.iter(fun(binding,ty)->assert((Flow_graph.Projection.find pane["g";binding] |>Option.get).ty=ty))
+    ["literal",Flow.Ty.Text;"rewritten",Text;"entries",Record["owners",Array Text;"names",Array Text]];
+  List.iter(fun(binding,key,value)->
+    let _,changed=Flow_graph.Flow_edit.apply_checked ~checker catalog forms
+      (Set_arg{node=["g";binding];key;sub=[];value=Flow.Syntax.make(Str value)}) |>flow_ok in
+    let card=Flow_graph.Projection.find(Flow_graph.Projection.of_graph catalog changed "g")["g";binding] |>Option.get in
+    let row=List.find(fun(row:Flow_graph.Projection.row)->row.key=key)card.rows in
+    assert(Option.map Flow.Lisp.flat row.expr=Some(Flow.Lisp.flat(Flow.Syntax.make(Str value)))))
+    ["literal",Flow_graph.Flow_edit.Pos 0,"é*";
+     "rewritten",Pos 0,"x*";"rewritten",Pos 1,"y*";"rewritten",Pos 2,"xyz";
+     "entries",Pos 1,"wall*";"entries",Kw "owner","edge"];
+  print_endline "Glob literal/rewrite and ordered group entries: byte oracles, native snapshot conflicts, strict 5001-text loops and direct graph gestures"
+
+let () =
+  let catalog=Flow.Check.{version=1;kinds=[]} in
+  let refuses body =
+    let forms=Flow.Syntax.parse body |>flow_ok in
+    let _,ds=Flow.Workspace.check ~ops:Flow_sop.Operators.all catalog forms in
+    assert(List.exists(fun(d:Flow.Diagnostic.t)->d.code="E_ARRAY_TYPE")ds) in
+  refuses {|(workspace public_fold (graph g :context sop [(geo : geometry nil)]
+    (fold [previous geo] [i (array/int 3)] (sop/delete_group previous ""))))|};
+  refuses {|(workspace public_any_fold (graph g :context sop [(geo : geometry nil)]
+    (fold [previous geo] [i (array/int 3)] (error "E_PUBLIC_FOLD" "public geometry fold"))))|};
+  List.iter(fun body->refuses("(workspace rejected (defnode sop/rejected [(geo : geometry)] "^body^
+    ") (graph g :context sop (sop/rejected nil)))"))
+    ["(for [i (array/int 3)] (sop/delete_group geo \"\"))";
+     "(scan [previous geo] [i (array/int 3)] (sop/delete_group previous \"\"))";
+     "(map (fn [(i : int)] (sop/delete_group geo \"\")) (array/int 3))"];
+  let groups=List.init 5001(fun i->Group.init ~owner:Group.Point ~name:("entry_"^string_of_int i) 0(fun _->assert false)) in
+  let geometry=G.create ~positions:(G.positions(List.hd(fixtures()))) ~topology:(Rdk.Topology.empty ~point_count:0) ~groups() |>ok in
+  let node=Lisp_sop.workspace_node ~with_:["source",Lisp_sop.snapshot geometry] {|(workspace cooked_inventory
+    (defnode sop/cooked_inventory [(geo : geometry)]
+      (let* [entries (sop/group_entries geo "*" :owner "point")
+             result (fold [state {:geometry geo :seen 0}]
+               [name entries.names]
+               (let* [seen (int/add state.seen 1)]
+                 {:geometry (sop/with_attr state.geometry "iteration" (array/int 1 seen) :owner detail :type int)
+                  :seen seen}))]
+        result.geometry))
+    (graph g :context sop (sop/cooked_inventory (sop/ext_source))))|} in
+  let session=create_session() in
+  Fun.protect ~finally:(fun()->Sop.Session.close session)(fun()->
+    List.iter(fun domains->let output=cook session domains node in
+      assert(List.length(G.groups output)=5001);
+      match G.find_attribute ~owner:Rdk.Attribute.Detail "iteration" output |>Option.get |>Rdk.Attribute.storage with
+      |Int values->assert(values=[|5001|])|_->assert false) [1;8]);
+  print_endline "Cooked defnode Fold traverses 5001 inventory entries through geometry handles; public array-node folds and collecting forms remain refused"

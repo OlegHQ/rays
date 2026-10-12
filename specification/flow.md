@@ -762,6 +762,13 @@ it cannot replace an existing OCaml kind or another workspace definition
 (`E_NAME`). Its call remains a catalog call with one card and cook identity.
 The body is checked with the declared input types and must return geometry;
 recursive node dependencies are `E_RECURSION`.
+A `fold` inside a compiled SOP node body may iterate typed arrays while carrying
+geometry, or a record containing geometry and data. It executes as an ordered
+structured Core loop during cooking; it does not create an array of geometry.
+Array iteration retains its native storage bounds and has no 4,096-list limit.
+Public graph array loops and collecting `for`, `scan` and `map` forms still
+cannot construct graph nodes. Numeric operations nested in the cooked fold
+retain strict packed qualification.
 Optional `:operation "stable_operation"` retains an existing cook operation
 identity while the catalog kind keeps its authored name and human label. It
 defaults to the unqualified kind name. The default runtime node label remains
@@ -1469,6 +1476,22 @@ mask containing zero or one per owner element. Group owners are `point`,
 without changing topology or other payloads. The mask must match its owner's
 count. `(sop/group_names geometry "wall*" :owner point)` returns matching names
 in native insertion order, using the existing Houdini-style name patterns.
+
+`(sop/group_entries geometry "wall*" :owner "any")` returns
+`{:owners (array text) :names (array text)}` with matching entries in the
+geometry's global ordinary-group insertion order, followed by edge groups.
+The parallel columns have identical lengths; owners are `point`, `vertex`,
+`primitive` or `edge`. This preserves ordering when ordinary owners interleave.
+
+The SOP overlay's pure `text/glob_literal` quotes a nonempty text value as one
+literal glob term. It escapes glob syntax and the parser's ASCII term whitespace,
+preserving UTF-8 bytes, hyphens, vertical tabs and other literal bytes. Empty text
+reports `E_METADATA_PATTERN`. `text/glob_rewrite pattern replacement text` uses
+the existing wildcard-capture rewrite contract and retains unmatched text;
+invalid rewrite syntax reports `E_METADATA_PATTERN`. Both expose ordinary
+editable argument cards. Dynamic cooked uses run through typed host sources in
+structured native Core; direct JavaScript twins share the existing matcher.
+Production frame export still refuses dynamic host sources with `E_WEB_SOURCE`.
 
 `(sop/group_order geometry :name "top" :owner point)` returns
 `{:ordered bool :indices (array int)}`. Passing this record as `:order` to

@@ -118,6 +118,14 @@ let group_names : Flow.Op.t = {
     | _->Flow.Value.fail "E_GROUP_PATTERN" "Group pattern must be text.");
   body=(fun ~live:_ ~node:_ args->Flow.Value.Source("sop/group_names",Flow.Ty.Array Flow.Ty.Text,args));
 }
+let group_entries_type=Flow.Ty.Record["owners",Array Text;"names",Array Text]
+let group_entries : Flow.Op.t = {
+  group with name="sop/group_entries";
+  signature={pos=["geometry",Flow.Ty.geometry;"pattern",Flow.Ty.Text];opt=[];rest=None;kw=["owner",Flow.Ty.Text]};
+  out=(fun _->group_entries_type);choices=["owner",["point";"vertex";"primitive";"edge";"any"]];check=(fun _->());
+  body=(fun ~live:_ ~node:_ args->Flow.Value.Record(List.map(fun component->component,
+    Flow.Value.Source("sop/group_entries",Flow.Ty.Array Flow.Ty.Text,args@["component",Flow.Value.Text component]))["owners";"names"]));
+}
 let with_group : Flow.Op.t = {
   group with name="sop/with_group";
   signature={group.signature with pos=["geometry",Flow.Ty.geometry;"values",Flow.Ty.Array Int];
@@ -244,7 +252,27 @@ let glob_rewrite_error : Flow.Op.t = {
     Ok _->""|Error message->message));
 }
 
+(* Symbolic prototype arguments retain the ordinary typed Source boundary,
+   so these pure text operations also run inside structured cooked loops. *)
+let text_source name args run =
+  if List.exists(fun(_,value)->match value with Flow.Value.Source _|Residual _->true|_->false)args
+  then Flow.Value.Source(name,Flow.Ty.Text,args) else Flow.Value.Text(run())
+let glob_rewrite : Flow.Op.t = {
+  glob_error with name="text/glob_rewrite";
+  signature={glob_error.signature with pos=["pattern",Text;"replacement",Text;"text",Text]};
+  body=(fun ~live:_ ~node:_ args->text_source "text/glob_rewrite" args(fun()->
+    let pattern=metadata_text args "pattern" and replacement=metadata_text args "replacement"
+    and text=metadata_text args "text" in
+    checked(Attribute_metadata.glob_rewrite ~pattern ~replacement text)));
+}
+let glob_literal : Flow.Op.t = {
+  glob_error with name="text/glob_literal";
+  signature={glob_error.signature with pos=["text",Text]};
+  body=(fun ~live:_ ~node:_ args->text_source "text/glob_literal" args(fun()->
+    checked(Attribute_metadata.glob_literal(metadata_text args "text"))));
+}
+
 let all = Flow_ir.Operators.all @ [attr; with_attr; has_attr; delete_attr; count; edges;
-  group; group_order; group_names; with_group; context_seed;
+  group; group_order; group_names; group_entries; with_group; context_seed;
   rename_attr;swap_attr;delete_attrs;rename_group;delete_group;rename_edge;delete_edge;attr_type;attr_names;
-  glob_error;glob_rewrite_error]
+  glob_error;glob_rewrite_error;glob_rewrite;glob_literal]

@@ -90,6 +90,25 @@ let dump () = String.concat "" (List.map (fun (name,r) ->
     [-3.;-2.5;-0.;0.;0.00005;0.00015;0.37;1.;1.9;100.25];
   name ^ "\n" ^ printed) cases)
 let () =
+  List.iter (fun body ->
+    let r=residual body in
+    let core=match I.Core_lower.lower r with Ok p->p|Error name->failwith name in
+    let program=ok(I.Executor.compile(E.Residual r)) in
+    List.iter (fun time ->
+      let live=Frame_input.at_time time in
+      let expected=E.Private.force_reference(E.Residual r) ~live in
+      List.iter (fun actual -> match actual,expected with
+        | Ok a,Ok b->assert(same a b)
+        | Error a,Error b->assert(a.Flow.Diagnostic.code=b.code && a.message=b.message && a.cause=b.cause)
+        | _->failwith "Lazy record accumulator error changed")
+        [I.Core_exec.run core ~live;I.Executor.force program ~live]) [0.;1.])
+    [ {|(fold [state {:n 0}] [i (range 3)]
+          (if (> t 0.) (error "E_RECORD" "selected record error" :cause "record cause")
+            (assoc state :n (int/add state.n 1))))|};
+      {|(fold [state {:n 0}] [i (range 3)]
+          (assoc (if (> t 0.) (error "E_RECORD" "selected record error" :cause "record cause") state)
+            :n (int/add state.n 1)))|} ]
+let () =
   let actual=dump () in
   if Array.length Sys.argv=2 && Sys.argv.(1)="--print" then print_string actual
   else begin
