@@ -169,6 +169,53 @@ let () =
 let () =
   let trace = !I.Packed.Private.trace in
   I.Packed.Private.trace := ignore;
+  let count=32769 in
+  let fn=match recorded
+    "(fn [(mask : int) (p : vec4)] (if (int/eq mask 1) [t 2 3 4] p))" with E.Fn f->f|_->assert false in
+  let mask=Array.init count(fun i->i mod 2) in
+  let marker=E.Source("test/borrow_columns",Flow.Ty.Array Flow.Ty.Vec4,[]) in
+  let value=ok(E.Private.map_function ~signature:Flow.Ty.{params=[Int;Vec4];result=Vec4}
+    fn [E.Int_array mask;E.Vec4_array(Array.make(count*4)0.)]) in
+  let packed=match value with E.Residual r->Option.get(compile r(E.Private.residual_view r).term)|_->assert false in
+  let region=I.Packed.to_region packed in
+  let sources=Array.map(fun(residual,(term:Flow.Workspace.term))->
+    if term.ty<>Flow.Ty.Array Flow.Ty.Vec4 then residual,term else
+      let term={term with node=Ref_binding("typed_borrowed_source",[])} in
+      E.Private.with_bindings residual ~term ["typed_borrowed_source",marker],term)region.sources in
+  let packed=match I.Packed.of_region {region with sources}with Ok p->p
+    |Error ds->failwith(String.concat "; "(List.map Flow.Diagnostic.to_string ds)) in
+  let data=Array.init(count*5)(fun i->if i mod 5=4 then 99. else if i=0 then -0. else float i) in
+  let before=Marshal.to_string data [] in
+  let columns=Array.init 4(fun offset->I.Packed.{data;offset;stride=5}) in
+  let resolutions=ref 0 in
+  let resolve=function E.Source("test/borrow_columns",_,_)->incr resolutions;Ok(E.Vec4_array(Array.make(count*4)0.))
+    |value->Ok value in
+  let source _ (term:Flow.Workspace.term)=Ok(if term.ty=Flow.Ty.Array Flow.Ty.Vec4 then Some columns else None) in
+  let live=Frame_input.at_time 0.25 in
+  let run columns outputs=I.Packed.force_into ~strict:true ~resolve
+    ~column_source:(fun r term->match source r term with Ok(Some _)->Ok(Some columns)|other->other)
+    ~count ~outputs packed ~live in
+  List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+    let planes=Array.init 4(fun _->Array.make count 0.) in
+    ignore(ok(run columns[|Array.map Option.some planes|]));
+    Array.iteri(fun c plane->Array.iteri(fun i x->
+      let expected=if mask.(i)=1 then (if c=0 then 0.25 else float(c+1)) else data.(i*5+c) in
+      assert(Int64.bits_of_float x=Int64.bits_of_float expected))plane)planes;
+    ignore(ok(run columns[|[|None;Some planes.(1);None;None|]|])))) [1;4;8];
+  assert(!resolutions=0 && before=Marshal.to_string data []);
+  let refusal code columns=match run columns[|[|None;None;None;None|]|]with
+    |Error d->assert(d.code=code)|Ok _->assert false in
+  refusal "E_ARRAY_TYPE" [|columns.(0)|];
+  refusal "E_ARRAY_RANGE" [|{columns.(0)with stride=0};columns.(1);columns.(2);columns.(3)|];
+  refusal "E_ARRAY_COUNT" [|{columns.(0)with data=[||];offset=0};columns.(1);columns.(2);columns.(3)|];
+  let bad=Array.copy data in bad.(0)<-nan;
+  refusal "E_NONFINITE" (Array.map(fun(c:I.Packed.column)->{c with data=bad})columns);
+  I.Packed.Private.trace := trace;
+  print_endline "Typed borrowed columns: mixed Int/Vec4 inputs, exact planes, no source materialization and selected errors passed"
+
+let () =
+  let trace = !I.Packed.Private.trace in
+  I.Packed.Private.trace := ignore;
   let count = 32769 in
   let bodies =
     ["(if (< (mod x 2.0) 1.0) (if (< (mod x 4.0) 1.0) (+ (sin x) t) (- (cos x) t)) (+ x t))";

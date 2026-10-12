@@ -194,9 +194,26 @@ exception Failed of Flow.Diagnostic.t
 exception Nonfinite
 let get = function Ok x -> x | Error d -> raise (Failed d)
 
-let run_typed ?plane_outputs ?expected_count ~evaluate ~uniform ~seed t ~live =
-  let inputs=Array.map (fun (r,term)->evaluate r term) t.sources in
-  let lengths=Array.map V.array_length inputs in
+let borrowed_count width columns =
+  if Array.length columns<>width then V.fail "E_ARRAY_TYPE" "Borrowed columns changed the packed element width.";
+  let length c=if c.stride<=0 || c.offset<0 || c.offset>Array.length c.data then
+      V.fail "E_ARRAY_RANGE" "Borrowed column offset and stride must describe an in-bounds span."
+    else if c.offset=Array.length c.data then 0 else
+      1+(Array.length c.data-1-c.offset)/c.stride in
+  let count=length columns.(0) in
+  if not(Array.for_all(fun c->length c=count)columns)then
+    V.fail "E_ARRAY_COUNT" "Borrowed components need the same element count.";
+  count
+
+let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~seed t ~live =
+  let borrowed=Array.make (Array.length t.sources) None in
+  let inputs=Array.mapi (fun i (r,term)->
+    borrowed.(i)<-(match column_source,term.W.ty with
+      |Some source,Ty.Array (Ty.Float|Vec2|Vec3|Vec4)->get(source r term)
+      |_->None);
+    if borrowed.(i)=None then evaluate r term else E.No_geo) t.sources in
+  let lengths=Array.mapi(fun i value->match borrowed.(i)with
+    |None->V.array_length value|Some columns->borrowed_count t.widths.(i) columns)inputs in
   let count=if inputs=[||] then 0 else if t.iteration=Product && Array.exists ((=)0) lengths then 0 else
     Array.fold_left (fun n length->match t.iteration with Zip->min n length | Product->
       if length<>0 && n>max_int/length then V.fail "E_ARRAY_RANGE" "Kernel iteration count exceeds native bounds.";
@@ -301,12 +318,18 @@ let run_typed ?plane_outputs ?expected_count ~evaluate ~uniform ~seed t ~live =
               if not(Float.is_finite x) then V.fail "E_NONFINITE" "packed produced a nonfinite value.";
               floats.(at+j)<-x
             done in
-            (match inputs.(i)with
-             |E.Float_array data when width=1->load data
-             |E.Vec2_array data when width=2->load data
-             |E.Vec3_array data when width=3->load data
-             |E.Vec4_array data when width=4->load data
-             |value->for j=first to last-1 do
+            (match borrowed.(i),inputs.(i)with
+             |Some columns,_->let column=columns.(component) in
+                 for j=first to last-1 do
+                   let x=column.data.(column.offset+source j i*column.stride) in
+                   if not(Float.is_finite x) then V.fail "E_NONFINITE" "packed produced a nonfinite value.";
+                   floats.(at+j)<-x
+                 done
+             |None,E.Float_array data when width=1->load data
+             |None,E.Vec2_array data when width=2->load data
+             |None,E.Vec3_array data when width=3->load data
+             |None,E.Vec4_array data when width=4->load data
+             |None,value->for j=first to last-1 do
                  floats.(at+j)<-finite(components(V.array_get value (source j i))).(component)
                done)
         | Int_uniform i->if first<last then (match Lazy.force uniforms.(i)with
@@ -474,7 +497,7 @@ let rec run_all ?column_source ?plane_outputs ?expected_count ?state ?elems ?res
           | _ -> false)
       | _ -> false) t.code in
     if integer_program t || guarded_capture then
-      run_typed ?plane_outputs ?expected_count ~seed ~live t
+      run_typed ?column_source ?plane_outputs ?expected_count ~seed ~live t
         ~evaluate:(fun r term->get(evaluate r term))
         ~uniform:(fun value -> get (uniform value))
     else
@@ -493,15 +516,7 @@ let rec run_all ?column_source ?plane_outputs ?expected_count ?state ?elems ?res
           columns) inputs in
     let lengths=Array.mapi (fun i columns->match borrowed.(i) with
       |None->Array.length inputs.(i)/t.widths.(i)
-      |Some _->
-          let length c=if c.stride<=0 || c.offset<0 || c.offset>Array.length c.data then
-              V.fail "E_ARRAY_RANGE" "Borrowed column offset and stride must describe an in-bounds span."
-            else if c.offset=Array.length c.data then 0 else
-              1+(Array.length c.data-1-c.offset)/c.stride in
-          let count=length columns.(0) in
-          if not (Array.for_all (fun c->length c=count) columns) then
-            V.fail "E_ARRAY_COUNT" "Borrowed components need the same element count.";
-          count) columns in
+      |Some _->borrowed_count t.widths.(i) columns) columns in
     let count = if t.iteration = Product && Array.exists ((=) 0) lengths then 0 else
       Array.fold_left (fun a b -> match t.iteration with
       | Zip -> min a b | Product ->
