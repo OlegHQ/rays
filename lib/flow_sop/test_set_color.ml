@@ -3,9 +3,8 @@ open Rdk_test_support
 module N = Sop.Node
 module P = Param
 let checked=function Ok x->x|Error d->fail(Flow.Diagnostic.to_string d)
-let forms=In_channel.with_open_bin "nodes/set_color.pending" In_channel.input_all |>Flow.Syntax.parse |>checked
-let sources=(Flow_sop.Catalog.sources() |>checked)@forms
-let node ~reference input keywords=
+let sources=Flow_sop.Catalog.sources() |>checked
+let node ?observe ~reference input keywords=
   let factory=Sop.Edit_graph.factory ~key:"color_input" ~label:"Color input" ~category:["Test"] ~arity:0(fun _->input) in
   let factories=factory::List.filter(fun f->Sop.Edit_graph.factory_key f<>"set_color")Sop_catalog.Editor.factories in
   let catalog=Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version factories |>checked in
@@ -14,6 +13,7 @@ let node ~reference input keywords=
     |Some ws,ds when not(List.exists(fun(d:Flow.Diagnostic.t)->d.severity=Error)ds)->ws
     |_,ds->fail(String.concat "\n"(List.map Flow.Diagnostic.to_string ds)) in
   let lowered=Flow_sop.Lower.of_checked ~reference ~factories ws |>checked in
+  Option.iter(fun observe->observe lowered)observe;
   if keywords="" then begin
     let factory=List.find(fun factory->Sop.Edit_graph.factory_key factory="set_color")lowered.factories in
     check(Flow_sop.Catalog.descriptor factory=Flow_sop.Catalog.descriptor Sop.Nodes.Set_color.factory)
@@ -38,6 +38,16 @@ let owners=["Point",Attribute.Point,Group.Point;"Vertex",Attribute.Vertex,Group.
   "Primitive",Attribute.Primitive,Group.Primitive]
 let count geo=function Attribute.Point->Geometry.point_count geo|Vertex->Geometry.vertex_count geo
   |Primitive->Geometry.primitive_count geo|Detail->1
+let lines point_count primitive_count=
+  let topology=Topology.create_owned ~point_count
+    ~vertex_points:(Array.init(primitive_count*2)(fun i->i mod point_count))
+    ~primitive_offsets:(Array.init(primitive_count+1)(fun i->i*2))
+    ~primitive_kinds:(Array.make primitive_count Topology.Open_polyline) |>get_string_ok in
+  Geometry.create ~positions:(Geometry.positions(points point_count)) ~topology() |>get_string_ok
+let selection_groups geo=
+  List.fold_left(fun geo(_,owner,group_owner)->List.fold_left(fun geo(name,select)->
+    Geometry.with_group(Group.init ~owner:group_owner ~name(count geo owner)select)geo |>get_string_ok)
+    geo ["selected",(fun i->i mod 2=0);"empty",(fun _->false);"full",(fun _->true)])geo owners
 let fixture ()=
   let topology=Topology.create_owned ~point_count:6 ~vertex_points:[|0;1;2;3;1;4;5|]
     ~primitive_offsets:[|0;4;7|] ~primitive_kinds:[|Topology.Polygon;Open_polyline|] |>get_string_ok in
@@ -67,7 +77,9 @@ let verify ()=
   let base=fixture() in
   let grid=with_session(fun session->cook session 1 97(Lisp_sop.node "(sop/grid :columns 64 :rows 64)")) in
   check(Geometry.point_count grid=4225 && Geometry.primitive_count grid>0)"Set Color grid fixture topology";
+  let large=selection_groups(lines 32769 32769) in
   let fixtures=[base;points 0;points 1;grid;points 32769;with_cd base existing;
+    large;with_cd large existing;with_cd large(fun n->Attribute.Float(Array.make n 0.1));
     with_cd base(fun n->Attribute.Float(Array.make n 0.1));
     with_cd base(fun n->Attribute.Int(Array.make n 17));
     with_cd base(fun n->Attribute.Text(Array.make n "wrong"));
@@ -81,8 +93,9 @@ let verify ()=
       ~x:(Array.make n 1.) ~y:(Array.make n 2.) ~z:(Array.make n 3.) |>get_string_ok))] in
   List.iter(fun geo->let input=Lisp_sop.snapshot geo and before=geometry_bytes geo in
     let cases=List.concat_map(fun owner->List.map(fun group->owner,group)["";" \t\r\n "])["Point";"Vertex";"Primitive";"Detail"]
-      @(if Geometry.point_count geo=6 then List.concat_map(fun(owner,_,_)->
-        List.map(fun group->owner,group)["selected";"ordered";"empty";"full";" é猫\" "])owners else []) in
+      @List.concat_map(fun(owner,_,group_owner)->List.filter_map(fun group->
+        if Option.is_some(Geometry.find_group ~owner:group_owner(String.trim group)geo)
+        then Some(owner,group)else None)["selected";"ordered";"empty";"full";" é猫\" "])owners in
     List.iter(fun(owner,group)->
       let actual=node ~reference:false input(keywords owner group)
       and reference=node ~reference:true input(keywords owner group)
@@ -189,19 +202,217 @@ let projection ()=
   let _,bypassed=Edit.apply_checked ~checker catalog authored(Toggle_bypass{node=actual_card.path})|>checked in
   check((card catalog bypassed).bypass)"Set Color bypass gesture";
   print_endline"Set Color draft: native card/inspector parity and every field direct graph gesture"
-let benchmark ()=
-  let geo=points 1_000_000 in
-  let geo=Geometry.with_group(Group.init ~owner:Group.Point ~name:"selected" 1_000_000(fun i->i mod 2=0))geo |>get_string_ok in
+let raw_cd_audit ()=
+  let cases=ref 0 in
+  List.iter(fun(owner,attribute_owner,_)->List.iter(fun channel->List.iter(fun index->
+    List.iter(fun value->
+      let geo=fixture() in
+      let plane component=Array.init(count geo attribute_owner)(fun i->if component=channel && i=index then value else 0.5) in
+      let data=Packed.Float4.of_owned ~x:(plane 0) ~y:(plane 1) ~z:(plane 2) ~w:(plane 3) |>get_string_ok in
+      let geo=Geometry.with_attribute(Attribute.create_owned ~owner:attribute_owner ~name:"Cd"(Attribute.Float4 data)|>get_string_ok)geo |>get_string_ok in
+      let input=Lisp_sop.snapshot geo in
+      with_session(fun session->
+        let expected=cook session 1 97(native input(changes owner "selected")) in
+        let data=Geometry.find_attribute ~owner:attribute_owner "Cd" expected |>Option.get
+          |>Attribute.get(Attribute.color ~owner:attribute_owner)|>Option.get|>Packed.Float4.Private.view in
+        let actual=(match channel with 0->data.x|1->data.y|2->data.z|_->data.w).(index) in
+        let replacement=List.nth[0.2;0.4;0.6;0.8]channel in
+        check(Int64.bits_of_float actual=Int64.bits_of_float(if index=0 then replacement else value))
+          "Set Color native selected/unselected raw Cd bits";
+        let before=geometry_bytes geo in
+        List.iter(fun reference->let authored=node ~reference input(keywords owner "selected") in
+          List.iter(fun domains->List.iter(fun grain->Sop.Session.clear session;
+            check(geometry_bytes(cook session domains grain authored)=geometry_bytes expected)
+              "Set Color selected/unselected raw Cd native bytes") [1;97;4096]) [1;4;8]) [false;true];
+        check(geometry_bytes geo=before)"Set Color raw Cd mutated input");
+      incr cases)[Int64.float_of_bits 0x7ff8000000000123L;infinity;neg_infinity]) [0;1]) [0;1;2;3])owners;
+  Printf.printf"Set Color raw Cd: %d selected/unselected channel cases native/reference/strict byte exact at domains1/4/8 grains1/97/4096\n%!" !cases
+let trace_grouped ()=
+  let previous= !(Flow_ir.Packed.Private.trace) and seen=Hashtbl.create 16 in
+  let profile=ref None in
+  let rec describe depth name value=
+    let key=Flow.Value.key_of ~residual:Flow.Eval.Private.residual_id value in
+    Printf.printf"capture name=%s type=%s key_bytes=%d key=%s\n%!" name
+      (Flow.Ty.to_string(Flow.Value.ty_of value))(String.length key)
+      (String.sub key 0(min 240(String.length key)));
+    if depth>0 then match value with
+      |Flow.Value.Residual residual->let view=Flow.Eval.Private.residual_view residual in
+        Printf.printf"residual name=%s term=%s\n%!"name(Flow.Lisp.flat view.term.form);
+        List.iter(fun(binding,value)->describe(depth-1)(name^"/"^binding)value)view.bindings
+      |Struct(kind,_,fields)|Source(kind,_,fields)->
+        Printf.printf"descriptor name=%s kind=%s\n%!"name kind;
+        List.iter(fun(field,value)->describe(depth-1)(name^"/"^field)value)fields
+      |Record fields->List.iter(fun(field,value)->describe(depth-1)(name^"/"^field)value)fields
+      |_->() in
+  let trace=function
+    |Error diagnostics->List.iter(fun(d:Flow.Diagnostic.t)->
+      let key=d.code^":"^d.message in if not(Hashtbl.mem seen key)then begin
+        Hashtbl.add seen key();Printf.printf"packed refusal %s\n%!"(Flow.Diagnostic.to_string d)end)diagnostics
+    |Ok packed->let region=Flow_ir.Packed.to_region packed in
+      let key=Flow.Lisp.flat region.term.form in
+      if not(Hashtbl.mem seen key)then begin Hashtbl.add seen key();
+        Printf.printf"packed form=%s type=%s registers=%d outputs=%d sources=[%s]\n%!"
+          key(Flow.Ty.to_string region.term.ty)(Array.length region.code)(Array.length region.outputs)
+          (String.concat";"(Array.to_list(Array.map(fun(_,term)->Flow.Ty.to_string term.Flow.Workspace.ty)region.sources)))end in
+  Flow_ir.Packed.Private.trace:=trace;
+  Fun.protect ~finally:(fun()->Flow_ir.Packed.Private.trace:=previous)(fun()->
+    let geo=with_cd(selection_groups(lines 32769 32769))existing in
+    let measure name f=Gc.full_major();
+      let bytes=Gc.allocated_bytes() and started=Unix.gettimeofday() in
+      let result=f() in
+      Printf.printf"stage=%s vertex_elements=%d seconds=%.6f bytes=%.0f\n%!"
+        name(Geometry.vertex_count geo)(Unix.gettimeofday()-.started)(Gc.allocated_bytes()-.bytes);
+      result in
+    let constructor=Option.get(Flow.Op.find "array/vec4" Flow.Context.value) in
+    let values=measure "typed_constructor"(fun()->constructor.body ~live:(Frame_input.at_time 0.)
+      ~node:(fun _ _->assert false)["count",Flow.Value.Int(Geometry.vertex_count geo);
+        "value",Flow.Value.Vec4(0.2,0.4,0.6,0.8)]) in
+    let selection=measure "group_source"(fun()->Flow_sop.Attribute_kernel.resolve
+      ~geometry:(fun _->Some geo)(Flow.Value.Source("sop/group",Array Int,
+        ["geometry",Deferred(Flow.Ty.geometry,0);"name",Text "selected";"owner",Text "vertex"]))|>checked) in
+    ignore(measure "selected_writer"(fun()->Flow_sop.Attribute_kernel.write_selected
+      ~grain:4096 ~owner:Attribute.Vertex ~kind:"vec4" "Cd" ~values ~selection
+      ~default:(Flow.Value.Vec4(1.,1.,1.,1.))geo|>checked));
+    let authored=node ~observe:(fun(lowered:Flow_sop.Lower.t)->profile:=Some lowered.profile;
+      Array.iter(fun(node:Flow.Eval.node)->
+        Printf.printf"plan node=%d kind=%s\n%!"node.id node.kind;
+        if node.kind="sop/with_attr" then
+          List.iter(fun(name,value)->describe 4 name value)node.args)lowered.plan.nodes)
+      ~reference:false(Lisp_sop.snapshot geo)(keywords"Vertex""selected") in
+    with_session(fun session->ignore(measure "whole_cold_cook"(fun()->cook session 1 4096 authored)));
+    Option.iter(fun profile->List.iter(fun(execution:Flow_ir.execution)->
+      Printf.printf"execution tier=%s seconds=%.6f sites=[%s]\n%!"
+        (match execution.tier with Cpu_kernel->"cpu_kernel"|Interp->"interp"|Gpu->"gpu"
+          |Gpu_readback->"gpu_readback"|Closure->"closure"|Gpu_compile->"gpu_compile"|Cooked->"cooked")
+        execution.seconds(String.concat";"(List.map(fun(_,path,_)->String.concat"/"path)execution.sites)))
+      (Flow_ir.Profile.executions profile))!profile)
+let benchmark_mask ()=
+  let geo=with_cd(selection_groups(lines 1_000_000 500_000))existing in
+  let old=Geometry.find_attribute ~owner:Attribute.Vertex "Cd" geo |>Option.get
+    |>Attribute.storage in
+  let planes=match old with Attribute.Float4 data->let view=Packed.Float4.Private.view data in
+    [|view.x;view.y;view.z;view.w|]|_->assert false in
+  let resolve name=Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->Some geo)
+    (Flow.Value.Source("sop/group",Array Int,["geometry",Deferred(Flow.Ty.geometry,0);
+      "name",Text name;"owner",Text "vertex"])) |>checked in
+  let values=Flow.Op.Private.constant_array_descriptor "array/vec4"
+    ["count",Flow.Value.Int(Geometry.vertex_count geo);"value",Vec4(0.2,0.4,0.6,0.8)] in
+  List.iter(fun group->let selection=resolve group in
+    List.iter(fun domains->
+      List.iter(fun(stage,run)->
+        let samples=List.init 3(fun _->Gc.full_major();
+          let bytes=Gc.allocated_bytes() and start=Unix.gettimeofday() in
+          Rays_math.Parallel.run ~domains run;
+          Unix.gettimeofday()-.start,Gc.allocated_bytes()-.bytes) in
+        let seconds,bytes=List.nth(List.sort(fun(a,_)(b,_)->Float.compare a b)samples)1 in
+        Printf.printf"Color_mask elements=%d group=%s domains=%d stage=%s seconds=%.6f bytes=%.0f\n%!"
+          (Geometry.vertex_count geo)group domains stage seconds bytes)
+        ["group_source",(fun()->ignore(resolve group));
+         "selection_validation",(fun()->match selection with
+           |Flow.Value.Int_array data->let length=Array.length data and i=ref 0 in
+               while !i<length && (let value=data.(!i) in value=0 || value=1) do incr i done;
+               check(!i=length)"selection validation"
+           |_->assert false);
+         "owned_plane_copy",(fun()->ignore(Array.map Array.copy planes));
+         "descriptor_selected_writer",(fun()->ignore(Flow_sop.Attribute_kernel.write_selected
+           ~grain:4096 ~owner:Attribute.Vertex ~kind:"vec4" "Cd" ~values ~selection
+           ~default:(Flow.Value.Vec4(1.,1.,1.,1.))geo |>checked))]) [1;4])
+    ["selected";"full";"empty"]
+let benchmark ?(detail_only=false) ()=
+  let measured=ref 0 and failures=ref [] in
   let median xs=List.sort(fun(a,_)(b,_)->Float.compare a b)xs |>fun xs->List.nth xs 1 in
-  List.iter(fun present->let geo=if present then with_cd geo existing else geo in
+  List.iter(fun(owner,attribute_owner)->
+    let geo=selection_groups(match attribute_owner with
+      |Attribute.Vertex->lines 1_000_000 500_000|Primitive->lines 1_000_000 1_000_000
+      |Point|Detail->points 1_000_000) in
+    List.iter(fun(storage,make)->let geo=match make with None->geo|Some make->
+      Geometry.with_attribute(Attribute.create_owned ~owner:attribute_owner ~name:"Cd"(make(count geo attribute_owner))|>get_string_ok)geo |>get_string_ok in
     let input=Lisp_sop.snapshot geo in
-    List.iter(fun group->let actual=node ~reference:false input(keywords"Point"group)
-      and native=native input(changes"Point"group) in
-      List.iter(fun domains->let sample node=List.init 3(fun _->with_session(fun session->
-        Gc.full_major();let bytes=Gc.allocated_bytes() and start=Unix.gettimeofday() in
-        ignore(cook session domains 4096 node);Unix.gettimeofday()-.start,Gc.allocated_bytes()-.bytes)) |>median in
+    List.iter(fun group->let actual=node ~reference:false input(keywords owner group)
+      and walked=node ~reference:true input(keywords owner group)
+      and native=native input(changes owner group) in
+      List.iter(fun domains->
+        with_session(fun session->let expected=geometry_bytes(cook session domains 4096 native) in
+          check(geometry_bytes(cook session domains 4096 actual)=expected &&
+            geometry_bytes(cook session domains 4096 walked)=expected)
+            "Set Color million-row native/reference bytes");
+        let batch=if attribute_owner=Attribute.Detail then 1000 else 1 in
+        let sample node=List.init 3(fun _->
+          let sessions=Array.init batch(fun _->Sop.Session.create ~max_entries:64
+            ~max_payload_bytes:512_000_000|>get_string_ok) in
+          Fun.protect ~finally:(fun()->Array.iter Sop.Session.close sessions)(fun()->
+            Gc.full_major();let bytes=Gc.allocated_bytes() and start=Unix.gettimeofday() in
+            Array.iter(fun session->ignore(cook session domains 4096 node))sessions;
+            (Unix.gettimeofday()-.start)/.float batch,(Gc.allocated_bytes()-.bytes)/.float batch)) |>median in
         let native_time,native_bytes=sample native and time,bytes=sample actual in
-        Printf.printf"Set Color points=1000000 Cd=%b group=%S domains=%d grain=4096 native=%.6f lisp=%.6f ratio=%.3f native_bytes=%.0f lisp_bytes=%.0f\n%!"
-          present group domains native_time time(time/.native_time)native_bytes bytes) [1;4]) ["";"selected"])
-    [false;true]
-let ()=if Array.exists((=)"--bench")Sys.argv then benchmark() else(verify();edits();errors();projection())
+        incr measured;
+        if time>2.*.native_time then failures:=(owner,storage,group,domains,time/.native_time)::!failures;
+        Printf.printf"Set Color points=1000000 owner=%s elements=%d Cd=%s group=%S domains=%d grain=4096 cold_sessions=%d native=%.17g lisp=%.17g ratio=%.17g gate=%s native_bytes=%.0f lisp_bytes=%.0f\n%!"
+          owner(count geo attribute_owner)storage group domains batch native_time time(time/.native_time)
+          (if time<=2.*.native_time then "pass" else "fail")native_bytes bytes) [1;4])
+      (if attribute_owner=Attribute.Detail then [""]else ["";"selected";"full";"empty"]))
+    ["absent",None;"vec4",Some existing;"wrong_float",Some(fun n->Attribute.Float(Array.make n 0.1))])
+    (if detail_only then ["Detail",Attribute.Detail] else
+      ["Point",Attribute.Point;"Vertex",Attribute.Vertex;"Primitive",Attribute.Primitive;"Detail",Attribute.Detail]);
+  check(!measured=(if detail_only then 6 else 78))"Set Color predetermined performance row count";
+  Printf.printf"set_color_gate rows=%d failures=%d\n%!" !measured(List.length !failures);
+  match List.rev !failures with []->()|(owner,storage,group,domains,ratio)::_->
+    fail(Printf.sprintf"Set Color2x gate: %d failed rows; first owner=%s Cd=%s group=%S domains=%d ratio=%.17g"
+      (List.length !failures)owner storage group domains ratio)
+let benchmark_detail_batch ()=benchmark ~detail_only:true ()
+let trace_detail ()=
+  let geo=Geometry.with_attribute(Attribute.create_owned ~owner:Attribute.Detail ~name:"Cd"
+    (Attribute.Float[|0.1|])|>get_string_ok)(points 3)|>get_string_ok in
+  let actual=node ~reference:false(Lisp_sop.snapshot geo)(keywords "Detail" "") in
+  with_session(fun session->ignore(cook session 1 4096 actual))
+let benchmark_one_row_writer ()=
+  let geo=selection_groups(points 1_000_000) and values=Flow.Value.Vec4_array[|0.2;0.4;0.6;0.8|] in
+  List.iter(fun(storage,make)->let geo=match make with None->geo|Some make->
+    Geometry.with_attribute(Attribute.create_owned ~owner:Attribute.Detail ~name:"Cd"(make 1)|>get_string_ok)geo|>get_string_ok in
+    List.iter(fun domains->
+      let samples=List.init 3(fun _->Rays_math.Parallel.run ~domains(fun()->
+        Gc.full_major();let bytes=Gc.allocated_bytes() and start=Unix.gettimeofday() in
+        for _=1 to 1000 do ignore(Flow_sop.Attribute_kernel.write ~grain:4096
+          ~owner:Attribute.Detail ~kind:"vec4" "Cd" values geo|>checked) done;
+        (Unix.gettimeofday()-.start)/.1000.,(Gc.allocated_bytes()-.bytes)/.1000.))
+        |>List.sort(fun(a,_)(b,_)->Float.compare a b) in
+      let seconds,bytes=List.nth samples 1 in
+      Printf.printf"Color_one_row_writer points=1000000 owner=Detail Cd=%s domains=%d grain=4096 calls=1000 seconds=%.9f bytes=%.0f\n%!"
+        storage domains seconds bytes)[1;4])
+    ["absent",None;"vec4",Some existing;"wrong_float",Some(fun n->Attribute.Float(Array.make n 0.1))]
+let benchmark_domain_defaults ()=
+  List.iter(fun(label,domains)->
+    List.iter(fun(name,operation)->
+      operation();
+      let samples=List.init 3(fun _->
+        Gc.full_major();let bytes=Gc.allocated_bytes() and start=Unix.gettimeofday() in
+        for _=1 to 10000 do operation() done;
+        (Unix.gettimeofday()-.start)/.10000.,(Gc.allocated_bytes()-.bytes)/.10000.)
+        |>List.sort(fun(a,_)(b,_)->Float.compare a b) in
+      let seconds,bytes=List.nth samples 1 in
+      Printf.printf "Domain_default operation=%s domains=%s calls=10000 seconds=%.12f bytes=%.0f\n%!"
+        name label seconds bytes)
+      ["Context.create",(fun()->ignore(Sop.Context.create ?domains() |>get_string_ok));
+       "Parallel.run",(fun()->Rays_math.Parallel.run ?domains(fun()->()))])
+    ["omitted",None;"1",Some 1;"4",Some 4]
+let profile_detail ()=
+  let input=Lisp_sop.snapshot(selection_groups(points 1_000_000)) in
+  let actual=node ~reference:false input(keywords "Detail" "") in
+  Printf.printf "Set Color Detail profile ready pid=%d: absent Cd, 1M points, domains=1 grain=4096, fresh cold Sessions\n%!"
+    (Unix.getpid());
+  let until=Unix.gettimeofday()+.8. and count=ref 0 in
+  while Unix.gettimeofday()<until do
+    with_session(fun session->ignore(cook session 1 4096 actual));
+    incr count
+  done;
+  Printf.printf "Set Color Detail profile: %d fresh-session cooks (Session create/close included in sampled process)\n%!" !count
+let ()=if Array.exists((=)"--bench-domain-defaults")Sys.argv then benchmark_domain_defaults()
+  else if Array.exists((=)"--profile-detail")Sys.argv then profile_detail()
+  else if Array.exists((=)"--bench")Sys.argv then benchmark()
+  else if Array.exists((=)"--bench-detail-batch")Sys.argv then benchmark_detail_batch()
+  else if Array.exists((=)"--trace-detail")Sys.argv then trace_detail()
+  else if Array.exists((=)"--bench-one-row-writer")Sys.argv then benchmark_one_row_writer()
+  else if Array.exists((=)"--bench-mask")Sys.argv then benchmark_mask()
+  else if Array.exists((=)"--audit-raw-cd")Sys.argv then raw_cd_audit()
+  else if Array.exists((=)"--trace-grouped")Sys.argv then trace_grouped()
+  else(verify();raw_cd_audit();edits();errors();projection())

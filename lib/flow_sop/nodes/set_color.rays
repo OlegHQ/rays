@@ -1,0 +1,27 @@
+(defnode sop/set_color :label "Set Color" :category ["Attribute" "Set"]
+  :validate (or (not (equal? owner "Detail")) (text/blank? group))
+  :code "E_PARAM" :message "sop/set_color: a detail color cannot be restricted to a group"
+  [(in0 : geometry)
+   (group : text "" :label "Group")
+   (owner : text "Point" :label "Owner" :choices ["Point" "Vertex" "Primitive" "Detail"])
+   (color_r : float 1.0 :label "Red" :min 0 :max 1 :hard_min 0 :hard_max 1 :vec3 ["color" 0])
+   (color_g : float 1.0 :label "Green" :min 0 :max 1 :hard_min 0 :hard_max 1 :vec3 ["color" 1])
+   (color_b : float 1.0 :label "Blue" :min 0 :max 1 :hard_min 0 :hard_max 1 :vec3 ["color" 2])
+   (alpha : float 1.0 :label "Alpha" :min 0 :max 1 :hard_min 0 :hard_max 1)]
+  (let* [selected_owner (text/lower owner)
+         count (case owner "Point" (sop/count in0 :points)
+                           "Vertex" (sop/count in0 :vertices)
+                           "Primitive" (sop/count in0 :primitives) :else 1)
+         selected_group (text/trim group)
+         value [color_r color_g color_b alpha]
+         colors (array/vec4 count value)]
+    (if (text/blank? group)
+      (sop/with_attr in0 "Cd" (exact colors) :owner selected_owner :type vec4)
+      (let* [found (fold [seen false] [name (sop/group_names in0 "" :owner selected_owner)]
+                     (or seen (equal? name selected_group)))]
+        (if (not found)
+          (error "set_color_failed" "set_color could not produce valid geometry"
+            :cause (str "could not find group " (text/repr selected_group)))
+          (sop/with_attr in0 "Cd" (exact colors) :owner selected_owner :type vec4
+            :selection (sop/group in0 :name selected_group :owner selected_owner)
+            :default [1.0 1.0 1.0 1.0]))))))

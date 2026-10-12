@@ -138,7 +138,6 @@ module Attribute_transfer_all = Sop.Nodes.Attribute_transfer_all [@@sop.register
 module Promote_attributes = Sop.Nodes.Promote_attributes [@@sop.register]
 module Measure = Sop.Nodes.Measure [@@sop.register]
 module Connectivity = Sop.Nodes.Connectivity [@@sop.register]
-module Set_color = Sop.Nodes.Set_color [@@sop.register]
 module Rest_position = Sop.Nodes.Rest_position [@@sop.register]
 module Enumerate = Sop.Nodes.Enumerate [@@sop.register]
 module Attribute_blur = Sop.Nodes.Attribute_blur [@@sop.register]

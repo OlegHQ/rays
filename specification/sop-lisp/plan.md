@@ -636,7 +636,7 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 - [x] B.8 — 100,000 exact random keys and 300,054 native noise samples passed with strict reference/domain/JavaScript parity; evidence in results.md.
 - [x] B.9 — named and CSR segmented reductions match ordered references at one/eight domains, including empty/malformed rows and captured compiled sources.
 - [ ] B.10
-- [ ] B.11
+- [x] B.11 — all six whole setter ports passed native/reference/schema/cache/domain/grain/editor and fixed performance gates; final Set Color evidence in results.md.
 - [x] B.12
 - [ ] B.13
 - [ ] B.14
@@ -682,7 +682,7 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 ### Completed whole-node ports
 
 Each checked node passed the full Verification recipe and has its own source
-commit. Evidence and timings are in `results.md`. The other 115 inventory
+commit. Evidence and timings are in `results.md`. The other 114 inventory
 nodes remain required; grouped phase milestones stay unchecked until every
 node in that group has passed.
 
@@ -691,7 +691,8 @@ node in that group has passed.
 - [x] `set_int` — B.11, all owners.
 - [x] `set_vector` — B.11, all owners.
 - [x] `set_orient` — B.11, native quaternion parity.
-- [x] `set_transform` — B.11, all 16 matrix fields; Set Color remains open.
+- [x] `set_transform` — B.11, all 16 matrix fields.
+- [x] `set_color` — B.11, all owners, group modes and Cd storage; raw exceptional bytes and all 78 timing rows pass.
 - [x] `delete_edge_group` — B.12, exact literal names, metadata and graph/editor parity.
 - [x] `rename_edge_group` — B.12, exact literal names and native error order, metadata and graph/editor parity.
 - [x] `delete_attributes` — B.12, all owners/storages, optional references, native diagnostics, metadata and graph/editor parity.

@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "987ce6c924bf01aea508ee6e0a6f7243")
+  (digest "15828e467da54640d73dc4d51dae5337")
   (kinds
     (kind "sop/box"
       (key "box")
@@ -3140,22 +3140,6 @@
         (field "text_prefix" "Text prefix" (folder "Output") (text) (text "piece") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/set_color"
-      (key "set_color")
-      (aliases)
-      (operation "set_color")
-      (label "Set Color")
-      (category "Attribute" "Set")
-      (slots (slot "in0" required))
-      (fields
-        (field "group" "Group" (folder) (text) (text "") (primary false) (vec3))
-        (field "owner" "Owner" (folder) (choice "Point" "Vertex" "Primitive" "Detail") (choice "Point") (primary false) (vec3))
-        (field "color_r" "Red" (folder) (float (soft 0 1) (hard 0 1)) (float 1) (primary false) (vec3 "color" 0))
-        (field "color_g" "Green" (folder) (float (soft 0 1) (hard 0 1)) (float 1) (primary false) (vec3 "color" 1))
-        (field "color_b" "Blue" (folder) (float (soft 0 1) (hard 0 1)) (float 1) (primary false) (vec3 "color" 2))
-        (field "alpha" "Alpha" (folder) (float (soft 0 1) (hard 0 1)) (float 1) (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/rest_position"
       (key "rest_position")
       (aliases)
@@ -3414,6 +3398,23 @@
       (fields
         (field "from" "From" (folder) (text) (text "edges") (primary false) (vec3))
         (field "into" "To" (folder) (text) (text "renamed") (primary false) (vec3)))
+      (outputs (output "geo" geometry))
+      (body lisp)
+      (calls))
+    (kind "sop/set_color"
+      (key "set_color")
+      (aliases)
+      (operation "set_color")
+      (label "Set Color")
+      (category "Attribute" "Set")
+      (slots (slot "in0" required))
+      (fields
+        (field "group" "Group" (folder) (text) (text "") (primary false) (vec3))
+        (field "owner" "Owner" (folder) (choice "Point" "Vertex" "Primitive" "Detail") (choice "Point") (primary false) (vec3))
+        (field "color_r" "Red" (folder) (float (soft 0 1) (hard 0 1)) (float 1) (primary false) (vec3 "color" 0))
+        (field "color_g" "Green" (folder) (float (soft 0 1) (hard 0 1)) (float 1) (primary false) (vec3 "color" 1))
+        (field "color_b" "Blue" (folder) (float (soft 0 1) (hard 0 1)) (float 1) (primary false) (vec3 "color" 2))
+        (field "alpha" "Alpha" (folder) (float (soft 0 1) (hard 0 1)) (float 1) (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (body lisp)
       (calls))

@@ -124,8 +124,11 @@
 
 (rule
  (alias set_color_draft)
- (deps nodes/set_color.pending)
  (action (run %{exe:test_set_color.exe})))
+
+(alias
+ (name runtest)
+ (deps (alias set_color_draft)))
 
 (test
  (name test_topology_kernel)

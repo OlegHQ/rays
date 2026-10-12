@@ -687,6 +687,83 @@ let swap_attributes () =
     ~extra_geometries:[extra;raw] ~initial_changes:[]
     ~edit:["rules",P.Text_value(Param.String_table.encode[[" POINTS ";"id";"N";" SWAP "]])] ()
 
+let set_color () =
+  let owners=["Point",Attribute.Point,Group.Point;
+    "Vertex",Attribute.Vertex,Group.Vertex;
+    "Primitive",Attribute.Primitive,Group.Primitive] in
+  let count geometry=function Attribute.Point->Geometry.point_count geometry
+    |Vertex->Geometry.vertex_count geometry|Primitive->Geometry.primitive_count geometry
+    |Detail->1 in
+  let base=List.fold_left(fun geometry(_,owner,group_owner)->
+    let n=count geometry owner in
+    let geometry=Geometry.with_group(Group.ordered ~owner:group_owner ~name:"ordered"
+      ~length:n(Array.init((n+1)/2)(fun i->((n-1)/2-i)*2))|>get_string_ok)geometry|>get_string_ok in
+    List.fold_left(fun geometry(name,selected)->Geometry.with_group
+      (Group.init ~owner:group_owner ~name n selected)geometry|>get_string_ok)geometry
+      ["selected",(fun i->i mod 2=0);"full",(fun _->true);"empty",(fun _->false)])
+    (mixed())owners in
+  let with_cd make=List.fold_left(fun geometry owner->Geometry.with_attribute
+    (Attribute.create_owned ~owner ~name:"Cd"(make(count geometry owner))|>get_string_ok)
+    geometry|>get_string_ok)base[Attribute.Point;Vertex;Primitive;Detail] in
+  let array n value=Array.make n value in
+  let storages=[
+    (fun n->Attribute.Float(array n 0.1));
+    (fun n->Attribute.Int(array n max_int));
+    (fun n->Attribute.Text(array n "wrong \t猫😀"));
+    (fun n->Attribute.Float2(Packed.Float2.of_owned ~x:(array n 1.) ~y:(array n(-0.))|>get_string_ok));
+    (fun n->Attribute.Float3(Packed.Float3.of_owned ~x:(array n 1.) ~y:(array n(-0.))
+      ~z:(array n 3.)|>get_string_ok));
+    (fun n->Attribute.Float4(Packed.Float4.of_owned ~x:(array n 0.1) ~y:(array n(-0.))
+      ~z:(array n 0.75) ~w:(array n 0.5)|>get_string_ok));
+    (fun n->Attribute.Float_array(Packed.Float_array.create_owned
+      ~offsets:(Array.init(n+1)Fun.id) ~values:(array n(-0.))|>get_string_ok));
+    (fun n->Attribute.Int_array(Packed.Int_array.create_owned
+      ~offsets:(Array.init(n+1)Fun.id) ~values:(array n max_int)|>get_string_ok))] in
+  (* On each ordinary owner rows 0 and 1 are selected/unselected respectively.
+     Four channels times three exceptional values times these two rows and
+     three owners exercise all 72 raw cases without changing the source body. *)
+  let raw=List.concat_map(fun channel->List.map(fun value->with_cd(fun n->
+    let planes=Array.init 4(fun component->Array.init n(fun i->
+      if component=channel && i<2 then value else if component=1 then -0. else 0.5)) in
+    Attribute.Float4(Packed.Float4.of_owned ~x:planes.(0) ~y:planes.(1)
+      ~z:planes.(2) ~w:planes.(3)|>get_string_ok)))
+    [Int64.float_of_bits 0x7ff8000000000123L;infinity;neg_infinity])[0;1;2;3] in
+  let quote text=Flow.Lisp.flat(Flow.Syntax.make(Str text)) in
+  let cases=("",[])::List.concat_map(fun owner->List.map(fun group->
+    Printf.sprintf ":owner %s :group %s :color [0.2 0.4 0.6] :alpha 0.8"
+      (quote owner)(quote group),
+    ["owner",P.Choice_value owner;"group",P.Text_value group;
+     "color_r",P.Float_value 0.2;"color_g",P.Float_value 0.4;
+     "color_b",P.Float_value 0.6;"alpha",P.Float_value 0.8])
+    (if owner="Detail" then["";" \t\r\n "]
+     else["";" \t\r\n ";"selected";"ordered";"full";"empty";"missingé";" selected "]))
+    ["Point";"Vertex";"Primitive";"Detail"] in
+  metadata_port ~key:"set_color" ~native_factory:Sop.Nodes.Set_color.factory
+    ~cases ~extra_geometries:(base::List.map with_cd storages@raw)
+    ~initial_changes:[] ~edit:["color_r",P.Float_value 0.25] ();
+  (* Header refusal stays a parameter-rebuild comparison, not a cook case:
+     metadata_port already compares malformed physical field types/values,
+     and the retained Color alias checks every valid edit/cache/graph gesture. *)
+  let input=Lisp_sop.snapshot base in
+  let sources=Flow_sop.Catalog.sources()|>flow_ok in
+  let factories=Sop.Nodes.Set_color.factory::List.filter(fun factory->
+    Sop.Edit_graph.factory_key factory<>"set_color")Sop_catalog.Editor.factories in
+  let catalog=Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version factories|>flow_ok in
+  let forms=Flow.Syntax.parse"(workspace color_header (graph g :context sop (sop/set_color (sop/grid))))"|>flow_ok in
+  let checked=match Flow_sop.Catalog.check_workspace ~sources ~ops:Flow_sop.Operators.all catalog forms with
+    |Some checked,ds when not(List.exists(fun(d:Flow.Diagnostic.t)->d.severity=Error)ds)->checked
+    |_,ds->fail(String.concat"\n"(List.map Flow.Diagnostic.to_string ds)) in
+  let lowered=Flow_sop.Lower.of_checked ~factories checked|>flow_ok in
+  let factory=List.find(fun factory->Sop.Edit_graph.factory_key factory="set_color")lowered.factories in
+  let initial=Sop.Edit_graph.instantiate factory[input]|>get_string_ok
+  and oracle=Sop.Edit_graph.instantiate Sop.Nodes.Set_color.factory[input]|>get_string_ok in
+  let rejected node edits=match N.apply_parameters node edits with
+    |Error message->Error message|Ok _->Ok() in
+  List.iter(fun edits->let actual=rejected initial edits and expected=rejected oracle edits in
+    check(actual=expected && Result.is_error actual)"Set Color header rebuild refusal")
+    [["owner",P.Choice_value"Detail";"group",P.Text_value"selected"];
+     ["owner",P.Choice_value"Edge"]]
+
 let ()=if Array.exists ((=) "--bench") Sys.argv then benchmark ()
   else if Array.exists ((=) "--rename-attributes") Sys.argv then rename_attributes ()
-  else (noise_displace ();set_float ();set_int ();set_vector ();set_orient ();set_transform ();delete_edge_group ();rename_edge_group ();delete_attributes ();rename_attributes ();group_delete ();group_rename ();swap_attributes ())
+  else (noise_displace ();set_float ();set_int ();set_vector ();set_orient ();set_transform ();delete_edge_group ();rename_edge_group ();delete_attributes ();rename_attributes ();group_delete ();group_rename ();swap_attributes ();set_color ())

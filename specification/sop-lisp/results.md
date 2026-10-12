@@ -25,7 +25,7 @@ The typed attribute, integer, Text and random foundation was committed as
 
 ## Task evidence
 
-B.11's native declaration census adds B.4 owner counts as a prerequisite:
+The initial B.11 declaration census added B.4 owner counts as a prerequisite:
 constant setters must create missing point, vertex, primitive and detail
 attributes without reading a nonexistent attribute to discover its count.
 Set Transform requires genuine 16-value CSR rows, including empty geometry;
@@ -42,13 +42,14 @@ canonical P and exact edge-name error behavior. The shared table codec is now
 Codec and metadata compilation checks passed (session 24395); this is
 preparation evidence, not a completed metadata or setter port.
 
-B.12 also requires Lisp-authored encoded parameter normalization. Native
+The initial B.12 boundary audit required Lisp-authored encoded parameter normalization. Native
 `Param.Encoded` fields decode edits and re-encode their normalized values for
 the schema view and cook key. A plain Text defnode field with a body decoder
 does not preserve that boundary: equivalent owner/conflict tokens retain
 different keys and malformed edits fail later. The generic declaration needs
 validation and canonicalization at the parameter boundary before these whole
-ports can ship; B.12 remains unchecked.
+ports could ship; B.12 remained unchecked at that checkpoint. Its later whole
+ports and completed encoded boundary are recorded below.
 
 | Task | Current evidence | Remaining gate |
 | --- | --- | --- |
@@ -60,14 +61,16 @@ ports can ship; B.12 remains unchecked.
 | A.5 | `test_lisp_projection.ml` compares the Lisp and independent OCaml cards structurally, full inspector metadata, scalar/vector scrubs, parameter drives, bypass, nested cards and schema-change invalidation. Combined lowering/graph/editor gate exited 0 (session 89094); actual editor fallback-inspector editing and menu search/add passed (session 92998). Dummy-driver `@test/test_workspace_vocabulary @test/test_workspace_shell @test/test_sop_catalog @test/dependency_gate` exited 0 (session 16558), proving helper navigation filtering, completion refresh after declaration addition/removal, schema changes, reload and reducer undo/redo, actual menu interaction, and the combined factory registry. The production source/editor/catalog/dependency refresh exited 0 (session 21186). | Complete: focused card/menu/vocabulary/navigation and production source/editor gates passed. |
 | A.6 | The complete pilot implements both noise modes and explicit/context seed selection. Its context-seed and attribute-delete prerequisites have moved forward from later work. Whole-mode geometry/domain/grain/cache/schema checks passed (checker agent session 60089). Real-parallel 32,769-point fixtures cover both modes at 1/4/8 domains and grains 97/4096, with 4-ULP oracle and byte-exact strict-reference comparisons after clearing the session (session 48781). The quiet one-million-point timing gate passed (session 59246, measurements below). Production now embeds `noise_displace.rays` and removes its native catalog registration while retaining `Sop.Nodes` as the oracle. The reviewed promoted manifest has digest `ef85cfb9f1560f4b8d7456cbcf6af521`; labels/defaults remain unchanged and the entry records a Lisp body. Production pilot/catalog/checker gates exited 0 (checker agent sessions 68500 and 99460); actual source-save/editor/catalog/dependency refresh passed (session 21186). Final pilot and legacy node gates passed after repairing the native factory's default cook-label protocol (session 45407), including relabel/cache/parameter-rebuild checks with ASCII and UTF-8 labels at context seeds 42 and 999. | Complete: full Verification and final shipping/native gates passed; committed with the production port. |
 | A.R | `specification/sop.md` and `lib/sop_catalog/AGENTS.md` now describe the Lisp declaration alternative and runtime ownership. `specification/flow.md` describes `defnode`. Root focused `@API @test/dependency_gate @lib/flow/runtest @lib/flow_sop/runtest @test/test_rays_editor @test/test_workspace_start @runtest-native` exited 0 (session 36479), including actual native rendering/pathtracer gates. Native reruns 41613 and 34796 passed; the latter covers 23 SOP graphs with exact one/four-domain PNG comparisons. Render goldens remain unchanged. `opam exec -- _build/default/tools/check.exe @lib/flow_sop/runtest @lib/sop/test_nodes` exited 0 (session 86865), covering selective attribute/deletion facts and the combined native/Lisp factory census. Shipping runs 15355/25500 exposed narrow catalog injection and the generated-source digest expectation; fixes are recorded below. | Complete: final `check.exe --ship` (session 83244) and `@runtest-native` (session 33890) exited 0; committed with the production port. |
-| B–E | No port evidence recorded here yet. | All language, port and phase review gates. |
+| B–E | Fourteen whole-node ports are complete: the pilot, all six B.11 setters and all seven B.12 metadata nodes. Their individual oracle, performance and production evidence is retained below. | The other 114 whole ports, remaining language capabilities and phase review gates remain required. |
 | B.1 | Owner-aware Float/Vec2/Vec3/Vec4/Int/Text/CSR attributes, literal-selected result types and a cooked Boolean `sop/has_attr` predicate are implemented. Focused `@lib/flow_sop/runtest @tools/lisp/runtest` exited 0 (session 98738): all-owner strict/reference Text round trips, exact UTF-8/empty strings, copied read/write ownership, count/type errors, a strict 4,097-element authored text map, empty geometry/detail counts, exact one/eight-domain bytes, graph type edits through Text, numeric multi-block fixtures, distinct owner/CSR count origins and strict compiled lazy query guards pass. Native-to-JavaScript census including Text attributes passes 15,152 cases across 79 contracts. Shared structured Core resolves genuine host sources without interpreter fallback. No new port is claimed. | Complete: focused, shipping, native and web foundation gates passed; final commands and coverage below. |
 | B.2 | The expanded native-to-JavaScript primitive census passes 15,029 cases across 78 contracts: all ten exact integer operations, five comparisons, typed integer construction/range/build/count/get/slice/concat/sum and the existing floating/host contracts. Signed bounds, values above 2^53, wrapping sums beyond 4,096 elements, invalid shifts, selectors and element types retain exact integer/error checks. The census exposed and repaired shared native range-selector and JavaScript integer builder/error boundaries. | Complete: focused, shipping, native and web foundation gates passed; final commands and coverage below. |
 | B.4 | `test_topology_kernel` compares all four counts and canonical edge endpoints with native `Topology_index` on empty, shared polygon, repeated open curve, closed curve and mixed nonmanifold fixtures. Owned queries, exact integer writes beyond 2^53, cache refresh/invalidation and graph keyword gestures pass. Focused gate 63052 exited 0; combined language gate 42787 also passed. | Complete: stated focused language gate; final Phase B review remains pending. |
 | B.5 | `test_group_kernel` covers all four owners, 0/1 masks, names/pattern escapes, ordered-empty versus unordered groups, invalid order/membership and unsupported ordered edges, immutable ownership, cache and actual live-frame sources. Focused gate 85800 and live state-fold check 68513 passed; combined language gate 42787 passed. | Complete: stated focused language gate; no group-node port is claimed. |
-| B.6 | `test_metadata_kernel` covers all attribute owners and eight storages, canonical P, rename/delete/copy/move/swap conflicts and atomicity, ordered group union, missing edge names, unused groups, strict compiled queries and graph gestures. Native/JavaScript host census passes 16,598 cases across 105 exports. Focused `@lib/flow_sop/runtest @tools/lisp/test/runtest` gate 13786 exited 0, including one/eight domains and grains 97/4096. | Complete: stated language gate; B.12 encoded parameter boundary and seven whole-node ports remain pending. |
+| B.6 | `test_metadata_kernel` covers all attribute owners and eight storages, canonical P, rename/delete/copy/move/swap conflicts and atomicity, ordered group union, missing edge names, unused groups, strict compiled queries and graph gestures. Native/JavaScript host census passes 16,598 cases across 105 exports. Focused `@lib/flow_sop/runtest @tools/lisp/test/runtest` gate 13786 exited 0, including one/eight domains and grains 97/4096. | Complete: stated language gate; the later B.12 encoded boundary and all seven whole-node ports are also complete. |
 | B.7 | Exact scalar math/rounding and matrix/quaternion helper fixtures pass. Explicit native-order FMA fixes cross/matrix cancellation: native compound audit is 0/1,863 above four ULP; 5,001 rows match exact native/reference/strict CPU/JavaScript bytes at one/four/eight domains. The prior 15 unfused discrepancies remain recorded and ordinary arithmetic stays unfused. | Complete: final focused compiler/Web/GPU/catalog/CLI/API/dependency gate 54530 exited 0; unsupported exact binary64 FMA retains typed GPU refusal. |
 | B.9 | `test_reductions` checks exact wrapping Int sums, Float/tuple extrema including signed zeros, ordered CSR sums, zero rows and malformed offsets, and 32,769 rows at one/eight domains without input mutation. Computed scalar/array/record/function captures use compiled Core region arguments; unresolved web region arguments select structured Core compilation. Focused gates 27645 and 42787 passed. | Complete: stated focused language gate; no dependent whole-node port is claimed. |
+| B.11 | All six setters are embedded Lisp declarations with native factories retained as test oracles. Final Set Color passes the whole production oracle, metadata/cache/editor/refusal checks, raw Cd byte checks and all 78 fixed performance rows (maximum 1.7896493105836428×). | Complete: final production/native integration 8526 exited 0; evidence below. |
+| B.12 | All seven metadata nodes are embedded Lisp declarations. Encoded normalization and canonical keys, every owner/storage/mode, exact errors, public cache identity and graph/editor gates passed. Swap is the final whole metadata port; all 212 fixed timing rows pass under the recorded precision protocols. | Complete: final production/native integration 90589 exited 0; individual evidence below. |
 | C.15 | Full native Measure wrapper and kernel audit establishes topology/indexed position access and canonical n-gon triangulation with original-primitive mapping as prerequisites. The whole node moves from B.15 to C.15; no mode, registration or target is removed. | B.1/B.5/B.7/B.9/C.1/C.2 and a generic canonical triangulation + primitive mapping capability, then the complete port Verification gate. No implementation or completion claimed. |
 | G.1–G.2 | Optional tasks; no placement evidence recorded here yet. | Measured placement and CPU/GPU tolerance checks. |
 
@@ -3895,3 +3898,162 @@ Logs: `/tmp/rays-swap-attributes-production-focused.log`,
 
 Swap is whole port13 of128. All seven B.12 metadata ports are complete;
 115 whole ports remain and the remaining phase groups stay required.
+
+## Set Color whole recipe and candidate performance
+
+After shared zero-retention Session optimization `09681744`, the complete
+predetermined 78-row Color matrix was rerun quietly with the unchanged body
+and native oracle. Root strengthened the existing harness to compare exact
+native/reference/strict million-input bytes in every row, print full-precision
+seconds/ratios and an unrounded 2x verdict, retain every failing row until the
+end, and assert the complete row count. The 72 dense Point/Vertex/Primitive
+rows retain batch1; all six one-element Detail rows use the already audited
+batch1000 cold-session precision protocol. One shared runner also supplies
+`--bench-detail-batch`, avoiding a second implementation of the sampling loop.
+
+Focused Color proof in handle88033 passed all owners, group modes and eight
+storage variants; all 72 selected/unselected exceptional channel cases are
+byte-exact with native/reference/strict at domains1/4/8 and grains1/97/4096.
+Each physical field edit preserves native keys and one public miss/warm hit;
+card/inspector rows and every field gesture match the native declaration.
+These candidate checks do not alone qualify the production port.
+
+Quiet handle67437 exited0 with `set_color_gate rows=78 failures=0`.
+Command: `opam exec -- ./test_set_color.exe --bench` from
+`_build/default/lib/flow_sop`. Full log:
+`/tmp/rays-set-color-full78-current-bench.log`.
+Machine: Apple M1 arm64, OCaml5.3 development build, grain4096, domains1/4.
+Each row uses the median of three samples. Input has1,000,000 points; dense
+target owner counts are also1,000,000; Detail has one element. Native and Lisp
+use identical session retention settings. Fresh Sessions and their close plus
+full-major GC are outside the clock; Context creation and whole cold cook are
+inside. Allocations observe the initial domain, so worker allocations at four
+domains may be undercounted. No native denominator or eager domain-default
+behavior was changed. All historical Color failure tables remain retained.
+Maximum unrounded ratio:1.7896493105836428x, Vertex/absent/selected/domain1.
+The following table retains all78 original measurements without rounding:
+
+| Owner | Cd | Group | Domains | Cold sessions | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Point | absent | "" | 1 | 1 | 0.0014779567718505859 | 0.00061893463134765625 | 0.41877722213260204 | 32010056 | 32027824 |
+| Point | absent | "" | 4 | 1 | 0.0011827945709228516 | 0.00075411796569824219 | 0.6375730699455755 | 32010288 | 32028056 |
+| Point | absent | "selected" | 1 | 1 | 0.0038399696350097656 | 0.0066888332366943359 | 1.7418974295293679 | 32010472 | 40026592 |
+| Point | absent | "selected" | 4 | 1 | 0.0037748813629150391 | 0.0049071311950683594 | 1.2999431566980357 | 32010704 | 40069864 |
+| Point | absent | "full" | 1 | 1 | 0.0048820972442626953 | 0.0046479701995849609 | 0.95204375640963035 | 32010464 | 40026464 |
+| Point | absent | "full" | 4 | 1 | 0.0048491954803466797 | 0.0046899318695068359 | 0.96715669403608828 | 32010696 | 40026696 |
+| Point | absent | "empty" | 1 | 1 | 0.0028700828552246094 | 0.0031421184539794922 | 1.0947831865758431 | 32010464 | 40026584 |
+| Point | absent | "empty" | 4 | 1 | 0.0028970241546630859 | 0.0026829242706298828 | 0.92609661756234052 | 32010696 | 40078704 |
+| Point | vec4 | "" | 1 | 1 | 0.0012669563293457031 | 0.00068902969360351562 | 0.5438464433571697 | 32010208 | 32028376 |
+| Point | vec4 | "" | 4 | 1 | 0.0012698173522949219 | 0.00064182281494140625 | 0.50544498685692829 | 32010440 | 32028608 |
+| Point | vec4 | "selected" | 1 | 1 | 0.0043058395385742188 | 0.0071489810943603516 | 1.6602990033222591 | 32010816 | 40026768 |
+| Point | vec4 | "selected" | 4 | 1 | 0.0045440196990966797 | 0.0054101943969726562 | 1.1906186053832835 | 32011048 | 40073008 |
+| Point | vec4 | "full" | 1 | 1 | 0.0055699348449707031 | 0.0046849250793457031 | 0.84110949405016688 | 32010808 | 40026744 |
+| Point | vec4 | "full" | 4 | 1 | 0.0055229663848876953 | 0.00469207763671875 | 0.84955752212389379 | 32011040 | 40026976 |
+| Point | vec4 | "empty" | 1 | 1 | 0.0037569999694824219 | 0.0037841796875 | 1.0072344206117527 | 32010808 | 40026760 |
+| Point | vec4 | "empty" | 4 | 1 | 0.0034861564636230469 | 0.0031881332397460938 | 0.91451237860757761 | 32011040 | 40079232 |
+| Point | wrong_float | "" | 1 | 1 | 0.0011780261993408203 | 0.00076007843017578125 | 0.64521351953045947 | 32010208 | 32028376 |
+| Point | wrong_float | "" | 4 | 1 | 0.001194000244140625 | 0.00067591667175292969 | 0.56609424920127793 | 32010440 | 32028608 |
+| Point | wrong_float | "selected" | 1 | 1 | 0.0038409233093261719 | 0.0066130161285400391 | 1.721725636250776 | 32010640 | 40026776 |
+| Point | wrong_float | "selected" | 4 | 1 | 0.00380706787109375 | 0.0045859813690185547 | 1.2045966933867736 | 32010872 | 40075008 |
+| Point | wrong_float | "full" | 1 | 1 | 0.0049719810485839844 | 0.0046079158782958984 | 0.92677663757552509 | 32010632 | 40026648 |
+| Point | wrong_float | "full" | 4 | 1 | 0.0049178600311279297 | 0.0047020912170410156 | 0.95612546662141851 | 32010864 | 40026880 |
+| Point | wrong_float | "empty" | 1 | 1 | 0.0028669834136962891 | 0.0032219886779785156 | 1.1238253638253639 | 32010632 | 40026768 |
+| Point | wrong_float | "empty" | 4 | 1 | 0.0028529167175292969 | 0.0026481151580810547 | 0.92821327093431394 | 32010864 | 40079936 |
+| Vertex | absent | "" | 1 | 1 | 0.0012729167938232422 | 0.00069212913513183594 | 0.54373478179434354 | 32010064 | 32027824 |
+| Vertex | absent | "" | 4 | 1 | 0.0012719631195068359 | 0.00072193145751953125 | 0.56757263355201504 | 32010296 | 32028056 |
+| Vertex | absent | "selected" | 1 | 1 | 0.0037868022918701172 | 0.0067770481109619141 | 1.7896493105836428 | 32010480 | 40026592 |
+| Vertex | absent | "selected" | 4 | 1 | 0.0037708282470703125 | 0.0046579837799072266 | 1.2352680829539706 | 32010712 | 40074552 |
+| Vertex | absent | "full" | 1 | 1 | 0.0048670768737792969 | 0.0046651363372802734 | 0.9585088664641912 | 32010464 | 40026464 |
+| Vertex | absent | "full" | 4 | 1 | 0.0048830509185791016 | 0.0047209262847900391 | 0.96679849616717939 | 32010696 | 40026696 |
+| Vertex | absent | "empty" | 1 | 1 | 0.0029110908508300781 | 0.0031850337982177734 | 1.094103194103194 | 32010472 | 40026584 |
+| Vertex | absent | "empty" | 4 | 1 | 0.0028889179229736328 | 0.0026609897613525391 | 0.92110258314764382 | 32010704 | 40079504 |
+| Vertex | vec4 | "" | 1 | 1 | 0.0011961460113525391 | 0.00068497657775878906 | 0.57265297986844732 | 32010216 | 32028384 |
+| Vertex | vec4 | "" | 4 | 1 | 0.0012381076812744141 | 0.00070500373840332031 | 0.56942037357981901 | 32010448 | 32028616 |
+| Vertex | vec4 | "selected" | 1 | 1 | 0.0044682025909423828 | 0.0073058605194091797 | 1.6350781708553439 | 32010824 | 40026768 |
+| Vertex | vec4 | "selected" | 4 | 1 | 0.0050609111785888672 | 0.0051181316375732422 | 1.0113063551137702 | 32011056 | 40074864 |
+| Vertex | vec4 | "full" | 1 | 1 | 0.0057649612426757812 | 0.004795074462890625 | 0.83176178660049627 | 32010808 | 40026744 |
+| Vertex | vec4 | "full" | 4 | 1 | 0.0053708553314208984 | 0.0046122074127197266 | 0.85874728104052911 | 32011040 | 40026976 |
+| Vertex | vec4 | "empty" | 1 | 1 | 0.0035848617553710938 | 0.0039548873901367188 | 1.103218941207768 | 32010816 | 40026760 |
+| Vertex | vec4 | "empty" | 4 | 1 | 0.0034818649291992188 | 0.0032930374145507812 | 0.9457682826622843 | 32011048 | 40080232 |
+| Vertex | wrong_float | "" | 1 | 1 | 0.0011889934539794922 | 0.00067114830017089844 | 0.56446761580108284 | 32010224 | 32028392 |
+| Vertex | wrong_float | "" | 4 | 1 | 0.0012798309326171875 | 0.00070905685424804688 | 0.55402384500745161 | 32010456 | 32028624 |
+| Vertex | wrong_float | "selected" | 1 | 1 | 0.0038139820098876953 | 0.0066370964050292969 | 1.7402012877414514 | 32010656 | 40026784 |
+| Vertex | wrong_float | "selected" | 4 | 1 | 0.0040259361267089844 | 0.0050649642944335938 | 1.2580836195665048 | 32010888 | 40070616 |
+| Vertex | wrong_float | "full" | 1 | 1 | 0.0050089359283447266 | 0.0046629905700683594 | 0.93093436146413444 | 32010640 | 40026656 |
+| Vertex | wrong_float | "full" | 4 | 1 | 0.0050680637359619141 | 0.0052599906921386719 | 1.0378698781577833 | 32010872 | 40026888 |
+| Vertex | wrong_float | "empty" | 1 | 1 | 0.0028810501098632812 | 0.0030989646911621094 | 1.075637206223105 | 32010648 | 40026776 |
+| Vertex | wrong_float | "empty" | 4 | 1 | 0.0028810501098632812 | 0.0026690959930419922 | 0.92643164515061238 | 32010880 | 40080232 |
+| Primitive | absent | "" | 1 | 1 | 0.0013341903686523438 | 0.00077509880065917969 | 0.58095067905646891 | 32010088 | 32027856 |
+| Primitive | absent | "" | 4 | 1 | 0.0012190341949462891 | 0.00066709518432617188 | 0.54723254449442593 | 32010320 | 32028088 |
+| Primitive | absent | "selected" | 1 | 1 | 0.00385284423828125 | 0.0066218376159667969 | 1.7186881188118812 | 32010504 | 40026624 |
+| Primitive | absent | "selected" | 4 | 1 | 0.0038270950317382812 | 0.0050318241119384766 | 1.3147894343384001 | 32010736 | 40081032 |
+| Primitive | absent | "full" | 1 | 1 | 0.0048549175262451172 | 0.0046401023864746094 | 0.95575308156951333 | 32010480 | 40026480 |
+| Primitive | absent | "full" | 4 | 1 | 0.0051410198211669922 | 0.0046679973602294922 | 0.90799053934981222 | 32010712 | 40026712 |
+| Primitive | absent | "empty" | 1 | 1 | 0.0028738975524902344 | 0.0031378269195556641 | 1.0918367346938775 | 32010488 | 40026600 |
+| Primitive | absent | "empty" | 4 | 1 | 0.0029211044311523438 | 0.0029780864715576172 | 1.0195070192621614 | 32010720 | 40077992 |
+| Primitive | vec4 | "" | 1 | 1 | 0.0012688636779785156 | 0.00068688392639160156 | 0.54133784291619691 | 32010240 | 32028408 |
+| Primitive | vec4 | "" | 4 | 1 | 0.0012099742889404297 | 0.00067496299743652344 | 0.55783251231527098 | 32010472 | 32028640 |
+| Primitive | vec4 | "selected" | 1 | 1 | 0.0042579174041748047 | 0.0073180198669433594 | 1.7186852567332997 | 32010848 | 40026800 |
+| Primitive | vec4 | "selected" | 4 | 1 | 0.0045011043548583984 | 0.0058329105377197266 | 1.2958843159065629 | 32011080 | 40074040 |
+| Primitive | vec4 | "full" | 1 | 1 | 0.0057260990142822266 | 0.0047810077667236328 | 0.83495024357746594 | 32010824 | 40026760 |
+| Primitive | vec4 | "full" | 4 | 1 | 0.0053548812866210938 | 0.0046639442443847656 | 0.87097061442564561 | 32011056 | 40026992 |
+| Primitive | vec4 | "empty" | 1 | 1 | 0.0034928321838378906 | 0.0038690567016601562 | 1.1077133105802048 | 32010832 | 40026776 |
+| Primitive | vec4 | "empty" | 4 | 1 | 0.0033290386199951172 | 0.0032207965850830078 | 0.96748549738594858 | 32011064 | 40080064 |
+| Primitive | wrong_float | "" | 1 | 1 | 0.0012979507446289062 | 0.00068402290344238281 | 0.5270022042615724 | 32010240 | 32028408 |
+| Primitive | wrong_float | "" | 4 | 1 | 0.0012531280517578125 | 0.00064516067504882812 | 0.51484018264840181 | 32010472 | 32028640 |
+| Primitive | wrong_float | "selected" | 1 | 1 | 0.0037379264831542969 | 0.0066239833831787109 | 1.7721010332950631 | 32010672 | 40026808 |
+| Primitive | wrong_float | "selected" | 4 | 1 | 0.0038900375366210938 | 0.0046379566192626953 | 1.1922652610934052 | 32010904 | 40074344 |
+| Primitive | wrong_float | "full" | 1 | 1 | 0.0049161911010742188 | 0.0047800540924072266 | 0.97230843840931136 | 32010648 | 40026664 |
+| Primitive | wrong_float | "full" | 4 | 1 | 0.0048708915710449219 | 0.0046300888061523438 | 0.95056289769946156 | 32010880 | 40026896 |
+| Primitive | wrong_float | "empty" | 1 | 1 | 0.0029079914093017578 | 0.0030989646911621094 | 1.0656718865294745 | 32010656 | 40026784 |
+| Primitive | wrong_float | "empty" | 4 | 1 | 0.0031220912933349609 | 0.0029959678649902344 | 0.9596029018709431 | 32010888 | 40112216 |
+| Detail | absent | "" | 1 | 1000 | 4.8139095306396482e-06 | 7.6060295104980471e-06 | 1.5800108959437373 | 9968 | 21496 |
+| Detail | absent | "" | 4 | 1000 | 4.765987396240234e-06 | 7.5278282165527348e-06 | 1.5794897448724363 | 10200 | 21728 |
+| Detail | vec4 | "" | 1 | 1000 | 5.6409835815429688e-06 | 9.2539787292480469e-06 | 1.6404902789518174 | 10120 | 22056 |
+| Detail | vec4 | "" | 4 | 1000 | 5.258083343505859e-06 | 7.9450607299804683e-06 | 1.5110184093588466 | 10352 | 22288 |
+| Detail | wrong_float | "" | 1 | 1000 | 4.6348571777343753e-06 | 7.5948238372802735e-06 | 1.6386316872427982 | 10120 | 22056 |
+| Detail | wrong_float | "" | 4 | 1000 | 4.9099922180175784e-06 | 7.9970359802246098e-06 | 1.6287268136350392 | 10352 | 22288 |
+
+### Set Color production integration
+
+The whole recipe is now embedded as `nodes/set_color.rays`; its native catalog
+registration is removed and its original factory remains the independent
+oracle. The retained Color alias is included in regular `runtest`, with one
+shared action rather than a duplicate run. `test_lisp_ports.ml` now contains
+the whole Color function and exercises the mandatory fixtures, all owners,
+group modes, eight Cd storage types, combined raw NaN/Inf channel fixtures,
+physical parameter refusals and Detail-group/Edge header rebuild errors.
+Reference and strict CPU results agree exactly at every required domain/grain;
+the dedicated Color test retains every physical field edit/cache and direct
+card/inspector gesture check.
+
+Focused production handle67069 passed the whole Color oracle and all Color
+language/cache/editor checks; its only failure was the intended manifest diff.
+The reviewed manifest preserves every default, range, label, category, vector
+group and slot, replacing native facts with the Lisp body marker and no calls.
+Promoted digest: `15828e467da54640d73dc4d51dae5337`.
+Fresh native integration handle9249 passed all fourteen whole-port oracles,
+native rendering, editor/workspace, API and dependency checks. Its only failure
+was the observed generated CLI catalog hash. Updating that hash to
+`1bd5f5054049352418b1d9e7f3aaa7a2fd31b0a045e7ade0d751588d1ddc4c9f`
+made the same complete integration request, handle8526, exit0:
+
+```sh
+opam exec -- _build/default/tools/check.exe @runtest-native \
+  @lib/sop/test_lisp_ports @lib/flow_sop/runtest @lib/flow_sop/set_color_draft \
+  @lib/sop_catalog/runtest @tools/lisp/test/runtest \
+  @test/test_workspace_source @test/test_workspace_shell @test/test_sop_catalog \
+  @tools/api_manifest/runtest @test/dependency_gate
+```
+
+Logs: `/tmp/rays-set-color-production-focused.log`,
+`/tmp/rays-set-color-native-integration.log`,
+`/tmp/rays-set-color-native-integration2.log`. The only refreshed golden is
+`tools/lisp/test/ml.t`'s generated catalog hash; rendered PNGs, film digests and
+public API remain unchanged. No semantic, arithmetic or performance threshold
+was relaxed. The preceding fixed 78-row quiet performance proof uses the same
+body and shared runtime as this production declaration.
+
+Set Color is whole port14 of128. All six B.11 setters and seven B.12 metadata
+ports are complete; 114 whole ports remain. The plan has20 of60 milestones
+complete; remaining phase and review gates stay required.
