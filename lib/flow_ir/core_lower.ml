@@ -1264,9 +1264,9 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
           let a=List.map (field statements cache source Flow.Ty.Float (arg "a")) ["x";"y";"z"] in
           let b=List.map (field statements cache source Flow.Ty.Float (arg "b")) ["x";"y";"z"] in
           (match a,b with [x;y;z],[u;v;w] ->
-            vec [calc Sub (calc Mul y w) (calc Mul z v);
-                 calc Sub (calc Mul z u) (calc Mul x w);
-                 calc Sub (calc Mul x v) (calc Mul y u)] | _ -> assert false)
+            let component a b c d=prim Flow.Ty.Float Fma
+              ["a",calc Mul (Known(V.Float(-1.))) c;"b",d;"c",calc Mul a b] in
+            vec [component y w z v;component z u x w;component x v y u] | _ -> assert false)
       | "length" | "normalize" ->
           let components=List.map (field statements cache source Flow.Ty.Float (arg "vector")) ["x";"y";"z"] in
           let squares=List.map (fun v -> calc Mul v v) components in

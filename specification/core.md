@@ -371,8 +371,12 @@ on objects, strings and lists.
 | `and`, `or`, `not` | Operands have already evaluated in authored order. Truth-convert operands as the source operator does and produce Bool. `and`/`or` may short-circuit the second truth conversion, but never the evaluation of the second operand expression. |
 
 The vec3 operators `dot`, `cross` and `normalize` expand to existing numeric
-instructions. Dot accumulates three separately rounded products left to right;
-cross uses the ordered pair of products and subtraction for each component.
+instructions. Dot accumulates three separately rounded products left to right.
+Cross rounds the first product, then subtracts the second product with one
+fused rounding: its x component is `fma(-a.z, b.y, a.y * b.z)`, with the
+corresponding cyclic expressions for y and z. This preserves native FMSUB
+association, including signed zero and cancellation residues. CPU and
+JavaScript use exact binary64 FMA; unsupported GPU targets refuse this form.
 Normalize computes the square root of that dot product, returns positive zero
 components for a zero length, and otherwise multiplies by the reciprocal length.
 The generic language operator rejects nonfinite intermediate lengths. Port
@@ -383,7 +387,9 @@ The shared SOP prelude represents a matrix as the ordered record
 `{:r0 vec4 :r1 vec4 :r2 vec4 :r3 vec4}`: row-major storage, column vectors,
 right-to-left composition. Its matrix and quaternion helpers preserve
 `Rays_math` operation order. Matrix multiplication includes the initial
-positive-zero accumulator. Matrix inverse uses first-tie partial pivoting and
+positive-zero accumulator and four explicit FMA updates in inner-index order.
+These named operations do not contract ordinary language multiplication or
+addition. Matrix inverse uses first-tie partial pivoting and
 the native `1e-12` singular threshold, returning an empty list for singular or
 a singleton matrix list for success. Point transforms leave the raw result
 when the homogeneous divisor's magnitude is at most `1e-12`; direction

@@ -626,7 +626,7 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 - [x] B.4 — owner counts and canonical unique-edge arrays match five native fixtures; focused language/source/graph gates passed.
 - [x] B.5 — all-owner masks, ordered groups and native pattern rules pass round trips, cache and live-source gates.
 - [x] B.6 — native metadata rename/delete/conflict, ordered groups and canonical P pass focused language and JavaScript gates; complete node ports remain B.12.
-- [ ] B.7
+- [x] B.7 — scalar/rounding math, matrix/quaternion helpers and native four-ULP audit pass; explicit native-order cross/matrix FMA matches reference/CPU/JavaScript bits without automatic arithmetic contraction.
 - [x] B.8 — 100,000 exact random keys and 300,054 native noise samples passed with strict reference/domain/JavaScript parity; evidence in results.md.
 - [x] B.9 — named and CSR segmented reductions match ordered references at one/eight domains, including empty/malformed rows and captured compiled sources.
 - [ ] B.10

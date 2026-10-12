@@ -66,6 +66,7 @@ ports can ship; B.12 remains unchecked.
 | B.4 | `test_topology_kernel` compares all four counts and canonical edge endpoints with native `Topology_index` on empty, shared polygon, repeated open curve, closed curve and mixed nonmanifold fixtures. Owned queries, exact integer writes beyond 2^53, cache refresh/invalidation and graph keyword gestures pass. Focused gate 63052 exited 0; combined language gate 42787 also passed. | Complete: stated focused language gate; final Phase B review remains pending. |
 | B.5 | `test_group_kernel` covers all four owners, 0/1 masks, names/pattern escapes, ordered-empty versus unordered groups, invalid order/membership and unsupported ordered edges, immutable ownership, cache and actual live-frame sources. Focused gate 85800 and live state-fold check 68513 passed; combined language gate 42787 passed. | Complete: stated focused language gate; no group-node port is claimed. |
 | B.6 | `test_metadata_kernel` covers all attribute owners and eight storages, canonical P, rename/delete/copy/move/swap conflicts and atomicity, ordered group union, missing edge names, unused groups, strict compiled queries and graph gestures. Native/JavaScript host census passes 16,598 cases across 105 exports. Focused `@lib/flow_sop/runtest @tools/lisp/test/runtest` gate 13786 exited 0, including one/eight domains and grains 97/4096. | Complete: stated language gate; B.12 encoded parameter boundary and seven whole-node ports remain pending. |
+| B.7 | Exact scalar math/rounding and matrix/quaternion helper fixtures pass. Explicit native-order FMA fixes cross/matrix cancellation: native compound audit is 0/1,863 above four ULP; 5,001 rows match exact native/reference/strict CPU/JavaScript bytes at one/four/eight domains. The prior 15 unfused discrepancies remain recorded and ordinary arithmetic stays unfused. | Complete: final focused compiler/Web/GPU/catalog/CLI/API/dependency gate 54530 exited 0; unsupported exact binary64 FMA retains typed GPU refusal. |
 | B.9 | `test_reductions` checks exact wrapping Int sums, Float/tuple extrema including signed zeros, ordered CSR sums, zero rows and malformed offsets, and 32,769 rows at one/eight domains without input mutation. Computed scalar/array/record/function captures use compiled Core region arguments; unresolved web region arguments select structured Core compilation. Focused gates 27645 and 42787 passed. | Complete: stated focused language gate; no dependent whole-node port is claimed. |
 | C.15 | Full native Measure wrapper and kernel audit establishes topology/indexed position access and canonical n-gon triangulation with original-primitive mapping as prerequisites. The whole node moves from B.15 to C.15; no mode, registration or target is removed. | B.1/B.5/B.7/B.9/C.1/C.2 and a generic canonical triangulation + primitive mapping capability, then the complete port Verification gate. No implementation or completion claimed. |
 | G.1–G.2 | Optional tasks; no placement evidence recorded here yet. | Measured placement and CPU/GPU tolerance checks. |
@@ -73,7 +74,8 @@ ports can ship; B.12 remains unchecked.
 The typed integer/text/source Core API snapshot was accepted separately in
 commit `621113d2` after API/dependency gate 37921 exited 0. Foundation
 implementation has passed the final focused compiler, shipping, native and web
-gates. B.1/B.2/B.3/B.8 are complete; B.7 and all remaining ports stay unchecked.
+gates. At that foundation checkpoint B.1/B.2/B.3/B.8 were complete; B.7
+remained unchecked until the later native-order helper correction below.
 
 Final foundation shipping gate 39576 (`check.exe --ship`, log
 `/tmp/rays-sop-lisp-phase-b-foundation-ship-2.log`) exited 0: all builds, tests,
@@ -305,15 +307,15 @@ Focused executable build 20046 and native run 23312 exited 0; all logged
 resident image/canvas channel differences were zero. No error assertion or
 render threshold was relaxed.
 
-B.7's partial math gate 71202 passes the compiler's exact unfused oracle.
-The independent native 4-ULP audit still fails 15 of 1,863 cases: fourteen
+At B.7's partial math gate 71202, the compiler's exact unfused oracle passed.
+The independent native 4-ULP audit failed 15 of 1,863 cases: fourteen
 cross-product cancellations near zero and one matrix product at 16 ULP.
-B.7 remains unchecked until that native parity gate passes.
+B.7 remained unchecked at that gate; the original failures are retained below.
 
 An isolated JavaScript BigInt FMA prototype matches native `Float.fma` bits
 for 10,011 cases. Explicit FMA therefore has a viable web implementation;
 this does not authorize automatic Mul/Add contraction or change the current
-unfused arithmetic policy. B.7's native four-ULP gate remains unresolved.
+unfused arithmetic policy. That prototype alone did not resolve the native gate.
 
 The explicit `(fma a b c)` operator is now implemented in reference evaluation,
 structured Core, strict packed CPU execution and JavaScript regions/primitives.
@@ -324,8 +326,33 @@ zero, subnormals, ties and finite overflow cancellation. Reference and CPU at
 one/eight domains, emitted JavaScript and scalar primitives agree exactly.
 Mixed integer captures and frame inputs, selected/unselected overflow, invalid
 non-finite inputs and the exact binary64 GPU refusal are also checked. Ordinary
-Mul/Add remain separate operations. The native-order cross/matrix helper policy
-is still awaiting the owner's preference; B.7 is not completed by this gate.
+Mul/Add remain separate operations. This primitive gate alone did not complete
+the native-order cross/matrix helpers or B.7.
+
+The subsequent B.7 helper correction uses explicit FMA only at native sites
+verified in Apple M1 / OCaml 5.3.0 object disassembly. Native Vec3 cross rounds
+the first product before FMSUB subtracts the second product; native Mat4
+multiplication performs four FMADD updates from positive zero. The scalar
+`cross` operator, structured Core, strict regions and the two corresponding
+prelude helpers now preserve those associations. Ordinary multiplication,
+addition, dot and the other helpers keep their existing contracts.
+
+Request 89458 passes the native compound audit with 0/1,863 components above
+four ULP (maximum 1 ULP). The independent prior unfused oracle still records
+all 15 discrepancies. Cross and matrix multiplication match native bits;
+5,001-element strict reference/Core/packed/JavaScript proofs cover signed
+zero, cancellation and tiny inputs at one/four/eight domains, plus overflow
+refusal. The existing exact scalar math and rounding checks remain green.
+Flow/Web/tools gate 50769 and corrected GPU gate 23690 passed. Exact binary64
+FMA makes Cross a typed GPU refusal; existing shader and rendered goldens
+remain unchanged. There is no automatic Mul/Add contraction or API change.
+Final request 54530 exited 0 for `@lib/flow/runtest @lib/flow_ir/runtest
+@lib/flow_sop/runtest @lib/flow_web/runtest @lib/flow_gpu/runtest
+@lib/sop_catalog/runtest @tools/lisp/test/runtest @tools/api_manifest/runtest
+@test/dependency_gate`. The preceding request 44967 failed only on the
+concurrent, reviewed Transform catalog/CLI expectations; accepting those
+node-owned expectations made the aggregate green. No arithmetic tolerance or
+render baseline was relaxed. B.7's stated language gate is complete.
 
 The focused `@lib/flow_sop/runtest` gate 2800 exited 0, including B.1's numeric
 attribute regressions and B.8's random/noise foundations. B.8 checks 100,000
@@ -759,7 +786,7 @@ cells round-trip exactly.
 Quaternion normalization now guards native norm overflow with quarter-scaled
 squares, retaining the native identity threshold and signed-zero overflow
 outputs without producing a nonfinite intermediate. The existing native math
-audit remains 15/1,863 components above four ULP; B.7 remains unchecked. The
+audit at this stage remained 15/1,863 components above four ULP. The
 helper threshold check passes 60 finite native cases, checking overflow and
 signed zeros exactly and other finite components at the approved four-ULP
 oracle tolerance. Strict packed/reference comparison on 32,769 elements is

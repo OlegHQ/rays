@@ -106,6 +106,7 @@ let () =
     | reason :: _, Error emitted -> assert (reason.code = emitted.code && reason.message = emitted.message)
     | _ -> assert false)
     ["(sum [x (array/range 1024)] (+ x t))";
+     "(map (fn [x] (cross [x t 0] [1 2 3])) (array/range 1024))";
      "(for [x (array/range 1024)] :skip [0] (+ x t))"];
   let pixels = List.assoc "vec4" (Test_program.vector_fixtures 1) in
   let image = Test_program.ok (Flow_web.Wgsl.kernel ~image:true pixels) in

@@ -471,8 +471,9 @@ let all = frame @ arrays @ reductions @ draw @ host @ integers @ images @ [
     {run=fun ~name ~node:_ args ->
       let x,y,z = comps (List.assoc "a" args) and a,b,c = comps (List.assoc "b" args) in
       let product x y = Sys.opaque_identity (x *. y) in
-      Vec3 (fin name (product y c -. product z b),
-        fin name (product z a -. product x c), fin name (product x b -. product y a))};
+      Vec3 (fin name (Float.fma (-.z) b (product y c)),
+        fin name (Float.fma (-.x) c (product z a)),
+        fin name (Float.fma (-.y) a (product x b)))};
   mk ~category:"Vector" "normalize" ["vector",Ty.Vec3] (fun _ -> Ty.Vec3)
     {run=fun ~name ~node:_ args ->
       let x,y,z = comps (List.assoc "vector" args) in

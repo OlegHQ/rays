@@ -63,8 +63,8 @@ let call name args = evaluate ("(" ^ name ^ " " ^ String.concat " " args ^ ")")
 let check_v3 label expected actual = check_vector ~ulps:4 label [expected.V.x;expected.y;expected.z] actual
 let qvalue q = vector [q.Q.x;q.y;q.z;q.w]
 let check_q label q result = check_vector ~ulps:4 label [q.Q.x;q.y;q.z;q.w] result
-(* The Lisp contract rounds each product separately. Preserve the native FMA
-   comparison as an audit, including cancellation that exceeds four ULP. *)
+(* Keep the prior separately rounded arithmetic as an independent audit.
+   Ordinary language multiplication/addition retain that contract. *)
 let product a b = Sys.opaque_identity (a *. b)
 let cross_unfused a b = V.create
   (product a.V.y b.V.z -. product a.z b.y)
@@ -79,6 +79,8 @@ let mul_unfused a b =
       !result in
     component 0,component 1,component 2,component 3 in
   M.of_rows (row 0) (row 1) (row 2) (row 3)
+let unfused_differences=ref 0
+let audit_unfused expected actual=if distance expected actual>4. then incr unfused_differences
 let () =
   List.iter (fun (name, operation, samples) ->
     List.iter (fun x -> check_vector name [operation x] (call name [number x])) samples)
@@ -115,10 +117,15 @@ let () =
     check_vector ~ulps:4 "dot intrinsic" [V.dot a b] (call "dot" [triple a;triple b]);
     List.iter (fun name ->
       let result = call name [triple a;triple b] in
-      let native = V.cross a b and expected = cross_unfused a b in
+      let native = V.cross a b and unfused = cross_unfused a b in
+      List.iter2 audit_unfused [native.x;native.y;native.z] [unfused.x;unfused.y;unfused.z];
       List.iter2 (observe_native name) [native.x;native.y;native.z] (floats result);
-      check_vector name [expected.x;expected.y;expected.z] result)
-      ["vec3_cross";"cross"]) vectors) vectors;
+      check_vector name [native.x;native.y;native.z] result)
+      ["vec3_cross";"cross"];
+    let unfused=cross_unfused a b in
+    check_vector "ordinary unfused products" [unfused.x;unfused.y;unfused.z]
+      (evaluate(Printf.sprintf "(let* [a %s b %s] [(- (* a.y b.z) (* a.z b.y)) (- (* a.z b.x) (* a.x b.z)) (- (* a.x b.y) (* a.y b.x))])"
+        (triple a)(triple b)))) vectors) vectors;
   List.iter (fun angle ->
     List.iter (fun (name,native) -> check_matrix name (native angle) (call name [number angle]))
       ["mat4_rotation_x",M.rotation_x;"mat4_rotation_y",M.rotation_y;"mat4_rotation_z",M.rotation_z];
@@ -137,13 +144,16 @@ let () =
     check_matrix "transpose" (M.transpose m) (call "mat4_transpose" [matrix m]);
     List.iter (fun right ->
       let result = call "mat4_mul" [matrix m;matrix right] in
+      let native=M.mul m right and unfused=mul_unfused m right in
+      for i=0 to 3 do for j=0 to 3 do audit_unfused
+        (M.get native ~row:i ~column:j)(M.get unfused ~row:i ~column:j) done done;
       (match result with E.Record fields ->
         List.iteri (fun i name -> List.iteri (fun j actual ->
           observe_native (Printf.sprintf "multiply[%d,%d]" i j)
             (M.get (M.mul m right) ~row:i ~column:j) actual) (floats (List.assoc name fields)))
           ["r0";"r1";"r2";"r3"]
        | _ -> failwith "matrix record expected");
-      check_matrix ~ulps:0 "multiply unfused" (mul_unfused m right) result)
+      check_matrix ~ulps:0 "multiply native FMA" native result)
       [M.identity;asymmetric];
     List.iter (fun v ->
       check_v3 "point" (M.transform_point m v) (call "mat4_transform_point" [matrix m;triple v]);
@@ -179,7 +189,9 @@ let () =
   Printf.printf "Native compound audit: %d/%d components exceed four ULP; max %.17g ULP, max absolute error %.17g\n"
     (List.length !native_differences) !native_samples !native_max_ulps !native_max_error;
   List.iter print_endline (List.rev !native_differences);
-  print_endline "Lisp scalar math/rounding and unfused cross/multiply match exact bytes; remaining compound helpers meet native four ULP"
+  if !native_differences<>[] then failwith "Native compound four-ULP gate failed";
+  Printf.printf "Prior unfused cross/multiply audit retained: %d components exceed native four ULP\n" !unfused_differences;
+  print_endline "Scalar math/rounding and explicit-FMA cross/multiply match exact bytes; ordinary products remain unfused; compound native four-ULP gate passes"
 
 let () =
   let neighbors value = [Float.next_after value neg_infinity;value;

@@ -437,8 +437,9 @@ let lower ?(fusion = true) ?(dynamic = false)
                   let x=product 0 and y=product 1 and z=product 2 in
                   let xy=emit(Binary(Add,x,y))in [|emit(Binary(Add,xy,z))|]
               | Flow.Op.Cross, [a;b] when Array.length a.registers=3 && Array.length b.registers=3 ->
+                  let negative=emit(Const(-1.)) in
                   let component i j=let p=emit(Binary(Mul,a.registers.(i),b.registers.(j)))
-                    and q=emit(Binary(Mul,a.registers.(j),b.registers.(i)))in emit(Binary(Sub,p,q))in
+                    and q=emit(Binary(Mul,negative,a.registers.(j)))in emit(Fma(q,b.registers.(i),p))in
                   [|component 1 2;component 2 0;component 0 1|]
               | Flow.Op.Normalize, [a] when Array.length a.registers=3 ->
                   let square i=emit(Binary(Mul,a.registers.(i),a.registers.(i)))in

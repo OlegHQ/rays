@@ -26,7 +26,7 @@
  (name test_math_kernel)
  (modules test_math_kernel)
  (deps nodes/prelude.rays)
- (libraries flow_sop flow flow_ir frame_input rays_math))
+ (libraries flow_sop flow flow_ir flow_web frame_input rays_math))
 
 (test
  (name test_lisp_node)

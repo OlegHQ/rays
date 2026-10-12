@@ -24,9 +24,10 @@
   (defn vec3_dot :context value [(left : vec3) (right : vec3)]
     (+ (+ (* left.x right.x) (* left.y right.y)) (* left.z right.z)))
   (defn vec3_cross :context value [(left : vec3) (right : vec3)]
-    [(- (* left.y right.z) (* left.z right.y))
-     (- (* left.z right.x) (* left.x right.z))
-     (- (* left.x right.y) (* left.y right.x))])
+    ; Native FMSUB subtracts the second product from the rounded first product.
+    [(fma (* -1.0 left.z) right.y (* left.y right.z))
+     (fma (* -1.0 left.x) right.z (* left.z right.x))
+     (fma (* -1.0 left.y) right.x (* left.x right.y))])
   ; Vec3.normalize uses a zero-only test and reciprocal multiplication.
   (defn vec3_normalize :context value [(value : vec3)]
     (let* [size (sqrt (vec3_dot value value))
@@ -105,8 +106,14 @@
      :r3 [matrix.r0.w matrix.r1.w matrix.r2.w matrix.r3.w]})
   ; Mat4.mul starts each accumulator at positive zero, unlike a dot product.
   (defn mat4_mul_row :context value [(row : vec4) (right : {:r0 vec4 :r1 vec4 :r2 vec4 :r3 vec4})]
-    (+ (+ (+ (+ [0.0 0.0 0.0 0.0] (* row.x right.r0))
-             (* row.y right.r1)) (* row.z right.r2)) (* row.w right.r3)))
+    [(fma row.w right.r3.x (fma row.z right.r2.x
+       (fma row.y right.r1.x (fma row.x right.r0.x 0.0))))
+     (fma row.w right.r3.y (fma row.z right.r2.y
+       (fma row.y right.r1.y (fma row.x right.r0.y 0.0))))
+     (fma row.w right.r3.z (fma row.z right.r2.z
+       (fma row.y right.r1.z (fma row.x right.r0.z 0.0))))
+     (fma row.w right.r3.w (fma row.z right.r2.w
+       (fma row.y right.r1.w (fma row.x right.r0.w 0.0))))])
   (defn mat4_mul :context value
     [(left : {:r0 vec4 :r1 vec4 :r2 vec4 :r3 vec4})
      (right : {:r0 vec4 :r1 vec4 :r2 vec4 :r3 vec4})]

@@ -120,7 +120,7 @@ let () =
     let integer = Flow.Packed_ops.integer name <> None || Flow.Packed_ops.comparison name <> None || name = "rand/at" in
     let array = if integer then "(array/range 1024 :type \"int\")" else "(array/range 1024)" in
     let program = Test_program.compile ("(map (fn [x] " ^ body ^ ") " ^ array ^ ")") in
-    if integer || name = "hypot" || name = "fma" then
+    if integer || name = "hypot" || name = "fma" || name = "cross" then
       (match Flow_gpu.Emit.kernel program with
        | Error d -> assert (d.code = "E_GPU_FORM")
        | Ok _ -> failwith ("Metal must refuse " ^ name))

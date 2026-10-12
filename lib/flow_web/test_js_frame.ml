@@ -257,7 +257,9 @@ let () =
       |Error actual,Error expected->assert(actual.code=expected.code && actual.message=expected.message)
       |_->assert false) case.lives;
     case)
-    ["(text/blank? (if (> t 0.) \" \\t\\r\\n\" \" \"))";
+    ["(cross [t 0.3 -0.7] [t 0.3 -0.7])";
+     "(let* [a [t 0.3 -0.7]] [(- (* a.y a.z) (* a.z a.y)) (- (* a.z a.x) (* a.x a.z)) (- (* a.x a.y) (* a.y a.x))])";
+     "(text/blank? (if (> t 0.) \" \\t\\r\\n\" \" \"))";
      "(if (> t 0.) (error (str \"E_TEXT_\" (int t)) (str \"exact é日本😀 \" t) :cause (str \"reason 日本😀 \" t)) \"safe\")";
      "(text/trim (if (> t 0.) \" \\tABéÉ日本😀\\r\\n\" \"　A \"))";
      "(text/lower (if (> t 0.) \"ABéÉΣİ日本😀\" \"Z\000A\"))";
