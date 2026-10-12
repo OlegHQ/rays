@@ -377,6 +377,11 @@ let write_storage ~owned_fields ~grain ~owner ~kind name values geometry =
       if count>Sys.max_floatarray_length/width || Array.length values/width<>count || Array.length values mod width<>0 then
         error "E_ATTR_COUNT" (Printf.sprintf "%s needs %d %s values; got %d."
           name count (owner_name owner) (Array.length values / width))
+      else if count=1 then
+        let i=ref 0 in
+        while !i<width && Float.is_finite values.(!i) do incr i done;
+        if !i<width then error "E_NONFINITE" "Attribute values must be finite."
+        else install ~owner ~kind name(Array.init width(fun c->[|values.(c)|]))geometry
       else
         let finite = Atomic.make true in
         let planes=Array.init width (fun _->Array.make count 0.) in

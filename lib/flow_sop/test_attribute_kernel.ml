@@ -781,7 +781,7 @@ let () =
         if count>0 then begin
           let bad = Array.copy values in bad.(Array.length bad-1)<-Float.infinity;
           failure bad "E_NONFINITE"
-        end)) [1;8]) [0;32769];
+        end)) [1;8]) [0;1;32769];
   print_endline "XYZ attribute writes: empty/multi-block, signed-zero/domain bytes, ownership and error immutability pass"
 
 let () =

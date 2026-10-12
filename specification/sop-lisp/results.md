@@ -2955,3 +2955,33 @@ but both 2× gates still fail. All prior tables and the contaminated sampled
 profile caveat are preserved in [text-gather-validation.md](text-gather-validation.md).
 Logs: `/tmp/rays-text-one-lane-guard-focused.log` and
 `/tmp/rays-text-one-lane-guard-bench.log`. No whole port is qualified.
+
+### One-row numeric writes validate and install owned planes directly
+
+The actual Detail route is a dense Vec4 array through `Attribute_kernel.write_storage`, not the constant-source consumer. The shared writer now handles count one after the existing shape/count check: it checks each finite component in order, then installs fresh one-element planes. This avoids the atomic finite flag and parallel range dispatch. Counts zero and greater than one retain their existing paths; all ordinary and source-descriptor callers share this boundary. No API or node-specific callback was added.
+
+Combined focused request **92200** exited 0 for FlowSOP, Set Color, IR, Web, Point Jitter, Group Delete and Rename Attributes. The regular XYZ writer regression now includes count one alongside zero and 32769, exact signed-zero/domain bytes, fresh ownership and count/nonfinite failure immutability. Existing all-owner/type/raw-72 and strict/reference/UI/cache proofs passed unchanged. Files: `lib/flow_sop/attribute_kernel.ml` and `lib/flow_sop/test_attribute_kernel.ml`; the draft harness remains outside this shared change.
+
+Quiet actual-writer request **52627** exited 0, following the unchanged six-config baseline **87949**. Both use the same million-point input, dense one-row Vec4, domains one/four, grain 4096, median three samples of 1000 direct writes and GC outside timing. These measurements include owned-plane creation and geometry installation, with no Sessions. Allocations decrease in every row; five wall times decrease and the absent/one-domain outlier increases. Both outcomes are retained. Logs: `/tmp/rays-color-one-row-writer-before.log`, `/tmp/rays-color-one-row-writer-after.log`.
+
+| Cd | Domains | Before seconds/write | After seconds/write | Before bytes | After bytes |
+|---|---:|---:|---:|---:|---:|
+| absent | 1 | 0.000000171 | 0.000000274 | 824 | 696 |
+| absent | 4 | 0.000000309 | 0.000000099 | 1480 | 696 |
+| vec4 | 1 | 0.000000165 | 0.000000103 | 824 | 696 |
+| vec4 | 4 | 0.000000299 | 0.000000102 | 1480 | 696 |
+| wrong_float | 1 | 0.000000166 | 0.000000096 | 824 | 696 |
+| wrong_float | 4 | 0.000000298 | 0.000000097 | 1480 | 696 |
+
+Quiet whole-cook request **1647** exited 0 on the freshly linked 92200 snapshot. This retains every predetermined Detail configuration, median three samples of 1000 fresh cold Sessions, million-point input, grain 4096 and native exact-byte preflight. Session create/close and GC remain outside the clock; context and cook remain inside. Four-domain allocations cover the initial domain. Earlier six-row failures and the unused constant-consumer cut remain above. Log: `/tmp/rays-set-color-one-row-detail-bench.log`.
+
+| Cd | Domains | Native seconds | Lisp seconds | Printed ratio | Native bytes | Lisp bytes |
+|---|---:|---:|---:|---:|---:|---:|
+| absent | 1 | 0.000004535 | 0.000009071 | 2.000× | 9960 | 26128 |
+| absent | 4 | 0.000004806 | 0.000009258 | 1.926× | 10192 | 26360 |
+| vec4 | 1 | 0.000004579 | 0.000008513 | 1.859× | 10120 | 26864 |
+| vec4 | 4 | 0.000004639 | 0.000009025 | 1.945× | 10352 | 27096 |
+| wrong_float | 1 | 0.000004869 | 0.000009137 | 1.877× | 10120 | 26864 |
+| wrong_float | 4 | 0.000005256 | 0.000010315 | 1.962× | 10352 | 27096 |
+
+The absent/one-domain ratio prints 2.000 at three-decimal precision. The logged nine-decimal times cannot distinguish a pass from a slight failure at the exact 2× boundary; there is no unrounded predicate in this harness. This row is unresolved and is not accepted as passing. Set Color stays unregistered and B.11 incomplete. The isolated writer occupies only a small part of the whole cold cook, so the next diagnostic should profile that whole route rather than repeat unchanged timings or add another unmeasured writer branch.
