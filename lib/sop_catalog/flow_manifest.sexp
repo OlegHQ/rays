@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "4c26f747931acd48875866372f08160d")
+  (digest "cb0e51368d5173e1c0f3fc8aa36368f7")
   (kinds
     (kind "sop/box"
       (key "box")
@@ -3223,19 +3223,6 @@
         (field "text_prefix" "Text prefix" (folder "Output") (text) (text "piece") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/set_int"
-      (key "set_int")
-      (aliases)
-      (operation "set_int")
-      (label "Set Integer")
-      (category "Attribute" "Set")
-      (slots (slot "in0" required))
-      (fields
-        (field "owner" "Owner" (folder) (choice "Point" "Vertex" "Primitive" "Detail") (choice "Point") (primary false) (vec3))
-        (field "name" "Attribute" (folder) (text) (text "value") (primary false) (vec3))
-        (field "value" "Value" (folder) (int (soft -100 100) (hard nil nil)) (int 0) (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/set_vector"
       (key "set_vector")
       (aliases)
@@ -3501,6 +3488,20 @@
         (field "owner" "Owner" (folder) (choice "Point" "Vertex" "Primitive" "Detail") (choice "Point") (primary false) (vec3))
         (field "name" "Attribute" (folder) (text) (text "value") (primary false) (vec3))
         (field "value" "Value" (folder) (float (soft -10 10) (hard nil nil)) (float 0) (primary false) (vec3)))
+      (outputs (output "geo" geometry))
+      (body lisp)
+      (calls))
+    (kind "sop/set_int"
+      (key "set_int")
+      (aliases)
+      (operation "set_int")
+      (label "Set Integer")
+      (category "Attribute" "Set")
+      (slots (slot "in0" required))
+      (fields
+        (field "owner" "Owner" (folder) (choice "Point" "Vertex" "Primitive" "Detail") (choice "Point") (primary false) (vec3))
+        (field "name" "Attribute" (folder) (text) (text "value") (primary false) (vec3))
+        (field "value" "Value" (folder) (int (soft -100 100) (hard nil nil)) (int 0) (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (body lisp)
       (calls))

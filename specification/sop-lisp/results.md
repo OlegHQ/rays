@@ -534,8 +534,8 @@ OCAML
 
 ## Port and measurement ledger
 
-Two of the 128 target nodes have completed their full Verification gates:
-`noise_displace` and `set_float`. The remaining 126 ports are still required.
+Three of the 128 target nodes have completed their full Verification gates:
+`noise_displace`, `set_float` and `set_int`. The remaining 125 ports are still required.
 Do not fill timings, run counts, render parity or domain equality from estimates.
 Each accepted row must cite the command and fixture, machine/domain setup,
 OCaml/Lisp times and validation result before its plan checkbox is marked.
@@ -544,6 +544,7 @@ OCaml/Lisp times and validation result before its plan checkbox is marked.
 | --- | --- | --- | --- | --- | --- | --- |
 | `noise_displace` pilot | Final pilot and legacy node gate 45407 passed at 4 ULP | 48781 passed, byte-exact strict reference | Schema/cache/refusals and real source/save/editor gates passed; label regression 45407 passed | Final 33890 passed; render fixtures unchanged; ml.t catalog digest expectation refreshed | Both modes 1/4 domains below 2×; table below | Complete in this port commit; A.6 and A.R passed |
 | `set_float` | Authoritative all-owner native oracle 19797 and production 24674 passed | Exact strict/reference at 1/4/8 domains, grains 1/97/4096 | Factory/schema, every physical edit, public cache misses/hits, graph/inspector and refusals passed | 62289 passed; render fixtures unchanged; ml.t catalog digest only | Native/Lisp 0.000527/0.000175 s at 1 domain, 0.000212/0.000229 s at 4 domains; production table below | Complete in its separate port commit; B.11 remains incomplete |
+| `set_int` | Authoritative all-owner native oracle 96226 and production 22235 passed | Exact strict/reference at 1/4/8 domains, grains 1/97/4096 | Factory/schema, every physical edit, public cache misses/hits, graph/inspector and refusals passed | 26730 passed; render fixtures unchanged; ml.t catalog digest only | Two fixed production repeats passed at both domain counts; initial 4-domain 2.559× outlier and all repeat timings retained below | Complete in its separate port commit; B.11 remains incomplete |
 
 ## Moves and blocked modes
 
@@ -1137,3 +1138,54 @@ exact bytes and physical unchanged-plane identity, without mutating inputs.
 A computed identity map over those planes still raises `E_NONFINITE`.
 Post-promotion API and tools request 48150 exited 0. This storage proof is
 not a whole-node speed gate; Rest Position remains unregistered.
+
+### Set Integer production port
+
+Candidate request 96226 exited 0 for the authoritative `set_int` oracle,
+loading the pending declarations explicitly while the global catalog kept
+its native registration. The production `nodes/set_int.rays` addition and
+native registration removal then happened together. Only this declaration
+was removed from `setters.pending`; the shared prelude macro is reused.
+`Sop.Nodes.Set_int.factory` remains the independent oracle.
+
+The complete setter recipe covers all owners, defaults/non-defaults,
+`max_int` without float coercion, the required geometry fixtures, full
+factory/runtime schema, native geometry, exact strict/reference and 1/4/8
+domain bytes at grains 1/97/4096, every physical field's edit/cache identity,
+validation and wrong geometry types. Production request 22235 exited 0 for
+SOP, FlowSOP, catalog, dependency and tools Lisp tests. Native request 26730
+exited 0, including 23 SOP graphs with exact one/four-domain PNG parity.
+
+Manifest digest `cb0e51368d5173e1c0f3fc8aa36368f7` changes only the Set
+Integer entry's declaration order, native facts and Lisp body/calls markers;
+all original metadata remains equal. Only `tools/lisp/test/ml.t`'s generated
+catalog digest changed to
+`0b65809322047391b13964d6dd8bc827013759862ee30f3b954ceb1863952adc`.
+No render fixture changed. The first quiet production timing (17423, exit 0)
+failed the four-domain 2× gate. Command: `opam exec -- ./test_setters.exe
+--bench-int` from `_build/default/lib/flow_sop`; log
+`/tmp/rays-set-int-production-bench.log`. Apple M1, OCaml 5.3.0, 1,000,000
+points, grain 4096, median of three fresh-session cold cooks:
+
+| Domains | Native seconds | Lisp seconds | Ratio | Native allocated bytes | Lisp allocated bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.001521 | 0.000467 | 0.307 | 8,007,008 | 8,025,536 |
+| 4 | 0.000773 | 0.001978 | 2.559 | 8,007,240 | 8,025,768 |
+
+Four-domain allocation records the initial domain only. Earlier draft ratios
+were 1.058/1.055. Two additional quiet invocations were predetermined to
+investigate the variation, retaining every result and making no code change:
+
+| Trial | Domains | Native seconds | Lisp seconds | Ratio |
+| --- | ---: | ---: | ---: | ---: |
+| repeat 1 | 1 | 0.001051 | 0.000507 | 0.482 |
+| repeat 1 | 4 | 0.000420 | 0.000432 | 1.028 |
+| repeat 2 | 1 | 0.000692 | 0.000399 | 0.577 |
+| repeat 2 | 4 | 0.000469 | 0.000407 | 0.868 |
+
+Logs: `/tmp/rays-set-int-production-repeat-1.log` and
+`/tmp/rays-set-int-production-repeat-2.log`. Each trial uses the same median
+of three cold cooks and identical allocations as the first run. Both fresh
+repeat gates pass the unchanged 2× limit; the initial four-domain timing
+spike remains recorded. Set Integer is complete in its separate source commit; B.11 remains
+unchecked.

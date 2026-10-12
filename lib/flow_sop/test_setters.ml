@@ -252,5 +252,6 @@ let projection ()=
 
 let ()=if Array.exists((=)"--bench-transform")Sys.argv then benchmark ~only:"set_transform"()
   else if Array.exists((=)"--bench-float")Sys.argv then benchmark ~only:"set_float"()
+  else if Array.exists((=)"--bench-int")Sys.argv then benchmark ~only:"set_int"()
   else if Array.exists((=)"--bench")Sys.argv then benchmark()
   else if Array.exists((=)"--trace")Sys.argv then trace_transform() else (verify();parameter_edits();invalid_parameters();projection())

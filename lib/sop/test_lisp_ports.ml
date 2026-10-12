@@ -378,5 +378,7 @@ let setter_port key =
 
 let set_float ()=setter_port "set_float"
 
+let set_int ()=setter_port "set_int"
+
 let ()=if Array.exists ((=) "--bench") Sys.argv then benchmark ()
-  else (noise_displace ();set_float ())
+  else (noise_displace ();set_float ();set_int ())

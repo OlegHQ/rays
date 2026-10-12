@@ -145,7 +145,6 @@ module Attribute_transfer_all = Sop.Nodes.Attribute_transfer_all [@@sop.register
 module Promote_attributes = Sop.Nodes.Promote_attributes [@@sop.register]
 module Measure = Sop.Nodes.Measure [@@sop.register]
 module Connectivity = Sop.Nodes.Connectivity [@@sop.register]
-module Set_int = Sop.Nodes.Set_int [@@sop.register]
 module Set_vector = Sop.Nodes.Set_vector [@@sop.register]
 module Set_orient = Sop.Nodes.Set_orient [@@sop.register]
 module Set_transform = Sop.Nodes.Set_transform [@@sop.register]
