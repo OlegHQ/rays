@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "536ca411537394f6c4f3977b72a028d0")
+  (digest "2019eaed71f6bbcded648a345705a3bc")
   (kinds
     (kind "sop/box"
       (key "box")
@@ -2692,21 +2692,6 @@
       (fields)
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/delete_attributes"
-      (key "delete_attributes")
-      (aliases)
-      (operation "attribute_delete_pattern")
-      (label "Delete Attributes")
-      (category "Attribute" "Manage")
-      (slots (slot "input" required) (slot "reference" optional))
-      (fields
-        (field "delete_non_selected" "Delete non-selected" (folder) (bool) (bool false) (primary false) (vec3))
-        (field "point_pattern" "Point attributes" (folder "Patterns") (text) (text "") (primary false) (vec3))
-        (field "vertex_pattern" "Vertex attributes" (folder "Patterns") (text) (text "") (primary false) (vec3))
-        (field "primitive_pattern" "Primitive attributes" (folder "Patterns") (text) (text "") (primary false) (vec3))
-        (field "detail_pattern" "Detail attributes" (folder "Patterns") (text) (text "") (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/rename_attributes"
       (key "rename_attributes")
       (aliases)
@@ -3382,6 +3367,22 @@
         (field "cap_group" "Cap group" (folder) (text) (text "caps") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
+    (kind "sop/delete_attributes"
+      (key "delete_attributes")
+      (aliases)
+      (operation "attribute_delete_pattern")
+      (label "Delete Attributes")
+      (category "Attribute" "Manage")
+      (slots (slot "input" required) (slot "reference" optional))
+      (fields
+        (field "delete_non_selected" "Delete non-selected" (folder) (bool) (bool false) (primary false) (vec3))
+        (field "point_pattern" "Point attributes" (folder "Patterns") (text) (text "") (primary false) (vec3))
+        (field "vertex_pattern" "Vertex attributes" (folder "Patterns") (text) (text "") (primary false) (vec3))
+        (field "primitive_pattern" "Primitive attributes" (folder "Patterns") (text) (text "") (primary false) (vec3))
+        (field "detail_pattern" "Detail attributes" (folder "Patterns") (text) (text "") (primary false) (vec3)))
+      (outputs (output "geo" geometry))
+      (body lisp)
+      (calls))
     (kind "sop/delete_edge_group"
       (key "delete_edge_group")
       (aliases)

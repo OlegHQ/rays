@@ -393,25 +393,29 @@ let set_orient ()=setter_port "set_orient"
 
 let set_transform ()=setter_port "set_transform"
 
-let edge_port ~key ~native_factory ~cases ~initial_changes ~edit =
+let metadata_port ?reference_input ~key ~native_factory ~cases ~initial_changes ~edit () =
   let sources=Flow_sop.Catalog.sources()|>flow_ok in
   let authored ~reference input keywords =
     let factory=Sop.Edit_graph.factory ~key:"edge_port_input" ~label:"Edge input" ~category:["Test"] ~arity:0(fun _->input) in
-    let factories=factory::List.filter(fun factory->Sop.Edit_graph.factory_key factory<>key)Sop_catalog.Editor.factories in
+    let reference_factory=Option.map(fun node->Sop.Edit_graph.factory ~key:"metadata_reference"
+      ~label:"Reference" ~category:["Test"] ~arity:0(fun _->node))reference_input in
+    let factories=factory::Option.to_list reference_factory@
+      List.filter(fun factory->Sop.Edit_graph.factory_key factory<>key)Sop_catalog.Editor.factories in
     let catalog=Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version factories|>flow_ok in
     let forms=Flow.Syntax.parse(Printf.sprintf
       "(workspace edge_port (graph g :context sop (sop/%s (sop/edge_port_input) %s)))"
-      key keywords)|>flow_ok in
+      key ((if Option.is_none reference_input then "" else ":reference (sop/metadata_reference) ")^keywords))|>flow_ok in
     let checked=match Flow_sop.Catalog.check_workspace ~sources ~ops:Flow_sop.Operators.all catalog forms with
       |Some workspace,ds when not(List.exists(fun(d:Flow.Diagnostic.t)->d.severity=Error)ds)->workspace
       |_,ds->fail(String.concat "\n"(List.map Flow.Diagnostic.to_string ds)) in
     let lowered=Flow_sop.Lower.of_checked ~reference ~factories checked|>flow_ok in
     let actual=List.find(fun factory->Sop.Edit_graph.factory_key factory=key)lowered.factories in
-    check(Flow_sop.Catalog.descriptor actual=Flow_sop.Catalog.descriptor native_factory)"Delete Edge Group descriptor";
+    check(Flow_sop.Catalog.descriptor actual=Flow_sop.Catalog.descriptor native_factory)(key^": descriptor");
     let graph=List.hd lowered.graphs in
     Sop.Edit_graph.compile_node graph.network.geometry ~node_id:(Option.get graph.root)|>get_string_ok in
   let native input changes =
-    let initial=Sop.Edit_graph.instantiate native_factory[input]|>get_string_ok in
+    let initial=(if key="delete_attributes" then Sop.Edit_graph.instantiate_optional native_factory
+      [Some input;reference_input] else Sop.Edit_graph.instantiate native_factory[input])|>get_string_ok in
     fst(N.apply_parameters initial changes|>get_string_ok) in
   let cooked_bytes session context node=match Sop.Session.cook session ~context node with
     |Error d->Error(d.Sop.Diagnostic.code,d.message,d.cause)
@@ -423,14 +427,14 @@ let edge_port ~key ~native_factory ~cases ~initial_changes ~edit =
       and walked=authored ~reference:true input keywords and expected=native input changes in
       check(N.operation actual=N.operation expected && N.version actual=N.version expected
         && N.label actual=N.label expected && N.parameter_fields actual=N.parameter_fields expected
-        && N.parameter_key actual=N.parameter_key expected)"Delete Edge Group identity/schema/key";
+        && N.parameter_key actual=N.parameter_key expected)(key^": identity/schema/key");
       let s=session() in Fun.protect ~finally:(fun()->Sop.Session.close s)(fun()->
         let baseline=cooked_bytes s(context 1 97)expected in
         List.iter(fun domains->List.iter(fun grain->Sop.Session.clear s;
           check(baseline=cooked_bytes s(context domains grain)actual)(key^": native/domain/grain bytes/errors");
           check(baseline=cooked_bytes s(context domains grain)walked)(key^": reference bytes/errors"))
           [1;97;4096])[1;4;8]))cases;
-    check(before=geometry_bytes geometry)"Delete Edge Group input mutation")
+    check(before=geometry_bytes geometry)(key^": input mutation"))
     [payload(points 0);payload(points 1);grid;mixed();payload(points 32769)];
   let input=Lisp_sop.snapshot(mixed()) in
   let initial=fst(N.apply_parameters(authored ~reference:false input "")initial_changes|>get_string_ok)
@@ -439,44 +443,78 @@ let edge_port ~key ~native_factory ~cases ~initial_changes ~edit =
   let s=session() in Fun.protect ~finally:(fun()->Sop.Session.close s)(fun()->
     ignore(cooked s(context 1 97)initial);let before=Sop.Session.stats s in
     let result=cooked s(context 1 97)edited in let after=Sop.Session.stats s in
-    check(after.misses=before.misses+1)"Delete Edge Group edit public miss";
+    check(after.misses=before.misses+1)(key^": edit public miss");
     check(geometry_bytes result=geometry_bytes(cooked s(context 1 97)(native input(initial_changes@edit))))(key^": edited native");
     let before=Sop.Session.stats s in ignore(cooked s(context 1 97)edited);let after=Sop.Session.stats s in
-    check(after.misses=before.misses && after.hits>before.hits)"Delete Edge Group warm hit";
+    check(after.misses=before.misses && after.hits>before.hits)(key^": warm hit");
     List.iter(fun label->let relabeled=N.relabel label edited in
-      check(N.id relabeled=N.id edited && N.parameter_key relabeled=N.parameter_key edited)"Delete Edge Group relabel identity";
-      check(geometry_bytes(cooked s(context 1 97)relabeled)=geometry_bytes result)"Delete Edge Group relabel cook")
+      check(N.id relabeled=N.id edited && N.parameter_key relabeled=N.parameter_key edited)(key^": relabel identity");
+      check(geometry_bytes(cooked s(context 1 97)relabeled)=geometry_bytes result)(key^": relabel cook"))
       ["Edge selection";"é猫"]);
   List.iter(fun(field:P.field_view)->List.iter(fun value->let apply node=match N.apply_parameters node[field.name,value]with
     |Error message->Error message|Ok(node,_)->Ok(N.parameter_key node,N.parameter_fields node) in
-    check(apply initial=apply oracle)"Delete Edge Group wrong parameter diagnostic")
+    check(apply initial=apply oracle)(key^": wrong parameter diagnostic"))
     [P.Bool_value true;P.Int_value 17;P.Float_value nan;P.Float_value infinity])(N.parameter_fields initial);
   let catalog=Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version
     (native_factory::List.filter(fun factory->Sop.Edit_graph.factory_key factory<>key)Sop_catalog.Editor.factories)|>flow_ok in
-  List.iter(fun input->let forms=Flow.Syntax.parse(Printf.sprintf
-      "(workspace invalid_edges (graph g :context sop (sop/%s %s)))"key input)|>flow_ok in
-    let errors(workspace,ds)=check(workspace=None)"Delete Edge Group wrong input accepted";
+  let wrong_inputs=["17","";"(image/noise :width 1 :height 1)",""]@
+    (if key="delete_attributes" then ["(sop/grid)"," :reference 17";
+      "(sop/grid)"," :reference (image/noise :width 1 :height 1)"] else []) in
+  List.iter(fun(input,keywords)->let forms=Flow.Syntax.parse(Printf.sprintf
+      "(workspace invalid_edges (graph g :context sop (sop/%s %s%s)))"key input keywords)|>flow_ok in
+    let errors(workspace,ds)=check(workspace=None)(key^": wrong input accepted");
       List.filter_map(fun(d:Flow.Diagnostic.t)->if d.severity=Error then Some d.code else None)ds in
     let expected=errors(Flow.Workspace.check ~ops:Flow_sop.Operators.all catalog forms)
     and actual=errors(Flow_sop.Catalog.check_workspace ~sources ~ops:Flow_sop.Operators.all catalog forms) in
-    check(actual=expected && List.mem "E_TYPE" actual)"Delete Edge Group wrong input code")
-    ["17";"(image/noise :width 1 :height 1)"];
+    check(actual=expected && List.mem "E_TYPE" actual)(key^": wrong input code"))
+    wrong_inputs;
   print_endline(key^": whole native/reference/schema/cache/domain/grain/refusal recipe passed")
 
 let delete_edge_group () =
   let cases=("",[])::List.map(fun name->
     ":name "^Flow.Lisp.flat(Flow.Syntax.make(Str name)),["name",P.Text_value name])
     ["edges";"selected_edges";"absent";"";" selected_edges ";"*"] in
-  edge_port ~key:"delete_edge_group" ~native_factory:Sop.Nodes.Delete_edge_group.factory ~cases
-    ~initial_changes:[] ~edit:["name",P.Text_value "selected_edges"]
+  metadata_port ~key:"delete_edge_group" ~native_factory:Sop.Nodes.Delete_edge_group.factory ~cases
+    ~initial_changes:[] ~edit:["name",P.Text_value "selected_edges"] ()
 
 let rename_edge_group () =
   let cases=("",[])::List.concat_map(fun from->List.map(fun into->
     Printf.sprintf ":from %s :into %s" (Flow.Lisp.flat(Flow.Syntax.make(Str from)))
       (Flow.Lisp.flat(Flow.Syntax.make(Str into))),["from",P.Text_value from;"into",P.Text_value into])
     ["renamed";"selected_edges";"";" ";"é猫\""])["edges";"selected_edges";"absent";" selected_edges ";"*"] in
-  edge_port ~key:"rename_edge_group" ~native_factory:Sop.Nodes.Rename_edge_group.factory ~cases
-    ~initial_changes:["from",P.Text_value "selected_edges"] ~edit:["into",P.Text_value "é猫\""]
+  metadata_port ~key:"rename_edge_group" ~native_factory:Sop.Nodes.Rename_edge_group.factory ~cases
+    ~initial_changes:["from",P.Text_value "selected_edges"] ~edit:["into",P.Text_value "é猫\""] ()
+
+let delete_attributes () =
+  let patterns=["point_pattern";"vertex_pattern";"primitive_pattern";"detail_pattern"] in
+  let cases=("",[])::(":delete_non_selected true",["delete_non_selected",P.Bool_value true])::
+    List.concat_map(fun field->List.concat_map(fun pattern->List.map(fun inverse->
+      Printf.sprintf ":%s %s :delete_non_selected %b" field
+        (Flow.Lisp.flat(Flow.Syntax.make(Str pattern)))inverse,
+      [field,P.Text_value pattern;"delete_non_selected",P.Bool_value inverse])[false;true])
+      ["*";"N id";"* ^id";"P";"absent";" \t ";"é猫";"id\\ ";"\\ id"] )patterns in
+  List.iter(fun reference_input->metadata_port ?reference_input ~key:"delete_attributes"
+    ~native_factory:Sop.Nodes.Delete_attributes.factory ~cases ~initial_changes:[]
+    ~edit:["point_pattern",P.Text_value "N"] ())
+    [None;Some(Lisp_sop.snapshot(points 0));Some(Lisp_sop.snapshot(mixed()))];
+  let input=Lisp_sop.snapshot(mixed()) in
+  let sources=Flow_sop.Catalog.sources()|>flow_ok in
+  let factory=Sop.Edit_graph.factory ~key:"delete_input" ~label:"Input" ~category:["Test"] ~arity:0(fun _->input) in
+  let factories=factory::List.filter(fun factory->Sop.Edit_graph.factory_key factory<>"delete_attributes")Sop_catalog.Editor.factories in
+  let catalog=Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version factories|>flow_ok in
+  let forms=Flow.Syntax.parse "(workspace delete (graph g :context sop (sop/delete_attributes (sop/delete_input))))"|>flow_ok in
+  let checked=match Flow_sop.Catalog.check_workspace ~sources ~ops:Flow_sop.Operators.all catalog forms with
+    |Some workspace,ds when not(List.exists(fun(d:Flow.Diagnostic.t)->d.severity=Error)ds)->workspace
+    |_,ds->fail(String.concat "\n"(List.map Flow.Diagnostic.to_string ds)) in
+  let lowered=Flow_sop.Lower.of_checked ~factories checked|>flow_ok in
+  let initial=List.find(fun factory->Sop.Edit_graph.factory_key factory="delete_attributes")lowered.factories
+    |>fun factory->Sop.Edit_graph.instantiate_optional factory[Some input;None]|>get_string_ok in
+  let oracle=Sop.Edit_graph.instantiate_optional Sop.Nodes.Delete_attributes.factory[Some input;None]|>get_string_ok in
+  List.iter(fun field->List.iter(fun pattern->
+    let apply node=match N.apply_parameters node[field,P.Text_value pattern]with
+      |Error message->Error message|Ok _->Ok() in
+    check(apply initial=apply oracle && Result.is_error(apply initial))"Delete Attributes invalid glob rebuild diagnostic")
+    ["[";"\\";"[z-a]"])patterns
 
 let ()=if Array.exists ((=) "--bench") Sys.argv then benchmark ()
-  else (noise_displace ();set_float ();set_int ();set_vector ();set_orient ();set_transform ();delete_edge_group ();rename_edge_group ())
+  else (noise_displace ();set_float ();set_int ();set_vector ();set_orient ();set_transform ();delete_edge_group ();rename_edge_group ();delete_attributes ())

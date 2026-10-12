@@ -2718,3 +2718,143 @@ rows and all prior failed tables are retained; no case was removed or
 repeated to obtain a passing result. Set Color remains unregistered and
 B.11 incomplete. The shared all-one constant optimization has semantic
 proof independently of this remaining whole-node speed failure.
+
+### Delete Attributes production port
+
+The authoritative declaration is `nodes/delete_attributes.rays`, with the
+unchanged five physical fields, required `input` and optional `reference`,
+labels, folders, defaults, operation and canonical parameter key. Its native
+catalog registration is removed; `Sop.Nodes.Delete_attributes.factory` and
+`Rdk.Attribute_ops.delete` remain the independent oracle. The old declaration
+and its private validator are removed from `metadata.pending`.
+
+The complete native wrapper and `attribute_lifecycle.ml` were reread. Native
+validation compiles the original patterns before construction, while its cook
+trims them. An escaped trailing space can therefore pass header validation
+and become a dangling escape at cook time. The authored helper uses existing
+Text trim/glob and structured error primitives to preserve that native
+`invalid_attribute` code, message, cause and owner order; it adds no hidden
+node callback. Initial expanded draft requests 50266/66929 exposed this
+error-timing mismatch, 21242 passed the native cases but exposed a reserved
+binding in the graph fixture, and corrected focused request 97097 exited 0.
+All earlier failures remain in `/tmp/rays-delete-attributes-draft-focused*.log`.
+
+The authoritative production function in `lib/sop/test_lisp_ports.ml` uses
+only embedded `Catalog.sources()`, testing defaults/inverse, nine patterns
+for each owner at both inverse settings, absent/empty/mixed references,
+empty/single/4,225-grid/mixed-polygon-and-polyline/32,769-point inputs,
+domains 1/4/8 and grains 1/97/4096. It compares exact geometry bytes and
+complete native code/message/cause, strict reference, schema/descriptor,
+operation/version/label/key, every physical-field rebuild, one public miss
+and a subsequent warm hit, relabel identity, unchanged input bytes,
+malformed glob rebuilds and wrong required/optional input types.
+`test_metadata_ports.ml` additionally covers all four owners and eight
+storage kinds, canonical P, name order and raw signed zeros, native
+card/inspector structure, every field gesture, actual optional reference
+connection/disconnection and bypass cooks. Its production graph check runs
+in the ordinary `@lib/flow_sop/runtest` alias.
+
+Production focused request 9711 ran `@lib/sop/runtest
+@lib/flow_sop/runtest @lib/flow_sop/metadata_ports_draft
+@lib/sop_catalog/runtest @test/dependency_gate`. All semantic/oracle checks
+passed, including all three reference states and 465,782 native nonfinite
+field instances; the aggregate exited 1 solely for the intended catalog
+snapshot diff. The reviewed manifest moves the unchanged entry to the Lisp
+section and adds `(body lisp)`/`(calls)`; its digest is
+`2019eaed71f6bbcded648a345705a3bc`. Serialized promotion request 70512
+accepted that exact manifest. CLI request 43021 reported the actual combined
+digest `fff5af1db80ed5b3d2387e8da5fd5d0e1d2b2084e999cdadb24a55d1a18f5ba5`;
+only that digest is updated in `tools/lisp/test/ml.t`.
+
+Initial integration request 62750 ran the complete native suite successfully
+but the aggregate exited 1 because an optional-slot catalog fixture still
+searched the native-only factory list. All sibling slot-factory checks now
+reuse its existing combined native/Lisp inventory. Focused catalog request
+53925 exited 0, then final request 93275 exited 0 for `@runtest-native
+@lib/sop/test_lisp_ports @lib/flow_sop/runtest @lib/sop_catalog/runtest
+@tools/lisp/test/runtest @test/test_workspace_source @test/test_workspace_shell
+@test/test_sop_catalog @tools/api_manifest/runtest @test/dependency_gate`.
+This includes all native renderer/pathtracer/2D checks, 23 SOP graphs with
+exact one/four-domain PNGs, the production source/save/menu/editor checks,
+the actual CLI baseline, API and dependency gates. No render fixture was
+refreshed. Logs: `/tmp/rays-delete-attributes-native-integration.log`,
+`/tmp/rays-delete-attributes-catalog-followup.log` and
+`/tmp/rays-delete-attributes-native-integration2.log`. This is the ninth
+complete port; B.12 remains open for its other four metadata kinds.
+
+Quiet timing request 30117 exited 0. The same authored body was measured
+before moving its declaration into production. Apple M1, OCaml 5.3.0 dev,
+1,000,000 grid points, 998,001 quads, eight attributes across the four owners,
+grain 4096 and domains 1/4 were used. Ten fixed pattern/inverse modes times
+absent/empty/selected references give all 60 configurations. Every row first
+passes exact native geometry-byte preflight. A sample performs 1,000 fresh
+cold Sessions; the median of three samples is reported. Session creation,
+close and major GC are outside the clock; context creation and cook are
+inside. No warm-session hits are reused, and the fixed batch amortizes timer
+resolution for these metadata-only microsecond cooks. All other agents held
+builds and timings for the complete window. Initial-domain allocations are
+reported; four-domain totals are not claimed. All 60 unchanged 2× gates
+pass, maximum 1.621×. Log: `/tmp/rays-delete-attributes-bench-first.log`.
+
+| Mode | Reference | Domains | Cold Sessions/sample | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| default | absent | 1 | 1000 | 0.000005 | 0.000007 | 1.496 | 10736 | 19120 |
+| default | absent | 4 | 1000 | 0.000005 | 0.000008 | 1.552 | 10968 | 19352 |
+| inverse | absent | 1 | 1000 | 0.000005 | 0.000006 | 1.350 | 10688 | 18208 |
+| inverse | absent | 4 | 1000 | 0.000005 | 0.000008 | 1.621 | 10920 | 18440 |
+| point_pattern | absent | 1 | 1000 | 0.000007 | 0.000008 | 1.179 | 13216 | 21536 |
+| point_pattern | absent | 4 | 1000 | 0.000008 | 0.000008 | 0.912 | 13448 | 21768 |
+| vertex_pattern | absent | 1 | 1000 | 0.000006 | 0.000008 | 1.318 | 13216 | 21536 |
+| vertex_pattern | absent | 4 | 1000 | 0.000006 | 0.000009 | 1.425 | 13448 | 21768 |
+| primitive_pattern | absent | 1 | 1000 | 0.000006 | 0.000008 | 1.414 | 13216 | 21536 |
+| primitive_pattern | absent | 4 | 1000 | 0.000006 | 0.000009 | 1.581 | 13448 | 21768 |
+| detail_pattern | absent | 1 | 1000 | 0.000005 | 0.000008 | 1.424 | 13216 | 21536 |
+| detail_pattern | absent | 4 | 1000 | 0.000006 | 0.000008 | 1.418 | 13448 | 21768 |
+| all | absent | 1 | 1000 | 0.000006 | 0.000008 | 1.214 | 12904 | 20448 |
+| all | absent | 4 | 1000 | 0.000006 | 0.000008 | 1.287 | 13136 | 20680 |
+| all_inverse | absent | 1 | 1000 | 0.000007 | 0.000008 | 1.297 | 12952 | 21360 |
+| all_inverse | absent | 4 | 1000 | 0.000006 | 0.000009 | 1.452 | 13184 | 21592 |
+| exclusions | absent | 1 | 1000 | 0.000007 | 0.000010 | 1.383 | 16528 | 24584 |
+| exclusions | absent | 4 | 1000 | 0.000007 | 0.000008 | 1.184 | 16760 | 24816 |
+| exclusions_inverse | absent | 1 | 1000 | 0.000006 | 0.000009 | 1.383 | 16728 | 24880 |
+| exclusions_inverse | absent | 4 | 1000 | 0.000007 | 0.000009 | 1.326 | 16960 | 25112 |
+| default | empty | 1 | 1000 | 0.000006 | 0.000008 | 1.436 | 13336 | 23808 |
+| default | empty | 4 | 1000 | 0.000007 | 0.000010 | 1.363 | 17888 | 28360 |
+| inverse | empty | 1 | 1000 | 0.000006 | 0.000008 | 1.495 | 13288 | 22896 |
+| inverse | empty | 4 | 1000 | 0.000007 | 0.000009 | 1.382 | 17840 | 27448 |
+| point_pattern | empty | 1 | 1000 | 0.000007 | 0.000009 | 1.393 | 15816 | 26224 |
+| point_pattern | empty | 4 | 1000 | 0.000008 | 0.000010 | 1.355 | 20368 | 30776 |
+| vertex_pattern | empty | 1 | 1000 | 0.000007 | 0.000010 | 1.433 | 15816 | 26224 |
+| vertex_pattern | empty | 4 | 1000 | 0.000008 | 0.000010 | 1.296 | 20368 | 30776 |
+| primitive_pattern | empty | 1 | 1000 | 0.000009 | 0.000011 | 1.222 | 15816 | 26224 |
+| primitive_pattern | empty | 4 | 1000 | 0.000008 | 0.000012 | 1.463 | 20368 | 30776 |
+| detail_pattern | empty | 1 | 1000 | 0.000006 | 0.000010 | 1.473 | 15816 | 26224 |
+| detail_pattern | empty | 4 | 1000 | 0.000008 | 0.000010 | 1.326 | 20368 | 30776 |
+| all | empty | 1 | 1000 | 0.000006 | 0.000009 | 1.466 | 15504 | 25136 |
+| all | empty | 4 | 1000 | 0.000007 | 0.000010 | 1.452 | 20056 | 29688 |
+| all_inverse | empty | 1 | 1000 | 0.000006 | 0.000009 | 1.448 | 15552 | 26048 |
+| all_inverse | empty | 4 | 1000 | 0.000008 | 0.000010 | 1.285 | 20104 | 30600 |
+| exclusions | empty | 1 | 1000 | 0.000007 | 0.000010 | 1.381 | 19128 | 29272 |
+| exclusions | empty | 4 | 1000 | 0.000008 | 0.000012 | 1.363 | 23680 | 33824 |
+| exclusions_inverse | empty | 1 | 1000 | 0.000008 | 0.000011 | 1.470 | 19328 | 29568 |
+| exclusions_inverse | empty | 4 | 1000 | 0.000009 | 0.000011 | 1.293 | 23880 | 34120 |
+| default | selected | 1 | 1000 | 0.000007 | 0.000010 | 1.320 | 14968 | 25440 |
+| default | selected | 4 | 1000 | 0.000009 | 0.000011 | 1.299 | 19552 | 30024 |
+| inverse | selected | 1 | 1000 | 0.000006 | 0.000009 | 1.371 | 14768 | 25144 |
+| inverse | selected | 4 | 1000 | 0.000007 | 0.000010 | 1.351 | 19352 | 29728 |
+| point_pattern | selected | 1 | 1000 | 0.000007 | 0.000010 | 1.426 | 15888 | 26392 |
+| point_pattern | selected | 4 | 1000 | 0.000008 | 0.000012 | 1.484 | 20472 | 30976 |
+| vertex_pattern | selected | 1 | 1000 | 0.000007 | 0.000009 | 1.355 | 15688 | 26096 |
+| vertex_pattern | selected | 4 | 1000 | 0.000007 | 0.000011 | 1.417 | 20272 | 30680 |
+| primitive_pattern | selected | 1 | 1000 | 0.000007 | 0.000009 | 1.321 | 15888 | 26392 |
+| primitive_pattern | selected | 4 | 1000 | 0.000008 | 0.000010 | 1.373 | 20472 | 30976 |
+| detail_pattern | selected | 1 | 1000 | 0.000007 | 0.000010 | 1.449 | 15888 | 26392 |
+| detail_pattern | selected | 4 | 1000 | 0.000007 | 0.000011 | 1.429 | 20472 | 30976 |
+| all | selected | 1 | 1000 | 0.000006 | 0.000010 | 1.618 | 16176 | 26192 |
+| all | selected | 4 | 1000 | 0.000008 | 0.000012 | 1.478 | 20760 | 30776 |
+| all_inverse | selected | 1 | 1000 | 0.000008 | 0.000010 | 1.310 | 16224 | 27104 |
+| all_inverse | selected | 4 | 1000 | 0.000008 | 0.000012 | 1.516 | 20808 | 31688 |
+| exclusions | selected | 1 | 1000 | 0.000008 | 0.000010 | 1.381 | 19800 | 30328 |
+| exclusions | selected | 4 | 1000 | 0.000009 | 0.000011 | 1.257 | 24384 | 34912 |
+| exclusions_inverse | selected | 1 | 1000 | 0.000010 | 0.000011 | 1.160 | 20000 | 30624 |
+| exclusions_inverse | selected | 4 | 1000 | 0.000009 | 0.000012 | 1.407 | 24584 | 35208 |

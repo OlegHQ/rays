@@ -49,6 +49,9 @@ let same a b=match a,b with
   |Ok a,Ok b->geometry_bytes a=geometry_bytes b
   |Error a,Error b->a=b
   |_->false
+let describe=function
+  |Ok geometry->"geometry:"^Digest.to_hex(Digest.string(geometry_bytes geometry))
+  |Error(code,message,cause)->code^": "^message^Option.fold ~none:"" ~some:(fun cause->" cause: "^cause)cause
 let points count=Kernel.generate_point_ranges count(fun ~first ~last ~x ~y ~z->
   for index=first to last-1 do x.(index)<-float index;y.(index)<- -0.;z.(index)<-0.5 done)
 let grid ()=
@@ -104,6 +107,8 @@ let cases =
      "group_delete",":delete_unused true",["delete_unused",P.Bool_value true];
      "delete_attributes",":point_pattern \"old_*\" :detail_pattern \"old_text\"",["point_pattern",P.Text_value "old_*";"detail_pattern",P.Text_value "old_text"];
      "delete_attributes",":delete_non_selected true :vertex_pattern \"old_int\"",["delete_non_selected",P.Bool_value true;"vertex_pattern",P.Text_value "old_int"];
+     "delete_attributes",":point_pattern \"old_int\\\\ \"",["point_pattern",P.Text_value "old_int\\ "];
+     "delete_attributes",":point_pattern \"\\\\ old_int\"",["point_pattern",P.Text_value "\\ old_int"];
      (let keywords,changes=rules[["point";"[";"x";"skip"]]in "group_rename",keywords,changes);
      (let keywords,changes=rules[["point";"["]]in "group_delete",keywords,changes);
      "rename_edge_group",":from \"missing\" :into \"missing\"",["from",P.Text_value "missing";"into",P.Text_value "missing"];
@@ -121,7 +126,9 @@ let verify ()=
       let session=Sop.Session.create ~max_entries:64 ~max_payload_bytes:64_000_000|>get_string_ok in
       Fun.protect ~finally:(fun()->Sop.Session.close session)(fun()->
         let baseline=cook session 1 97 actual in
-        check(same baseline(cook session 1 97 oracle))(key^": native bytes or error differs");
+        let expected=cook session 1 97 oracle in
+        check(same baseline expected)(Printf.sprintf "%s %s points=%d: native bytes or error differs\nNative %s\nLisp %s"
+          key keywords (Geometry.point_count geometry)(describe expected)(describe baseline));
         check(same baseline(cook session 1 97 reference))(key^": strict/reference differs");
         List.iter(fun domains->List.iter(fun grain->Sop.Session.clear session;
           check(same baseline(cook session domains grain actual))(key^": worker/grain differs"))[1;97;4096])[1;4;8]);
@@ -284,6 +291,102 @@ let edge_projection key =
     check(same(cook session 1 97 bypassed)(cook session 1 97 input))"Delete Edge Group bypass preserves input bytes");
   print_endline(key^": native card/inspector parity, direct parameter edits and bypass gestures")
 
+let delete_attributes_projection () =
+  let module S=Flow.Syntax in
+  let module Projection=Flow_graph.Projection in
+  let module Edit=Flow_graph.Flow_edit in
+  let input=Lisp_sop.snapshot(fixture()) in
+  let factories=factories input input in
+  let catalog factories=Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version factories|>flow_ok in
+  let catalog=catalog factories and native_catalog=catalog(factory "delete_attributes"::factories) in
+  let checker catalog forms=Flow_sop.Catalog.check_workspace ~sources ~ops:Flow_sop.Operators.all catalog forms in
+  let workspace=function Some workspace,ds when not(List.exists(fun(d:Flow.Diagnostic.t)->d.severity=Error)ds)->workspace
+    |_,ds->fail(String.concat "\n"(List.map Flow.Diagnostic.to_string ds)) in
+  let forms=S.parse {|(workspace deletion (graph g :context sop
+    (let* [src (sop/metadata_input) reference_source (sop/metadata_reference)
+      card (sop/delete_attributes src)] card)))|}|>flow_ok in
+  let actual=workspace(checker catalog forms)
+  and expected=workspace(Flow.Workspace.check ~ops:Flow_sop.Operators.all native_catalog forms) in
+  let card catalog workspace=Option.get(Projection.find(Projection.of_graph catalog workspace "g")["g";"card"]) in
+  let actual_card=card catalog actual and expected_card=card native_catalog expected in
+  check(actual_card=expected_card && Projection.lines Full actual_card=Projection.lines Full expected_card)
+    "Delete Attributes native card/inspector parity";
+  let session=Sop.Session.create ~max_entries:32 ~max_payload_bytes:64_000_000|>get_string_ok in
+  Fun.protect ~finally:(fun()->Sop.Session.close session)(fun()->
+    let compile workspace=let lowered=Flow_sop.Lower.of_checked ~factories workspace|>flow_ok in
+      let graph=List.hd lowered.graphs in
+      Sop.Edit_graph.compile_node graph.network.geometry ~node_id:(Option.get graph.root)|>get_string_ok in
+    let edited_forms,edited=List.fold_left(fun(forms,_) (field,value)->
+      Edit.apply_checked ~checker catalog forms
+        (Set_arg{node=actual_card.path;key=Kw field;sub=[];value})|>flow_ok)
+      (forms,actual)["delete_non_selected",S.make(Sym "true");
+        "point_pattern",S.make(Str "old_int");"vertex_pattern",S.make(Str "old_vec*");
+        "primitive_pattern",S.make(Str "old_text");"detail_pattern",S.make(Str "old_float*")] in
+    let changes=["delete_non_selected",P.Bool_value true;"point_pattern",P.Text_value "old_int";
+      "vertex_pattern",P.Text_value "old_vec*";"primitive_pattern",P.Text_value "old_text";
+      "detail_pattern",P.Text_value "old_float*"] in
+    let observed=compile edited in
+    let expected=native input "delete_attributes" changes in
+    check(N.parameter_key observed=N.parameter_key expected && same(cook session 1 97 observed)(cook session 1 97 expected))
+      "Delete Attributes every field edit cook/key";
+    let connected_forms,connected=Edit.apply_checked ~checker catalog edited_forms
+      (Connect{node=actual_card.path;key=Kw "reference";src="reference_source";iter=false})|>flow_ok in
+    let connected_node=compile connected in
+    check(same(cook session 1 97 connected_node)(cook session 1 97(native ~reference:input input "delete_attributes" changes)))
+      "Delete Attributes optional reference connection cook";
+    let _,disconnected=Edit.apply_checked ~checker catalog connected_forms
+      (Disconnect{node=actual_card.path;key=Kw "reference";fallback=None})|>flow_ok in
+    check(same(cook session 1 97(compile disconnected))(cook session 1 97 expected))
+      "Delete Attributes optional reference disconnection cook";
+    let _,bypassed=Edit.apply_checked ~checker catalog forms(Toggle_bypass{node=actual_card.path})|>flow_ok in
+    check(same(cook session 1 97(compile bypassed))(cook session 1 97 input))"Delete Attributes actual bypass cook");
+  print_endline "Delete Attributes card/inspector, all field gestures, optional connect/disconnect and bypass cooks"
+
+let cold_sample ~batch ~domains node =
+  List.init 3(fun _->
+    let sessions=Array.init batch(fun _->Sop.Session.create ~max_entries:32 ~max_payload_bytes:512_000_000|>get_string_ok) in
+    Fun.protect ~finally:(fun()->Array.iter Sop.Session.close sessions)(fun()->
+      Gc.full_major();let bytes=Gc.allocated_bytes() and started=Unix.gettimeofday() in
+      Array.iter(fun session->ignore(cook session domains 4096 node))sessions;
+      (Unix.gettimeofday()-.started)/.float batch,(Gc.allocated_bytes()-.bytes)/.float batch))
+    |>List.sort(fun(a,_)(b,_)->Float.compare a b)|>fun samples->List.nth samples 1
+
+let delete_attributes_benchmark () =
+  let geometry=Plane_generators.grid ~connectivity:Grid_quads ~columns:999 ~rows:999 ~size:8.()|>get_ok in
+  check(Geometry.point_count geometry=1_000_000)"Delete Attributes million-point grid";
+  let geometry=List.fold_left(fun geometry(owner,count)->List.fold_left(fun geometry(name,storage)->
+    Geometry.with_attribute(Attribute.create_owned ~owner ~name storage|>get_string_ok)geometry|>get_string_ok)
+    geometry ["keep_float",Attribute.Float(Array.make count(-0.));"drop_int",Int(Array.make count max_int)])
+    geometry [Attribute.Point,Geometry.point_count geometry;Vertex,Geometry.vertex_count geometry;
+      Primitive,Geometry.primitive_count geometry;Detail,1] in
+  let input=Lisp_sop.snapshot geometry in
+  let reference=List.fold_left(fun geometry owner->Geometry.without_attribute ~owner "drop_int" geometry)
+    geometry [Attribute.Point;Vertex;Primitive;Detail]
+    |>Geometry.without_attribute ~owner:Attribute.Vertex "keep_float" in
+  let patterns=["point_pattern";"vertex_pattern";"primitive_pattern";"detail_pattern"] in
+  let configs=["default",[];"inverse",["delete_non_selected",P.Bool_value true]]@
+    List.map(fun field->field,[field,P.Text_value "keep_*"])patterns@
+    List.concat_map(fun(pattern,label)->List.map(fun inverse->label^(if inverse then "_inverse" else ""),
+      ("delete_non_selected",P.Bool_value inverse)::List.map(fun field->field,P.Text_value pattern)patterns)[false;true])
+      ["*","all";"* ^keep_*","exclusions"] in
+  List.iter(fun(reference_name,reference)->
+    List.iter(fun(label,changes)->
+      let keywords=String.concat " "(List.map(fun(field,value)->":"^field^" "^(match value with
+        |P.Bool_value value->string_of_bool value|P.Text_value value->quoted value|_->assert false))changes)
+        ^(if Option.is_some reference then " :reference (sop/metadata_reference)" else "") in
+      let actual=node ~reference_node:reference ~reference:false input "delete_attributes" keywords
+      and expected=native ?reference input "delete_attributes" changes in
+      List.iter(fun domains->
+        let preflight=Sop.Session.create ~max_entries:32 ~max_payload_bytes:512_000_000|>get_string_ok in
+        Fun.protect ~finally:(fun()->Sop.Session.close preflight)(fun()->
+          check(same(cook preflight domains 4096 actual)(cook preflight domains 4096 expected))
+            "Delete Attributes million-point native preflight");
+        let native_time,native_bytes=cold_sample ~batch:1000 ~domains expected
+        and time,bytes=cold_sample ~batch:1000 ~domains actual in
+        Printf.printf "delete_attributes points=1000000 quads=998001 mode=%s reference=%s domains=%d grain=4096 cold_sessions=1000 native=%.6f lisp=%.6f ratio=%.3f native_bytes=%.0f lisp_bytes=%.0f\n%!"
+          label reference_name domains native_time time(time/.native_time)native_bytes bytes)[1;4])configs)
+    ["absent",None;"empty",Some(Lisp_sop.snapshot(points 0));"selected",Some(Lisp_sop.snapshot reference)]
+
 let edge_benchmark ?(batch=1) key =
   let geometry=Plane_generators.grid ~connectivity:Grid_quads ~columns:999 ~rows:999 ~size:8.()|>get_ok in
   check(Geometry.point_count geometry=1_000_000)"Delete Edge Group million-point grid";
@@ -317,9 +420,10 @@ let edge_benchmark ?(batch=1) key =
 
 let edges ()=List.iter(fun key->edge_exact key;edge_projection key)["delete_edge_group";"rename_edge_group"]
 let ()=if Array.exists((=)"--bench-edge")Sys.argv then edge_benchmark "delete_edge_group"
+  else if Array.exists((=)"--bench-delete-attributes")Sys.argv then delete_attributes_benchmark()
   else if Array.exists((=)"--bench-rename-edge")Sys.argv then edge_benchmark "rename_edge_group"
   else if Array.exists((=)"--bench-rename-edge-batch")Sys.argv then edge_benchmark ~batch:1000 "rename_edge_group"
-  else if Array.exists((=)"--edge")Sys.argv then edges()
+  else if Array.exists((=)"--edge")Sys.argv then (delete_attributes_projection();edges())
   else if Array.exists((=)"--huge")Sys.argv then large_rules 100001
   else if Array.exists((=)"--large")Sys.argv then large_rules 5001
-  else(declaration_metadata();verify();edits();invalid_parameters();reference_input();edges())
+  else(declaration_metadata();verify();edits();invalid_parameters();reference_input();delete_attributes_projection();edges())

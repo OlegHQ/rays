@@ -1,0 +1,30 @@
+(workspace delete_attributes_node
+(defn metadata_delete_validate :context value [(pattern : text)]
+  (if (text/blank? pattern) true
+    (let* [message (text/glob_error pattern)]
+      (if (equal? message "") true (error "E_PARAM" (str "sop/delete_attributes: " message))))))
+
+(defn metadata_delete_pattern :context value [(pattern : text) (owner : text)]
+  (let* [trimmed (text/trim pattern) message (text/glob_error trimmed)]
+    (if (equal? message "") trimmed
+      (error "invalid_attribute" "attribute_delete could not produce valid geometry"
+        :cause (str "attribute_delete [invalid_attribute]: Attribute Delete " owner " pattern: " message)))))
+
+(defnode sop/delete_attributes :label "Delete Attributes" :operation "attribute_delete_pattern"
+  :category ["Attribute" "Manage"]
+  :validate (and (and (metadata_delete_validate point_pattern) (metadata_delete_validate vertex_pattern))
+    (and (metadata_delete_validate primitive_pattern) (metadata_delete_validate detail_pattern)))
+  [(input : geometry) (reference : geometry :required false)
+   (delete_non_selected : bool false :label "Delete non-selected")
+   (point_pattern : text "" :label "Point attributes" :folder ["Patterns"])
+   (vertex_pattern : text "" :label "Vertex attributes" :folder ["Patterns"])
+   (primitive_pattern : text "" :label "Primitive attributes" :folder ["Patterns"])
+   (detail_pattern : text "" :label "Detail attributes" :folder ["Patterns"])]
+  (let* [point (metadata_delete_pattern point_pattern "point")
+         vertex (metadata_delete_pattern vertex_pattern "vertex")
+         primitive (metadata_delete_pattern primitive_pattern "primitive")
+         detail (metadata_delete_pattern detail_pattern "detail")]
+    (if (equal? reference nil)
+      (sop/delete_attrs input :inverse delete_non_selected :point point :vertex vertex :primitive primitive :detail detail)
+      (sop/delete_attrs input :reference reference :inverse delete_non_selected :point point :vertex vertex :primitive primitive :detail detail))))
+)

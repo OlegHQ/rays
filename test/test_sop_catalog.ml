@@ -734,7 +734,7 @@ let run ?(exhaustive = false) () =
   Session.close key_session;
   let match_size_factory = List.find (fun factory ->
       Edit_graph.factory_key factory = "match_size")
-      Sop_catalog.Editor.factories in
+      (Lazy.force registered_factories) in
   check (Edit_graph.factory_inputs match_size_factory
       = [Edit_graph.Required; Optional]
       && Result.is_ok (Edit_graph.instantiate_optional match_size_factory
@@ -742,7 +742,7 @@ let run ?(exhaustive = false) () =
     "PPX descriptor lost Match Size's optional target input signature";
   List.iter (fun key ->
     let factory = List.find (fun factory ->
-        Edit_graph.factory_key factory = key) Sop_catalog.Editor.factories in
+        Edit_graph.factory_key factory = key) (Lazy.force registered_factories) in
     check (Edit_graph.factory_inputs factory
         = [Edit_graph.Required; Optional]
         && Result.is_ok (Edit_graph.instantiate_optional factory [None; None]))
@@ -751,7 +751,7 @@ let run ?(exhaustive = false) () =
      "rest_position"];
   let delete_attributes_factory = List.find (fun factory ->
       Edit_graph.factory_key factory = "delete_attributes")
-      Sop_catalog.Editor.factories in
+      (Lazy.force registered_factories) in
   check (Edit_graph.factory_inputs delete_attributes_factory
       = [Edit_graph.Required; Optional]
       && Result.is_ok (Edit_graph.instantiate_optional
@@ -759,7 +759,7 @@ let run ?(exhaustive = false) () =
     "Delete Attributes lost its optional reference input signature";
   let point_replicate_factory = List.find (fun factory ->
       Edit_graph.factory_key factory = "point_replicate")
-      Sop_catalog.Editor.factories in
+      (Lazy.force registered_factories) in
   check (Edit_graph.factory_inputs point_replicate_factory
       = [Edit_graph.Required; Optional]
       && Result.is_ok (Edit_graph.instantiate_optional point_replicate_factory
@@ -767,7 +767,7 @@ let run ?(exhaustive = false) () =
     "Point Replicate lost its optional custom-shape input signature";
   let attribute_fade_factory = List.find (fun factory ->
       Edit_graph.factory_key factory = "attribute_fade")
-      Sop_catalog.Editor.factories in
+      (Lazy.force registered_factories) in
   check (Edit_graph.factory_inputs attribute_fade_factory
       = [Edit_graph.Required; Optional; Optional]
       && Result.is_ok (Edit_graph.instantiate_optional attribute_fade_factory
@@ -784,7 +784,7 @@ let run ?(exhaustive = false) () =
     "Attribute Fade parameter edit reassigned its sparse hold-source port";
   let point_velocity_factory = List.find (fun factory ->
       Edit_graph.factory_key factory = "point_velocity")
-      Sop_catalog.Editor.factories in
+      (Lazy.force registered_factories) in
   check (Edit_graph.factory_inputs point_velocity_factory
       = [Edit_graph.Required; Optional; Optional]
       && Result.is_ok (Edit_graph.instantiate_optional point_velocity_factory
@@ -798,7 +798,7 @@ let run ?(exhaustive = false) () =
       = [Node.id fade_source; Node.id fade_hold])
     "Point Velocity parameter edit reassigned its sparse next-sample port";
   let points_factory = List.find (fun factory ->
-      Edit_graph.factory_key factory = "points") Sop_catalog.Editor.factories in
+      Edit_graph.factory_key factory = "points") (Lazy.force registered_factories) in
   let points = Edit_graph.instantiate points_factory [] |> Result.get_ok in
   check (Node.operation points = "point_generate"
       && Edit_graph.factory_arity points_factory = 0)

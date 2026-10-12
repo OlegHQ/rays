@@ -64,10 +64,6 @@
 (defn metadata_rewrite_validate :context value [(operation : text) (pattern : text) (replacement : text)]
   (let* [message (text/glob_rewrite_error pattern replacement)]
     (if (equal? message "") true (error "E_PARAM" (str operation ": " message)))))
-(defn metadata_delete_validate :context value [(pattern : text)]
-  (if (text/blank? pattern) true
-    (let* [message (text/glob_error pattern)]
-      (if (equal? message "") true (error "E_PARAM" (str "sop/delete_attributes: " message))))))
 
 (defnode sop/rename_attributes :label "Rename Attributes" :operation "attribute_rename_pattern"
   :category ["Attribute" "Manage"]
@@ -89,22 +85,6 @@
      :normalize metadata_swap_attributes_normalize)]
   (reduce (fn [geometry row]
     (sop/swap_attr geometry (nth row 1) (nth row 2) :owner (nth row 0) :method (nth row 3))) in0 (text/table_decode rules)))
-
-(defnode sop/delete_attributes :label "Delete Attributes" :operation "attribute_delete_pattern"
-  :category ["Attribute" "Manage"]
-  :validate (and (and (metadata_delete_validate point_pattern) (metadata_delete_validate vertex_pattern))
-    (and (metadata_delete_validate primitive_pattern) (metadata_delete_validate detail_pattern)))
-  [(input : geometry) (reference : geometry :required false)
-   (delete_non_selected : bool false :label "Delete non-selected")
-   (point_pattern : text "" :label "Point attributes" :folder ["Patterns"])
-   (vertex_pattern : text "" :label "Vertex attributes" :folder ["Patterns"])
-   (primitive_pattern : text "" :label "Primitive attributes" :folder ["Patterns"])
-   (detail_pattern : text "" :label "Detail attributes" :folder ["Patterns"])]
-  (if (equal? reference nil)
-    (sop/delete_attrs input :inverse delete_non_selected :point point_pattern :vertex vertex_pattern
-      :primitive primitive_pattern :detail detail_pattern)
-    (sop/delete_attrs input :reference reference :inverse delete_non_selected :point point_pattern :vertex vertex_pattern
-      :primitive primitive_pattern :detail detail_pattern)))
 
 (defnode sop/group_rename :label "Group Rename" :category ["Group" "Edit"]
   [(in0 : geometry)
