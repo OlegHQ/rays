@@ -1993,3 +1993,49 @@ table remains intact.
 | empty | 1 | descriptor_selected_writer | 0.004240 | 0.004015 | 32002272 | 32002272 |
 | empty | 4 | group_source | 0.005114 | 0.001124 | 8001200 | 8001168 |
 | empty | 4 | descriptor_selected_writer | 0.003872 | 0.003684 | 32046960 | 32055440 |
+
+### Typed numeric helpers stay unboxed (shared foundation)
+
+The preceding unregistered Point Jitter draft section retains the detailed
+allocation-attribution diagnostics. Native-object inspection identified an
+actual 16-byte float allocation
+on both branches of the typed runner's numeric register reader. Every guard
+test called that reader. The minimal generic change forces scalar reader,
+arithmetic and checked-projection helpers inline, with an inline finite
+predicate retaining the exact existing error code/message. Guard traversal,
+integer banks, checked arithmetic order/opacity, selected errors, gather
+ordering and source preparation are unchanged. The rebuilt ARM guard predicate
+now loads or converts directly into a float register and compares it without
+allocating a float box. Focused request 59212 exited 0 for the full Flow IR
+suite and Point Jitter recipe, including all existing lazy/finite/status,
+signed-zero, integer, gather, cause, domain and grain proofs
+(`/tmp/rays-point-jitter-unboxed-focused.log`).
+
+The before table is quiet request 8238
+(`/tmp/rays-point-jitter-bench-first1.log`):
+
+| Mode | Domains | Native seconds | Lisp seconds | Ratio | Native allocated bytes | Lisp allocated bytes |
+|---|---:|---:|---:|---:|---:|---:|
+| Defaults, no group | 1 | 0.021372 | 1.220160 | 57.091× | 72,015,704 | 4,678,113,184 |
+| Defaults, no group | 4 | 0.008722 | 0.437272 | 50.134× | 35,885,280 | 1,431,068,528 |
+| Selected group, mask/ID/pscale | 1 | 0.023941 | 1.505549 | 62.886× | 48,016,440 | 4,919,631,312 |
+| Selected group, mask/ID/pscale | 4 | 0.007411 | 0.536836 | 72.438× | 30,171,592 | 1,531,346,296 |
+
+Quiet request 28993 repeated those same four predetermined rows, with the
+same median-three cold-cook harness and native/reference preflights, and exited
+0 (`/tmp/rays-point-jitter-unboxed-bench-first.log`). Both runs use Apple M1,
+OCaml 5.3.0 dev profile, a real 1,000,000-point/998,001-quad grid, domains 1/4
+and grain 4096. Allocations at four domains cover the initial domain only.
+All output checks pass. The after table is:
+
+| Mode | Domains | Native seconds | Lisp seconds | Ratio | Native allocated bytes | Lisp allocated bytes |
+|---|---:|---:|---:|---:|---:|---:|
+| Defaults, no group | 1 | 0.021278 | 0.779768 | 36.646× | 72,015,704 | 612,604,368 |
+| Defaults, no group | 4 | 0.010221 | 0.295018 | 28.864× | 36,675,288 | 358,899,544 |
+| Selected group, mask/ID/pscale | 1 | 0.024053 | 1.005076 | 41.786× | 48,016,440 | 535,779,504 |
+| Selected group, mask/ID/pscale | 4 | 0.009449 | 0.370817 | 39.244× | 31,062,944 | 354,419,112 |
+
+The measured allocation cut is substantial, but all four rows still fail the
+unchanged 2× gate. The original failed table remains above; the broader table
+stays held. There is no node-specific optimization, public API change,
+registration or whole-port performance claim.

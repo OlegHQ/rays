@@ -57,7 +57,7 @@ let integer_program t = Array.exists typed_instruction t.code
   || Array.exists (Array.exists (fun r->Core.Region.integer_register t.code.(r))) t.outputs
   || Array.exists (fun (_,term)->term.W.ty=Ty.Array Ty.Int) t.sources
 
-let binary_apply op x y = match op with
+let[@inline always] binary_apply op x y = match op with
   | Add->x+.y | Sub->x-.y | Mul->x*.y | Div->if y=0. then 0. else x/.y
   | Mod->if y=0. then 0. else Float.rem (Float.rem x y+.y) y
   | Pow->Float.pow (Float.abs x) y | Min->Float.min x y | Max->Float.max x y
@@ -66,11 +66,11 @@ let binary_apply op x y = match op with
   | Eq->if x=y then 1. else 0. | And->if x<>0. && y<>0. then 1. else 0.
   | Or->if x<>0. || y<>0. then 1. else 0.
   | Atan2->Float.atan2 x y | Hypot->Float.hypot x y
-let unary_apply op x = match op with
+let[@inline always] unary_apply op x = match op with
   | Sin->sin x | Cos->cos x | Sqrt->sqrt (Float.abs x) | Abs->Float.abs x
   | Not->if x=0. then 1. else 0. | Tan->tan x | Asin->asin x | Acos->acos x
   | Exp->exp x | Log->log x | Sign->if x>0. then 1. else if x<0. then -1. else x
-let checked_projection projection value =
+let[@inline always] checked_projection projection value =
   let valid=Float.is_finite value in
   match projection with Value -> if valid then value else 0. | Valid -> if valid then 1. else 0.
 let convert_int op x = match op with
@@ -272,7 +272,8 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
       let data=Array.make (kept*width) 0. in
       match width with 2->E.Vec2_array data|3->E.Vec3_array data|4->E.Vec4_array data|_->E.Float_array data)t.outputs in
   let banks=Array.map Core.Region.integer_register t.code in
-  let finite x=V.fin "packed" x in
+  let[@inline always] finite x=if Float.is_finite x then x
+    else V.fail "E_NONFINITE" "packed produced a nonfinite value." in
   let concrete=function E.Int _|Float _|Bool _|Vec2 _|Vec3 _|Vec4 _->true|_->false in
   let uniforms=Array.map(fun value->if concrete value then Lazy.from_val value
     else lazy(uniform value))t.uniforms in
@@ -286,7 +287,7 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
   let chunk chunk =
     let integer=Array.make (Array.length t.code*block_size) 0
     and floats=Array.make (Array.length t.code*block_size) 0. in
-    let numeric r j=let at=r*block_size+j in if banks.(r) then float integer.(at) else floats.(at) in
+    let[@inline always] numeric r j=let at=r*block_size+j in if banks.(r) then float integer.(at) else floats.(at) in
     let frame=Array.map(fun instruction->lazy(match unguarded instruction with
       | Int_frame name | Frame name ->
           if name="t" then E.Float live.Frame_input.t else
