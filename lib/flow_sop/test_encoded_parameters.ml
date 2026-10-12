@@ -57,7 +57,9 @@ let ()=
   assert(Sop.Node.operation explicit="native_encoded" && Sop.Node.label explicit="test_encoded");
   assert(Sop.Node.parameter_key explicit=Sop.Node.parameter_key node);
   assert(Sop.Node.parameter_fields explicit=Sop.Node.parameter_fields node);
-  let edited,_=ok(Sop.Node.apply_parameters explicit["rules",Param.Text_value " DETAIL "]) in
+  let (edited,_),phases=Flow.Phase_timer.sample ~clock:Unix.gettimeofday(fun()->
+    ok(Sop.Node.apply_parameters explicit["rules",Param.Text_value " DETAIL "])) in
+  assert(Flow.Phase_timer.calls phases Evaluate=0);
   assert(Sop.Node.operation edited="native_encoded" && Sop.Node.id edited=Sop.Node.id explicit);
   assert(Sop.Node.parameter_fields node=Param.view native_schema "point");
   assert(Sop.Node.parameter_key node=Param.cook_key native_schema "point");

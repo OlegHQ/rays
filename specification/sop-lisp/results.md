@@ -2985,3 +2985,22 @@ Quiet whole-cook request **1647** exited 0 on the freshly linked 92200 snapshot.
 | wrong_float | 4 | 0.000005256 | 0.000010315 | 1.962× | 10352 | 27096 |
 
 The absent/one-domain ratio prints 2.000 at three-decimal precision. The logged nine-decimal times cannot distinguish a pass from a slight failure at the exact 2× boundary; there is no unrounded predicate in this harness. This row is unresolved and is not accepted as passing. Set Color stays unregistered and B.11 incomplete. The isolated writer occupies only a small part of the whole cold cook, so the next diagnostic should profile that whole route rather than repeat unchanged timings or add another unmeasured writer branch.
+
+### Encoded normalization retains workspace phase counts
+
+The first production encoded-field port exposed a shared instrumentation gap:
+normalizers evaluate their pure checked helper twice for canonicalization,
+outside the existing suppressed node-body compilation scope. The bloom
+workspace therefore reported extra workspace Evaluate invocations during
+checked lowering. Original production request 67783 retained that failure
+in `/tmp/rays-rename-attributes-production-focused.log`.
+
+`Encoded_parameters.for_node` now uses the existing `Phase_timer.without`
+around internal normalization. Canonicalization, idempotence checks, errors
+and execution remain unchanged; their duration belongs to the surrounding
+phase. Request 19605 passed every semantic test including bloom's unchanged
+one-Evaluate/one-Lower assertion, with only the intended manifest diff.
+The direct encoded parameter-edit regression also asserts zero workspace
+Evaluate invocations and passed in request 11682. Logs:
+`/tmp/rays-rename-attributes-production-focused2.log` and
+`/tmp/rays-rename-attributes-native-integration.log`.

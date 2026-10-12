@@ -17,10 +17,10 @@ let for_node checked (definition : W.node_definition) =
       |E.Text canonical when Array.length result.plan.nodes=0->Ok canonical
       |_->Error(Flow.Diagnostic.error ~span:form.span ~code:"E_PARAM_NORMALIZE"
           "An encoded normalizer must return concrete text without cooked effects.")) in
-    let normalize raw=Result.bind(evaluate raw)(fun canonical->
+    let normalize raw=Flow.Phase_timer.without(fun()->Result.bind(evaluate raw)(fun canonical->
       Result.bind(evaluate canonical)(fun again->if again=canonical then Ok canonical else
         Error(Flow.Diagnostic.error ~span:form.span ~code:"E_PARAM_NORMALIZE"
-          "An encoded normalizer must preserve its canonical output."))) in
+          "An encoded normalizer must preserve its canonical output.")))) in
     name,normalize)definition.normalizers
 
 let normalize_defaults workspace =
