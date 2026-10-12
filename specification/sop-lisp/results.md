@@ -4202,3 +4202,41 @@ Existing host cancellation checks remain; this adds no cancellation-granularity
 claim. C1 topology construction, IEEE computed arrays, normal fallbacks and
 native diagnostic mapping remain separate prerequisites. B.5 remains complete;
 whole completion stays14/128 and20/60 milestones.
+
+## Private IEEE arithmetic experiment and actual JavaScript proof
+
+2026-10-13, Apple M1 arm64, OCaml5.3 development profile, Node24.19.0.
+Outside-only source and retained logs are `/tmp/rays-ieee-proof`; no production
+API, descriptor, policy or registration is accepted by this experiment.
+The actual checker/residual/Core_region/SSA compiler drives an independent
+scalar walk and the existing Packed borrowed-column/owned-plane runner.
+Native RDK uses domains1/4/8 and grains1/97/4096; CPU uses domains1/4/8 with
+its existing1024-lane blocks and16-block chunk schedule. Raw32769-row fixtures
+exercise multiple chunks, ordinary finite controls and selected/untaken causes.
+
+Build-4 and native-3 EXIT0; actual32769-point distance→ordered maximum→mask
+matches native/scalar/CPU words, including successful Inf distances and NaN
+masks. Identity/division/sqrt/explicit FMA/separately rounded Mul+Add cover
+14^3 combinations of signed zero, subnormal/normal bounds, infinities and signed
+quiet/signalling NaN payloads, repeated over32769 rows. No isNaN equivalence
+replaces exact bit comparisons. Constant-policy tests retain arithmetic in SSA
+rather than ordinary finite constant folding.
+
+Final Node arithmetic4 EXIT0 (`js-arithmetic-4.log`, diagnostic elapsed~0.32s):
+43904 primary native words,43904 held-out changed NaN-payload words,10011
+independent finite FMA words and32769 actual serialized SSA distance/mask rows.
+The private raw-word engine derives496 operand-category NaN selectors and
+checks payloads excluded from training; it has no per-input expected-word
+lookup. OCaml5.3 Float.min/max sign-dependent operand selection is mirrored
+exactly, including unchanged signalling NaNs. Finite FMA reuses the existing
+BigInt implementation. Unmapped forms explicitly refuse E_WEB_IEEE_BITS.
+Failed Node derivation attempts1–3 are retained (abs sign clearing, native
+min/max behavior and unnecessary comparison derivation); final checks pass
+without changing expected words. The earlier transport-only arithmetic-refusal
+check remains recorded and is not counted as arithmetic proof.
+
+Production work still needs opaque raw results/ownership, closed instruction
+policy propagation through IR/cache/fusion, full reference dispatch, generic
+source consumption, GPU refusal and actual language/graph boundaries. The
+proof has no port/performance/architecture-portability qualification and no
+milestone count increment. The full current scope stays128 ports/60 milestones.
