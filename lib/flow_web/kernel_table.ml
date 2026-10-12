@@ -1,12 +1,4 @@
-let json_string s =
-  let b = Buffer.create (String.length s + 2) in
-  Buffer.add_char b '"';
-  String.iter (function
-    | '"' -> Buffer.add_string b "\\\"" | '\\' -> Buffer.add_string b "\\\\"
-    | '\n' -> Buffer.add_string b "\\n"
-    | c when Char.code c < 32 || Char.code c = 127 -> Printf.bprintf b "\\u%04x" (Char.code c)
-    | c -> Buffer.add_char b c) s;
-  Buffer.add_char b '"'; Buffer.contents b
+let json_string = Text_literal.quote
 let json_list f items = "[" ^ String.concat "," (List.map f items) ^ "]"
 let json_ints a = json_list string_of_int (Array.to_list a)
 let kind_name = function

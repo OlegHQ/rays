@@ -13,6 +13,37 @@
 export class Fail extends Error { constructor(code, message, cause) { super(message); this.code = code;
   if (cause !== undefined) this.cause = cause; } }
 export class PArray { constructor(width, data) { this.width = width; this.data = data; } }
+// Reversible native byte transport: invalid UTF-8 bytes occupy DC80..DCFF.
+// Valid Unicode, including a literal replacement character and BOM, stays Unicode.
+export function textBytes(text) {
+  const encoder = new TextEncoder();
+  if (!/[\udc80-\udcff]/u.test(text)) return encoder.encode(text);
+  const bytes = [];
+  for (const c of text) {
+    const code = c.codePointAt(0);
+    if (code >= 0xdc80 && code <= 0xdcff) bytes.push(code - 0xdc00);
+    else for (const byte of encoder.encode(c)) bytes.push(byte);
+  }
+  return Uint8Array.from(bytes);
+}
+export function textOfBytes(bytes) {
+  const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+  try { return decoder.decode(bytes); } catch (_) { /* Preserve exceptional bytes below. */ }
+  const parts = [];
+  for (let i = 0; i < bytes.length;) {
+    const a = bytes[i], b = bytes[i + 1];
+    let n = a < 0x80 ? 1 : a >= 0xc2 && a <= 0xdf ? 2
+      : a >= 0xe0 && a <= 0xef ? 3 : a >= 0xf0 && a <= 0xf4 ? 4 : 0;
+    if (i + n > bytes.length || (n >= 2 && !(b >= 0x80 && b <= 0xbf))
+      || (n >= 3 && !(bytes[i + 2] >= 0x80 && bytes[i + 2] <= 0xbf))
+      || (n === 4 && !(bytes[i + 3] >= 0x80 && bytes[i + 3] <= 0xbf))
+      || (a === 0xe0 && b < 0xa0) || (a === 0xed && b >= 0xa0)
+      || (a === 0xf0 && b < 0x90) || (a === 0xf4 && b >= 0x90)) n = 0;
+    if (n) { parts.push(decoder.decode(bytes.subarray(i, i + n))); i += n; }
+    else { parts.push(String.fromCharCode(0xdc00 + a)); i++; }
+  }
+  return parts.join('');
+}
 export class TextArray {
   constructor(data) {
     if (!Array.isArray(data) || !data.every(x => typeof x === 'string'))
@@ -244,9 +275,9 @@ export function text_table_decode(text) {
       else if (c === 't') cell += '\t';
       else if (c === 'n') cell += '\n';
       else {
-        // The native byte codec reports the first byte; JSON replaces an isolated UTF-8 byte.
-        const byte = new TextEncoder().encode(c)[0];
-        err('E_TABLE', `unsupported table escape \\${new TextDecoder().decode(Uint8Array.of(byte))}`);
+        // The native byte codec reports the first byte, including invalid UTF-8.
+        const byte = textBytes(c)[0];
+        err('E_TABLE', `unsupported table escape \\${textOfBytes(Uint8Array.of(byte))}`);
       }
     } else if (c === '\\') escaped = true;
     else if (c === '\t') { row.push(cell); cell = ''; }
@@ -597,7 +628,7 @@ export const color_byte = (mode, v) => {
 };
 const hexDigit = c => c >= 48 && c <= 57 ? c - 48 : (c | 32) >= 97 && (c | 32) <= 102 ? (c | 32) - 87 : -1;
 function hexColor(text) {
-  let b = [...new TextEncoder().encode(text)];
+  let b = [...textBytes(text)];
   if (b[0] === 35) b.shift();
   if (b.length === 3 || b.length === 4) b = b.flatMap(c => [c, c]);
   if (b.length !== 6 && b.length !== 8) err('E_DRAW_COLOR', 'Color.hex: expected #rgb, #rgba, #rrggbb, or #rrggbbaa');
@@ -627,14 +658,14 @@ export function sop_context_seed(namespace, context) {
   if (typeof namespace !== 'string' || !namespace.trim()) err('E_SEED_NAMESPACE', 'A context seed namespace must be nonblank.');
   if (!(context instanceof Map)) err('E_NODE_CONTEXT', 'Context seed is available inside a defnode body.');
   let identity = 0xcbf29ce484222325n;
-  for (const byte of new TextEncoder().encode(`${namespace}:${context.get('label')}`))
+  for (const byte of textBytes(`${namespace}:${context.get('label')}`))
     identity = BigInt.asUintN(64, (identity ^ BigInt(byte)) * 0x100000001b3n);
   const mixed = BigInt.asUintN(64, BigInt(context.get('seed')) ^ (identity * 0x9e3779b97f4a7c15n));
   return BigInt.asIntN(63, mixed ^ (mixed >> 32n));
 }
 
 function attributePattern(source, rewriteLabel = null) {
-  const bytes = s => Array.from(new TextEncoder().encode(s), n => String.fromCharCode(n)).join('');
+  const bytes = s => Array.from(textBytes(s), n => String.fromCharCode(n)).join('');
   const raw = bytes(source), terms = [];
   const whitespace = c => ' \t\n\r\f'.includes(c);
   let index = 0;
@@ -718,7 +749,7 @@ function metadataOwner(text, groups = false, one = false) {
 }
 function metadataQuoted(text) {
   let output = '"';
-  for (const byte of new TextEncoder().encode(text)) {
+  for (const byte of textBytes(text)) {
     output += byte === 34 ? '\\"' : byte === 92 ? '\\\\' : byte === 8 ? '\\b'
       : byte === 9 ? '\\t' : byte === 10 ? '\\n' : byte === 13 ? '\\r'
       : byte >= 32 && byte <= 126 ? String.fromCharCode(byte) : `\\${String(byte).padStart(3, '0')}`;
@@ -791,7 +822,7 @@ function metadataRewrite(pattern, replacement) {
     if (index < 0) index = captures.groups.findIndex((_, i) => !used.has(i));
     used.add(index); return index;
   });
-  const bytes = text => Array.from(new TextEncoder().encode(text), byte => String.fromCharCode(byte)).join('');
+  const bytes = text => Array.from(textBytes(text), byte => String.fromCharCode(byte)).join('');
   return name => {
     const text = bytes(name), starts = new Array(captures.groups.length).fill(0), lengths = starts.slice();
     let atom = 0, character = 0, lastStar = -1, retry = 0;
@@ -825,7 +856,7 @@ function metadataRewrite(pattern, replacement) {
         result += text.slice(starts[capture], starts[capture] + lengths[capture]); i += outputs.groups[group].length;
       }
     }
-    return new TextDecoder().decode(Uint8Array.from(result, character => character.charCodeAt(0)));
+    return textOfBytes(Uint8Array.from(result, character => character.charCodeAt(0)));
   };
 }
 export function text_glob_error(pattern) {

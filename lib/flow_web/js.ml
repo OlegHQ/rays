@@ -236,16 +236,7 @@ module C = Flow_ir.Core
 
 exception Refused of string * string * Flow.Diagnostic.span option
 
-let escape text =
-  let b = Buffer.create (String.length text + 2) in
-  Buffer.add_char b '"';
-  String.iter (function
-    | '"' -> Buffer.add_string b "\\\"" | '\\' -> Buffer.add_string b "\\\\"
-    | '\n' -> Buffer.add_string b "\\n" | '\r' -> Buffer.add_string b "\\r" | '\t' -> Buffer.add_string b "\\t"
-    | c when Char.code c < 32 || Char.code c = 127 -> Printf.bprintf b "\\u%04x" (Char.code c)
-    | c -> Buffer.add_char b c) text;
-  Buffer.add_char b '"';
-  Buffer.contents b
+let escape = Text_literal.quote
 
 let rec literal ?store : C.literal -> string = function
   | Int n -> string_of_int n ^ "n" | Float x -> number x

@@ -48,14 +48,7 @@ let export name = match name with
   | _ -> String.map (function '/' -> '_' | c -> c) name
 
 (* ---- JSON ---- *)
-let str s =
-  let b = Buffer.create (String.length s + 2) in
-  Buffer.add_char b '"';
-  String.iter (function
-    | '"' -> Buffer.add_string b "\\\"" | '\\' -> Buffer.add_string b "\\\\"
-    | c when Char.code c < 32 -> Buffer.add_string b (Printf.sprintf "\\u%04x" (Char.code c))
-    | c -> Buffer.add_char b c) s;
-  Buffer.add_char b '"'; Buffer.contents b
+let str = Flow_web.Kernel_table.json_string
 let seq f xs = "[" ^ String.concat "," (List.map f xs) ^ "]"
 let flt x =
   if Float.is_nan x then {|{"float":"NaN"}|}

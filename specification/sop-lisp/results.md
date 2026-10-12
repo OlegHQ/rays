@@ -2209,3 +2209,24 @@ time by about 18–31%, but adds span storage: selected optional one-domain
 allocation rises from 535,779,504 to 732,659,608 bytes. All four unchanged
 2× gates still fail. This is shared execution evidence, not a Point Jitter
 port acceptance; no registration, native removal or broader timing claim.
+
+### Reversible Text byte transport prerequisite
+
+The shared JSON/JavaScript literal printer and byte-oriented runtime boundaries
+now preserve native invalid UTF-8 bytes with reversible isolated low surrogates.
+Valid Unicode, embedded NUL, BOM and literal replacement characters retain
+their identities; worker cloning preserves the representation. The printer
+reuses the standard library decoder through a private module. No public API
+shape or SOP primitive changes.
+
+Dedicated codec proof 9358 passed, then exposed 15 existing primitive fixtures
+whose native JSON writer had replaced byte-reversed Unicode with replacement
+characters. The fixture writer now shares the same reversible transport; all
+original semantic cases remain. Follow-up 56576 exited 0 for Web/tools/API and
+dependency gates, including 17,552 primitive cases, all byte-value/malformed
+UTF-8 round trips, native repr, one/eight-worker transport, existing web goldens
+and actual frame checks. Detailed evidence and limitations are recorded in
+`text-byte-transport.md`; log `/tmp/rays-text-codec-final.log`.
+
+This is a prerequisite for the required Text kernel leaf extension. It does
+not complete Text gather, Name From Groups or C.2.

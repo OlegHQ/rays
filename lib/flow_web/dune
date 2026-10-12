@@ -3,7 +3,8 @@
 (library
  (name flow_web)
  (public_name rays.flow_web)
- (modules flow_web wgsl js target kernel_table)
+ (modules flow_web wgsl js target kernel_table text_literal)
+ (private_modules text_literal)
  (libraries flow flow_ir param rays_math scene_command))
 
 (test
@@ -51,3 +52,9 @@
  (modules test_gather)
  (deps (glob_files ../../tools/web/runtime/*.js))
  (libraries flow_web flow flow_ir rays_math str))
+
+(test
+ (name test_text_bytes)
+ (modules test_text_bytes)
+ (deps ../../tools/web/runtime/prims.js)
+ (libraries flow_web))
