@@ -909,7 +909,9 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
                     | _ -> invalid_arg "Attribute deletion needs one geometry") in
                 {cid;factory;arity=1;changes=[];dynamic=[];zone=None;kernels=[];
                   slots=List.mapi (fun i source -> i,source) sources}
-            | "sop/merge" ->
+            (* A library (Lisp-bodied) sop/merge takes the generic path; the native lowering below adds the
+               provenance tags the editor needs, which the Lisp body cannot yet carry. *)
+            | "sop/merge" when not(List.exists(fun(n:Workspace.node_definition)->n.kind.qualified="sop/merge")checked.nodes) ->
                 let sources = geo_of args in
                 let base = !tags in
                 tags := base + List.length sources;

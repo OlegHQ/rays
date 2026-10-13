@@ -1,0 +1,7 @@
+; Whole Merge draft: every input is appended by sop/concat, which runs the native Mesh_merge.run
+; (attribute and group policy, errors and the optional provenance attribute are native's).
+(defnode sop/merge :label "Merge" :category "Copy"
+  [(input : geometry :rest true)
+   (source_attribute : text "" :label "Source attribute")
+   (source_base : int 0 :label "Source base" :min -1000 :max 1000)]
+  (sop/concat input :source_attribute source_attribute :source_base source_base))
