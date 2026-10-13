@@ -179,20 +179,20 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
       let owner=ok(Attribute_kernel.owner(text "owner" "point" "E_ATTR_OWNER"))
       and kind=text "type" "vec3" "E_ATTR_TYPE" in
       ignore(ok(Attribute_kernel.value_type kind));owner,kind in
-    let is_geometry_arrays kind=kind="sop/mesh" || kind="sop/mesh_planes" || kind="sop/remap" || kind="sop/concat" in
-    let geometry_arrays_key=function "sop/remap"->"flow.remap"|"sop/concat"->"flow.concat"|_->"flow.mesh" in
-    let geometry_arrays_label=function "sop/remap"->"Remap"|"sop/concat"->"Concat"|_->"Mesh" in
-    let geometry_arrays_data args=E.Record(List.filter(fun(name,_)->name<>"source" && name<>"target" && name<>"sources")args) in
+    let is_geometry_arrays kind=kind="sop/mesh" || kind="sop/mesh_planes" || kind="sop/remap" || kind="sop/concat" || kind="sop/with_planes" in
+    let geometry_arrays_key=function "sop/remap"->"flow.remap"|"sop/concat"->"flow.concat"|"sop/with_planes"->"flow.with_planes"|_->"flow.mesh" in
+    let geometry_arrays_label=function "sop/remap"->"Remap"|"sop/concat"->"Concat"|"sop/with_planes"->"With planes"|_->"Mesh" in
+    let geometry_arrays_data args=E.Record(List.filter(fun(name,_)->name<>"source" && name<>"target" && name<>"sources" && name<>"geometry")args) in
     let geometry_arrays_node ?(strict_body=strict_body) ?(host=false) ?state ?elems ~operation ~args ~sources inputs =
       let data=geometry_arrays_data args in
       let program=Attribute_kernel.prepare ~profile ~strict:strict_body ~approx:checked.approx
         ~sink:Flow_ir.Sop_input ~sources inputs data in
       if strict_body then ignore(ok program);
-      let parameters=Lazy.force kernel_source ^ (match operation with "sop/remap"->";remap;"|"sop/concat"->";concat;"|_->";mesh;") ^ (if host then "host" ^ string_of_int (Atomic.fetch_and_add host_serial 1) else Flow.Value.key_of ~residual:E.Private.residual_id data)
+      let parameters=Lazy.force kernel_source ^ (match operation with "sop/remap"->";remap;"|"sop/concat"->";concat;"|"sop/with_planes"->";planes;"|_->";mesh;") ^ (if host then "host" ^ string_of_int (Atomic.fetch_and_add host_serial 1) else Flow.Value.key_of ~residual:E.Private.residual_id data)
         ^Option.fold ~none:"" ~some:E.state_stamp state
         ^Option.fold ~none:"" ~some:(fun fields->Flow.Value.key_of ~residual:E.Private.residual_id(E.Record fields))elems in
       let node=Sop.Node.Private.make_geometry ~label:(geometry_arrays_label operation) ~operation:(geometry_arrays_key operation) ~version:1
-        ~parameters ~cook_mode:(if operation="sop/remap" || operation="sop/concat" then Sop.Node.Generic else Sop.Node.Generator)
+        ~parameters ~cook_mode:(if operation="sop/remap" || operation="sop/concat" || operation="sop/with_planes" then Sop.Node.Generic else Sop.Node.Generator)
         ~dependencies:(if E.frame_dependent data then Sop.Context.Dependencies.one Input
           else Sop.Context.Dependencies.static) ~inputs:(Array.of_list inputs)
         (fun ~node_id:_ context geometries->
@@ -203,7 +203,12 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
             Result.bind(Flow_ir.Executor.force ?state ?elems ~reference ~strict:strict_body
               ~resolve:(Attribute_kernel.resolve ~geometry) program ~live:(Sop.Context.input context))
               (function E.Record fields->if cancelled()then error()else
-                  let result=if operation="sop/concat" then
+                  let result=if operation="sop/with_planes" then
+                      (match List.assoc_opt "geometry" args with
+                       |Some(E.Deferred(ty,id)) when ty=Ty.geometry && geometry id<>None->
+                           Attribute_kernel.with_planes ~grain:(Sop.Context.grain context)(Option.get(geometry id))fields
+                       |_->Error(Diagnostic.error ~code:"E_DATA_SOURCE" "With planes needs a cooked geometry."))
+                    else if operation="sop/concat" then
                       let rec collect result = function
                         |[]->Ok(List.rev result)
                         |E.No_geo::rest->collect result rest
@@ -229,7 +234,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
                 |_->Error(Diagnostic.error ~code:"E_TOPOLOGY_TYPE" "Mesh data must be a record.")))in
           Result.map_error(Diagnostic_bridge.to_sop)
             (Result.map(fun geometry->Sop.Node.Private.{geometry;diagnostics=[];instances=None})result))in
-      Sop.Node.Private.with_facts {(Sop.Node.facts node) with reads=(if operation="sop/remap" || operation="sop/concat" then ["*"] else Attribute_kernel.reads data);
+      Sop.Node.Private.with_facts {(Sop.Node.facts node) with reads=(if operation="sop/remap" || operation="sop/concat" || operation="sop/with_planes" then ["*"] else Attribute_kernel.reads data);
         writes=["*"];topology=Changed;elementwise=None}node in
     let structural_node residual captures =
       let program=match Flow_ir.Core_lower.lower ~strict:true residual with
@@ -838,7 +843,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
               | arg -> [arg]) args in
           let dynamic = ref [] in
           let p = match node.kind with
-            | "sop/mesh" | "sop/mesh_planes" | "sop/remap" | "sop/concat" ->
+            | "sop/mesh" | "sop/mesh_planes" | "sop/remap" | "sop/concat" | "sop/with_planes" ->
                 let sources=deps node in
                 let factory=Edit.factory ~key:(geometry_arrays_key node.kind) ~label:(geometry_arrays_label node.kind) ~category:["Flow";"Topology"]
                   ~arity:(List.length sources)(geometry_arrays_node ~operation:node.kind ~args ~sources)in

@@ -1338,3 +1338,25 @@ none) adds a primitive Int attribute holding `:source_base` plus the input index
 and an input that already has it keeps its values. No Core or Region instruction
 is added, there is no JavaScript twin (the rdk function is compiled for the
 browser later), and facts read and write all payload with changed topology.
+
+### Float attributes as planes with a cook-time width
+
+A Lisp body cannot read an attribute whose storage type is only known at cook
+time, because `:type` of `sop/attr` is a literal. Two host operators handle every
+float-family storage internally:
+
+```lisp
+(sop/attr_planes geometry "name" :owner "point")
+  ; -> {:width int :x (array float) :y (array float) :z (array float) :w (array float)}
+(sop/with_planes geometry "name" planes :owner "point")
+```
+
+`sop/attr_planes` reads Float (width 1), Vec2, Vec3 and Vec4 attributes of any
+owner, and canonical point `P`. `:width` is the stored width; planes past it are
+zero arrays of the owner count (always four planes keep the record type static).
+Other storage, or a missing attribute, is `E_ATTR_TYPE`. `sop/with_planes` writes
+the first `:width` planes of the record with the matching float, vec2, vec3 or vec4
+storage through the ordinary planar `sop/with_attr` writer: owner count
+(`E_ATTR_COUNT`), finiteness (`E_NONFINITE`) and the `P` vec3 rule are unchanged,
+and a width outside 1 to 4 is `E_ATTR_WIDTH`. A round trip restores the storage
+type. Neither adds a Core instruction; there is no JavaScript twin (decision 4).

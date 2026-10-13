@@ -1594,6 +1594,12 @@ of geometries with native Merge semantics for every attribute type and group
 type is only known at cook time. It projects as an ordinary card with a
 geometry-list row.
 
+`(sop/attr_planes geometry "name" :owner o)` reads any float, vec2, vec3 or vec4
+attribute as `{:width :x :y :z :w}` and `(sop/with_planes geometry "name" planes
+:owner o)` writes such a record back with the matching storage, for bodies that
+loop over `sop/attr_entries` whose storage types are only known at cook time. Both
+are ordinary cards with record rows.
+
 `(sop/mesh_planes :points {:x xs :y ys :z zs} :vertex_points vp
 :primitive_offsets po :kinds k)` is the separately typed coordinate-plane form
 of the same constructor. Its points socket is exactly a three-field record of

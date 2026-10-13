@@ -49,7 +49,7 @@ let reads value =
     let rec scan (term : Flow.Workspace.term) =
       let all = List.iter scan and fields fields = List.iter (fun (_, term) -> scan term) fields in
       match term.node with
-      | Op {op=("sop/attr"|"sop/attr_checked"|"sop/has_attr"|"sop/attr_type");args;_} ->
+      | Op {op=("sop/attr"|"sop/attr_checked"|"sop/attr_planes"|"sop/has_attr"|"sop/attr_type");args;_} ->
           (match Option.bind (List.assoc_opt "attribute" args) (lookup bindings),
               Option.bind (List.assoc_opt "geometry" args) (lookup bindings) with
            | Some (E.Text name), Some (E.Deferred (ty, id)) when Flow.Ty.is_geometry ty ->
@@ -94,7 +94,7 @@ let reads value =
         names:="*"::!names;
         (match List.assoc_opt "geometry" args with Some(E.Deferred(ty,_))when Flow.Ty.is_geometry ty->()
          |_->opaque:=true)
-    | E.Struct ("sop/attr", _, args) | E.Source(("sop/attr"|"sop/attr_checked"|"sop/has_attr"|"sop/attr_type"),_,args) ->
+    | E.Struct ("sop/attr", _, args) | E.Source(("sop/attr"|"sop/attr_checked"|"sop/attr_planes"|"sop/has_attr"|"sop/attr_type"),_,args) ->
         (match List.assoc_opt "attribute" args, List.assoc_opt "geometry" args with
          | Some (E.Text name), Some (E.Deferred (ty, _)) when Flow.Ty.is_geometry ty ->
              names := name :: !names
@@ -218,6 +218,18 @@ let read_checked ~component ~owner ~kind name geometry =
           Ok(if component="valid" then E.Int_array valid else match width with
             |1->E.Float_array values|2->E.Vec2_array values|3->E.Vec3_array values|_->E.Vec4_array values))
 
+let read_planes ~component ~owner name geometry =
+  match storage ~owner ~name geometry with
+  | None -> error "E_ATTR_TYPE" (owner_name owner ^ " attribute " ^ name ^ " is missing.")
+  | Some storage -> match columns storage with
+    | None -> error "E_ATTR_TYPE" (owner_name owner ^ " attribute " ^ name ^ " is not float, vec2, vec3 or vec4.")
+    | Some planes ->
+        if component = "width" then Ok(E.Int(Array.length planes)) else
+        match String.index_opt "xyzw" (if String.length component=1 then component.[0] else '?') with
+        | None -> error "E_ATTR_TYPE" "Plane component is width, x, y, z or w."
+        | Some c -> Ok(E.Float_array(if c < Array.length planes then Array.copy planes.(c)
+            else Array.make (owner_count geometry owner) 0.))
+
 let constant_source = function
   |E.Source(name,ty,args) when String.starts_with ~prefix:"$core/constant-array/" name ->
       Some (try
@@ -247,6 +259,14 @@ let rec resolve ~geometry value = match constant_source value with
             |Some geometry->Result.bind(options args)(fun(owner,kind)->
                 read_checked ~component ~owner ~kind name geometry))
        |_->error "E_ATTR_TYPE" "sop/attr_checked needs geometry, an attribute name and a component.")
+  | E.Source ("sop/attr_planes", _, args) ->
+      (match List.assoc_opt "geometry" args, List.assoc_opt "attribute" args, List.assoc_opt "component" args with
+       | Some (E.Deferred (ty, id)), Some (E.Text name), Some (E.Text component) when Flow.Ty.is_geometry ty ->
+           (match geometry id with
+            | None -> error "E_DATA_SOURCE" "Attribute source has not been cooked."
+            | Some geometry -> Result.bind (options args) (fun (owner, _) ->
+                read_planes ~component ~owner name geometry))
+       | _ -> error "E_ATTR_TYPE" "sop/attr_planes needs geometry, an attribute name and a component.")
   | E.Struct ("sop/attr", _, args) | E.Source ("sop/attr", _, args) ->
       (match List.assoc_opt "geometry" args, List.assoc_opt "attribute" args with
        | Some (E.Deferred (ty, id)), Some (E.Text name) when Flow.Ty.is_geometry ty ->
@@ -444,6 +464,26 @@ let write_storage ~owned_fields ~grain ~owner ~kind name values geometry =
 
 let write ~grain ~owner ~kind name values geometry =
   write_storage ~owned_fields:[] ~grain ~owner ~kind name values geometry
+
+(* [planes] is the record [attr_planes] reads: the first [width] planes are written as float,
+   vec2, vec3 or vec4 through the ordinary planar writer. *)
+let with_planes ~grain geometry fields =
+  let text key = match List.assoc_opt key fields with
+    | Some(E.Text value)->Ok value | _->error "E_ATTR_NAME" ("sop/with_planes needs " ^ key ^ " as text.") in
+  Result.bind (text "attribute") (fun name -> Result.bind (owner(match List.assoc_opt "owner" fields with
+      | Some(E.Text value)->value | _->"point")) (fun owner ->
+    match List.assoc_opt "planes" fields with
+    | Some(E.Record planes) ->
+        (match List.assoc_opt "width" planes with
+         | Some(E.Int w) when w>=1 && w<=4 ->
+             let names=List.filteri(fun i _->i<w)["x";"y";"z";"w"] in
+             let kind=[|"float";"vec2";"vec3";"vec4"|].(w-1) in
+             let values=if w=1 then List.assoc "x" planes
+               else E.Record(List.map(fun n->n,List.assoc n planes)names) in
+             write ~grain ~owner ~kind name values geometry
+         | Some(E.Int _)->error "E_ATTR_WIDTH" "Plane width is 1 to 4."
+         | _->error "E_ATTR_TYPE" "sop/with_planes needs an integer width.")
+    | _->error "E_ATTR_TYPE" "sop/with_planes needs a planes record."))
 
 let write_selected ~grain ~owner ~kind name ~values ~selection ~default geometry =
   let width=width kind and count=owner_count geometry owner in

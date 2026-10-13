@@ -57,6 +57,18 @@ let attr_checked : Flow.Op.t = {
         name,Flow.Value.Source("sop/attr_checked",ty,args@["component",Flow.Value.Text name]))fields)
     | _ -> assert false);
 }
+(* Float-family attribute as planes with a cook-time width: x, y, z, w (planes past [width] are zero). *)
+let planes_type=Flow.Ty.Record["width",Int;"x",Array Float;"y",Array Float;"z",Array Float;"w",Array Float]
+let attr_planes : Flow.Op.t = {
+  attr with name="sop/attr_planes";
+  signature={attr.signature with kw=["owner",Flow.Ty.Text]};
+  out=(fun _->planes_type); out_args=None;
+  check=validate_args;
+  body=(fun ~live:_ ~node:_ args->match planes_type with
+    | Flow.Ty.Record fields -> Flow.Value.Record(List.map(fun(name,ty)->
+        name,Flow.Value.Source("sop/attr_planes",ty,args@["component",Flow.Value.Text name]))fields)
+    | _ -> assert false);
+}
 let with_attr : Flow.Op.t = {
   attr with name = "sop/with_attr";
   signature = {attr.signature with pos = attr.signature.pos @ ["values", Flow.Ty.Any];
@@ -436,6 +448,15 @@ let group_name_forced : Flow.Op.t = {
     Rdk.Group_ops.force_valid_group_name(metadata_text args "text")));
 }
 
+let with_planes : Flow.Op.t = {
+  mesh with name="sop/with_planes";
+  signature={pos=["geometry",Flow.Ty.geometry;"attribute",Text;"planes",planes_type];opt=[];rest=None;
+    kw=["owner",Text]};
+  out_args=None;
+  check=validate_args;
+  body=(fun ~live:_ ~node args->node "sop/with_planes" args);
+}
+
 let remap : Flow.Op.t = {
   mesh with name="sop/remap";
   out_args=None;
@@ -457,7 +478,7 @@ let concat : Flow.Op.t = {
   body=(fun ~live:_ ~node args->node "sop/concat" args);
 }
 
-let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; adjacency; components; shortest_paths; color; chains; mesh; mesh_planes; remap; concat;
+let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; adjacency; components; shortest_paths; color; chains; mesh; mesh_planes; remap; concat; attr_planes; with_planes;
   group; group_order; group_names; group_entries; with_group; context_seed;
   rename_attr;swap_attr;delete_attrs;rename_group;delete_group;rename_edge;delete_edge;attr_type;attr_names;attr_entries;
   glob_error;glob_rewrite_error;glob_rewrite;glob_literal;group_name_valid;group_name_forced]

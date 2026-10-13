@@ -31,6 +31,11 @@ val write : grain:int -> owner:Rdk.Attribute.owner -> kind:string -> string ->
 (** Write concrete typed arrays into fresh owned storage, checking owner count,
     storage layout and finite numeric values. *)
 
+val with_planes : grain:int -> Rdk.Geometry.t -> (string * Flow.Eval.value) list ->
+  (Rdk.Geometry.t, Flow.Diagnostic.t) result
+(** Write [:attribute], [:owner] and the [:planes] record (width and x/y/z/w planes, as
+    [sop/attr_planes] reads them) with the matching float, vec2, vec3 or vec4 storage. *)
+
 val write_selected : grain:int -> owner:Rdk.Attribute.owner -> kind:string -> string ->
   values:Flow.Eval.value -> selection:Flow.Eval.value -> default:Flow.Eval.value ->
   Rdk.Geometry.t -> (Rdk.Geometry.t, Flow.Diagnostic.t) result
