@@ -869,6 +869,72 @@ arr1[0.;-0.;0.];arr1[1e16;1.;-1e16];
       components over (Some(E.Int_array(Array.make count 2))))
       ["edges",Rdk.Geometry.point_count geometry;"points",Rdk.Geometry.primitive_count geometry];
     components "faces" None;
+    (* E.1-E.3: pure array sources over the adjacency record; the host twin takes
+       the same concrete record and arrays. *)
+    let adjacency=match
+      List.fold_left(fun acc name->Result.bind acc (fun fields->
+        Result.map(fun value->(name,value)::fields)(resolve(E.Source("sop/adjacency",T.Array T.Int,
+          ["geometry",handle;"component",E.Text name])))))(Ok[])
+        ["primitive_of_vertex";"next_vertex";"previous_vertex";"edge_of_vertex";"opposite_vertex";
+         "edge_a";"edge_b";"point_edge_offsets";"point_edges";"point_vertex_offsets";"point_vertices"]
+    with Ok fields->E.Record(List.rev fields)|Error d->failwith(Flow.Diagnostic.to_string d) in
+    let points=Rdk.Geometry.point_count geometry
+    and edges=Rdk.Topology_index.edge_count(Rdk.Topology_index.create(Rdk.Geometry.topology geometry)) in
+    let graph name ty components args=
+      add_host name (List.map snd args)
+        (host_result(fun()->
+          let get component=resolve(E.Source(name,ty,("component",E.Text component)::args)) in
+          let rec gather acc=function
+            |[]->Ok(E.Record(List.rev acc))
+            |component::rest->Result.bind(get component)(fun value->gather((component,value)::acc)rest) in
+          gather [] components)) in
+    let paths ?radius lengths roots=
+      graph "graph/shortest_paths" T.Any ["distance";"parent"]
+        (["adjacency",adjacency;"lengths",lengths;"roots",roots]@(match radius with Some r->["radius",r]|None->[])) in
+    let unit=E.Float_array(Array.make edges 1.) and mixed=E.Float_array(Array.init edges (fun i->float(1+i mod 2)))
+    and ramp=E.Float_array(Array.init edges (fun i->0.25*.float i)) in
+    List.iter(fun roots->if roots<=points then List.iter(fun lengths->
+      paths lengths (E.Int_array(Array.init roots Fun.id)))[unit;mixed;ramp])[0;1;2;5];
+    paths ~radius:(E.Float 1.5) unit (E.Int_array(if points>0 then [|0|] else [||]));
+    paths ~radius:(E.Float 0.) unit (E.Int_array(if points>0 then [|0;0|] else [||]));
+    paths ~radius:(E.Float (-1.)) unit (E.Int_array [||]);
+    paths (E.Float_array(Array.make (edges+1) 1.)) (E.Int_array [||]);
+    paths (E.Float_array(Array.make edges (-1.))) (E.Int_array [||]);
+    if edges>0 then paths (E.Float_array(Array.init edges (fun i->if i=0 then -1. else 1.))) (E.Int_array [||]);
+    paths unit (E.Int_array [|points|]);
+    paths unit (E.Int_array [|-1|]);
+    paths unit (E.Int_array [||]);
+    paths unit (E.Int_array(Array.make 3 (-0)));
+    let chains mask=graph "graph/chains" T.Any ["offsets";"values";"closed"]
+      (["adjacency",adjacency]@(match mask with Some m->["mask",m]|None->[])) in
+    chains None;
+    chains (Some(E.Int_array(Array.make edges 1)));
+    chains (Some(E.Int_array(Array.init edges (fun i->i land 1))));
+    chains (Some(E.Int_array(Array.init edges (fun i->if i mod 3=1 then 0 else 1))));
+    chains (Some(E.Int_array(Array.make edges 0)));
+    chains (Some(E.Int_array(Array.make (edges+1) 1)));
+    chains (Some(E.Int_array(Array.make edges 2)));
+    let rows_of lists=
+      let offsets=Array.make (Array.length lists+1) 0 in
+      Array.iteri(fun i l->offsets.(i+1)<-offsets.(i)+List.length l)lists;
+      E.Record["offsets",E.Int_array offsets;"values",E.Int_array(Array.of_list(List.concat(Array.to_list lists)))] in
+    let color rows order=graph "graph/color" T.Any ["color";"count"]["adjacency",rows;"order",order] in
+    List.iter(fun n->
+      let path=rows_of(Array.init n (fun i->List.filter(fun j->j>=0&&j<n)[i-1;i+1]))
+      and clique=rows_of(Array.init n (fun i->List.filter((<>)i)(List.init n Fun.id)))
+      and ring=rows_of(Array.init n (fun i->[(i+n-1) mod n;(i+1) mod n])) in
+      List.iter(fun rows->
+        color rows (E.Int_array(Array.init n Fun.id));
+        color rows (E.Int_array(Array.init n (fun i->n-1-i)));
+        color rows (E.Int_array(Array.init (n/2) (fun i->2*i)))) [path;clique;ring])[0;1;2;3;6;11];
+    color (rows_of [|[0];[0]|]) (E.Int_array [|0;1|]);
+    color (rows_of [|[1];[0]|]) (E.Int_array [|1;0;1|]);
+    color (rows_of [|[1];[0]|]) (E.Int_array [|2|]);
+    color (rows_of [|[1];[0]|]) (E.Int_array [|-1|]);
+    color (E.Record["offsets",E.Int_array [|0;1|];"values",E.Int_array [|5|]]) (E.Int_array [|0|]);
+    color (E.Record["offsets",E.Int_array [|1;1|];"values",E.Int_array [||]]) (E.Int_array [||]);
+    color (E.Record["offsets",E.Int_array [|0;2;1|];"values",E.Int_array [|0;0|]]) (E.Int_array [||]);
+    color (E.Record["offsets",E.Int_array [||];"values",E.Int_array [||]]) (E.Int_array [||]);
     mesh_case(mesh_fields geometry);
     mesh_case ~planes:true(mesh_plane_fields geometry))
     topology_fixtures;
@@ -1311,7 +1377,7 @@ remap_case source unrelated fields;
     let body = String.concat ",\n" (List.rev !(Hashtbl.find cases name)) in
     Out_channel.with_open_bin (Filename.concat outdir (export name ^ ".json")) (fun oc ->
       Printf.fprintf oc "{\"primitive\":%s,\"export\":%s,\"cases\":[\n%s\n]}\n" (str name) (str (export name)) body))
-    (List.map C.primitive_name inventory @ ["array/sum";"sop/context_seed";"sop/delete_attr";"sop/attr";"sop/attr_checked";"sop/with_attr";"sop/has_attr";"sop/count";"sop/edges";"sop/topology";"sop/adjacency";"sop/components";"sop/mesh";"sop/mesh_planes";"sop/remap";
+    (List.map C.primitive_name inventory @ ["array/sum";"sop/context_seed";"sop/delete_attr";"sop/attr";"sop/attr_checked";"sop/with_attr";"sop/has_attr";"sop/count";"sop/edges";"sop/topology";"sop/adjacency";"sop/components";"graph/shortest_paths";"graph/chains";"graph/color";"sop/mesh";"sop/mesh_planes";"sop/remap";
       "sop/group";"sop/group_names";"sop/group_order";"sop/with_group";
       "sop/attr_type";"sop/attr_names";"sop/rename_attr";"sop/swap_attr";"sop/delete_attrs";
       "sop/rename_group";"sop/delete_group";"sop/rename_edge";"sop/delete_edge";"text/glob_error";"text/glob_rewrite_error";

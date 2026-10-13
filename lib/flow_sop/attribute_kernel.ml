@@ -225,7 +225,7 @@ let constant_source = function
         |Flow.Value.Diagnostic_fail d->Error d)
   |_->None
 
-let resolve ~geometry value = match constant_source value with
+let rec resolve ~geometry value = match constant_source value with
   |Some result->Result.bind result(fun(operation,count,value)->
       try Ok((Option.get(Flow.Op.find operation Flow.Context.value)).body
         ~live:(Frame_input.at_time 0.) ~node:(fun _ _->assert false)["count",E.Int count;"value",value])
@@ -257,9 +257,28 @@ let resolve ~geometry value = match constant_source value with
                 Ok(E.Bool(match storage ~owner ~name geometry with
                   |None->false|Some storage->Option.fold ~none:true ~some:((=)(storage_kind storage))requested))))
        | _->error "E_ATTR_TYPE" "sop/has_attr needs geometry and an attribute name.")
-  | E.Source (("sop/count"|"sop/edges"|"sop/topology"|"sop/adjacency"|"sop/components"),_,_) as source -> Topology_kernel.resolve ~geometry source
+  | E.Source ("sop/components" as name,ty,args) ->
+      Result.bind (concrete_args ~geometry args) (fun args ->
+        Topology_kernel.resolve ~geometry (E.Source (name, ty, args)))
+  | E.Source (("sop/count"|"sop/edges"|"sop/topology"|"sop/adjacency"),_,_) as source -> Topology_kernel.resolve ~geometry source
   | E.Source (("sop/attr_type"|"sop/attr_names"),_,_) as source -> Attribute_metadata.resolve ~geometry source
+  | E.Source (("graph/shortest_paths"|"graph/color"|"graph/chains") as name,ty,args) ->
+      Result.bind (concrete_args ~geometry args) (fun args ->
+        Graph_kernel.resolve (E.Source (name, ty, args)))
   | source -> Group_kernel.resolve ~geometry source
+
+(* Array arguments of a pure source may still be host sources (a sop/adjacency
+   record): resolve them so the algorithm sees concrete arrays. *)
+and concrete_args ~geometry args =
+  let rec concrete = function
+    | E.Source _ as source -> Result.bind (resolve ~geometry source) concrete
+    | E.Record fields -> Result.map (fun fields -> E.Record fields) (all fields)
+    | value -> Ok value
+  and all = function
+    | [] -> Ok []
+    | (field, value) :: rest -> Result.bind (concrete value) (fun value ->
+        Result.map (fun rest -> (field, value) :: rest) (all rest)) in
+  all args
 
 let make_storage kind planes = match kind with
   | "float" -> Ok (A.Float planes.(0))

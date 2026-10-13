@@ -1551,6 +1551,15 @@ classes in order of their first element. The optional 0/1 `:mask` (one entry per
 labelled element) removes elements as deleted topology: they get id -1 and are
 not counted.
 
+The `graph/` operators are pure array functions over the adjacency record, so
+they need no geometry. `(graph/shortest_paths adjacency lengths roots)` returns
+`{:distance (array float) :parent (array int)}` (distance -1 where unreached;
+optional `:radius`), `(graph/color rows order)` returns `{:color (array int)
+:count int}` by first fit in the given order over `{:offsets :values}` neighbour
+rows, and `(graph/chains adjacency :mask m)` returns the ragged point chains
+`{:offsets :values :closed}` of the selected edges. Each wraps the RDK routine
+that the matching modeling node uses, with the same tie-breaks.
+
 `(sop/mesh :points p :vertex_points vp :primitive_offsets po :kinds k)` builds
 geometry from four required typed keyword rows. Points are a vec3 array; the
 other rows are exact integer arrays. An empty mesh uses empty points, vertex
