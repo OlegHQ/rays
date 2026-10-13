@@ -166,19 +166,30 @@ let run () =
       (sop/merge c d))))|} amount in
   let first = lower (chain "1") in
   let p = player first in
-  ignore (frame p ~time:0.);
+  let _, original = frame p ~time:0. in
   let before = Session.stats p.session in
   check (before.misses = 6 && before.hits = 0) "chain cooks six nodes";
   (* scrub: re-lower with the ids kept, same session, same compile chain *)
   let scrubbed = lower ~compiled_ids:first.compiled_ids ~sites:first.sites (chain "2") in
   let p' = { p with lowered = scrubbed; graph = List.hd scrubbed.graphs;
     root = Option.get (List.hd scrubbed.graphs).root; lane = Value_lane.create () } in
-  ignore (frame p' ~time:0.);
+  let _, scrubbed_geometry = frame p' ~time:0. in
   let after = Session.stats p.session in
-  check (after.misses - before.misses = 3)
-    (Printf.sprintf "the scrubbed node and its downstream recook (%d misses)"
+  (* Set Color reads topology/counts, so its cached Cd carries fresh P through
+     the existing component refresh. Only Transform and Merge must recook. *)
+  check (after.misses - before.misses = 2)
+    (Printf.sprintf "the transform and merge recook (%d misses)"
       (after.misses - before.misses));
-  check (after.hits - before.hits = 3) "the upstream node and the sibling chain hit";
+  check (after.hits - before.hits = 4)
+    "the upstream node, unchanged sibling chain and component-cached color hit";
+  let fresh = player (lower (chain "2")) in
+  let _, expected = frame fresh ~time:0. in
+  check (geometry_bytes scrubbed_geometry = geometry_bytes expected)
+    "component-cached color did not carry the transformed positions";
+  check (geometry_bytes scrubbed_geometry <> geometry_bytes original)
+    "the transform scrub returned the previous geometry";
+  Session.close fresh.session;
+  Session.close p.session;
   (* --- the editor's cook path: Lower.objects, timeline time, await -------- *)
   let orrery = lower (case "orrery") in
   let objects = Lower.objects orrery in

@@ -4240,3 +4240,39 @@ policy propagation through IR/cache/fusion, full reference dispatch, generic
 source consumption, GPU refusal and actual language/graph boundaries. The
 proof has no port/performance/architecture-portability qualification and no
 milestone count increment. The full current scope stays128 ports/60 milestones.
+
+## Lisp declaration cache keys preserve unchanged siblings
+
+2026-10-13. The C.1 shipping run process91290 exposed a pre-existing broad cache
+regression after Set Color became a Lisp body: `test_workspace_live` expected
+three downstream misses for a transform scrub and observed four. A sibling
+Set Color call with unchanged parameters/input also missed because the shared
+public factory source digest included the edited workspace call.
+
+The shared Lower fix keys ordinary Lisp factories on checked declarations,
+helpers and macros, retaining existing separate parameter/cooked-input keys.
+Supplied function slots keep the conservative whole-source key so closure/body
+capture invalidation is not lost. All declarations still conservatively
+invalidate ordinary factories; that known ceiling has a ponytail comment.
+A new one/eight-domain test requires an unchanged sibling to hit after a call
+edit and both dependent bodies to miss after a helper-body edit, comparing
+fresh-oracle geometry bytes.
+
+The first focused shared-launcher request process25298 completed EXIT1:
+Flow SOP (including new cache and actual subnormal fixtures), API and dependency
+checks pass, but the existing live-workspace test observes two misses, not three.
+Set Color's inferred component facts do not read P: after the shared source-key
+fix, its existing cached Cd delta carries the fresh transformed positions.
+Only Transform and Merge need a real cook; upstream/sibling nodes and both color
+nodes hit. The live test now requires exactly two misses/four hits and adds full
+fresh-oracle geometry-byte equality plus a changed-output assertion to rule out
+stale P. This updates the cache expectation to the existing component contract;
+it does not relax output correctness. Request50009 completes EXIT0 with the
+strengthened Flow SOP/live-workspace/API/dependency gate;
+log `/tmp/rays-lisp-declaration-cache-focused2.log`.
+The first ship run91290 is EXIT1 and also used dummy video settings
+and failed native smoke startup for that reason; the final shipping check must
+use native video. C.1's earlier focused request57033 is separately EXIT0.
+The strengthened packed fixture now uses actual `Float.next_after 0. 1.`
+subnormals; the earlier `Float.min_float` spelling represented the smallest
+positive normal, so its earlier success alone did not prove subnormal coverage.

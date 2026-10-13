@@ -577,3 +577,39 @@ let () = with_session (fun session ->
       (sop/attr_from_image geo :image (first pictures) :attribute "shade"))|},
     ["(sop/images geo)",unchanged;"(sop/images geo picture picture)",textured;
       "(sop/images geo (list picture picture))",textured]])
+
+let () =
+  let source amount helper = Printf.sprintf {|(workspace stable_body
+    (defn shifted :context value [(p : vec3)] (+ p [%s 0.0 0.0]))
+    (defnode sop/stable_body [(geo : geometry) (amount : float 0.0)]
+      (sop/with_attr geo :P (exact (map (fn [(p : vec3)]
+        (+ (shifted p) [amount 0.0 0.0])) (sop/attr geo :P)))))
+    (graph g :context sop (let* [upstream (sop/line :kind "Points" :points 3)
+      edited (sop/stable_body upstream :amount %s)
+      sibling (sop/stable_body upstream :amount 0.0)] (sop/merge edited sibling))))|} helper amount in
+  let lower ?previous text =
+    let compiled_ids,sites=match previous with None->None,None
+      |Some(lowered:Flow_sop.Lower.t)->Some lowered.compiled_ids,Some lowered.sites in
+    match Flow_sop.Lower.workspace ?compiled_ids ?sites ~factories:Sop_catalog.Editor.factories(parse text) with
+    |Ok lowered->let graph=List.hd lowered.graphs in
+        lowered,ok(Sop.Edit_graph.compile_node graph.network.geometry ~node_id:(Option.get graph.root))
+    |Error d->failwith(Flow.Diagnostic.to_string d) in
+  List.iter(fun domains->with_session(fun session->
+    let first,node=lower(source "1.0" "2.0") in
+    ignore(cook session ~domains node);
+    let before=Sop.Session.stats session in
+    let edited,node=lower ~previous:first(source "3.0" "2.0") in
+    ignore(cook session ~domains node);
+    let after=Sop.Session.stats session in
+    check(after.misses-before.misses=2 && after.hits-before.hits=2)
+      "A call-site parameter edit recooked an unchanged Lisp sibling";
+    let _,node=lower ~previous:edited(source "3.0" "4.0") in
+    let changed=cook session ~domains node in
+    let after_helper=Sop.Session.stats session in
+    check(after_helper.misses-after.misses=3 && after_helper.hits-after.hits=1)
+      "A helper body edit failed to invalidate both dependent Lisp bodies";
+    let _,oracle=lower(source "3.0" "4.0") in
+    with_session(fun fresh->check(Rdk_test_support.geometry_bytes changed=
+      Rdk_test_support.geometry_bytes(cook fresh ~domains oracle))
+      "Helper invalidation returned stale cached geometry"))) [1;8];
+  print_endline "Lisp declaration cache keys preserve unchanged siblings and invalidate edited helpers at one/eight domains"

@@ -161,6 +161,13 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
     let kernel_source = lazy (Digest.string (fst (Lisp.print (checked.source @ checked.macros @
       List.map (fun (g : Workspace.graph) -> g.form) checked.defs @
       List.map (fun (d : Workspace.node_definition) -> d.body.form) checked.nodes)))) in
+    (* Public Lisp nodes already key parameters and cooked inputs separately.
+       A call-site edit must not invalidate an unchanged sibling's body.
+       ponytail: all declarations invalidate these factories; narrow to called
+       declaration cones if unrelated helper edits measurably recook them. *)
+    let declaration_source = lazy (Digest.string (fst (Lisp.print (checked.macros @
+      List.map (fun (g : Workspace.graph) -> g.form) checked.defs @
+      List.map (fun (d : Workspace.node_definition) -> d.body.form) checked.nodes)))) in
     let attribute_options args =
       let text key default code=match List.assoc_opt key args with
         |None->default|Some(E.Text text)->text|_->fail code ("Attribute "^key^" must be static text") in
@@ -666,7 +673,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
               definition.slots)
             ~operation:definition.operation ~label:key
             ~fields:definition.fields ~normalizers:(Encoded_parameters.for_node checked definition)
-            ~source:(Lazy.force kernel_source) ~build:(build bindings)
+            ~source:(Lazy.force (if functions=[] then declaration_source else kernel_source)) ~build:(build bindings)
             (List.filter_map Fun.id inputs) in
       if definition.slots=[] then
         Edit.factory ~key ~operation:definition.operation ~label:definition.label ~category ~fields:definition.fields ~arity:0
