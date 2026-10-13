@@ -5,9 +5,10 @@ immutable storage, state rollback, domains, geometry compositions and actual
 JavaScript runtime/workers pass in focused integration. The latest run is
 `/tmp/rays-region-binding-focused9.log` (EXIT0), including recursive argument
 storage, ordinary Float Product forcing and actual worker error locations.
-Core variants were accepted in `77be0b5c`. The corrected snapshot's final
-shipping check is running in `/tmp/rays-bulk-array-native-ship2.log`.
-No C.4 tick or whole SOP port is counted until that check finishes.
+Core variants were accepted in `77be0b5c`; implementation is `93f5528f`.
+The corrected snapshot's native shipping check passed (session11075 EXIT0,
+`/tmp/rays-bulk-array-native-ship2.log`). C.4 is complete. These capability
+checks qualify no whole SOP port.
 
 ## Contract and existing path
 

@@ -4,10 +4,10 @@ Status: native/reference/strict Core, source ownership, lazy errors, state
 rollback, domains and actual JavaScript runtime/workers pass. The latest focused
 integration run is `/tmp/rays-region-binding-focused9.log` (EXIT0), including
 recursive argument storage, ordinary Float Product forcing and actual worker
-error locations. Core variants were accepted in `77be0b5c`. The corrected
-snapshot's final shipping check is running in `/tmp/rays-bulk-array-native-ship2.log`.
-Optional scatter timings below have not run. C.4 remains unchecked until
-shipping finishes; no whole SOP port is qualified by these primitive checks.
+error locations. Core variants were accepted in `77be0b5c`; implementation is
+`93f5528f`. The corrected snapshot's native shipping check passed (session11075
+EXIT0, `/tmp/rays-bulk-array-native-ship2.log`). C.4 is complete. Optional scatter
+timings below have not run; these primitive checks qualify no whole SOP port.
 
 ## Boundary and reuse
 

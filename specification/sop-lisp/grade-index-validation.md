@@ -6,9 +6,10 @@ runtime/workers pass. The all-byte fixture uses a checked list and typed map
 within the existing 2,048 AST budget. The latest focused integration run is
 `/tmp/rays-region-binding-focused9.log` (EXIT0), including recursive argument
 storage, ordinary Float Product forcing and actual worker error locations.
-Core variants were accepted in `77be0b5c`. The corrected snapshot's final
-shipping check is running in `/tmp/rays-bulk-array-native-ship2.log`.
-No C.5 tick or whole SOP port is counted until that check finishes.
+Core variants were accepted in `77be0b5c`; implementation is `93f5528f`.
+The corrected snapshot's native shipping check passed (session11075 EXIT0,
+`/tmp/rays-bulk-array-native-ship2.log`). C.5 is complete. These capability
+checks qualify no whole SOP port.
 
 The integration adds canonical `array/grade` and `array/index_of`, two Core primitive tags, the
 existing cached Core dispatch and the production JavaScript mirrors. No
@@ -81,7 +82,7 @@ The shared launcher passed the focused checks:
 opam exec -- _build/default/tools/check.exe @check @lib/flow/runtest @lib/flow_ir/runtest @lib/flow_sop/runtest @lib/flow_graph/runtest @lib/flow_web/runtest @lib/flow_gpu/runtest @tools/lisp/runtest @test/dependency_gate @test/test_workspace_shell @tools/api_manifest/runtest
 ```
 
-Parent owns API promotion and final broad/native integration checks.
+The API and final native shipping integration checks passed.
 
 These language primitives are not full Sort/Enumerate/Match implementations.
 Selected groups, combined indices, spatial Morton keys, duplicate rejection,

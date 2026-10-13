@@ -4686,3 +4686,41 @@ The corrected snapshot's final native `check.exe --ship` is running as
 session11075, `/tmp/rays-bulk-array-native-ship2.log`. Its terminal result must
 be recorded before C.4/C.5 are checked. Accepted ports remain14/128 and completed
 milestones21/60. Circle and payload remap/concat remain unaccepted candidates.
+
+## C.4/C.5 accepted — final native integration (2026-10-13)
+
+The corrected compiler snapshot `93f5528f` passed native
+`opam exec -- _build/default/tools/check.exe --ship`: session11075 EXIT0,
+`/tmp/rays-bulk-array-native-ship2.log`. This ran `@all`, `@runtest`, the finite
+native smoke checks and `git diff --check`. The workspace IR sweep passed all
+43 standard workspaces, one custom-catalog executable and 13 fixtures, with
+four times and domains1/8; existing14 accepted whole ports remained green.
+The same running handle was retained throughout; no build was restarted merely
+because its workspace sweep took longer than a tool observation window.
+
+Together with the focused EXIT0 and actual worker proof recorded above, this
+closes the stated C.4/C.5 language gates. Native/reference/Core checks include
+domains1/4/8, immutable buffers, exact Int values/wrap above2^53, stable equal
+keys, byte-Text ordering, missing/first-match lookup, lazy failures and state
+rollback. C.4 additionally has actual compact/scan geometry compositions and
+ordered scatter failure precedence; graph/menu/save gestures and native/JS
+fixtures passed. Actual generated frames use compiled Invoke arguments/source
+preparers and null/one/eight-worker pools, not reference-fed inputs or counts.
+The three review findings (recursive storage, Float Product forcing and worker
+statement provenance) are corrected and tested.
+
+Task C.4 (compact/scan/scatter) and C.5 (grade/index) are now checked in the plan.
+Completed milestones:23/60 (38.3%). Accepted whole ports:14/128 (10.9%), with
+114 remaining. No whole Sort, Enumerate, Merge, Line, Circle or other pending
+port is counted from language capability checks. The whole-node native4ULP and
+2× speed gates remain unchanged. Pure bulk intrinsics retain their documented
+host cancellation boundary; no internal cancellation checkpoint is claimed.
+
+Next integration candidates are generic payload remap/concat and whole
+generators. Read-only remap review found a native/JS early-malformed-ancestry
+cancellation-order mismatch; the frozen follow-up preserves native deferred
+invalid reporting through both validation scans. It remains unbuilt/unaccepted.
+Points design preserves the native hard maximum50; its fixed proposed timings
+label aggregate1M output as20,000 cold50-point cooks, separately from36 micro
+rows. Both retain every row and the unrounded2× gate; no single1M Points
+geometry, widened schema or substituted sibling implementation is claimed.
