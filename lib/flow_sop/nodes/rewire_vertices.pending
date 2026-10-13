@@ -1,0 +1,116 @@
+; Whole Rewire Vertices draft. The target attribute (point, vertex or primitive owned) names a point per
+; corner; selected corners are rewired, unused points are dropped (kept ones keep their payload), and the
+; result is one sop/remap with an explicit edge ancestry so edge groups follow their corner edges.
+; The selection is promoted to the target owner with group_promote_any (Include_any), defined by the
+; accepted group_promote_boundary node.
+(defn rewire_fail :context value [(reason : text)]
+  (error "invalid_rewire_vertices" "rewire_vertices could not produce valid geometry"
+    :cause (str "rewire_vertices [invalid_rewire_vertices]: " reason)))
+; Each point's first cycle node along its successor chain (invalid targets point to themselves). Pointer
+; doubling: s^(2^k) lands on a cycle, the image of s^n is exactly the cycle nodes, and doubling again from
+; "cycle nodes stay put" finds the first cycle node of every chain.
+(defn rewire_resolve :context sop [(target : (array int)) (points : int)]
+  (let* [indices (array/range points :type int)
+         step (exact (map (fn [(d : int) (p : int)] (if (and (int/ge d 0) (int/lt d points)) d p)) target indices))
+         bits (fold [b 0] [k (array/range 62 :type int)] (int/add b (if (int/lt (int/shl 1 k) points) 1 0)))
+         far (iterate bits step (fn [a] (exact (map (fn [(x : int)] (array/nth a x)) a))))
+         cycle (exact (map (fn [(c : int)] (if (int/gt c 0) 1 0)) (array/scatter_add far (array/int points 1) points)))
+         start (exact (map (fn [(m : int) (s : int) (p : int)] (if (int/eq m 1) p s)) cycle step indices))]
+    (iterate bits start (fn [a] (exact (map (fn [(x : int)] (array/nth a x)) a))))))
+
+(defnode sop/rewire_vertices :label "Rewire Vertices" :category ["Topology" "Edit"]
+  :validate (and (and (or (not recursive) (equal? owner "Point")) (not (text/blank? target_attribute)))
+                 (not (equal? (text/trim original_point_attribute) "N")))
+  :code "E_PARAM" :message "sop/rewire_vertices: invalid recursive mode, target or original attribute"
+  [(in0 : geometry)
+   (selection_owner : text "Vertex" :label "Selection owner" :choices ["Point" "Vertex" "Primitive" "Edge"])
+   (selection : text "" :label "Selection group")
+   (owner : text "Vertex" :label "Target attribute owner" :choices ["Point" "Vertex" "Primitive"])
+   (target_attribute : text "target" :label "Target attribute")
+   (recursive : bool false :label "Resolve recursively")
+   (delete_target_attribute : bool true :label "Delete target attribute")
+   (keep_unused_points : bool false :label "Keep unused points")
+   (original_point_attribute : text "" :label "Original point attribute" :folder ["Output"])]
+  (let* [group_name (text/trim selection)
+         has_group (not (text/blank? group_name))
+         group_owner (text/lower selection_owner)
+         target_owner (text/lower owner)
+         group_literal (text/glob_literal (if has_group group_name "x"))
+         target_literal (text/glob_literal target_attribute)
+         original_name (text/trim original_point_attribute)
+         group_found (or (not has_group)
+                         (int/gt (array/count (sop/group_names in0 group_literal :owner group_owner)) 0))
+         has_target (sop/has_attr in0 target_attribute :owner target_owner)
+         target_is_int (sop/has_attr in0 target_attribute :owner target_owner :type int)]
+    (cond
+      (not group_found)
+        (error "missing_group" (str "rewire_vertices could not find " group_owner " group " (text/repr group_name)))
+      (not has_target) (rewire_fail (str "Rewire Vertices could not find target attribute " (text/repr target_attribute)))
+      (not target_is_int) (rewire_fail "Rewire Vertices target attribute must be scalar integer")
+      :else
+        (let* [points (sop/count in0 :points)
+               vertices (sop/count in0 :vertices)
+               prims (sop/count in0 :primitives)
+               topo (sop/topology in0)
+               vp topo.vertex_points
+               adjacency (sop/adjacency in0)
+               raw (sop/attr in0 target_attribute :owner target_owner :type int)
+               count (case owner "Point" points "Vertex" vertices :else prims)
+               mask (if has_group
+                      (group_promote_any in0 group_owner target_owner (sop/group in0 :name group_name :owner group_owner))
+                      (array/int count 1))
+               targets (if recursive (rewire_resolve raw points) raw)
+               dest (case owner
+                      "Point" (exact (map (fn [(p : int)] (array/nth targets p)) vp))
+                      "Vertex" raw
+                      :else (exact (map (fn [(q : int)] (array/nth raw q)) adjacency.primitive_of_vertex)))
+               chosen (case owner
+                        "Point" (exact (map (fn [(p : int)] (array/nth mask p)) vp))
+                        "Vertex" mask
+                        :else (exact (map (fn [(q : int)] (array/nth mask q)) adjacency.primitive_of_vertex)))
+               moved (exact (map (fn [(p : int) (d : int) (s : int)]
+                       (if (and (int/eq s 1) (and (and (int/ge d 0) (int/lt d points)) (not (int/eq d p)))) d p))
+                       vp dest chosen))
+               changed (int/gt (array/sum (exact (map (fn [(a : int) (b : int)] (if (int/eq a b) 0 1)) vp moved))) 0)]
+          (if (not changed)
+            (let* [cleaned (if delete_target_attribute (sop/delete_attr in0 target_literal :owner target_owner) in0)]
+              (if (text/blank? original_name) cleaned
+                (sop/with_attr cleaned original_name (exact vp) :owner "vertex" :type int)))
+            (let* [used_before (array/scatter_add vp (array/int vertices 1) points)
+                   used_after (array/scatter_add moved (array/int vertices 1) points)
+                   kept (exact (map (fn [(b : int) (a : int)] (if (or (int/eq b 0) (int/gt a 0)) 1 0)) used_before used_after))
+                   kept_count (array/sum kept)
+                   compact (and (not keep_unused_points) (int/lt kept_count points))
+                   renumber (array/scan_sum kept)
+                   final_points (if compact kept_count points)
+                   final_vp (if compact (exact (map (fn [(p : int)] (array/nth renumber p)) moved)) moved)
+                   point_map (if compact (array/compact kept) (array/range points :type int))
+                   target (sop/mesh :points (array/vec3 final_points) :vertex_points final_vp
+                            :primitive_offsets topo.primitive_offsets :kinds topo.kinds)
+                   has_edge_groups (int/gt (array/count (sop/group_names in0 "*" :owner "edge")) 0)
+                   edges (sop/edges target)
+                   target_edges (sop/count target :edges)
+                   keys (exact (map (fn [(a : int) (b : int)] (int/add (int/mul a final_points) b)) edges.a edges.b))
+                   owned (array/compact (exact (map (fn [(e : int)] (if (int/ge e 0) 1 0)) adjacency.edge_of_vertex)))
+                   queries (exact (map (fn [(v : int)]
+                             (let* [left (array/nth final_vp v)
+                                    right (array/nth final_vp (array/nth adjacency.next_vertex v))]
+                               (int/add (int/mul (if (int/lt left right) left right) final_points)
+                                 (if (int/lt left right) right left))))
+                             owned))
+                   found (array/index_of keys queries)
+                   grouped (array/grade found)
+                   ancestry {:offsets (array/scan_sum (array/scatter_add found (array/int (array/count owned) 1) target_edges))
+                             :values (exact (map (fn [(i : int)] (array/nth adjacency.edge_of_vertex (array/nth owned i))) grouped))}
+                   rewired (if has_edge_groups
+                             (sop/remap in0 target :points point_map
+                               :vertices (array/range vertices :type int) :primitives (array/range prims :type int)
+                               :positions "mapped" :edges ancestry)
+                             (sop/remap in0 target :points point_map
+                               :vertices (array/range vertices :type int) :primitives (array/range prims :type int)
+                               :positions "mapped"))
+                   cleaned (sop/delete_attr (sop/delete_attr
+                             (if delete_target_attribute (sop/delete_attr rewired target_literal :owner target_owner) rewired)
+                             "N" :owner "point") "N" :owner "vertex")]
+              (if (text/blank? original_name) cleaned
+                (sop/with_attr cleaned original_name (exact vp) :owner "vertex" :type int))))))))
