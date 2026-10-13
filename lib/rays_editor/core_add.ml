@@ -72,6 +72,9 @@ let value_expression ~ops context key =
   | "sop/mesh" ->
       List.hd (Result.get_ok (S.parse
         "(sop/mesh :points (array/vec3 0) :vertex_points (array/int 0) :primitive_offsets (array/int 1) :kinds (array/int 0))")), "mesh"
+  | "sop/mesh_planes" ->
+      List.hd (Result.get_ok (S.parse
+        "(sop/mesh_planes :points {:x (array/float 0) :y (array/float 0) :z (array/float 0)} :vertex_points (array/int 0) :primitive_offsets (array/int 1) :kinds (array/int 0))")), "mesh"
   | form when List.exists (fun (_, f, _, _) -> f = form) forms ->
       let _, _, text, name = List.find (fun (_, f, _, _) -> f = form) forms in
       List.hd (Result.get_ok (S.parse text)), name

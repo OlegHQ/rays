@@ -4389,3 +4389,27 @@ Final native shipping request72554 EXIT0 passes with that fix;
 standard files, one custom-catalog executable and13 fixtures; native examples,
 all default tests, the build and whitespace check pass. These capabilities add no whole SOP
 port and tick no additional milestone:14/128 ports and21/60 milestones remain.
+## Typed Mesh coordinate-plane integration
+
+2026-10-13. `sop/mesh_planes` accepts an exact x/y/z Float-array record and
+the three required Int topology arrays. It reuses the owned Mesh boundary,
+copies every retained input plane and preserves native scalar-array capacity
+without allocating a combined3*n Float buffer. All Lower Mesh callers share
+the same recognition predicate for source discovery, live/state, zone and
+factory reconstruction. The JavaScript host twin validates exact planes and
+uses the existing topology boundary. This adds no SOP port or milestone.
+
+Focused request83367 EXIT0, `/tmp/rays-mesh-planes-focused6.log`, covers @check,
+Flow SOP/graph/web, CLI/Core/JavaScript fixtures, actual workspace-shell Add,
+API and dependency gates. Five plain topologies and32769 points match exact
+native/reference bytes at domains1/4/8 and grains1/97/4096, including signed
+zeros/subnormals, immutable ownership, source read/count facts, warm caches,
+lazy errors/causes, typed helper captures, cancellation and failed-state rollback.
+No golden, public interface, registration or performance gate changes.
+
+Requests22642/4780/55939/76466/76922 EXIT1 exposed invalid draft test gestures,
+printer-sensitive matching, missing typed census defaults, vector field access,
+name shadowing and separately created snapshot identities. Logs focused1–5
+are retained. Corrected tests keep the original native and ownership assertions;
+the ordinary checker and numeric contract remain unchanged. Whole counts remain
+14/128 ports and21/60 milestones.

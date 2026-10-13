@@ -144,6 +144,26 @@ let mesh : Flow.Op.t = {
   body=(fun ~live:_ ~node args->node "sop/mesh" args);
 }
 
+(* A separate typed constructor keeps existing mesh/error polymorphism intact.
+   Both representations use the same owned native topology boundary. *)
+let mesh_planes_type=Flow.Ty.Record(List.map(fun name->name,Flow.Ty.Array Flow.Ty.Float)["x";"y";"z"])
+let mesh_planes_fields=("points",mesh_planes_type)::List.tl mesh_fields
+let mesh_planes : Flow.Op.t = {
+  mesh with name="sop/mesh_planes";
+  signature={pos=[];opt=[];rest=None;kw=mesh_planes_fields};
+  out_args=Some(fun args->
+    List.iter(fun(name,_)->if not(List.exists(fun(key,_,_)->key=name)args)then
+      Flow.Value.fail "E_ARGS" ("sop/mesh_planes needs :"^name^"."))mesh_planes_fields;
+    (match List.find_opt(fun(name,_,_)->name="points")args with
+     |Some(_,Flow.Ty.Record fields,_) when List.length fields<>3->
+         Flow.Value.fail "E_TYPE" "Mesh planes require exactly x, y and z float-array fields."
+     |_->());
+    Flow.Ty.geometry);
+  check=(fun args->List.iter(fun(name,_)->if not(List.mem_assoc name args)then
+    Flow.Value.fail "E_ARGS" ("sop/mesh_planes needs :"^name^"."))mesh_planes_fields);
+  body=(fun ~live:_ ~node args->node "sop/mesh_planes" args);
+}
+
 let group_check args =
   (match List.assoc_opt "name" args with
    | Some(Flow.Value.Text name) when String.trim name<>"" -> ()
@@ -338,7 +358,7 @@ let glob_literal : Flow.Op.t = {
     checked(Attribute_metadata.glob_literal(metadata_text args "text"))));
 }
 
-let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; mesh;
+let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; mesh; mesh_planes;
   group; group_order; group_names; group_entries; with_group; context_seed;
   rename_attr;swap_attr;delete_attrs;rename_group;delete_group;rename_edge;delete_edge;attr_type;attr_names;
   glob_error;glob_rewrite_error;glob_rewrite;glob_literal]

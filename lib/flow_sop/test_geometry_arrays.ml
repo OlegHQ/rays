@@ -336,3 +336,231 @@ let ()=
       |Error d->check(d.code="E_MESH_STATE" && d.cause=Some"state cause")"C1 selected state cause changed";
           check(E.state_stamp state=stamp)"C1 failed mesh advanced supplied host state"
       |Ok _->fail "C1 selected state error succeeded") [1;8])) [false;true]
+
+(* Separate typed sockets avoid changing Any/error or polymorphic with_attr
+   rules. Both public forms reach the same immutable topology boundary. *)
+let plane_type=Flow.Ty.Record(List.map(fun name->name,Flow.Ty.Array Flow.Ty.Float)["x";"y";"z"])
+let plane_fields geometry=
+  let p=Packed.Float3.Private.view(Geometry.positions geometry)in
+  ("points",E.Record["x",E.Float_array(Array.copy p.x);"y",E.Float_array(Array.copy p.y);"z",E.Float_array(Array.copy p.z)])
+    ::List.tl(fields geometry)
+let plane_arrays_source={|(workspace planes
+  (graph g :context sop [(points : {:x (array float) :y (array float) :z (array float)}
+    {:x (array/float 0) :y (array/float 0) :z (array/float 0)})
+    (vertex_points : (array int) (array/int 0))
+    (primitive_offsets : (array int) (array/int 1)) (kinds : (array int) (array/int 0))]
+    (sop/mesh_planes :points points :vertex_points vertex_points
+      :primitive_offsets primitive_offsets :kinds kinds)))|}
+let plane_arrays ?(reference=false) values=
+  L.workspace ~reference ~factories ~inputs:["g",values](parse plane_arrays_source)|>flow|>compile|>snd
+let plane_rebuild={|(let* [topology (sop/topology geo) positions (sop/attr geo :P)]
+  (sop/mesh_planes :points
+    {:x (exact (map (fn [(p : vec3)] p.x) positions))
+     :y (exact (map (fn [(p : vec3)] p.y) positions))
+     :z (exact (map (fn [(p : vec3)] p.z) positions))}
+    :vertex_points topology.vertex_points :primitive_offsets topology.primitive_offsets :kinds topology.kinds))|}
+let ()=
+  let large=Line_geometry.points(Array.init 32769(fun i->
+    float i,(if i mod 2=0 then -0. else Float.next_after 0. 1.),-2.))in
+  List.iter(fun expected->let before=geometry_bytes expected in
+    List.iter(fun reference->
+      let args=plane_fields expected in
+      let node=plane_arrays ~reference args in
+      let source=Printf.sprintf {|(workspace rebuilt_planes
+        (defnode sop/rebuilt_planes [(geo : geometry)] %s)
+        (graph g :context sop (sop/rebuilt_planes (sop/ext_src))))|}plane_rebuild in
+      let _,rebuilt=lower ~reference source(Lisp_sop.snapshot expected)|>compile in
+      List.iter(fun domains->List.iter(fun grain->with_session(fun session->
+        List.iter(fun node->check(geometry_bytes(geometry(cook session ~domains ~grain node))=before)
+          "Mesh planes native/reference/multi-block bytes differ") [node;rebuilt];
+        let misses=(Sop.Session.stats session).misses in
+        ignore(cook session ~domains ~grain node);
+        check((Sop.Session.stats session).misses=misses)"Mesh planes warm cache missed")) [1;97;4096]) [1;4;8];
+      with_session(fun session->let actual=geometry(cook session node)in
+        (match List.assoc "points" args with E.Record planes->List.iter(function
+          |_,E.Float_array values->Array.fill values 0(Array.length values)99.|_->assert false)planes
+          |_->assert false);
+        List.iter(function _,E.Int_array values->Array.fill values 0(Array.length values)99|_->())args;
+        check(geometry_bytes actual=before)"Mesh planes borrowed mutable caller buffers")) [false;true])
+    (fixtures()@[large]);
+  print_endline "Mesh planes all five plain topologies and 32769-point authored maps own exact planes at 1/4/8 domains"
+let ()=
+  let base=plane_fields(List.nth(fixtures())1)in
+  let replace key value=List.map(fun(name,old)->name,if key=name then value else old)base in
+  let bad=["points",E.Record["x",E.Float_array[||];"y",E.Float_array[|0.|];"z",E.Float_array[||]],"E_ARRAY_COUNT";
+    "primitive_offsets",E.Int_array[||],"E_TOPOLOGY";
+    "vertex_points",E.Int_array[|9007199254740993;1;2;2;1;3|],"E_TOPOLOGY";
+    "kinds",E.Int_array[|3;0|],"E_TOPOLOGY_KIND"]in
+  List.iter(fun(key,value,code)->List.iter(fun reference->List.iter(fun domains->with_session(fun session->
+    match cook session ~domains(plane_arrays ~reference(replace key value))with
+    |Error d->check(d.code=code)"Mesh planes malformed storage changed error code"
+    |Ok _->fail "Mesh planes malformed storage succeeded")) [1;8]) [false;true])bad;
+  List.iter(fun axis->List.iter(fun bad->let p=Packed.Float3.Private.view(Geometry.positions(List.nth(fixtures())1))in
+    let point_fields=List.map(fun(name,values)->let values=Array.copy values in
+      if name=axis then values.(0)<-bad;name,E.Float_array values)["x",p.x;"y",p.y;"z",p.z]in
+    List.iter(fun reference->match L.workspace ~reference ~factories
+      ~inputs:["g",replace "points"(E.Record point_fields)](parse plane_arrays_source)with
+      |Error d->check(d.code="E_NONFINITE")"Mesh planes input validation changed nonfinite refusal"
+      |Ok _->fail "Mesh planes accepted nonfinite input arrays") [false;true]) [nan;infinity;neg_infinity]) ["x";"y";"z"];
+  List.iter(fun reference->let original=List.nth(fixtures())1 in
+    let source body=Printf.sprintf {|(workspace lazy_planes
+      (defnode sop/lazy_planes [(geo : geometry)] %s)
+      (graph g :context sop (sop/lazy_planes (sop/ext_src))))|}body in
+    let _,node=lower ~reference(source("(if false (sop/mesh_planes :points (error \"E_UNTAKEN\" \"untaken\") :vertex_points (array/int 0) :primitive_offsets (array/int 0) :kinds (array/int 0)) "^plane_rebuild^")"))(Lisp_sop.snapshot original)|>compile in
+    with_session(fun session->check(geometry_bytes(geometry(cook session node))=geometry_bytes original)
+      "Mesh planes forced untaken argument");
+    let _,node=lower ~reference(source {|(sop/mesh_planes :points
+      {:x (error "E_X" "selected x" :cause "x cause") :y (array/float 0) :z (array/float 0)}
+      :vertex_points (error "E_VP" "later vertices") :primitive_offsets (array/int 1) :kinds (array/int 0))|})
+      (Lisp_sop.snapshot original)|>compile in
+    with_session(fun session->match cook session node with
+      |Error d->check(d.code="E_X" && d.message="selected x" && d.cause=Some"x cause")
+        "Mesh planes selected error cause or field forcing order changed"
+      |Ok _->fail "Mesh planes selected error succeeded")) [false;true];
+  (* The storage proof is separate from allocation: scalar collectors retain
+     the existing per-plane bound, without allocating an impossible huge test. *)
+  let n=Sys.max_floatarray_length/3+1 in
+  check(n<=Sys.max_floatarray_length && n*3>Sys.max_floatarray_length)
+    "Mesh planes failed to remove the interleaved representation ceiling";
+  check(Flow.Op.Private.array_count "array/float"(E.Int Sys.max_floatarray_length)=Sys.max_floatarray_length)
+    "Mesh planes narrowed native scalar capacity";
+  (try ignore(Flow.Op.Private.array_count "array/float"(E.Int(Sys.max_floatarray_length+1)));
+      fail "Scalar point plane exceeded native array capacity"
+   with Flow.Value.Fail(code,_,_)->check(code="E_ARRAY_RANGE")"Scalar plane capacity error changed");
+  print_endline "Mesh planes finite/count/topology errors, lazy causes and exact scalar capacity retain native boundaries"
+let ()=
+  let catalog=Flow_sop.Catalog.of_factories ~version:1 factories|>flow in
+  let checker=Flow_sop.Catalog.check_workspace ~ops:Flow_sop.Operators.all in
+  let source={|(workspace planes_cards (graph g :context sop
+    (let* [coords {:x (array/float 0) :y (array/float 0) :z (array/float 0)}
+      built (sop/mesh_planes :points {:x (array/float 0) :y (array/float 0) :z (array/float 0)} :vertex_points (array/int 0)
+        :primitive_offsets (array/int 1) :kinds (array/int 0))] built)))|}in
+  let forms=parse source in
+  let checked=match checker catalog forms with Some checked,[]->checked|_->fail "Mesh planes card source did not check"in
+  let card=Flow_graph.Projection.of_graph catalog checked "g"|>fun p->Flow_graph.Projection.find p["g";"built"]|>Option.get in
+  check(List.map(fun(row:Flow_graph.Projection.row)->row.label)card.rows=["points";"vertex_points";"primitive_offsets";"kinds"])"Mesh planes required card rows changed";
+  let row=List.find(fun(row:Flow_graph.Projection.row)->row.label="points")card.rows in
+  check(row.ty=Some plane_type && row.socket)"Mesh planes card has an unconstrained points socket";
+  check(Option.is_some(Flow_graph.Flow_edit.default_for plane_type "points"))"Mesh planes record socket has no typed default";
+  let edit expression=Flow_graph.Flow_edit.apply_checked ~checker catalog forms
+    (Set_arg{node=["g";"built"];key=Kw"points";sub=[];value=parse expression|>List.hd})in
+  ignore(flow(edit "{:x (array/float 1) :y (array/float 1) :z (array/float 1)}"));
+  ignore(flow(Flow_graph.Flow_edit.apply_checked ~checker catalog forms
+    (Set_arg{node=["g";"built"];key=Kw"points";sub=[1];value=parse"(array/float 0)"|>List.hd})));
+  ignore(flow(Flow_graph.Flow_edit.apply_checked ~checker catalog forms
+    (Connect{node=["g";"built"];key=Kw"points";src="coords";iter=false})));
+  List.iter(fun key->ignore(flow(Flow_graph.Flow_edit.apply_checked ~checker catalog forms
+    (Set_arg{node=["g";"built"];key=Kw key;sub=[];
+      value=parse(if key="primitive_offsets"then"(array/int 1)"else"(array/int 0)")|>List.hd}))))
+    ["vertex_points";"primitive_offsets";"kinds"];
+  let printed=fst(Flow.Lisp.print forms)in
+  List.iter(fun expression->check(Result.is_error(edit expression))"Mesh planes malformed points edit accepted")
+    ["(array/vec3 0)";"{:x (array/float 0) :y (array/float 0)}";
+     "{:x (array/int 0) :y (array/float 0) :z (array/float 0)}";
+     "{:x (array/float 0) :y (array/float 0) :z (array/float 0) :extra (array/float 0)}"];
+  check(fst(Flow.Lisp.print forms)=printed)"Mesh planes malformed edit changed prior source";
+  let saved=parse printed in
+  ignore(L.workspace ~factories saved|>flow);
+  let saved_checked=match checker catalog saved with Some checked,[]->checked|_->fail "Mesh planes saved source did not check"in
+  check(saved_checked.source=saved)"Mesh planes source save embedded implementation definitions";
+  let starter=parse "(sop/mesh_planes :points {:x (array/float 0) :y (array/float 0) :z (array/float 0)} :vertex_points (array/int 0) :primitive_offsets (array/int 1) :kinds (array/int 0))"|>List.hd in
+  ignore(flow(Flow_graph.Flow_edit.apply_checked ~checker catalog forms
+    (Add_node{scope=["g"];name="empty_planes";expr=starter})));
+  with_session(fun session->check(geometry_bytes(geometry(cook session(Lisp_sop.node(Flow.Lisp.flat starter))))=geometry_bytes(List.hd(fixtures())))
+    "Mesh planes insertion starter does not construct empty geometry");
+  print_endline "Mesh planes typed record cards, defaults, insertion, source save and malformed edit rollback are ordinary gestures"
+let ()=
+  List.iter(fun expression->List.iter(fun reference->
+    let source=Printf.sprintf {|(workspace animated_planes (graph g :context sop
+      (let* [coordinate %s]
+        (sop/mesh_planes :points
+          {:x (exact (map (fn [(i : int)] coordinate) (array/range 1 :type int)))
+           :y (array/float 1) :z (array/float 1)}
+          :vertex_points (array/int 0) :primitive_offsets (array/int 1) :kinds (array/int 0)))))|}expression in
+    let lowered=L.workspace ~reference ~factories(parse source)|>flow in
+    let graph=List.hd lowered.graphs and state=E.create_state()in
+    let lane=Flow_sop.Value_lane.create ~state ()in
+    with_session(fun session->List.iter(fun(time,dt)->
+      let live={(Frame_input.at_time time)with dt;frame=int_of_float time;tick=int_of_float time}in
+      let network=Flow_sop.Value_lane.resolve ~live lane ~time graph.network|>flow in
+      let node=Edit.compile_node network.geometry ~node_id:(Option.get graph.root)|>get_string_ok in
+      let stamp=E.state_stamp state in
+      let context=Sop.Context.create ~domains:8 ~time ~input:live ()|>get_string_ok in
+      let actual=geometry(Sop.Session.cook session ~context node)in
+      check(Packed.Float3.get(Geometry.positions actual)0=((if expression="t"then time else dt),0.,0.))
+        "Mesh planes retained live/state coordinate became stale";
+      check(E.state_stamp state=stamp)"Mesh planes cook mutated retained state") [0.,0.25;1.,0.5;2.,0.125])) [false;true])
+    ["t";"(state [previous 0.0] (+ previous (frame/dt)))"];
+  let source={|(workspace plane_zone (graph g :context sop
+    (sop/merge (for [p (sop/point_list (sop/ext_src))]
+      (sop/mesh_planes :points {:x (array/float 1 p.x) :y (array/float 1 p.y) :z (array/float 1 p.z)}
+        :vertex_points (array/int 0) :primitive_offsets (array/int 1) :kinds (array/int 0))))))|}in
+  let expected=Line_geometry.points[|0.,0.,0.;2.,0.,0.;4.,0.,0.|]in
+  List.iter(fun reference->let _,node=lower ~reference source(Lisp_sop.snapshot expected)|>compile in
+    List.iter(fun domains->with_session(fun session->check(fields(geometry(cook session ~domains node))=fields expected)
+      "Mesh planes lost retained zone element")) [1;8]) [false;true];
+  print_endline "Mesh planes retained live/state and zone element captures preserve constructor behavior"
+let ()=
+  let original=List.nth(fixtures())1 in
+  let captured={|(workspace captured_planes
+    (defn topology_planes :context sop [(geo : geometry)] (sop/topology geo))
+    (defnode sop/captured_planes [(geo : geometry) (field : (fn [vec3] vec3))]
+      (let* [topology (topology_planes geo) p (sop/attr geo :P)]
+        (sop/mesh_planes :points
+          {:x (exact (map (fn [(v : vec3)] (let* [mapped (field v)] mapped.x)) p))
+           :y (exact (map (fn [(v : vec3)] (let* [mapped (field v)] mapped.y)) p))
+           :z (exact (map (fn [(v : vec3)] (let* [mapped (field v)] mapped.z)) p))}
+          :vertex_points topology.vertex_points :primitive_offsets topology.primitive_offsets :kinds topology.kinds)))
+    (graph g :context sop (sop/captured_planes (sop/ext_src) (fn [(v : vec3)] v))))|}in
+  List.iter(fun reference->let _,node=lower ~reference captured(Lisp_sop.snapshot original)|>compile in
+    List.iter(fun domains->with_session(fun session->check(geometry_bytes(geometry(cook session ~domains node))=geometry_bytes original)
+      "Mesh planes lost typed Fn/helper/source capture")) [1;8]) [false;true];
+  List.iter(fun domains->with_session(fun session->
+    let cancel=Sop.Context.Cancel.create()in Sop.Context.Cancel.cancel cancel;
+    let context=Sop.Context.create ~domains ~cancel ()|>get_string_ok in
+    match Sop.Session.cook session ~context(plane_arrays(plane_fields original))with
+    |Error d->check(d.code="cancelled" || d.code="E_CANCELLED")"Mesh planes cancellation changed"
+    |Ok _->fail "Cancelled mesh planes succeeded")) [1;8];
+  let source={|(workspace plane_rollback (graph g :context sop
+    (let* [step (state [previous 0.0] (+ previous (frame/dt)))]
+      (sop/mesh_planes :points
+        {:x (exact (map (fn [(i : int)] (if (> step 0.0)
+          (error "E_PLANE_STATE" "selected plane state" :cause "plane state cause") 0.0)) (array/range 1 :type int)))
+         :y (array/float 1) :z (array/float 1)}
+        :vertex_points (array/int 0) :primitive_offsets (array/int 1) :kinds (array/int 0)))))|}in
+  List.iter(fun reference->let lowered=L.workspace ~reference ~factories(parse source)|>flow in
+    let graph=List.hd lowered.graphs and state=E.create_state()in
+    let lane=Flow_sop.Value_lane.create ~state ()in
+    let live={(Frame_input.at_time 1.)with dt=0.5;frame=1;tick=1}in
+    let network=Flow_sop.Value_lane.resolve ~live lane ~time:1. graph.network|>flow in
+    let node=Edit.compile_node network.geometry ~node_id:(Option.get graph.root)|>get_string_ok in
+    let stamp=E.state_stamp state in
+    with_session(fun session->List.iter(fun domains->
+      let context=Sop.Context.create ~domains ~time:1. ~input:live ()|>get_string_ok in
+      match Sop.Session.cook session ~context node with
+      |Error d->check(d.code="E_PLANE_STATE" && d.cause=Some"plane state cause")"Mesh planes state error lost cause";
+        check(E.state_stamp state=stamp)"Mesh planes failure advanced retained host state"
+      |Ok _->fail "Mesh planes selected state error succeeded") [1;8])) [false;true];
+  print_endline "Mesh planes helper/Fn captures, cancellation and failed cooked state preserve the existing boundary"
+let ()=
+  let source={|(workspace plane_origins (graph g :context sop [(geo : geometry nil)]
+    (let* [p (sop/attr geo :P) coords
+      {:x (exact (map (fn [(point : vec3)] point.x) p))
+       :y (exact (map (fn [(point : vec3)] point.y) p))
+       :z (exact (map (fn [(point : vec3)] point.z) p))}] geo)))|}in
+  let catalog=Flow_sop.Catalog.of_factories ~version:1 factories|>flow in
+  let checked=match Flow_sop.Catalog.check_workspace ~ops:Flow_sop.Operators.all catalog(parse source)with
+    |Some checked,[]->checked|_,ds->fail(String.concat ";"(List.map Flow.Diagnostic.to_string ds))in
+  let evaluation=E.static ~record:true ~inputs:["g",["geo",E.Deferred(Flow.Ty.geometry,7)]]checked|>flow in
+  let coordinates=List.assoc["g";"coords"]evaluation.records|>List.hd|>snd in
+  check(Flow_sop.Attribute_kernel.sources coordinates=[7])"Mesh plane record capture lost geometry dependency";
+  check(Flow_sop.Attribute_kernel.reads coordinates=["P"])"Mesh plane capture lost precise position read facts";
+  let input=Lisp_sop.snapshot(List.nth(fixtures())1)in
+  let origins=match coordinates with E.Record planes->List.map(fun(_,value)->
+    let program=Flow_sop.Attribute_kernel.prepare ~strict:true ~sources:[7]
+      [input]value|>flow in
+    let packed=Array.find_map(fun(node:Flow_ir.node)->match node.kind with
+      |Kernel{body=Packed_map packed;_}->Some packed|_->None)(Flow_ir.Executor.graph program).nodes|>Option.get in
+    Flow_ir.Packed.count_origin packed|>Option.get)planes|_->assert false in
+  check(List.length(List.sort_uniq compare origins)=1)"Coordinate fields acquired false independent owner counts";
+  print_endline "Mesh planes keep precise P read facts, source ownership and a shared point-owner count through captured records"

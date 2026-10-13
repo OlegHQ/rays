@@ -664,12 +664,20 @@ let () =
       "primitive_offsets",E.Int_array topology.primitive_offsets;
       "kinds",E.Int_array(Array.init(Bytes.length topology.primitive_kinds)
         (fun i->Char.code(Bytes.get topology.primitive_kinds i)))] in
-  let mesh fields =
-    Result.bind(Flow.Syntax.parse {|(workspace mesh (graph g :context sop
+  let mesh ?(planes=false) fields =
+    let source = if planes then {|(workspace mesh (graph g :context sop
+      [(points : {:x (array float) :y (array float) :z (array float)}
+        {:x (array/float 0) :y (array/float 0) :z (array/float 0)})
+       (vertex_points : (array int) (array/int 0))
+       (primitive_offsets : (array int) (array/int 1)) (kinds : (array int) (array/int 0))]
+      (sop/mesh_planes :points points :vertex_points vertex_points
+        :primitive_offsets primitive_offsets :kinds kinds)))|}
+    else {|(workspace mesh (graph g :context sop
       [(points : (array vec3) (array/vec3 0)) (vertex_points : (array int) (array/int 0))
        (primitive_offsets : (array int) (array/int 1)) (kinds : (array int) (array/int 0))]
       (sop/mesh :points points :vertex_points vertex_points
-        :primitive_offsets primitive_offsets :kinds kinds)))|})(fun forms->
+        :primitive_offsets primitive_offsets :kinds kinds)))|} in
+    Result.bind(Flow.Syntax.parse source)(fun forms->
       Result.bind(Flow_sop.Lower.workspace ~factories:[] ~inputs:["g",fields] forms)(fun lowered->
         let graph=List.hd lowered.graphs in
         match Sop.Edit_graph.compile_node graph.network.geometry ~node_id:(Option.get graph.root) with
@@ -680,7 +688,12 @@ let () =
               match Sop.Session.cook session ~context:(Sop.Context.create() |>Result.get_ok)node with
               |Error d->Error(Flow.Diagnostic.error ?cause:d.cause ~code:d.code d.message)
               |Ok output->Ok(geometry_value(Result.get_ok(Sop.Payload.geometry output.payload)))))) in
-  let mesh_case fields=add_host "sop/mesh" (List.map snd fields)(host_result(fun()->mesh fields)) in
+  let mesh_case ?(planes=false) fields=add_host (if planes then "sop/mesh_planes" else "sop/mesh")
+    (List.map snd fields)(host_result(fun()->mesh ~planes fields)) in
+  let mesh_plane_fields geometry=
+    let p=Rdk.Packed.Float3.Private.view(Rdk.Geometry.positions geometry)in
+    ("points",E.Record["x",E.Float_array p.x;"y",E.Float_array p.y;"z",E.Float_array p.z])
+      ::List.tl(mesh_fields geometry)in
   List.iter(fun geometry->
     let resolve=Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->Some geometry) in
     let handle=E.Deferred(T.geometry,0) in
@@ -700,7 +713,8 @@ let () =
         Result.bind(component "primitive_offsets")(fun offsets->
           Result.map(fun kinds->E.Record["vertex_points",vertices;
             "primitive_offsets",offsets;"kinds",kinds])(component "kinds")))));
-    mesh_case(mesh_fields geometry))
+    mesh_case(mesh_fields geometry);
+    mesh_case ~planes:true(mesh_plane_fields geometry))
     topology_fixtures;
   let base=mesh_fields(List.nth topology_fixtures 1) in
   List.iter(fun(key,value)->mesh_case(List.map(fun(name,old)->
@@ -715,6 +729,21 @@ let () =
       "points",E.Vec3_array[|nan;0.;0.|];
       "points",E.Vec3_array[|infinity;0.;0.|];
       "points",E.Vec3_array[|neg_infinity;0.;0.|]];
+  let plane_base=mesh_plane_fields(List.nth topology_fixtures 1)in
+  List.iter(fun(key,value)->mesh_case ~planes:true(List.map(fun(name,old)->
+    name,if name=key then value else old)plane_base))
+    ["primitive_offsets",E.Int_array[||];"primitive_offsets",E.Int_array[|1;3;6|];
+     "primitive_offsets",E.Int_array[|0;3;5|];"kinds",E.Int_array[|0|];
+     "vertex_points",E.Int_array[|0;1;2;2;1;9007199254740993|];
+     "primitive_offsets",E.Int_array[|0;7;6|];"primitive_offsets",E.Int_array[|0;2;6|];
+     "kinds",E.Int_array[|-1;0|];"kinds",E.Int_array[|3;0|];
+     "points",E.Record["x",E.Float_array[||];"y",E.Float_array[|0.|];"z",E.Float_array[||]];
+     "points",E.Record["x",E.Float_array[||];"y",E.Float_array[|nan|];"z",E.Float_array[||]]];
+  List.iter(fun axis->List.iter(fun bad->
+    let p=Rdk.Packed.Float3.Private.view(Rdk.Geometry.positions(List.nth topology_fixtures 1))in
+    let coordinates=E.Record(List.map(fun(name,values)->let values=Array.copy values in
+      if name=axis then values.(0)<-bad;name,E.Float_array values)["x",p.x;"y",p.y;"z",p.z])in
+    mesh_case ~planes:true(("points",coordinates)::List.tl plane_base)) [nan;infinity;neg_infinity]) ["x";"y";"z"];
   List.iter(fun name->let args=["geometry",E.No_geo] @
       (if name="sop/count" then ["element",E.Text"points"] else ["component",E.Text"a"]) in
     add_host name (E.No_geo::(if name="sop/count" then [E.Text"points"] else []))
@@ -963,7 +992,7 @@ List.iter(fun bad->
     let body = String.concat ",\n" (List.rev !(Hashtbl.find cases name)) in
     Out_channel.with_open_bin (Filename.concat outdir (export name ^ ".json")) (fun oc ->
       Printf.fprintf oc "{\"primitive\":%s,\"export\":%s,\"cases\":[\n%s\n]}\n" (str name) (str (export name)) body))
-    (List.map C.primitive_name inventory @ ["array/sum";"sop/context_seed";"sop/delete_attr";"sop/attr";"sop/attr_checked";"sop/with_attr";"sop/has_attr";"sop/count";"sop/edges";"sop/topology";"sop/mesh";
+    (List.map C.primitive_name inventory @ ["array/sum";"sop/context_seed";"sop/delete_attr";"sop/attr";"sop/attr_checked";"sop/with_attr";"sop/has_attr";"sop/count";"sop/edges";"sop/topology";"sop/mesh";"sop/mesh_planes";
       "sop/group";"sop/group_names";"sop/group_order";"sop/with_group";
       "sop/attr_type";"sop/attr_names";"sop/rename_attr";"sop/swap_attr";"sop/delete_attrs";
       "sop/rename_group";"sop/delete_group";"sop/rename_edge";"sop/delete_edge";"text/glob_error";"text/glob_rewrite_error";

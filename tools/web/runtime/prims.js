@@ -1184,18 +1184,11 @@ export function sop_topology(geometry) {
     ['kinds', new PArray(1, BigInt64Array.from(geometry.get('primitive_kinds'), c => BigInt(c.charCodeAt(0))))]
   ]);
 }
-export function sop_mesh(points, vertex_points, primitive_offsets, kinds) {
-  const integer = value => value instanceof PArray && value.width === 1 && value.data instanceof BigInt64Array;
-  if (!(points instanceof PArray) || points.width !== 3 || !(points.data instanceof Float64Array)
-      || !integer(vertex_points) || !integer(primitive_offsets) || !integer(kinds))
-    err('E_TOPOLOGY_TYPE', 'Mesh requires vec3 points and integer vertex_points, primitive_offsets and kinds arrays.');
-  if (points.data.length % 3 !== 0)
-    err('E_ARRAY_TYPE', 'Packed vec3 storage has three coordinates per element.');
-  for (const value of points.data) if (!Number.isFinite(value))
-    err('E_NONFINITE', 'array input produced a nonfinite value.');
+const meshInteger = value => value instanceof PArray && value.width === 1 && value.data instanceof BigInt64Array;
+function meshGeometry(pointCount, positions, vertex_points, primitive_offsets, kinds) {
   for (const kind of kinds.data) if (kind < 0n || kind > 2n)
     err('E_TOPOLOGY_KIND', 'Primitive kinds are 0 (polygon), 1 (open polyline) or 2 (closed polyline).');
-  const offsets = primitive_offsets.data, vertices = vertex_points.data, pointCount = BigInt(points.data.length / 3);
+  const offsets = primitive_offsets.data, vertices = vertex_points.data;
   const topologyError = message => err('E_TOPOLOGY', message);
   if (offsets.length === 0) topologyError('Topology: primitive offsets must contain the initial zero');
   if (offsets[0] !== 0n) topologyError('Topology: first primitive offset must be zero');
@@ -1211,11 +1204,41 @@ export function sop_mesh(points, vertex_points, primitive_offsets, kinds) {
     if (offsets[i+1] - offsets[i] < (kinds.data[i] === 1n ? 2n : 3n))
       topologyError('Topology: primitive has too few vertices for its kind');
   return new Map([
-    ['positions', new PArray(3, new Float64Array(points.data))],
+    ['positions', positions()],
     ['vertex_points', Array.from(vertices)], ['primitive_offsets', Array.from(offsets)],
     ['primitive_kinds', Array.from(kinds.data, kind => String.fromCharCode(Number(kind))).join('')],
     ['attributes', []], ['groups', []], ['edge_groups', []]
   ]);
+}
+export function sop_mesh(points, vertex_points, primitive_offsets, kinds) {
+  if (!(points instanceof PArray) || points.width !== 3 || !(points.data instanceof Float64Array)
+      || !meshInteger(vertex_points) || !meshInteger(primitive_offsets) || !meshInteger(kinds))
+    err('E_TOPOLOGY_TYPE', 'Mesh requires vec3 points and integer vertex_points, primitive_offsets and kinds arrays.');
+  if (points.data.length % 3 !== 0)
+    err('E_ARRAY_TYPE', 'Packed vec3 storage has three coordinates per element.');
+  for (const value of points.data) if (!Number.isFinite(value))
+    err('E_NONFINITE', 'array input produced a nonfinite value.');
+  return meshGeometry(BigInt(points.data.length / 3), () => new PArray(3, new Float64Array(points.data)),
+    vertex_points, primitive_offsets, kinds);
+}
+export function sop_mesh_planes(points, vertex_points, primitive_offsets, kinds) {
+  if (!meshInteger(vertex_points) || !meshInteger(primitive_offsets) || !meshInteger(kinds))
+    err('E_TOPOLOGY_TYPE', 'Mesh requires vec3 points and integer vertex_points, primitive_offsets and kinds arrays.');
+  const scalar = value => value instanceof PArray && value.width === 1 && value.data instanceof Float64Array;
+  if (!(points instanceof Map) || points.size !== 3 || !['x', 'y', 'z'].every(name => scalar(points.get(name))))
+    err('E_TOPOLOGY_TYPE', 'Mesh planes require exactly x, y and z float arrays.');
+  const x = points.get('x').data, y = points.get('y').data, z = points.get('z').data;
+  for (const plane of [x, y, z]) for (const value of plane) if (!Number.isFinite(value))
+    err('E_NONFINITE', 'array input produced a nonfinite value.');
+  if (x.length !== y.length || x.length !== z.length)
+    err('E_ARRAY_COUNT', 'Mesh coordinate planes need the same element count.');
+  return meshGeometry(BigInt(x.length), () => {
+    // The host fixture protocol represents geometry positions as AoS. The
+    // native constructor owns separate planes without an interleaved buffer.
+    const data = new Float64Array(x.length * 3);
+    for (let i = 0; i < x.length; i++) { data[3*i] = x[i]; data[3*i+1] = y[i]; data[3*i+2] = z[i]; }
+    return new PArray(3, data);
+  }, vertex_points, primitive_offsets, kinds);
 }
 
 function groupOwner(owner) {

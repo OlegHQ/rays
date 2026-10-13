@@ -130,6 +130,28 @@ for (const [type, width] of [['float', 1], ['vec2', 2], ['vec3', 3], ['vec4', 4]
   expect('E_ARRAY_TYPE', () => prims.sop_mesh(new PArray(3, Float64Array.of(1)), int([]), int([0n]), int([])));
   for (const bad of [NaN, Infinity, -Infinity])
     expect('E_NONFINITE', () => prims.sop_mesh(new PArray(3, Float64Array.of(bad, 0, 0)), int([]), int([0n]), int([])));
+  const scalar = values => new PArray(1, Float64Array.from(values));
+  const planes = new Map([['x', scalar([0, 1, 2])], ['y', scalar([-0, 0.25, -0])], ['z', scalar([2, 2, 2])]]);
+  const fromPlanes = prims.sop_mesh_planes(planes, int([0n, 1n, 2n]), int([0n, 3n]), int([0n]));
+  if (!Object.is(fromPlanes.get('positions').data[1], -0)) throw new Error('mesh planes lost negative zero');
+  for (const value of planes.values()) value.data.fill(99);
+  if (fromPlanes.get('positions').data[0] !== 0 || !Object.is(fromPlanes.get('positions').data[1], -0))
+    throw new Error('mesh planes retained caller-owned arrays');
+  const emptyPlanes = () => new Map(['x', 'y', 'z'].map(name => [name, scalar([])]));
+  const short = emptyPlanes(); short.set('y', scalar([1]));
+  expect('E_ARRAY_COUNT', () => prims.sop_mesh_planes(short, int([]), int([0n]), int([])));
+  short.set('y', scalar([NaN]));
+  expect('E_NONFINITE', () => prims.sop_mesh_planes(short, int([]), int([]), int([3n])));
+  for (const wrong of [null, new Map(), new Map([['x', scalar([])], ['y', scalar([])]])])
+    expect('E_TOPOLOGY_TYPE', () => prims.sop_mesh_planes(wrong, int([]), int([0n]), int([])));
+  const extra = emptyPlanes(); extra.set('extra', scalar([]));
+  expect('E_TOPOLOGY_TYPE', () => prims.sop_mesh_planes(extra, int([]), int([0n]), int([])));
+  const integers = emptyPlanes(); integers.set('x', int([]));
+  expect('E_TOPOLOGY_TYPE', () => prims.sop_mesh_planes(integers, int([]), int([0n]), int([])));
+  for (const name of ['x', 'y', 'z']) for (const bad of [NaN, Infinity, -Infinity]) {
+    const data = new Map(['x', 'y', 'z'].map(axis => [axis, scalar([axis === name ? bad : 0])]));
+    expect('E_NONFINITE', () => prims.sop_mesh_planes(data, int([]), int([0n]), int([])));
+  }
   expect('E_DATA_SOURCE', () => prims.sop_topology(null));
 }
 

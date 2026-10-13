@@ -325,7 +325,16 @@ let run_values () =
     && has (source e) ":kinds (array/int 0)")
     ("required mesh keyword arrays were absent from production menu insertion: " ^ source e);
   E3.close e;
+  let e = add "sop/mesh_planes" in
+  check (E3.undo_label e = Some "Add node" && has (source e) "(sop/mesh_planes"
+    && has (source e) ":points {:x (array/float 0)"
+    && has (source e) ":y (array/float 0)"
+    && has (source e) ":z (array/float 0)}"
+    && has (source e) ":primitive_offsets (array/int 1)")
+    ("required typed mesh planes were absent from production menu insertion: " ^ source e);
+  E3.close e;
   let e = add "attr_from_image" in
+
   check (E3.undo_label e = Some "Add node" && has (source e) "sop/attr_from_image"
          && has (source e) ":image (image/noise :width 1 :height 1)")
     ("a mixed SOP has a real image default through the add menu: " ^ source e);

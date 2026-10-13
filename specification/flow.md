@@ -1539,6 +1539,24 @@ rollback. Both forms project as ordinary cards; topology exposes its three
 outputs, and mesh keyword rows accept normal checked argument/connection
 gestures. Integer-array socket defaults use `(array/int 0)`.
 
+`(sop/mesh_planes :points {:x xs :y ys :z zs} :vertex_points vp
+:primitive_offsets po :kinds k)` is the separately typed coordinate-plane form
+of the same constructor. Its points socket is exactly a three-field record of
+Float arrays. Missing fields, known extra fields, or integer/vector fields are
+rejected by checked gestures; runtime input records must also have exactly those
+fields. All three planes need equal element counts (`E_ARRAY_COUNT`). Finite
+point validation precedes kind and topology validation, as for Mesh. Geometry
+owns copies of all coordinate and topology planes. Each Float plane retains its
+ordinary native array bound; there is no combined `3 * point_count` Float-array
+allocation or smaller artificial point limit on the native path. This form is
+usable by both reference and strict packed scalar collectors. Mesh retains its
+existing Vec3-array signature and behavior. Both constructors share the retained
+source/state/zone/cook boundary, and their ordinary cards have concrete socket
+types, defaults, and checked argument/connection edits. The menu inserts valid
+empty geometry for either form. The JavaScript host twin uses the existing
+interleaved geometry fixture protocol after validation; this is a separate host
+protocol, not a native storage fallback or a SOP 2D-export claim.
+
 `(sop/group geometry :name "top" :owner point)` returns an owned `(array int)`
 mask containing zero or one per owner element. Group owners are `point`,
 `vertex`, `primitive` and `edge`; the default is `point`.

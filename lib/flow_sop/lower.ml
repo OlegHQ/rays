@@ -375,6 +375,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
     let group_data args = E.Record(List.filter(fun(name,_)->name="values"||name="order")args) in
     let attribute_data args=if not(List.mem_assoc "selection" args || List.mem_assoc "default" args) then List.assoc "values" args
       else E.Record(List.filter(fun(name,_)->name="values"||name="selection"||name="default")args) in
+    let is_mesh kind=kind="sop/mesh" || kind="sop/mesh_planes" in
     let mesh_data args=E.Record args in
     let mesh_node ?state ?elems ~args ~sources inputs =
       let data=mesh_data args in
@@ -474,7 +475,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
     let rec deps (n : E.node) =
       if is_zone n.kind then (match n.args with (_, E.Deferred ((Flow.Ty.Named "geometry"), src)) :: _ -> src | _ -> fail "E_LOWER" "Zone without geometry")
         :: (zinfo n).captures
-      else if n.kind="sop/mesh" then Attribute_kernel.sources(mesh_data n.args)
+      else if is_mesh n.kind then Attribute_kernel.sources(mesh_data n.args)
       else if n.kind = "sop/with_attr" || n.kind="sop/with_group" then
         let geometry = List.assoc "geometry" n.args in
         let root = match geometry with E.Deferred (_, id) -> Some id | E.No_geo -> None
@@ -756,11 +757,11 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
           let live = List.filter (fun (_, v) -> E.is_live v) node.args in
           let resource = node.ty=Ty.image && node.kind="exact"
             || node.kind="image/load" || node.kind="image/render" || node.kind="image/map" in
-          if not template && node.kind <> "sop/with_attr" && node.kind<>"sop/with_group" && node.kind<>"sop/mesh" && not resource then
+          if not template && node.kind <> "sop/with_attr" && node.kind<>"sop/with_group" && not(is_mesh node.kind) && not resource then
             pending := List.rev_append (List.map (fun (field, value) ->
               {node = cid; field; value}) live) !pending;
           (* a template node keeps its live arguments: each element forces them *)
-          let args = if template || node.kind = "sop/with_attr" || node.kind="sop/with_group" || node.kind="sop/mesh" || resource then node.args
+          let args = if template || node.kind = "sop/with_attr" || node.kind="sop/with_group" || is_mesh node.kind || resource then node.args
             else List.map (fun (n, v) -> n, at_zero v) node.args in
           let args = if node.kind <> "sop/material" then args else
             List.concat_map (function
@@ -773,7 +774,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
               | arg -> [arg]) args in
           let dynamic = ref [] in
           let p = match node.kind with
-            | "sop/mesh" ->
+            | "sop/mesh" | "sop/mesh_planes" ->
                 let sources=deps node in
                 let factory=Edit.factory ~key:"flow.mesh" ~label:"Mesh" ~category:["Flow";"Topology"]
                   ~arity:(List.length sources)(mesh_node ~args ~sources)in
@@ -1046,7 +1047,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
                 (List.filter_map Fun.id options)
           | None when n.kind="sop/with_group" ->
               group_node ?state ~elems:outer ~args:n.args ~sources:(deps n) (List.filter_map Fun.id options)
-          | None when n.kind="sop/mesh" ->
+          | None when is_mesh n.kind ->
               mesh_node ?state ~elems:outer ~args:n.args ~sources:(deps n) (List.filter_map Fun.id options)
           | None -> edit (Edit.instantiate_optional p.factory options) in
         let node = edit (Sop.Node.Private.restore_id p.cid node) in
@@ -1064,7 +1065,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
         if n.kind = "zone/element" || is_zone n.kind || (prepare n).dynamic <> []
            || (n.kind = "sop/with_attr" && E.is_live (attribute_data n.args))
            || (n.kind="sop/with_group" && E.is_live(group_data n.args))
-           || (n.kind="sop/mesh" && E.is_live(mesh_data n.args))
+           || (is_mesh n.kind && E.is_live(mesh_data n.args))
            (* ponytail: all function inputs vary in a zone; narrow to actual
               element captures if rebuilding constant functions becomes costly. *)
            || (prepare n).kernels <> []
@@ -1102,7 +1103,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
          && (List.exists (fun j -> volatile.(j)) (deps node)
               || (is_zone node.kind && (zinfo node).live)
               || (not (is_zone node.kind)
-                  && List.exists (fun (_, v) -> if templ.(node.id) || node.kind = "sop/with_attr" || node.kind="sop/with_group" || node.kind="sop/mesh"
+                  && List.exists (fun (_, v) -> if templ.(node.id) || node.kind = "sop/with_attr" || node.kind="sop/with_group" || is_mesh node.kind
                       then reads_t v || E.state_dependent v else E.is_live v ||
                         (match v with E.Fn _ -> reads_t v || E.state_dependent v | _ -> false)) node.args)) then begin
         volatile.(node.id) <- true;
@@ -1129,7 +1130,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
             Ok (kernel_node ~state:(E.fork_state state) k (Sop.Node.inputs node))) nodes)
           nodes p.kernels) prepared frame_nodes in
       let frame_nodes=Array.fold_left(fun nodes (n:E.node)->
-        if n.kind<>"sop/mesh" || Edit.find graph ~node_id:compiled.(n.id)=None
+        if not(is_mesh n.kind) || Edit.find graph ~node_id:compiled.(n.id)=None
           || not(E.state_dependent(mesh_data n.args))then nodes
         else Network.Int_map.add compiled.(n.id)(fun ~network:_ state _live node->
           Ok(Sop.Node.Private.adopt_identity ~source:node
