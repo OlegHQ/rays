@@ -1151,6 +1151,13 @@ arr1[0.;-0.;0.];arr1[1e16;1.;-1e16];
         (op "sop/attr_names").check args;
         Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->Some metadata_geometry)(E.Source("sop/attr_names",T.Array T.Text,args)))))
       ["";"*";"mask_* ^mask_A";"??";"[";"\\"];
+    add_host "sop/attr_entries" [geometry_value metadata_geometry;E.Text owner]
+      (host_result(fun()->let args=["geometry",E.Deferred(T.geometry,0);"owner",E.Text owner] in
+        (op "sop/attr_entries").check args;
+        let resolve=Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->Some metadata_geometry) in
+        let column component=resolve(E.Source("sop/attr_entries",T.Array T.Text,args@["component",E.Text component])) in
+        Result.bind(column "name")(fun name->Result.bind(column "type")(fun ty->
+          Result.map(fun owners->E.Record["name",name;"type",ty;"owner",owners])(column "owner")))));
     List.iter(fun(pattern,replacement)->List.iter(fun(conflict,policy)->
       add_host "sop/rename_attr" [geometry_value metadata_geometry;E.Text pattern;E.Text replacement;E.Text owner;E.Text conflict]
         (metadata_result "sop/rename_attr" ["pattern",E.Text pattern;"replacement",E.Text replacement;"owner",E.Text owner;"conflict",E.Text conflict]
@@ -1405,6 +1412,6 @@ remap_case source unrelated fields;
       Printf.fprintf oc "{\"primitive\":%s,\"export\":%s,\"cases\":[\n%s\n]}\n" (str name) (str (export name)) body))
     (List.map C.primitive_name inventory @ ["array/sum";"sop/context_seed";"sop/delete_attr";"sop/attr";"sop/attr_checked";"sop/with_attr";"sop/has_attr";"sop/count";"sop/edges";"sop/topology";"sop/adjacency";"sop/components";"graph/shortest_paths";"graph/chains";"graph/color";"sop/mesh";"sop/mesh_planes";"sop/remap";
       "sop/group";"sop/group_names";"sop/group_order";"sop/with_group";
-      "sop/attr_type";"sop/attr_names";"sop/rename_attr";"sop/swap_attr";"sop/delete_attrs";
+      "sop/attr_type";"sop/attr_names";"sop/attr_entries";"sop/rename_attr";"sop/swap_attr";"sop/delete_attrs";
       "sop/rename_group";"sop/delete_group";"sop/rename_edge";"sop/delete_edge";"text/glob_error";"text/glob_rewrite_error";
       "text/glob_literal";"text/glob_rewrite";"text/group_name_valid";"text/group_name_forced";"sop/group_entries";"$host/diagnostic_rows"])

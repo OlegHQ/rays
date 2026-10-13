@@ -130,7 +130,29 @@ let names ~owner ~pattern geometry =
     let names=G.Private.attributes geometry |> Array.to_seq |> Seq.filter_map (fun attribute ->
       if A.owner attribute=owner && Rdk.Attribute_pattern.matches compiled (A.name attribute)
       then Some (A.name attribute) else None) |> Array.of_seq in Ok (E.Text_array names))
+(* Parallel name/type/owner columns of the stored attributes, in native attribute order. *)
+let entries ~owner ~component geometry =
+  let owner_text attribute=match A.owner attribute with
+    |A.Point->"point"|Vertex->"vertex"|Primitive->"primitive"|Detail->"detail" in
+  let column=match component with
+    |"name"->Ok A.name|"type"->Ok(fun attribute->storage_kind(A.Private.storage attribute))
+    |"owner"->Ok owner_text
+    |_->error "E_ATTR_ENTRIES" "Attribute entry component is name, type or owner." in
+  Result.map(fun column->E.Text_array(G.Private.attributes geometry |> Array.to_seq
+    |> Seq.filter(fun attribute->owner=None||owner=Some(A.owner attribute))
+    |> Seq.map column |> Array.of_seq))column
 let resolve ~geometry = function
+  | E.Source ("sop/attr_entries",_,args) ->
+      (match List.assoc_opt "geometry" args with
+       |Some (E.Deferred (ty,id)) when Flow.Ty.is_geometry ty ->
+           (match geometry id with None->error "E_DATA_SOURCE" "Metadata source has not been cooked."
+            |Some geometry ->
+                let owner=match List.assoc_opt "owner" args with None->Ok (Some A.Point)
+                  |Some(E.Text owner)->attribute_owner owner|_->error "E_ATTR_OWNER" "Attribute owner must be text." in
+                Result.bind owner (fun owner->match List.assoc_opt "component" args with
+                  |Some(E.Text component)->entries ~owner ~component geometry
+                  |_->error "E_ATTR_ENTRIES" "Attribute entry component is name, type or owner."))
+       |_->error "E_DATA_SOURCE" "Metadata source requires cooked geometry.")
   | E.Source (("sop/attr_type"|"sop/attr_names" as operation),_,args) ->
       (match List.assoc_opt "geometry" args with
        |Some (E.Deferred (ty,id)) when Flow.Ty.is_geometry ty ->

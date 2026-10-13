@@ -59,7 +59,7 @@ let reads value =
           (match Option.bind (List.assoc_opt "geometry" args) (lookup bindings) with
            | Some (E.Deferred (ty,id)) when Flow.Ty.is_geometry ty -> safe:=id::!safe
            | _ -> opaque:=true)
-      | Op {op="sop/attr_names";args;_} ->
+      | Op {op=("sop/attr_names"|"sop/attr_entries");args;_} ->
           names:="*"::!names;
           (match Option.bind(List.assoc_opt "geometry" args)(lookup bindings)with
            |Some(E.Deferred(ty,id))when Flow.Ty.is_geometry ty->safe:=id::!safe
@@ -90,7 +90,7 @@ let reads value =
         (match List.assoc_opt "geometry" args with
          | Some (E.Deferred (ty,_)) when Flow.Ty.is_geometry ty -> ()
          | _ -> opaque:=true)
-    | E.Source("sop/attr_names",_,args) ->
+    | E.Source(("sop/attr_names"|"sop/attr_entries"),_,args) ->
         names:="*"::!names;
         (match List.assoc_opt "geometry" args with Some(E.Deferred(ty,_))when Flow.Ty.is_geometry ty->()
          |_->opaque:=true)
@@ -261,7 +261,7 @@ let rec resolve ~geometry value = match constant_source value with
       Result.bind (concrete_args ~geometry args) (fun args ->
         Topology_kernel.resolve ~geometry (E.Source (name, ty, args)))
   | E.Source (("sop/count"|"sop/edges"|"sop/topology"|"sop/adjacency"),_,_) as source -> Topology_kernel.resolve ~geometry source
-  | E.Source (("sop/attr_type"|"sop/attr_names"),_,_) as source -> Attribute_metadata.resolve ~geometry source
+  | E.Source (("sop/attr_type"|"sop/attr_names"|"sop/attr_entries"),_,_) as source -> Attribute_metadata.resolve ~geometry source
   | E.Source (("graph/shortest_paths"|"graph/color"|"graph/chains") as name,ty,args) ->
       Result.bind (concrete_args ~geometry args) (fun args ->
         Graph_kernel.resolve (E.Source (name, ty, args)))

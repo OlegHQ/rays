@@ -893,6 +893,13 @@ export function sop_attr_names(geometry, pattern, owner = 'point') {
   return new TextArray(geometry.get('attributes').filter(attribute =>
     attribute.get('owner') === owner && matches(attribute.get('name'))).map(attribute => attribute.get('name')));
 }
+export function sop_attr_entries(geometry, owner = 'point') {
+  owner = metadataOwner(owner);
+  metadataGeometry(geometry);
+  const kept = geometry.get('attributes').filter(attribute => owner === 'any' || attribute.get('owner') === owner);
+  const column = key => new TextArray(kept.map(attribute => attribute.get(key)));
+  return new Map([['name', column('name')], ['type', column('type')], ['owner', column('owner')]]);
+}
 export function sop_delete_attrs(geometry, reference = null, inverse = false, point = '', vertex = '', primitive = '', detail = '') {
   const owners = ['point', 'vertex', 'primitive', 'detail'];
   const patterns = [point, vertex, primitive, detail].map(pattern => {

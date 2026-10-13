@@ -377,6 +377,16 @@ let attr_names : Flow.Op.t = {
     |Error message->Flow.Value.fail "E_ATTR_PATTERN" message);
   body=(fun ~live:_ ~node:_ args->Flow.Value.Source("sop/attr_names",Flow.Ty.Array Text,args));
 }
+let attr_entries_type=Flow.Ty.Record["name",Array Text;"type",Array Text;"owner",Array Text]
+let attr_entries : Flow.Op.t = {
+  attr_type with name="sop/attr_entries";
+  signature={attr_type.signature with pos=["geometry",Flow.Ty.geometry]};
+  out=(fun _->attr_entries_type);
+  check=(fun args->metadata_owner Attribute_metadata.attribute_owner args);
+  body=(fun ~live:_ ~node:_ args->Flow.Value.Record(List.map(fun component->component,
+    Flow.Value.Source("sop/attr_entries",Flow.Ty.Array Text,args@["component",Flow.Value.Text component]))
+    ["name";"type";"owner"]));
+}
 
 let glob_error : Flow.Op.t = {
   attr_type with name="text/glob_error";ctx=Flow.Context.value;category="Text";
@@ -440,5 +450,5 @@ let remap : Flow.Op.t = {
 
 let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; adjacency; components; shortest_paths; color; chains; mesh; mesh_planes; remap;
   group; group_order; group_names; group_entries; with_group; context_seed;
-  rename_attr;swap_attr;delete_attrs;rename_group;delete_group;rename_edge;delete_edge;attr_type;attr_names;
+  rename_attr;swap_attr;delete_attrs;rename_group;delete_group;rename_edge;delete_edge;attr_type;attr_names;attr_entries;
   glob_error;glob_rewrite_error;glob_rewrite;glob_literal;group_name_valid;group_name_forced]
