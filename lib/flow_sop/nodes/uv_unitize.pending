@@ -1,0 +1,155 @@
+; Whole UV Unitize draft. Every selected corner gets a group key (its primitive, or its island in
+; Islands mode); corners are sorted by key so min/max per group are segment reductions. Islands are the
+; sop/components of a derived graph with one two-point polyline per joined primitive pair.
+(defn unitize_error :context value [(code : text) (reason : text)]
+  (error code "uv_unitize could not produce valid geometry"
+    :cause (str "uv_unitize [" code "]: " reason)))
+(defn unitize_safe :context value [(index : int)] (if (int/ge index 0) index 0))
+(defn unitize_finite :context value [(x : float)] (= (- x x) 0.0))
+(defn unitize_owners :context value [(offsets : (array int)) (total : int)]
+  (let* [segments (int/sub (array/count offsets) 1)
+         starts (exact (map (fn [(p : int)] (array/nth offsets p)) (array/range segments :type int)))
+         prefix (array/scan_sum (array/scatter_add starts (array/int segments 1) (int/add total 1)))]
+    (exact (map (fn [(s : int)] (int/sub (array/nth prefix (int/add s 1)) 1)) (array/range total :type int)))))
+(defn unitize_group_missing :context value [(kind : text) (name : text)]
+  (unitize_error "missing_group" (str "uv_unitize could not find " kind " group " (text/repr name))))
+
+(defnode sop/uv_unitize :label "UV Unitize" :category ["UV" "Layout"]
+  [(in0 : geometry)
+   (mode : text "Per face" :label "Mode" :choices ["Per face" "Islands"])
+   (name : text "uv" :label "UV attribute")
+   (group : text "" :label "Primitive group")
+   (seams : text "" :label "Seam group")
+   (tolerance : float 0.000000001 :label "Tolerance" :min 0 :max 0.01 :hard_min 0)
+   (uniform : bool true :label "Uniform scale")]
+  (let* [group_name (text/trim group) seam_name (text/trim seams)
+         has_group (not (text/blank? group_name)) has_seams (not (text/blank? seam_name))
+         group_literal (text/glob_literal (if has_group group_name "x"))
+         seam_literal (text/glob_literal (if has_seams seam_name "x"))
+         seam_is_edge (and has_seams (int/gt (array/count (sop/group_names in0 seam_literal :owner "edge")) 0))
+         seam_is_vertex (and (and has_seams (not seam_is_edge)) (int/gt (array/count (sop/group_names in0 seam_literal :owner "vertex")) 0))
+         primitive_count (sop/count in0 :primitives)
+         vertex_count (sop/count in0 :vertices)
+         topology (sop/topology in0)
+         selected (if has_group (sop/group in0 :name group_name :owner "primitive") (array/int primitive_count 1))
+         non_polygon (int/gt (array/sum (exact (map (fn [(s : int) (k : int)]
+                         (if (and (int/eq s 1) (not (int/eq k 0))) 1 0)) selected topology.kinds))) 0)
+         ]
+    (cond
+      (and has_group (int/eq (array/count (sop/group_names in0 group_literal :owner "primitive")) 0))
+        (unitize_group_missing "primitive" group_name)
+      (and has_seams (and (not seam_is_edge) (not seam_is_vertex)))
+        (unitize_error "missing_group" (str "uv_unitize could not find edge or vertex seam group " (text/repr seam_name)))
+      (text/blank? name) (unitize_error "invalid_uv" "UV Unitize attribute name must not be empty")
+      non_polygon (unitize_error "invalid_uv" "UV Unitize supports selected polygon primitives only")
+      (not (sop/has_attr in0 name :owner "vertex" :type vec2)) (unitize_error "invalid_uv" (str "UV Unitize requires vertex float2 attribute " (text/repr name)))
+      :else
+      (let* [uvs (sop/attr in0 name :owner "vertex" :type vec2)
+             ux (exact (map (fn [(q : vec2)] q.x) uvs)) uy (exact (map (fn [(q : vec2)] q.y) uvs))
+             adj (sop/adjacency in0)
+             pov adj.primitive_of_vertex
+             corner_selected (exact (map (fn [(p : int)] (array/nth selected p)) pov))
+             invalid (int/gt (array/sum (exact (map (fn [(s : int) (u : float) (v : float)]
+                       (if (and (int/eq s 1) (not (and (unitize_finite u) (unitize_finite v)))) 1 0))
+                       corner_selected ux uy))) 0)]
+        (if invalid (unitize_error "invalid_uv" "UV Unitize requires finite selected UVs")
+          (let* [islands (equal? mode "Islands")
+                 edge_total (sop/count in0 :edges)
+                 eov adj.edge_of_vertex
+                 ; Islands: primitives joined across a non-seam interior edge
+                 join_a (if islands
+                   (let* [keys (exact (map (fn [(e : int)] (if (int/lt e 0) edge_total e)) eov))
+                          order (array/grade keys)
+                          counts (array/scatter_add keys (array/int vertex_count 1) (int/add edge_total 1))
+                          base (array/scan_sum counts)
+                          edges_range (array/range edge_total :type int)
+                          left (exact (map (fn [(e : int)] (array/nth order (unitize_safe
+                                  (if (int/eq (array/nth counts e) 2) (array/nth base e) 0)))) edges_range))
+                          right (exact (map (fn [(e : int)] (array/nth order (unitize_safe
+                                  (if (int/eq (array/nth counts e) 2) (int/add (array/nth base e) 1) 0)))) edges_range))
+                          seam_vertices (exact (if seam_is_vertex (sop/group in0 :name seam_name :owner "vertex") (array/int vertex_count 0)))
+                          seam_edges (exact (if seam_is_edge (sop/group in0 :name seam_name :owner "edge") (array/int edge_total 0)))
+                          vp topology.vertex_points
+                          ; Three kernels keep each under the 64-register limit.
+                          candidate (exact (map (fn [(e : int)]
+                            (let* [l (array/nth left e) r (array/nth right e)
+                                   pl (array/nth pov l) pr (array/nth pov r)
+                                   both (and (int/eq (array/nth selected pl) 1) (int/eq (array/nth selected pr) 1))
+                                   forced (or (or (int/eq (array/nth seam_vertices l) 1) (int/eq (array/nth seam_vertices r) 1))
+                                              (int/eq (array/nth seam_edges e) 1))]
+                              (if (and (int/eq (array/nth counts e) 2) (and both (and (not forced) (not (int/eq pl pr))))) 1 0)))
+                            edges_range))
+                          discontinuous (exact (map (fn [(e : int)]
+                            (let* [l (array/nth left e) r (array/nth right e)
+                                   lnext (array/nth adj.next_vertex l) rnext (array/nth adj.next_vertex r)
+                                   lns (unitize_safe lnext) rns (unitize_safe rnext)
+                                   endpoint (array/nth adj.edge_a e)
+                                   l_first (int/eq (array/nth vp l) endpoint)
+                                   r_first (int/eq (array/nth vp r) endpoint)
+                                   la (if l_first l lns) lb (if l_first lns l)
+                                   ra (if r_first r rns) rb (if r_first rns r)
+                                   m1 (abs (- (array/nth ux la) (array/nth ux ra)))
+                                   m2 (abs (- (array/nth uy la) (array/nth uy ra)))
+                                   m3 (abs (- (array/nth ux lb) (array/nth ux rb)))
+                                   m4 (abs (- (array/nth uy lb) (array/nth uy rb)))]
+                              (if (or (or (int/lt lnext 0) (int/lt rnext 0)) (> (max (max (max m1 m2) m3) m4) tolerance)) 1 0)))
+                            edges_range))
+                          joined (exact (map (fn [(c : int) (d : int)] (if (and (int/eq c 1) (int/eq d 0)) 1 0)) candidate discontinuous))
+                          kept (array/compact joined)]
+                     {:a (exact (map (fn [(e : int)] (array/nth pov (array/nth left e))) kept))
+                      :b (exact (map (fn [(e : int)] (array/nth pov (array/nth right e))) kept))})
+                   {:a (array/int 0 0) :b (array/int 0 0)})
+                 island_of (if islands
+                   (let* [derived (sop/mesh :points (array/vec3 primitive_count)
+                                    :vertex_points (exact (map (fn [(i : int)]
+                                      (if (int/eq (int/mod i 2) 0) (array/nth join_a.a (int/div i 2)) (array/nth join_a.b (int/div i 2))))
+                                      (array/range (int/mul 2 (array/count join_a.a)) :type int)))
+                                    :primitive_offsets (exact (map (fn [(i : int)] (int/mul i 2))
+                                      (array/range (int/add (array/count join_a.a) 1) :type int)))
+                                    :kinds (array/int (array/count join_a.a) 1))
+                          parts (sop/components derived :over "edges")]
+                     parts.id)
+                   (array/range primitive_count :type int))
+                 members (array/compact corner_selected)
+                 total (array/count members)
+                 keys (exact (map (fn [(v : int)] (array/nth island_of (array/nth pov v))) members))
+                 order (array/grade keys)
+                 sorted_vertices (exact (map (fn [(j : int)] (array/nth members (array/nth order j))) (array/range total :type int)))
+                 sorted_keys (exact (map (fn [(j : int)] (array/nth keys (array/nth order j))) (array/range total :type int)))
+                 boundary (exact (map (fn [(j : int)]
+                   (if (or (int/eq j 0) (not (int/eq (array/nth sorted_keys j) (array/nth sorted_keys (unitize_safe (int/sub j 1)))))) 1 0))
+                   (array/range total :type int)))
+                 starts (array/compact boundary)
+                 segments (array/count starts)
+                 offsets (array/concat starts (array/int 1 total))
+                 owner (unitize_owners offsets total)
+                 su (exact (map (fn [(v : int)] (array/nth ux v)) sorted_vertices))
+                 sv (exact (map (fn [(v : int)] (array/nth uy v)) sorted_vertices))
+                 min_u (array/segment_min su offsets) max_u (array/segment_max su offsets)
+                 min_v (array/segment_min sv offsets) max_v (array/segment_max sv offsets)
+                 span_u (exact (map (fn [(hi : float) (lo : float)] (- hi lo)) max_u min_u))
+                 span_v (exact (map (fn [(hi : float) (lo : float)] (- hi lo)) max_v min_v))
+                 span (exact (map (fn [(a2 : float) (b2 : float)] (if (> a2 b2) a2 b2)) span_u span_v))
+                 out_u (exact (map (fn [(j : int)]
+                   (let* [s (array/nth owner j) u (array/nth su j)]
+                     (if uniform
+                       (if (= (array/nth span s) 0.0) 0.5
+                         (fma (- u (fma (array/nth span_u s) 0.5 (array/nth min_u s))) (/ 1.0 (array/nth span s)) 0.5))
+                       (if (= (array/nth span_u s) 0.0) 0.5
+                         (* (- u (array/nth min_u s)) (/ 1.0 (array/nth span_u s)))))))
+                   (array/range total :type int)))
+                 out_v (exact (map (fn [(j : int)]
+                   (let* [s (array/nth owner j) v (array/nth sv j)]
+                     (if uniform
+                       (if (= (array/nth span s) 0.0) 0.5
+                         (fma (- v (fma (array/nth span_v s) 0.5 (array/nth min_v s))) (/ 1.0 (array/nth span s)) 0.5))
+                       (if (= (array/nth span_v s) 0.0) 0.5
+                         (* (- v (array/nth min_v s)) (/ 1.0 (array/nth span_v s)))))))
+                   (array/range total :type int)))
+                 slot (array/scatter_add sorted_vertices (exact (map (fn [(j : int)] (int/add j 1)) (array/range total :type int)))
+                        vertex_count)]
+            (sop/with_attr in0 name
+              (exact (map (fn [(k : int) (u : float) (v : float)]
+                  (if (int/gt k 0) [(array/nth out_u (int/sub k 1)) (array/nth out_v (int/sub k 1))] [u v]))
+                slot ux uy))
+              :owner "vertex" :type vec2)))))))

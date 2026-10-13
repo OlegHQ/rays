@@ -1,0 +1,157 @@
+; Whole Edge Cusp draft. Vertices of one point are unified (sop/components over a derived graph with one
+; two-point polyline per unified pair) everywhere except at the flagged ends of selected edges; each
+; component beyond the first at a point becomes a new point. Ancestry for edge groups comes from the
+; unchanged vertices; the point-normal refresh is the Normal node's face-area point mode.
+(defn cusp_error :context value [(reason : text)]
+  (error "invalid_topology" "edge_cusp could not produce valid geometry"
+    :cause (str "edge_cusp [invalid_topology]: Rdk_mesh.Facet.edge_cusp: " reason)))
+(defn cusp_safe :context value [(index : int)] (if (int/ge index 0) index 0))
+(defn cusp_following :context value [(j : int) (total : int)] (if (int/lt (int/add j 1) total) (int/add j 1) j))
+(defn cusp_owners :context value [(offsets : (array int)) (total : int)]
+  (let* [segments (int/sub (array/count offsets) 1)
+         starts (exact (map (fn [(p : int)] (array/nth offsets p)) (array/range segments :type int)))
+         prefix (array/scan_sum (array/scatter_add starts (array/int segments 1) (int/add total 1)))]
+    (exact (map (fn [(s : int)] (int/sub (array/nth prefix (int/add s 1)) 1)) (array/range total :type int)))))
+
+; The vertex of a corner that sits at the given point: the corner itself or its successor.
+(defn cusp_end_vertex :context value [(corner : int) (point : int) (vp : (array int)) (following : (array int))]
+  (if (int/eq (array/nth vp corner) point) corner (array/nth following corner)))
+
+(defnode sop/edge_cusp :label "Edge Cusp" :category ["Topology" "Edge"]
+  [(in0 : geometry)
+   (group : text "" :label "Edge group")
+   (update_point_normals : bool true :label "Update point normals")]
+  (let* [group_name (text/trim group)
+         has_group (not (text/blank? group_name))
+         group_literal (text/glob_literal (if has_group group_name "x"))
+         edge_total (sop/count in0 :edges)
+         selected (if has_group (sop/group in0 :name group_name :owner "edge") (array/int edge_total 0))]
+    (cond
+      (and has_group (int/eq (array/count (sop/group_names in0 group_literal :owner "edge")) 0))
+        (error "missing_group" (str "edge_cusp could not find native edge group " (text/repr group_name)))
+      (int/eq (array/sum selected) 0) in0
+      :else
+      (let* [point_total (sop/count in0 :points)
+             vertex_total (sop/count in0 :vertices)
+             primitive_total (sop/count in0 :primitives)
+             adj (sop/adjacency in0)
+             topology (sop/topology in0)
+             eov adj.edge_of_vertex
+             vp topology.vertex_points
+             edge_a adj.edge_a edge_b adj.edge_b
+             edges_range (array/range edge_total :type int)
+             degree (array/scatter_add (array/concat edge_a edge_b) (array/concat selected selected) point_total)
+             flag_a (exact (map (fn [(s : int) (a : int)] (if (and (int/eq s 1) (int/ge (array/nth degree a) 2)) 1 0)) selected edge_a))
+             flag_b (exact (map (fn [(s : int) (b : int)] (if (and (int/eq s 1) (int/ge (array/nth degree b) 2)) 1 0)) selected edge_b))
+             keys (exact (map (fn [(e : int)] (if (int/lt e 0) edge_total e)) eov))
+             incidence (array/scatter_add keys (array/int vertex_total 1) (int/add edge_total 1))
+             non_polygon (array/scatter_add keys
+               (exact (map (fn [(v : int)] (if (int/eq (array/nth topology.kinds (array/nth adj.primitive_of_vertex v)) 0) 0 1))
+                 (array/range vertex_total :type int)))
+               (int/add edge_total 1))
+             invalid (int/gt (array/sum (exact (map (fn [(fa : int) (fb : int) (e : int)]
+                 (if (and (int/eq (int/or fa fb) 1)
+                          (or (int/gt (array/nth incidence e) 2) (int/gt (array/nth non_polygon e) 0))) 1 0))
+               flag_a flag_b edges_range))) 0)]
+        (cond
+          invalid (cusp_error "effective selected edge is non-manifold or not polygon-only")
+          (int/eq (array/sum (exact (map (fn [(fa : int) (fb : int)] (int/or fa fb)) flag_a flag_b))) 0) in0
+          :else
+          (let* [flagged_a (array/compact flag_a) flagged_b (array/compact flag_b)
+                 affected_hits (array/scatter_add
+                   (array/concat (exact (map (fn [(e : int)] (array/nth edge_a e)) flagged_a))
+                                 (exact (map (fn [(e : int)] (array/nth edge_b e)) flagged_b)))
+                   (array/int (int/add (array/count flagged_a) (array/count flagged_b)) 1) point_total)
+                 slots (array/range vertex_total :type int)
+                 slot_owner (cusp_owners adj.point_vertex_offsets vertex_total)
+                 ; vertices of an unaffected point are one class
+                 point_pair (exact (map (fn [(j : int)]
+                   (if (and (int/lt (int/add j 1) vertex_total)
+                            (and (int/eq (array/nth slot_owner (cusp_following j vertex_total)) (array/nth slot_owner j))
+                                 (int/eq (array/nth affected_hits (array/nth slot_owner j)) 0))) 1 0)) slots))
+                 point_first (exact (map (fn [(j : int)] (array/nth adj.point_vertices j)) (array/compact point_pair)))
+                 point_second (exact (map (fn [(j : int)] (array/nth adj.point_vertices (int/add j 1))) (array/compact point_pair)))
+                 ; corners of one edge are joined at each end that is not flagged
+                 order (array/grade keys)
+                 edge_pair (exact (map (fn [(j : int)]
+                   (if (and (int/lt (int/add j 1) vertex_total)
+                            (and (int/lt (array/nth keys (array/nth order j)) edge_total)
+                                 (int/eq (array/nth keys (array/nth order j))
+                                         (array/nth keys (array/nth order (cusp_following j vertex_total)))))) 1 0)) slots))
+                 pair_slots (array/compact edge_pair)
+                 pair_edge (exact (map (fn [(j : int)] (array/nth keys (array/nth order j))) pair_slots))
+                 corner_one (exact (map (fn [(j : int)] (array/nth order j)) pair_slots))
+                 corner_two (exact (map (fn [(j : int)] (array/nth order (int/add j 1))) pair_slots))
+                 a_open (exact (map (fn [(e : int)] (int/sub 1 (array/nth flag_a e))) pair_edge))
+                 b_open (exact (map (fn [(e : int)] (int/sub 1 (array/nth flag_b e))) pair_edge))
+                 a_slots (array/compact a_open) b_slots (array/compact b_open)
+                 a_first (exact (map (fn [(k : int)] (cusp_end_vertex (array/nth corner_one k) (array/nth edge_a (array/nth pair_edge k)) vp adj.next_vertex)) a_slots))
+                 a_second (exact (map (fn [(k : int)] (cusp_end_vertex (array/nth corner_two k) (array/nth edge_a (array/nth pair_edge k)) vp adj.next_vertex)) a_slots))
+                 b_first (exact (map (fn [(k : int)] (cusp_end_vertex (array/nth corner_one k) (array/nth edge_b (array/nth pair_edge k)) vp adj.next_vertex)) b_slots))
+                 b_second (exact (map (fn [(k : int)] (cusp_end_vertex (array/nth corner_two k) (array/nth edge_b (array/nth pair_edge k)) vp adj.next_vertex)) b_slots))
+                 first_ends (array/concat point_first (array/concat a_first b_first))
+                 second_ends (array/concat point_second (array/concat a_second b_second))
+                 pair_total (array/count first_ends)
+                 derived (sop/mesh :points (array/vec3 vertex_total)
+                           :vertex_points (exact (map (fn [(i : int)]
+                             (if (int/eq (int/mod i 2) 0) (array/nth first_ends (int/div i 2)) (array/nth second_ends (int/div i 2))))
+                             (array/range (int/mul 2 pair_total) :type int)))
+                           :primitive_offsets (exact (map (fn [(i : int)] (int/mul i 2)) (array/range (int/add pair_total 1) :type int)))
+                           :kinds (array/int pair_total 1))
+                 parts (sop/components derived :over "edges")
+                 class_order (array/grade parts.id)
+                 class_first (exact (map (fn [(j : int)]
+                   (if (or (int/eq j 0) (not (int/eq (array/nth parts.id (array/nth class_order j))
+                                                    (array/nth parts.id (array/nth class_order (cusp_safe (int/sub j 1))))))) 1 0))
+                   slots))
+                 ; smallest vertex of every class, then those vertices ordered by (point, vertex)
+                 rep_mark (array/scatter_add (exact (map (fn [(j : int)] (array/nth class_order j)) (array/compact class_first)))
+                            (array/int (array/count (array/compact class_first)) 1) vertex_total)
+                 reps (array/compact rep_mark)
+                 rep_order (array/grade (exact (map (fn [(v : int)] (array/nth vp v)) reps)))
+                 ordered (exact (map (fn [(j : int)] (array/nth reps (array/nth rep_order j))) (array/range (array/count reps) :type int)))
+                 ordered_range (array/range (array/count reps) :type int)
+                 first_of_point (exact (map (fn [(j : int)]
+                   (if (or (int/eq j 0) (not (int/eq (array/nth vp (array/nth ordered j))
+                                                    (array/nth vp (array/nth ordered (cusp_safe (int/sub j 1))))))) 1 0))
+                   ordered_range))
+                 extra_total (int/sub (array/count reps) (array/sum first_of_point))]
+            (if (int/eq extra_total 0) in0
+              (let* [before (array/scan_sum first_of_point)
+                     output_id (exact (map (fn [(j : int)]
+                       (if (int/eq (array/nth first_of_point j) 1) (array/nth vp (array/nth ordered j))
+                         (int/add point_total (int/sub j (array/nth before j))))) ordered_range))
+                     rep_output (array/scatter_add ordered (exact (map (fn [(o : int)] (int/add o 1)) output_id)) vertex_total)
+                     ; class id -> rep vertex
+                     class_total (array/count (array/compact class_first))
+                     class_rep (array/scatter_add (exact (map (fn [(j : int)] (array/nth parts.id (array/nth class_order j)))
+                                                     (array/compact class_first)))
+                                 (exact (map (fn [(j : int)] (int/add (array/nth class_order j) 1)) (array/compact class_first)))
+                                 (int/add (array/max parts.id) 1))
+                     vertex_points (exact (map (fn [(v : int)]
+                       (int/sub (array/nth rep_output (int/sub (array/nth class_rep (array/nth parts.id v)) 1)) 1))
+                       slots))
+                     output_total (int/add point_total extra_total)
+                     extra_source (array/scatter_add
+                       (exact (map (fn [(j : int)] (if (int/eq (array/nth first_of_point j) 1) output_total (array/nth output_id j))) ordered_range))
+                       (exact (map (fn [(j : int)] (int/add (array/nth vp (array/nth ordered j)) 1)) ordered_range))
+                       (int/add output_total 1))
+                     point_map (exact (map (fn [(k : int)]
+                       (if (int/lt k point_total) k (int/sub (array/nth extra_source k) 1))) (array/range output_total :type int)))
+                     target (sop/mesh :points (array/vec3 output_total) :vertex_points vertex_points
+                              :primitive_offsets topology.primitive_offsets :kinds topology.kinds)
+                     target_adjacency (sop/adjacency target)
+                     target_edge_total (array/count target_adjacency.edge_a)
+                     leaving (exact (map (fn [(te : int)] (if (int/lt te 0) target_edge_total te)) target_adjacency.edge_of_vertex))
+                     ancestor (exact (map (fn [(e : int)] (int/add e 1)) eov))
+                     edge_count (array/scatter_add leaving (array/int vertex_total 1) (int/add target_edge_total 1))
+                     edge_sum (array/scatter_add leaving ancestor (int/add target_edge_total 1))
+                     edge_values (exact (map (fn [(e : int)]
+                         (int/sub (int/div (array/nth edge_sum e) (if (int/gt (array/nth edge_count e) 0) (array/nth edge_count e) 1)) 1))
+                       (array/range target_edge_total :type int)))
+                     split (sop/remap in0 target :points point_map :vertices slots
+                             :primitives (array/range primitive_total :type int) :positions "mapped"
+                             :edges {:offsets (array/range (int/add target_edge_total 1) :type int) :values edge_values})]
+                (if (and update_point_normals (sop/has_attr in0 "N" :owner "point"))
+                  (sop/normals split :owner "Point" :weighting "Face area")
+                  split)))))))))

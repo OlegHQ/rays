@@ -1,0 +1,228 @@
+; Whole Edge Straighten draft: components of the selected-edge graph come from sop/components over a
+; derived two-point polyline per selected edge; members are sorted by component so every per-component
+; sum is a segment sum in point order. The principal axis is a vectorised power iteration from three
+; seeds. Native arm64 contracts a + b*c into fma, so the sums spell fma explicitly.
+(defn straighten_error :context value [(code : text) (reason : text)]
+  (error code "edge_straighten could not produce valid geometry"
+    :cause (str "edge_straighten [" code "]: " reason)))
+(defn straighten_finite :context value [(x : float)] (= (- x x) 0.0))
+(defn straighten_safe :context value [(index : int)] (if (int/ge index 0) index 0))
+(defn straighten_interleave :context value [(a : (array int)) (b : (array int))]
+  (exact (map (fn [(i : int)]
+    (if (int/eq (int/mod i 2) 0) (array/nth a (int/div i 2)) (array/nth b (int/div i 2))))
+    (array/range (int/mul 2 (array/count a)) :type int))))
+; Owner segment of every slot given segment start offsets (length segments + 1).
+(defn straighten_owners :context value [(offsets : (array int)) (total : int)]
+  (let* [segments (int/sub (array/count offsets) 1)
+         starts (exact (map (fn [(p : int)] (array/nth offsets p)) (array/range segments :type int)))
+         prefix (array/scan_sum (array/scatter_add starts (array/int segments 1) (int/add total 1)))]
+    (exact (map (fn [(s : int)] (int/sub (array/nth prefix (int/add s 1)) 1)) (array/range total :type int)))))
+(defn straighten_gather :context value [(source : (array float)) (index : (array int))]
+  (exact (map (fn [(i : int)] (array/nth source i)) index)))
+; ((a*b) + (c*d)) + (e*f) with the later products fused
+(defn straighten_dot3 :context value [(a : float) (b : float) (c : float) (d : float) (e : float) (f : float)]
+  (fma e f (fma c d (* a b))))
+; Power iteration from one unit seed over every component at once.
+(defn straighten_power :context value
+  [(xx : (array float)) (xy : (array float)) (xz : (array float)) (yy : (array float)) (yz : (array float))
+   (zz : (array float)) (seed : int)]
+  (let* [segments (array/count xx)
+         rows (array/range segments :type int)
+         start {:x (array/float segments (if (int/eq seed 0) 1.0 0.0))
+                :y (array/float segments (if (int/eq seed 1) 1.0 0.0))
+                :z (array/float segments (if (int/eq seed 2) 1.0 0.0))
+                :done (array/int segments 0)}
+         final (iterate 64 start
+           (fn [(c : {:x (array float) :y (array float) :z (array float) :done (array int)})]
+             (let* [tx (exact (map (fn [(i : int)] (straighten_dot3 (array/nth xx i) (array/nth c.x i) (array/nth xy i)
+                         (array/nth c.y i) (array/nth xz i) (array/nth c.z i))) rows))
+                    ty (exact (map (fn [(i : int)] (straighten_dot3 (array/nth xy i) (array/nth c.x i) (array/nth yy i)
+                         (array/nth c.y i) (array/nth yz i) (array/nth c.z i))) rows))
+                    tz (exact (map (fn [(i : int)] (straighten_dot3 (array/nth xz i) (array/nth c.x i) (array/nth yz i)
+                         (array/nth c.y i) (array/nth zz i) (array/nth c.z i))) rows))
+                    magnitude (exact (map (fn [(i : int)]
+                      (sqrt (straighten_dot3 (array/nth tx i) (array/nth tx i) (array/nth ty i) (array/nth ty i)
+                              (array/nth tz i) (array/nth tz i)))) rows))
+                    live (exact (map (fn [(i : int)]
+                      (if (and (int/eq (array/nth c.done i) 0) (> (array/nth magnitude i) 0.0)) 1 0)) rows))
+                    nx (exact (map (fn [(i : int)] (if (int/eq (array/nth live i) 1)
+                         (/ (array/nth tx i) (array/nth magnitude i)) (array/nth c.x i))) rows))
+                    ny (exact (map (fn [(i : int)] (if (int/eq (array/nth live i) 1)
+                         (/ (array/nth ty i) (array/nth magnitude i)) (array/nth c.y i))) rows))
+                    nz (exact (map (fn [(i : int)] (if (int/eq (array/nth live i) 1)
+                         (/ (array/nth tz i) (array/nth magnitude i)) (array/nth c.z i))) rows))
+                    done (exact (map (fn [(i : int)]
+                      (cond (int/eq (array/nth c.done i) 1) 1
+                            (int/eq (array/nth live i) 0) 1
+                            :else (let* [alignment (abs (straighten_dot3 (array/nth c.x i) (array/nth nx i)
+                                      (array/nth c.y i) (array/nth ny i) (array/nth c.z i) (array/nth nz i)))]
+                                    (if (<= (- 1.0 alignment) (* 8.0 2.220446049250313e-16)) 1 0)))) rows))]
+               {:x nx :y ny :z nz :done done}))
+           :until (fn [(a : {:x (array float) :y (array float) :z (array float) :done (array int)})
+                       (b : {:x (array float) :y (array float) :z (array float) :done (array int)})]
+             (int/eq (array/sum b.done) segments)))
+         wx (exact (map (fn [(i : int)] (straighten_dot3 (array/nth xx i) (array/nth final.x i) (array/nth xy i)
+                     (array/nth final.y i) (array/nth xz i) (array/nth final.z i))) rows))
+         wy (exact (map (fn [(i : int)] (straighten_dot3 (array/nth xy i) (array/nth final.x i) (array/nth yy i)
+                     (array/nth final.y i) (array/nth yz i) (array/nth final.z i))) rows))
+         wz (exact (map (fn [(i : int)] (straighten_dot3 (array/nth xz i) (array/nth final.x i) (array/nth yz i)
+                     (array/nth final.y i) (array/nth zz i) (array/nth final.z i))) rows))
+         value (exact (map (fn [(i : int)] (straighten_dot3 (array/nth final.x i) (array/nth wx i) (array/nth final.y i)
+                     (array/nth wy i) (array/nth final.z i) (array/nth wz i))) rows))]
+    {:x final.x :y final.y :z final.z :value value}))
+
+(defnode sop/edge_straighten :label "Edge Straighten" :category ["Topology" "Edge"]
+  [(in0 : geometry)
+   (group : text "" :label "Edge group")
+   (output_group : text "" :label "Output group")]
+  (let* [group_name (text/trim group) output_name (text/trim output_group)
+         group_literal (text/glob_literal (if (text/blank? group_name) "x" group_name))
+         has_group (not (text/blank? group_name)) has_output (not (text/blank? output_name))
+         point_count (sop/count in0 :points)
+         edge_count (sop/count in0 :edges)
+         selected (if has_group (sop/group in0 :name group_name :owner "edge") (array/int edge_count 1))
+         selected_count (array/sum selected)
+         unchanged (if has_output (sop/with_group in0 (exact selected) :name output_name :owner "edge") in0)]
+    (cond
+      (and has_group (equal? (array/count (sop/group_names in0 group_literal :owner "edge")) 0))
+        (straighten_error "missing_group" (str "edge_straighten could not find native edge group " (text/repr group_name)))
+      (or (int/eq edge_count 0) (int/eq selected_count 0)) unchanged
+      :else
+        (let* [adj (sop/adjacency in0)
+               chosen (array/compact selected)
+               a (exact (map (fn [(e : int)] (array/nth adj.edge_a e)) chosen))
+               b (exact (map (fn [(e : int)] (array/nth adj.edge_b e)) chosen))
+               positions (sop/attr in0 "P")
+               px (exact (map (fn [(p : vec3)] p.x) positions))
+               py (exact (map (fn [(p : vec3)] p.y) positions))
+               pz (exact (map (fn [(p : vec3)] p.z) positions))
+               hits (array/scatter_add (array/concat a b) (array/int (int/mul 2 (array/count a)) 1) point_count)
+               touched (exact (map (fn [(h : int)] (if (int/gt h 0) 1 0)) hits))
+               members (array/compact touched)
+               total (array/count members)
+               bad (int/gt (array/sum (exact (map (fn [(p : int)]
+                       (if (and (straighten_finite (array/nth px p))
+                                (and (straighten_finite (array/nth py p)) (straighten_finite (array/nth pz p)))) 0 1))
+                       members))) 0)]
+          (if bad (straighten_error "invalid_geometry" "Edge Straighten selected edge has a non-finite endpoint")
+            (let* [derived (sop/mesh :points positions :vertex_points (straighten_interleave a b)
+                             :primitive_offsets (exact (map (fn [(i : int)] (int/mul i 2))
+                               (array/range (int/add (array/count chosen) 1) :type int)))
+                             :kinds (array/int (array/count chosen) 1))
+                   components (sop/components derived :over "edges")
+                   keys (exact (map (fn [(p : int)] (array/nth components.id p)) members))
+                   order (array/grade keys)
+                   sorted_points (exact (map (fn [(j : int)] (array/nth members (array/nth order j)))
+                                   (array/range total :type int)))
+                   sorted_ids (exact (map (fn [(j : int)] (array/nth keys (array/nth order j)))
+                                (array/range total :type int)))
+                   boundary (exact (map (fn [(j : int)]
+                     (if (or (int/eq j 0)
+                             (not (int/eq (array/nth sorted_ids j) (array/nth sorted_ids (straighten_safe (int/sub j 1))))))
+                       1 0)) (array/range total :type int)))
+                   starts (array/compact boundary)
+                   segments (array/count starts)
+                   offsets (array/concat starts (array/int 1 total))
+                   rows (array/range segments :type int)
+                   owner (straighten_owners offsets total)
+                   sizes (exact (map (fn [(s : int)] (int/sub (array/nth offsets (int/add s 1)) (array/nth offsets s))) rows))
+                   mx (straighten_gather px sorted_points) my (straighten_gather py sorted_points)
+                   mz (straighten_gather pz sorted_points)
+                   abs_max (fn [(v : (array float))]
+                     (array/segment_max (exact (map (fn [(x : float)] (abs x)) v)) offsets))
+                   largest (exact (map (fn [(x : float) (y : float) (z : float)] (max (max x y) z))
+                     (abs_max mx) (abs_max my) (abs_max mz)))
+                   scale (exact (map (fn [(m : float)] (if (= m 0.0) 1.0 m)) largest))
+                   member_scale (exact (map (fn [(s : int)] (array/nth scale s)) owner))
+                   sx (array/segment_sum (exact (map (fn [(v : float) (k : float)] (/ v k)) mx member_scale)) offsets)
+                   sy (array/segment_sum (exact (map (fn [(v : float) (k : float)] (/ v k)) my member_scale)) offsets)
+                   sz (array/segment_sum (exact (map (fn [(v : float) (k : float)] (/ v k)) mz member_scale)) offsets)
+                   inverse (exact (map (fn [(n : int)] (/ 1.0 (float n))) sizes))
+                   cx (exact (map (fn [(s : float) (i : float)] (* s i)) sx inverse))
+                   cy (exact (map (fn [(s : float) (i : float)] (* s i)) sy inverse))
+                   cz (exact (map (fn [(s : float) (i : float)] (* s i)) sz inverse))
+                   ; centered, scaled member coordinates
+                   ux (exact (map (fn [(v : float) (k : float) (s : int)] (- (/ v k) (array/nth cx s))) mx member_scale owner))
+                   uy (exact (map (fn [(v : float) (k : float) (s : int)] (- (/ v k) (array/nth cy s))) my member_scale owner))
+                   uz (exact (map (fn [(v : float) (k : float) (s : int)] (- (/ v k) (array/nth cz s))) mz member_scale owner))
+                   ; sequential fma accumulation per component, in point order
+                   grown (exact (map (fn [(s : int)] (int/add (array/nth offsets s) s)) (array/range (int/add segments 1) :type int)))
+                   cov (fn [(left : (array float)) (right : (array float))]
+                     (get (iterate (array/max sizes) {:acc (array/float segments) :k 0}
+                       (fn [(c : {:acc (array float) :k int})]
+                         {:acc (exact (map (fn [(s : int) (v : float)]
+                              (if (int/lt c.k (array/nth sizes s))
+                                (let* [at (int/add (array/nth offsets s) c.k)]
+                                  (fma (array/nth left at) (array/nth right at) v))
+                                v)) rows c.acc))
+                          :k (int/add c.k 1)})) :acc))
+                   xx (cov ux ux) xy (cov ux uy) xz (cov ux uz) yy (cov uy uy) yz (cov uy uz) zz (cov uz uz)
+                   nonzero (exact (map (fn [(qa : float) (qb : float) (qc : float)]
+                     (if (or (not (= qa 0.0)) (or (not (= qb 0.0)) (not (= qc 0.0)))) 1 0)) xx yy zz))
+                   s0 (straighten_power xx xy xz yy yz zz 0)
+                   s1 (straighten_power xx xy xz yy yz zz 1)
+                   s2 (straighten_power xx xy xz yy yz zz 2)
+                   pick1 (exact (map (fn [(v0 : float) (v1 : float)] (if (> v1 v0) 1 0)) s0.value s1.value))
+                   v01 (exact (map (fn [(v0 : float) (v1 : float)] (if (> v1 v0) v1 v0)) s0.value s1.value))
+                   pick2 (exact (map (fn [(v : float) (v2 : float)] (if (> v2 v) 1 0)) v01 s2.value))
+                   choose (fn [(f0 : (array float)) (f1 : (array float)) (f2 : (array float))]
+                     (exact (map (fn [(i : int)]
+                       (cond (int/eq (array/nth pick2 i) 1) (array/nth f2 i)
+                             (int/eq (array/nth pick1 i) 1) (array/nth f1 i)
+                             :else (array/nth f0 i))) rows)))
+                   vx (choose s0.x s1.x s2.x) vy (choose s0.y s1.y s2.y) vz (choose s0.z s1.z s2.z)
+                   ; residual statistics per member
+                   members_range (array/range total :type int)
+                   along (exact (map (fn [(j : int)]
+                     (let* [s (array/nth owner j)]
+                       (straighten_dot3 (array/nth ux j) (array/nth vx s) (array/nth uy j) (array/nth vy s)
+                         (array/nth uz j) (array/nth vz s)))) members_range))
+                   ; The projection loop reads axes from arrays, where native rounds dz*az before the last add.
+                   along_final (exact (map (fn [(j : int)]
+                     (let* [s (array/nth owner j)]
+                       (+ (fma (array/nth ux j) (array/nth vx s) (* (array/nth uy j) (array/nth vy s)))
+                          (* (array/nth uz j) (array/nth vz s))))) members_range))
+                   residual (exact (map (fn [(j : int)]
+                     (let* [s (array/nth owner j) l (array/nth along j)
+                            rx (fma (* -1.0 l) (array/nth vx s) (array/nth ux j))
+                            ry (fma (* -1.0 l) (array/nth vy s) (array/nth uy j))
+                            rz (fma (* -1.0 l) (array/nth vz s) (array/nth uz j))]
+                       (sqrt (straighten_dot3 rx rx ry ry rz rz)))) members_range))
+                   radius (exact (map (fn [(x : float) (y : float) (z : float)]
+                     (sqrt (straighten_dot3 x x y y z z))) ux uy uz))
+                   worst (array/segment_max residual offsets)
+                   spread (array/segment_max radius offsets)
+                   moves (exact (map (fn [(s : int)]
+                     (if (and (int/gt (array/nth sizes s) 2) (and (int/eq (array/nth nonzero s) 1)
+                           (> (array/nth worst s) (* (* 512.0 2.220446049250313e-16) (max 1.0 (array/nth spread s)))))) 1 0))
+                     rows))]
+              (if (int/eq (array/sum moves) 0) unchanged
+                (let* [px_new (exact (map (fn [(l : float) (s : int) (k : float)]
+                         (* k (+ (array/nth cx s) (* l (array/nth vx s))))) along_final owner member_scale))
+                       py_new (exact (map (fn [(l : float) (s : int) (k : float)]
+                         (* k (+ (array/nth cy s) (* l (array/nth vy s))))) along_final owner member_scale))
+                       pz_new (exact (map (fn [(l : float) (s : int) (k : float)]
+                         (* k (+ (array/nth cz s) (* l (array/nth vz s))))) along_final owner member_scale))
+                       active (exact (map (fn [(s : int)] (array/nth moves s)) owner))
+                       nonfinite (int/gt (array/sum (exact (map (fn [(j : int)]
+                         (if (and (int/eq (array/nth active j) 1)
+                                  (not (and (straighten_finite (array/nth px_new j))
+                                            (and (straighten_finite (array/nth py_new j)) (straighten_finite (array/nth pz_new j))))))
+                           1 0)) members_range))) 0)]
+                  (if nonfinite (straighten_error "invalid_geometry" "Edge Straighten projection produced a non-finite point")
+                    (let* [slot (array/scatter_add sorted_points (exact (map (fn [(j : int)] (int/add j 1)) (array/range total :type int)))
+                                  point_count)
+                           moved_mask (array/scatter_add sorted_points active point_count)
+                           where (exact (map (fn [(k : int)] (int/sub k 1)) slot))
+                           xs (exact (map (fn [(w : int) (m : int) (v : float)]
+                                (if (int/eq m 1) (array/nth px_new (straighten_safe w)) v)) where moved_mask px))
+                           ys (exact (map (fn [(w : int) (m : int) (v : float)]
+                                (if (int/eq m 1) (array/nth py_new (straighten_safe w)) v)) where moved_mask py))
+                           zs (exact (map (fn [(w : int) (m : int) (v : float)]
+                                (if (int/eq m 1) (array/nth pz_new (straighten_safe w)) v)) where moved_mask pz))
+                           moved_geo (sop/delete_attr (sop/delete_attr
+                             (sop/with_attr in0 "P" (exact (map (fn [(x : float) (y : float) (z : float)] [x y z]) xs ys zs))
+                               :owner "point")
+                             "N" :owner "point") "N" :owner "vertex")]
+                      (if has_output (sop/with_group moved_geo (exact selected) :name output_name :owner "edge")
+                        moved_geo)))))))))))

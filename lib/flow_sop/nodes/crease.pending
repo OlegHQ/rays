@@ -1,0 +1,126 @@
+; Whole Crease draft: per-vertex creaseweight, optional Cd visualization. Edge maxima over the
+; vertices of an edge come from a stable sort of vertices by edge (a CSR with a zero sentinel per edge).
+(defn crease_fail :context value [(reason : text)]
+  (error "invalid_crease" "crease could not produce valid geometry"
+    :cause (str "crease [invalid_crease]: Rdk_mesh.Crease.crease: " reason)))
+(defn crease_finite :context value [(x : float)] (= (- x x) 0.0))
+(defn crease_safe :context value [(index : int)] (if (int/ge index 0) index 0))
+; Owner segment of every slot given segment start offsets (length segments + 1).
+(defn crease_owners :context value [(offsets : (array int)) (total : int)]
+  (let* [segments (int/sub (array/count offsets) 1)
+         starts (exact (map (fn [(p : int)] (array/nth offsets p)) (array/range segments :type int)))
+         prefix (array/scan_sum (array/scatter_add starts (array/int segments 1) (int/add total 1)))]
+    (exact (map (fn [(s : int)] (int/sub (array/nth prefix (int/add s 1)) 1)) (array/range total :type int)))))
+; Edge_max: maximum (from zero) of the values of the vertices whose outgoing edge is the edge.
+(defn crease_edge_max :context value [(edge_of_vertex : (array int)) (weights : (array float)) (count : int)]
+  (if (int/eq count 0) (array/float 0)
+    (let* [keys (exact (map (fn [(e : int)] (if (int/lt e 0) count e)) edge_of_vertex))
+           order (array/grade keys)
+           counts (array/scatter_add keys (array/int (array/count keys) 1) (int/add count 1))
+           base (array/scan_sum counts)
+           grown (exact (map (fn [(q : int)] (int/add (array/nth base q) q)) (array/range (int/add count 1) :type int)))
+           total (int/add (array/nth base count) count)
+           owner (crease_owners grown total)
+           padded (exact (map (fn [(j : int) (q : int)]
+               (let* [local (int/sub j (array/nth grown q))]
+                 (if (int/eq local 0) 0.0
+                   (array/nth weights (array/nth order (int/sub (int/add (array/nth base q) local) 1))))))
+             (array/range total :type int) owner))]
+      (array/segment_max padded grown))))
+
+(defnode sop/crease :label "Crease" :category ["Topology" "Edge"]
+  [(in0 : geometry)
+   (group : text "" :label "Edge group")
+   (operation : text "Add" :label "Operation" :choices ["Add" "Set" "Delete"])
+   (weight : float 1.0 :label "Weight" :min 0 :max 10 :hard_min 0)
+   (add_vertex_color : bool false :label "Visualize with vertex color")]
+  (let* [group_name (text/trim group)
+         has_group (not (text/blank? group_name))
+         literal (text/glob_literal (if has_group group_name "x"))]
+    (if (and has_group (int/eq (array/count (sop/group_names in0 literal :owner "edge")) 0))
+      (error "missing_group" (str "crease could not find native edge group " (text/repr group_name)))
+      (let* [edge_total (sop/count in0 :edges)
+             vertex_total (sop/count in0 :vertices)
+             is_add (equal? operation "Add") is_set (equal? operation "Set") is_delete (equal? operation "Delete")
+             has_weights (sop/has_attr in0 "creaseweight" :owner "vertex")
+             weights_float (sop/has_attr in0 "creaseweight" :owner "vertex" :type float)
+             existing (if weights_float
+                        (sop/attr in0 "creaseweight" :owner "vertex" :type float) (array/float 0))]
+        (cond
+          (and has_weights (not weights_float))
+            (crease_fail "vertex creaseweight must have scalar float storage")
+          (and has_weights (int/gt (array/sum (exact (map (fn [(x : float)]
+                (if (and (crease_finite x) (>= x 0.0)) 0 1)) existing))) 0))
+            (crease_fail "vertex creaseweight contains a non-finite or negative value")
+          :else
+          (let* [adj (sop/adjacency in0)
+                 eov adj.edge_of_vertex
+                 selection (if has_group (sop/group in0 :name group_name :owner "edge") (array/int edge_total 1))
+                 selected_any (and (int/gt edge_total 0) (or (not has_group) (int/gt (array/sum selection) 0)))
+                 changes (cond
+                   (and is_delete (not has_weights)) false
+                   (and is_add (= weight 0.0)) false
+                   (and is_set (and (not has_weights) (= weight 0.0))) false
+                   :else selected_any)
+                 old_max (if (and changes (and is_add has_weights)) (crease_edge_max eov existing edge_total)
+                           (array/float edge_total))
+                 half_weight (* weight 0.5)
+                 ; o + weight overflows exactly when the halved sum reaches 2^1023
+                 too_big (exact (map (fn [(s : int) (o : float)]
+                   (if (and (int/eq s 1) (>= (+ (* o 0.5) half_weight) 8.98846567431158e307)) 1 0)) selection old_max))
+                 edge_values (exact (map (fn [(s : int) (o : float) (big : int)]
+                   (if (and (int/eq s 1) (int/eq big 0)) (+ o weight) 0.0)) selection old_max too_big))
+                 overflow (and (and changes is_add) (int/gt (array/sum too_big) 0))]
+            (if overflow (crease_fail "adding crease weight exceeds finite floating-point range")
+              (let* [base (if has_weights existing (array/float vertex_total))
+                     applies (exact (map (fn [(e : int)]
+                       (if (and changes (and (int/ge e 0) (int/eq (array/nth selection (crease_safe e)) 1))) 1 0)) eov))
+                     candidate (exact (map (fn [(e : int) (b : float)]
+                       (cond is_set weight is_delete 0.0 :else (array/nth edge_values (crease_safe e)))) eov base))
+                     moved (exact (map (fn [(a : int) (c : float) (b : float)]
+                       (if (and (int/eq a 1) (not (= c b))) 1 0)) applies candidate base))
+                     changed (int/gt (array/sum moved) 0)
+                     updated (exact (map (fn [(a : int) (c : float) (b : float)] (if (int/eq a 1) c b))
+                       applies candidate base))
+                     has_final (or changed has_weights)
+                     final (if changed updated existing)
+                     all_zero (int/eq (array/sum (exact (map (fn [(x : float)] (if (= x 0.0) 0 1)) updated))) 0)
+                     stage (cond
+                       (not changed) in0
+                       (and (or is_delete (= weight 0.0)) all_zero) (sop/delete_attr in0 "creaseweight" :owner "vertex")
+                       :else (sop/with_attr in0 "creaseweight" updated :owner "vertex" :type float))
+                     edge_weights (if (and add_vertex_color has_final) (crease_edge_max eov final edge_total) (array/float 0))
+                     any_positive (int/gt (array/sum (exact (map (fn [(w : float)] (if (> w 0.0) 1 0)) edge_weights))) 0)]
+                (if (not any_positive) stage
+                  (let* [has_vcd (sop/has_attr in0 "Cd" :owner "vertex")
+                         vcd_ok (sop/has_attr in0 "Cd" :owner "vertex" :type vec4)
+                         has_pcd (sop/has_attr in0 "Cd" :owner "point" :type vec4)
+                         pcd_ok (and (not has_vcd) has_pcd)
+                         vcd (if vcd_ok (sop/attr in0 "Cd" :owner "vertex" :type vec4) (array/vec4 0))
+                         pcd (if pcd_ok (sop/attr in0 "Cd" :owner "point" :type vec4) (array/vec4 0))
+                         topology (sop/topology in0)
+                         bad_color (fn [(c : (array vec4))]
+                           (int/gt (array/sum (exact (map (fn [(q : vec4)]
+                             (if (and (and (crease_finite q.x) (crease_finite q.y))
+                                      (and (crease_finite q.z) (crease_finite q.w))) 0 1)) c))) 0))]
+                    (cond
+                      (and has_vcd (not vcd_ok)) (crease_fail "vertex Cd must have float4 storage")
+                      (and vcd_ok (bad_color vcd)) (crease_fail "vertex Cd contains a non-finite value")
+                      (and pcd_ok (bad_color pcd)) (crease_fail "vertex Cd contains a non-finite value")
+                      :else
+                      (let* [colors (cond
+                               vcd_ok vcd
+                               pcd_ok (exact (map (fn [(p : int)] (array/nth pcd p)) topology.vertex_points))
+                               :else (exact (map (fn [(e : int)] [1.0 1.0 1.0 1.0]) eov)))
+                             creased (exact (map (fn [(e : int) (prev : int)]
+                                 (let* [incoming (if (int/ge prev 0) (array/nth eov prev) -1)]
+                                   (if (or (and (int/ge e 0) (> (array/nth edge_weights (crease_safe e)) 0.0))
+                                           (and (int/ge incoming 0) (> (array/nth edge_weights (crease_safe incoming)) 0.0))) 1 0)))
+                               eov adj.previous_vertex))
+                             differs (exact (map (fn [(c : int) (q : vec4)]
+                               (if (and (int/eq c 1) (not (and (and (= q.x 1.0) (= q.y 0.0)) (and (= q.z 0.0) (= q.w 1.0))))) 1 0))
+                               creased colors))]
+                        (if (and (int/eq (array/sum differs) 0) has_vcd) stage
+                          (sop/with_attr stage "Cd"
+                            (exact (map (fn [(c : int) (q : vec4)] (if (int/eq c 1) [1.0 0.0 0.0 1.0] q)) creased colors))
+                            :owner "vertex" :type vec4))))))))))))))
