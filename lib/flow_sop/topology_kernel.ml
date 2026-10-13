@@ -170,7 +170,7 @@ let remap ?cancel ~grain ~source ~target args =
             refuse "E_REMAP_COUNT" ("Remap " ^ name ^ " map must match target owner count.");
           Array.iteri (fun row index ->
             if row land 4095 = 0 then check ();
-            if index < 0 || index >= source_count then
+            if index < -1 || index >= source_count then
               refuse "E_REMAP_INDEX" ("Remap " ^ name ^ " source index is out of bounds.")) map;
           map
       | _ -> refuse "E_REMAP_TYPE" ("Remap " ^ name ^ " requires an integer array.") in
@@ -208,9 +208,9 @@ let remap ?cancel ~grain ~source ~target args =
       | Point when point_same -> attribute
       | Vertex when vertex_same -> attribute
       | Primitive when primitive_same -> attribute
-      | Point -> R.attribute ?cancel ~grain point_map attribute
-      | Vertex -> R.attribute ?cancel ~grain vertex_map attribute
-      | Primitive -> R.attribute ?cancel ~grain primitive_map attribute) (G.attributes source) in
+      | Point -> R.attribute ?cancel ~grain ~defaults:true point_map attribute
+      | Vertex -> R.attribute ?cancel ~grain ~defaults:true vertex_map attribute
+      | Primitive -> R.attribute ?cancel ~grain ~defaults:true primitive_map attribute) (G.attributes source) in
     let groups = List.map (fun group ->
       check ();
       match Rdk.Group.owner group with
@@ -224,9 +224,9 @@ let remap ?cancel ~grain ~source ~target args =
       else if point_same then G.positions source
       else let p = Rdk.Packed.Float3.Private.view (G.positions source) in
         Rdk.Packed.Float3.Private.of_owned_exn
-          ~x:(R.select_float ?cancel ~grain point_map p.x)
-          ~y:(R.select_float ?cancel ~grain point_map p.y)
-          ~z:(R.select_float ?cancel ~grain point_map p.z) in
+          ~x:(R.select_float ?cancel ~grain ~missing:0. point_map p.x)
+          ~y:(R.select_float ?cancel ~grain ~missing:0. point_map p.y)
+          ~z:(R.select_float ?cancel ~grain ~missing:0. point_map p.z) in
     check ();
     let output = result "E_REMAP" (G.create ~positions ~topology:target_topology
         ~attributes ~groups ~edge_groups ()) in

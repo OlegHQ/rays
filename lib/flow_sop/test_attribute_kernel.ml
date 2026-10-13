@@ -1174,7 +1174,7 @@ let () =
           assert (Marshal.to_string modern [Marshal.No_sharing] = Marshal.to_string expected [Marshal.No_sharing]);
           assert (Marshal.to_string actual [Marshal.No_sharing] = Marshal.to_string expected [Marshal.No_sharing])))
           [1;8]) [0.;0.125;1.25;7.]))
-    ["g", 3; "(sop/transform g :translate [0 0 1])", 3;
+    ["g", 3; "(sop/transform g :translate [0 0 1])", 1;
      "(sop/grid :counts \"Point counts\" :connectivity \"Points\" :columns 1025 :rows 2)", 1;
      "(sop/scatter (sop/grid) :count 2050 :seed 9)", 1]
 let () =

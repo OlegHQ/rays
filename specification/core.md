@@ -1261,7 +1261,13 @@ Region instruction, shader capability, or native SOP callback:
 
 The three required integer arrays map each **target** owner row to a **source**
 row. They must match target Point, Vertex and Primitive counts; every source
-index must be in bounds. Negative indices do not denote empty/default payload.
+index must be in bounds or `-1`. `-1` is a created element: every attribute
+storage takes its default (Float 0, Int 0, Text "", vector components 0, an
+empty ragged row, the same defaults as `Point_generate`'s created points), it is in no
+group, and under `:positions "mapped"` its P is the origin. Any other negative
+index is `E_REMAP_INDEX`. Weighted carry (mixing two source rows) is not part of
+`sop/remap`: the native nodes that interpolate (`Curve_ops`, `Resample_curves`)
+each carry their own rule.
 Target supplies topology and, by default, canonical P. `:positions "mapped"`
 selects source P through the point map. This selection copies raw native bits,
 including signed zero, subnormals, infinities and NaN payloads; it is a storage
@@ -1273,8 +1279,8 @@ order. Every native storage is supported: Float, exact Int, Text, Float2/3/4,
 ragged Int arrays and ragged Float arrays (including 16-value matrix rows).
 Detail attributes retain their immutable objects. Validated identity maps may
 retain unchanged owner storage; non-identity selections own their copied
-buffers. No normal transformation, interpolation, generated default, or owner
-conversion is inferred. Ordinary ordered groups follow native source rank,
+buffers. No normal transformation, interpolation, or owner
+conversion is inferred; defaults appear only for `-1` rows. Ordinary ordered groups follow native source rank,
 with target indices increasing within each rank; ordered-empty remains ordered.
 Callers that require native copy-major order author that policy with existing
 `sop/group_order` and `sop/with_group :order`, for example concatenating source

@@ -1,35 +1,44 @@
 open Rays_math
 
-let select ?cancel ~grain mapping source =
+(* [missing] is the value of a row whose source index is -1 (a created element); without it a
+   negative index is out of bounds, as it always was. *)
+let select ?cancel ~grain ?missing mapping source =
   let count = Array.length mapping in
   if count = 0 then [||]
   else begin
-    let output = Array.make count source.(mapping.(0)) in
+    let output = Array.make count (match missing with
+      | Some value -> value | None -> source.(mapping.(0))) in
     let ranges = ((count - 1) / grain) + 1 in
     Parallel.for_ ~chunk_size:1 ~start:0 ~finish:(ranges - 1) (fun range ->
       let first = range * grain in
       let last = min count (first + grain) in
       for index = first to last - 1 do
         if index land 4095 = 0 then Cancel.check_opt cancel;
-        output.(index) <- source.(mapping.(index))
+        let from = mapping.(index) in
+        if from >= 0 || missing = None then output.(index) <- source.(from)
       done);
     output
   end
 
-let select_float ?cancel ~grain mapping (source : float array) =
+let select_float ?cancel ~grain ?missing mapping (source : float array) =
   let count = Array.length mapping in
-  let output = Array.make count 0. in
+  let output = Array.make count (Option.value missing ~default:0.) in
   if count > 0 then Parallel.for_ ~chunk_size:grain ~start:0
       ~finish:(count - 1) (fun index ->
     if index land 4095 = 0 then Cancel.check_opt cancel;
-    output.(index) <- source.(mapping.(index)));
+    let from = mapping.(index) in
+    if from >= 0 || missing = None then output.(index) <- source.(from));
   output
 
-let attribute_result ?cancel ~grain mapping attribute =
+let attribute_result ?cancel ~grain ?(defaults = false) mapping attribute =
+  let select ?cancel ~grain ~missing mapping source =
+    if defaults then select ?cancel ~grain ~missing mapping source else select ?cancel ~grain mapping source
+  and select_float ?cancel ~grain mapping source =
+    if defaults then select_float ?cancel ~grain ~missing:0. mapping source else select_float ?cancel ~grain mapping source in
   let storage = match Attribute.Private.storage attribute with
     | Attribute.Float values -> Attribute.Float (select_float ?cancel ~grain mapping values)
-    | Attribute.Int values -> Attribute.Int (select ?cancel ~grain mapping values)
-    | Attribute.Text values -> Attribute.Text (select ?cancel ~grain mapping values)
+    | Attribute.Int values -> Attribute.Int (select ?cancel ~grain ~missing:0 mapping values)
+    | Attribute.Text values -> Attribute.Text (select ?cancel ~grain ~missing:"" mapping values)
     | Attribute.Int_array values ->
         Attribute.Int_array (Ragged_ops.remap_int ?cancel ~grain mapping values)
     | Attribute.Float_array values ->
@@ -55,8 +64,8 @@ let attribute_result ?cancel ~grain mapping attribute =
   Attribute.create_owned ~name:(Attribute.name attribute)
     ~owner:(Attribute.owner attribute) storage
 
-let attribute ?cancel ~grain mapping value =
-  attribute_result ?cancel ~grain mapping value |> Result.get_ok
+let attribute ?cancel ~grain ?defaults mapping value =
+  attribute_result ?cancel ~grain ?defaults mapping value |> Result.get_ok
 
 let drop_point_vertex_normals =
   [Attribute.Point, "N"; Attribute.Vertex, "N"]

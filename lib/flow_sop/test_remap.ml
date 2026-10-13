@@ -109,6 +109,61 @@ let ()=
       [0;1;2]) [0;3];
   print_endline "C3 all owner/storage raw bytes, ordinary order and edge copies across reference/CPU/domains/grains"
 let ()=
+  (* A source index of -1 is a created element: every storage at its default, in no group.  Other rows
+     are the native copy (the same Topology_remap helper with -1 replaced by row 0). *)
+  let bits=Int64.bits_of_float in
+  let src=source 3 in
+  List.iter(fun copies->let dst=target copies src in
+    let created n=fun i->i mod 3=1 && i<n in
+    let mk n real=Array.init n(fun i->if created n i then -1 else real i) in
+    let np=Geometry.point_count dst and nv=Geometry.vertex_count dst and nr=Geometry.primitive_count dst in
+    let p=mk np(fun i->(i+2) mod 3) and v=mk nv(fun i->i mod 3) and prim=mk nr(fun i->i mod Geometry.primitive_count src) in
+    let prim=if nr>0 && copies=1 then [|-1|] else prim in
+    let zero map=Array.map(fun i->max i 0)map in
+    let edges=Topology_index.edge_count(Topology_index.create(Geometry.topology dst))
+    and se=Topology_index.edge_count(Topology_index.create(Geometry.topology src)) in
+    let offsets=Array.init(edges+1)Fun.id and ancestors=Array.init edges(fun i->i mod se) in
+    let native=oracle src dst(zero p)(zero v)(zero prim)offsets ancestors true in
+    let attribute_map=function Attribute.Point->p|Attribute.Vertex->v|Attribute.Primitive->prim|Attribute.Detail->[||]
+    and group_map=function Group.Point->p|Group.Vertex->v|Group.Primitive->prim in
+    let row_ok map i=map.(i)>=0 in
+    List.iter(fun reference->let node=compile ~reference src dst(args p v prim offsets ancestors "mapped") in
+      List.iter(fun domains->
+        let actual=geometry(run ~domains ~grain:97 node) in
+        let eqf map a b=Array.iteri(fun i x->check(bits x=bits(if row_ok map i then b.(i) else 0.))
+          "created float row is not zero or copied row differs")a in
+        let ragged map offs vals expected_offs expected_vals cmp=Array.iteri(fun i _->if i<Array.length map then begin
+          let w=offs.(i+1)-offs.(i) in
+          if row_ok map i then begin
+            check(w=expected_offs.(i+1)-expected_offs.(i))"copied ragged row width differs";
+            for k=0 to w-1 do check(cmp vals.(offs.(i)+k) expected_vals.(expected_offs.(i)+k))"copied ragged value differs" done
+          end else check(w=0)"created ragged row is not empty" end)map in
+        List.iter(fun a->
+          let map=attribute_map(Attribute.owner a) in
+          let n=Option.get(Geometry.find_attribute ~owner:(Attribute.owner a)(Attribute.name a)native) in
+          if Attribute.owner a=Detail then () else
+          match Attribute.Private.storage a,Attribute.Private.storage n with
+          |Float x,Float y->eqf map x y
+          |Int x,Int y->Array.iteri(fun i e->check(e=(if row_ok map i then y.(i) else 0))"created int row is not 0")x
+          |Text x,Text y->Array.iteri(fun i e->check(e=(if row_ok map i then y.(i) else ""))"created text row is not empty")x
+          |Float2 x,Float2 y->let x=Packed.Float2.Private.view x and y=Packed.Float2.Private.view y in eqf map x.x y.x;eqf map x.y y.y
+          |Float3 x,Float3 y->let x=Packed.Float3.Private.view x and y=Packed.Float3.Private.view y in
+            eqf map x.x y.x;eqf map x.y y.y;eqf map x.z y.z
+          |Float4 x,Float4 y->let x=Packed.Float4.Private.view x and y=Packed.Float4.Private.view y in
+            eqf map x.x y.x;eqf map x.y y.y;eqf map x.z y.z;eqf map x.w y.w
+          |Int_array x,Int_array y->let x=Packed.Int_array.Private.view x and y=Packed.Int_array.Private.view y in
+            ragged map x.offsets x.values y.offsets y.values (=)
+          |Float_array x,Float_array y->let x=Packed.Float_array.Private.view x and y=Packed.Float_array.Private.view y in
+            ragged map x.offsets x.values y.offsets y.values (fun a b->bits a=bits b)
+          |_->fail "remap changed a storage kind")(Geometry.attributes actual);
+        List.iter(fun g->let map=group_map(Group.owner g) in
+          let n=Option.get(Geometry.find_group ~owner:(Group.owner g)(Group.name g)native) in
+          Array.iteri(fun i _->check(Group.mem i g=(row_ok map i && Group.mem i n))"created row is in a group or copied membership differs")map)
+          (Geometry.groups actual);
+        let view=Packed.Float3.Private.view(Geometry.positions actual) and expect=Packed.Float3.Private.view(Geometry.positions native) in
+        eqf p view.x expect.x;eqf p view.y expect.y;eqf p view.z expect.z) [1;8]) [false;true]) [1;2];
+  print_endline "remap -1 rows: defaults for every owner and storage, in no group, 1 and 8 domains"
+let ()=
   (* Independent permutation and many-to-one edge ancestry; empty CSR rows and
      repeated ancestors must be valid. *)
   let src=source 3 and dst=target 1(source 3) in
@@ -140,7 +195,7 @@ let ()=
     |Ok _->fail "remap accepted malformed argument")
     ["positions",E.Text"other","E_REMAP_POLICY";
      "points",E.Int_array[||],"E_REMAP_COUNT";
-     "points",E.Int_array[|-1;1;2|],"E_REMAP_INDEX";
+     "points",E.Int_array[|-2;1;2|],"E_REMAP_INDEX";
      "vertices",E.Int_array[|0;1;9|],"E_REMAP_INDEX";
      "primitives",E.Int_array[|1|],"E_REMAP_INDEX";
      "edge_map",E.Record["offsets",E.Int_array[|0;2;1;3|];"values",E.Int_array[|0;1;2|]],"E_REMAP_EDGES"];

@@ -1389,7 +1389,7 @@ let fields=["points",E.Int_array[|2;1;0|];"vertices",E.Int_array[|1;2;0|];
 remap_case source target fields;
 List.iter(fun(name,value)->remap_case source target
   (List.map(fun(key,old)->key,if key=name then value else old)fields))
-  ["points",E.Int_array[||];"points",E.Int_array[|-1;0;1|];"vertices",E.Int_array[|0;1;3|];
+  ["points",E.Int_array[||];"points",E.Int_array[|-2;0;1|];"points",E.Int_array[|-1;0;1|];"vertices",E.Int_array[|2;-1;0|];"primitives",E.Int_array[|-1|];"vertices",E.Int_array[|0;1;3|];
    "primitives",E.Int_array[|1|];"positions",E.Text"other";
    "edges",E.Record["offsets",E.Int_array[|0;2;1;3|];"values",E.Int_array[|0;1;2|]];
    "edges",E.Record["offsets",E.Int_array[|0;1;2;3|];"values",E.Int_array[|0;1;3|]]];

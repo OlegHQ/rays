@@ -1581,7 +1581,7 @@ checks apply to point data. Kind codes are checked before native topology
 validation; invalid kinds report `E_TOPOLOGY_KIND`, and native topology errors
 retain their messages under `E_TOPOLOGY`. Arrays are copied into owned native
 storage. Only the supplied topology and points are constructed: carrying
-attributes and groups requires a separate remap operation. Live values, retained
+attributes and groups requires a separate remap operation (`sop/remap`; a `-1` map entry creates a default row, core.md). Live values, retained
 state, cooked sources and zone elements use the existing array/cook boundary.
 Untaken branches remain lazy, and reached errors retain their causes and state
 rollback. Both forms project as ordinary cards; topology exposes its three

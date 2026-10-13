@@ -1847,7 +1847,7 @@ function remapGeometry(source, target, points, vertices, primitives, positions =
     const sourceCount = sop_count(source, name), targetCount = sop_count(target, name);
     if (BigInt(value.data.length) !== targetCount)
       err('E_REMAP_COUNT', `Remap ${name} map must match target owner count.`);
-    for (let i=0; i<value.data.length; i++) { if ((i & 4095) === 0) check(); const index=value.data[i]; if (index < 0n || index >= sourceCount)
+    for (let i=0; i<value.data.length; i++) { if ((i & 4095) === 0) check(); const index=value.data[i]; if (index < -1n || index >= sourceCount)
       err('E_REMAP_INDEX', `Remap ${name} source index is out of bounds.`); }
     maps.set(owner, value.data);
   }
@@ -1902,6 +1902,7 @@ function remapGeometry(source, target, points, vertices, primitives, positions =
     const output = new Uint8Array(data.buffer);
     for (let row = 0; row < map.length; row++) {
       if ((row & 4095) === 0) check();
+      if (map[row] < 0n) continue;  // a created row stays zero
       const first = Number(map[row]) * rowBytes;
       output.set(input.subarray(first, first + rowBytes), row * rowBytes);
     }
@@ -1910,20 +1911,22 @@ function remapGeometry(source, target, points, vertices, primitives, positions =
   const copy = (value,map) => {
     if (value instanceof PArray) return rawRows(value,map);
     if (value instanceof TextArray) return new TextArray(Array.from(map,(index,row)=>{
-      if ((row & 4095) === 0) check(); return value.data[Number(index)];
+      if ((row & 4095) === 0) check(); return index < 0n ? '' : value.data[Number(index)];
     }));
     const offsets = value.get('offsets').data, values = value.get('values');
     const outOffsets = new BigInt64Array(map.length + 1);
     for (let row = 0; row < map.length; row++) {
       if ((row & 4095) === 0) check();
-      const index = Number(map[row]); outOffsets[row+1] = outOffsets[row] + offsets[index+1] - offsets[index];
+      const index = Number(map[row]); outOffsets[row+1] = outOffsets[row] + (index < 0 ? 0n : offsets[index+1] - offsets[index]);
     }
     const data = new values.data.constructor(Number(outOffsets[map.length]));
     const input = new Uint8Array(values.data.buffer, values.data.byteOffset, values.data.byteLength);
     const output = new Uint8Array(data.buffer), bytes = values.data.BYTES_PER_ELEMENT;
     for (let row = 0; row < map.length; row++) {
       if ((row & 4095) === 0) check();
-      const index = Number(map[row]), first = Number(offsets[index]) * bytes, last = Number(offsets[index+1]) * bytes;
+      const index = Number(map[row]);
+      if (index < 0) continue;
+      const first = Number(offsets[index]) * bytes, last = Number(offsets[index+1]) * bytes;
       output.set(input.subarray(first,last), Number(outOffsets[row]) * bytes);
     }
     return new Map([['offsets',new PArray(1,outOffsets)],['values',new PArray(1,data)]]);
@@ -1936,7 +1939,7 @@ function remapGeometry(source, target, points, vertices, primitives, positions =
   const groups = (source.get('groups') ?? []).map(group => {
     const map = maps.get(group.get('owner')), sourceMask = group.get('mask').data;
     const mask = BigInt64Array.from(map,(index,row)=>{
-      if ((row & 4095) === 0) check(); return sourceMask[Number(index)];
+      if ((row & 4095) === 0) check(); return index < 0n ? 0n : sourceMask[Number(index)];
     }), result = new Map(group);
     result.set('mask',new PArray(1,mask));
     if (group.get('ordered')) {
@@ -1949,7 +1952,7 @@ function remapGeometry(source, target, points, vertices, primitives, positions =
       const counts = new Float64Array(sourceOrder.length);
       for (let i=0;i<map.length;i++) {
         if ((i & 4095) === 0) check('group_counts');
-        if (mask[i]) counts[rank[Number(map[i])]]++;
+        if (mask[i] && map[i] >= 0n) counts[rank[Number(map[i])]]++;
       }
       const starts = new Float64Array(counts.length+1);
       for(let i=0;i<counts.length;i++) {
@@ -1959,7 +1962,7 @@ function remapGeometry(source, target, points, vertices, primitives, positions =
       const next=starts.slice(), order=new BigInt64Array(starts[counts.length]);
       for(let i=0;i<map.length;i++) {
         if ((i & 4095) === 0) check('group_fill');
-        if(mask[i])order[next[rank[Number(map[i])]]++]=BigInt(i);
+        if(mask[i] && map[i] >= 0n)order[next[rank[Number(map[i])]]++]=BigInt(i);
       }
       result.set('indices',new PArray(1,order));
     }

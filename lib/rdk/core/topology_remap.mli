@@ -1,13 +1,15 @@
 (** Shared exact-ancestry remapping for topology-changing RDK kernels. *)
 
 val select :
-  ?cancel:Cancel.t -> grain:int -> int array -> 'a array -> 'a array
+  ?cancel:Cancel.t -> grain:int -> ?missing:'a -> int array -> 'a array -> 'a array
+(** [missing] is the value of a row whose source index is [-1]. *)
 
 val select_float :
-  ?cancel:Cancel.t -> grain:int -> int array -> float array -> float array
+  ?cancel:Cancel.t -> grain:int -> ?missing:float -> int array -> float array -> float array
 
 val attribute :
-  ?cancel:Cancel.t -> grain:int -> int array -> Attribute.t -> Attribute.t
+  ?cancel:Cancel.t -> grain:int -> ?defaults:bool -> int array -> Attribute.t -> Attribute.t
+(** With [defaults], a source index of [-1] is a created element: zero, [""], empty ragged row. *)
 
 val drop_point_vertex_normals : (Attribute.owner * string) list
 
