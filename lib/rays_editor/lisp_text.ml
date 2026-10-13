@@ -164,6 +164,7 @@ let special_docs = [
   "let*", "(let* [name expr ...] result) · sequential bindings: the graph's nodes";
   "for", "(for [i (range n)] body) · repeat over lists; geometry merges, numbers are summed";
   "fold", "(fold [acc init] [i xs] body) · feed the result back: acc is the previous value";
+  "iterate", "(iterate n init (fn [x] body)) · apply the function n times; n is a value, not a literal";
   "state", "(state [s init] step) · fold frames; s is the previous frame's value";
   "scan", "(scan [acc init] [i xs] body) · like fold, keeping every step as a list";
   "sum", "(sum [i xs] body) · add the body over the list";
