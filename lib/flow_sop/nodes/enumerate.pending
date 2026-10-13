@@ -1,0 +1,101 @@
+; Whole Enumerate draft. Selected elements get start + rank*step; rank is the selection order,
+; or, with a piece attribute, the running index inside the element's piece (pieces numbered in
+; first-appearance order among the selected elements) or the piece number itself.
+(defn enumerate_error :context value [(code : text) (reason : text)]
+  (error code "enumerate could not produce valid geometry"
+    :cause (str "enumerate [" code "]: " reason)))
+; Rank of each selected element (selection order) from the first selected element sharing its key.
+(defn enumerate_piece_rank :context value [(first : (array int)) (by_piece : bool)]
+  (let* [m (array/count first)
+         leaders (exact (map (fn [(f : int) (j : int)] (if (int/eq f j) 1 0)) first (array/range m :type int)))
+         numbered (array/scan_sum leaders)
+         piece (exact (map (fn [(f : int)] (array/nth numbered f)) first))]
+    (if by_piece piece
+      (let* [order (array/grade piece)
+             starts (array/scan_sum (array/scatter_add piece (array/int m 1) m))
+             within (exact (map (fn [(at : int) (j : int)]
+                              (int/sub at (array/nth starts (array/nth piece j))))
+                      (array/range m :type int) order))]
+        (array/scatter_add order within m)))))
+; Spread selected ranks over all elements; -1 where unselected.
+(defn enumerate_spread :context value [(n : int) (selected : (array int)) (rank : (array int))]
+  (exact (map (fn [(shifted : int)] (int/sub shifted 1))
+    (array/scatter_add selected (exact (map (fn [(r : int)] (int/add r 1)) rank)) n))))
+;; Native sequence_fits: start + top*step must stay inside the 63-bit range. Exact where the
+; headroom fits an Int, otherwise through a float estimate.
+(defn enumerate_overflows :context value [(start : int) (step : int) (top : int)]
+  (let* [limit 4611686018427387903
+         divisor (if (int/lt step 0) (int/sub 0 step) (if (int/eq step 0) 1 step))
+         reach (+ (float start) (* (float top) (float step)))]
+    (cond
+      (or (int/le top 0) (int/eq step 0)) false
+      (int/gt step 0)
+        (if (int/ge start 0) (int/gt top (int/div (int/sub limit start) divisor)) (> reach 4611686018427387904.0))
+      :else
+        (if (int/lt start 0) (int/gt top (int/div (int/add (int/add start limit) 1) divisor))
+          (< reach -4611686018427387904.0)))))
+(defnode sop/enumerate :label "Enumerate" :category ["Attribute" "Generate"]
+  :validate (and (not (text/blank? name)) (not (and (equal? owner "Point") (equal? name "P"))))
+  :code "E_PARAM" :message "sop/enumerate: invalid attribute name"
+  [(in0 : geometry)
+   (owner : text "Point" :label "Owner" :choices ["Point" "Vertex" "Primitive"])
+   (name : text "id" :label "Attribute")
+   (group : text "" :label "Group")
+   (start : int 0 :label "Start" :folder ["Sequence"] :min -100 :max 100)
+   (step : int 1 :label "Step" :folder ["Sequence"] :min -20 :max 20)
+   (storage : text "Integer" :label "Storage" :folder ["Output"] :choices ["Integer" "Text"])
+   (prefix : text "piece" :label "Text prefix" :folder ["Output"])
+   (piece_attribute : text "" :label "Piece attribute" :folder ["Pieces"])
+   (mode : text "Elements within pieces" :label "Piece mode" :folder ["Pieces"]
+     :choices ["Elements within pieces" "Pieces"])]
+  (let* [kind (text/lower owner)
+         n (case owner "Vertex" (sop/count in0 :vertices) "Primitive" (sop/count in0 :primitives)
+             :else (sop/count in0 :points))
+         group_name (text/trim group)
+         grouped (not (equal? group_name ""))
+         piece (text/trim piece_attribute)
+         pieced (not (equal? piece ""))
+         probe (if pieced piece "_")
+         integer (equal? storage "Integer")
+         existing (sop/has_attr in0 name :owner kind)
+         existing_ok (if integer (sop/has_attr in0 name :owner kind :type int)
+                       (sop/has_attr in0 name :owner kind :type text))
+         piece_int (and pieced (sop/has_attr in0 probe :owner kind :type int))
+         piece_text (and pieced (sop/has_attr in0 probe :owner kind :type text))]
+    (cond
+      (and grouped (not (group_exists in0 kind (if grouped group_name "_"))))
+        (enumerate_error "missing_group" (str "enumerate could not find " kind " group " (text/repr group_name)))
+      (and existing (not existing_ok))
+        (enumerate_error "invalid_enumeration" (str "target attribute " name " has the wrong storage"))
+      (and pieced (not (or piece_int piece_text)))
+        (enumerate_error "invalid_enumeration" (str "piece attribute " piece " is missing or not int or text"))
+      :else
+        (let* [mask (if grouped (sop/group in0 :name group_name :owner kind) (array/int n 1))
+               selected (array/compact mask)
+               m (array/count selected)
+               first (cond
+                       piece_int
+                         (let* [keys (sop/attr in0 piece :owner kind :type int)
+                                chosen (exact (map (fn [(i : int)] (array/nth keys i)) selected))]
+                           (array/index_of chosen chosen))
+                       piece_text
+                         (let* [keys (sop/attr in0 piece :owner kind :type text)
+                                chosen (map (fn [(i : int)] (array/nth keys i)) selected)]
+                           (array/index_of chosen chosen))
+                       :else (array/range m :type int))
+               rank (if pieced (enumerate_piece_rank first (equal? mode "Pieces")) (array/range m :type int))
+               top (if (int/eq m 0) -1 (array/max rank))
+               full (enumerate_spread n selected rank)]
+          (if (enumerate_overflows start step top)
+            (enumerate_error "invalid_enumeration" "integer sequence overflows")
+            (if integer
+              (sop/with_attr in0 name
+                (exact (map (fn [(r : int) (old : int)]
+                  (if (int/ge r 0) (int/add start (int/mul r step)) old))
+                  full (if existing (sop/attr in0 name :owner kind :type int) (array/int n 0))))
+                :owner kind :type int)
+              (sop/with_attr in0 name
+                (map (fn [(r : int) (old : text)]
+                  (if (int/ge r 0) (str prefix (int/add start (int/mul r step))) old))
+                  full (if existing (sop/attr in0 name :owner kind :type text) (array/text n "")))
+                :owner kind :type text)))))))

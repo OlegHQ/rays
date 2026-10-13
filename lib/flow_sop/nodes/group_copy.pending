@@ -1,0 +1,122 @@
+; Whole Group Copy draft. Each rule maps target elements to source elements (identity by index,
+; per-primitive local vertex index, or first match of an int/text attribute), then copies every
+; matching source group; an ordered source keeps its order, remapped by source rank.
+(defn group_copy_error :context value [(reason : text)]
+  (error "invalid_group" "group_copy could not produce valid geometry"
+    :cause (str "group_copy [invalid_group]: " reason)))
+(defn group_copy_owner :context value [(raw : text)]
+  (let* [token (text/lower (text/trim raw))]
+    (case token "point" "point" "points" "point" "vertex" "vertex" "vertices" "vertex"
+      "primitive" "primitive" "primitives" "primitive" "edge" "edge" "edges" "edge"
+      :else (error "E_PARAM" (str "unknown group owner " (text/repr token))))))
+(defn group_copy_normalize :context value [(raw : text)]
+  (text/table_encode (map (fn [(row : (list text))]
+    (if (= (count row) 4)
+      (list (group_copy_owner (nth row 0)) (nth row 1) (nth row 2) (text/trim (nth row 3)))
+      (error "E_PARAM" (str "Group Copy rule needs owner, pattern, prefix, and match attribute; got " (count row) " columns"))))
+    (text/table_decode raw))))
+(defn group_copy_count :context sop [(geo : geometry) (owner : text)]
+  (case owner "vertex" (sop/count geo :vertices) "primitive" (sop/count geo :primitives)
+    "edge" (sop/count geo :edges) :else (sop/count geo :points)))
+; Target vertex v of primitive p, local index l, reads source vertex start(p)+l when it exists.
+(defn group_copy_vertex_map :context sop [(source : geometry) (target : geometry)]
+  (let* [st (sop/topology source) tt (sop/topology target)
+         sp (sop/count source :primitives) tp (sop/count target :primitives)
+         tv (sop/count target :vertices)
+         sstarts (array/slice st.primitive_offsets 0 sp)
+         tstarts (array/slice tt.primitive_offsets 0 tp)
+         owner (prim_of_vertex tstarts tv)]
+    (exact (map (fn [(vertex : int) (prim : int)]
+      (if (int/lt prim sp)
+        (let* [first (array/nth sstarts prim)
+               size (int/sub (array/nth st.primitive_offsets (int/add prim 1)) first)
+               local (int/sub vertex (array/nth tstarts prim))]
+          (if (int/lt local size) (int/add first local) -1))
+        -1))
+      (array/range tv :type int) owner))))
+(defn group_copy_map :context sop
+  [(source : geometry) (target : geometry) (owner : text) (key : text)]
+  (cond
+    (text/blank? key)
+      (if (equal? owner "vertex") (group_copy_vertex_map source target)
+        (let* [limit (group_copy_count source owner)]
+          (exact (map (fn [(at : int)] (if (int/lt at limit) at -1))
+            (array/range (group_copy_count target owner) :type int)))))
+    (not (sop/has_attr source key :owner owner))
+      (group_copy_error (str "source " owner " attribute " (text/repr key) " is missing"))
+    (not (sop/has_attr target key :owner owner))
+      (group_copy_error (str "target " owner " attribute " (text/repr key) " is missing"))
+    (and (sop/has_attr source key :owner owner :type int) (sop/has_attr target key :owner owner :type int))
+      (array/index_of (sop/attr source key :owner owner :type int) (sop/attr target key :owner owner :type int))
+    (and (sop/has_attr source key :owner owner :type text) (sop/has_attr target key :owner owner :type text))
+      (array/index_of (sop/attr source key :owner owner :type text) (sop/attr target key :owner owner :type text))
+    :else (group_copy_error (str owner " attribute " (text/repr key) " must be integer or text with matching types"))))
+; First base2, base3, ... not taken: among n+1 candidates one is free.
+(defn group_copy_suffix :context sop [(target : geometry) (owner : text) (base : text)]
+  (let* [names (sop/group_names target "*" :owner owner)
+         candidates (map (fn [(k : int)] (str base (int/add k 2)))
+                      (array/range (int/add (array/count names) 1) :type int))
+         found (array/index_of names candidates)
+         free (exact (map (fn [(at : int)] (if (int/lt at 0) 1 0)) found))]
+    (array/nth candidates (array/nth (array/compact free) 0))))
+(defn group_copy_one :context sop
+  [(target : geometry) (source : geometry) (owner : text) (name : text) (prefix : text)
+   (conflict : text) (copy_empty : bool) (map_of : (array int))]
+  (let* [proposed (str prefix name)
+         existing (group_exists target owner proposed)]
+    (cond
+      (text/blank? proposed) (group_copy_error "prefix produced an empty group name")
+      (and (equal? conflict "Skip") existing) target
+      :else
+        (let* [out (if (and (equal? conflict "Add suffix") existing)
+                     (group_copy_suffix target owner proposed) proposed)
+               theirs (sop/group source :name name :owner owner)
+               order (sop/group_order source :name name :owner owner)
+               mask (if (int/eq (array/count theirs) 0) (array/int (array/count map_of) 0)
+                      (exact (map (fn [(from : int)]
+                        (if (int/ge from 0) (array/nth theirs from) 0)) map_of)))
+               members (array/compact mask)]
+          (cond
+            (and (not copy_empty) (int/eq (array/count members) 0)) target
+            (and order.ordered (not (equal? owner "edge")))
+              (let* [ranks (array/scatter_add order.indices (array/range (array/count order.indices) :type int)
+                             (array/count theirs))
+                     keys (exact (map (fn [(at : int)] (array/nth ranks (array/nth map_of at))) members))
+                     ordered (exact (map (fn [(at : int)] (array/nth members at)) (array/grade keys)))]
+                (sop/with_group target (exact mask) :name out :owner owner
+                  :order {:ordered true :indices ordered}))
+            :else (sop/with_group target (exact mask) :name out :owner owner))))))
+; The names this rule copies and the target-to-source element map.
+(defn group_copy_plan :context sop
+  [(source : geometry) (target : geometry) (row : (list text))]
+  (let* [names (sop/group_names source (nth row 1) :owner (nth row 0))]
+    {:names names
+     :map (if (int/eq (array/count names) 0) (array/int 0)
+            (group_copy_map source target (nth row 0) (nth row 3)))}))
+; Rule-level refusals native raises while visiting a rule.
+(defn group_copy_row_error :context value [(row : (list text))]
+  (cond
+    (and (equal? (nth row 0) "edge") (not (text/blank? (nth row 3)))) "native edges cannot match by attribute"
+    :else (text/glob_error (nth row 1))))
+(defnode sop/group_copy :label "Group Copy" :category ["Group" "Transfer"]
+  [(source : geometry)
+   (target : geometry)
+   (use_rules : bool false :label "Use rules")
+   (rules : text "" :label "Rules (owner, pattern, prefix, match attribute)" :kind encoded
+     :normalize group_copy_normalize)
+   (conflict : text "Overwrite" :label "Conflict" :choices ["Skip" "Overwrite" "Add suffix"])
+   (copy_empty : bool false :label "Copy empty groups")]
+  (let* [rows (map (fn [(row : (list text))]
+                (list (nth row 0) (if (text/blank? (nth row 1)) "*" (nth row 1)) (nth row 2) (nth row 3)))
+                (if use_rules (text/table_decode rules)
+                  (list (list "primitive" "*" "" "") (list "point" "*" "" "")
+                        (list "edge" "*" "" "") (list "vertex" "*" "" ""))))
+         first_error (fold [found ""] [row rows]
+                       (if (equal? found "") (group_copy_row_error row) found))]
+    (if (not (equal? first_error "")) (group_copy_error first_error)
+      (fold [geometry target] [row rows]
+        (let* [plan (group_copy_plan source geometry row)]
+          (fold [accumulated geometry]
+            [at (array/compact (array/int (array/count plan.names) 1))]
+            (group_copy_one accumulated source (nth row 0) (array/nth plan.names at) (nth row 2)
+              conflict copy_empty plan.map)))))))

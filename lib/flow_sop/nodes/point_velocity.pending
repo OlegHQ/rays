@@ -1,0 +1,194 @@
+; Whole Point Velocity draft. Initialization is computed from neighbouring snapshots (backward,
+; forward or central difference, optionally matched by an int/text point attribute), kept,
+; set to a constant or read from an attribute; the add vector is applied last. Error codes
+; follow Rdk.Motion: invalid_attribute, missing_attribute, invalid_argument (non-finite data),
+; invalid_deformation (snapshots, matching, unmatched points).
+(defn point_velocity_error :context value [(code : text) (reason : text)]
+  (error code "point_velocity could not produce valid geometry"
+    :cause (str "point_velocity [" code "]: " reason)))
+(defn point_velocity_finite :context value [(v : vec3)]
+  (and (= (- v.x v.x) 0.0) (and (= (- v.y v.y) 0.0) (= (- v.z v.z) 0.0))))
+(defn point_velocity_finite_float :context value [(v : float)] (= (- v v) 0.0))
+; Index of each current point in the sample (-1 when absent), by point number or by key.
+(defn point_velocity_map :context sop [(current : geometry) (sample : geometry) (key : text)]
+  (let* [n (sop/count current :points)]
+    (cond
+      (equal? key "")
+        (if (int/eq n (sop/count sample :points)) (array/range n :type int)
+          (point_velocity_error "invalid_deformation" "point-number matching requires equal point counts"))
+      (not (sop/has_attr current key :owner "point"))
+        (point_velocity_error "invalid_deformation" (str "missing point match attribute " (text/repr key)))
+      (not (sop/has_attr sample key :owner "point"))
+        (point_velocity_error "invalid_deformation" (str "missing point match attribute " (text/repr key)))
+      (and (sop/has_attr current key :owner "point" :type int) (sop/has_attr sample key :owner "point" :type int))
+        (let* [reference (sop/attr sample key :owner "point" :type int)
+               first (array/index_of reference reference)
+               moved (array/compact (exact (map (fn [(f : int) (at : int)] (if (int/eq f at) 0 1))
+                       first (array/range (array/count reference) :type int))))]
+          (if (int/gt (array/count moved) 0)
+            (point_velocity_error "invalid_deformation" "duplicate reference match key")
+            (array/index_of reference (sop/attr current key :owner "point" :type int))))
+      (and (sop/has_attr current key :owner "point" :type text) (sop/has_attr sample key :owner "point" :type text))
+        (let* [reference (sop/attr sample key :owner "point" :type text)
+               first (array/index_of reference reference)
+               moved (array/compact (exact (map (fn [(f : int) (at : int)] (if (int/eq f at) 0 1))
+                       first (array/range (array/count reference) :type int))))]
+          (if (int/gt (array/count moved) 0)
+            (point_velocity_error "invalid_deformation" "duplicate reference match key")
+            (array/index_of reference (sop/attr current key :owner "point" :type text))))
+      :else (point_velocity_error "invalid_deformation"
+              (str "point match attribute " (text/repr key) " must use the same integer or text storage")))))
+; Sample positions in current-point order; a missing match reads the current position.
+(defn point_velocity_sample :context sop
+  [(current : geometry) (sample : geometry) (key : text) (positions : (array vec3))]
+  (let* [index (point_velocity_map current sample key)
+         at (sop/attr sample :P)]
+    {:p (if (int/eq (array/count at) 0) positions
+          (map (fn [(i : int) (c : vec3)] (if (int/ge i 0) (array/nth at (max i 0)) c)) index positions))
+     :found (exact (map (fn [(i : int)] (if (int/ge i 0) 1 0)) index))}))
+(defn point_velocity_valid :context value
+  [(dt : float) (set_x : float) (set_y : float) (set_z : float) (scale : float)
+   (add_x : float) (add_y : float) (add_z : float) (velocity : text) (acceleration : text)
+   (compute : bool) (initialization : text) (approximation : text) (source : text)]
+  (and (and (and (> dt 0.0) (point_velocity_finite_float dt))
+            (and (point_velocity_finite [set_x set_y set_z]) (point_velocity_finite [add_x add_y add_z])))
+       (and (and (point_velocity_finite_float scale)
+                 (and (not (text/blank? velocity)) (not (equal? velocity "P"))))
+            (and (or (not compute)
+                     (and (and (not (text/blank? acceleration)) (not (equal? acceleration "P")))
+                          (and (not (equal? acceleration velocity))
+                               (and (equal? initialization "Compute from deformation")
+                                    (equal? approximation "Central difference")))))
+                 (or (not (equal? initialization "From attribute")) (not (text/blank? source)))))))
+(defnode sop/point_velocity :label "Point Velocity" :category ["Attribute" "Motion"]
+  :validate (point_velocity_valid dt set_x set_y set_z source_scale add_x add_y add_z velocity_attribute
+              acceleration_attribute compute_acceleration initialization approximation source_attribute)
+  :code "E_PARAM" :message "sop/point_velocity: invalid parameters"
+  [(input : geometry)
+   (previous : geometry :required false)
+   (next : geometry :required false)
+   (group : text "" :label "Point group")
+   (approximation : text "Backward difference" :label "Approximation"
+     :choices ["Backward difference" "Central difference" "Forward difference"])
+   (dt : float 0.016666666666666666 :label "Time step" :min 0.000001 :max 10 :hard_min 0)
+   (initialization : text "Compute from deformation" :label "Initialization"
+     :choices ["Compute from deformation" "Keep incoming" "Set value" "From attribute"])
+   (set_x : float 0.0 :label "Velocity X" :folder ["Initialization" "Value"] :min -100 :max 100 :vec3 ["set" 0])
+   (set_y : float 0.0 :label "Velocity Y" :folder ["Initialization" "Value"] :min -100 :max 100 :vec3 ["set" 1])
+   (set_z : float 0.0 :label "Velocity Z" :folder ["Initialization" "Value"] :min -100 :max 100 :vec3 ["set" 2])
+   (source_attribute : text "v" :label "Source attribute" :folder ["Initialization" "Attribute"])
+   (source_scale : float 1.0 :label "Source scale" :folder ["Initialization" "Attribute"] :min -10 :max 10)
+   (match_attribute : text "" :label "Match attribute" :folder ["Matching"])
+   (unmatched : text "Error" :label "Unmatched" :folder ["Matching"] :choices ["Error" "Zero"])
+   (velocity_attribute : text "v" :label "Velocity attribute" :folder ["Output"])
+   (add_x : float 0.0 :label "Add X" :folder ["Output" "Add velocity"] :min -100 :max 100 :vec3 ["add" 0])
+   (add_y : float 0.0 :label "Add Y" :folder ["Output" "Add velocity"] :min -100 :max 100 :vec3 ["add" 1])
+   (add_z : float 0.0 :label "Add Z" :folder ["Output" "Add velocity"] :min -100 :max 100 :vec3 ["add" 2])
+   (compute_acceleration : bool false :label "Compute acceleration" :folder ["Output"])
+   (acceleration_attribute : text "accel" :label "Acceleration attribute" :folder ["Output"])]
+  (let* [n (sop/count input :points)
+         name (text/trim group)
+         grouped (not (equal? name ""))
+         key (text/trim match_attribute)
+         add [add_x add_y add_z]
+         zero_add (and (= add_x 0.0) (and (= add_y 0.0) (= add_z 0.0)))
+         computing (equal? initialization "Compute from deformation")
+         has_velocity (sop/has_attr input velocity_attribute :owner "point")
+         velocity_ok (sop/has_attr input velocity_attribute :owner "point" :type vec3)
+         acceleration_probe (if compute_acceleration acceleration_attribute "_")
+         has_accel (and compute_acceleration (sop/has_attr input acceleration_probe :owner "point"))
+         accel_ok (sop/has_attr input acceleration_probe :owner "point" :type vec3)
+         source_probe (if (equal? initialization "From attribute") source_attribute "_")
+         has_source (sop/has_attr input source_probe :owner "point")
+         source_ok (sop/has_attr input source_probe :owner "point" :type vec3)
+         fast_from (and (equal? initialization "From attribute")
+                        (and (= source_scale 1.0) (and (not grouped) zero_add)))]
+    (cond
+      (and grouped (not (group_exists input "point" (if grouped name "_"))))
+        (point_velocity_error "missing_group" (str "point_velocity could not find point group " (text/repr name)))
+      (and has_velocity (not velocity_ok))
+        (point_velocity_error "invalid_attribute" (str "point attribute " (text/repr velocity_attribute) " must have float3 storage"))
+      (and has_accel (not accel_ok))
+        (point_velocity_error "invalid_attribute" (str "point attribute " (text/repr acceleration_attribute) " must have float3 storage"))
+      (and (equal? initialization "Keep incoming") (and zero_add has_velocity)) input
+      (and fast_from (not has_source))
+        (point_velocity_error "missing_attribute" (str "missing point attribute " (text/repr source_attribute)))
+      (and fast_from (not source_ok))
+        (point_velocity_error "invalid_attribute" (str "point attribute " (text/repr source_attribute) " must have float3 storage"))
+      fast_from
+        (sop/with_attr input velocity_attribute (sop/attr input source_probe :owner "point" :type vec3)
+          :owner "point" :type vec3)
+      :else
+        (let* [selected (if grouped (sop/group input :name name :owner "point") (array/int n 1))
+               old (exact (if has_velocity (sop/attr input velocity_attribute :owner "point" :type vec3) (array/vec3 n)))
+               positions (sop/attr input :P)
+               old_accel (exact (if has_accel (sop/attr input acceleration_probe :owner "point" :type vec3) (array/vec3 n)))
+               need_previous (not (equal? approximation "Forward difference"))
+               need_next (not (equal? approximation "Backward difference"))]
+          (cond
+            (and (not computing) (and (equal? initialization "From attribute") (not has_source)))
+              (point_velocity_error "invalid_argument" (str "point_velocity: missing point attribute " (text/repr source_attribute)))
+            (and (not computing) (and (equal? initialization "From attribute") (not source_ok)))
+              (point_velocity_error "invalid_argument" (str "point attribute " (text/repr source_attribute) " must have float3 storage"))
+            (not computing)
+              (let* [base (exact (case initialization
+                            "Keep incoming" old
+                            "Set value" (map (fn [(o : vec3)] [set_x set_y set_z]) old)
+                            :else (map (fn [(s : vec3)] (* s source_scale))
+                                    (sop/attr input source_probe :owner "point" :type vec3))))]
+                (sop/with_attr input velocity_attribute
+                  (exact (map (fn [(b : vec3) (o : vec3) (s : int)] (if (int/eq s 1) (+ b add) o)) base old selected))
+                  :owner "point" :type vec3))
+            (and need_previous (equal? previous nil))
+              (point_velocity_error "invalid_deformation" "backward/central deformation needs a previous snapshot")
+            (and need_next (equal? next nil))
+              (point_velocity_error "invalid_deformation" "forward/central deformation needs a next snapshot")
+            (and compute_acceleration (not (equal? approximation "Central difference")))
+              (point_velocity_error "invalid_deformation" "acceleration requires central difference")
+            :else
+              (let* [ones (array/int n 1)
+                     before (if need_previous (point_velocity_sample input previous key positions)
+                              {:p positions :found ones})
+                     after (if need_next (point_velocity_sample input next key positions)
+                             {:p positions :found ones})
+                     rows (array/range n :type int)
+                     lost (array/compact (exact (map (fn [(i : int)]
+                            (if (and (int/eq (array/nth selected i) 1)
+                                     (or (int/eq (array/nth before.found i) 0) (int/eq (array/nth after.found i) 0)))
+                              1 0)) rows)))
+                     scale (/ 1.0 (* 2.0 dt))
+                     inverse (/ 1.0 (* dt dt))
+                     missing_at (fn [(i : int)] (or (int/eq (array/nth before.found i) 0) (int/eq (array/nth after.found i) 0)))
+                     velocity (exact (case approximation
+                       "Backward difference"
+                         (map (fn [(i : int)]
+                           (if (int/eq (array/nth selected i) 0) (array/nth old i)
+                             (if (missing_at i) add
+                               (+ (/ (- (array/nth positions i) (array/nth before.p i)) dt) add)))) rows)
+                       "Forward difference"
+                         (map (fn [(i : int)]
+                           (if (int/eq (array/nth selected i) 0) (array/nth old i)
+                             (if (missing_at i) add
+                               (+ (/ (- (array/nth after.p i) (array/nth positions i)) dt) add)))) rows)
+                       :else
+                         (map (fn [(i : int)]
+                           (let* [p (array/nth before.p i) q (array/nth after.p i)]
+                             (if (int/eq (array/nth selected i) 0) (array/nth old i)
+                               (if (missing_at i) add
+                                 [(fma (- q.x p.x) scale add_x) (fma (- q.y p.y) scale add_y)
+                                  (fma (- q.z p.z) scale add_z)])))) rows)))
+                     accel (exact (map (fn [(i : int)]
+                             (let* [c (array/nth positions i) p (array/nth before.p i) q (array/nth after.p i)]
+                               (if (int/eq (array/nth selected i) 0) (array/nth old_accel i)
+                                 (if (or (int/eq (array/nth before.found i) 0) (int/eq (array/nth after.found i) 0))
+                                   [0.0 0.0 0.0]
+                                   (* (+ (- q (* 2.0 c)) p) inverse)))))
+                           rows))]
+                (cond
+                  (and (equal? unmatched "Error") (int/gt (array/count lost) 0))
+                    (point_velocity_error "invalid_deformation" "one or more selected points have no matching sample")
+                  compute_acceleration
+                    (sop/with_attr
+                      (sop/with_attr input acceleration_attribute accel :owner "point" :type vec3)
+                      velocity_attribute velocity :owner "point" :type vec3)
+                  :else (sop/with_attr input velocity_attribute velocity :owner "point" :type vec3))))))))
