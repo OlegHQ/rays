@@ -12,7 +12,9 @@ let main () =
   let args = List.tl (Array.to_list Sys.argv) in
   let bench = List.mem "--bench" args in
   let all = Port_gate.registered () in
-  let selected = match List.filter (fun a -> a <> "--bench") args with
+  let keys = List.filter (fun a -> a <> "--bench" && a <> "--full") args in
+  let quick = keys <> [] && not (List.mem "--full" args) in
+  let selected = match keys with
     | [] -> List.filter (fun (n : Port_gate.t) -> Sys.file_exists (Filename.concat dir (n.key ^ ".rays"))) all
     | key :: _ -> (match List.filter (fun (n : Port_gate.t) -> n.key = key) all with
         | [] -> Printf.eprintf "FAIL: no port registered for %S (registered: %s)\n" key
@@ -20,7 +22,7 @@ let main () =
         | l -> l) in
   if bench then print_endline "| key | domains | native s | lisp s | ratio |\n|---|---|---|---|---|";
   let failed = List.filter (fun (n : Port_gate.t) ->
-    try if bench then not (Port_gate.run_bench ~dir n) else (Port_gate.run_gate ~dir n; false)
+    try if bench then not (Port_gate.run_bench ~dir n) else (Port_gate.run_gate ~quick ~dir n; false)
     with Failure m -> Printf.printf "FAIL %s\n%!" m; true
        | e -> Printf.printf "FAIL %s: exception %s\n%!" n.key (Printexc.to_string e); true) selected in
   if bench && failed <> [] then print_endline "SPEED GATE FAILED";

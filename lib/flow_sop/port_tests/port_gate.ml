@@ -17,7 +17,10 @@
 
    Run (repo root, or `dune build --root .` in a worktree):
      dune build ./lib/flow_sop/port_tests/main.exe        then
-     _build/default/lib/flow_sop/port_tests/main.exe KEY            gate, accepted or pending
+     _build/default/lib/flow_sop/port_tests/main.exe KEY            quick gate, accepted or pending:
+                                                                    all cases on the last fixture,
+                                                                    defaults on the others
+     _build/default/lib/flow_sop/port_tests/main.exe KEY --full     every case on every fixture
      _build/default/lib/flow_sop/port_tests/main.exe KEY --bench    timing, fails above 2.0x
      _build/default/lib/flow_sop/port_tests/main.exe                every accepted node
      dune build @lib/flow_sop/port_tests/ports                      same, as a dune alias
@@ -246,9 +249,13 @@ let verify_case ~full ctx ulps label changes =
                 check (geometry_bytes (must (cook s domains grain actual)) = bytes)
                   (Printf.sprintf "bytes differ at domains=%d grain=%d" domains grain)) (if full then [1, 1; 1, 97; 1, 4096; 4, 1; 4, 97; 4, 4096] else [4, 1; 4, 4096])))
 
-let run_gate ~dir node =
-  let cases = ("defaults", []) :: node.cases and count = ref 0 in
+(* [quick]: every case on the last fixture, defaults (full matrix) on the others. The
+   full cross product is the `ports` alias and `main.exe KEY --full`. *)
+let run_gate ?(quick = false) ~dir node =
+  let all = ("defaults", []) :: node.cases and count = ref 0 in
+  let last = List.length node.inputs - 1 in
   List.iteri (fun i (fixture, geometries) ->
+    let cases = if quick && i <> last then [List.hd all] else all in
     let ctx = context ~dir node geometries in
     let tag what = fun f -> try f () with Failure m -> fail (Printf.sprintf "%s/%s: %s: %s" node.key fixture what m) in
     List.iter (fun (label, changes) -> incr count;
@@ -263,7 +270,8 @@ let run_gate ~dir node =
         check (Flow_sop.Catalog.descriptor lisp_factory = Flow_sop.Catalog.descriptor node.native)
           "Catalog.descriptor differs from native")))
     node.inputs;
-  Printf.printf "PASS %s: %d fixtures x %d cases\n%!" node.key (List.length node.inputs) !count
+  Printf.printf "PASS %s%s: %d fixtures, %d cases run\n%!" node.key (if quick then " (quick)" else "")
+    (List.length node.inputs) !count
 
 let run_bench ~dir node = match node.bench with
   | None -> Printf.printf "| %s | - | no bench registered | - | - |\n%!" node.key; true
