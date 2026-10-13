@@ -613,3 +613,60 @@ let () =
       Rdk_test_support.geometry_bytes(cook fresh ~domains oracle))
       "Helper invalidation returned stale cached geometry"))) [1;8];
   print_endline "Lisp declaration cache keys preserve unchanged siblings and invalidate edited helpers at one/eight domains"
+
+(* Deferred child cooking stays inside its authored error boundary. *)
+let ()=
+  let calls=ref 0 in
+  let retained=[Sop.Diagnostic.{node_id=88;label="retained child";operation="native.retained"};
+    Sop.Diagnostic.{node_id=89;label="retained input";operation="native.input"}]in
+  let child_error={ (Sop.Diagnostic.error ~cause:"\255 raw 日本😀" ~hints:["retained hint"]
+    ~code:"E_CHILD" "child cook failed") with trace=retained }in
+  let factory=Sop.Edit_graph.factory ~key:"failing_child" ~label:"Failing child" ~category:["Test"] ~arity:1
+    (fun inputs->Sop.Node.Private.make ~operation:"native.failing_child" ~version:1 ~parameters:""
+      ~cook_mode:Sop.Node.Generic ~inputs:(Array.of_list inputs) ~dependencies:Sop.Context.Dependencies.static
+      (fun ~node_id:_ _context _inputs->incr calls;Error child_error))in
+  let source= {|(workspace boundary
+    (defnode sop/error_boundary [(geo : geometry) (enabled : bool true)]
+      (if enabled
+        (with_error (sop/failing_child geo)
+          (fn [failure] (assoc failure :code "E_WRAPPED" :message "authored wrapping")))
+        (with_error geo (fn [failure] (error "E_MAPPER" "unused mapper")))))
+    (graph g :context sop (sop/error_boundary (sop/line :points 2))))|}in
+  let unused_source={|(workspace boundary
+    (defnode sop/error_boundary [(geo : geometry) (enabled : bool true)]
+      (let* [unused (if enabled
+        (with_error (sop/failing_child geo)
+          (fn [failure] (assoc failure :code "E_WRAPPED" :message "authored wrapping")))
+        nil)] geo))
+    (graph g :context sop (sop/error_boundary (sop/line :points 2))))|}in
+  let compile reference text=match Flow_sop.Lower.workspace ~reference
+      ~factories:(factory::Sop_catalog.Editor.factories)(parse text)with
+    |Error d->failwith(Flow.Diagnostic.to_string d)
+    |Ok lowered->let graph=List.hd lowered.graphs in
+      ok(Sop.Edit_graph.compile_node graph.network.geometry ~node_id:(Option.get graph.root)) in
+  List.iter(fun source->List.iter(fun reference->let node=compile reference source in
+    List.iter(fun domains->List.iter(fun grain->with_session(fun session->
+      let before= !calls in
+      match Sop.Session.cook session ~context:(ok(Sop.Context.create ~domains ~grain ()))node with
+      |Ok _->failwith "protected child failure was lost"
+      |Error actual->
+          check(actual.code="E_WRAPPED" && actual.message="authored wrapping" && actual.cause=child_error.cause)
+            "deferred diagnostic mapping changed its authored payload";
+          check(actual.hints=child_error.hints && List.filter(fun frame->List.mem frame retained)actual.trace=retained)
+            "deferred mapping lost native hints or trace";
+          check(!calls=before+1) "protected child cooked twice or outside the boundary")) [1;97;4096]) [1;4;8];
+let forms=parse source in
+let rec disable (form:Flow.Syntax.t)=
+  let node=match form.node with
+    |Flow.Syntax.List(({node=Sym "sop/error_boundary";_}as head)::args)->
+        Flow.Syntax.List(head::args@[Flow.Syntax.make(Kw "enabled");Flow.Syntax.make(Sym "false")])
+    |List children->List(List.map disable children)|Vec children->Vec(List.map disable children)
+    |Map children->Map(List.map disable children)|node->node in
+  {form with node}in
+let disabled=fst(Flow.Lisp.print(List.map disable forms))in
+    let before= !calls in
+    let original=with_session(fun session->cook session (lower "(workspace original (graph g :context sop (sop/line :points 2)))"))in
+    let actual=with_session(fun session->cook session (compile reference disabled))in
+    check(!calls=before && Rdk_test_support.geometry_bytes actual=Rdk_test_support.geometry_bytes original)
+      "untaken child/mapper executed or altered successful geometry") [false;true]) [source;unused_source];
+  print_endline "Diagnostic boundaries: deferred and unused protected children cook once; raw causes, hints, trace, untaken arms and one/four/eight domains agree"

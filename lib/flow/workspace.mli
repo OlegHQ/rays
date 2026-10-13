@@ -33,6 +33,8 @@ val context_name : context -> string
 type pattern = Name of string | Seq of pattern list | Keys of string list
 (** [a], [[a b]] (also over a vec3), [{:keys [a b]}]. *)
 
+type diagnostic_policy = First | Range_last
+
 type term = { path : path option; ty : Ty.t; node : node; form : Syntax.t }
 (** [path] is set on bindings, zones, results and graph/defn bodies.  [form] is
     the authored form (with its notes); for a macro call it is the call. *)
@@ -62,6 +64,8 @@ and node =
   | Loop of { kind : [ `For | `Fold | `Scan | `Sum ]; accs : (pattern * term) list;
               clauses : (pattern * term) list; skip : int list list; body : term; zone : path }
       (** [skip]: the iteration tuples a [for] leaves out (register L16); [[]] for other kinds *)
+  | With_error of term * term
+  | Error_rows of { rows : term; policy : diagnostic_policy; mapper : term }
   | If of term * term * term
   | Cond of (term * term) list * term
   | Case of term * (Syntax.t * term) list * term

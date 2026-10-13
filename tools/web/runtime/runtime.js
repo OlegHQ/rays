@@ -163,8 +163,10 @@ export function createRuntime(program, { now = () => performance.now() / 1000, f
       const pool = rt.pool;
       const ArrayType = r.integer ? BigInt64Array : Float64Array;
       const outputs = [r.text ? Array(r.kept).fill('') : pool ? pool.alloc(r.kept * r.width, ArrayType) : new ArrayType(r.kept * r.width)];
-      const status = pool ? await pool.collect(r.id ?? k, inputs, uniforms, outputs, r.count, r.skip)
-        : this.region(k)(inputs, uniforms, outputs, 0, r.count);
+      let status;
+      try { status = pool ? await pool.collect(r.id ?? k, inputs, uniforms, outputs, r.count, r.skip)
+        : this.region(k)(inputs, uniforms, outputs, 0, r.count); }
+      catch (error) { throw prims.diagnosticError(error); }
       if (status !== 0) prims.fail('E_KERNEL', 'Kernel needs reference evaluation.');
       return r.text ? new prims.TextArray(outputs[0]) : new prims.PArray(r.width, outputs[0]);
     },

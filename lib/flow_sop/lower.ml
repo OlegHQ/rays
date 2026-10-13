@@ -58,7 +58,7 @@ let resource_image operation result =
     ~cook_mode:Sop.Node.Generator ~dependencies:Sop.Context.Dependencies.static ~inputs:[||]
     (fun ~node_id:_ _ _->match result with
       |Ok image->Ok Sop.Node.Private.{payload=Sop.Payload.Image image;instances=None;diagnostics=[]}
-      |Error diagnostic->Error(Sop.Diagnostic.error ?cause:diagnostic.Diagnostic.cause ~code:diagnostic.code diagnostic.message))
+      |Error diagnostic->Error(Diagnostic_bridge.to_sop diagnostic))
 
 type kernel_input = {index : int; cid : int; identity : int;
   signature : Ty.fn_signature; fn : E.fn; sources : int list}
@@ -205,7 +205,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
               error "E_DATA_SOURCE" "A cooked handle has no result or prepared node."
             |None,Some node->
               Result.bind
-                (Result.map_error(fun(d:Sop.Diagnostic.error)->Diagnostic.error ?cause:d.cause ~code:d.code d.message)
+                (Result.map_error(Diagnostic_bridge.of_sop)
                   (Sop.Session.cook (Lazy.force session) ~context node))
                 (fun value->Result.map(fun value->output:=Some value;value)(validate value))) in
           let geometry id=match Hashtbl.find_opt geometries id with
@@ -234,7 +234,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
                   Sop.Node.Private.make ~operation:key ~version:1 ~parameters:(string_of_int id)
                     ~cook_mode:Sop.Node.Generator ~inputs:[||] ~dependencies:Sop.Context.Dependencies.static
                     (fun ~node_id:_ _context _inputs->
-                      Result.map_error(fun(d:Diagnostic.t)->Sop.Diagnostic.error ?cause:d.cause ~code:d.code d.message)
+                      Result.map_error(Diagnostic_bridge.to_sop)
                         (Result.map(fun(output:Sop.Session.output)->Sop.Node.Private.{payload=output.payload;
                           diagnostics=output.diagnostics;instances=output.instances})(snapshot actual id)))) in
                 factories:=factory::!factories;
@@ -331,6 +331,23 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
                   let id= !next in decr next;Hashtbl.add handles id(ty,Some node,ref None);Ok(E.Deferred(ty,id))))
               |_->error "E_DATA_SOURCE" "A cooked call must return one typed result.")) in
           let resolve value=try match value with
+            |E.Source("$core/diagnostic_index",Ty.Int,["rows",rows;"policy",E.Text policy])->
+                let grain=match policy with "first"->Ok None|"range-last"->Ok(Some(Sop.Context.grain context))
+                  |_->error "E_DIAGNOSTIC_CONTEXT" "Unknown host diagnostic policy." in
+                Result.bind grain(fun grain->
+                  let selected=try
+                    let check()=if Sop.Context.cancelled context then
+                      Flow.Value.fail "cancelled" "geometry operation was cancelled" in
+                    Ok(Flow.Value.Private.error_row_index ?grain ~check rows)
+                   with Flow.Value.Fail(code,message,span)->Error(Diagnostic.error ?span ~code message)
+                     |Flow.Value.Diagnostic_fail diagnostic->Error diagnostic in
+                   Result.bind selected(function Some index->Ok(E.Int index)
+                     |None->error "E_DIAGNOSTIC_CONTEXT" "Host diagnosis needs a failing row."))
+            |E.Source("$core/diagnostic_index",_,_)->error "E_DIAGNOSTIC_CONTEXT" "Host diagnosis needs typed rows and policy."
+            |E.Source("$core/complete",ty,["value",E.Deferred(actual,id)]) when actual=ty && Ty.is_cooked ty->
+                Result.map(fun _->E.Deferred(ty,id))(snapshot ty id)
+            |E.Source("$core/complete",ty,["value",E.No_geo]) when ty=Ty.geometry->Ok E.No_geo
+            |E.Source("$core/complete",_,_)->error "E_DATA_SOURCE" "Protected completion needs one matching cooked handle."
             |E.Source("$core/cooked",ty,["id",E.Int id])->Result.map(fun _->E.Deferred(ty,id))(handle ty id)
             |E.Source(("$core/operator"|"$core/catalog" as kind),ty,args)->
                 if not(Ty.is_cooked ty)then error "E_DATA_SOURCE" "Host calls return a declared cooked type." else
@@ -347,7 +364,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
             |E.Deferred(ty,id) when ty=Ty.geometry->snapshot ty id
             |E.No_geo->error "E_LOWER" "Cooked selection returned empty geometry."
             |_->error "E_DATA_SOURCE" "Cooked selection must return a geometry handle.") in
-          Result.map_error(fun(d:Diagnostic.t)->Sop.Diagnostic.error ?cause:d.cause ~code:d.code d.message)
+          Result.map_error(Diagnostic_bridge.to_sop)
             (Result.map(fun(output:Sop.Session.output)->Sop.Node.Private.{payload=output.payload;
               diagnostics=output.diagnostics;instances=output.instances})result))) in
       Sop.Node.Private.with_facts {(Sop.Node.facts node) with reads=["*"];writes=["*"]} node in
@@ -381,7 +398,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
               (function E.Record fields->if cancelled()then error()else
                   Result.bind(Topology_kernel.mesh fields)(fun geometry->if cancelled()then error()else Ok geometry)
                 |_->Error(Diagnostic.error ~code:"E_TOPOLOGY_TYPE" "Mesh data must be a record.")))in
-          Result.map_error(fun(d:Diagnostic.t)->Sop.Diagnostic.error ?cause:d.cause ~code:d.code d.message)
+          Result.map_error(Diagnostic_bridge.to_sop)
             (Result.map(fun geometry->Sop.Node.Private.{geometry;diagnostics=[];instances=None})result))in
       Sop.Node.Private.with_facts {(Sop.Node.facts node) with reads=Attribute_kernel.reads data;
         writes=["*"];topology=Changed;elementwise=None}node in
@@ -418,7 +435,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
                       | Some(E.Int_array mask)->Group_kernel.write ?order ~owner ~name mask geometries.(0)
                       | _->Error(Diagnostic.error ~code:"E_GROUP_MASK" "Group mask requires an integer array."))
                 | _ -> assert false)) in
-          Result.map_error(fun(d:Diagnostic.t)->Sop.Diagnostic.error ?cause:d.cause ~code:d.code d.message)
+          Result.map_error(Diagnostic_bridge.to_sop)
             (Result.map(fun geometry->Sop.Node.Private.{geometry;diagnostics=[];instances=None})result))
       |>fun node->Sop.Node.Private.with_facts {(Sop.Node.facts node) with topology=Preserved;reads=["*"];writes=["*"]} node in
     let plan = evaluated.plan in
@@ -668,7 +685,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
         let body context =
           if not driven then Ok compiled else
           let lane = Value_lane.create () in
-          Result.map_error (fun (d : Diagnostic.t) -> Sop.Diagnostic.error ?cause:d.cause ~code:d.code d.message)
+          Result.map_error (Diagnostic_bridge.to_sop)
             (Result.bind (Value_lane.resolve ~live:(Sop.Context.input context) lane
               ~time:(Sop.Context.time context) graph.network) (fun resolved ->
               if resolved.geometry==graph.network.geometry then Ok compiled else
@@ -683,8 +700,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
             definition.kind.facts in
           let facts=Sop.Node.{cook_mode;
             elementwise=None;reads=["*"];writes=["*"];topology=Changed;exact} in
-          (fun _ -> Error(Sop.Diagnostic.error ?cause:diagnostic.cause
-            ~code:diagnostic.code diagnostic.message)), dependencies, facts) in
+          (fun _ -> Error(Diagnostic_bridge.to_sop diagnostic)), dependencies, facts) in
       let category = if definition.category=[] then ["Custom"] else definition.category in
       let construct inputs =
           let next = ref 0 in

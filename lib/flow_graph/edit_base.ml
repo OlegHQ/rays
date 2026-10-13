@@ -302,7 +302,7 @@ let collapse s ps res = if ps = [] then res else rebuild s ps res  (* an empty l
    leaf of the binding (or [@result]) that holds it, then [#] and each argument on the way down
    ([result#0#:cutters]: the [:cutters] input of the first input of [result]) *)
 let node_call (e : S.t) = match head_sym e with
-  | Some ("fn" | "map" | "filter" | "reduce" | "sort-by" | "if" | "cond" | "case" | "exact") -> true
+  | Some ("fn" | "map" | "filter" | "reduce" | "sort-by" | "if" | "cond" | "case" | "with_error" | "error_rows" | "exact") -> true
   | Some h -> String.length h > 1 && String.contains h '/'
   | None -> false
 let nested leaf = String.contains leaf '#'

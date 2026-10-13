@@ -1,8 +1,8 @@
 (library
  (name flow_sop)
  (public_name rays.flow_sop)
- (modules port instance_path curve merge_source network value_lane catalog manifest operators attribute_kernel attribute_metadata topology_kernel group_kernel context_kernel function_kernel image_kernel lisp_node encoded_parameters node_sources lower)
- (private_modules function_kernel merge_source lisp_node encoded_parameters node_sources attribute_metadata topology_kernel group_kernel context_kernel)
+ (modules diagnostic_bridge port instance_path curve merge_source network value_lane catalog manifest operators attribute_kernel attribute_metadata topology_kernel group_kernel context_kernel function_kernel image_kernel lisp_node encoded_parameters node_sources lower)
+ (private_modules diagnostic_bridge function_kernel merge_source lisp_node encoded_parameters node_sources attribute_metadata topology_kernel group_kernel context_kernel)
  (libraries flow flow_ir param sop unix))
 
 (rule
@@ -188,3 +188,8 @@
  (name runtest)
  (deps (alias test_projection) (alias test_workspace_edit)
   (alias test_workspace_cook) (alias test_workspace_zone)))
+
+(test
+ (name test_error_rows)
+ (modules test_error_rows)
+ (libraries flow_sop flow flow_ir sop_catalog sop rdk rdk_test_support lisp_sop rays_math))

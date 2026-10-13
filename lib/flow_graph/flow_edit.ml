@@ -741,6 +741,8 @@ let apply_checked ?ops ?library ?checker catalog src op =
         | Call_fn {args;_} -> args | Graph_ref {inputs;_} -> List.map snd inputs
         | Let (bs,r) -> List.map snd bs @ [r] | State {init;step;_} -> [init;step]
         | Loop {accs;clauses;body;_} -> List.map snd accs @ List.map snd clauses @ [body]
+        | With_error(a,b) -> [a;b]
+        | Error_rows{rows=a;mapper=b;_} -> [a;b]
         | If (a,b,c) -> [a;b;c] | Cond (arms,d) -> List.concat_map (fun (a,b) -> [a;b]) arms @ [d]
         | Case (s,arms,d) -> s :: List.map snd arms @ [d] | Fn {body;_} -> [body]
         | Record fs -> List.map snd fs | Assoc (r,fs) -> r :: List.map snd fs

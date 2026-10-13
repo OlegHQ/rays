@@ -25,9 +25,10 @@ type ('f, 'r) t =
 exception Fail of string * string * Diagnostic.span option
 exception Diagnostic_fail of Diagnostic.t
 
-let raise_diagnostic (d:Diagnostic.t) = match d.cause with
-  |None->raise(Fail(d.code,d.message,d.span))
-  |Some _->raise(Diagnostic_fail d)
+let raise_diagnostic (d:Diagnostic.t) =
+  if d.cause=None && d.position=None && d.hints=[] && d.trace=[] then
+    raise(Fail(d.code,d.message,d.span))
+  else raise(Diagnostic_fail d)
 
 let fail code msg = raise (Fail (code, msg, None))
 let failf code fmt = Printf.ksprintf (fail code) fmt
@@ -275,3 +276,71 @@ let rec validate = function
   | List xs -> Array.iter validate xs
   | Record fs | Struct (_, _, fs) | Source (_, _, fs) -> List.iter (fun (_, v) -> validate v) fs
   | _ -> ()
+
+module Private = struct
+  let with_error ~protected ~map =
+    let cancelled (d:Diagnostic.t) = d.code="cancelled" || d.code="E_CANCELLED" in
+    let payload (d:Diagnostic.t) = Record ["code",Text d.code;"message",Text d.message;
+      "cause",List (match d.cause with None->[||]|Some cause->[|Text cause|])] in
+    let inherit_envelope (original:Diagnostic.t) (mapped:Diagnostic.t) =
+      {mapped with hints=original.hints;trace=original.trace;
+        span=(match mapped.span with Some _->mapped.span|None->original.span);
+        position=(match mapped.position with Some _->mapped.position|None->original.position)} in
+    let handle (original:Diagnostic.t) =
+      if cancelled original then raise_diagnostic original;
+      let result = try map (payload original) with
+        | Fail(code,message,span)->let mapped=Diagnostic.error ?span ~code message in
+            raise_diagnostic(if cancelled mapped then mapped else inherit_envelope original mapped)
+        | Diagnostic_fail mapped when cancelled mapped->raise_diagnostic mapped
+        | Diagnostic_fail mapped->raise_diagnostic(inherit_envelope original mapped) in
+      let malformed ()=raise_diagnostic {original with code="E_DIAGNOSTIC_MAP";
+        message="An error mapper returns code, message and zero or one text causes."} in
+      match result with
+      | Record fields when List.length fields=3 ->
+          (match List.assoc_opt "code" fields,List.assoc_opt "message" fields,List.assoc_opt "cause" fields with
+           | Some(Text code),Some(Text message),Some(List causes)->
+               let cause=match causes with [||]->None|[|Text cause|]->Some cause|_->malformed() in
+               raise_diagnostic {original with code;message;cause}
+           | _->malformed())
+      | _->malformed() in
+    try protected() with
+    | Fail(code,message,span)->handle(Diagnostic.error ?span ~code message)
+    | Diagnostic_fail diagnostic->handle diagnostic
+(* Validate the entire immutable mask before reporting any selected row. *)
+let error_row_index ?grain ?(check=(fun()->())) value =
+  let rows=match value with Int_array rows->rows
+    |_->fail "E_DIAGNOSTIC_ROWS" "Diagnostic rows require an integer 0/1 array." in
+  Option.iter(fun grain->if grain<=0 then fail "E_DIAGNOSTIC_CONTEXT" "Diagnostic grain must be positive.")grain;
+  check();
+  let first=ref (-1) in
+  for i=0 to Array.length rows-1 do
+    if i land 4095=0 then check();
+    if rows.(i)<>0 && rows.(i)<>1 then
+      fail "E_DIAGNOSTIC_ROWS" "Diagnostic row values must be 0 or 1.";
+    if rows.(i)=1 && !first<0 then first:=i
+  done;
+  if !first<0 then None else match grain with
+  |None->Some !first
+  |Some grain->
+      let last= !first+min(grain- !first mod grain)(Array.length rows- !first) in
+      let selected=ref !first in
+      for i= !first+1 to last-1 do
+        if i land 4095=0 then check();
+        if rows.(i)=1 then selected:=i
+      done;
+      check();Some !selected
+
+let diagnose_rows ~select ~map value =
+  (* ponytail: this host-independent validation has no native cancellation
+     token; add an execution check if full-mask validation dominates latency.
+     Native selection polls its token, and Session checks entry/completion. *)
+  match error_row_index value with
+  |None->No_geo
+  |Some first->
+      let index=select value first in
+      (match value with Int_array rows when index>=0 && index<Array.length rows && rows.(index)=1->()
+        |_->fail "E_DIAGNOSTIC_CONTEXT" "Host diagnosis returned a non-failing row.");
+      with_error ~protected:(fun()->fail "E_DIAGNOSTIC_ROW" "A diagnostic row failed.")
+        ~map:(fun _->map(Int index))
+
+end

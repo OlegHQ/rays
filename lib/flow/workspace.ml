@@ -9,6 +9,8 @@ let context_of_name s = Result.to_option (Context.of_string s)
 let context_ty = Context.result
 
 type pattern = Name of string | Seq of pattern list | Keys of string list
+type diagnostic_policy = First | Range_last
+
 type term = { path : path option; ty : Ty.t; node : node; form : S.t }
 and node =
   | Lit of Param.value
@@ -26,6 +28,8 @@ and node =
   | State of { binder : pattern; init : term; step : term; zone : path }
   | Loop of { kind : [ `For | `Fold | `Scan | `Sum ]; accs : (pattern * term) list;
               clauses : (pattern * term) list; skip : int list list; body : term; zone : path }
+  | With_error of term * term
+  | Error_rows of { rows : term; policy : diagnostic_policy; mapper : term }
   | If of term * term * term
   | Cond of (term * term) list * term
   | Case of term * (S.t * term) list * term
@@ -61,6 +65,8 @@ let called_names ~include_ops root =
     | Let (bindings,body) -> List.concat_map (fun (_,v) -> calls v) bindings @ calls body
     | State {init;step;_} -> calls init @ calls step
     | Loop {accs;clauses;body;_} -> List.concat_map (fun (_,v) -> calls v) (accs@clauses) @ calls body
+    | With_error(a,b) -> calls a @ calls b
+    | Error_rows{rows=a;mapper=b;_} -> calls a @ calls b
     | If (a,b,c) -> calls a @ calls b @ calls c
     | Cond (arms,default) -> List.concat_map (fun (a,b) -> calls a @ calls b) arms @ calls default
     | Case (scrutinee,arms,default) -> calls scrutinee @ List.concat_map (fun (_,v) -> calls v) arms @ calls default
@@ -103,7 +109,7 @@ let max_call_depth = 64
 (* ---- names ---- *)
 
 let special = [ "workspace"; "graph"; "defn"; "defnode"; "defmacro"; "let*"; "ref"; "for"; "fold";
-  "scan"; "sum"; "state"; "if"; "values"; "fn"; "cond"; "case"; "list"; "concat"; "str"; "get";
+  "scan"; "sum"; "state"; "if"; "with_error"; "error_rows"; "values"; "fn"; "cond"; "case"; "list"; "concat"; "str"; "get";
   "assoc"; "map"; "filter"; "reduce"; "sort-by"; "quote"; "quasiquote"; "unquote";
   "unquote-splicing" ]
 let special_forms = special
@@ -371,6 +377,8 @@ let check ?(ops = []) ?(library = false) catalog forms =
         match term.node with
         | Vec ts -> all ts | Get (t, _) | Bypass t | Expanded {body = t; _} -> visit t
         | Op {args; _} -> fields args | Let (bindings, result) -> fields bindings; visit result
+        | With_error(a,b) -> all[a;b]
+        | Error_rows{rows=a;mapper=b;_} -> all[a;b]
         | If (c, a, b) -> all [c;a;b]
         | Cond (arms, d) -> List.iter (fun (a,b) -> all [a;b]) arms; visit d
         | Case (s, arms, d) -> visit s; fields arms; visit d
@@ -700,6 +708,95 @@ let check ?(ops = []) ?(library = false) catalog forms =
         "A branch in %s picks between shapes by t. The network keeps its shape while playing; pick a value instead, for example an if on a size or a colour."
         (path_text cx.path))
 
+  and pure_boundary cx ~mapper code message term =
+    let visited=Hashtbl.create 8 in
+    let impure (t:term)=err t.form code message in
+    let rec scan (t:term)=
+      let all=List.iter scan and fields fields=List.iter(fun(_,t)->scan t)fields in
+      if mapper && Ty.is_cooked t.ty then impure t;
+      match t.node with
+      | State _ | Graph_ref _ -> impure t
+      | Time when mapper -> impure t
+      | Call {ctx;args;_}->if mapper || not(List.mem ctx [Context.sop;Context.image])then impure t;fields args
+      | Op {op;args;_}->
+          (match find_op op cx.ctx with
+           |Some op when (if mapper then op.ctx=Context.value && not op.live && op.name<>"sop/context_seed"
+               else List.mem op.ctx [Context.value;Context.sop;Context.image])->()
+           |_->impure t);fields args
+      | Ref_binding(name,_)->(match Smap.find_opt name cx.env with
+          |Some value when mapper && (value.live || value.state_dep || Ty.is_cooked value.ty)->impure t|_->())
+      | Fn_ref name -> helper t name
+      | Call_fn {fn;args;body}->all args;(match body with Some body->scan body|None->helper t fn)
+      | Vec ts | List_lit ts | Str ts | List_op(_,ts) | Hof(_,ts)->all ts
+      | Let(bindings,body)->fields bindings;scan body
+      | Loop{accs;clauses;body;_}->fields accs;fields clauses;scan body
+      | With_error(protected,handler)->all[protected;handler]
+      | Error_rows {rows;mapper=handler;_}->if mapper then impure t;all[rows;handler]
+      | If(a,b,c)->all[a;b;c]
+      | Cond(arms,default)->List.iter(fun(a,b)->all[a;b])arms;scan default
+      | Case(value,arms,default)->scan value;fields arms;scan default
+      | Fn{body;capture;_}->scan body;Option.iter scan capture
+      | Record fields_->fields fields_
+      | Get(value,_) | Expanded{body=value;_} | Bypass value->scan value
+      | Assoc(value,updates)->scan value;fields updates
+      | Lit _ | Text _ | Nil | Time -> ()
+    and helper t name=if not(Hashtbl.mem visited name)then begin
+      Hashtbl.add visited name();
+      match Hashtbl.find_opt def_terms name with
+      |Some graph->scan graph.body
+      |None->(match find_op name cx.ctx with
+          |Some op when op.ctx=Context.value && (not mapper || not op.live)->()
+          |_->impure t)
+    end in scan term
+
+  and with_error cx (x:S.t) args = match args with
+    | [protected;mapper]->
+        let protected,pv=input cx "0" protected in
+        let mapper,mv=fn_arg cx mapper in
+        let payload=Ty.Record["code",Ty.Text;"message",Ty.Text;"cause",Ty.List Ty.Text] in
+        let argument=instantiate_fn ~coerce_params:false cx
+          {key=None;aform=mapper.form;aterm=mapper;av=mv} {params=[payload];result=payload} in
+        let mapper,mv=argument.aterm,argument.av in
+        (match mv.ty with
+         | Ty.Fn(Some signature) when signature.params=[payload] && Ty.fits signature.result payload->()
+         | _->err mapper.form "E_DIAGNOSTIC_MAP" "An error mapper takes and returns a diagnostic record.");
+        no_fn protected.form pv.ty "A protected value";
+        let rec cooked_container ty=Ty.is_cooked ty || match ty with
+          |Ty.List element->cooked_container element|Record fields->List.exists(fun(_,ty)->cooked_container ty)fields|_->false in
+        if cooked_container pv.ty && not(List.mem pv.ty [Ty.geometry;Ty.image])then
+          err protected.form "E_ERROR_SCOPE" "An error boundary completes a direct cooked result, not a cooked container.";
+        pure_boundary cx ~mapper:false "E_ERROR_SCOPE" "An error boundary has no state, graph, drawing or UI effects." protected;
+        if mv.live || mv.state_dep then err mapper.form "E_DIAGNOSTIC_MAP" "An error mapper is pure and independent of frame/state.";
+        pure_boundary cx ~mapper:true "E_DIAGNOSTIC_MAP" "An error mapper is pure: no frame, state, context or cooked values." mapper;
+        tm x pv.ty (With_error(protected,mapper)),derive pv.ty [pv;mv]
+    | _->bad x "E_ARITY" "with_error takes a protected value and a pure error mapper."
+
+  and error_rows cx (x:S.t) args =
+    let parse rows mapper policy=match policy.S.node with
+      |S.Str "first"->Some(rows,mapper,First)
+      |S.Str "range-last"->Some(rows,mapper,Range_last)
+      |_->err policy "E_DIAGNOSTIC_POLICY" "Diagnostic policy is literal first or range-last.";None in
+    let parsed=match args with
+      |[rows;mapper]->Some(rows,mapper,First)
+      |[rows;key;policy;mapper] when key.S.node=S.Kw "policy"->parse rows mapper policy
+      |[rows;mapper;key;policy] when key.S.node=S.Kw "policy"->parse rows mapper policy
+      |_->None in
+    match parsed with
+    |None->bad x "E_ARGS" "error_rows takes rows, a pure diagnostic mapper, and optional :policy text."
+    |Some(rows,mapper,policy)->
+        let rows,rv=input cx "0" rows in
+        if rv.ty<>Ty.Array Ty.Int then err rows.form "E_DIAGNOSTIC_ROWS" "Diagnostic rows require an integer 0/1 array.";
+        let mapper,mv=fn_arg cx mapper in
+        let payload=Ty.Record["code",Ty.Text;"message",Ty.Text;"cause",Ty.List Ty.Text] in
+        let argument=instantiate_fn ~coerce_params:false cx
+          {key=None;aform=mapper.form;aterm=mapper;av=mv} {params=[Ty.Int];result=payload} in
+        let mapper,mv=argument.aterm,argument.av in
+        (match mv.ty with Ty.Fn(Some signature) when signature.params=[Ty.Int] && Ty.fits signature.result payload->()
+          |_->err mapper.form "E_DIAGNOSTIC_MAP" "A row mapper takes an int and returns a diagnostic record.");
+        if mv.live || mv.state_dep then err mapper.form "E_DIAGNOSTIC_MAP" "A row mapper is pure and independent of frame/state.";
+        pure_boundary cx ~mapper:true "E_DIAGNOSTIC_MAP" "A row mapper is pure: no frame, state, context or cooked values." mapper;
+        tm x Ty.geometry(Error_rows{rows;policy;mapper}),derive Ty.geometry [rv;mv]
+
   and if_ cx (x : S.t) (args : S.t list) =
     match args with
     | [ c; a; b ] ->
@@ -825,10 +922,10 @@ let check ?(ops = []) ?(library = false) catalog forms =
     mark id v;
     ({ t with path = Some id }, v)
 
-  and input cx key (x : S.t) =
+  and input cx key (x : S.t) : term * v =
     match S.head x with
     | Some h when String.contains h '/' || Hashtbl.mem macro_tbl h
-        || List.mem h ["fn"; "map"; "filter"; "reduce"; "sort-by"; "if"; "cond"; "case"; "exact"] ->
+        || List.mem h ["fn"; "map"; "filter"; "reduce"; "sort-by"; "if"; "cond"; "case"; "with_error"; "error_rows"; "exact"] ->
         let memo = cx.path, key, x.id in
         let id = match Hashtbl.find_opt input_paths memo with
           | Some id -> id
@@ -844,7 +941,7 @@ let check ?(ops = []) ?(library = false) catalog forms =
                 | leaf :: scope -> List.rev scope @ [Printf.sprintf "%s~%d" leaf n]
                 | [] -> assert false in
               Hashtbl.add input_paths memo id; id in
-        if List.mem h ["fn"; "map"; "filter"; "reduce"; "sort-by"; "if"; "cond"; "case"; "exact"] then binding cx x id
+        if List.mem h ["fn"; "map"; "filter"; "reduce"; "sort-by"; "if"; "cond"; "case"; "with_error"; "error_rows"; "exact"] then binding cx x id
         else let t, v = infer {cx with path = id} x in mark id v;
           (* Canvas previews need the inline result recorded at its card path.
              Scene and SOP lowering retain their operation's original site. *)
@@ -1263,6 +1360,8 @@ let check ?(ops = []) ?(library = false) catalog forms =
     | "state" -> state cx x (inline cx "~state")
     | "for" | "fold" | "scan" | "sum" -> zone cx x (inline cx ("~" ^ name))
     | "fn" -> mk_fn cx x (inline cx "~fn") "fn"
+    | "with_error" -> with_error cx x args
+    | "error_rows" -> error_rows cx x args
     | "if" -> if_ cx x args
     | "cond" | "case" -> cond cx x name args
     | "ref" -> ref_ cx x args
@@ -1917,40 +2016,7 @@ let check ?(ops = []) ?(library = false) catalog forms =
           let term,value=argument.aterm,argument.av in
           if value.ty<>Ty.Fn(Some{params=[Ty.Text];result=Ty.Text}) then
             err form "E_TYPE" "An encoded normalizer takes one text and returns text.";
-          let visited=Hashtbl.create 8 in
-          let impure (t:term)=err t.form "E_PARAM_NORMALIZE" "An encoded normalizer is pure: no frame, state, context or cooked values." in
-          let rec scan (t:term)=
-            let all=List.iter scan and fields fields=List.iter(fun(_,t)->scan t)fields in
-            if Ty.is_cooked t.ty then impure t;
-            match t.node with
-            | Time | State _ | Call _ | Graph_ref _ -> impure t
-            | Op {op;args;_}->
-                (match find_op op Context.value with
-                 |Some op when not op.live && op.ctx=Context.value && op.name<>"sop/context_seed" -> ()
-                 |_->impure t); fields args
-            | Fn_ref name -> helper t name
-            | Call_fn {fn;args;body}->all args;
-                (match body with Some body->scan body|None->helper t fn)
-            | Vec ts | List_lit ts | Str ts | List_op(_,ts) | Hof(_,ts)->all ts
-            | Let(bindings,body)->List.iter(fun(_,value)->scan value)bindings;scan body
-            | Loop{accs;clauses;body;_}->List.iter(fun(_,value)->scan value)(accs@clauses);scan body
-            | If(a,b,c)->all[a;b;c]
-            | Cond(arms,default)->List.iter(fun(a,b)->all[a;b])arms;scan default
-            | Case(value,arms,default)->scan value;fields arms;scan default
-            | Fn{body;capture;_}->scan body;Option.iter scan capture
-            | Record fields_->fields fields_
-            | Get(value,_) | Expanded{body=value;_} | Bypass value->scan value
-            | Assoc(value,updates)->scan value;fields updates
-            | Lit _ | Text _ | Nil | Ref_binding _ -> ()
-          and helper t name=if not(Hashtbl.mem visited name)then begin
-            Hashtbl.add visited name();
-            match Hashtbl.find_opt def_terms name with
-            |Some graph->scan graph.body
-            |None->(match find_op name Context.value with
-                |Some op when not op.live && op.ctx=Context.value && op.name<>"sop/context_seed"->()
-                |_->impure t)
-          end in
-          scan term;name,term) d.normalizers in
+          pure_boundary ncx ~mapper:true "E_PARAM_NORMALIZE" "An encoded normalizer is pure: no frame, state, context or cooked values." term;name,term) d.normalizers in
         node_terms := {kind=d.kind;slots=d.slots;keyword_inputs=d.keyword_inputs;fields=d.fields;label=d.label;category=d.category;description=d.description;operation=d.operation;
           body={name=n;context=Context.sop;inputs;body=bt;form=d.form};validations;normalizers} :: !node_terms)
         (Hashtbl.find_opt node_sources n)) items;

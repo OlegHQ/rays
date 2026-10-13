@@ -1552,3 +1552,10 @@ otherwise the existing attribute pattern applies. Explicit distance remains
 the Lisp default, while Auto enables unbounded transfer and detail ownership.
 Group patterns take precedence over exact names. Source vertex groups retain
 their all/any triangle-corner selection controls.
+
+Lisp-authored delegated cook diagnostics may use the mapping-only `with_error`
+scope. Internal child cooking remains in the zero-retention Session and happens
+before the protected scope exits; hints and ordered child trace survive the
+Flow/SOP boundary. Cancellation and errors from already cooked public input
+edges remain unchanged. Mapping text belongs to the Lisp mapper, never to an
+operation-name switch in Flow or a private SOP callback.

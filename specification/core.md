@@ -1113,3 +1113,63 @@ frame/event records), `lib/flow/eval.ml` (control, function identity and state),
 `noise.ml`, `rand.ml`, and `lib/rays_editor/drawing.ml` / `lib/rays/scene.ml`
 (drawing defaults and coordinate conversion). The runnable census is
 `dune build tools/core_census.exe && _build/default/tools/core_census.exe`.
+
+### Lazy diagnostic mapping
+
+`(with_error protected mapper)` preserves the protected value's type and maps
+only a reached typed failure. The pure mapper takes and returns a record with
+`code: text`, `message: text`, and `cause: list text` (zero or one cause). It
+always rethrows; it does not recover a value, retry a child, or catch cancellation
+or unrelated host exceptions. Hints, ordered native trace and source location
+survive mapping. A failing mapper is not caught recursively by itself.
+
+The checked term stays residual during static evaluation. Structured Core's
+`Protect` executes the protected block and completes a direct cooked result
+inside its scope before invoking a handler. It does not hoist child construction,
+numeric Invokes or errors across the scope; every reached numeric kernel still
+needs genuine compilation. `$core/complete` is a private host request and returns
+the same handle after cooking/memoizing its payload, diagnostics and instances.
+Existing `$core/cooked` retains its lazy handle behavior.
+Diagnostic scopes in unused `let*` bindings still execute: static evaluation
+retains the enclosing expression for the execution boundary, including scopes
+inside called local helpers. Nested empty-geometry results need no host lookup.
+
+Initial scope excludes state, drawing/UI effects, graph references and containers
+of cooked values. Pure numeric/data values and direct geometry/image results are
+supported. Existing public input edges cook before a body-local boundary; put a
+producer inside the protected expression to protect its deferred cook. JavaScript
+uses the same structured blocks and diagnostic metadata; host-owned geometry
+completion remains an explicit `E_WEB_SOURCE` refusal. Per-element packed/GPU
+error boundaries are refused rather than interpreted or retried.
+
+### Diagnostic row policies
+
+`(error_rows flags mapper [:policy "first"|"range-last"])` is a diagnostic
+boundary over a genuine Int array. Every row must be 0 or 1; validation reads
+the entire immutable mask before reporting an ordinary failure. Empty or
+all-zero masks return `nil` and evaluate neither the mapper nor a host lookup.
+For a failure, the pure Int-to-diagnostic mapper runs once and always throws;
+its row index cannot be returned as successful numeric data. Mapping retains
+the same lossless diagnostic envelope and cancellation rule as `with_error`.
+
+The default `first` policy is host-independent. `range-last` matches native
+bulk diagnostics: choose the first grain range containing a 1, then the last
+1 in that range. The host supplies cook grain through the private diagnosis
+resolver, rather than an ordinary Lisp value or operator. Valid geometry,
+array values and output fingerprints remain independent of grain. The native
+selector uses overflow-safe range bounds and coarse cancellation checks;
+errors never enter a persistent successful-output cache. The row producer
+must itself retain the target native operation's validation and error order.
+This boundary does not turn an arbitrary early-throwing numeric kernel into a
+mask producer.
+Initial host-independent full-mask validation has no native cancellation token;
+Session protects entry/completion, while native failing-row selection polls its
+token. The implementation records this validation-latency ceiling explicitly.
+
+Structured Core owns the nonescaping mapper index local and lazy block. The
+current 2D JavaScript emitter supports `first` and refuses reached
+`range-last` with `E_WEB_SOURCE`. The separate geometry host twin binds private
+`{grain, check}` context to the same deterministic selector and is tested with
+real checked raw-attribute validity, including grain boundaries and tails.
+There is no authored grain getter, numeric result, GPU fallback or automatic
+change to ordinary packed arithmetic.

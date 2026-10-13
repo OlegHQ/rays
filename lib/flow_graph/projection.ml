@@ -82,6 +82,8 @@ let subterms (t : W.term) = match t.node with
   | Let (bs, r) -> List.map snd bs @ [ r ]
   | State {init; step; _} -> [init; step]
   | Loop { accs; clauses; body; _ } -> List.map snd accs @ List.map snd clauses @ [ body ]
+  | With_error(a,b) -> [a;b]
+  | Error_rows{rows=a;mapper=b;_} -> [a;b]
   | If (a, b, c) -> [ a; b; c ]
   | Cond (arms, d) -> List.concat_map (fun (a, b) -> [ a; b ]) arms @ [ d ]
   | Case (s, arms, d) -> (s :: List.map snd arms) @ [ d ]
@@ -258,6 +260,8 @@ let call_rows c (e : S.t) h args =
     @ [ add c prefix (E.Pos npos) ty ] in
   let list_ty = Some (Ty.List Ty.Any) in
   match h with
+  | "with_error" -> [posrow "protected" 0;posrow ~ty:(Ty.Fn None) "mapper" 1]
+  | "error_rows" -> [posrow ~ty:(Ty.Array Ty.Int) "rows" 0;posrow ~ty:(Ty.Fn None) "mapper" 1;kwrow ~ty:Ty.Text "policy"]
   | "if" -> [ posrow ~ty:Ty.Bool "if" 0; row c "then" (E.Arm 0) (at 1); row c "else" (E.Arm (-1)) (at 2) ]
   | "list" -> items string_of_int "+ item" None
   | "str" -> items (fun _ -> "part") "+ part" None

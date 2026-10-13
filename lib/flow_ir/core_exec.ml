@@ -20,6 +20,8 @@ let static_invokes (program : C.program) =
     let w a = writes.(a) <- writes.(a) + 1; if not top then nested.(a) <- true in
     match s.node with
     | Assign (a, _) | Invoke {result = a; _} | Store {sequence = a; _} | State_write {value = a; _} -> w a
+    | Diagnose_rows{index;result;handler;_}->w index;w result;List.iter(walk false)handler
+    | Protect {body;handler;failure;result;_}->w failure;w result;List.iter(walk false)body;List.iter(walk false)handler
     | If {yes; no; _} -> List.iter (walk false) yes; List.iter (walk false) no
     | Iterate {index; item; body; _} -> w index; w item; List.iter (walk false) body
     | Counted {count; index; item; init; body; _} ->
@@ -75,6 +77,8 @@ let device_regions (program : C.program) =
     | Draw d -> draw d
     | Assign (_, e) -> expression e
     | Reset_call _ | State_peek _ -> ()
+    | Protect {body;value;handler;mapped;_}->use value;use mapped;List.iter statement body;List.iter statement handler
+    | Diagnose_rows{rows;diagnostic;handler;_}->use rows;use diagnostic;List.iter statement handler
     | If {condition; yes; no} -> use condition; List.iter statement yes; List.iter statement no
     | Iterate {sequence; body; _} -> use sequence; List.iter statement body
     | Counted {first; last; init; body; _} -> use first; use last; List.iter statement init; List.iter statement body
@@ -87,6 +91,8 @@ let device_regions (program : C.program) =
   let ok = Array.make (Array.length program.regions) true in
   let rec regions (s : C.statement) = match s.node with
     | Invoke {region; result; _} -> if not eligible.(result) || other.(result) then ok.(region) <- false
+    | Protect {body;handler;_}->List.iter regions body;List.iter regions handler
+    | Diagnose_rows{handler;_}->List.iter regions handler
     | If {yes; no; _} -> List.iter regions yes; List.iter regions no
     | Iterate {body; _} -> List.iter regions body
     | Counted {init; body; _} -> List.iter regions init; List.iter regions body
@@ -348,6 +354,8 @@ let scalar_tree (program : C.program) constants =
 
 let rec builds (statements : C.statement list) = List.exists (fun (s : C.statement) -> match s.node with
   | Assign (_,Prim (Sequence_build,_)) -> true
+  | Protect {body;handler;_}->builds body || builds handler
+  | Diagnose_rows{handler;_}->builds handler
   | If {yes;no;_} -> builds yes || builds no
   | Iterate {body;_} -> builds body
   | Counted {init;body;_} -> builds init || builds body
@@ -369,6 +377,8 @@ let counted_kernel (program : C.program) loop_id index item body =
     | Vec ns | Items ns -> List.iter use ns in
   let rec outside (s : C.statement) = if s.id<>loop_id then match s.node with
     | Assign (_,e) -> expr use e
+    | Protect {body;value;handler;mapped;_}->use value;use mapped;List.iter outside body;List.iter outside handler
+    | Diagnose_rows{rows;diagnostic;handler;_}->use rows;use diagnostic;List.iter outside handler
     | If {condition;yes;no} -> use condition;List.iter outside yes;List.iter outside no
     | Counted {first;last;init;body;_} -> use first;use last;List.iter outside init;List.iter outside body
     | Iterate {sequence;body;_} -> use sequence;List.iter outside body
@@ -594,7 +604,9 @@ let prepare ?(fused=true) (program : C.program) =
         (match E.Private.force_reference ?resolve:st.resolve value ~live:st.live with
          | Ok value -> value | Error d -> V.raise_diagnostic d)
     | Host_source {name;ty;args}->fun st->
-        let value=E.Source(name,ty,List.map(fun(name,index)->name,st.values.(index))args) in
+        let args=List.map(fun(name,index)->name,st.values.(index))args in
+        if name="$core/complete" && ty=Flow.Ty.geometry && args=["value",V.No_geo] then V.No_geo else
+        let value=E.Source(name,ty,args) in
         (match E.Private.force_reference ?resolve:st.resolve value ~live:st.live with
          |Ok value->value|Error d->V.raise_diagnostic d)
     | Source_descriptor {name;ty;args}->fun st->
@@ -658,6 +670,8 @@ let prepare ?(fused=true) (program : C.program) =
   let rec count statements = List.iter (fun (s : C.statement) -> match s.node with
     | Assign (n,_) | State_write {value=n;_} | Invoke {result=n;_} -> bump n
     | Reset_call _ | Store _ | Draw _ -> ()
+    | Protect {body;handler;failure;result;_}->bump failure;bump result;count body;count handler
+    | Diagnose_rows{index;result;handler;_}->bump index;bump result;count handler
     | If {yes;no;_} -> count yes; count no
     | Iterate {index;item;body;_} -> bump index; bump item; count body
     | Counted {count=c;index;item;init;body;_} -> bump c; bump index; bump item; count init; count body
@@ -710,6 +724,23 @@ let prepare ?(fused=true) (program : C.program) =
         fun st -> (match st.marks with
           | Some sink -> run st.values sink
           | None -> V.fail "E_CORE" "Drawing statements need a mark table.")
+    | Diagnose_rows{rows;policy;index;handler;diagnostic;result}->
+        let handler=plain_block handler in
+        fun st->st.values.(result)<-V.Private.diagnose_rows st.values.(rows)
+          ~select:(fun rows first->match st.resolve,policy with
+            |None,Flow.Workspace.First->first
+            |None,Flow.Workspace.Range_last->V.fail "E_DIAGNOSTIC_CONTEXT" "Range-last diagnosis needs its native host."
+            |Some resolve,policy->
+                let policy=match policy with Flow.Workspace.First->"first"|Range_last->"range-last" in
+                (match resolve(V.Source("$core/diagnostic_index",Flow.Ty.Int,["rows",rows;"policy",V.Text policy]))with
+                  |Ok(V.Int index)->index|Error error->V.raise_diagnostic error
+                  |_->V.fail "E_DIAGNOSTIC_CONTEXT" "Host diagnosis returns one integer row."))
+          ~map:(fun value->st.values.(index)<-value;handler st;seal st diagnostic;st.values.(diagnostic))
+    | Protect {body;value;failure;handler;mapped;result}->
+        let body=plain_block body and handler=plain_block handler in
+        fun st->st.values.(result)<-V.Private.with_error
+          ~protected:(fun()->body st;seal st value;st.values.(value))
+          ~map:(fun diagnostic->st.values.(failure)<-diagnostic;handler st;seal st mapped;st.values.(mapped))
     | If {condition;yes;no} ->
         let yes=block yes and no=block no in
         fun st -> (if V.truthy st.values.(condition) then yes else no) st

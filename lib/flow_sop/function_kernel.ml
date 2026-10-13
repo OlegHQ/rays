@@ -1,6 +1,6 @@
 module E = Flow.Eval
 module K = Sop.Kernel
-let host_error (d : Flow.Diagnostic.t) = Sop.Diagnostic.error ?cause:d.cause ~code:d.code d.message
+let host_error = Diagnostic_bridge.to_sop
 let value = function K.Floats xs -> E.Float_array xs | Vec3s xs -> E.Vec3_array xs
 let column = function
   | E.Float_array xs -> Ok (K.Floats xs)

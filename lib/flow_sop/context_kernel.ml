@@ -13,6 +13,8 @@ let map ?(select=Fun.id) transform (graph:W.graph) =
       | Let (bindings,body) -> Let (patterns bindings,term body)
       | State s -> State {s with init=term s.init;step=term s.step}
       | Loop l -> Loop {l with accs=patterns l.accs;clauses=patterns l.clauses;body=term l.body}
+      | With_error(a,b) -> With_error(term a,term b)
+      | Error_rows scope -> Error_rows{scope with rows=term scope.rows;mapper=term scope.mapper}
       | If (a,b,c) -> If (term a,term b,term c)
       | Cond (arms,default) -> Cond (List.map (fun (a,b)->term a,term b) arms,term default)
       | Case (value,arms,default) -> Case (term value,patterns arms,term default)

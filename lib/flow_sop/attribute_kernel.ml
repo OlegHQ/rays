@@ -73,6 +73,8 @@ let reads value =
       | Let (bindings, body) -> fields bindings; scan body
       | Loop {accs;clauses;body;_} -> fields accs; fields clauses; scan body
       | State {init;step;_} -> all [init;step]
+      | With_error(a,b) -> all[a;b]
+      | Error_rows{rows=a;mapper=b;_} -> all[a;b]
       | If (condition, yes, no) -> all [condition;yes;no]
       | Cond (arms, default) -> List.iter (fun (condition, yes) -> all [condition;yes]) arms; scan default
       | Case (value, arms, default) -> scan value; fields arms; scan default
@@ -759,7 +761,7 @@ let node ?state ?(reference = false) ?(strict = false) ?elems ?profile ?selectio
                   (fun values -> if Sop.Context.cancelled context then
                       error "E_CANCELLED" "Attribute kernel cancelled."
                     else write_storage ~owned_fields ~grain:(Sop.Context.grain context) ~owner ~kind name values geometries.(0))))) in
-      Result.map_error (fun (d : Flow.Diagnostic.t) -> Sop.Diagnostic.error ?cause:d.cause ~code:d.code d.message)
+      Result.map_error (Diagnostic_bridge.to_sop)
         (Result.map (fun geometry -> N.Private.{geometry; diagnostics = []; instances = None}) result)) in
   N.Private.with_facts { (N.facts node) with elementwise = (match owner with A.Point->N.Points|Primitive->Primitives|_->None);
     topology = N.Preserved; reads = (if selected then List.sort_uniq String.compare(name::reads data) else reads data); writes = [name] } node

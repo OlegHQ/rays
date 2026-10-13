@@ -19,6 +19,8 @@ let children (t : W.term) =
   | Let (bindings, body) -> fields bindings @ [body]
   | State {init; step; _} -> [init; step]
   | Loop {accs; clauses; body; _} -> fields accs @ fields clauses @ [body]
+  | With_error(a,b) -> [a;b]
+  | Error_rows{rows=a;mapper=b;_} -> [a;b]
   | If (a, b, c) -> [a; b; c]
   | Cond (arms, d) -> List.concat_map (fun (a, b) -> [a; b]) arms @ [d]
   | Case (s, arms, d) -> s :: d :: fields arms
@@ -82,6 +84,8 @@ let span_of_region (r : C.Region.t) = r.term.form.span
 (* Every statement of the program, nested ones included. *)
 let rec all_statements (body : C.statement list) =
   List.concat_map (fun (s : C.statement) -> s :: (match s.node with
+    | Protect {body;handler;_}->all_statements body @ all_statements handler
+    | Diagnose_rows{handler;_}->all_statements handler
     | If {yes; no; _} -> all_statements yes @ all_statements no
     | Iterate {body; _} -> all_statements body
     | Counted {init; body; _} -> all_statements init @ all_statements body
@@ -207,6 +211,8 @@ let uses_defs (s : C.statement) = match s.node with
   | Draw d -> draw_uses d, []
   | Assign (d, e) -> expr_uses e, [d]
   | Reset_call _ -> [], []
+  | Protect {value;mapped;failure;result;_}->[value;mapped],[failure;result]
+  | Diagnose_rows{rows;diagnostic;index;result;_}->[rows;diagnostic],[index;result]
   | If {condition; _} -> [condition], []
   | Iterate {sequence; index; item; _} -> [sequence], [index; item]
   | Counted {first; last; count; index; item; _} -> [first; last], [count; index; item]

@@ -4324,3 +4324,68 @@ The launcher completes @all/@runtest/native smoke/git diff --check. Earlier
 dummy-video shipping request91290 failed native smoke and exposed the shared
 Lisp cache issue; focused cache request50009 and this final shipping check
 pass after the reviewed source-key fix and stronger fresh-oracle assertions.
+
+## Lazy diagnostic scopes and native row selection
+
+2026-10-13. `with_error` is a mapping-only scope: pure record-to-record mapping
+always rethrows a reached typed error; success leaves the mapper untaken, and
+cancellation and unrelated host exceptions bypass it. Direct geometry/image
+results complete inside the scope and retain their original handle. Structured
+Core uses independent protected/mapper blocks; reference evaluation, graph
+projection/checked gestures and emitted JavaScript share the behavior. Lossless
+Flow/SOP adapters retain code/message/cause/hints/ordered trace. Existing Flow
+span/position are retained; SOP has no corresponding location fields.
+
+`error_rows` validates a complete immutable Int 0/1 mask. Empty/all-zero masks
+return nil with no handler/host lookup. Failing masks invoke a pure
+Int-to-diagnostic mapper once and always throw; the index never becomes a
+successful numeric result. `first` is host-independent; `range-last` uses a
+private host-bound cook grain and selects the last failing row in the first
+failing grain range. Real checked raw-attribute masks exercise the JavaScript
+geometry-host twin at grains1/97/4096. The current 2D emitter supports first
+and explicitly refuses range-last; no authored grain getter, SOP callback,
+Packed instruction, GPU fallback or automatic numeric contraction is added.
+
+Focused shared request54421 EXIT0, `/tmp/rays-diagnostics-focused9.log`, covers
+@check, Flow/IR/graph/SOP/web, CLI cram, API and dependency gates. Strengthened
+unused native-child and called-local-helper checks pass in request65107 EXIT0,
+`/tmp/rays-diagnostics-focused10.log`, covering Flow IR/SOP. Native Peak/Mountain
+selected code/message/cause/hints match reference and strict compiled unused
+validation at domains1/4/8, grains1/97/4096. Successful caches ignore grain.
+Deferred child tests require one cook, preserve raw UTF-8/cause bytes, hints and
+ordered native trace, and keep disabled children/mappers untaken. Pure tests
+cover nested nil, full diagnostic envelopes with and without a cause, malformed
+mapping, mapper failure, cancellation, unrelated exceptions,32769-element
+strict numeric work and nested/policy edits. Actual emitted JavaScript agrees
+without refreshing existing goldens; typed worker failures preserve envelopes
+below/above chunk size at one/eight workers. The four intended public interface
+changes are reviewed and the API manifest is promoted, with implementation and
+acceptance to be committed together before any consuming port.
+
+Failed requests59256/60539/57727/47660/92093/98630 and row request55420,
+plus focused attempt8, are retained in `/tmp/rays-diagnostics-focused1.log`
+through `focused6.log`, `focused8.log` and `/tmp/rays-diagnostics-row7.log`.
+They exposed an ambiguous Workspace record
+inference, a missed test visitor, fixtures with invalid value-graph results or
+missing input defaults/keyword names, nonexistent fixture constructors and a
+private exception fixture assuming the wrong envelope representation. Real
+production gaps were also corrected: nested nil completion now skips a host
+lookup; the shared exception helper keeps location/hints/trace without a cause;
+unused residual diagnostic bindings retain the enclosing let for execution,
+including called local helpers. The native Peak oracle caught the formerly
+skipped validation. No native oracle, numeric tolerance or error-order gate was
+relaxed. Initial host-independent mask validation has no native cancellation
+token; Session entry/completion and failing host selection protect their
+boundaries. Its validation-latency ceiling is explicit in code and specification.
+
+Native-video shipping request3786 EXIT1 finished its full workspace sweep:
+43 standard files, one custom-catalog executable and13 fixtures. Its only
+reported failure was the missing text-completion entry for `with_error`;
+`/tmp/rays-diagnostics-native-ship1.log`. Both new special forms now have
+completion documentation. Request84192 EXIT0 confirms the completion fix, API
+and dependency gates; `/tmp/rays-diagnostics-completion-focused.log`.
+Final native shipping request72554 EXIT0 passes with that fix;
+`/tmp/rays-diagnostics-native-ship2.log`. Its full workspace sweep covers43
+standard files, one custom-catalog executable and13 fixtures; native examples,
+all default tests, the build and whitespace check pass. These capabilities add no whole SOP
+port and tick no additional milestone:14/128 ports and21/60 milestones remain.

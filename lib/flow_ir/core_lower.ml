@@ -46,6 +46,10 @@ let constant_storage (program:C.program) =
     |State_read{result;initial;init;_}->unsafe initial;incr_write result;List.iter scan init
     |State_peek{found;value;_}->List.iter incr_write[found;value]
     |State_write{value;_}->unsafe value
+    |Diagnose_rows{rows;index;handler;diagnostic;result;_}->List.iter unsafe[rows;diagnostic];
+        List.iter incr_write[index;result];List.iter scan handler
+    |Protect{body;value;failure;handler;mapped;result}->List.iter unsafe[value;mapped];
+        List.iter incr_write[failure;result];List.iter scan body;List.iter scan handler
     |Reset_call _->()
     |Draw draw->(match draw with
         |Background n->unsafe n|Point{at;ink}->List.iter unsafe[at;ink]
@@ -63,6 +67,8 @@ let constant_storage (program:C.program) =
     |Assign(dst,Prim((Array_int|Array_text|Array_float|Array_vec3|Array_vec4 as primitive),args)) when safe [] dst->
         Assign(dst,Source_descriptor{name="$core/constant-array/"^C.primitive_name primitive;ty=program.locals.(dst);args})
     |If arms->If{arms with yes=List.map rewrite arms.yes;no=List.map rewrite arms.no}
+    |Diagnose_rows scope->Diagnose_rows{scope with handler=List.map rewrite scope.handler}
+    |Protect scope->Protect{scope with body=List.map rewrite scope.body;handler=List.map rewrite scope.handler}
     |Counted loop->Counted{loop with init=List.map rewrite loop.init;body=List.map rewrite loop.body}
     |Iterate loop->Iterate{loop with body=List.map rewrite loop.body}
     |State_read state->State_read{state with init=List.map rewrite state.init}
@@ -407,6 +413,36 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
           let value=term statements cache source env value in
           bind statements cache source env pattern value) env bindings in
         term ~borrow statements cache source env body
+    | Error_rows {rows;policy;mapper}->
+        let rows=compile rows |> ensure statements cache source in
+        let handler=ref [] and handler_cache=Hashtbl.create 16 in
+        let index=local Flow.Ty.Int in
+        let mapper=term handler handler_cache source env mapper |> as_callable source in
+        let payload=Flow.Ty.Record["code",Text;"message",Text;"cause",List Text] in
+        let diagnostic=call handler handler_cache source payload None mapper [Computed(index,Flow.Ty.Int)]
+          |> ensure handler handler_cache source in
+        let result=local x.ty in
+        statements:=statement(number())source(Diagnose_rows{rows;policy;index;
+          handler=List.rev !handler;diagnostic;result})::!statements;
+        Computed(result,x.ty)
+    | With_error(protected,mapper) ->
+        let body=ref [] and handler=ref [] in
+        let body_cache=Hashtbl.create 16 and handler_cache=Hashtbl.create 16 in
+        let protected_value=term body body_cache source env protected in
+        let value=ensure body body_cache source protected_value in
+        let complete=Flow.Ty.is_cooked protected.ty && (match protected_value with Known V.No_geo->false|_->true) in
+        let value=if complete then
+            emit body source protected.ty (Host_source{name="$core/complete";ty=protected.ty;args=["value",value]})
+              |> ensure body body_cache source else value in
+        let payload=Flow.Ty.Record["code",Text;"message",Text;"cause",List Text] in
+        let failure=local payload in
+        let mapper=term handler handler_cache source env mapper |> as_callable source in
+        let mapped=call handler handler_cache source payload None mapper [Computed(failure,payload)]
+          |> ensure handler handler_cache source in
+        let result=local x.ty in
+        statements:=statement(number()) source (Protect{body=List.rev !body;value;failure;
+          handler=List.rev !handler;mapped;result})::!statements;
+        Computed(result,x.ty)
     | If (condition,yes,no) ->
         branch statements cache source x.ty (compile condition)
           (fun body cache -> term ~borrow body cache source env yes)

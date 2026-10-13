@@ -72,6 +72,8 @@ let checked workspace =
     | Let(bindings,body)->Result.bind(pairs walk bindings)(fun bindings->one(fun body->W.Let(bindings,body))body)
     | Loop loop->Result.bind(pairs walk loop.accs)(fun accs->Result.bind(pairs walk loop.clauses)(fun clauses->one(fun body->W.Loop{loop with accs;clauses;body})loop.body))
     | State state->two(fun init step->W.State{state with init;step})state.init state.step
+    | With_error(a,b)->two(fun a b->W.With_error(a,b))a b
+    | Error_rows scope->two(fun rows mapper->W.Error_rows{scope with rows;mapper})scope.rows scope.mapper
     | If(condition,yes,no)->Result.bind(walk condition)(fun condition->two(fun yes no->W.If(condition,yes,no))yes no)
     | Cond(arms,default)->Result.bind(list(fun(a,b)->Result.bind(walk a)(fun a->Result.map(fun b->a,b)(walk b)))arms)
         (fun arms->one(fun default->W.Cond(arms,default))default)

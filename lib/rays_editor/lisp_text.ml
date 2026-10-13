@@ -168,6 +168,8 @@ let special_docs = [
   "scan", "(scan [acc init] [i xs] body) · like fold, keeping every step as a list";
   "sum", "(sum [i xs] body) · add the body over the list";
   "if", "(if test then else) · a branch; both arms have the same type";
+  "with_error", "(with_error protected mapper) · map and rethrow a reached error; success and cancellation bypass the mapper";
+  "error_rows", "(error_rows flags mapper :policy \"first\") · report an integer 0/1 failure mask; range-last uses native cook grain";
   "cond", "(cond test expr ... :else expr) · the first test that holds";
   "case", "(case expr literal expr ... :else expr) · match a literal";
   "fn", "(fn [a b] body) · an anonymous function for map, filter, reduce, sort-by";

@@ -94,6 +94,8 @@ let rec walk f (x : Workspace.term) =
   | Call { args; _ } | Op { args; _ } | Graph_ref { inputs = args; _ } | Record args -> named args
   | Let (bs, r) -> named bs; walk f r
   | State {init; step; _} -> all [init; step]
+  | With_error (protected, mapper) -> all [protected; mapper]
+  | Error_rows {rows; mapper; _} -> all [rows; mapper]
   | Loop { accs; clauses; body; _ } -> named accs; named clauses; walk f body
   | If (a, b, c) -> all [ a; b; c ]
   | Cond (arms, d) -> List.iter (fun (a, b) -> all [ a; b ]) arms; walk f d

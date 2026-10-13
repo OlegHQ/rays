@@ -1955,3 +1955,18 @@ a generation-checked borrowed token after completion. Unchanged dimensions
 create no persistent resources; resize and failed writes invalidate previous
 tokens. Workspace publication and resident consumers use this boundary;
 explicit `(exact image)` freezes the publication through the resource owner.
+
+`with_error` is an expression card with `protected` and `mapper` positional rows.
+Nested calls in its protected row remain ordinary editable cards; its function
+mapper uses the existing function scope. Projection, input gestures and source
+roundtrip retain the wrapper and each authored source identity. Completion offers
+the checked spelling. The body and mapper participate in existing source/body
+cache identity; there is no synthetic native handler or text-only capability.
+
+`error_rows` has an integer-array `rows` input, a pure integer-to-diagnostic
+`mapper` function row and an editable literal `policy` row. The default policy
+is `"first"`; `"range-last"` reproduces native bulk error selection using the
+host's cook grain. An all-zero mask returns `nil`, and a selected failure always
+throws the mapper's diagnostic. A boundary in an unused `let*` binding still
+executes before the enclosing expression publishes its result. Nested row
+producers and policy edits use the ordinary checked graph gestures.

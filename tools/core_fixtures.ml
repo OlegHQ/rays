@@ -922,6 +922,40 @@ let () =
     ["wall_a","new";"wall_a","wall_b";"wall_a","wall_a";"missing","missing";"literal*","new*";"wall_a"," "];
   List.iter(fun name->add_host "sop/delete_edge" [geometry_value metadata_geometry;E.Text name]
     (json(geometry_value(Rdk.Geometry.without_edge_group name metadata_geometry)))) ["wall_a";"missing";"*";""];
+(* This adapter is fixture plumbing, not an authored operator: its grain is
+   supplied by the same private host context used by native diagnosis. *)
+let diagnostic_json(d:Flow.Diagnostic.t)=Printf.sprintf
+  {|{"error":{"code":%s,"message":%s%s}}|}(str d.code)(str d.message)
+  (Option.fold ~none:"" ~some:(fun cause->",\"cause\":"^str cause)d.cause) in
+let diagnose rows grain =
+  try json(Flow.Value.Private.diagnose_rows rows
+    ~select:(fun rows _->Option.get(Flow.Value.Private.error_row_index ~grain rows))
+    ~map:(function E.Int index->E.Record["code",E.Text"E_ROW";
+        "message",E.Text("bad "^string_of_int index);
+        "cause",E.List[|E.Text("raw 日本😀 "^string_of_int index)|]]|_->assert false))
+  with Flow.Value.Fail(code,message,span)->diagnostic_json(Flow.Diagnostic.error ?span ~code message)
+    |Flow.Value.Diagnostic_fail d->diagnostic_json d in
+List.iter(fun bad->
+  let count=32769 in
+  let x=Array.init count(fun index->if List.mem index bad then Float.nan else -0.)
+  and y=Array.make count 0. and z=Array.make count 0. in
+  (* Only x is invalid where flagged; keep every other row wholly finite. *)
+  Array.fill y 0 count 0.;
+  let directions=Rdk.Packed.Float3.Private.of_owned_exn ~x ~y ~z in
+  let positions=Rdk.Packed.Float3.Private.of_owned_exn
+    ~x:(Array.make count 0.) ~y:(Array.make count 0.) ~z:(Array.make count 0.) in
+  let topology=Rdk.Topology.empty ~point_count:count in
+  let geometry=Rdk.Geometry.create ~positions ~topology()|>Result.get_ok in
+  let geometry=Rdk.Geometry.with_attribute
+    (Rdk.Attribute.create_owned ~name:"raw" ~owner:Point(Float3 directions)|>Result.get_ok)
+    geometry|>Result.get_ok in
+  let validity=match Result.get_ok(checked_read geometry "raw" "point" "vec3")with
+    |E.Record fields->(match List.assoc "valid" fields with E.Int_array rows->rows|_->assert false)
+    |_->assert false in
+  let flags=E.Int_array(Array.map(fun valid->1-valid)validity)in
+  List.iter(fun grain->add_host "$host/diagnostic_rows"
+    [geometry_value geometry;E.Record["grain",E.Int grain]](diagnose flags grain)) [1;97;4096])
+  [[];[0;1;96;97;98];[96;97;98];[4095;4096;4097];[32768]];
   (* write *)
   assert (List.length inventory = 90);
   if not (Sys.file_exists outdir) then Sys.mkdir outdir 0o755;
@@ -933,4 +967,4 @@ let () =
       "sop/group";"sop/group_names";"sop/group_order";"sop/with_group";
       "sop/attr_type";"sop/attr_names";"sop/rename_attr";"sop/swap_attr";"sop/delete_attrs";
       "sop/rename_group";"sop/delete_group";"sop/rename_edge";"sop/delete_edge";"text/glob_error";"text/glob_rewrite_error";
-      "text/glob_literal";"text/glob_rewrite";"sop/group_entries"])
+      "text/glob_literal";"text/glob_rewrite";"sop/group_entries";"$host/diagnostic_rows"])

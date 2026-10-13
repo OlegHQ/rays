@@ -483,7 +483,13 @@ let call ctx primitive args =
   let statics = match primitive with
     | C.Coerce ty -> [ty_json ty] | Color_byte C.Clamped -> [{|"clamped"|}] | Color_byte Unclamped -> [{|"unclamped"|}]
     | Fail (code, message) -> [escape code; escape message]
-    | Fail_diagnostic d -> [escape d.code;escape d.message;Option.fold ~none:"undefined" ~some:escape d.cause]
+    | Fail_diagnostic d -> [escape d.code; escape d.message;
+        Option.fold ~none:"undefined" ~some:escape d.cause] @
+        (if d.hints=[] && d.trace=[] then [] else
+          ["[" ^ String.concat "," (List.map escape d.hints) ^ "]";
+           "[" ^ String.concat "," (List.map (fun (t:Flow.Diagnostic.trace) ->
+             Printf.sprintf "{node_id:%dn,label:%s,operation:%s}" t.node_id
+               (escape t.label) (escape t.operation)) d.trace) ^ "]"])
     | _ -> [] in
   Printf.sprintf "rt.%s(%s)" (export_name primitive) (String.concat ", " (statics @ values))
 
@@ -543,6 +549,27 @@ and statement ctx depth (s : C.statement) =
   | Assign (n, e) -> line "%s%s = %s;" at (local n) (expression ctx e)
   | Reset_call slot -> line "%scalls[%d] = 0;" at slot
   | Draw d -> line "%s%s" at (draw ctx d)
+  | Diagnose_rows{rows;policy;index;handler;diagnostic;result}->
+      if policy=Flow.Workspace.Range_last then
+        raise(Refused("E_WEB_SOURCE","Range-last diagnosis needs its native host.",s.source.span));
+      line "%s{" at;
+      line "  const row%d = rt.diagnosticFirst(%s);" s.id(local rows);
+      line "  if (row%d >= 0) {" s.id;
+      line "    %s = BigInt(row%d);" (local index)s.id;
+      line "    try {";statements ctx(depth+3)handler;
+      line "    } catch (rowError%d) { rt.error_mapper_failure(new rt.Fail(\"E_DIAGNOSTIC_ROW\", \"A diagnostic row failed.\"), rowError%d); }" s.id s.id;
+      line "    rt.diagnosticRowsThrow(%s);" (local diagnostic);
+      line "  }";line "  %s = null;"(local result);line "}"
+  | Protect {body;value;failure;handler;mapped;result}->
+    line "%stry {" at;block body;line "  %s = %s;" (local result)(local value);
+    line "} catch (error%d) {" s.id;
+    line "  if (error%d instanceof rt.Fail && error%d.statement === undefined) error%d.statement = at;" s.id s.id s.id;
+    line "  %s = rt.error_payload(error%d);" (local failure) s.id;
+    line "  try {";statements ctx(depth+2)handler;
+    line "  } catch (mapper%d) {" s.id;
+    line "    if (mapper%d instanceof rt.Fail && mapper%d.statement === undefined) mapper%d.statement = at;" s.id s.id s.id;
+    line "    rt.error_mapper_failure(error%d, mapper%d);" s.id s.id;line "  }";
+    line "  rt.error_rethrow(error%d, %s);" s.id(local mapped);line "}"
   | If {condition; yes; no} ->
       line "%sif (rt.truthy(%s)) {" at (local condition); block yes;
       if no = [] then line "}" else (line "} else {"; block no; line "}")

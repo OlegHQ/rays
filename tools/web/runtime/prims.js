@@ -10,7 +10,7 @@
 // | {list: type} | {record: [[name, type], ...]}; a mode is "clamped" | "unclamped".
 // A native failure is thrown as Fail with the same code.
 
-export class Fail extends Error { constructor(code, message, cause) { super(message); this.code = code;
+export class Fail extends Error { constructor(code, message, cause, hints = [], trace = []) { super(message); this.code = code; this.hints = hints; this.trace = trace;
   if (cause !== undefined) this.cause = cause; } }
 export class PArray { constructor(width, data) { this.width = width; this.data = data; } }
 // Reversible native byte transport: invalid UTF-8 bytes occupy DC80..DCFF.
@@ -52,7 +52,7 @@ export class TextArray {
   }
 }
 
-const err = (code, message, cause) => { throw new Fail(code, message, cause); };
+const err = (code, message, cause, hints, trace) => { throw new Fail(code, message, cause, hints, trace); };
 export const error = (code, message, cause) => typeof code === 'string' && typeof message === 'string'
   ? (cause === undefined || typeof cause === 'string' ? err(code, message, cause)
     : err('E_TYPE', 'error cause must be text.')) : err('E_TYPE', 'error needs text code and message.');
@@ -394,7 +394,7 @@ export function coerce(ty, v) {
   return v;
 }
 export const truthy = v => truth(v);
-export const fail = (code, message, cause) => err(code, message, cause);
+export const fail = (code, message, cause, hints, trace) => err(code, message, cause, hints, trace);
 
 // ---- packed arrays ----
 const MAX_LENGTH = 2n ** 54n - 1n; // Sys.max_floatarray_length
@@ -1334,4 +1334,74 @@ export function sop_with_group(geometry, mask, name, owner = 'point', order) {
   const at = groups.findIndex(group => group.get('name') === name && (owner === 'edge' || group.get('owner') === owner));
   if (at < 0) groups.push(group); else groups[at] = group;
   const result = new Map(geometry); result.set(key, groups); return result;
+}
+
+// Standalone region code cannot import Fail; its typed boundary restores the class.
+export function diagnosticError(error) {
+  if (error instanceof Fail || typeof error?.code !== 'string' || typeof error?.message !== 'string') return error;
+  const typed = new Fail(error.code, error.message, error.cause, error.hints, error.trace);
+  if (error.statement !== undefined) typed.statement = error.statement;
+  return typed;
+}
+// Mapping-only structured error scope. Cancelled and unrelated host exceptions pass through.
+const cancelledDiagnostic = error => error.code === 'cancelled' || error.code === 'E_CANCELLED';
+export function error_payload(error) {
+  if (!(error instanceof Fail) || cancelledDiagnostic(error)) throw error;
+  return new Map([['code', error.code], ['message', error.message],
+    ['cause', error.cause === undefined ? [] : [error.cause]]]);
+}
+const errorEnvelope = (original, mapped) => {
+  mapped.hints = original.hints; mapped.trace = original.trace;
+  if (mapped.statement === undefined) mapped.statement = original.statement;
+  return mapped;
+};
+export function error_mapper_failure(original, mapped) {
+  if (mapped instanceof Fail && !cancelledDiagnostic(mapped)) throw errorEnvelope(original, mapped);
+  throw mapped;
+}
+export function error_rethrow(original, mapped) {
+  if (!(mapped instanceof Map) || mapped.size !== 3 || typeof mapped.get('code') !== 'string'
+      || typeof mapped.get('message') !== 'string' || !Array.isArray(mapped.get('cause'))
+      || mapped.get('cause').length > 1 || mapped.get('cause').some(value => typeof value !== 'string'))
+    throw errorEnvelope(original, new Fail('E_DIAGNOSTIC_MAP',
+      'An error mapper returns code, message and zero or one text causes.', original.cause));
+  throw errorEnvelope(original, new Fail(mapped.get('code'), mapped.get('message'), mapped.get('cause')[0]));
+}
+
+// Diagnostic policy is host binding, never a workspace numeric argument.
+export function diagnosticFirst(rows, check = () => {}) {
+  if (!(rows instanceof PArray) || rows.width !== 1 || !(rows.data instanceof BigInt64Array))
+    err('E_DIAGNOSTIC_ROWS', 'Diagnostic rows require an integer 0/1 array.');
+  check(); let first = -1;
+  for (let i = 0; i < rows.data.length; i++) {
+    if ((i & 4095) === 0) check();
+    const value = rows.data[i];
+    if (value !== 0n && value !== 1n) err('E_DIAGNOSTIC_ROWS', 'Diagnostic row values must be 0 or 1.');
+    if (value === 1n && first < 0) first = i;
+  }
+  return first;
+}
+export function diagnosticHost({grain, check = () => {}}) {
+  if (typeof grain !== 'bigint' || grain <= 0n)
+    err('E_DIAGNOSTIC_CONTEXT', 'Diagnostic grain must be positive.');
+  return {
+    index(rows, policy) {
+      const first = diagnosticFirst(rows, check);
+      if (first < 0) err('E_DIAGNOSTIC_CONTEXT', 'Host diagnosis needs a failing row.');
+      if (policy === 'first') return BigInt(first);
+      if (policy !== 'range-last') err('E_DIAGNOSTIC_CONTEXT', 'Unknown host diagnostic policy.');
+      const start = BigInt(first), count = BigInt(rows.data.length);
+      const remaining = grain - start % grain;
+      const stop = Number(start + (remaining < count - start ? remaining : count - start));
+      let last = first;
+      for (let i = first + 1; i < stop; i++) {
+        if ((i & 4095) === 0) check();
+        if (rows.data[i] === 1n) last = i;
+      }
+      check(); return BigInt(last);
+    },
+  };
+}
+export function diagnosticRowsThrow(mapped) {
+  error_rethrow(new Fail('E_DIAGNOSTIC_ROW', 'A diagnostic row failed.'), mapped);
 }

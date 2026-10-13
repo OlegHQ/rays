@@ -75,6 +75,8 @@ let rec reads_names names (term : W.term) =
   | Vec ts | List_lit ts | Str ts | List_op (_, ts) | Hof (_, ts) -> any ts
   | Loop {accs; clauses; body; _} -> any (body :: fields (accs @ clauses))
   | State {init; step; _} -> any [init; step]
+  | With_error(a,b) -> any[a;b]
+  | Error_rows{rows=a;mapper=b;_} -> any[a;b]
   | If (c, a, b) -> any [c; a; b]
   | Cond (arms, d) -> any (d :: List.concat_map (fun (a, b) -> [a; b]) arms)
   | Case (s, arms, d) -> any (s :: d :: fields arms)
@@ -585,6 +587,8 @@ let lower ?(fusion = true) ?(dynamic = false)
       let children = match t.node with
         | W.Vec ts -> ts | Get (t, _) | Expanded {body = t; _} -> [t]
         | Bypass call -> Option.to_list (W.bypass_input call)
+        | With_error(a,b) -> [a;b]
+        | Error_rows{rows=a;mapper=b;_} -> [a;b]
         | If (a, b, c) -> [a;b;c] | Op {args; _} -> List.map snd args
         | Cond (arms, d) -> d :: List.concat_map (fun (a,b) -> [a;b]) arms
         | Case (s, arms, d) -> s :: d :: List.map snd arms

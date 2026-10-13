@@ -14,6 +14,8 @@ const [workersPath, goldenDir] = process.argv.slice(2);
 if (!workersPath || !goldenDir) { console.error('usage: node workers.mjs WORKERS_JS GOLDEN_DIR'); process.exit(2); }
 const { createPool, checkIsolation, CHUNK } = await import(pathToFileURL(resolve(workersPath)).href);
 
+const { Fail, error_payload } = await import(new URL('./prims.js', pathToFileURL(resolve(workersPath))).href);
+
 const failures = [];
 const check = (ok, what) => { if (!ok) failures.push(what); };
 
@@ -81,6 +83,28 @@ for (const [name, widths] of Object.entries(GOLDENS)) {
   const restored = pool.alloc(n);
   await pool.collect('noise', inputs, uniforms, [restored], n);
   check(bytes(restored).equals(bytes(expected)), 'retired region reloads on every worker');
+}
+// Both cutoff paths restore typed errors and preserve the worker envelope.
+for (const code of ['E_ARRAY_RANGE', 'E_CANCELLED']) {
+  const source = `function region(inputs, uniforms, outputs, start, stop) {
+    const failure = new Error('child 日本😀'); failure.code = '${code}';
+    failure.cause = '\udcff raw'; failure.hints = ['retained hint'];
+    failure.trace = [{node_id: 13n, label: 'child', operation: 'native.child'}]; throw failure; }`;
+  for (const [size, pool] of Object.entries(pools)) for (const count of [1000, 100003]) {
+    pool.load('diagnostic', source);
+    try { await pool.collect('diagnostic', [], [], [pool.alloc(count)], count);
+      check(false, `typed error absent workers=${size} n=${count}`); }
+    catch (error) {
+      check(error instanceof Fail && error.code === code && error.message === 'child 日本😀'
+        && error.cause === '\udcff raw' && error.hints?.[0] === 'retained hint'
+        && error.trace?.[0]?.node_id === 13n && error.trace?.[0]?.label === 'child'
+        && error.trace?.[0]?.operation === 'native.child', `typed envelope workers=${size} n=${count}`);
+      if (code === 'E_CANCELLED') {
+        try { error_payload(error); check(false, 'worker cancellation mapped'); }
+        catch (cancelled) { check(cancelled === error, 'worker cancellation identity'); }
+      }
+    }
+  }
 }
 for (const pool of Object.values(pools)) pool.close();
 

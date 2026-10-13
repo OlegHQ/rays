@@ -260,12 +260,38 @@ function checkCase(fn, exportName, expectedJson, c) {
   return d ? d : null;
 }
 
+// Test adapter for the future geometry host: grain is private context, never
+// an authored numeric operand. Actual checked raw geometry supplies the mask.
+function hostDiagnosticRows(geometry, context) {
+  const before = geometry.get('attributes')[0].get('values').data.slice();
+  const checked = prims.sop_attr_checked(geometry, 'raw', 'point', 'vec3');
+  const valid = checked.get('valid');
+  const flags = new PArray(1, BigInt64Array.from(valid.data, value => 1n - value));
+  const first = prims.diagnosticFirst(flags);
+  if (first < 0) return null;
+  const index = prims.diagnosticHost({grain: context.get('grain')}).index(flags, 'range-last');
+  const after = geometry.get('attributes')[0].get('values').data;
+  if (!before.every((value, i) => Object.is(value, after[i]))) throw new Error('diagnostic source mutation');
+  prims.diagnosticRowsThrow(new Map([
+    ['code', 'E_ROW'], ['message', `bad ${index}`], ['cause', [`raw 日本😀 ${index}`]],
+  ]));
+}
+{
+  const flags = new PArray(1, new BigInt64Array([1n, 0n, 2n]));
+  try { prims.diagnosticHost({grain: 97n}).index(flags, 'range-last'); throw new Error('malformed rows accepted'); }
+  catch (error) { if (!(error instanceof Fail) || error.code !== 'E_DIAGNOSTIC_ROWS') throw error; }
+  let checks = 0;
+  try { prims.diagnosticHost({grain: 97n, check() { if (++checks === 3) throw new Fail('cancelled', 'stop'); }})
+      .index(new PArray(1, new BigInt64Array(5001)), 'range-last'); throw new Error('cancel ignored'); }
+  catch (error) { if (!(error instanceof Fail) || error.code !== 'cancelled') throw error; }
+}
+
 // ---- driver ----
 const files = readdirSync(fixtureDir).filter(f => f.endsWith('.json')).sort();
 let cases = 0, failures = 0;
 for (const file of files) {
   const fixture = JSON.parse(readFileSync(join(fixtureDir, file), 'utf8'));
-  const fn = prims[fixture.export];
+  const fn = fixture.export === '$host_diagnostic_rows' ? hostDiagnosticRows : prims[fixture.export];
   if (typeof fn !== 'function') {
     console.log(`${file}: no export named ${fixture.export}`);
     failures++;
@@ -291,3 +317,25 @@ if (failures > 0) {
   process.exit(1);
 }
 console.log(`ok ${cases} cases, ${files.length} primitives`);
+
+// Structured error boundary metadata and mapper failure lifetime.
+{
+  const original = new prims.Fail('E_CHILD', 'child 日本😀', '\udcff cause', ['hint'],
+    [{node_id: 13, label: 'child', operation: 'native.child'}]);
+  const payload = prims.error_payload(original);
+  try { prims.error_rethrow(original, payload); throw new Error('mapping did not throw'); }
+  catch (mapped) {
+    if (!(mapped instanceof prims.Fail) || mapped.code !== original.code || mapped.message !== original.message
+        || mapped.cause !== original.cause || mapped.hints !== original.hints || mapped.trace !== original.trace)
+      throw new Error('error envelope was lost');
+  }
+  for (const code of ['cancelled', 'E_CANCELLED']) {
+    const cancellation = new prims.Fail(code, 'cancel');
+    try { prims.error_payload(cancellation); throw new Error('cancellation was mapped'); }
+    catch (actual) { if (actual !== cancellation) throw actual; }
+  }
+  try { prims.error_rethrow(original, new Map([['code','E_BAD'],['message','bad'],['cause',['a','b']]]));
+    throw new Error('malformed mapping did not throw'); }
+  catch (actual) { if (actual.code !== 'E_DIAGNOSTIC_MAP' || actual.cause !== original.cause
+      || actual.trace !== original.trace) throw actual; }
+}

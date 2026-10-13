@@ -74,6 +74,8 @@ let qualify_workspace ?record ?inputs ?observe (workspace : W.t) =
           |> List.sort_uniq compare in
         visit (match owners with [owner] -> owner | _ -> owner) body) body
     | State {init;step;zone;_} -> visit owner init; visit zone step
+    | With_error(a,b) -> all[a;b]
+    | Error_rows{rows=a;mapper=b;_} -> all[a;b]
     | If (c,a,b) -> all [c;a;b]
     | Cond (arms,d) -> List.iter (fun (a,b) -> all [a;b]) arms; visit owner d
     | Case (s,arms,d) -> visit owner s; fields arms; visit owner d
@@ -713,6 +715,8 @@ module Executor = struct
       | Get (term, _) | Expanded {body = term; _} -> source r term
       | Bypass call -> Option.bind (W.bypass_input call) (source r)
       | Let (bindings, result) -> children (result :: List.map snd bindings)
+      | With_error(a,b) -> children[a;b]
+      | Error_rows{rows=a;mapper=b;_} -> children[a;b]
       | If (a,b,c) -> children [a;b;c]
       | Cond (arms,default) -> children(default::List.concat_map(fun(a,b)->[a;b])arms)
       | Case (value,arms,default) -> children(value::default::List.map snd arms)

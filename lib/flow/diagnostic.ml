@@ -1,13 +1,14 @@
 type span = { start : int; finish : int }
 type severity = Error | Warning
 type position = { line : int; col : int }
+type trace = { node_id : int; label : string; operation : string }
 type t = { code : string; severity : severity; position : position option;
-  message : string; span : span option; cause : string option }
+  message : string; span : span option; cause : string option; hints : string list; trace : trace list }
 
-let error ?span ?position ?cause ~code message =
-  {code; severity = Error; position; message; span; cause}
+let error ?span ?position ?cause ?(hints=[]) ?(trace=[]) ~code message =
+  {code; severity = Error; position; message; span; cause; hints; trace}
 let warning ?span ~code message =
-  {code; severity = Warning; position = None; message; span; cause=None}
+  {code; severity = Warning; position = None; message; span; cause=None; hints=[]; trace=[]}
 let to_string value = match value.position with
   | None -> value.code ^ ": " ^ value.message
   | Some position -> Printf.sprintf "%s at %d:%d: %s"

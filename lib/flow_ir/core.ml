@@ -63,6 +63,10 @@ and statement_node =
   | Draw of draw
   | Assign of int * expr
   | Reset_call of int
+  | Protect of { body : statement list; value : int; failure : int;
+      handler : statement list; mapped : int; result : int }
+  | Diagnose_rows of { rows : int; policy : Flow.Workspace.diagnostic_policy; index : int;
+      handler : statement list; diagnostic : int; result : int }
   | If of { condition : int; yes : statement list; no : statement list }
   | Iterate of { sequence : int; index : int; item : int; limit : int; body : statement list }
   | Counted of { first : int; last : int; count : int; index : int; item : int;
@@ -267,6 +271,13 @@ let pp fmt p =
       (match s.node with
       | Assign (n,e) -> local n; out " = "; expression e
       | Reset_call n -> out "call[%d] <- 0" n
+      | Protect {body;value;failure;handler;mapped;result}->
+          local result;out " = protect ";nested "body" body;out " value=";local value;
+          out " error=";local failure;out " ";nested "map" handler;out " value=";local mapped
+      | Diagnose_rows {rows;policy;index;handler;diagnostic;result}->
+          local result;out " = diagnose_rows ";local rows;out " policy=%s index="
+            (match policy with Flow.Workspace.First->"first"|Range_last->"range-last");local index;
+          out " ";nested "map" handler;out " diagnostic=";local diagnostic
       | If {condition;yes;no} -> out "if "; local condition; out " "; nested "then" yes;
           out " "; nested "else" no
       | Iterate {sequence;index;item;limit;body} -> out "iterate "; local sequence;

@@ -42,6 +42,8 @@ let free_names term =
         | State {binder; init; step; _} -> walk (pattern_names bound binder) (walk bound names init) step
         | Fn {capture = Some original; _} -> walk bound names original
         | Fn {params; body; _} -> walk (List.fold_left (fun bound (pattern, _) -> pattern_names bound pattern) bound params) names body
+        | With_error(a,b) -> all bound names[a;b]
+        | Error_rows{rows=a;mapper=b;_} -> all bound names[a;b]
         | If (condition, yes, no) -> all bound names [condition; yes; no]
         | Cond (arms, default) -> List.fold_left (fun names (test, body) -> walk bound (walk bound names test) body) (walk bound names default) arms
         | Case (subject, arms, default) -> fields bound (all bound names [subject; default]) arms
@@ -279,6 +281,32 @@ let case_matches sv lv =
 
 let add_values a b = Value.arith "sum" ( +. ) a b
 
+(* Diagnostic scopes execute even when a let binding's result is unused.
+   Defer the containing let, so cooking a static geometry result cannot prune
+   its validation. Functions themselves are values; inspect bodies at calls. *)
+let rec diagnostic_effect st env (term:W.term) =
+  let boundary=diagnostic_effect st env in
+  let any=List.exists boundary and fields xs=List.exists(fun(_,t)->boundary t)xs in
+  let named name=match Smap.find_opt name env with
+    |Some(Fn(Closure cl))->diagnostic_effect cl.at.st cl.env cl.body
+    |_->Option.fold ~none:false ~some:(fun(g:W.graph)->boundary g.body)(Hashtbl.find_opt st.defs name)in
+  match term.node with
+  | W.With_error _ | W.Error_rows _ -> true
+  | W.Call_fn{fn;args;body}->any args || Option.fold ~none:(named fn) ~some:boundary body
+  | W.Call{args;_} | W.Op{args;_} | W.Record args -> fields args
+  | W.Graph_ref{inputs;_}->fields inputs
+  | W.Vec ts | W.List_lit ts | W.Str ts | W.List_op(_,ts) | W.Hof(_,ts)->any ts
+  | W.Let(bindings,body)->List.exists(fun(_,t)->boundary t)bindings || boundary body
+  | W.Loop{accs;clauses;body;_}->List.exists(fun(_,t)->boundary t)(accs@clauses) || boundary body
+  | W.State{init;step;_}->any[init;step]
+  | W.If(a,b,c)->any[a;b;c]
+  | W.Cond(arms,default)->boundary default || List.exists(fun(a,b)->any[a;b])arms
+  | W.Case(value,arms,default)->any[value;default] || fields arms
+  | W.Get(value,_) | W.Expanded{body=value;_}->boundary value
+  | W.Bypass call->Option.fold ~none:false ~some:boundary(W.bypass_input call)
+  | W.Assoc(value,updates)->boundary value || fields updates
+  | W.Lit _ | W.Text _ | W.Nil | W.Time | W.Ref_binding _ | W.Fn_ref _ | W.Fn _ -> false
+
 let resolve_source resolve source =
   match resolve source with
   | Error (d : Diagnostic.t) -> raise_diagnostic d
@@ -475,6 +503,7 @@ and ev_raw c env (x : W.term) : value =
   | W.Let (binds, res) ->
       let env = List.fold_left (fun env (pat, (t : W.term)) ->
         let v = ev c env t in
+        let v=match v with Residual _ when diagnostic_effect c.st env t->concrete c v|_->v in
         let pfx = match t.path with
           | Some p -> List.filteri (fun i _ -> i < List.length p - 1) p | None -> [] in
         bind_pat c ~mk:(Some (fun n -> pfx @ [ n ])) ~whole:false pat v env) env binds in
@@ -498,6 +527,31 @@ and ev_raw c env (x : W.term) : value =
            | Some v -> v
            | None -> let v = state_data c (coerce_to x.ty (ev c env step)) in
                state.next <- Smap.add key v state.next; v)
+  | W.Error_rows{rows;policy;mapper}->
+      if c.st.time=None then raise Needs_t;
+      let value=concrete_data c(ev(sub c "0")env rows)in
+      Value.Private.diagnose_rows value
+        ~select:(fun rows first->match c.st.resolve,policy with
+          |None,W.First->first
+          |None,W.Range_last->fail "E_DIAGNOSTIC_CONTEXT" "Range-last diagnosis needs its native host."
+          |Some resolve,policy->
+              let policy=match policy with W.First->"first"|Range_last->"range-last" in
+              (match resolve_source resolve(Source("$core/diagnostic_index",Ty.Int,
+                ["rows",rows;"policy",Text policy]))with Int index->index
+                |_->fail "E_DIAGNOSTIC_CONTEXT" "Host diagnosis returns one integer row."))
+        ~map:(fun index->match concrete c(ev(sub c "1")env mapper)with
+          |Fn fn->concrete_data c(call_fn c fn[index])
+          |_->fail "E_DIAGNOSTIC_MAP" "A row mapper is a function.")
+  | W.With_error(protected,mapper) ->
+      if c.st.time=None then raise Needs_t;
+      Value.Private.with_error
+        ~protected:(fun()->let value=concrete_data c(ev (sub c "0") env protected) in
+          match value,c.st.resolve with
+          | Deferred(ty,_),Some resolve when Ty.is_cooked ty->
+              resolve_source resolve(Source("$core/complete",ty,["value",value]))
+          | Deferred(ty,_),None when Ty.is_cooked ty->fail "E_DATA_SOURCE" "A protected cooked result needs its host."
+          | _->value)
+        ~map:(fun diagnostic->match concrete c(ev (sub c "1") env mapper) with Fn fn->concrete_data c(call_fn c fn [diagnostic])|_->fail "E_DIAGNOSTIC_MAP" "An error mapper is a function.")
   | W.If (cnd, a, b) ->
       if truthy (concrete c (ev (sub c "if") env cnd)) then ev (sub c "then") env a
       else ev (sub c "else") env b
@@ -1119,6 +1173,8 @@ and term_dependent frame st env (term : W.term) =
   | W.Vec ts | W.List_lit ts | W.Str ts | W.List_op (_, ts) | W.Hof (_, ts) -> any ts
   | W.Let (bindings, body) -> any (List.map snd bindings) || term_dep body
   | W.Loop {accs; clauses; body; _} -> any (List.map snd (accs @ clauses)) || term_dep body
+  | W.With_error(a,b) -> any[a;b]
+  | W.Error_rows{rows=a;mapper=b;_} -> any[a;b]
   | W.If (c, a, b) -> any [c; a; b]
   | W.Cond (arms, d) -> any (d :: List.concat_map (fun (a, b) -> [a; b]) arms)
   | W.Case (s, arms, d) -> any (s :: d :: List.map snd arms)

@@ -74,6 +74,10 @@ and statement_node =
   | Draw of draw
   | Assign of int * expr
   | Reset_call of int
+  | Protect of { body : statement list; value : int; failure : int;
+      handler : statement list; mapped : int; result : int }
+  | Diagnose_rows of { rows : int; policy : Flow.Workspace.diagnostic_policy; index : int;
+      handler : statement list; diagnostic : int; result : int }
   | If of { condition : int; yes : statement list; no : statement list }
   | Iterate of { sequence : int; index : int; item : int; limit : int; body : statement list }
   | Counted of { first : int; last : int; count : int; index : int; item : int;

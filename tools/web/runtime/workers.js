@@ -11,6 +11,8 @@
 // Numeric outputs are SharedArrayBuffer-backed (`pool.alloc`). Immutable Text tables are staged once
 // per execution; workers return disjoint chunk-local string arrays into a fresh caller-owned output.
 
+import { diagnosticError } from './prims.js';
+
 export const CHUNK = 16 * 1024;
 
 // Plain message, no fallback: the page needs cross-origin isolation for SharedArrayBuffer.
@@ -40,7 +42,7 @@ listen(m => {
       const status = regions.get(m.id)(p.inputs, p.uniforms, outputs, m.start, m.stop, m.base);
       port.postMessage({ status, texts: outputs.map((o, i) => m.outputs[i] === null ? o : null) });
     }
-  } catch (error) { port.postMessage({ error: { message: error?.message ?? String(error), code: error?.code, cause: error?.cause } }); }
+  } catch (error) { port.postMessage({ error: { message: error?.message ?? String(error), code: error?.code, cause: error?.cause, hints: error?.hints, trace: error?.trace } }); }
 });`;
 
 // The one adapter: {post(message), onMessage(f), stop()}.
@@ -86,7 +88,8 @@ export async function createPool({ size = Math.max(1, (globalThis.navigator?.har
     collect(id, inputs, uniforms, outputs, count, skip = []) {
       const run = () => new Promise((resolve, reject) => {
         const chunks = Math.ceil(count / CHUNK);
-        if (chunks <= 1) return resolve(compiled.get(id)(inputs, uniforms, outputs, 0, count));
+        if (chunks <= 1) { try { return resolve(compiled.get(id)(inputs, uniforms, outputs, 0, count)); }
+          catch (error) { return reject(diagnosticError(error)); } }
         if (!outputs.every(o => Array.isArray(o) || o.buffer instanceof SharedArrayBuffer)) return reject(new TypeError('collect outputs must be pool.alloc arrays or Text arrays'));
         const ins = inputs.map(shared);
         const captures = uniforms.map(u => ArrayBuffer.isView(u) ? shared(u) : u);
@@ -111,8 +114,7 @@ export async function createPool({ size = Math.max(1, (globalThis.navigator?.har
             }
             if (--left === 0) {
               for (const s of slots) s.w.post({ op: 'release' });
-              if (failure) { const e = new Error(failure.message); if (failure.code !== undefined) e.code = failure.code;
-                if (failure.cause !== undefined) e.cause = failure.cause; reject(e); }
+              if (failure) reject(diagnosticError(Object.assign(new Error(failure.message), failure)));
               else resolve(status);
             } else feed(slot);
           };

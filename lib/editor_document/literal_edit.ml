@@ -44,6 +44,8 @@ let rec map_term f (term : W.term) =
     | State state -> State {state with init = go state.init; step = go state.step}
     | Loop loop -> Loop {loop with accs = List.map (fun (p,t) -> p, go t) loop.accs;
         clauses = List.map (fun (p,t) -> p, go t) loop.clauses; body = go loop.body}
+    | With_error(a,b) -> With_error(go a,go b)
+    | Error_rows scope -> Error_rows{scope with rows=go scope.rows;mapper=go scope.mapper}
     | If (a,b,c) -> If (go a, go b, go c)
     | Cond (arms, last) -> Cond (List.map (fun (a,b) -> go a, go b) arms, go last)
     | Case (value, arms, last) -> Case (go value, List.map (fun (a,b) -> a, go b) arms, go last)
@@ -74,6 +76,8 @@ let rec find_argument field id (term : W.term) =
         | Let (bindings, body) -> body :: List.map snd bindings
         | State state -> [state.init; state.step]
         | Loop loop -> loop.body :: List.map snd loop.accs @ List.map snd loop.clauses
+        | With_error(a,b) -> [a;b]
+        | Error_rows{rows=a;mapper=b;_} -> [a;b]
         | If (a,b,c) -> [a;b;c]
         | Cond (arms,last) -> last :: List.concat_map (fun (a,b) -> [a;b]) arms
         | Case (value,arms,last) -> value :: last :: List.map snd arms

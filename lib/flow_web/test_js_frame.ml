@@ -29,6 +29,13 @@ let expression name body =
   | E.Residual _ as v -> Some (lower_residual name v) | _ -> None
 let pick names list = List.map (fun n -> n, List.assoc n list) names
 
+let error_boundaries = [
+  "error_success", "(with_error 7 (fn [failure] (error \"E_UNTAKEN\" \"mapper never\")))";
+  "error_map", "(with_error (error \"E_CHILD\" \"child\" :cause \"日本😀\") (fn [failure] (assoc failure :code \"E_MAPPED\")))";
+  "error_mapper", "(with_error (error \"E_CHILD\" \"child\") (fn [failure] (error \"E_MAPPER\" \"mapper\")))";
+  "error_cancel", "(with_error (error \"E_CANCELLED\" \"cancel\") (fn [failure] (error \"E_WRONG\" \"never\")))";
+  "error_nested", "(with_error (with_error (error \"E_CHILD\" \"child\") (fn [failure] failure)) (fn [failure] (assoc failure :cause (list \"outer\"))))"
+]
 let values =
   List.map (fun (n, s) -> "control_" ^ n, tested n s) (pick ["vec2"; "cond"; "case-text"; "let-nested"; "local-fn"; "named-fn";
       "pattern-error"; "bypass"; "untaken-error"] Core_fixtures.control)
@@ -105,6 +112,8 @@ let coverage programs =
     | Draw d -> mark (match d with
         | C.Background _ -> "background" | Point _ -> "point" | Mark _ -> "mark" | Batch _ -> "batch" | Points _ -> "points"
         | Path _ -> "path" | Text_run _ -> "text" | Image _ -> "image" | Push _ -> "push" | Pop -> "pop")
+    | Protect {body;handler;_}->mark "protect";statements body;statements handler
+    | Diagnose_rows{handler;_}->mark "diagnose_rows";statements handler
     | If {yes; no; _} -> mark "if"; statements yes; statements no
     | Iterate {body; _} -> mark "iterate"; statements body
     | Counted {init; body; _} -> mark "counted"; statements init; statements body
@@ -236,6 +245,8 @@ let run_node cases =
 let rec has_invoke l = List.exists (fun (s : C.statement) -> match s.node with
   | Invoke _ -> true | If {yes; no; _} -> has_invoke yes || has_invoke no
   | Iterate {body; _} -> has_invoke body | Counted {init; body; _} -> has_invoke init || has_invoke body
+  | Protect {body;handler;_}->has_invoke body || has_invoke handler
+  | Diagnose_rows{handler;_}->has_invoke handler
   | State_read {init; _} -> has_invoke init | _ -> false) l
 
 (* prims.js has no packed form of sequence_build (core.md: a width allocates packed storage), so
@@ -261,7 +272,13 @@ let () =
       |Error actual,Error expected->assert(actual.code=expected.code && actual.message=expected.message)
       |_->assert false) case.lives;
     case)
-    ["(cross [t 0.3 -0.7] [t 0.3 -0.7])";
+[ {|(if (> t 0.)
+      (let* [unused (error_rows (array/int 2 1)
+        (fn [index] {:code "E_ROW" :message (str "bad " index) :cause (list (str "raw 日本😀 " index))}))] 0) 0)|};
+  {|(let* [unused (error_rows (array/int 0) (fn [index] (error "E_UNTAKEN" "mapper")))] 0)|};
+  {|(if (> t 0.) (let* [unused (error_rows (array/int 2 1)
+      (fn [index] (error "cancelled" "mapper cancel" :cause "raw cancel")))] 0) 0)|};
+  "(cross [t 0.3 -0.7] [t 0.3 -0.7])";
      "(let* [a [t 0.3 -0.7]] [(- (* a.y a.z) (* a.z a.y)) (- (* a.z a.x) (* a.x a.z)) (- (* a.x a.y) (* a.y a.x))])";
      "(text/blank? (if (> t 0.) \" \\t\\r\\n\" \" \"))";
      "(if (> t 0.) (error (str \"E_TEXT_\" (int t)) (str \"exact é日本😀 \" t) :cause (str \"reason 日本😀 \" t)) \"safe\")";
@@ -326,3 +343,19 @@ let () =
     if !failures <> [] then failwith (String.concat "\n" (List.rev !failures));
     Printf.printf "JS frames under node against Core_exec: %d programs, %d frames agree\n" (List.length cases) !compared
   end
+
+(* New structured control is checked semantically, without refreshing unrelated goldens. *)
+let ()=if node then begin
+  let cases=List.map(fun(name,body)->value_case name(wrapped name body))error_boundaries in
+  let produced=run_node cases in
+  List.iter(fun case->List.iteri(fun index expected->
+    let actual=List.assoc(case.name,index)produced in
+    if not(same_text actual expected)then failwith(case.name^": "^actual^" differs from "^expected))case.expected)cases
+end
+let ()=
+  match Some(wrapped "range-last-boundary"
+    {|(let* [unused (error_rows (array/int 2 1) (fn [index]
+        {:code "E_ROW" :message (str index) :cause (list)}) :policy "range-last")] 0)|})with
+  |Some(_,program)->(match Flow_web.Js.frame program with
+      |Error d->assert(d.code="E_WEB_SOURCE")|Ok _->assert false)
+  |None->assert false
