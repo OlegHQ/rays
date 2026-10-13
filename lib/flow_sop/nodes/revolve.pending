@@ -1,0 +1,432 @@
+; Whole Revolve draft. The OCaml kernel counts, plans and fills; here the same plan is
+; arrays. Source vertices carry rings (one point per angular sample, one for an on-axis
+; vertex); each selected curve emits rows, columns, surface cells and caps in that order.
+; Output primitives are described by (section, a, b), output corners are resolved from
+; them, and the geometry is rebuilt with sop/mesh and carried by sop/remap.
+; Sections: 0 row, 1 column, 2 surface cell, 3 start cap, 4 finish cap.
+; Arithmetic keeps the OCaml order; native arm64 fuses a*b+c with the right-hand product.
+
+; Distance between two points scaled by the largest component (robust_distance).
+(defn revolve_distance :context value [(a : vec3) (b : vec3)]
+  (let* [dx (- b.x a.x) dy (- b.y a.y) dz (- b.z a.z)
+         scale (max (abs dx) (max (abs dy) (abs dz)))
+         divisor (if (= scale 0.0) 1.0 scale)
+         x (/ dx divisor) y (/ dy divisor) z (/ dz divisor)]
+    (if (= scale 0.0) 0.0 (* scale (sqrt (fma z z (fma y y (* x x))))))))
+
+; Which of the four ring points p0..p3 forms corner c of a cell (see Revolve.run).
+(defn revolve_cell_corner :context value
+  [(cur_axis : int) (next_axis : int) (quads : int) (reverse : int) (part : int) (c : int)]
+  (cond (int/eq cur_axis 1) (if (int/eq c 0) 0 (int/add c 1))
+        (int/eq next_axis 1) c
+        (int/eq quads 1) c
+        (int/eq reverse 1) (if (int/eq part 0) (if (int/eq c 2) 3 c) (int/add c 1))
+        :else (if (int/eq part 0) c (if (int/eq c 0) 0 (int/add c 1)))))
+
+(defn revolve_valid :context value
+  [(revolve_type : text) (connectivity : text) (divisions : int) (start_angle : float)
+   (end_angle : float) (caps : bool) (uv_attribute : text)
+   (axis_x : float) (axis_y : float) (axis_z : float)]
+  (let* [closed_type (equal? revolve_type "Closed")
+         surface (or (equal? connectivity "Quads") (or (equal? connectivity "Triangles")
+                   (or (equal? connectivity "Alternating triangles")
+                       (equal? connectivity "Reverse triangles"))))
+         uv (text/trim uv_attribute)]
+    (and (int/ge divisions (if closed_type 3 1))
+      (and (not (and (= axis_x 0.0) (and (= axis_y 0.0) (= axis_z 0.0))))
+        (and (or closed_type (not (= start_angle end_angle)))
+          (and (or (not caps) (and closed_type surface))
+               (not (or (equal? uv "P") (equal? uv "N")))))))))
+
+(defnode sop/revolve :label "Revolve" :category ["Topology" "Surface"]
+  :validate (revolve_valid revolve_type connectivity divisions start_angle end_angle caps
+              uv_attribute axis_x axis_y axis_z)
+  :code "E_PARAM" :message "sop/revolve: invalid parameters"
+  [(in0 : geometry)
+   (group : text "" :label "Primitive group")
+   (revolve_type : text "Closed" :label "Revolve type" :choices ["Closed" "Open arc"])
+   (connectivity : text "Quads" :label "Connectivity"
+     :choices ["Points" "Rows" "Columns" "Rows and columns" "Quads" "Triangles"
+               "Alternating triangles" "Reverse triangles"])
+   (start_angle : float 0.0 :label "Start angle" :min -6.283185307179586 :max 6.283185307179586)
+   (end_angle : float 6.283185307179586 :label "End angle" :min -6.283185307179586 :max 6.283185307179586)
+   (reverse_cross_sections : bool false :label "Reverse cross sections")
+   (caps : bool false :label "End caps")
+   (cap_group : text "caps" :label "Cap group")
+   (uv_attribute : text "uv" :label "UV attribute")
+   (divisions : int 32 :label "Divisions" :min 2 :max 512 :hard_min 1)
+   (origin_x : float 0.0 :label "Origin X" :folder ["Axis" "Origin"] :min -100 :max 100 :vec3 ["origin" 0])
+   (origin_y : float 0.0 :label "Origin Y" :folder ["Axis" "Origin"] :min -100 :max 100 :vec3 ["origin" 1])
+   (origin_z : float 0.0 :label "Origin Z" :folder ["Axis" "Origin"] :min -100 :max 100 :vec3 ["origin" 2])
+   (axis_x : float 0.0 :label "Axis X" :folder ["Axis" "Direction"] :min -1 :max 1 :vec3 ["axis" 0])
+   (axis_y : float 1.0 :label "Axis Y" :folder ["Axis" "Direction"] :min -1 :max 1 :vec3 ["axis" 1])
+   (axis_z : float 0.0 :label "Axis Z" :folder ["Axis" "Direction"] :min -1 :max 1 :vec3 ["axis" 2])]
+  (let* [group_name (text/trim group)
+         found_group (or (text/blank? group)
+           (fold [found false] [name (sop/group_names in0 "" :owner "primitive")]
+             (or found (equal? name group_name))))]
+    (if (not found_group)
+      (error "missing_group" (str "revolve could not find primitive group " (text/repr group_name)))
+      (let* [closed_type (equal? revolve_type "Closed")
+             rows_mode (or (equal? connectivity "Rows") (equal? connectivity "Rows and columns"))
+             columns_mode (or (equal? connectivity "Columns") (equal? connectivity "Rows and columns"))
+             quads (equal? connectivity "Quads")
+             surface_mode (or quads (or (equal? connectivity "Triangles")
+               (or (equal? connectivity "Alternating triangles") (equal? connectivity "Reverse triangles"))))
+             points_mode (equal? connectivity "Points")
+             quads_flag (if quads 1 0)
+             reverse_flag (if reverse_cross_sections 1 0)
+             uv_name (text/trim uv_attribute)
+             has_uv (not (text/blank? uv_name))
+             cap_name (text/trim cap_group)
+             has_cap_group (and caps (not (text/blank? cap_name)))
+             ring (if closed_type divisions (int/add divisions 1))
+             span (if closed_type 6.283185307179586 (- end_angle start_angle))
+             ; Normalised axis, as the kernel scales by the largest component first.
+             axis_scale (max (abs axis_x) (max (abs axis_y) (abs axis_z)))
+             sx (/ axis_x axis_scale) sy (/ axis_y axis_scale) sz (/ axis_z axis_scale)
+             axis_length (sqrt (fma sz sz (fma sy sy (* sx sx))))
+             ax (/ sx axis_length) ay (/ sy axis_length) az (/ sz axis_length)
+             samples (array/range ring :type int)
+             angle_cos (exact (map (fn [(s : int)]
+               (cos (+ start_angle (/ (* span (float s)) (float divisions))))) samples))
+             angle_sin (exact (map (fn [(s : int)]
+               (sin (+ start_angle (/ (* span (float s)) (float divisions))))) samples))
+             ; ---- source topology, per vertex
+             primitives (sop/count in0 :primitives)
+             vertices (sop/count in0 :vertices)
+             point_total (sop/count in0 :points)
+             topology (sop/topology in0)
+             vertex_points topology.vertex_points
+             offsets topology.primitive_offsets
+             kinds topology.kinds
+             selection (if (text/blank? group_name) (array/int primitives 1)
+                         (sop/group in0 :name group_name :owner "primitive"))
+             vertex_range (array/range vertices :type int)
+             primitive_range (array/range primitives :type int)
+             vertex_marks (array/scatter_add (array/slice offsets 0 primitives)
+                            (array/int primitives 1) (int/add vertices 1))
+             vertex_cumulative (array/scan_sum vertex_marks)
+             owners (exact (map (fn [(v : int)] (int/sub (array/nth vertex_cumulative (int/add v 1)) 1))
+                      vertex_range))
+             position_data (sop/attr_checked in0 "P")
+             positions position_data.values
+             position_valid position_data.valid
+             chosen (exact (map (fn [(o : int)] (array/nth selection o)) owners))
+             vertex_position (exact (map (fn [(pt : int)] (array/nth positions pt)) vertex_points))
+             vertex_valid (exact (map (fn [(pt : int)] (array/nth position_valid pt)) vertex_points))
+             along (exact (map (fn [(p : vec3)]
+               (let* [rx (- p.x origin_x) ry (- p.y origin_y) rz (- p.z origin_z)]
+                 (fma rz az (fma ry ay (* rx ax))))) vertex_position))
+             radial (exact (map (fn [(p : vec3) (a : float)]
+               (let* [rx (- p.x origin_x) ry (- p.y origin_y) rz (- p.z origin_z) n (* -1.0 a)]
+                 [(fma n ax rx) (fma n ay ry) (fma n az rz)])) vertex_position along))
+             ring_base (exact (map (fn [(a : float)]
+               [(fma a ax origin_x) (fma a ay origin_y) (fma a az origin_z)]) along))
+             ring_cross (exact (map (fn [(q : vec3)]
+               [(fma (* -1.0 az) q.y (* ay q.z)) (fma (* -1.0 ax) q.z (* az q.x))
+                (fma (* -1.0 ay) q.x (* ax q.y))]) radial))
+             vertex_axis (exact (map (fn [(q : vec3) (c : int)]
+               (if (and (int/eq c 1)
+                        (= (max (abs q.x) (max (abs q.y) (abs q.z))) 0.0)) 1 0)) radial chosen))
+             ; ---- profile parameter along each curve
+             first_flags (exact (map (fn [(v : int) (o : int)]
+               (if (int/eq v (array/nth offsets o)) 1 0)) vertex_range owners))
+             edge_lengths (exact (map (fn [(v : int) (f : int)]
+               (revolve_distance (array/nth vertex_position (if (int/eq f 1) v (int/sub v 1)))
+                                 (array/nth vertex_position v))) vertex_range first_flags))
+             cumulative_length (exact (scan [acc 0.0] [v vertex_range]
+               (if (int/eq (array/nth first_flags v) 1) 0.0 (+ acc (array/nth edge_lengths v)))))
+             closing (exact (map (fn [(p : int)]
+               (let* [first (array/nth offsets p)
+                      size (int/sub (array/nth offsets (int/add p 1)) first)]
+                 (if (and (int/gt size 1) (int/eq (array/nth kinds p) 2))
+                   (revolve_distance (array/nth vertex_position (int/sub (int/add first size) 1))
+                                     (array/nth vertex_position first))
+                   0.0))) primitive_range))
+             totals (exact (map (fn [(p : int) (extra : float)]
+               (let* [first (array/nth offsets p)
+                      size (int/sub (array/nth offsets (int/add p 1)) first)]
+                 (if (int/gt size 0)
+                   (+ (array/nth cumulative_length (int/sub (int/add first size) 1)) extra)
+                   0.0))) primitive_range closing))
+             profile_u (exact (map (fn [(c : float) (o : int)]
+               (let* [total (array/nth totals o)]
+                 (/ c (if (> total 0.0) total 1.0)))) cumulative_length owners))
+             vertex_u (exact (map (fn [(u : float)] (if reverse_cross_sections (- 1.0 u) u)) profile_u))
+             ; ---- input errors: first failing selected primitive wins
+             invalid_vertex (array/segment_sum (exact (map (fn [(valid : int) (c : int)]
+               (if (and (int/eq c 1) (int/eq valid 0)) 1 0)) vertex_valid chosen)) offsets)
+             zero_edges (array/segment_sum (exact (map (fn [(l : float) (f : int) (c : int)]
+               (if (and (int/eq c 1) (and (int/eq f 0) (= l 0.0))) 1 0))
+               edge_lengths first_flags chosen)) offsets)
+             codes (exact (map (fn [(p : int)]
+               (let* [first (array/nth offsets p)
+                      size (int/sub (array/nth offsets (int/add p 1)) first)
+                      kind (array/nth kinds p)
+                      invalid (array/nth invalid_vertex p) zero (array/nth zero_edges p)
+                      extra (array/nth closing p) total (array/nth totals p)]
+                 (cond (int/eq (array/nth selection p) 0) 0
+                       (int/eq kind 0) 1
+                       (int/lt size 2) 2
+                       (int/gt invalid 0) 3
+                       (or (int/gt zero 0) (and (int/eq kind 2) (= extra 0.0))) 4
+                       (= total 0.0) 5
+                       :else 0)))
+               primitive_range))
+             checked (error_rows (exact (map (fn [(code : int)] (if (int/gt code 0) 1 0)) codes))
+               (fn [(index : int)]
+                 {:code "invalid_geometry" :message "revolve could not produce valid geometry"
+                  :cause (list (str "revolve [invalid_geometry]: Rdk_mesh.Revolve.revolve: primitive " index " "
+                    (case (array/nth codes index)
+                      1 "is a polygon, not a polygon curve"
+                      2 "has fewer than two vertices"
+                      3 "contains a non-finite or unrepresentable position"
+                      4 "contains a zero-length or non-finite edge"
+                      :else "has zero or non-finite length")))}) :policy "first")
+             ; ---- rings: points of every source vertex
+             ring_counts (exact (map (fn [(c : int) (axis : int)]
+               (if (int/eq c 1) (if (int/eq axis 1) 1 ring) 0)) chosen vertex_axis))
+             ring_offsets (array/scan_sum ring_counts)
+             point_count (array/nth ring_offsets vertices)
+             point_marks (array/scatter_add (array/slice ring_offsets 0 vertices)
+                           (array/int vertices 1) (int/add point_count 1))
+             point_cumulative (array/scan_sum point_marks)
+             point_owner (exact (map (fn [(k : int)] (int/sub (array/nth point_cumulative (int/add k 1)) 1))
+                           (array/range point_count :type int)))
+             point_map (exact (map (fn [(v : int)] (array/nth vertex_points v)) point_owner))
+             point_local (exact (map (fn [(k : int) (v : int)] (int/sub k (array/nth ring_offsets v)))
+                           (array/range point_count :type int) point_owner))
+             ring_positions (exact (map (fn [(v : int) (local : int)]
+               (let* [single (int/eq (array/nth ring_counts v) 1)
+                      cosine (if single 1.0 (array/nth angle_cos local))
+                      sine (if single 0.0 (array/nth angle_sin local))
+                      b (array/nth ring_base v) q (array/nth radial v) k (array/nth ring_cross v)]
+                 [(fma k.x sine (fma q.x cosine b.x))
+                  (fma k.y sine (fma q.y cosine b.y))
+                  (fma k.z sine (fma q.z cosine b.z))])) point_owner point_local))
+             built (if points_mode
+               (let* [point_uv_x (exact (map (fn [(v : int)] (array/nth vertex_u v)) point_owner))
+             point_uv_y (exact (map (fn [(v : int) (l : int)]
+               (if (int/eq (array/nth ring_counts v) 1) 0.0 (/ (float l) (float divisions))))
+               point_owner point_local))]
+                 {:target (sop/mesh :points ring_positions :vertex_points (array/int 0)
+                            :primitive_offsets (array/int 1) :kinds (array/int 0))
+                  :vertex_map (array/int 0) :primitive_map (array/int 0)
+                  :uv_x point_uv_x :uv_y point_uv_y :cap_flags (array/int 0)})
+               (let* [
+; ---- per slot (logical position along a curve): the actual vertex and its edge
+             slot_first (exact (map (fn [(o : int)] (array/nth offsets o)) owners))
+             slot_size (exact (map (fn [(o : int)]
+               (int/sub (array/nth offsets (int/add o 1)) (array/nth offsets o))) owners))
+             slot_local (exact (map (fn [(v : int) (f : int)] (int/sub v f)) vertex_range slot_first))
+             slot_actual (exact (map (fn [(v : int) (f : int) (z : int)]
+               (if reverse_cross_sections (int/sub (int/add (int/mul 2 f) (int/sub z 1)) v) v))
+               vertex_range slot_first slot_size))
+             slot_next (exact (map (fn [(f : int) (z : int) (l : int)]
+               (let* [n (int/add f (int/mod (int/add l 1) z))]
+                 (if reverse_cross_sections (int/sub (int/add (int/mul 2 f) (int/sub z 1)) n) n)))
+               slot_first slot_size slot_local))
+             slot_cur_axis (exact (map (fn [(a : int)] (array/nth vertex_axis a)) slot_actual))
+             slot_next_axis (exact (map (fn [(a : int)] (array/nth vertex_axis a)) slot_next))
+             slot_mult (exact (map (fn [(c : int) (n : int)]
+               (if (or (int/eq c 1) (or (int/eq n 1) quads)) 1 2)) slot_cur_axis slot_next_axis))
+             slot_cells (exact (map (fn [(v : int)]
+               (let* [c (array/nth slot_cur_axis v) n (array/nth slot_next_axis v) m (array/nth slot_mult v)
+                      l (array/nth slot_local v) z (array/nth slot_size v) o (array/nth owners v)]
+               (if (and surface_mode
+                        (and (int/eq (array/nth selection o) 1)
+                          (and (or (int/lt l (int/sub z 1)) (int/eq (array/nth kinds o) 2))
+                               (not (and (int/eq c 1) (int/eq n 1))))))
+                 (int/mul divisions m) 0))) vertex_range))
+             slot_rows (exact (map (fn [(a : int) (c : int)]
+               (if (and rows_mode (and (int/eq c 1) (int/eq (array/nth vertex_axis a) 0))) 1 0))
+               slot_actual chosen))
+             ; ---- per source primitive: counts of each section
+             row_counts (array/segment_sum slot_rows offsets)
+             cell_counts (array/segment_sum slot_cells offsets)
+             column_counts (exact (map (fn [(s : int)]
+               (if (and columns_mode (int/eq s 1)) ring 0)) selection))
+             start_open (exact (map (fn [(p : int)]
+               (let* [first (array/nth offsets p)
+                      size (int/sub (array/nth offsets (int/add p 1)) first)]
+                 (if (and caps (and (int/eq (array/nth selection p) 1)
+                          (and (int/eq (array/nth kinds p) 1) (int/gt size 0))))
+                   (if (int/eq (array/nth vertex_axis (array/nth slot_actual first)) 0) 1 0) 0)))
+               primitive_range))
+             finish_open (exact (map (fn [(p : int)]
+               (let* [first (array/nth offsets p)
+                      size (int/sub (array/nth offsets (int/add p 1)) first)]
+                 (if (and caps (and (int/eq (array/nth selection p) 1)
+                          (and (int/eq (array/nth kinds p) 1) (int/gt size 0))))
+                   (if (int/eq (array/nth vertex_axis
+                         (array/nth slot_actual (int/sub (int/add first size) 1))) 0) 1 0) 0)))
+               primitive_range))
+             rows_columns (exact (map (fn [(r : int) (c : int)] (int/add r c)) row_counts column_counts))
+             cells_start (exact (map (fn [(c : int) (a : int)] (int/add c a)) cell_counts start_open))
+             totals_out (exact (map (fn [(rc : int) (ca : int) (f : int)] (int/add (int/add rc ca) f))
+               rows_columns cells_start finish_open))
+             primitive_bases (array/scan_sum totals_out)
+             row_bases (array/scan_sum row_counts)
+             cell_bases (array/scan_sum cell_counts)
+             row_list (array/compact slot_rows)
+             cell_offsets (array/scan_sum slot_cells)
+             cell_total (array/nth cell_offsets vertices)
+             cell_marks (array/scatter_add (array/slice cell_offsets 0 vertices)
+                          (array/int vertices 1) (int/add cell_total 1))
+             cell_cumulative (array/scan_sum cell_marks)
+             ; ---- output primitives
+             primitive_total (array/nth primitive_bases primitives)
+             primitive_marks (array/scatter_add (array/slice primitive_bases 0 primitives)
+                               (array/int primitives 1) (int/add primitive_total 1))
+             primitive_cumulative (array/scan_sum primitive_marks)
+             out_range (array/range primitive_total :type int)
+             out_source (exact (map (fn [(i : int)]
+               (int/sub (array/nth primitive_cumulative (int/add i 1)) 1)) out_range))
+             out_local (exact (map (fn [(i : int) (p : int)] (int/sub i (array/nth primitive_bases p)))
+                         out_range out_source))
+             out_section (exact (map (fn [(l : int) (p : int)]
+               (let* [rows (array/nth row_counts p) columns (array/nth column_counts p)
+                      cells (array/nth cell_counts p)]
+                 (cond (int/lt l rows) 0
+                       (int/lt l (int/add rows columns)) 1
+                       (int/lt l (int/add rows (int/add columns cells))) 2
+                       :else (if (and (int/eq l (int/add rows (int/add columns cells)))
+                                      (int/eq (array/nth start_open p) 1)) 3 4))))
+               out_local out_source))
+             ; a: slot (row, cell), sample (column) or vertex (cap); b: cell index within its edge
+             out_cell (exact (map (fn [(l : int) (p : int) (sec : int)]
+               (if (int/eq sec 2)
+                 (int/add (array/nth cell_bases p)
+                   (int/sub l (int/add (array/nth row_counts p) (array/nth column_counts p))))
+                 0)) out_local out_source out_section))
+             out_slot (exact (map (fn [(i : int)]
+               (let* [l (array/nth out_local i) p (array/nth out_source i)
+                      sec (array/nth out_section i) g (array/nth out_cell i)]
+               (cond (int/eq sec 0) (array/nth row_list (int/add (array/nth row_bases p) l))
+                     (int/eq sec 1) (int/sub l (array/nth row_counts p))
+                     (int/eq sec 2) (int/sub (array/nth cell_cumulative (int/add g 1)) 1)
+                     (int/eq sec 3) (array/nth slot_actual (array/nth offsets p))
+                     :else (array/nth slot_actual (int/sub (array/nth offsets (int/add p 1)) 1))))) out_range))
+             out_within (exact (map (fn [(sec : int) (g : int) (s : int)]
+               (if (int/eq sec 2) (int/sub g (array/nth cell_offsets s)) 0))
+               out_section out_cell out_slot))
+             out_sizes (exact (map (fn [(sec : int) (a : int) (p : int)]
+               (cond (int/eq sec 0) ring
+                     (int/eq sec 1) (array/nth slot_size (array/nth offsets p))
+                     (int/eq sec 2) (if (and quads (and (int/eq (array/nth slot_cur_axis a) 0)
+                                                        (int/eq (array/nth slot_next_axis a) 0))) 4 3)
+                     :else divisions))
+               out_section out_slot out_source))
+             out_kinds (exact (map (fn [(sec : int) (p : int)]
+               (cond (int/eq sec 0) (if closed_type 2 1)
+                     (int/eq sec 1) (if (int/eq (array/nth kinds p) 2) 2 1)
+                     :else 0)) out_section out_source))
+             out_offsets (array/scan_sum out_sizes)
+             corner_total (array/nth out_offsets primitive_total)
+             corner_marks (array/scatter_add (array/slice out_offsets 0 primitive_total)
+                            (array/int primitive_total 1) (int/add corner_total 1))
+             corner_cumulative (array/scan_sum corner_marks)
+             corner_range (array/range corner_total :type int)
+             corner_prim (exact (map (fn [(j : int)]
+               (int/sub (array/nth corner_cumulative (int/add j 1)) 1)) corner_range))
+             corner_index (exact (map (fn [(j : int) (i : int)] (int/sub j (array/nth out_offsets i)))
+                            corner_range corner_prim))
+             ; Surface cell, per output primitive: side d, which half (part) of a split cell,
+             ; the alternating-reverse flag and the axis flags of its edge, packed into flags.
+             out_d (exact (map (fn [(i : int)]
+               (if (int/eq (array/nth out_section i) 2)
+                 (int/shr (array/nth out_within i) (int/sub (array/nth slot_mult (array/nth out_slot i)) 1)) 0))
+               out_range))
+             out_flags (exact (map (fn [(i : int)]
+               (if (int/eq (array/nth out_section i) 2)
+                 (let* [s (array/nth out_slot i) d (array/nth out_d i)
+                        part (int/and (array/nth out_within i) (int/sub (array/nth slot_mult s) 1))
+                        rev (if (or (equal? connectivity "Reverse triangles")
+                                    (and (equal? connectivity "Alternating triangles")
+                                         (int/eq (int/and (int/add (array/nth slot_local s) d) 1) 1))) 1 0)]
+                   (int/add (int/add part (int/mul rev 2))
+                            (int/add (int/mul (array/nth slot_cur_axis s) 4)
+                                     (int/mul (array/nth slot_next_axis s) 8))))
+                 0)) out_range))
+             corner_d (exact (map (fn [(i : int)] (array/nth out_d i)) corner_prim))
+             corner_pi (exact (map (fn [(c : int) (i : int)]
+               (if (int/eq (array/nth out_section i) 2)
+                 (let* [f (array/nth out_flags i)]
+                   (revolve_cell_corner (int/and (int/shr f 2) 1) (int/shr f 3) quads_flag
+                     (int/and (int/shr f 1) 1) (int/and f 1) c))
+                 0)) corner_index corner_prim))
+             corner_side (exact (map (fn [(pidx : int) (d : int)]
+               (if (or (int/eq pidx 0) (int/eq pidx 3)) d
+                 (if closed_type (int/mod (int/add d 1) ring) (int/add d 1)))) corner_pi corner_d))
+             corner_vertex (exact (map (fn [(c : int) (i : int) (pidx : int)]
+               (let* [sec (array/nth out_section i) a (array/nth out_slot i)
+                      p (array/nth out_source i)]
+                 (cond (int/eq sec 0) (array/nth slot_actual a)
+                       (int/eq sec 1) (array/nth slot_actual (int/add (array/nth offsets p) c))
+                       (int/eq sec 2) (if (int/lt pidx 2) (array/nth slot_actual a) (array/nth slot_next a))
+                       :else a)))
+               corner_index corner_prim corner_pi))
+             corner_sample (exact (map (fn [(c : int) (i : int) (side : int)]
+               (let* [sec (array/nth out_section i)]
+                 (cond (int/eq sec 0) c
+                       (int/eq sec 1) (array/nth out_slot i)
+                       (int/eq sec 2) side
+                       (int/eq sec 3) c
+                       :else (int/sub (int/sub divisions 1) c))))
+               corner_index corner_prim corner_side))
+             corner_points (exact (map (fn [(w : int) (sample : int)]
+               (if (int/eq (array/nth ring_counts w) 1) (array/nth ring_offsets w)
+                 (int/add (array/nth ring_offsets w) sample))) corner_vertex corner_sample))
+             corner_uv_u (exact (map (fn [(i : int) (w : int) (sample : int)]
+               (if (int/ge (array/nth out_section i) 3)
+                 (+ 0.5 (* 0.5 (array/nth angle_cos sample)))
+                 (array/nth vertex_u w))) corner_prim corner_vertex corner_sample))
+             corner_vnum (exact (map (fn [(pidx : int) (d : int) (sample : int)]
+               (if (or (int/eq pidx 1) (int/eq pidx 2)) (int/add d 1) d)) corner_pi corner_d corner_sample))
+             corner_uv_v (exact (map (fn [(i : int) (n : int) (sample : int)]
+               (let* [sec (array/nth out_section i)]
+                 (cond (int/ge sec 3) (+ 0.5 (* 0.5 (array/nth angle_sin sample)))
+                       (int/eq sec 2) (/ (float n) (float divisions))
+                       :else (/ (float sample) (float divisions)))))
+               corner_prim corner_vnum corner_sample))
+                      target (sop/mesh :points ring_positions :vertex_points corner_points
+                        :primitive_offsets out_offsets :kinds out_kinds)]
+                 {:target target :vertex_map corner_vertex :primitive_map out_source
+                  :uv_x corner_uv_u :uv_y corner_uv_v
+                  :cap_flags (exact (map (fn [(sec : int)] (if (int/ge sec 3) 1 0)) out_section))}))
+             ; ---- payload: source attributes and groups carried through the maps
+             uv_owner (if points_mode "point" "vertex")
+             without_normals (sop/delete_attr (sop/delete_attr in0 "N" :owner "point") "N" :owner "vertex")
+             ; A blank UV name deletes the already-removed normals again: no change.
+             source_clean (fold [state without_normals] [name (list (if has_uv uv_name "N"))]
+               (sop/delete_attr state (text/glob_literal name) :owner uv_owner))
+             edge_group_count (array/count (sop/group_names in0 "" :owner "edge"))
+             source_edges (sop/adjacency in0)
+             target_edges (sop/adjacency built.target)
+             key_base (int/add point_total 1)
+             source_keys (exact (map (fn [(a : int) (b : int)]
+               (int/add (int/mul (if (int/lt a b) a b) key_base) (if (int/lt a b) b a)))
+               source_edges.edge_a source_edges.edge_b))
+             edge_queries (exact (map (fn [(a : int) (b : int)]
+               (let* [pa (array/nth point_map a) pb (array/nth point_map b)]
+                 (if (int/eq pa pb) -1
+                   (int/add (int/mul (if (int/lt pa pb) pa pb) key_base) (if (int/lt pa pb) pb pa)))))
+               target_edges.edge_a target_edges.edge_b))
+             edge_found (array/index_of source_keys edge_queries)
+             edge_has (exact (map (fn [(e : int)] (if (int/ge e 0) 1 0)) edge_found))
+             edge_values (exact (map (fn [(e : int)] (array/nth edge_found e)) (array/compact edge_has)))
+             mapped (if (int/gt edge_group_count 0)
+               (sop/remap source_clean built.target :points point_map :vertices built.vertex_map
+                 :primitives built.primitive_map :positions "target"
+                 :edges {:offsets (array/scan_sum edge_has) :values edge_values})
+               (sop/remap source_clean built.target :points point_map :vertices built.vertex_map
+                 :primitives built.primitive_map :positions "target"))
+             with_uv (if has_uv
+               (sop/with_attr mapped uv_name {:x built.uv_x :y built.uv_y}
+                 :owner uv_owner :type vec2)
+               mapped)]
+        (if has_cap_group
+          (sop/with_group with_uv built.cap_flags
+            :name cap_name :owner "primitive")
+          with_uv)))))

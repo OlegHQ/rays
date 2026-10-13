@@ -1,0 +1,189 @@
+; Whole Edge Transport Curves draft. Every selected curve is walked from its root in
+; direction order; the walk is a reset-at-curve-start scan over "slots" (curve, ordinal),
+; so the native sequential per-curve loop becomes one ordered scan. The result of each
+; element is its last write, as in the native loop (repeated points inside one curve).
+
+; Native edge_length: coordinates scaled by the largest magnitude of the six, then
+; scale * sqrt(dx*dx + dy*dy + dz*dz) with the arm64 contraction (right product fused).
+(defn edge_transport_length :context value [(a : vec3) (b : vec3)]
+  (let* [scale (max (max (max (abs a.x) (abs b.x)) (max (abs a.y) (abs b.y)))
+                    (max (abs a.z) (abs b.z)))
+         divisor (if (= scale 0.0) 1.0 scale)
+         dx (- (/ b.x divisor) (/ a.x divisor))
+         dy (- (/ b.y divisor) (/ a.y divisor))
+         dz (- (/ b.z divisor) (/ a.z divisor))]
+    (if (= scale 0.0) 0.0 (* scale (sqrt (fma dz dz (fma dy dy (* dx dx))))))))
+
+(defnode sop/edge_transport_curves :label "Edge Transport Curves" :category ["Attribute" "Transport"]
+  :validate (and (not (text/blank? attribute))
+              (and (not (equal? attribute "P"))
+                   (or (equal? operation "Total") (not (or integrate_constant scale_by_edge_length)))))
+  :code "E_PARAM" :message "sop/edge_transport_curves: invalid parameters"
+  [(in0 : geometry)
+   (attribute : text "value" :label "Attribute")
+   (primitive_group : text "" :label "Primitive group")
+   (owner : text "Point" :label "Attribute owner" :choices ["Point" "Vertex"])
+   (direction : text "Forward" :label "Direction" :choices ["Forward" "Backward"])
+   (operation : text "Transport" :label "Operation"
+     :choices ["Transport" "From root" "Total" "Maximum" "Minimum"])
+   (root_value : text "Zero" :label "Root value" :choices ["Zero" "Hold"])
+   (integrate_constant : bool false :label "Integrate constant")
+   (scale_by_edge_length : bool false :label "Scale by edge length")
+   (normalization : text "None" :label "Normalization" :choices ["None" "Per component" "Global"])]
+  (let* [group_name (text/trim primitive_group)
+         found_group (or (text/blank? group_name)
+           (fold [found false] [name (sop/group_names in0 "" :owner "primitive")]
+             (or found (equal? name group_name))))]
+    (if (not found_group)
+      (error "missing_group" (str "edge_transport_curves could not find primitive group " (text/repr group_name)))
+      (let* [primitives (sop/count in0 :primitives)
+             selection (if (text/blank? group_name) (array/int primitives 1)
+                         (sop/group in0 :name group_name :owner "primitive"))
+             selected_count (array/sum selection)
+             point_owner (equal? owner "Point")
+             owner_name (if point_owner "point" "vertex")
+             present (sop/has_attr in0 attribute :owner owner_name)]
+        (cond
+          (int/eq selected_count 0) in0
+          (and (not integrate_constant) (not present)) in0
+          (and (not integrate_constant) (not (sop/has_attr in0 attribute :owner owner_name :type float)))
+            (error "invalid_edge_transport" "edge_transport_curves could not produce valid geometry"
+              :cause "edge_transport_curves [invalid_edge_transport]: Edge Transport Each Curve requires a scalar float attribute")
+          :else
+            (let* [vertices (sop/count in0 :vertices)
+                   point_total (sop/count in0 :points)
+                   domain (if point_owner point_total vertices)
+                   topology (sop/topology in0)
+                   vertex_points topology.vertex_points
+                   offsets topology.primitive_offsets
+                   kinds topology.kinds
+                   vertex_range (array/range vertices :type int)
+                   primitive_range (array/range primitives :type int)
+                   marks (array/scatter_add (array/slice offsets 0 primitives)
+                           (array/int primitives 1) (int/add vertices 1))
+                   cumulative (array/scan_sum marks)
+                   owners (exact (map (fn [(v : int)] (int/sub (array/nth cumulative (int/add v 1)) 1))
+                            vertex_range))
+                   chosen (exact (map (fn [(o : int)] (array/nth selection o)) owners))
+                   ; ---- a point shared by two selected curves is refused (n*sum(c^2) = sum(c)^2 iff one curve)
+                   use_count (array/scatter_add vertex_points chosen point_total)
+                   use_sum (array/scatter_add vertex_points
+                             (exact (map (fn [(o : int) (c : int)] (int/mul c o)) owners chosen)) point_total)
+                   use_square (array/scatter_add vertex_points
+                                (exact (map (fn [(o : int) (c : int)] (int/mul c (int/mul o o))) owners chosen))
+                                point_total)
+                   shared (if (and point_owner (int/gt selected_count 1))
+                            (array/sum (map (fn [(n : int) (s : int) (q : int)]
+                              (if (int/eq (int/mul q n) (int/mul s s)) 0 1)) use_count use_sum use_square))
+                            0)
+                   checked (error_rows (array/int (if (int/gt shared 0) 1 0) 1)
+                     (fn [(index : int)]
+                       {:code "invalid_edge_transport"
+                        :message "edge_transport_curves could not produce valid geometry"
+                        :cause (list "edge_transport_curves [invalid_edge_transport]: Edge Transport Each Curve point is shared by selected primitives")})
+                     :policy "first")
+                   ; ---- root and step of each curve
+                   firsts (exact (map (fn [(p : int)] (array/nth offsets p)) primitive_range))
+                   sizes (exact (map (fn [(p : int)]
+                     (int/sub (array/nth offsets (int/add p 1)) (array/nth offsets p))) primitive_range))
+                   lowest (array/segment_min vertex_points offsets)
+                   lowest_vertex (array/segment_min (exact (map (fn [(v : int) (o : int)]
+                     (if (int/eq (array/nth vertex_points v) (array/nth lowest o)) v vertices))
+                     vertex_range owners)) offsets)
+                   forward_root (exact (map (fn [(p : int)]
+                     (let* [first (array/nth firsts p) size (array/nth sizes p)]
+                       (if (int/eq (array/nth kinds p) 1)
+                         (if (int/le (array/nth vertex_points first)
+                                     (array/nth vertex_points (int/sub (int/add first size) 1))) 0 (int/sub size 1))
+                         (int/sub (array/nth lowest_vertex p) first)))) primitive_range))
+                   forward_step (exact (map (fn [(p : int)]
+                     (let* [first (array/nth firsts p) size (array/nth sizes p)
+                            root (array/nth forward_root p)]
+                       (if (int/eq (array/nth kinds p) 1)
+                         (if (int/eq root 0) 1 -1)
+                         (if (int/le size 2) 1
+                           (if (int/le (array/nth vertex_points (int/add first (int/mod (int/add root 1) size)))
+                                       (array/nth vertex_points (int/add first (int/mod (int/add root (int/sub size 1)) size))))
+                             1 -1))))) primitive_range))
+                   backward (equal? direction "Backward")
+                   walk_root (exact (map (fn [(p : int)]
+                     (if (and backward (int/eq (array/nth kinds p) 1))
+                       (int/sub (int/sub (array/nth sizes p) 1) (array/nth forward_root p))
+                       (array/nth forward_root p))) primitive_range))
+                   walk_step (exact (map (fn [(p : int)]
+                     (if backward (int/sub 0 (array/nth forward_step p)) (array/nth forward_step p)))
+                     primitive_range))
+                   ; ---- slots: ordinal k of curve p lives at index first + k
+                   slot_vertex (exact (map (fn [(s : int) (o : int)]
+                     (let* [first (array/nth firsts o) size (array/nth sizes o)
+                            at (int/add (array/nth walk_root o) (int/mul (array/nth walk_step o) (int/sub s first)))]
+                       (int/add first (int/mod (int/add at size) size)))) vertex_range owners))
+                   slot_element (exact (map (fn [(v : int)]
+                     (if point_owner (array/nth vertex_points v) v)) slot_vertex))
+                   slot_first (exact (map (fn [(s : int) (o : int)]
+                     (if (int/eq s (array/nth firsts o)) 1 0)) vertex_range owners))
+                   source (if integrate_constant (array/float domain 1.0)
+                            (sop/attr in0 attribute :owner owner_name :type float))
+                   position_data (sop/attr_checked in0 "P")
+                   positions position_data.values
+                   slot_input (exact (map (fn [(e : int)] (array/nth source e)) slot_element))
+                   total_walk (exact (scan [acc 0.0] [s vertex_range]
+                     (if (int/eq (array/nth slot_first s) 1) 0.0
+                       (fma (array/nth slot_input (int/sub s 1))
+                            (if scale_by_edge_length
+                              (edge_transport_length
+                                (array/nth positions (array/nth vertex_points (array/nth slot_vertex (int/sub s 1))))
+                                (array/nth positions (array/nth vertex_points (array/nth slot_vertex s))))
+                              1.0)
+                            acc))))
+                   maximum_walk (exact (scan [acc 0.0] [s vertex_range]
+                     (if (int/eq (array/nth slot_first s) 1) (array/nth slot_input s)
+                       (if (> (array/nth slot_input s) acc) (array/nth slot_input s) acc))))
+                   minimum_walk (exact (scan [acc 0.0] [s vertex_range]
+                     (if (int/eq (array/nth slot_first s) 1) (array/nth slot_input s)
+                       (if (< (array/nth slot_input s) acc) (array/nth slot_input s) acc))))
+                   root_input (exact (map (fn [(o : int)] (array/nth slot_input (array/nth firsts o))) owners))
+                   slot_value (cond
+                     (equal? operation "Total") total_walk
+                     (equal? operation "Maximum") maximum_walk
+                     (equal? operation "Minimum") minimum_walk
+                     :else (if (equal? root_value "Zero") (array/float vertices 0.0) root_input))
+                   ; ---- last writer of each element
+                   writer_keys (exact (map (fn [(i : int)]
+                     (let* [s (int/sub (int/sub vertices 1) i)]
+                       (if (int/eq (array/nth chosen s) 1) (array/nth slot_element s) -1)))
+                     vertex_range))
+                   writer (exact (map (fn [(f : int)] (if (int/lt f 0) -1 (int/sub (int/sub vertices 1) f)))
+                            (array/index_of writer_keys (array/range domain :type int))))
+                   written (exact (map (fn [(w : int) (e : int)]
+                     (if (int/lt w 0) (array/nth source e) (array/nth slot_value w)))
+                     writer (array/range domain :type int)))
+                   ; ---- normalisation over the values the curves ended with
+                   slot_final (exact (map (fn [(e : int)] (array/nth written e)) slot_element))
+                   selected_slots (array/compact chosen)
+                   selected_values (exact (map (fn [(s : int)] (array/nth slot_final s)) selected_slots))
+                   curve_low (array/segment_min slot_final offsets)
+                   curve_high (array/segment_max slot_final offsets)
+                   global_low (if (equal? normalization "Global") (array/min selected_values) 0.0)
+                   global_high (if (equal? normalization "Global") (array/max selected_values) 0.0)
+                   ; Native normalises each visit of an element in turn, so a point visited r times
+                   ; is normalised r times against the same bounds.
+                   visits (array/scatter_add slot_element chosen domain)
+                   element_range (array/range domain :type int)
+                   element_curve (exact (map (fn [(w : int)] (if (int/lt w 0) 0 (array/nth owners w))) writer))
+                   element_low (exact (map (fn [(c : int)]
+                     (if (equal? normalization "Global") global_low (array/nth curve_low c))) element_curve))
+                   element_high (exact (map (fn [(c : int)]
+                     (if (equal? normalization "Global") global_high (array/nth curve_high c))) element_curve))
+                   spans (exact (map (fn [(l : float) (h : float)] (- h l)) element_low element_high))
+                   passes (if (equal? normalization "None") 0 (array/max visits))
+                   start (exact (map (fn [(x : float) (n : int)] [x (float n)]) written visits))
+                   settled (iterate passes start
+                     (fn [(state : (array vec2))]
+                       (exact (map (fn [(s : vec2) (e : int)]
+                         (if (> s.y 0.5)
+                           [(if (= (array/nth spans e) 0.0) 0.0
+                              (/ (- s.x (array/nth element_low e)) (array/nth spans e))) (- s.y 1.0)]
+                           s)) state element_range))))
+                   output (exact (map (fn [(s : vec2)] s.x) settled))]
+              (sop/with_attr in0 attribute output :owner owner_name :type float)))))))

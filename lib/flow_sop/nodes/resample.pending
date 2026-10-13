@@ -1,0 +1,377 @@
+; Whole Resample draft. Every curve gets a cumulative length table (a reset-at-curve-start
+; scan); each output sample is a distance along its curve, located by a vectorised binary
+; search over that table. Positions interpolate with the arm64-fused left + (right-left)*t.
+; The output is rebuilt with sop/mesh and carried by sop/remap (nearest source row per
+; sample), then float/vec2/vec3/vec4 point and vertex attributes are re-written with the
+; interpolated source_values in place, so attribute order is kept. Edge groups are recomputed.
+
+(defn resample_edge_length :context value [(a : vec3) (b : vec3)]
+  (let* [dx (- b.x a.x) dy (- b.y a.y) dz (- b.z a.z)]
+    (sqrt (fma dz dz (fma dy dy (* dx dx))))))
+
+; One search step over [lo hi): the first edge boundary not below the distance.
+(defn resample_search_step :context value
+  [(window : vec2) (base : int) (distance : float) (table : (array float))]
+  (if (< window.x window.y)
+    (let* [mid (floor (* 0.5 (+ window.x window.y)))]
+      (if (< (array/nth table (int/add base mid)) distance)
+        [(float (int/add mid 1)) window.y]
+        [window.x (float mid)]))
+    window))
+
+; Float-like attributes blend their two source rows; N is renormalised afterwards.
+(defn resample_interpolate :context sop
+  [(target : geometry) (source : geometry) (name : text) (owner : text)
+   (left : (array int)) (right : (array int)) (weights : (array float))]
+  (let* [kind (sop/attr_type source name :owner owner)]
+    (cond
+      (equal? kind "float")
+        (let* [source_values (sop/attr source name :owner owner :type float)]
+          (sop/with_attr target name (exact (map (fn [(l : int) (r : int) (w : float)]
+            (fma (- (array/nth source_values r) (array/nth source_values l)) w (array/nth source_values l))) left right weights))
+            :owner owner :type float))
+      (equal? kind "vec2")
+        (let* [source_values (sop/attr source name :owner owner :type vec2)]
+          (sop/with_attr target name (exact (map (fn [(l : int) (r : int) (w : float)]
+            (let* [a (array/nth source_values l) b (array/nth source_values r)]
+              [(fma (- b.x a.x) w a.x) (fma (- b.y a.y) w a.y)])) left right weights))
+            :owner owner :type vec2))
+      (equal? kind "vec3")
+        (let* [source_values (sop/attr source name :owner owner :type vec3)
+               blended (exact (map (fn [(l : int) (r : int) (w : float)]
+                 (let* [a (array/nth source_values l) b (array/nth source_values r)]
+                   [(fma (- b.x a.x) w a.x) (fma (- b.y a.y) w a.y) (fma (- b.z a.z) w a.z)]))
+                 left right weights))]
+          (sop/with_attr target name
+            (if (equal? name "N")
+              (exact (map (fn [(v : vec3)]
+                (let* [length (sqrt (fma v.z v.z (fma v.y v.y (* v.x v.x))))]
+                  (if (> length 1e-20) [(/ v.x length) (/ v.y length) (/ v.z length)] v))) blended))
+              blended)
+            :owner owner :type vec3))
+      (equal? kind "vec4")
+        (let* [source_values (sop/attr source name :owner owner :type vec4)]
+          (sop/with_attr target name (exact (map (fn [(l : int) (r : int) (w : float)]
+            (let* [a (array/nth source_values l) b (array/nth source_values r)]
+              [(fma (- b.x a.x) w a.x) (fma (- b.y a.y) w a.y) (fma (- b.z a.z) w a.z)
+               (fma (- b.w a.w) w a.w)])) left right weights))
+            :owner owner :type vec4))
+      :else target)))
+
+; Source edges of one curve that are not in the group, counted over an index range
+; clamped to the curve's edges (prefix is the running count over all source vertices).
+(defn resample_unselected :context value
+  [(prefix : (array int)) (first : int) (edges : int) (low : int) (high : int)]
+  (let* [a (if (int/lt low 0) 0 low) b (if (int/gt high (int/sub edges 1)) (int/sub edges 1) high)
+         ia (int/add first (if (int/gt a edges) edges a))
+         ib (int/add first (if (int/lt b 0) 0 (int/add b 1)))]
+    (if (int/gt a b) 0 (int/sub (array/nth prefix ib) (array/nth prefix ia)))))
+
+(defn resample_edge_group :context sop
+  [(target : geometry) (source : geometry) (name : text)
+   (source_edge : (array int)) (target_edge : (array int)) (target_edges : int)
+   (firsts : (array int)) (edges : (array int)) (closed : (array int)) (owners : (array int))
+   (curve : (array int)) (local : (array int)) (counts : (array int)) (offsets : (array int))
+   (left : (array int)) (weights : (array float))]
+  (let* [mask (sop/group source :name name :owner "edge")
+         vertex_range (array/range (array/count owners) :type int)
+         unselected (exact (map (fn [(v : int)]
+           (let* [p (array/nth owners v) e (array/nth source_edge v)]
+             (if (and (int/lt (int/sub v (array/nth firsts p)) (array/nth edges p))
+                      (not (and (int/ge e 0) (int/eq (if (int/ge e 0) (array/nth mask e) 0) 1)))) 1 0)))
+           vertex_range))
+         prefix (array/scan_sum unselected)
+         sample_range (array/range (array/count curve) :type int)
+         flags (exact (map (fn [(j : int)]
+           (let* [p (array/nth curve j) l (array/nth local j) first (array/nth firsts p)
+                  se (array/nth edges p) count (array/nth counts p) closed_p (array/nth closed p)
+                  out_edges (int/sub (int/add count closed_p) 1)
+                  end (int/add (array/nth offsets p) (int/mod (int/add l 1) count))
+                  start_local (int/add (int/sub (array/nth left j) first)
+                                       (if (>= (array/nth weights j) (- 1.0 1e-12)) 1 0))
+                  end_local (int/sub (array/nth left end) first)
+                  wend (array/nth weights end)
+                  accepted (if (and (int/eq closed_p 1) (int/eq l (int/sub out_edges 1)))
+                    (and (int/eq (resample_unselected prefix first se start_local (int/sub se 1)) 0)
+                         (or (<= wend 1e-12) (int/eq (resample_unselected prefix first se 0 end_local) 0)))
+                    (int/eq (resample_unselected prefix first se start_local
+                              (if (<= wend 1e-12) (int/sub end_local 1) end_local)) 0))]
+             (if (and (int/lt l out_edges) (and accepted (int/ge (array/nth target_edge j) 0))) 1 0)))
+           sample_range))
+         edge_of (exact (map (fn [(j : int)]
+           (let* [e (array/nth target_edge j)] (if (int/lt e 0) 0 e))) sample_range))
+         sums (array/scatter_add edge_of flags target_edges)]
+    (sop/with_group target (exact (map (fn [(c : int)] (if (int/gt c 0) 1 0)) sums))
+      :name name :owner "edge")))
+
+(defn resample_valid :context value
+  [(use_segments : bool) (use_maximum_segment_length : bool) (maximum_segment_length : float)
+   (segment_length_attribute : text) (segments_attribute : text) (curve_u_attribute : text)
+   (curve_number_attribute : text) (distance_attribute : text) (tangent_attribute : text)]
+  (let* [u (text/trim curve_u_attribute) n (text/trim curve_number_attribute)
+         d (text/trim distance_attribute) g (text/trim tangent_attribute)
+         taken (fn [(a : text) (b : text)] (and (not (text/blank? a)) (equal? a b)))]
+    (and (or (not use_maximum_segment_length) (> maximum_segment_length 0.0))
+      (and (or use_segments (or use_maximum_segment_length
+                (or (not (text/blank? segment_length_attribute)) (not (text/blank? segments_attribute)))))
+        (and (not (or (equal? u "P") (or (equal? n "P") (or (equal? d "P") (equal? g "P")))))
+          (not (or (taken u n) (or (taken u d) (or (taken u g)
+                (or (taken n d) (or (taken n g) (taken d g))))))))))))
+
+(defnode sop/resample :label "Resample" :category ["Topology" "Curve"]
+  :validate (resample_valid use_segments use_maximum_segment_length maximum_segment_length
+              segment_length_attribute segments_attribute curve_u_attribute
+              curve_number_attribute distance_attribute tangent_attribute)
+  :code "E_PARAM" :message "sop/resample: invalid parameters"
+  [(in0 : geometry)
+   (group : text "" :label "Primitive group")
+   (use_segments : bool true :label "Use segments")
+   (segments : int 10 :label "Segments" :min 1 :max 1024 :hard_min 1)
+   (use_maximum_segment_length : bool false :label "Use maximum segment length")
+   (maximum_segment_length : float 0.1 :label "Maximum segment length" :min 0.0001 :max 10 :hard_min 0)
+   (segment_length_attribute : text "" :label "Segment length attribute" :folder "Overrides")
+   (segments_attribute : text "" :label "Segments attribute" :folder "Overrides")
+   (even_last_segment : bool true :label "Even last segment")
+   (curve_u_attribute : text "" :label "Curve U" :folder "Output attributes")
+   (curve_number_attribute : text "" :label "Curve number" :folder "Output attributes")
+   (distance_attribute : text "" :label "Distance" :folder "Output attributes")
+   (tangent_attribute : text "" :label "Tangent" :folder "Output attributes")]
+  (let* [group_name (text/trim group)
+         found_group (or (text/blank? group)
+           (fold [found false] [name (sop/group_names in0 "" :owner "primitive")]
+             (or found (equal? name group_name))))]
+    (if (not found_group)
+      (error "missing_group" (str "resample could not find primitive group " (text/repr group_name)))
+      (let* [primitives (sop/count in0 :primitives)
+             vertices (sop/count in0 :vertices)
+             point_total (sop/count in0 :points)
+             topology (sop/topology in0)
+             vertex_points topology.vertex_points
+             offsets topology.primitive_offsets
+             kinds topology.kinds
+             selection (if (text/blank? group_name) (array/int primitives 1)
+                         (sop/group in0 :name group_name :owner "primitive"))
+             primitive_range (array/range primitives :type int)
+             position_data (sop/attr_checked in0 "P")
+             positions position_data.values
+             length_name (text/trim segment_length_attribute)
+             count_name (text/trim segments_attribute)
+             length_named (not (text/blank? length_name))
+             count_named (not (text/blank? count_name))
+             length_ok (and length_named (sop/has_attr in0 length_name :owner "primitive" :type float))
+             count_ok (and count_named (sop/has_attr in0 count_name :owner "primitive" :type int))
+             length_values (if length_ok (sop/attr in0 length_name :owner "primitive" :type float)
+                             (array/float primitives 0.0))
+             count_values (if count_ok (sop/attr in0 count_name :owner "primitive" :type int)
+                            (array/int primitives 0))
+             ; ---- source cumulative lengths (one table per curve)
+             firsts (exact (map (fn [(p : int)] (array/nth offsets p)) primitive_range))
+             sizes (exact (map (fn [(p : int)]
+               (int/sub (array/nth offsets (int/add p 1)) (array/nth offsets p))) primitive_range))
+             closed_flags (exact (map (fn [(p : int)] (if (int/eq (array/nth kinds p) 2) 1 0)) primitive_range))
+             vertex_marks (array/scatter_add firsts (array/int primitives 1) (int/add vertices 1))
+             vertex_cumulative (array/scan_sum vertex_marks)
+             owners (exact (map (fn [(v : int)] (int/sub (array/nth vertex_cumulative (int/add v 1)) 1))
+                      (array/range vertices :type int)))
+             table_counts (exact (map (fn [(s : int) (c : int)] (int/add s c)) sizes closed_flags))
+             source_edges (exact (map (fn [(s : int) (c : int)] (int/sub (int/add s c) 1)) sizes closed_flags))
+             table_bases (array/scan_sum table_counts)
+             table_total (array/nth table_bases primitives)
+             table_marks (array/scatter_add (array/slice table_bases 0 primitives)
+                           (array/int primitives 1) (int/add table_total 1))
+             table_cumulative (array/scan_sum table_marks)
+             table_owner (exact (map (fn [(c : int)] (int/sub (array/nth table_cumulative (int/add c 1)) 1))
+                           (array/range table_total :type int)))
+             table (exact (scan [acc 0.0] [c (array/range table_total :type int)]
+               (let* [o (array/nth table_owner c)
+                      k (int/sub c (array/nth table_bases o))
+                      first (array/nth firsts o) size (array/nth sizes o)]
+                 (if (int/eq k 0) 0.0
+                   (+ acc (resample_edge_length
+                     (array/nth positions (array/nth vertex_points (int/add first (int/mod (int/sub k 1) size))))
+                     (array/nth positions (array/nth vertex_points (int/add first (int/mod k size))))))))))
+             totals (exact (map (fn [(p : int)]
+               (array/nth table (int/add (array/nth table_bases p) (array/nth source_edges p)))) primitive_range))
+             ; ---- how each curve is resampled
+             wanted_segments (exact (map (fn [(p : int)]
+               (if (int/eq (array/nth selection p) 0) 0
+                 (if count_named
+                   (if (int/le (array/nth count_values p) 0) 0 (array/nth count_values p))
+                   (if use_segments segments 0)))) primitive_range))
+             wanted_length (exact (map (fn [(p : int)]
+               (if (int/eq (array/nth selection p) 0) 0.0
+                 (if length_named
+                   (if (<= (array/nth length_values p) 0.0) 0.0 (array/nth length_values p))
+                   (if use_maximum_segment_length maximum_segment_length 0.0)))) primitive_range))
+             minimum_edges (exact (map (fn [(c : int)] (if (int/eq c 1) 3 1)) closed_flags))
+             length_edges (exact (map (fn [(p : int)]
+               (let* [m (array/nth wanted_length p)]
+                 (if (> m 0.0)
+                   (max (array/nth minimum_edges p) (ceil (/ (array/nth totals p) m)))
+                   0))) primitive_range))
+             preserve (exact (map (fn [(s : int) (m : float)] (if (and (int/eq s 0) (= m 0.0)) 1 0))
+                        wanted_segments wanted_length))
+             output_edges (exact (map (fn [(p : int)]
+               (let* [s (array/nth wanted_segments p) l (array/nth length_edges p)
+                      lowest (array/nth minimum_edges p)]
+                 (cond (int/eq (array/nth preserve p) 1) (array/nth source_edges p)
+                       (and (int/gt s 0) (int/gt l 0)) (max lowest (min s l))
+                       (int/gt s 0) (max lowest s)
+                       :else l))) primitive_range))
+             spacing (exact (map (fn [(p : int)]
+               (let* [s (array/nth wanted_segments p) l (array/nth length_edges p)
+                      edges (array/nth output_edges p)]
+                 (cond (int/eq (array/nth preserve p) 1) 2
+                       (or (= (array/nth wanted_length p) 0.0)
+                         (or even_last_segment (or (and (int/gt s 0) (and (int/gt l 0) (int/lt s l)))
+                                                   (int/eq edges (array/nth minimum_edges p))))) 1
+                       :else 0))) primitive_range))
+             sample_counts (exact (map (fn [(e : int) (c : int)] (int/add e (int/sub 1 c)))
+                             output_edges closed_flags))
+             sample_offsets (array/scan_sum sample_counts)
+             sample_total (array/nth sample_offsets primitives)
+             ; ---- input errors (code invalid_geometry): polygons, zero length, closed with < 3 segments,
+             ; unusable override attributes
+             problems (int/add
+               (int/add (if (and length_named (not length_ok)) 1 0) (if (and count_named (not count_ok)) 1 0))
+               (int/add (array/sum (exact (map (fn [(k : int)] (if (int/eq k 0) 1 0)) kinds)))
+                 (int/add (array/sum (exact (map (fn [(total : float)] (if (<= total 1e-20) 1 0)) totals)))
+                   (array/sum (exact (map (fn [(p : int)]
+                     (if (and (int/eq (array/nth closed_flags p) 1)
+                              (and (int/gt (array/nth wanted_segments p) 0) (int/lt (array/nth wanted_segments p) 3))) 1 0))
+                     primitive_range))))))]
+        (if (int/gt problems 0)
+          (error "invalid_geometry" "resample could not produce valid geometry"
+            :cause "resample [invalid_geometry]: Rdk_curve.Resample_curves.resample_curves: invalid input curve")
+          (let* [sample_range (array/range sample_total :type int)
+                 sample_marks (array/scatter_add (array/slice sample_offsets 0 primitives)
+                                (array/int primitives 1) (int/add sample_total 1))
+                 sample_cumulative (array/scan_sum sample_marks)
+                 sample_curve (exact (map (fn [(i : int)] (int/sub (array/nth sample_cumulative (int/add i 1)) 1))
+                                sample_range))
+                 sample_local (exact (map (fn [(i : int) (p : int)] (int/sub i (array/nth sample_offsets p)))
+                                sample_range sample_curve))
+                 sample_distance (exact (map (fn [(local : int) (p : int)]
+                   (let* [edges (array/nth output_edges p) total (array/nth totals p)
+                          mode (array/nth spacing p)]
+                     (cond (int/eq mode 2) (array/nth table (int/add (array/nth table_bases p) local))
+                           (and (int/eq (array/nth closed_flags p) 0) (int/eq local edges)) total
+                           (int/eq mode 1) (/ (* total (float local)) (float edges))
+                           :else (* (float local) (array/nth wanted_length p)))))
+                   sample_local sample_curve))
+                 sample_base (exact (map (fn [(p : int)] (array/nth table_bases p)) sample_curve))
+                 rounds (fold [r 0] [i (range 40)]
+                   (if (int/le (int/shl 1 i) (if (int/eq primitives 0) 0 (array/max source_edges))) (int/add i 1) r))
+                 searched (iterate rounds (exact (map (fn [(p : int)] [1.0 (float (array/nth source_edges p))])
+                                                 sample_curve))
+                   (fn [(windows : (array vec2))]
+                     (exact (map (fn [(s : vec2) (i : int)]
+                       (resample_search_step s (array/nth sample_base i) (array/nth sample_distance i) table))
+                       windows sample_range))))
+                 sample_edge (exact (map (fn [(s : vec2)] (int/sub (floor s.x) 1)) searched))
+                 ; ---- the two source vertices and the weight of each sample
+                 sample_start (exact (map (fn [(e : int) (i : int)]
+                   (array/nth table (int/add (array/nth sample_base i) e))) sample_edge sample_range))
+                 sample_finish (exact (map (fn [(e : int) (i : int)]
+                   (array/nth table (int/add (array/nth sample_base i) (int/add e 1)))) sample_edge sample_range))
+                 sampled_weight (exact (map (fn [(a : float) (b : float) (d : float)]
+                   (let* [length (- b a)] (if (<= length 1e-20) 0.0 (/ (- d a) length))))
+                   sample_start sample_finish sample_distance))
+                 kept (exact (map (fn [(p : int)] (array/nth preserve p)) sample_curve))
+                 vertex_left (exact (map (fn [(i : int)]
+                   (let* [p (array/nth sample_curve i) first (array/nth firsts p) size (array/nth sizes p)]
+                     (if (int/eq (array/nth kept i) 1) (int/add first (array/nth sample_local i))
+                       (int/add first (int/mod (array/nth sample_edge i) size))))) sample_range))
+                 vertex_right (exact (map (fn [(i : int)]
+                   (let* [p (array/nth sample_curve i) first (array/nth firsts p) size (array/nth sizes p)]
+                     (if (int/eq (array/nth kept i) 1) (int/add first (array/nth sample_local i))
+                       (int/add first (int/mod (int/add (array/nth sample_edge i) 1) size))))) sample_range))
+                 weights (exact (map (fn [(w : float) (k : int)] (if (int/eq k 1) 0.0 w)) sampled_weight kept))
+                 point_left (exact (map (fn [(v : int)] (array/nth vertex_points v)) vertex_left))
+                 point_right (exact (map (fn [(v : int)] (array/nth vertex_points v)) vertex_right))
+                 sample_positions (exact (map (fn [(l : int) (r : int) (w : float)]
+                   (let* [a (array/nth positions l) b (array/nth positions r)]
+                     [(fma (- b.x a.x) w a.x) (fma (- b.y a.y) w a.y) (fma (- b.z a.z) w a.z)]))
+                   point_left point_right weights))
+                 target (sop/mesh :points sample_positions :vertex_points sample_range
+                          :primitive_offsets sample_offsets
+                          :kinds (exact (map (fn [(p : int)] (array/nth kinds p)) primitive_range)))
+                 nearest_points (exact (map (fn [(l : int) (r : int) (w : float)] (if (< w 0.5) l r))
+                                  point_left point_right weights))
+                 nearest_vertices (exact (map (fn [(l : int) (r : int) (w : float)] (if (< w 0.5) l r))
+                                    vertex_left vertex_right weights))
+                 edge_group_names (sop/group_names in0 "" :owner "edge")
+                 empty_edges {:offsets (array/int (int/add (sop/count target :edges) 1) 0)
+                              :values (array/int 0)}
+                 carried (if (int/gt (array/count edge_group_names) 0)
+                   (sop/remap in0 target :points nearest_points :vertices nearest_vertices
+                     :primitives primitive_range :positions "target" :edges empty_edges)
+                   (sop/remap in0 target :points nearest_points :vertices nearest_vertices
+                     :primitives primitive_range :positions "target"))
+                 ; ---- float-like point and vertex attributes interpolate instead of taking the nearest row
+                 interpolated_points (fold [geo carried] [name (sop/attr_names in0 "*" :owner "point")]
+                   (resample_interpolate geo in0 name "point" point_left point_right weights))
+                 interpolated (fold [geo interpolated_points] [name (sop/attr_names in0 "*" :owner "vertex")]
+                   (resample_interpolate geo in0 name "vertex" vertex_left vertex_right weights))
+                 ; ---- generated point attributes, appended after the carried ones
+                 u_name (text/trim curve_u_attribute) n_name (text/trim curve_number_attribute)
+                 d_name (text/trim distance_attribute) g_name (text/trim tangent_attribute)
+                 taken (fold [names (list)] [name (list u_name n_name d_name g_name)]
+                         (if (text/blank? name) names (concat names (list name))))
+                 cleared (fold [geo interpolated] [name taken]
+                   (sop/delete_attr geo (text/glob_literal name) :owner "point"))
+                 last_vertex (exact (map (fn [(p : int)] (int/sub (array/nth sample_offsets (int/add p 1)) 1))
+                               sample_curve))
+                 previous (exact (map (fn [(i : int)]
+                   (let* [p (array/nth sample_curve i)]
+                     (if (int/eq (array/nth sample_local i) 0)
+                       (if (int/eq (array/nth closed_flags p) 1) (array/nth last_vertex i) i)
+                       (int/sub i 1)))) sample_range))
+                 following (exact (map (fn [(i : int)]
+                   (let* [p (array/nth sample_curve i)]
+                     (if (int/eq (int/add (array/nth sample_local i) 1) (array/nth sample_counts p))
+                       (if (int/eq (array/nth closed_flags p) 1) (array/nth sample_offsets p) i)
+                       (int/add i 1)))) sample_range))
+                 curve_u_values (exact (map (fn [(i : int)]
+                   (let* [p (array/nth sample_curve i) edges (float (array/nth source_edges p))]
+                     (if (int/eq (array/nth kept i) 1) (/ (float (array/nth sample_local i)) edges)
+                       (/ (+ (float (array/nth sample_edge i)) (array/nth weights i)) edges)))) sample_range))
+                 distance_values (exact (map (fn [(i : int)]
+                   (let* [a (array/nth previous i) b (array/nth following i) here (array/nth sample_positions i)
+                          left (if (int/eq a i) 0.0 (resample_edge_length (array/nth sample_positions a) here))
+                          right (if (int/eq b i) 0.0 (resample_edge_length here (array/nth sample_positions b)))]
+                     (* 0.5 (+ left right)))) sample_range))
+                 tangent_scale (exact (map (fn [(i : int)]
+                   (let* [a (array/nth sample_positions (array/nth previous i))
+                          b (array/nth sample_positions (array/nth following i))]
+                     (max (abs (- b.x a.x)) (max (abs (- b.y a.y)) (abs (- b.z a.z)))))) sample_range))
+                 tangent_values (exact (map (fn [(i : int)]
+                   (let* [a (array/nth sample_positions (array/nth previous i))
+                          b (array/nth sample_positions (array/nth following i))
+                          scale (array/nth tangent_scale i) divisor (if (= scale 0.0) 1.0 scale)
+                          sx (/ (- b.x a.x) divisor) sy (/ (- b.y a.y) divisor) sz (/ (- b.z a.z) divisor)
+                          length (sqrt (fma sz sz (fma sy sy (* sx sx))))]
+                     [(/ sx length) (/ sy length) (/ sz length)])) sample_range))
+                 with_u (if (text/blank? u_name) cleared
+                   (sop/with_attr cleared u_name curve_u_values :owner "point" :type float))
+                 with_n (if (text/blank? n_name) with_u
+                   (sop/with_attr with_u n_name sample_curve :owner "point" :type int))
+                 with_d (if (text/blank? d_name) with_n
+                   (sop/with_attr with_n d_name distance_values :owner "point" :type float))
+                 with_t (if (text/blank? g_name) with_d
+                   (sop/with_attr with_d g_name tangent_values :owner "point" :type vec3))
+                 undefined_tangents (if (text/blank? g_name) 0
+                   (array/sum (exact (map (fn [(s : float)] (if (= s 0.0) 1 0)) tangent_scale))))
+                 ; ---- edge groups: an output edge is in a group when every source edge it spans is
+                 source_adjacency (sop/adjacency in0)
+                 target_adjacency (sop/adjacency target)
+                 target_edge_total (sop/count target :edges)
+                 grouped (fold [geo with_t] [name edge_group_names]
+                   (resample_edge_group geo in0 name source_adjacency.edge_of_vertex
+                     target_adjacency.edge_of_vertex target_edge_total
+                     firsts source_edges closed_flags owners sample_curve sample_local sample_counts
+                     sample_offsets vertex_left weights))]
+            (if (int/gt undefined_tangents 0)
+              (error "invalid_geometry" "resample could not produce valid geometry"
+                :cause "resample [invalid_geometry]: Rdk_curve.Resample_curves.resample_curves: generated a non-finite or undefined diagnostic")
+              grouped)))))))
