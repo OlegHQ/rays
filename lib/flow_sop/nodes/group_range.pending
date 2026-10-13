@@ -1,0 +1,151 @@
+; Group Range draft. Every range mode, base, filter, invert and merge is here, plus connectivity
+; "Disconnected regions" and "Connected with seams" without seam sources. A seam source
+; (connectivity attributes or a collision group) needs sop/components to accept an edge mask of
+; seams, which the language does not have yet; that case is refused with E_UNSUPPORTED.
+(defn group_range_error :context value [(reason : text)]
+  (error "invalid_group" "group_range could not produce valid geometry"
+    :cause (str "group_range [invalid_group]: " reason)))
+; Group_ops.range_bounds: which = 0 gives the first index, 1 the last (an empty range is 1, 0).
+(defn group_range_bound :context value
+  [(mode : int) (total : int) (start : int) (end_ : int) (end_offset : int) (length : int)
+   (partition : int) (partitions : int) (which : int)]
+  (let* [empty (if (int/eq which 0) 1 0)]
+    (case mode
+      0 (if (int/eq which 0) start end_)
+      1 (if (int/eq which 0) start (int/sub (int/sub total end_offset) 1))
+      2
+        (cond
+          (int/le length 0) empty
+          (int/lt start 0)
+            (let* [end_exclusive (int/add start length)]
+              (cond
+                (int/le end_exclusive 0) empty
+                (int/eq which 0) 0
+                :else (if (int/lt (int/sub total 1) (int/sub end_exclusive 1))
+                        (int/sub total 1) (int/sub end_exclusive 1))))
+          (int/ge start total) empty
+          (int/eq which 0) start
+          :else (if (int/ge length (int/sub total start)) (int/sub total 1)
+                  (int/sub (int/add start length) 1)))
+      :else
+        (if (or (int/lt partition 0) (int/ge partition partitions)) empty
+          (let* [quotient (int/div total partitions)
+                 remainder (int/mod total partitions)
+                 head (int/add (int/mul partition quotient) (if (int/lt partition remainder) partition remainder))
+                 size (int/add quotient (if (int/lt partition remainder) 1 0))]
+            (if (int/eq which 0) head (int/sub (int/add head size) 1)))))))
+(defn group_range_positive_mod :context value [(value : int) (modulus : int)]
+  (int/mod (int/add (int/mod value modulus) modulus) modulus))
+(defn group_range_filter :context value
+  [(use_filter : bool) (element : int) (head : int) (select : int) (of : int) (offset : int)]
+  (or (not use_filter)
+      (int/lt (group_range_positive_mod
+                (int/sub (int/sub (group_range_positive_mod element of) (group_range_positive_mod head of))
+                         (group_range_positive_mod offset of)) of)
+              select)))
+
+(defnode sop/group_range :label "Group Range" :category ["Group" "Create"]
+  [(in0 : geometry)
+   (owner : text "Points" :label "Group type" :choices ["Points" "Vertices" "Primitives" "Edges"])
+   (name : text "range" :label "Output group")
+   (base : text "" :label "Base group")
+   (invert : bool false :label "Invert range")
+   (merge : text "Replace" :label "Merge"
+     :choices ["Replace" "Union" "Intersection" "Subtract" "Exclusive or"])
+   (range_mode : text "Start and end" :label "Range"
+     :choices ["Start and end" "From ends" "Start and length" "Partition"])
+   (start : int 0 :label "Start" :folder "Range" :min -100000 :max 100000)
+   (end_ : int -1 :label "End" :folder "Range" :min -100000 :max 100000)
+   (end_offset : int 0 :label "End offset" :folder "Range" :min -100000 :max 100000)
+   (length : int 1 :label "Length" :folder "Range" :min 0 :max 100000 :hard_min 0)
+   (partition : int 0 :label "Partition" :folder "Range" :min 0 :max 10000 :hard_min 0)
+   (partitions : int 2 :label "Partitions" :folder "Range" :min 1 :max 10000 :hard_min 1)
+   (use_filter : bool false :label "Use filter" :folder "Filter")
+   (filter_select : int 1 :label "Select" :folder "Filter" :min 0 :max 10000 :hard_min 0)
+   (filter_of : int 1 :label "Of" :folder "Filter" :min 1 :max 10000 :hard_min 1)
+   (filter_offset : int 0 :label "Offset" :folder "Filter" :min -10000 :max 10000)
+   (connectivity_mode : text "None" :label "Connectivity" :folder "Connectivity"
+     :choices ["None" "Disconnected regions" "Connected with seams"])
+   (use_region : bool false :label "Restrict region" :folder "Connectivity")
+   (region : int 0 :label "Region" :folder "Connectivity" :min 0 :max 100000 :hard_min 0)
+   (connectivity_attributes : text "" :label "Connectivity attributes" :folder "Connectivity")
+   (connectivity_tolerance : float 0.00001 :label "Attribute tolerance" :folder "Connectivity"
+     :min 0 :max 1 :hard_min 0)
+   (use_collision : bool false :label "Use collision group" :folder ["Connectivity" "Collision"])
+   (collision_owner : text "Edges" :label "Collision owner" :folder ["Connectivity" "Collision"]
+     :choices ["Points" "Vertices" "Primitives" "Edges"])
+   (collision_pattern : text "collision" :label "Collision pattern" :folder ["Connectivity" "Collision"])
+   (keep_boundary : bool false :label "Keep boundary" :folder ["Connectivity" "Collision"])
+   (remove_other_regions : bool false :label "Remove other regions" :folder "Connectivity")]
+  (let* [element_owner (case owner "Points" "point" "Vertices" "vertex" "Primitives" "primitive" :else "edge")
+         total (case owner "Points" (sop/count in0 :points) "Vertices" (sop/count in0 :vertices)
+                 "Primitives" (sop/count in0 :primitives) :else (sop/count in0 :edges))
+         mode_index (case range_mode "Start and end" 0 "From ends" 1 "Start and length" 2 :else 3)
+         trimmed_base (text/trim base)
+         connected (not (equal? connectivity_mode "None"))
+         seam_source (and (equal? connectivity_mode "Connected with seams")
+                       (or use_collision (not (equal? (text/trim connectivity_attributes) ""))))]
+    (cond
+      (text/blank? name) (group_range_error "Group Range: empty output name")
+      (and connected (or (equal? owner "Vertices") (equal? owner "Edges")))
+        (group_range_error "Group Range: connectivity is available only for points and primitives")
+      (and (equal? connectivity_mode "Connected with seams") (and use_collision (text/blank? collision_pattern)))
+        (group_range_error "Group Range: empty collision group pattern")
+      (and use_filter (or (int/gt filter_select filter_of) (int/le filter_of 0)))
+        (group_range_error "Group Range: filter requires 0 <= select <= of and of > 0")
+      (and (equal? range_mode "From ends") (or (int/lt start 0) (int/lt end_offset 0)))
+        (group_range_error "Group Range: relative offsets must be non-negative")
+      (and (not (equal? trimmed_base "")) (not (equal? (text/glob_error trimmed_base) "")))
+        (group_range_error (text/glob_error trimmed_base))
+      seam_source (error "E_UNSUPPORTED" "Group Range: seam sources need sop/components to accept an edge mask")
+      :else
+      (let* [elements (array/range total :type int)
+             lo (group_range_bound mode_index total start end_ end_offset length partition partitions 0)
+             hi (group_range_bound mode_index total start end_ end_offset length partition partitions 1)
+             plain (exact (map (fn [(i : int)]
+                     (if (let* [in_range (and (and (int/ge i lo) (int/le i hi))
+                                           (group_range_filter use_filter i lo filter_select filter_of filter_offset))]
+                           (if invert (not in_range) in_range)) 1 0)) elements))
+             components (sop/components in0 :over (if (equal? owner "Points") "edges" "points"))
+             ids components.id
+             sizes (array/scatter_add ids (array/int total 1) components.count)
+             starts (array/scan_sum sizes)
+             order (array/grade ids)
+             sorted_ids (exact (map (fn [(o : int)] (array/nth ids o)) order))
+             sorted_starts (exact (map (fn [(c : int)] (array/nth starts c)) sorted_ids))
+             local (array/scatter_add order
+                     (exact (map (fn [(s : int) (begin : int)] (int/sub s begin)) elements sorted_starts)) total)
+             firsts (exact (map (fn [(size : int)]
+                      (group_range_bound mode_index size start end_ end_offset length partition partitions 0)) sizes))
+             lasts (exact (map (fn [(size : int)]
+                     (group_range_bound mode_index size start end_ end_offset length partition partitions 1)) sizes))
+             removing (or (equal? connectivity_mode "Disconnected regions") remove_other_regions)
+             regional (exact (map (fn [(c : int) (l : int)]
+                        (if (int/ge c 0)
+                          (if (and use_region (not (int/eq c region)))
+                            (if removing 0 1)
+                            (let* [low (array/nth firsts c)
+                                   high (array/nth lasts c)
+                                   in_range (and (and (int/ge l low) (int/le l high))
+                                              (group_range_filter use_filter l low filter_select filter_of filter_offset))]
+                              (if (if invert (not in_range) in_range) 1 0)))
+                          0)) ids local))
+             generated (if connected regional plain)]
+        (if (equal? trimmed_base "")
+          (group_merge_publish in0 element_owner name generated merge)
+          ; The union of the matching base groups accumulates in a scratch group, which a final
+          ; one-pass fold reads (only a fold accumulator can be read back as a cooked group)
+          ; before deleting it. The base only masks the generated range.
+          (let* [scratch (fold [acc (sop/with_group in0 (array/int total 0) :name "__range_base" :owner element_owner)]
+                           [group (sop/group_names in0 trimmed_base :owner element_owner)]
+                           (sop/with_group acc
+                             (exact (map (fn [(a : int) (b : int)] (int/or a b))
+                               (sop/group acc :name "__range_base" :owner element_owner)
+                               (sop/group in0 :name group :owner element_owner)))
+                             :name "__range_base" :owner element_owner))]
+            (fold [acc scratch] [pass (array/range 1 :type int)]
+              (sop/delete_group
+                (group_merge_publish acc element_owner name
+                  (exact (map (fn [(g : int) (b : int)] (int/and g b)) generated
+                    (sop/group acc :name "__range_base" :owner element_owner))) merge)
+                "__range_base" :owner element_owner))))))))
