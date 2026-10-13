@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "15c508781b700242b802dfaa6b7c7cfe")
+  (digest "3beb4264abad4e1b81b7434766a9082c")
   (kinds
     (kind "sop/platonic"
       (key "platonic")
@@ -1662,23 +1662,6 @@
         (field "include_all_primitives_sharing_boundary_points" "Include primitives sharing boundary points" (folder) (bool) (bool false) (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/groups_from_name"
-      (key "groups_from_name")
-      (aliases)
-      (operation "groups_from_name")
-      (label "Groups from Name")
-      (category "Group" "Convert")
-      (slots (slot "in0" required))
-      (fields
-        (field "owner" "Attribute owner" (folder) (choice "Point" "Vertex" "Primitive") (choice "Primitive") (primary false) (vec3))
-        (field "attribute" "Name attribute" (folder) (text) (text "name") (primary false) (vec3))
-        (field "prefix" "Group prefix" (folder) (text) (text "") (primary false) (vec3))
-        (field "conflict" "Conflict" (folder) (choice "Replace" "Union") (choice "Replace") (primary false) (vec3))
-        (field "invalid_names" "Invalid names" (folder) (choice "Ignore invalid" "Force valid") (choice "Ignore invalid") (primary false) (vec3))
-        (field "max_groups" "Maximum groups" (folder "Limits") (int (soft 1 16384) (hard 1 nil)) (int 4096) (primary false) (vec3))
-        (field "max_payload_bytes" "Maximum payload bytes" (folder "Limits") (int (soft 1048576 1073741824) (hard 1 nil)) (int 268435456) (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/group_promotions"
       (key "group_promotions")
       (aliases)
@@ -1795,19 +1778,6 @@
       (slots (slot "in0" required))
       (fields
         (field "rules" "Range rules" (folder) (text) (text "point	range		false	replace	start_end	0	-1	none	0	1	0	none			0	false	edge		false	false") (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/ordered_group"
-      (key "ordered_group")
-      (aliases)
-      (operation "ordered_group")
-      (label "Group Ordered")
-      (category "Group" "Create")
-      (slots (slot "in0" required))
-      (fields
-        (field "owner" "Group type" (folder) (choice "Points" "Vertices" "Primitives") (choice "Points") (primary false) (vec3))
-        (field "name" "Output group" (folder) (text) (text "ordered") (primary false) (vec3))
-        (field "elements" "Elements in order" (folder) (text) (text "0") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/group_find_path"
@@ -3161,6 +3131,24 @@
       (outputs (output "geo" geometry))
       (body lisp)
       (calls))
+    (kind "sop/groups_from_name"
+      (key "groups_from_name")
+      (aliases)
+      (operation "groups_from_name")
+      (label "Groups from Name")
+      (category "Group" "Convert")
+      (slots (slot "in0" required))
+      (fields
+        (field "owner" "Attribute owner" (folder) (choice "Point" "Vertex" "Primitive") (choice "Primitive") (primary false) (vec3))
+        (field "attribute" "Name attribute" (folder) (text) (text "name") (primary false) (vec3))
+        (field "prefix" "Group prefix" (folder) (text) (text "") (primary false) (vec3))
+        (field "conflict" "Conflict" (folder) (choice "Replace" "Union") (choice "Replace") (primary false) (vec3))
+        (field "invalid_names" "Invalid names" (folder) (choice "Ignore invalid" "Force valid") (choice "Ignore invalid") (primary false) (vec3))
+        (field "max_groups" "Maximum groups" (folder "Limits") (int (soft 1 16384) (hard 1 nil)) (int 4096) (primary false) (vec3))
+        (field "max_payload_bytes" "Maximum payload bytes" (folder "Limits") (int (soft 1048576 1073741824) (hard 1 nil)) (int 268435456) (primary false) (vec3)))
+      (outputs (output "geo" geometry))
+      (body lisp)
+      (calls))
     (kind "sop/line"
       (key "line")
       (aliases)
@@ -3268,6 +3256,20 @@
         (field "frequency" "Frequency" (folder) (float (soft 0 20) (hard 0 nil)) (float 1) (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode generic) (elementwise points) (reads "P" "N") (writes "P" "N") (topology preserved) (exact false))
+      (body lisp)
+      (calls))
+    (kind "sop/ordered_group"
+      (key "ordered_group")
+      (aliases)
+      (operation "ordered_group")
+      (label "Group Ordered")
+      (category "Group" "Create")
+      (slots (slot "in0" required))
+      (fields
+        (field "owner" "Group type" (folder) (choice "Points" "Vertices" "Primitives") (choice "Points") (primary false) (vec3))
+        (field "name" "Output group" (folder) (text) (text "ordered") (primary false) (vec3))
+        (field "elements" "Elements in order" (folder) (text) (text "0") (primary false) (vec3)))
+      (outputs (output "geo" geometry))
       (body lisp)
       (calls))
     (kind "sop/point_jitter"

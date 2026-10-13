@@ -16,12 +16,11 @@
      :min 1048576 :max 1073741824 :hard_min 1)]
   (let* [selected (text/lower owner)
          count (case owner "Point" (sop/count in0 :points) "Vertex" (sop/count in0 :vertices)
-                 :else (sop/count in0 :primitives))
-         present (sop/has_attr in0 attribute :owner selected)]
+                 :else (sop/count in0 :primitives))]
     (cond
       (equal? owner "Vertex") (groups_from_name_error "Groups from Name: owner must be point or primitive")
       (text/blank? attribute) (groups_from_name_error "Groups from Name: attribute name must not be empty")
-      (not present) (groups_from_name_error (str "Groups from Name: missing " selected " text attribute " (text/repr attribute)))
+      (not (sop/has_attr in0 attribute :owner selected)) (groups_from_name_error (str "Groups from Name: missing " selected " text attribute " (text/repr attribute)))
       (not (sop/has_attr in0 attribute :owner selected :type text))
         (groups_from_name_error (str "Groups from Name: " selected " attribute " (text/repr attribute)
                                   " must have text storage"))
@@ -51,6 +50,11 @@
                 (let* [name (array/nth names position)
                        mine (map (fn [(other : text)] (if (equal? other name) 1 0)) names)
                        merged (if (equal? conflict "Union")
-                                (group_publish geometry selected name "union" (exact mine))
+                                (sop/with_group geometry
+                                  (if (group_exists geometry selected name)
+                                    (exact (map (fn [(old : int) (now : int)] (int/or old now))
+                                      (sop/group geometry :name name :owner selected) mine))
+                                    (exact mine))
+                                  :name name :owner selected)
                                 (group_publish geometry selected name "replace" (exact mine)))]
                   merged)))))))
