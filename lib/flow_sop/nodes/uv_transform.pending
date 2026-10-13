@@ -1,0 +1,54 @@
+; Whole-node draft.
+(defnode sop/uv_transform :label "UV Transform" :category ["UV" "Modify"]
+  :validate (and (and (and (= (- translate_u translate_u) 0.0) (= (- translate_v translate_v) 0.0))
+                      (and (= (- scale_u scale_u) 0.0) (= (- scale_v scale_v) 0.0)))
+                 (and (= (- angle angle) 0.0) (and (= (- pivot_u pivot_u) 0.0) (= (- pivot_v pivot_v) 0.0))))
+  :code "E_PARAM" :message "sop/uv_transform: transform parameters must be finite"
+  [(in0 : geometry)
+   (name : text "uv" :label "UV attribute")
+   (owner : text "Vertex" :label "Owner" :choices ["Point" "Vertex"])
+   (group : text "" :label "Group")
+   (translate_u : float 0.0 :label "Translate U" :folder ["Transform" "Translate"] :min -10 :max 10 :primary true)
+   (translate_v : float 0.0 :label "Translate V" :folder ["Transform" "Translate"] :min -10 :max 10 :primary true)
+   (scale_u : float 1.0 :label "Scale U" :folder ["Transform" "Scale"] :min -10 :max 10 :primary true)
+   (scale_v : float 1.0 :label "Scale V" :folder ["Transform" "Scale"] :min -10 :max 10 :primary true)
+   (angle : float 0.0 :label "Angle" :folder ["Transform"] :min -3.141592653589793 :max 3.141592653589793 :primary true)
+   (pivot_u : float 0.5 :label "Pivot U" :folder ["Transform" "Pivot"] :min -10 :max 10)
+   (pivot_v : float 0.5 :label "Pivot V" :folder ["Transform" "Pivot"] :min -10 :max 10)]
+  (let* [selected_owner (text/lower owner)
+         selected_group (text/trim group)
+         found (or (text/blank? group)
+           (fold [seen false] [group_name (sop/group_names in0 "" :owner selected_owner)]
+             (or seen (equal? group_name selected_group))))
+         invalid (fn [message] (error "invalid_attribute" "uv_transform could not produce valid geometry" :cause message))]
+    (cond
+      (not found)
+        (error "missing_group" (str "uv_transform could not find " selected_owner " group " (text/repr selected_group)))
+      (text/blank? name) (invalid "UV attribute name must not be empty")
+      (not (sop/has_attr in0 name :owner selected_owner))
+        (invalid (str "missing " selected_owner " UV attribute " (text/repr name)))
+      (not (sop/has_attr in0 name :owner selected_owner :type vec2))
+        (invalid (str "UV attribute " (text/repr name) " must have float2 storage"))
+      :else
+        (let* [count (if (equal? owner "Point") (sop/count in0 :points) (sop/count in0 :vertices))
+               source (sop/attr in0 name :owner selected_owner :type vec2)
+               selection (if (text/blank? group) (array/int count 1)
+                           (sop/group in0 :name selected_group :owner selected_owner))
+               cosine (cos angle)
+               sine (sin angle)
+               moved_x (+ pivot_u translate_u)
+               moved_y (+ pivot_v translate_v)
+               result (map (fn [(uv : vec2) (selected : int)]
+                 (if (int/eq selected 0) uv
+                   (let* [u (* (- uv.x pivot_u) scale_u)
+                          v (* (- uv.y pivot_v) scale_v)]
+                     [(fma (* -1.0 sine) v (fma cosine u moved_x))
+                      (fma cosine v (fma sine u moved_y))])))
+                 source selection)
+               ; Non-finite input stays non-finite through the transform, so one output scan suffices.
+               bad (if (int/eq count 0) 0 (array/max (map (fn [(r : vec2) (selected : int)]
+                 (if (and (int/eq selected 1) (not (and (= (- r.x r.x) 0.0) (= (- r.y r.y) 0.0)))) 1 0))
+                 result selection)))]
+          (if (int/eq bad 1)
+            (invalid "UV Transform requires finite selected input and output coordinates")
+            (sop/with_attr in0 name (exact result) :owner selected_owner :type vec2))))))
