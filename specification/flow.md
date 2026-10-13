@@ -1536,6 +1536,13 @@ count, kinds use primitive-owner count, and offsets contain primitive count plus
 one entries. These distinct count origins survive direct field access and
 captured records. The query reads topology, without reading positions or attributes.
 
+`(sop/adjacency geometry)` returns the dense topology tables as a record of
+owned `(array int)` fields: `primitive_of_vertex`, `next_vertex`,
+`previous_vertex`, `edge_of_vertex`, `opposite_vertex` (vertex-sized, -1 where
+absent), `edge_a`, `edge_b` (as `sop/edges`), `point_edge_offsets` and
+`point_edges`, `point_vertex_offsets` and `point_vertices` (point CSR rows).
+It reads topology only.
+
 `(sop/mesh :points p :vertex_points vp :primitive_offsets po :kinds k)` builds
 geometry from four required typed keyword rows. Points are a vec3 array; the
 other rows are exact integer arrays. An empty mesh uses empty points, vertex

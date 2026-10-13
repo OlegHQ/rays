@@ -1290,6 +1290,54 @@ export function sop_topology(geometry) {
     ['kinds', new PArray(1, BigInt64Array.from(geometry.get('primitive_kinds'), c => BigInt(c.charCodeAt(0))))]
   ]);
 }
+// D.1: the dense adjacency tables of Topology_index, in the same orders:
+// edges by first outgoing corner, point rows by ascending vertex/edge index.
+export function sop_adjacency(geometry) {
+  topologyGeometry(geometry);
+  const points = Array.from(geometry.get('vertex_points'), Number);
+  const offsets = Array.from(geometry.get('primitive_offsets'), Number);
+  const kinds = geometry.get('primitive_kinds');
+  const vertexCount = points.length, pointCount = Number(length(geometry.get('positions')));
+  const fill = () => new Array(vertexCount).fill(-1);
+  const primitive = fill(), next = fill(), previous = fill(), edgeOf = fill(), opposite = fill();
+  const edgeA = [], edgeB = [], edgeVertices = [], keys = new Map();
+  for (let p = 0; p < kinds.length; p++) {
+    const first = offsets[p], last = offsets[p + 1], cyclic = kinds.charCodeAt(p) !== 1;
+    for (let vertex = first; vertex < last; vertex++) {
+      primitive[vertex] = p;
+      if (vertex + 1 < last) next[vertex] = vertex + 1; else if (cyclic) next[vertex] = first;
+      if (vertex > first) previous[vertex] = vertex - 1; else if (cyclic) previous[vertex] = last - 1;
+    }
+  }
+  for (let vertex = 0; vertex < vertexCount; vertex++) {
+    if (next[vertex] < 0) continue;
+    const from = points[vertex], to = points[next[vertex]];
+    const lo = Math.min(from, to), hi = Math.max(from, to), key = `${lo}:${hi}`;
+    let edge = keys.get(key);
+    if (edge === undefined) { edge = edgeA.length; keys.set(key, edge); edgeA.push(lo); edgeB.push(hi); edgeVertices.push([]); }
+    edgeOf[vertex] = edge; edgeVertices[edge].push(vertex);
+  }
+  for (const pair of edgeVertices) if (pair.length === 2) { opposite[pair[0]] = pair[1]; opposite[pair[1]] = pair[0]; }
+  const rows = (count, list) => {
+    const start = [0], values = [];
+    for (let i = 0; i < count; i++) { for (const v of list[i]) values.push(v); start.push(values.length); }
+    return [start, values];
+  };
+  const byPoint = Array.from({ length: pointCount }, () => []);
+  for (let vertex = 0; vertex < vertexCount; vertex++) byPoint[points[vertex]].push(vertex);
+  const edgesByPoint = Array.from({ length: pointCount }, () => []);
+  for (let edge = 0; edge < edgeA.length; edge++) {
+    edgesByPoint[edgeA[edge]].push(edge);
+    if (edgeB[edge] !== edgeA[edge]) edgesByPoint[edgeB[edge]].push(edge);
+  }
+  const [vertexOffsets, vertexRows] = rows(pointCount, byPoint);
+  const [edgeOffsets, edgeRows] = rows(pointCount, edgesByPoint);
+  const int = values => new PArray(1, BigInt64Array.from(values, BigInt));
+  return new Map([['primitive_of_vertex', int(primitive)], ['next_vertex', int(next)],
+    ['previous_vertex', int(previous)], ['edge_of_vertex', int(edgeOf)], ['opposite_vertex', int(opposite)],
+    ['edge_a', int(edgeA)], ['edge_b', int(edgeB)], ['point_edge_offsets', int(edgeOffsets)],
+    ['point_edges', int(edgeRows)], ['point_vertex_offsets', int(vertexOffsets)], ['point_vertices', int(vertexRows)]]);
+}
 const meshInteger = value => value instanceof PArray && value.width === 1 && value.data instanceof BigInt64Array;
 function meshGeometry(pointCount, positions, vertex_points, primitive_offsets, kinds) {
   for (const kind of kinds.data) if (kind < 0n || kind > 2n)

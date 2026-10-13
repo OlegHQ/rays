@@ -55,7 +55,7 @@ let reads value =
            | Some (E.Text name), Some (E.Deferred (ty, id)) when Flow.Ty.is_geometry ty ->
                names := name :: !names; safe := id :: !safe
            | _ -> opaque := true)
-      | Op {op=("sop/count"|"sop/edges"|"sop/topology"|"sop/group"|"sop/group_names"|"sop/group_order"|"sop/group_entries");args;_} ->
+      | Op {op=("sop/count"|"sop/edges"|"sop/topology"|"sop/adjacency"|"sop/group"|"sop/group_names"|"sop/group_order"|"sop/group_entries");args;_} ->
           (match Option.bind (List.assoc_opt "geometry" args) (lookup bindings) with
            | Some (E.Deferred (ty,id)) when Flow.Ty.is_geometry ty -> safe:=id::!safe
            | _ -> opaque:=true)
@@ -86,7 +86,7 @@ let reads value =
     scan term;
     List.filter (fun id -> not (List.mem id !unsafe)) !safe in
   let rec visit safe = function
-    | E.Source (("sop/count"|"sop/edges"|"sop/topology"|"sop/group"|"sop/group_names"|"sop/group_order"|"sop/group_entries"),_,args) ->
+    | E.Source (("sop/count"|"sop/edges"|"sop/topology"|"sop/adjacency"|"sop/group"|"sop/group_names"|"sop/group_order"|"sop/group_entries"),_,args) ->
         (match List.assoc_opt "geometry" args with
          | Some (E.Deferred (ty,_)) when Flow.Ty.is_geometry ty -> ()
          | _ -> opaque:=true)
@@ -257,7 +257,7 @@ let resolve ~geometry value = match constant_source value with
                 Ok(E.Bool(match storage ~owner ~name geometry with
                   |None->false|Some storage->Option.fold ~none:true ~some:((=)(storage_kind storage))requested))))
        | _->error "E_ATTR_TYPE" "sop/has_attr needs geometry and an attribute name.")
-  | E.Source (("sop/count"|"sop/edges"|"sop/topology"),_,_) as source -> Topology_kernel.resolve ~geometry source
+  | E.Source (("sop/count"|"sop/edges"|"sop/topology"|"sop/adjacency"),_,_) as source -> Topology_kernel.resolve ~geometry source
   | E.Source (("sop/attr_type"|"sop/attr_names"),_,_) as source -> Attribute_metadata.resolve ~geometry source
   | source -> Group_kernel.resolve ~geometry source
 

@@ -135,6 +135,16 @@ let topology : Flow.Op.t = {
     component,Flow.Value.Source("sop/topology",Flow.Ty.Array Flow.Ty.Int,
       args@["component",Flow.Value.Text component]))["vertex_points";"primitive_offsets";"kinds"]));
 }
+let adjacency_fields = ["primitive_of_vertex";"next_vertex";"previous_vertex";"edge_of_vertex";
+  "opposite_vertex";"edge_a";"edge_b";"point_edge_offsets";"point_edges";
+  "point_vertex_offsets";"point_vertices"]
+let adjacency : Flow.Op.t = {
+  edges with name="sop/adjacency";
+  out=(fun _->Flow.Ty.Record(List.map(fun name->name,Flow.Ty.Array Flow.Ty.Int)adjacency_fields));
+  body=(fun ~live:_ ~node:_ args->Flow.Value.Record(List.map(fun component->
+    component,Flow.Value.Source("sop/adjacency",Flow.Ty.Array Flow.Ty.Int,
+      args@["component",Flow.Value.Text component]))adjacency_fields));
+}
 let mesh_fields = ["points",Flow.Ty.Array Flow.Ty.Vec3;
   "vertex_points",Flow.Ty.Array Flow.Ty.Int;
   "primitive_offsets",Flow.Ty.Array Flow.Ty.Int;"kinds",Flow.Ty.Array Flow.Ty.Int]
@@ -378,7 +388,7 @@ let remap : Flow.Op.t = {
   body=(fun ~live:_ ~node args->node "sop/remap" args);
 }
 
-let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; mesh; mesh_planes; remap;
+let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; adjacency; mesh; mesh_planes; remap;
   group; group_order; group_names; group_entries; with_group; context_seed;
   rename_attr;swap_attr;delete_attrs;rename_group;delete_group;rename_edge;delete_edge;attr_type;attr_names;
   glob_error;glob_rewrite_error;glob_rewrite;glob_literal]
