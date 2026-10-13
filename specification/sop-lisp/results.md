@@ -4459,3 +4459,49 @@ records EXIT 0 for `@check @lib/flow_ir/runtest @tools/api_manifest/runtest`.
 The two public version fields and strict Core calls have a separate API acceptance
 commit; the five array primitive tags remain an unstaged, pending integration.
 No new whole-node port or plan milestone is counted here.
+
+## Shared topology validation and applied whole Line draft (pending)
+
+Whole-port acceptance remains **14/128** and plan acceptance **21/60**. Line is
+an applied `.pending` draft; the native factory remains registered. The full
+scope, both modes, default four-ULP gate and strict 2x speed gate are retained.
+
+`@check @lib/flow_sop/line_draft` passed (focused6), with byte-exact native and
+reference comparison across domains 1/4/8 and grains 1/97/4096, both modes,
+one/two/4225/32769/100001 points, extreme directions, exact endpoints, native
+errors/cancellation, all schema fields, cache keys and warm hits, card/inspector
+and every physical edit. Zero-input bypass is refused with native E_BYPASS.
+Real native and Lisp value lanes agree for live time and accumulated retained
+state, with repeat-frame and cook state isolation. The reserved interpolation
+binding was renamed from `t` to `fraction`; tests preserve context-time syntax.
+
+The eight fixed million-point rows failed two four-domain curve cases at
+2.750253293x and 2.744239401x. Profiling the shared public topology constructor
+found its callback scan significant. A local tail-recursive scan now preserves
+the exact validation order, short circuit, messages and API. The runnable
+`tools/bench_topology.ml` checks valid and last-invalid public results while
+timing seven samples, with construction outside the measured validation.
+
+Apple M1 arm64, OCaml 5.3.0, Dune dev, one domain, 1,000,000 vertices:
+
+| Constructor validation | Before seconds | After seconds | Before/after allocated bytes | Promoted/major words |
+| --- | ---: | ---: | ---: | ---: |
+| Valid open polyline | 0.003259182 | 0.001287937 | 632 / 592 | 0 / 0 |
+| Invalid last vertex | 0.002113104 | 0.000811815 | 504 / 464 | 0 / 0 |
+
+All agents paused during measurement; desktop/VM background processes remained.
+Command: `opam exec -- _build/default/tools/bench_topology.exe 1000000`.
+Logs: `/tmp/rays-topology-benchmark-before.log`,
+`/tmp/rays-topology-benchmark-after.log`, both exit 0.
+The focused RDK and Flow SOP suite plus Line draft passed in
+`/tmp/rays-topology-validation-focused1.log` (exit 0), using the shared
+check launcher with `tools/bench_topology.exe @lib/flow_sop/line_draft
+@lib/flow_sop/runtest @lib/rdk/runtest` under dummy SDL.
+
+After the shared scan, six of eight Line rows still pass; four-domain curve
+ratios remain **2.284607746x** and **2.126230508x**, so Line remains unaccepted.
+`line-port-audit.md` records both full tables and allocation counters. The
+follow-up executable printed all eight rows before exit 2, with full million
+point native/reference/domain byte preflight intact. Remaining work is the
+shared constructor cost and atomic production registration/source integration;
+no points-only substitution, weakened speed threshold, or count increment.

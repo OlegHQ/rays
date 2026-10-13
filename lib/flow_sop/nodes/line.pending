@@ -1,0 +1,54 @@
+; Whole Line draft. Native factory stays registered until the complete recipe gate.
+(defnode sop/line :label "Line" :category ["Create" "Curve"]
+  [(kind : text "Polygon curve" :label "Primitive type" :choices ["Polygon curve" "Points"])
+   (points : int 2 :label "Points" :min 2 :max 128 :hard_min 1)
+   (origin_x : float 0.0 :label "Origin X" :folder "Origin" :min -10 :max 10 :vec3 ["origin" 0])
+   (origin_y : float 0.0 :label "Origin Y" :folder "Origin" :min -10 :max 10 :vec3 ["origin" 1])
+   (origin_z : float 0.0 :label "Origin Z" :folder "Origin" :min -10 :max 10 :vec3 ["origin" 2])
+   (direction_x : float 0.0 :label "Direction X" :folder "Direction" :min -1 :max 1 :vec3 ["direction" 0])
+   (direction_y : float 1.0 :label "Direction Y" :folder "Direction" :min -1 :max 1 :vec3 ["direction" 1])
+   (direction_z : float 0.0 :label "Direction Z" :folder "Direction" :min -1 :max 1 :vec3 ["direction" 2])
+   (length : float 1.0 :label "Length" :min 0 :max 10 :hard_min 0)]
+  (if (and (equal? kind "Polygon curve") (int/lt points 2))
+    (error "invalid_parameter" "line could not produce valid geometry"
+      :cause "line [invalid_parameter]: Rdk.Line_geometry.line: curve output requires at least 2 points")
+    (let* [scale (max (abs direction_x) (max (abs direction_y) (abs direction_z)))]
+      (if (= scale 0.0)
+        (error "invalid_parameter" "line could not produce valid geometry"
+          :cause "line [invalid_parameter]: Rdk.Line_geometry.line: direction must be non-zero")
+        (let* [sx (/ direction_x scale) sy (/ direction_y scale) sz (/ direction_z scale)
+               ; Native Apple-Silicon contraction: xx is rounded, then two FMAs.
+               magnitude (sqrt (fma sz sz (fma sy sy (* sx sx))))
+               dx (* (/ sx magnitude) length)
+               dy (* (/ sy magnitude) length)
+               dz (* (/ sz magnitude) length)
+               ; Multiplication by one is exact, so this is checked native fadd.
+               end_x (float/fma_checked dx 1.0 origin_x)
+               end_y (float/fma_checked dy 1.0 origin_y)
+               end_z (float/fma_checked dz 1.0 origin_z)]
+          (if (not (and end_x.valid (and end_y.valid end_z.valid)))
+            (error "invalid_parameter" "line could not produce valid geometry"
+              :cause "line [invalid_parameter]: Rdk.Line_geometry.line: endpoint is not finite")
+            (let* [last (int/sub points 1)
+                   indices (array/range points :type int)
+                   plane_x (exact (map (fn [(index : int)]
+                     (cond (int/eq index 0) origin_x
+                       (int/eq index last) end_x.value
+                       :else (let* [fraction (/ (float index) (float last))]
+                         (fma dx fraction origin_x)))) indices))
+                   plane_y (exact (map (fn [(index : int)]
+                     (cond (int/eq index 0) origin_y
+                       (int/eq index last) end_y.value
+                       :else (let* [fraction (/ (float index) (float last))]
+                         (fma dy fraction origin_y)))) indices))
+                   plane_z (exact (map (fn [(index : int)]
+                     (cond (int/eq index 0) origin_z
+                       (int/eq index last) end_z.value
+                       :else (let* [fraction (/ (float index) (float last))]
+                         (fma dz fraction origin_z)))) indices))]
+              (if (equal? kind "Points")
+                (sop/mesh_planes :points {:x plane_x :y plane_y :z plane_z} :vertex_points (array/int 0)
+                  :primitive_offsets (array/int 1) :kinds (array/int 0))
+                (sop/mesh_planes :points {:x plane_x :y plane_y :z plane_z} :vertex_points indices
+                  :primitive_offsets (array/concat (array/int 1) (array/int 1 points))
+                  :kinds (array/int 1 1))))))))))

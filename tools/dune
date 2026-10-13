@@ -89,6 +89,11 @@
  (libraries rdk rays_math unix))
 
 (executable
+ (name bench_topology)
+ (modules bench_topology)
+ (libraries rdk unix))
+
+(executable
  (name bench_uniforms)
  (modules bench_uniforms)
  (libraries scene_execution scene_execution_fixtures ogpu unix))
