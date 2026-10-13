@@ -1,0 +1,234 @@
+; Whole Group Promotions draft. Each rule row (12 columns, canonical after normalisation) promotes every group of
+; the source owner whose name matches the pattern, in the order they existed when the rule started: the
+; element modes (any / all / shared_edge) over every owner pair are computed here from sop/adjacency, the
+; boundary mode goes through sop/group_promote_boundary. Outputs are published (replacing a group of the same
+; owner and name in place, else appended) or written as an integer attribute; the source group is removed
+; unless kept. Attribute outputs are applied immediately rather than at the end of the cook (a later boundary
+; rule comparing a freshly written attribute would see it earlier than native does).
+(defn gp_error :context value [(reason : text)]
+  (error "invalid_group" "group_promotions could not produce valid geometry"
+    :cause (str "group_promotions [invalid_group]: Group Promotions: " reason)))
+(defn gp_owner :context value [(raw : text)]
+  (let* [token (text/lower (text/trim raw))]
+    (case token "point" "point" "points" "point" "vertex" "vertex" "vertices" "vertex"
+      "primitive" "primitive" "primitives" "primitive" "edge" "edge" "edges" "edge"
+      :else (error "E_PARAM" (str "unknown group owner " (text/repr token))))))
+(defn gp_attribute_owner :context value [(raw : text)]
+  (let* [token (text/lower (text/trim raw))]
+    (case token "point" "point" "points" "point" "vertex" "vertex" "vertices" "vertex"
+      "primitive" "primitive" "primitives" "primitive" "detail" "detail"
+      :else (error "E_PARAM" (str "unknown attribute owner " (text/repr token))))))
+(defn gp_bool :context value [(raw : text)]
+  (let* [token (text/lower (text/trim raw))]
+    (case token "true" "true" "1" "true" "yes" "true" "false" "false" "0" "false" "no" "false"
+      :else (error "E_PARAM" (str "expected boolean, got " (text/repr token))))))
+(defn gp_float_text :context value [(raw : text)]
+  (let* [parsed (text/to_float raw)]
+    (if parsed.valid (if (= parsed.value 0.0) "0" (str parsed.value))
+      (error "E_PARAM" (str "invalid boundary tolerance " (text/repr raw))))))
+(defn gp_attributes :context value [(raw : text)]
+  (text/table_encode (map (fn [(row : (list text))]
+    (if (= (count row) 2) (list (gp_attribute_owner (nth row 0)) (nth row 1))
+      (error "E_PARAM" (str "boundary attribute needs owner and pattern, got " (count row) " columns"))))
+    (text/table_decode raw))))
+(defn gp_row :context value [(row : (list text))]
+  (let* [kind (text/lower (text/trim (nth row 6)))
+         boundary (equal? kind "boundary")
+         token (case kind "any" "any" "all" "all" "shared_edge" "shared_edge" "shared edge" "shared_edge"
+                 "boundary" "boundary"
+                 :else (error "E_PARAM" (str "unknown group promotion operation " (text/repr kind))))]
+    (list (gp_owner (nth row 0)) (gp_owner (nth row 1)) (nth row 2) (text/trim (nth row 3))
+      (gp_bool (nth row 4)) (gp_bool (nth row 5)) token
+      (if boundary (gp_float_text (nth row 7)) "0")
+      (if boundary (gp_bool (nth row 8)) "false") (if boundary (gp_bool (nth row 9)) "false")
+      (if boundary (gp_bool (nth row 10)) "false")
+      ; Stricter than native: an element rule's unused attribute column must be empty (native ignores it, so
+      ; an edit there would leave the canonical key, and the cache key, unchanged).
+      (if boundary (gp_attributes (nth row 11))
+        (if (text/blank? (nth row 11)) "" (error "E_PARAM" "an element promotion has no boundary attributes"))))))
+(defn gp_normalize :context value [(raw : text)]
+  (text/table_encode (map (fn [(row : (list text))]
+    (if (= (count row) 12) (gp_row row)
+      (error "E_PARAM" (str "Group Promotions rule needs 12 columns, got " (count row)))))
+    (text/table_decode raw))))
+(defn gp_title :context value [(owner : text)]
+  (case owner "point" "Points" "vertex" "Vertices" "primitive" "Primitives" :else "Edges"))
+
+; "" when the rule is applicable, else the reason it is refused (Group_ops.validate_promotion_operation and
+; the pattern, rewrite and boundary-attribute checks). Blank patterns are skipped, so never refused.
+(defn gp_rule_problem :context value [(row : (list text))]
+  (let* [pattern (text/trim (nth row 2))
+         probe (if (text/blank? pattern) "x" pattern)
+         replacement (nth row 3)
+         source (nth row 0)
+         dest (nth row 1)
+         operation (nth row 6)
+         boundary (equal? operation "boundary")
+         tolerance (text/to_float (nth row 7))
+         unshared (equal? (nth row 8) "true")
+         all_curve (equal? (nth row 9) "true")
+         all_primitives (equal? (nth row 10) "true")
+         pattern_error (text/glob_error probe)
+         rewrite_error (text/glob_rewrite_error probe (if (text/blank? replacement) "x" replacement))
+         attribute_errors (fold [bad 0] [item (text/table_decode (nth row 11))]
+                            (let* [item_error (text/glob_error (nth item 1))]
+                              (int/add bad (if (or (equal? (nth item 0) "detail") (not (equal? item_error ""))) 1 0))))]
+    (cond
+      (text/blank? pattern) ""
+      (not (equal? pattern_error "")) pattern_error
+      (and (not (text/blank? replacement)) (not (equal? rewrite_error ""))) rewrite_error
+      (and (equal? (nth row 5) "true") (equal? dest "edge")) "native edges do not own attributes"
+      (and (equal? operation "shared_edge") (not (equal? dest "primitive"))) "shared-edge inclusion requires primitive output"
+      (and (equal? operation "all") (and (equal? dest "point") (not (equal? source "point"))))
+        "entirely-contained mode is unavailable for point output"
+      (and boundary (< tolerance.value 0.0)) "boundary tolerance must be finite and non-negative"
+      (and boundary (and all_curve (not unshared))) "all curve edges require unshared edges"
+      (and boundary (and all_primitives (not (equal? dest "primitive")))) "point-sharing expansion requires primitive output"
+      (and boundary (int/gt attribute_errors 0)) "invalid boundary attribute"
+      :else "")))
+(defn gp_pos :context sop [(h : (array int))] (exact (map (fn [(x : int)] (if (int/gt x 0) 1 0)) h)))
+; Element promotion of a 0/1 mask between different owners (Group_ops.promote_predicate); mode 0 any,
+; 1 all, 2 shared edge.
+(defn gp_promote :context sop
+  [(geo : geometry) (source : text) (dest : text) (mode : int) (mask : (array int))]
+  (let* [adjacency (sop/adjacency geo)
+         topology (sop/topology geo)
+         points (sop/count geo :points)
+         edges (sop/count geo :edges)
+         vp topology.vertex_points
+         eov adjacency.edge_of_vertex
+         next adjacency.next_vertex
+         padded (array/concat mask (array/int 1 0))
+         own (case source
+               "point" (exact (map (fn [(p : int)] (array/nth mask p)) vp))
+               "primitive" (exact (map (fn [(q : int)] (array/nth mask q)) adjacency.primitive_of_vertex))
+               "vertex" mask
+               :else (exact (map (fn [(e : int)] (array/nth padded (if (int/ge e 0) e edges))) eov)))
+         follow (exact (map (fn [(n : int)] (if (int/ge n 0) (array/nth own (if (int/ge n 0) n 0)) 0)) next))
+         linked (exact (map (fn [(o : int) (f : int)] (if (and (int/eq o 1) (int/eq f 1)) 1 0)) own follow))
+         anchored (exact (map (fn [(o : int) (f : int)] (if (or (int/eq o 1) (int/eq f 1)) 1 0)) own follow))]
+    (cond
+      (equal? dest "point")
+        (if (equal? source "edge")
+          (gp_pos (array/scatter_add (array/concat adjacency.edge_a adjacency.edge_b) (array/concat mask mask) points))
+          (gp_pos (array/scatter_add vp own points)))
+      (equal? dest "vertex")
+        (if (and (equal? source "edge") (not (int/eq mode 1)))
+          (exact (map (fn [(o : int) (p : int)]
+            (if (or (int/eq o 1) (and (int/ge p 0) (int/eq (array/nth own (if (int/ge p 0) p 0)) 1))) 1 0))
+            own adjacency.previous_vertex))
+          own)
+      (equal? dest "primitive")
+        (let* [flag (if (and (int/eq mode 2) (not (equal? source "edge"))) linked own)
+               sums (array/segment_sum flag topology.primitive_offsets)
+               prims (sop/count geo :primitives)
+               lengths (exact (map (fn [(first : int) (last : int)] (int/sub last first))
+                         (array/slice topology.primitive_offsets 0 prims) (array/slice topology.primitive_offsets 1 prims)))]
+          (if (int/eq mode 1)
+            (exact (map (fn [(s : int) (n : int)] (if (and (int/gt n 0) (int/eq s n)) 1 0)) sums lengths))
+            (gp_pos sums)))
+      :else
+        (if (equal? source "point")
+          (exact (map (fn [(a : int) (b : int)]
+            (let* [x (array/nth mask a) y (array/nth mask b)]
+              (if (int/eq mode 0) (if (or (int/eq x 1) (int/eq y 1)) 1 0) (if (and (int/eq x 1) (int/eq y 1)) 1 0))))
+            adjacency.edge_a adjacency.edge_b))
+          (let* [flag (if (equal? source "vertex") (if (int/eq mode 0) anchored linked) own)
+                 owned (array/compact (exact (map (fn [(e : int)] (if (int/ge e 0) 1 0)) eov)))
+                 targets (exact (map (fn [(v : int)] (array/nth eov v)) owned))
+                 sums (array/scatter_add targets (exact (map (fn [(v : int)] (array/nth flag v)) owned)) edges)
+                 totals (array/scatter_add targets (array/int (array/count owned) 1) edges)]
+            (if (int/eq mode 0)
+              (gp_pos sums)
+              (exact (map (fn [(s : int) (n : int)] (if (and (int/gt n 0) (int/eq s n)) 1 0)) sums totals))))))))
+(defn gp_count :context sop [(geo : geometry) (owner : text)]
+  (case owner "point" (sop/count geo :points) "vertex" (sop/count geo :vertices)
+    "primitive" (sop/count geo :primitives) :else (sop/count geo :edges)))
+
+(defnode sop/group_promotions :label "Group Promotions" :category ["Group" "Convert"]
+  [(in0 : geometry)
+   (rules : text "point\tprimitive\t*\t\tfalse\tfalse\tany\t0\tfalse\tfalse\tfalse\t"
+     :label "Rules (source, destination, pattern, new name, keep, attribute, operation...)"
+     :kind encoded :normalize gp_normalize)
+   (max_outputs : int 4096 :label "Maximum outputs" :folder ["Limits"] :min 1 :max 16384 :hard_min 1)
+   (max_payload_bytes : int 268435456 :label "Maximum payload bytes" :folder ["Limits"]
+     :min 1048576 :max 1073741824 :hard_min 1)]
+  (let* [rows (text/table_decode rules)
+         problems (fold [found (array/text 0 "")] [row rows]
+                    (array/concat found (array/text 1 (gp_rule_problem row))))]
+    (get (fold [state {:geo in0 :outputs 0 :payload 0}] [index (array/range (count rows) :type int)]
+      (let* [row (nth rows index)
+             problem (array/nth problems index)
+             pattern (text/trim (nth row 2))
+             snap state.geo
+             source (nth row 0)
+             dest (nth row 1)
+             replacement (nth row 3)
+             keep (equal? (nth row 4) "true")
+             as_attribute (equal? (nth row 5) "true")
+             operation (nth row 6)
+             boundary (equal? operation "boundary")
+             tolerance (text/to_float (nth row 7))
+             unshared (equal? (nth row 8) "true")
+             all_curve (equal? (nth row 9) "true")
+             all_primitives (equal? (nth row 10) "true")
+             mode (case operation "all" 1 "shared_edge" 2 :else 0)
+             names (if (or (text/blank? pattern) (not (equal? problem ""))) (array/text 0 "") (sop/group_names snap pattern :owner source))]
+        (cond
+          (text/blank? pattern) state
+          (not (equal? problem "")) (gp_error problem)
+          :else
+            (let* [done (fold [inner {:geo state.geo :outputs state.outputs :payload state.payload :touched (array/text 0 "")}]
+                          [at (array/range (array/count names) :type int)]
+                          (let* [name (array/nth names at)
+                                 out_name (if (text/blank? replacement) name (text/glob_rewrite pattern replacement name))
+                                 count (gp_count snap dest)
+                                 bytes (if as_attribute (int/mul count 8) (int/div (int/add count 7) 8))
+                                 key (str source ":" name)
+                                 touched_here (fold [found false] [item inner.touched] (or found (equal? item key)))
+                                 removable (and (not keep) (not touched_here))
+                                 marked (if as_attribute inner.touched
+                                          (array/concat inner.touched (array/text 1 (str dest ":" out_name))))]
+                            (cond
+                              (text/blank? out_name) (gp_error "rewrite produced an empty output name")
+                              (int/ge inner.outputs max_outputs) (gp_error "outputs exceed max_outputs")
+                              (int/gt bytes (int/sub max_payload_bytes inner.payload))
+                                (gp_error "generated payload exceeds max_payload_bytes")
+                              boundary
+                                ; The boundary node always keeps the source (it deletes it by raw pattern, not by
+                                ; literal name); removal before publication is replayed here.
+                                (let* [called (sop/group_promote_boundary inner.geo
+                                                :source (gp_title source) :destination (gp_title dest) :group name :name out_name
+                                                :keep_original true :output_attribute (if as_attribute out_name "")
+                                                :attributes (nth row 11) :tolerance tolerance.value
+                                                :include_unshared_edges unshared :include_all_unshared_curve_edges all_curve
+                                                :include_all_primitives_sharing_boundary_points all_primitives)
+                                       same (and (equal? source dest) (equal? name out_name))
+                                       out_literal (text/glob_literal out_name)
+                                       out_mask (if (or as_attribute (not same)) (array/int 0) (sop/group called :name out_name :owner dest))
+                                       out_order (if (or as_attribute (not same)) {:ordered false :indices (array/int 0)}
+                                                   (sop/group_order called :name out_name :owner dest))
+                                       finished (cond
+                                         (not removable) called
+                                         (or as_attribute (not same)) (sop/delete_group called (text/glob_literal name) :owner source)
+                                         (equal? dest "edge")
+                                           (sop/with_group (sop/delete_group called out_literal :owner dest) (exact out_mask) :name out_name :owner dest)
+                                         :else
+                                           (sop/with_group (sop/delete_group called out_literal :owner dest) (exact out_mask) :name out_name :owner dest
+                                             :order {:ordered out_order.ordered :indices (exact out_order.indices)}))]
+                                  {:geo finished :outputs (int/add inner.outputs 1) :payload (int/add inner.payload bytes) :touched marked})
+                              :else
+                                (let* [selected (sop/group snap :name name :owner source)
+                                       ordering (sop/group_order snap :name name :owner source)
+                                       mask (if (equal? source dest) selected (gp_promote snap source dest mode selected))
+                                       base (if removable (sop/delete_group inner.geo (text/glob_literal name) :owner source) inner.geo)
+                                       published (cond
+                                         as_attribute (sop/with_attr base out_name (exact mask) :owner dest :type int)
+                                         (and (equal? source dest) (not (equal? dest "edge")))
+                                           (sop/with_group base (exact mask) :name out_name :owner dest
+                                             :order {:ordered ordering.ordered :indices (exact ordering.indices)})
+                                         :else (sop/with_group base (exact mask) :name out_name :owner dest))]
+                                  {:geo published :outputs (int/add inner.outputs 1)
+                                   :payload (int/add inner.payload bytes) :touched marked}))))]
+              {:geo done.geo :outputs done.outputs :payload done.payload}))))
+      :geo)))
