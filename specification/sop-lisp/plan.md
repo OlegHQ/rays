@@ -723,3 +723,64 @@ and Point Jitter drafts remain unaccepted in the worktree; payload-concat and
 IEEE source proposals are also held. None contributes to the completed counts.
 
 All helper agents are idle. No new port batch starts at this checkpoint.
+
+### Draft tracker — resumed 2026-10-13
+
+Process change: every port is verified by the table-driven gate in
+`lib/flow_sop/port_tests/` (one `port_<key>.ml` registration per node; run
+`main.exe <key>` and `main.exe <key> --bench`). A draft is `nodes/<key>.pending`
+and is not registered. "Gate" below is the full Verification gate against the
+OCaml oracle; "speed" is Lisp/native at 1,000,000 elements, 1 and 4 domains.
+A draft that passes the gate but exceeds the 2× speed gate stays unregistered
+and unticked pending the owner's decision on question 6.
+
+Profile (reverse, compact_points, empty cook): the cost is runtime, not the
+tree walker. Each `sop/mesh`/`sop/remap` host call lowers a synthetic
+workspace; `sop/remap` built an unneeded edge index; `array/index_of` used a
+generic hash; packed maps cost about 40 ns per element against about 5 ns for a
+whole fused native pass. Three shared fixes are in (`3bffaa15`, `8ba568d7`,
+`d445b404`). `8ba568d7` no longer validates an explicit `:edges` CSR when the
+source has no edge groups. Projection: 2× is not reachable for reindexing
+nodes without ancestry-aware host operators.
+
+| Node | Task | Gate | Speed @1 / @4 | Note |
+| --- | --- | --- | --- | --- |
+| `group_invert` | B.13 | pass | 24× / 65× | packed bits natively, int masks in Lisp |
+| `group_random` | B.13 | pass | 2.3× / 3.7× | |
+| `name_from_groups` | B.14 | pass | 4.9× / 3.0× | |
+| `point_jitter` | B.10 | pass | 5.7× / 31× | |
+| `rest_position` | B.10 | pass | 3.3× / 1.0× | default bench is a sub-millisecond no-op |
+| `distance_from_target` | B.15 | pass | 6.7× / 5.8× | |
+| `uv_transform` | B.15 | pass | 20× / 15× | |
+| `color_by_height` | B.15 | pass | 11× / 13× | |
+| `grid` | C.7 | pass | 164× / 114× | |
+| `circle` | C.7 | pass | 24× / 40× | `segments 2` case dropped: checker hard range, native clamps |
+| `reverse` | C.8 | pass | 119× / 148× | |
+| `compact_points` | C.8 | pass | 6.2× / 6.7× | |
+| `blast` | C.8 | pass | 15× / 16× | |
+| `blast_by_attribute` | C.8 | pass | 3.4× / 3.1× | delegates to `sop/blast` |
+| `mirror` | C.8 | pass | 32× / 79× | |
+| `ends` | C.9 | pass | 49× / 65× | |
+| `graph_color` | E.5 | pass | 8.0× / 8.8× | refusal cases to restore |
+| `distance_along_geometry` | E.4 | pass | 4.6× / 3.5× | |
+
+Drafts that do not pass yet, and nodes without a draft:
+
+| Node | Blocker |
+| --- | --- |
+| `group_combine` | fold with a record-of-arrays state does not pack (`E_KERNEL_FORM`) |
+| `group_bounds` | Edges/Partially contained: `E_PACKED_FORM` in the segment-box test |
+| `group_non_planar`, `group_backface` | per-polygon arg-max loops do not pack; needs a segmented arg-max |
+| `ordered_group`, `attribute_remap`, `attribute_fade` | text split and text-to-number (in progress) |
+| `groups_from_name` | group-name validity operators (in progress) |
+| `material` | defaults pass; vec3 cases to re-run on the fixed gate |
+| `attr_from_image` | no image-pixel read in a geometry body |
+| `attribute_composite`, `merge` | runtime-typed attributes / attribute inventory (in progress) |
+| `attribute_noise`, `attribute_noise_quaternion` | fractal noise parameters (in progress) |
+| `sort` | Random mode needs an in-place shuffle |
+| `copy_to_points` | `pack` mode returns instances; a Lisp body returns geometry only |
+| `duplicate`, `rewire_vertices` | not drafted |
+| `group_find_path` | min-hops-then-length search with blocked masks |
+| `poly_path` | point clusters that keep all points; traversed edge per chain step |
+| `edge_transport`, `edge_transport_parent` | tree scan over a parent array; multi-root forest tie-breaks |
+| `edge_flip` | polygon triangulation validity check |
