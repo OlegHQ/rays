@@ -1,0 +1,294 @@
+; Whole Edge Relax draft: lengths, targets and the early exits are array passes over the edge table;
+; the relaxation is the native two-path scheme (closed form when every point has one selected edge,
+; otherwise Jacobi sweeps with per-point sequential accumulation) inside iterate with a tolerance stop.
+(defn relax_error :context value [(reason : text)]
+  (error "invalid_edge_relax" "edge_relax could not produce valid geometry"
+    :cause (str "edge_relax [invalid_edge_relax]: " reason)))
+(defn relax_missing :context value [(what : text) (name : text)]
+  (error "missing_group" "edge_relax could not produce valid geometry"
+    :cause (str "edge_relax [missing_group]: edge_relax could not find " what " " (text/repr name))))
+(defn relax_finite :context value [(x : float)] (= (- x x) 0.0))
+(defn relax_safe :context value [(index : int)] (if (int/ge index 0) index 0))
+(defn relax_all_finite :context value [(plane : (array float))]
+  (exact (int/eq (array/sum (exact (map (fn [(x : float)] (if (= (- x x) 0.0) 0 1)) plane))) 0)))
+; Edge_relax.length_between
+(defn relax_between :context value
+  [(ax : float) (ay : float) (az : float) (bx : float) (by : float) (bz : float)]
+  (let* [scale (max (max (max (abs ax) (abs bx)) (max (abs ay) (abs by))) (max (abs az) (abs bz)))]
+    (if (= scale 0.0) 0.0
+      (let* [dx (- (/ bx scale) (/ ax scale)) dy (- (/ by scale) (/ ay scale)) dz (- (/ bz scale) (/ az scale))]
+        (* scale (sqrt (fma dz dz (fma dy dy (* dx dx)))))))))
+; Edge_constraints.length
+(defn relax_vector :context value [(dx : float) (dy : float) (dz : float)]
+  (let* [scale (max (max (abs dx) (abs dy)) (abs dz))]
+    (if (= scale 0.0) 0.0
+      (let* [a (/ dx scale) b (/ dy scale) c (/ dz scale)]
+        (* scale (sqrt (+ (+ (pow a 2.0) (pow b 2.0)) (pow c 2.0))))))))
+(defn relax_same :context value [(a : (array int)) (b : (array int))]
+  (if (int/eq (array/count a) (array/count b))
+    (exact (int/eq (array/sum (exact (map (fn [(x : int) (y : int)] (if (int/eq x y) 0 1)) a b))) 0)) false))
+; Mean of selected lengths / maximum, scaled back (sum in edge order).
+(defn relax_normalized :context value
+  [(lengths : (array float)) (selected : (array int)) (maximum : float) (count : int)]
+  (if (= maximum 0.0) 0.0
+    (* maximum (/ (array/sum (exact (map (fn [(s : int) (l : float)] (if (int/eq s 1) (/ l maximum) 0.0)) selected lengths)))
+                  (float count)))))
+(defn relax_moves :context value
+  [(plane : (array float)) (edge_a : (array int)) (edge_b : (array int)) (errors : (array float))]
+  (exact (int/gt (array/sum (exact (map (fn [(e : int) (er : float)]
+    (if (and (> er 0.0) (not (= (array/nth plane (array/nth edge_a e)) (array/nth plane (array/nth edge_b e))))) 1 0))
+    (array/range (array/count errors) :type int) errors))) 0)))
+; Closed-form placement of one coordinate plane.
+(defn relax_place :context value
+  [(plane : (array float)) (active : bool) (owner_edge : (array int)) (movable : (array int))
+   (edge_a : (array int)) (edge_b : (array int)) (factor : (array float))]
+  (if active
+    (exact (map (fn [(p : int) (v : float)]
+      (let* [raw (array/nth owner_edge p) e (relax_safe raw)]
+        (if (and (int/ge raw 0) (int/eq (array/nth movable p) 1))
+          (let* [a (array/nth edge_a e) b (array/nth edge_b e)
+                 dx (- (array/nth plane b) (array/nth plane a)) f (array/nth factor e)]
+            (if (int/eq p a) (fma f dx (array/nth plane a)) (fma (* -1.0 f) dx (array/nth plane b))))
+          v)))
+      (array/range (array/count plane) :type int) plane))
+    plane))
+; One Jacobi term: next + factor * (current[other] - current[point]) where other >= 0.
+(defn relax_advance :context value
+  [(plane : (array float)) (accum : (array float)) (other : (array int)) (factor : (array float))]
+  (exact (map (fn [(p : int) (v : float)]
+    (let* [raw (array/nth other p) o (relax_safe raw)]
+      (if (int/ge raw 0) (+ v (* (array/nth factor p) (- (array/nth plane o) (array/nth plane p)))) v)))
+    (array/range (array/count plane) :type int) accum)))
+; Owner point of every slot of a CSR table, from a prefix sum of the segment starts.
+(defn relax_owners :context value [(offsets : (array int)) (total : int)]
+  (let* [points (int/sub (array/count offsets) 1)
+         starts (exact (map (fn [(p : int)] (array/nth offsets p)) (array/range points :type int)))
+         prefix (array/scan_sum (array/scatter_add starts (array/int points 1) (int/add total 1)))]
+    (exact (map (fn [(s : int)] (int/sub (array/nth prefix (int/add s 1)) 1)) (array/range total :type int)))))
+(defn relax_terms :context value
+  [(plane : (array float)) (other : (array int)) (factor : (array float)) (owner : (array int))]
+  (exact (map (fn [(s : int) (raw : int)]
+    (let* [o (relax_safe raw) p (array/nth owner s)]
+      (if (int/ge raw 0) (* (array/nth factor s) (- (array/nth plane o) (array/nth plane p))) 0.0)))
+    (array/range (array/count other) :type int) other)))
+; next[p] = current[p] + term_1 + term_2 ... in slot order: segment sums over [current, terms...] per point.
+(defn relax_accumulate :context value
+  [(plane : (array float)) (term : (array float)) (offsets : (array int)) (grown : (array int))
+   (grown_owner : (array int)) (active : (array int))]
+  (let* [joined (exact (map (fn [(j : int)]
+           (let* [q (array/nth grown_owner j) local (int/sub j (array/nth grown q))]
+             (if (int/eq local 0) (array/nth plane q)
+               (array/nth term (relax_safe (int/sub (int/add (array/nth offsets q) local) 1))))))
+           (array/range (array/count grown_owner) :type int)))
+         sums (array/segment_sum joined grown)]
+    (exact (map (fn [(q : int) (v : float)] (if (int/gt (array/nth active q) 0) (array/nth sums q) v))
+      (array/range (array/count plane) :type int) plane))))
+; next[p] = fma chain over the point's slots in slot order, starting at current[p]
+(defn relax_fused :context value
+  [(plane : (array float)) (other : (array int)) (factor : (array float)) (offsets : (array int)) (slots : int)]
+  (get (iterate slots {:v plane :k 0}
+    (fn [(s : {:v (array float) :k int})]
+      {:v (exact (map (fn [(p : int) (v : float)]
+          (let* [first (array/nth offsets p) slot (int/add first s.k)]
+            (if (int/lt slot (array/nth offsets (int/add p 1)))
+              (let* [raw (array/nth other slot) o (relax_safe raw)]
+                (if (int/ge raw 0) (fma (array/nth factor slot) (- (array/nth plane o) (array/nth plane p)) v) v))
+              v)))
+          (array/range (array/count plane) :type int) s.v))
+       :k (int/add s.k 1)})) :v))
+(defn relax_max_error :context value
+  [(x : (array float)) (y : (array float)) (z : (array float)) (selected : (array int))
+   (edge_a : (array int)) (edge_b : (array int)) (targets : (array float)) (only_shorten : bool)]
+  (array/max (exact (map (fn [(e : int)]
+    (if (int/eq (array/nth selected e) 1)
+      (let* [a (array/nth edge_a e) b (array/nth edge_b e)
+             l (relax_vector (- (array/nth x b) (array/nth x a)) (- (array/nth y b) (array/nth y a))
+                             (- (array/nth z b) (array/nth z a)))
+             d (- l (array/nth targets e))]
+        (if only_shorten (if (> d 0.0) d 0.0) (abs d)))
+      0.0)) (array/range (array/count selected) :type int)))))
+
+(defnode sop/edge_relax :label "Edge Relax" :category ["Topology" "Edge"]
+  [(source : geometry) (reference : geometry)
+   (group_owner : text "Edge" :label "Group type" :choices ["Point" "Vertex" "Primitive" "Edge"])
+   (group : text "" :label "Group")
+   (pin_group : text "" :label "Pin point group")
+   (iterations : int 32 :label "Iterations" :min 1 :max 1024 :hard_min 1)
+   (step_size : float 0.5 :label "Step size" :min 0 :max 1 :hard_min 0
+     :validate (and (> step_size 0.0) (<= step_size 1.0))
+     :code "E_PARAM" :message "sop/edge_relax: step size must be finite and within (0, 1]")
+   (target_mode : text "Individual lengths" :label "Target mode"
+     :choices ["Individual lengths" "Scale-independent distribution"])
+   (only_shorten : bool false :label "Only shorten")
+   (tolerance : float 0.000001 :label "Tolerance" :min 0 :max 0.1 :hard_min 0
+     :validate (> tolerance 0.0)
+     :code "E_PARAM" :message "sop/edge_relax: tolerance must be finite and positive")]
+  (let* [group_name (text/trim group) pin_name (text/trim pin_group)
+         group_literal (text/glob_literal (if (text/blank? group_name) "x" group_name))
+         pin_literal (text/glob_literal (if (text/blank? pin_name) "x" pin_name))
+         has_group (not (text/blank? group_name)) has_pin (not (text/blank? pin_name))
+         by_primitive (equal? group_owner "Primitive")
+         point_count (sop/count source :points)
+         primitive_count (sop/count source :primitives)
+         edge_count (sop/count source :edges)
+         src_topology (sop/topology source) ref_topology (sop/topology reference)]
+    (cond
+      (and has_group (or (equal? group_owner "Vertex") (equal? group_owner "Edge")))
+        (error "E_PARAM" "sop/edge_relax: group must own points or primitives")
+      (and has_group (equal? (array/count (sop/group_names source group_literal
+                                :owner (if by_primitive "primitive" "point"))) 0))
+        (relax_missing (if by_primitive "primitive group" "point group") group_name)
+      (and has_pin (equal? (array/count (sop/group_names source pin_literal :owner "point")) 0))
+        (relax_missing "pin point group" pin_name)
+      (not (and (int/eq (sop/count reference :points) point_count)
+                (and (relax_same src_topology.vertex_points ref_topology.vertex_points)
+                     (and (relax_same src_topology.primitive_offsets ref_topology.primitive_offsets)
+                          (relax_same src_topology.kinds ref_topology.kinds)))))
+        (relax_error "Edge Relax reference topology must exactly match the source topology")
+      (int/eq edge_count 0) source
+      :else
+        (let* [adj (sop/adjacency source)
+               primitive_mask (if (and has_group by_primitive) (sop/group source :name group_name :owner "primitive")
+                                (array/int primitive_count 1))
+               vertex_in (exact (map (fn [(p : int)] (array/nth primitive_mask p)) adj.primitive_of_vertex))
+               promoted (array/segment_sum (exact (map (fn [(v : int)] (array/nth vertex_in v)) adj.point_vertices))
+                          adj.point_vertex_offsets)
+               point_selected (cond
+                 (not has_group) (array/int point_count 1)
+                 by_primitive (exact (map (fn [(c : int)] (if (int/gt c 0) 1 0)) promoted))
+                 :else (sop/group source :name group_name :owner "point"))
+               pinned (if has_pin (sop/group source :name pin_name :owner "point") (array/int point_count 0))
+               movable (exact (map (fn [(s : int) (q : int)] (if (and (int/eq s 1) (int/eq q 0)) 1 0)) point_selected pinned))
+               all_movable (and (not has_group) (not has_pin))
+               edge_a adj.edge_a edge_b adj.edge_b
+               selected (if all_movable (array/int edge_count 1)
+                 (exact (map (fn [(a : int) (b : int)]
+                   (if (or (int/eq (array/nth movable a) 1) (int/eq (array/nth movable b) 1)) 1 0)) edge_a edge_b)))
+               selected_count (array/sum selected)]
+          (if (int/eq selected_count 0) source
+            (let* [px (sop/attr source "P") rx (sop/attr reference "P")
+                   sx (exact (map (fn [(p : vec3)] p.x) px)) sy (exact (map (fn [(p : vec3)] p.y) px))
+                   sz (exact (map (fn [(p : vec3)] p.z) px))
+                   tx (exact (map (fn [(p : vec3)] p.x) rx)) ty (exact (map (fn [(p : vec3)] p.y) rx))
+                   tz (exact (map (fn [(p : vec3)] p.z) rx))
+                   edges (array/range edge_count :type int)
+                   source_lengths (exact (map (fn [(e : int)]
+                     (if (int/eq (array/nth selected e) 1)
+                       (relax_between (array/nth sx (array/nth edge_a e)) (array/nth sy (array/nth edge_a e))
+                         (array/nth sz (array/nth edge_a e)) (array/nth sx (array/nth edge_b e))
+                         (array/nth sy (array/nth edge_b e)) (array/nth sz (array/nth edge_b e))) 0.0)) edges))
+                   reference_lengths (exact (map (fn [(e : int)]
+                     (if (int/eq (array/nth selected e) 1)
+                       (relax_between (array/nth tx (array/nth edge_a e)) (array/nth ty (array/nth edge_a e))
+                         (array/nth tz (array/nth edge_a e)) (array/nth tx (array/nth edge_b e))
+                         (array/nth ty (array/nth edge_b e)) (array/nth tz (array/nth edge_b e))) 0.0)) edges))
+                   invalid (and (not (and (relax_all_finite sx) (and (relax_all_finite sy) (relax_all_finite sz))))
+                                (int/gt (array/sum selected) 0))
+                   reference_invalid (not (and (relax_all_finite tx) (and (relax_all_finite ty) (relax_all_finite tz))))
+                   lengths_invalid (not (and (relax_all_finite source_lengths) (relax_all_finite reference_lengths)))]
+              (if (or invalid (or reference_invalid lengths_invalid))
+                (relax_error "Edge Relax selected edge has a non-finite or unrepresentable source/reference length")
+                (let* [maximum_source (array/max source_lengths) maximum_reference (array/max reference_lengths)
+                       by_distribution (equal? target_mode "Scale-independent distribution")
+                       source_mean (relax_normalized source_lengths selected maximum_source selected_count)
+                       reference_mean (relax_normalized reference_lengths selected maximum_reference selected_count)
+                       cannot_normalize (and by_distribution (and (= reference_mean 0.0) (not (= source_mean 0.0))))
+                       scale_factor (if by_distribution
+                         (if (= reference_mean 0.0) 1.0 (/ source_mean reference_mean)) 1.0)]
+                  (cond
+                    cannot_normalize (relax_error "Edge Relax cannot normalize a zero-mean reference")
+                    (not (relax_finite scale_factor)) (relax_error "Edge Relax target scale is not representable")
+                    :else
+                      (let* [targets (exact (map (fn [(l : float)] (* l scale_factor)) reference_lengths))
+                             target_bad (not (relax_all_finite targets))
+                             errors (exact (map (fn [(s : int) (l : float) (tg : float)]
+                               (if (int/eq s 1)
+                                 (let* [d (- l tg)] (if only_shorten (if (> d 0.0) d 0.0) (abs d))) 0.0))
+                               selected source_lengths targets))
+                             expand_bad (int/gt (array/sum (exact (map (fn [(s : int) (l : float) (tg : float)]
+                               (if (and (int/eq s 1) (and (> tg 0.0) (and (= l 0.0) (not only_shorten)))) 1 0))
+                               selected source_lengths targets))) 0)
+                             maximum_error (array/max errors)
+                             maximum_target (array/max (exact (map (fn [(s : int) (tg : float)]
+                               (if (int/eq s 1) tg 0.0)) selected targets)))
+                             moves_x (relax_moves sx edge_a edge_b errors)
+                             moves_y (relax_moves sy edge_a edge_b errors)
+                             moves_z (relax_moves sz edge_a edge_b errors)
+                             full_degree (exact (map (fn [(i : int)]
+                               (int/sub (array/nth adj.point_edge_offsets (int/add i 1)) (array/nth adj.point_edge_offsets i)))
+                               (array/range point_count :type int)))
+                             selected_degree (array/scatter_add
+                               (array/concat edge_a edge_b)
+                               (array/concat selected
+                                 (exact (map (fn [(s : int) (a : int) (b : int)]
+                                   (if (and (int/eq s 1) (not (int/eq a b))) 1 0)) selected edge_a edge_b)))
+                               point_count)
+                             maximum_degree (if all_movable (array/max full_degree) (array/max selected_degree))
+                             threshold (* tolerance (if (> maximum_source maximum_target) maximum_source maximum_target))]
+                        (cond
+                          target_bad (relax_error "Edge Relax target edge length is not representable")
+                          expand_bad (relax_error "Edge Relax cannot expand zero-length selected edge without a direction")
+                          (<= maximum_error threshold) source
+                          :else
+                            (let* [closed_form (and (int/eq maximum_degree 1) (<= step_size 0.5))
+                                   both_decay (pow (- 1.0 (* 2.0 step_size)) (float iterations))
+                                   one_decay (pow (- 1.0 step_size) (float iterations))
+                                   qualifies (exact (map (fn [(s : int) (l : float) (tg : float)]
+                                     (let* [d (- l tg)]
+                                       (if (and closed_form (and (int/eq s 1) (and (or (not only_shorten) (> d 0.0)) (not (= d 0.0))))) 1 0)))
+                                     selected source_lengths targets))
+                                   tagged (exact (map (fn [(e : int) (q : int)] (int/mul q (int/add e 1))) edges qualifies))
+                                   owner_edge (exact (map (fn [(a : int) (b : int)] (int/sub (int/add a b) 1))
+                                     (array/scatter_add edge_a tagged point_count)
+                                     (array/scatter_add edge_b tagged point_count)))
+                                   factor (exact (map (fn [(e : int) (l : float) (tg : float)]
+                                     (let* [both (and (int/eq (array/nth movable (array/nth edge_a e)) 1)
+                                                      (int/eq (array/nth movable (array/nth edge_b e)) 1))
+                                            final_length (fma (- l tg) (if both both_decay one_decay) tg)]
+                                       (if (= l 0.0) 0.0 (/ (/ (- l final_length) l) (if both 2.0 1.0)))))
+                                     edges source_lengths targets))
+                                   closed {:x (relax_place sx moves_x owner_edge movable edge_a edge_b factor)
+                                           :y (relax_place sy moves_y owner_edge movable edge_a edge_b factor)
+                                           :z (relax_place sz moves_z owner_edge movable edge_a edge_b factor)}
+                                   points (array/range point_count :type int)
+                                   max_slots (array/max full_degree)
+                                   slot_total (array/count adj.point_edges)
+                                   slots_range (array/range slot_total :type int)
+                                   slot_owner (relax_owners adj.point_edge_offsets slot_total)
+                                   grown (exact (map (fn [(q : int)] (int/add (array/nth adj.point_edge_offsets q) q))
+                                     (array/range (int/add point_count 1) :type int)))
+                                   grown_owner (relax_owners grown (int/add slot_total point_count))
+                                   planes
+                                     (if closed_form closed
+                                       (iterate iterations {:x sx :y sy :z sz}
+                                         (fn [(c : {:x (array float) :y (array float) :z (array float)})]
+                                           (let* [slot_other (exact (map (fn [(s : int)]
+                                                    (let* [p (array/nth slot_owner s) e (array/nth adj.point_edges s)
+                                                           o (if (int/eq (array/nth edge_a e) p) (array/nth edge_b e) (array/nth edge_a e))
+                                                           len (relax_vector (- (array/nth c.x o) (array/nth c.x p))
+                                                                 (- (array/nth c.y o) (array/nth c.y p)) (- (array/nth c.z o) (array/nth c.z p)))
+                                                           err (- len (array/nth targets e))]
+                                                      (if (and (int/eq (array/nth movable p) 1)
+                                                               (and (int/eq (array/nth selected e) 1)
+                                                                    (and (> len 0.0) (or (not only_shorten) (> err 0.0))))) o -1)))
+                                                    slots_range))
+                                                  slot_factor (exact (map (fn [(s : int) (raw : int)]
+                                                    (let* [p (array/nth slot_owner s) o (relax_safe raw) e (array/nth adj.point_edges s)
+                                                           len (relax_vector (- (array/nth c.x o) (array/nth c.x p))
+                                                                 (- (array/nth c.y o) (array/nth c.y p)) (- (array/nth c.z o) (array/nth c.z p)))
+                                                           err (- len (array/nth targets e))]
+                                                      (if (int/ge raw 0)
+                                                        (/ (/ (* step_size err) (if (> len 0.0) len 1.0)) (float maximum_degree)) 0.0)))
+                                                    slots_range slot_other))
+                                                  sweep {:x (relax_fused c.x slot_other slot_factor adj.point_edge_offsets max_slots)
+                                                         :y (relax_fused c.y slot_other slot_factor adj.point_edge_offsets max_slots)
+                                                         :z (relax_fused c.z slot_other slot_factor adj.point_edge_offsets max_slots)}]
+                                             (if (and (relax_all_finite sweep.x) (and (relax_all_finite sweep.y) (relax_all_finite sweep.z)))
+                                               sweep (relax_error "Edge Relax produced a non-finite point"))))
+                                         :until (fn [(a : {:x (array float) :y (array float) :z (array float)})
+                                                     (b : {:x (array float) :y (array float) :z (array float)})]
+                                           (<= (relax_max_error b.x b.y b.z selected edge_a edge_b targets only_shorten) threshold))))]
+                              (sop/delete_attr (sop/delete_attr
+                                (sop/with_attr source "P" (exact (map (fn [(x : float) (y : float) (z : float)] [x y z])
+                                  planes.x planes.y planes.z)))
+                                "N" :owner "point") "N" :owner "vertex")))))))))))))
