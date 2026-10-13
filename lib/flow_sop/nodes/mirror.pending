@@ -1,0 +1,83 @@
+; Whole-node draft of Mirror: reflects points across a plane (optionally keeping the
+; original), reverses mirrored polygons, and carries payloads through sop/remap.
+; Reflected normals ("N" on points and vertices) are recomputed after the remap.
+(defn mirror_reflect :context value [(v : vec3) (o : vec3) (n : vec3)]
+  ; Native contraction: (a*nx + b*ny) + c*nz is fma(c, nz, fma(b, ny, a*nx)).
+  (let* [twice (* 2.0 (fma (- v.z o.z) n.z (fma (- v.y o.y) n.y (* (- v.x o.x) n.x))))]
+    [(fma (* -1.0 twice) n.x v.x) (fma (* -1.0 twice) n.y v.y) (fma (* -1.0 twice) n.z v.z)]))
+(defnode sop/mirror :label "Mirror" :category "Modify"
+  [(in0 : geometry)
+   (keep_original : bool true :label "Keep original")
+   (origin_x : float 0.0 :label "Origin X" :folder ["Plane" "Origin"] :min -10 :max 10 :vec3 ["origin" 0])
+   (origin_y : float 0.0 :label "Origin Y" :folder ["Plane" "Origin"] :min -10 :max 10 :vec3 ["origin" 1])
+   (origin_z : float 0.0 :label "Origin Z" :folder ["Plane" "Origin"] :min -10 :max 10 :vec3 ["origin" 2])
+   (normal_x : float 1.0 :label "Normal X" :folder ["Plane" "Normal"] :min -1 :max 1 :vec3 ["normal" 0])
+   (normal_y : float 0.0 :label "Normal Y" :folder ["Plane" "Normal"] :min -1 :max 1 :vec3 ["normal" 1])
+   (normal_z : float 0.0 :label "Normal Z" :folder ["Plane" "Normal"] :min -1 :max 1 :vec3 ["normal" 2])]
+  (let* [sq_x (float/mul_checked normal_x normal_x)
+         sq_y (float/fma_checked normal_y normal_y sq_x.value)
+         sq_z (float/fma_checked normal_z normal_z sq_y.value)
+         finite_length (and sq_x.valid (and sq_y.valid sq_z.valid))
+         length (if finite_length (sqrt sq_z.value) 1e300)]
+    (if (<= length 1e-20)
+      (error "invalid_parameter" "mirror could not produce valid geometry"
+        :cause "mirror [invalid_parameter]: Rdk_mesh.Mirror_geometry.mirror: plane normal must be non-zero")
+      ; An overflowing length is +infinity natively: every unit component is a signed zero.
+      (let* [n (if finite_length [(/ normal_x length) (/ normal_y length) (/ normal_z length)]
+                 [(* 0.0 normal_x) (* 0.0 normal_y) (* 0.0 normal_z)])
+             origin [origin_x origin_y origin_z]
+             zero [0.0 0.0 0.0]
+             points (sop/count in0 :points)
+             vertices (sop/count in0 :vertices)
+             prims (sop/count in0 :primitives)
+             topo (sop/topology in0)
+             offsets topo.primitive_offsets
+             starts (array/slice offsets 0 prims)
+             ends (array/slice offsets 1 prims)
+             point_base (if keep_original points 0)
+             owner (prim_of_vertex starts vertices)
+             ; source vertex of every reflected vertex: polygons run backwards
+             reflected_source (exact (map (fn [(vertex : int) (prim : int)]
+               (if (int/eq (array/nth topo.kinds prim) 0)
+                 (int/sub (int/add (array/nth starts prim) (array/nth ends prim)) (int/add vertex 1))
+                 vertex))
+               (array/range vertices :type int) owner))
+             vertex_map (if keep_original
+                          (array/concat (array/range vertices :type int) reflected_source) reflected_source)
+             point_map (if keep_original
+                         (array/concat (array/range points :type int) (array/range points :type int))
+                         (array/range points :type int))
+             primitive_map (if keep_original
+                             (array/concat (array/range prims :type int) (array/range prims :type int))
+                             (array/range prims :type int))
+             vertex_points (exact (map (fn [(source : int)] (int/add point_base (array/nth topo.vertex_points source)))
+               reflected_source))
+             positions (sop/attr in0 :P)
+             reflected (exact (map (fn [(p : vec3)] (mirror_reflect p origin n)) positions))
+             target (sop/mesh
+               :points (if keep_original (array/concat positions reflected) reflected)
+               :vertex_points (if keep_original (array/concat topo.vertex_points vertex_points) vertex_points)
+               :primitive_offsets (if keep_original
+                                    (array/concat starts (exact (map (fn [(o : int)] (int/add o vertices)) offsets)))
+                                    offsets)
+               :kinds (if keep_original (array/concat topo.kinds topo.kinds) topo.kinds))
+             source_edges (sop/edges in0)
+             target_edges (sop/edges target)
+             back (fn [(p : int)] (if keep_original (int/mod p points) p))
+             remapped (sop/remap in0 target
+               :points point_map :vertices vertex_map :primitives primitive_map
+               :positions "target"
+               :edges (edge_ancestry source_edges.a source_edges.b
+                        (exact (map back target_edges.a)) (exact (map back target_edges.b)) points))
+             point_normals (if (sop/has_attr in0 "N" :owner "point" :type vec3)
+               (let* [source (sop/attr in0 "N" :owner "point" :type vec3)
+                      flipped (exact (map (fn [(v : vec3)] (mirror_reflect v zero n)) source))]
+                 (sop/with_attr remapped "N" (if keep_original (array/concat source flipped) flipped)
+                   :owner "point" :type vec3))
+               remapped)]
+        (if (sop/has_attr in0 "N" :owner "vertex" :type vec3)
+          (let* [source (sop/attr in0 "N" :owner "vertex" :type vec3)
+                 mapped (exact (map (fn [(at : int)] (mirror_reflect (array/nth source at) zero n)) reflected_source))]
+            (sop/with_attr point_normals "N" (if keep_original (array/concat source mapped) mapped)
+              :owner "vertex" :type vec3))
+          point_normals)))))

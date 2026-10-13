@@ -180,4 +180,26 @@
   (defn rand_at :context value [(seed : int) (index : int)]
     (let* [key (int/xor seed (int/mul (int/add index 1276007651554290947)
                                      2177342782468422677))]
-      (/ (float (int/shr (rand_mix_index key) 10)) 9007199254740992.0))))
+      (/ (float (int/shr (rand_mix_index key) 10)) 9007199254740992.0)))
+
+  ; Reindexing helpers (C.8). Exact integer gather: source[index[i]].
+  (defn int_gather :context value [(source : (array int)) (index : (array int))]
+    (exact (map (fn [(at : int)] (array/nth source at)) index)))
+  ; Owning primitive of every vertex, from the primitive start offsets (without the terminal).
+  (defn prim_of_vertex :context value [(starts : (array int)) (vertices : int)]
+    (exact (map (fn [(seen : int)] (int/sub seen 1))
+      (array/slice (array/scan_sum (array/scatter_add starts (array/int (array/count starts) 1)
+                                    (int/add vertices 1))) 1 vertices))))
+  ; Edge ancestry CSR for sop/remap. Unique edges are given by endpoints in one point
+  ; space (target endpoints already translated to source points, -1 when a point is gone);
+  ; a target edge's row holds the source edge with the same endpoints, or is empty.
+  (defn edge_ancestry :context value [(source_a : (array int)) (source_b : (array int))
+                                      (target_a : (array int)) (target_b : (array int)) (points : int)]
+    (let* [found (exact (array/index_of
+             (map (fn [(a : int) (b : int)] (int/add (int/mul (min a b) points) (max a b))) source_a source_b)
+             (map (fn [(a : int) (b : int)]
+                    (if (or (int/lt a 0) (int/lt b 0)) -1 (int/add (int/mul (min a b) points) (max a b))))
+               target_a target_b)))
+           present (exact (map (fn [(edge : int)] (if (int/ge edge 0) 1 0)) found))]
+      {:offsets (array/scan_sum present)
+       :values (int_gather found (array/compact present))})))

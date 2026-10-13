@@ -1,0 +1,65 @@
+; Whole-node draft of Reverse: permutes vertices inside selected primitives, then
+; carries every payload through sop/remap. Edge groups follow their endpoints.
+(defnode sop/reverse :label "Reverse" :category "Topology"
+  [(in0 : geometry)
+   (group : text "" :label "Primitive group")
+   (operation : text "Reverse vertices" :label "Operation" :choices ["Reverse vertices" "Shift vertices"])
+   (shift : int 1 :label "Shift" :min -32 :max 32)]
+  (let* [group_name (text/trim group)
+         found (or (text/blank? group_name)
+           (fold [found false] [name (sop/group_names in0 "" :owner "primitive")]
+             (or found (equal? name group_name))))]
+    (if (not found)
+      (error "missing_group" (str "reverse could not find primitive group " (text/repr group_name)))
+      (let* [prims (sop/count in0 :primitives)
+             vertices (sop/count in0 :vertices)
+             points (sop/count in0 :points)
+             topo (sop/topology in0)
+             offsets topo.primitive_offsets
+             starts (array/slice offsets 0 prims)
+             ends (array/slice offsets 1 prims)
+             reversing (equal? operation "Reverse vertices")
+             selection (if (text/blank? group_name) (array/int prims 1)
+                           (sop/group in0 :name group_name :owner "primitive"))
+             changes (if reversing
+                       (int/gt (array/sum selection) 0)
+                       (and (not (int/eq shift 0))
+                         (int/gt (array/sum (map (fn [(first : int) (last : int) (on : int)]
+                           (if (and (int/eq on 1) (not (int/eq (int/mod shift (int/sub last first)) 0))) 1 0))
+                           starts ends selection)) 0)))]
+        (if (not changes) in0
+          (let* [; primitive owning each vertex: count of starts at or before it, minus one
+                 marks (array/scatter_add starts (array/int prims 1) (int/add vertices 1))
+                 owner (map (fn [(seen : int)] (int/sub seen 1))
+                   (array/slice (array/scan_sum marks) 1 vertices))
+                 sources (exact (map (fn [(vertex : int) (prim : int)]
+                   (let* [first (array/nth starts prim)
+                          count (int/sub (array/nth ends prim) first)
+                          local (int/sub vertex first)
+                          moved (if reversing (int/sub (int/sub count local) 1)
+                                  (int/mod (int/add local
+                                    (int/mod (int/add (int/mod shift count) count) count)) count))]
+                     (if (int/eq (array/nth selection prim) 1) (int/add first moved) vertex)))
+                   (array/range vertices :type int) owner))
+                 vertex_points (exact (map (fn [(source : int)] (array/nth topo.vertex_points source)) sources))
+                 target (sop/mesh :points (sop/attr in0 :P) :vertex_points vertex_points
+                          :primitive_offsets offsets :kinds topo.kinds)
+                 ; edge ordinals follow first occurrence, so match edges by endpoints
+                 source_edges (sop/edges in0)
+                 target_edges (sop/edges target)
+                 found_edge (exact (array/index_of
+                   (map (fn [(a : int) (b : int)] (int/add (int/mul (min a b) points) (max a b)))
+                     source_edges.a source_edges.b)
+                   (map (fn [(a : int) (b : int)] (int/add (int/mul (min a b) points) (max a b)))
+                     target_edges.a target_edges.b)))
+                 present (exact (map (fn [(edge : int)] (if (int/ge edge 0) 1 0)) found_edge))
+                 remapped (sop/remap in0 target
+                   :points (array/range points :type int)
+                   :vertices sources
+                   :primitives (array/range prims :type int)
+                   :positions "mapped"
+                   :edges {:offsets (array/scan_sum present)
+                           :values (exact (map (fn [(at : int)] (array/nth found_edge at)) (array/compact present)))})]
+            (if reversing
+              (sop/delete_attr (sop/delete_attr remapped "N" :owner "point") "N" :owner "vertex")
+              remapped)))))))
