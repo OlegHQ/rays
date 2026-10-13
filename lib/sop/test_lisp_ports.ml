@@ -794,6 +794,45 @@ let line () =
             "Production Line native/reference/domain bytes") [1;4;8])) [false;true])
     ["Polygon curve",4225;"Points",1;"Points",32769]
 
+let points_port () =
+  check(not(List.exists(fun factory->Sop.Edit_graph.factory_key factory="points")
+    Sop_catalog.Editor.factories)) "Points still registered as an OCaml body";
+  check(List.exists(fun factory->Sop.Edit_graph.factory_key factory="point_generate")
+    Sop_catalog.Editor.factories) "Points port removed the separate input-dependent generator";
+  let sources=Flow_sop.Catalog.sources() |>flow_ok in
+  let factories=Sop_catalog.Editor.factories in
+  let catalog=Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version factories |>flow_ok in
+  let modes=["", "sourcepoint", "sourceindex";" \t\r\n", " sourceé ", " index猫 ";
+    " \t madeé猫 \n", "sourcepoint", "sourceindex";
+    " same ", "same", " same ";"\194\160", "\194\160", "\226\128\131";
+    "P", " P ", "p";"\000", " a\\\"é猫\n ", "\t b\000 "] in
+  List.iter(fun(count,(group,source_name,index_name))->
+    let forms=Flow.Syntax.parse(Printf.sprintf
+      "(workspace points_port (graph g :context sop (sop/points :points %d :generated_group %S :source_point_attribute %S :source_index_attribute %S)))"
+      count group source_name index_name) |>flow_ok in
+    let workspace=match Flow_sop.Catalog.check_workspace ~sources ~ops:Flow_sop.Operators.all catalog forms with
+      |Some workspace,ds when not(List.exists(fun(d:Flow.Diagnostic.t)->d.severity=Error)ds)->workspace
+      |_,ds->fail(String.concat "\n"(List.map Flow.Diagnostic.to_string ds)) in
+    let native=Sop.Edit_graph.instantiate Sop.Nodes.Point_generate.factory [] |>get_string_ok in
+    let native=fst(N.apply_parameters native ["points",P.Int_value count;"generated_group",P.Text_value group;
+      "source_point_attribute",P.Text_value source_name;"source_index_attribute",P.Text_value index_name] |>get_string_ok) in
+    List.iter(fun reference->
+      let lowered=Flow_sop.Lower.of_checked ~reference ~factories workspace |>flow_ok in
+      let factory=List.find(fun factory->Sop.Edit_graph.factory_key factory="points")lowered.factories in
+      check(Flow_sop.Catalog.descriptor factory=Flow_sop.Catalog.descriptor Sop.Nodes.Point_generate.factory)
+        "Production Points complete descriptor";
+      let graph=List.hd lowered.graphs in
+      let actual=Sop.Edit_graph.compile_node graph.network.geometry ~node_id:(Option.get graph.root) |>get_string_ok in
+      check(N.parameter_fields actual=N.parameter_fields native && N.parameter_key actual=N.parameter_key native
+        && N.operation actual=N.operation native && N.version actual=N.version native && N.label actual=N.label native
+        && N.inputs actual=[] && N.dependencies actual=N.dependencies native) "Production Points identity/schema/key";
+      let s=session() in Fun.protect ~finally:(fun()->Sop.Session.close s)(fun()->
+        List.iter(fun domains->List.iter(fun grain->Sop.Session.clear s;let c=context domains grain in
+          check(geometry_bytes(cooked s c actual)=geometry_bytes(cooked s c native))
+            (Printf.sprintf "Production Points native/reference/domain bytes count=%d group=%S source=%S index=%S reference=%b domains=%d grain=%d"
+              count group source_name index_name reference domains grain)) [1;97;4096]) [1;4;8])) [false;true])
+    (List.concat_map(fun count->List.map(fun mode->count,mode)modes)[1;7;50])
+
 let ()=if Array.exists ((=) "--bench") Sys.argv then benchmark ()
   else if Array.exists ((=) "--rename-attributes") Sys.argv then rename_attributes ()
-  else (noise_displace ();set_float ();set_int ();set_vector ();set_orient ();set_transform ();delete_edge_group ();rename_edge_group ();delete_attributes ();rename_attributes ();group_delete ();group_rename ();swap_attributes ();set_color ();line ())
+  else (noise_displace ();set_float ();set_int ();set_vector ();set_orient ();set_transform ();delete_edge_group ();rename_edge_group ();delete_attributes ();rename_attributes ();group_delete ();group_rename ();swap_attributes ();set_color ();line ();points_port ())

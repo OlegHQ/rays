@@ -1,10 +1,11 @@
-# Whole bounded Points candidate — recipe qualified, production pending
+# Complete bounded Points port and recipe audit
 
 Prepared outside the worktree after review of
 `/tmp/rays-points-whole-design.md`, then applied and tested by root. The complete
 semantic recipe and fixed12 aggregate/36 small-count performance rows pass.
-The initial two small-count failures remain evidence. Registration, manifest,
-whole-port integration and accepted counts stay pending. The native factory
+The initial two small-count failures remain evidence. Production registration,
+manifest, whole-port integration and final native/shipping gates now pass.
+Points is accepted as the sixteenth whole port. The native factory
 remains the independent oracle; no Point_generate callback appears in the body.
 
 ## Exact scope and route
@@ -87,9 +88,8 @@ the ordinary value lane and compare fields, keys, cooked bytes and caller state
 against the native lane. Cancellation checks are already-cancelled cold cooks
 only; this does not demonstrate dynamic mid-cook cancellation.
 
-No acceptance is implied by the authored test. Root still needs its runnable
-whole-port function in test_lisp_ports, production/native unregister pairing,
-reviewed manifest/CLI/goldens and all normal/native gates after actual proof.
+The recipe checks alone did not imply acceptance. The completed production
+pairing, whole-port function and final gates are recorded below.
 
 ## Fixed bounded-kind performance applicability
 
@@ -131,8 +131,44 @@ rows pass. Maximum final ratios1.8258339810115973 and1.9819395082323927. No
 threshold, count bound, row set or fallback was changed to obtain these passes.
 
 Initial-domain counters are not aggregate worker allocation or peak RSS. Root
-must record compiler/profile/CPU/OS/machine, quiet reservation, exact logs and
-terminal handles. Both tables must pass before qualification; this artifact
-records no times, performance improvement, zero allocation or port completion.
+recorded compiler/profile/CPU/OS/machine, quiet reservation, exact logs and
+terminal handles in concrete-executor-validation.md. Both complete tables pass;
+these measurements establish the existing2x gate without a zero-allocation claim.
 SOP/browser geometry export remains outside the current2D target; the existing
 intrinsics' host JS twins do not imply a browser Points geometry export.
+
+## Production acceptance
+
+The same unchanged body is embedded as nodes/points.rays, with its native
+catalog registration removed atomically. The input-dependent point_generate
+registration remains. test_points_port now uses Catalog.sources alone and runs
+under the normal runtest alias. test_lisp_ports additionally compares21 actual
+production combinations, full identity/descriptor and native/reference bytes
+at domains1/4/8 and grains1/97/4096.
+
+The actual editor Core_add test inserts the real menu row, checks its card and
+default fields/key, then cooks that inserted node against the native oracle at
+all nine domain/grain settings. Initial61037 and32153 menu checks selected
+Compact Points: existing sorting prioritizes display-label word matches over
+key matches. The final test uses the existing Node_menu.Private.keys sorter
+over the actual native+Lisp catalog and ArrowDown to the Points row. It changes
+no product ranking. Final78026 EXIT0 is recorded in
+/tmp/rays-points-real-menu-focused3-20261013.log.
+
+Reviewed/promoted manifest: unchanged four-field declaration moved to the Lisp
+section with body lisp/calls and digest7abb74934b958e68123090042534b754. The CLI
+snapshot changes only catalog digest to
+8c2fb554841c77bc3a09e9450d3273539af443902882f845576ede60dbdc39c1;
+authored-source digest, rendered goldens and public API are unchanged.
+
+Final focused74602 EXIT0: /tmp/rays-points-production-focused-final-20261013.log,
+compiler/FlowSOP/SOP/catalog/CLI/editor/API/dependency checks. Native20324 EXIT0:
+/tmp/rays-points-production-native-20261013.log, @runtest-native, including23
+graph one/four-domain rendered parity. Ship5577 EXIT0:
+/tmp/rays-points-production-ship-20261013.log, @all/@runtest/@smoke/diffcheck;
+43 standard files,1 custom-catalog executable and13 fixtures pass the complete
+four-frame/one-eight-domain payload and command sweep. No measured body or
+execution path changed between the final48 timing rows and this promotion.
+
+Accepted ports16/128 (12.5%),112 remaining; milestones24/60 (40%). C.7 remains
+unchecked with only Line and Points complete,2/11 generators.

@@ -220,6 +220,6 @@
  (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop unix))
 
 (rule
- (alias points_draft)
- (deps nodes/points.pending)
+ (aliases runtest points_port)
+ (deps nodes/points.rays)
  (action (run %{exe:test_points_port.exe})))

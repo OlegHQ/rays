@@ -6,10 +6,9 @@ module P=Param
 module S=Flow.Syntax
 module D=Flow.Diagnostic
 let checked=function Ok value->value|Error d->fail(D.to_string d)
-let sources=(Flow_sop.Catalog.sources() |>checked)@
-  (In_channel.with_open_bin "nodes/points.pending" In_channel.input_all |>S.parse |>checked
-   |>List.concat_map(fun(form:S.t)->match form.node with
-     |List({node=Sym "workspace";_}::_::children)->children|_->[form]))
+let sources=Flow_sop.Catalog.sources() |>checked
+let ()=check(not(List.exists(fun f->Sop.Edit_graph.factory_key f="points")Sop_catalog.Editor.factories))
+  "Points remains registered as an OCaml body"
 let factories=List.filter(fun f->Sop.Edit_graph.factory_key f<>"points")Sop_catalog.Editor.factories
 let native_factories=Sop.Nodes.Point_generate.factory::factories
 let catalog fs=Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version fs |>checked

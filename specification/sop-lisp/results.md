@@ -61,7 +61,7 @@ ports and completed encoded boundary are recorded below.
 | A.5 | `test_lisp_projection.ml` compares the Lisp and independent OCaml cards structurally, full inspector metadata, scalar/vector scrubs, parameter drives, bypass, nested cards and schema-change invalidation. Combined lowering/graph/editor gate exited 0 (session 89094); actual editor fallback-inspector editing and menu search/add passed (session 92998). Dummy-driver `@test/test_workspace_vocabulary @test/test_workspace_shell @test/test_sop_catalog @test/dependency_gate` exited 0 (session 16558), proving helper navigation filtering, completion refresh after declaration addition/removal, schema changes, reload and reducer undo/redo, actual menu interaction, and the combined factory registry. The production source/editor/catalog/dependency refresh exited 0 (session 21186). | Complete: focused card/menu/vocabulary/navigation and production source/editor gates passed. |
 | A.6 | The complete pilot implements both noise modes and explicit/context seed selection. Its context-seed and attribute-delete prerequisites have moved forward from later work. Whole-mode geometry/domain/grain/cache/schema checks passed (checker agent session 60089). Real-parallel 32,769-point fixtures cover both modes at 1/4/8 domains and grains 97/4096, with 4-ULP oracle and byte-exact strict-reference comparisons after clearing the session (session 48781). The quiet one-million-point timing gate passed (session 59246, measurements below). Production now embeds `noise_displace.rays` and removes its native catalog registration while retaining `Sop.Nodes` as the oracle. The reviewed promoted manifest has digest `ef85cfb9f1560f4b8d7456cbcf6af521`; labels/defaults remain unchanged and the entry records a Lisp body. Production pilot/catalog/checker gates exited 0 (checker agent sessions 68500 and 99460); actual source-save/editor/catalog/dependency refresh passed (session 21186). Final pilot and legacy node gates passed after repairing the native factory's default cook-label protocol (session 45407), including relabel/cache/parameter-rebuild checks with ASCII and UTF-8 labels at context seeds 42 and 999. | Complete: full Verification and final shipping/native gates passed; committed with the production port. |
 | A.R | `specification/sop.md` and `lib/sop_catalog/AGENTS.md` now describe the Lisp declaration alternative and runtime ownership. `specification/flow.md` describes `defnode`. Root focused `@API @test/dependency_gate @lib/flow/runtest @lib/flow_sop/runtest @test/test_rays_editor @test/test_workspace_start @runtest-native` exited 0 (session 36479), including actual native rendering/pathtracer gates. Native reruns 41613 and 34796 passed; the latter covers 23 SOP graphs with exact one/four-domain PNG comparisons. Render goldens remain unchanged. `opam exec -- _build/default/tools/check.exe @lib/flow_sop/runtest @lib/sop/test_nodes` exited 0 (session 86865), covering selective attribute/deletion facts and the combined native/Lisp factory census. Shipping runs 15355/25500 exposed narrow catalog injection and the generated-source digest expectation; fixes are recorded below. | Complete: final `check.exe --ship` (session 83244) and `@runtest-native` (session 33890) exited 0; committed with the production port. |
-| B–E | Fourteen whole-node ports are complete: the pilot, all six B.11 setters and all seven B.12 metadata nodes. Their individual oracle, performance and production evidence is retained below. | The other 114 whole ports, remaining language capabilities and phase review gates remain required. |
+| B–E | Sixteen whole-node ports are complete: the pilot, all six B.11 setters, all seven B.12 metadata nodes, Line and Points. Their individual oracle, performance and production evidence is retained below. | The other 112 whole ports, remaining language capabilities and phase review gates remain required. |
 | B.1 | Owner-aware Float/Vec2/Vec3/Vec4/Int/Text/CSR attributes, literal-selected result types and a cooked Boolean `sop/has_attr` predicate are implemented. Focused `@lib/flow_sop/runtest @tools/lisp/runtest` exited 0 (session 98738): all-owner strict/reference Text round trips, exact UTF-8/empty strings, copied read/write ownership, count/type errors, a strict 4,097-element authored text map, empty geometry/detail counts, exact one/eight-domain bytes, graph type edits through Text, numeric multi-block fixtures, distinct owner/CSR count origins and strict compiled lazy query guards pass. Native-to-JavaScript census including Text attributes passes 15,152 cases across 79 contracts. Shared structured Core resolves genuine host sources without interpreter fallback. No new port is claimed. | Complete: focused, shipping, native and web foundation gates passed; final commands and coverage below. |
 | B.2 | The expanded native-to-JavaScript primitive census passes 15,029 cases across 78 contracts: all ten exact integer operations, five comparisons, typed integer construction/range/build/count/get/slice/concat/sum and the existing floating/host contracts. Signed bounds, values above 2^53, wrapping sums beyond 4,096 elements, invalid shifts, selectors and element types retain exact integer/error checks. The census exposed and repaired shared native range-selector and JavaScript integer builder/error boundaries. | Complete: focused, shipping, native and web foundation gates passed; final commands and coverage below. |
 | B.4 | `test_topology_kernel` compares all four counts and canonical edge endpoints with native `Topology_index` on empty, shared polygon, repeated open curve, closed curve and mixed nonmanifold fixtures. Owned queries, exact integer writes beyond 2^53, cache refresh/invalidation and graph keyword gestures pass. Focused gate 63052 exited 0; combined language gate 42787 also passed. | Complete: stated focused language gate; final Phase B review remains pending. |
@@ -5003,3 +5003,50 @@ The new whole-port function is in lib/sop/test_lisp_ports.ml and rich Line check
 run under normal FlowSOP runtest. Counts:15/128 ports (11.7%),113 remaining;
 24/60 milestones (40%). C.7 stays unchecked with only1/11 generators accepted.
 Points' full recipe/performance is qualified but its production port is pending.
+
+## Points whole port accepted —16/128
+
+The complete bounded zero-input Points generator now resolves through
+nodes/points.rays. Its native catalog registration is removed in the same
+whole-port commit; Sop.Nodes.Point_generate.factory remains the independent
+oracle. The separate input-dependent sop/point_generate stays registered.
+All four physical fields, defaults, hard1..50 bounds, labels, categories,
+operation/version, normalized keys, empty inputs and dependencies match native.
+The body constructs positive-zero scalar planes, empty topology, exact source
+and local-index Int attributes and the optional trimmed unordered full group.
+Metadata names retain their exact bytes; no native whole-node callback is used.
+
+Rich tests cover all50 counts and every field/edit/cache/live/state/error route,
+raw Unicode/control names and ASCII-only whitespace rules, source saves,
+native/reference/strict output and domains1/4/8 at grains1/97/4096. The normal
+whole-port function additionally compares21 production combinations and the
+complete descriptor/identity. Actual Core_add insertion cooks the real menu
+node and compares native bytes. The menu test uses existing search sorting and
+keyboard navigation: label-word matches put Compact Points ahead of the key
+Points, so it computes the Points row from the native+Lisp catalog. Product
+ranking remains the existing behavior. Initial loader and menu-test failures
+are retained in points-port-audit.md.
+
+Both unchanged fixed performance tables pass:80848 EXIT0 aggregate12 rows and
+91572 EXIT0 micro36 rows. Maximum ratios1.8258339810115973 and1.9819395082323927;
+before/after96 rows and the substantive shared concrete Executor change are
+recorded in concrete-executor-validation.md. The native maximum remains50:
+the aggregate protocol is20,000 separate50-point cold cooks,1M total points.
+Median3,grain4096,domains1/4,Apple M1/macOS27.0.1/OCaml5.3/Dune dev; agents
+ACK-paused for timings. No threshold, row set, callback or fallback changed.
+The body and measured execution path are unchanged by production promotion.
+
+Final focused74602 EXIT0: /tmp/rays-points-production-focused-final-20261013.log,
+compiler/FlowSOP/SOP/catalog/CLI/editor/API/dependency checks. Actual menu78026
+EXIT0: /tmp/rays-points-real-menu-focused3-20261013.log. Native20324 EXIT0:
+/tmp/rays-points-production-native-20261013.log, @runtest-native. Ship5577
+EXIT0: /tmp/rays-points-production-ship-20261013.log, @all/@runtest/@smoke/diffcheck;
+43 standard files,1 custom-catalog executable and13 fixtures pass the complete
+four-frame/one-eight-domain cooked-payload and command sweep.
+
+Reviewed/promoted snapshots contain only the unchanged Points declaration's
+move to body lisp/calls and manifest digest7abb74934b958e68123090042534b754,
+plus CLI catalog digest8c2fb554841c77bc3a09e9450d3273539af443902882f845576ede60dbdc39c1.
+Authored-source digest, render goldens and public API remain unchanged.
+Accepted whole ports:16/128 (12.5%),112 remaining. Milestones remain24/60 (40%);
+C.7 stays unchecked with2/11 generators accepted.

@@ -650,7 +650,7 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 - [x] C.4 — ordered compact indices, exclusive Int offsets and scatter-add pass native/reference/Core/domain, ownership/error/state, geometry composition, graph/editor, actual JavaScript runtime/worker and final shipping gates; evidence in the three bulk-array validation notes and `results.md`.
 - [x] C.5 — stable Int/Float/byte-Text grade and exact first-match Int/Text lookup pass native/reference/Core/domain, ownership/error/state, consumer, graph/editor, actual JavaScript runtime/worker and final shipping gates; evidence in `grade-index-validation.md` and `results.md`.
 - [ ] C.6
-- [ ] C.7 — Line is complete (1/11 generators); its full recipe, production menu, native and shipping evidence is in `line-port-audit.md` and `results.md`. The other ten remain unaccepted.
+- [ ] C.7 — Line and Points are complete (2/11 generators); full recipes, performance, production menu, native and shipping evidence is in `line-port-audit.md`, `points-port-audit.md` and `results.md`. The other nine remain unaccepted.
 - [ ] C.8
 - [ ] C.9
 - [ ] C.10
@@ -682,7 +682,7 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 ### Completed whole-node ports
 
 Each checked node passed the full Verification recipe and has its own source
-commit. Evidence and timings are in `results.md`. The other 114 inventory
+commit. Evidence and timings are in `results.md`. The other 112 inventory
 nodes remain required; grouped phase milestones stay unchecked until every
 node in that group has passed.
 
@@ -700,3 +700,5 @@ node in that group has passed.
 - [x] `group_delete` — B.12, all four owners, unused groups, ordered rules and native error/schema/cache/graph parity.
 - [x] `group_rename` — B.12, all owners and conflict modes, ordered unions, rewrite/error order and native schema/cache/graph parity.
 - [x] `swap_attributes` — B.12, all owners, storage and copy/move/swap modes, canonical P, eager rewrite validation and native schema/cache/graph parity.
+- [x] `line` — C.7, both output kinds, all fields, native FMA/error/capacity parity, actual production menu and all eight performance rows; native/shipping gates pass.
+- [x] `points` — C.7, complete bounded zero-input generator, all four fields/counts/groups/raw names, native/reference/domain/cache/editor parity and all 48 fixed performance rows; native/shipping gates pass.

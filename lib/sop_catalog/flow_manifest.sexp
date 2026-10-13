@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "a89cc03f7f3ee2e0dc5130510617b400")
+  (digest "7abb74934b958e68123090042534b754")
   (kinds
     (kind "sop/box"
       (key "box")
@@ -1051,20 +1051,6 @@
         (field "make_isolated_loops_closed" "Close isolated loops" (folder) (bool) (bool false) (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/points"
-      (key "points")
-      (aliases)
-      (operation "point_generate")
-      (label "Point Generate")
-      (category "Create" "Point")
-      (slots)
-      (fields
-        (field "points" "Points" (folder) (int (soft 1 50) (hard 1 50)) (int 50) (primary false) (vec3))
-        (field "generated_group" "Generated group" (folder) (text) (text "") (primary false) (vec3))
-        (field "source_point_attribute" "Source point attribute" (folder) (text) (text "sourcepoint") (primary false) (vec3))
-        (field "source_index_attribute" "Source index attribute" (folder) (text) (text "sourceindex") (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode generator) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/attribute_noise_quaternion"
       (key "attribute_noise_quaternion")
       (aliases)
@@ -3375,6 +3361,21 @@
         (field "frequency" "Frequency" (folder) (float (soft 0 20) (hard 0 nil)) (float 1) (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode generic) (elementwise points) (reads "P" "N") (writes "P" "N") (topology preserved) (exact false))
+      (body lisp)
+      (calls))
+    (kind "sop/points"
+      (key "points")
+      (aliases)
+      (operation "point_generate")
+      (label "Point Generate")
+      (category "Create" "Point")
+      (slots)
+      (fields
+        (field "points" "Points" (folder) (int (soft 1 50) (hard 1 50)) (int 50) (primary false) (vec3))
+        (field "generated_group" "Generated group" (folder) (text) (text "") (primary false) (vec3))
+        (field "source_point_attribute" "Source point attribute" (folder) (text) (text "sourcepoint") (primary false) (vec3))
+        (field "source_index_attribute" "Source index attribute" (folder) (text) (text "sourceindex") (primary false) (vec3)))
+      (outputs (output "geo" geometry))
       (body lisp)
       (calls))
     (kind "sop/rename_attributes"
