@@ -836,7 +836,7 @@ arr1[0.;-0.;0.];arr1[1e16;1.;-1e16];
       (sop/mesh :points points :vertex_points vertex_points
         :primitive_offsets primitive_offsets :kinds kinds)))|} in
     Result.bind(Flow.Syntax.parse source)(fun forms->
-      Result.bind(Flow_sop.Lower.workspace ~factories:[] ~inputs:["g",fields] forms)(fun lowered->
+      Result.bind(Flow_sop.Lower.workspace ~factories:Sop_catalog.Editor.factories ~inputs:["g",fields] forms)(fun lowered->
         let graph=List.hd lowered.graphs in
         match Sop.Edit_graph.compile_node graph.network.geometry ~node_id:(Option.get graph.root) with
         |Error message->Error(Flow.Diagnostic.error ~code:"E_DATA_SOURCE" message)
@@ -1314,7 +1314,7 @@ let remap source target fields =
       (if List.mem_assoc "edges" fields then " :edges edges" else "") in
   Result.bind(Flow.Syntax.parse text)(fun forms->
     Result.bind(Flow_sop.Lower.workspace ~reference:true
-      ~factories:[factory "src" source;factory "dst" target] ~inputs:["g",fields] forms)(fun lowered->
+      ~factories:(factory "src" source::factory "dst" target::Sop_catalog.Editor.factories) ~inputs:["g",fields] forms)(fun lowered->
       let graph=List.hd lowered.graphs in
       match Sop.Edit_graph.compile_node graph.network.geometry ~node_id:(Option.get graph.root) with
       |Error message->Error(Flow.Diagnostic.error ~code:"E_DATA_SOURCE" message)
