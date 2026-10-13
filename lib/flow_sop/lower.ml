@@ -5,6 +5,10 @@ module E = Eval
 
 let source_attribute = "__flow_src"
 
+(* Serial for host-call nodes: they are cooked once in a session that keeps no cache entries, so their
+   arguments need no content key (marshalling a million-element array costs more than the kernel). *)
+let host_serial = Atomic.make 0
+
 type pending = { node : int; field : string; value : E.value }
 type origin = { merge : int; input : int; source : int; site : Workspace.path; iter : int list }
 type zone = { cid : int; site : Workspace.path; iter : int list; body_site : Workspace.path;
@@ -175,6 +179,43 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
       let owner=ok(Attribute_kernel.owner(text "owner" "point" "E_ATTR_OWNER"))
       and kind=text "type" "vec3" "E_ATTR_TYPE" in
       ignore(ok(Attribute_kernel.value_type kind));owner,kind in
+    let is_geometry_arrays kind=kind="sop/mesh" || kind="sop/mesh_planes" || kind="sop/remap" in
+    let geometry_arrays_data args=E.Record(List.filter(fun(name,_)->name<>"source" && name<>"target")args) in
+    let geometry_arrays_node ?(strict_body=strict_body) ?(host=false) ?state ?elems ~operation ~args ~sources inputs =
+      let data=geometry_arrays_data args in
+      let program=Attribute_kernel.prepare ~profile ~strict:strict_body ~approx:checked.approx
+        ~sink:Flow_ir.Sop_input ~sources inputs data in
+      if strict_body then ignore(ok program);
+      let parameters=Lazy.force kernel_source ^ (if operation="sop/remap" then ";remap;" else ";mesh;") ^ (if host then "host" ^ string_of_int (Atomic.fetch_and_add host_serial 1) else Flow.Value.key_of ~residual:E.Private.residual_id data)
+        ^Option.fold ~none:"" ~some:E.state_stamp state
+        ^Option.fold ~none:"" ~some:(fun fields->Flow.Value.key_of ~residual:E.Private.residual_id(E.Record fields))elems in
+      let node=Sop.Node.Private.make_geometry ~label:(if operation="sop/remap" then "Remap" else "Mesh") ~operation:(if operation="sop/remap" then "flow.remap" else "flow.mesh") ~version:1
+        ~parameters ~cook_mode:(if operation="sop/remap" then Sop.Node.Generic else Sop.Node.Generator)
+        ~dependencies:(if E.frame_dependent data then Sop.Context.Dependencies.one Input
+          else Sop.Context.Dependencies.static) ~inputs:(Array.of_list inputs)
+        (fun ~node_id:_ context geometries->
+          let cancelled ()=Sop.Context.cancelled context in
+          let error ()=Error(Diagnostic.error ~code:"E_CANCELLED" "Mesh kernel cancelled.")in
+          let geometry id=Option.map(fun index->geometries.(index))(List.find_index((=)id)sources)in
+          let result=if cancelled()then error()else Result.bind program(fun program->
+            Result.bind(Flow_ir.Executor.force ?state ?elems ~reference ~strict:strict_body
+              ~resolve:(Attribute_kernel.resolve ~geometry) program ~live:(Sop.Context.input context))
+              (function E.Record fields->if cancelled()then error()else
+                  let result=if operation<>"sop/remap" then Topology_kernel.mesh fields else
+                    let cooked name=match List.assoc_opt name args with
+                      |Some(E.Deferred(ty,id)) when ty=Ty.geometry->
+                          (match geometry id with Some geometry->Ok geometry|None->
+                            Error(Diagnostic.error ~code:"E_DATA_SOURCE" "Remap needs two cooked geometries."))
+                      |_->Error(Diagnostic.error ~code:"E_DATA_SOURCE" "Remap needs two cooked geometries.") in
+                    Result.bind(cooked "source")(fun source->Result.bind(cooked "target")(fun target->
+                      Topology_kernel.remap ~cancel:(Sop.Context.cancel_token context)
+                        ~grain:(Sop.Context.grain context) ~source ~target fields)) in
+                  Result.bind result(fun geometry->if cancelled()then error()else Ok geometry)
+                |_->Error(Diagnostic.error ~code:"E_TOPOLOGY_TYPE" "Mesh data must be a record.")))in
+          Result.map_error(Diagnostic_bridge.to_sop)
+            (Result.map(fun geometry->Sop.Node.Private.{geometry;diagnostics=[];instances=None})result))in
+      Sop.Node.Private.with_facts {(Sop.Node.facts node) with reads=(if operation="sop/remap" then ["*"] else Attribute_kernel.reads data);
+        writes=["*"];topology=Changed;elementwise=None}node in
     let structural_node residual captures =
       let program=match Flow_ir.Core_lower.lower ~strict:true residual with
         |Ok program->program|Error name->fail "E_PACKED_FORM" ("Cooked selection cannot compile "^name^".") in
@@ -257,6 +298,33 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
           let force_args ?(keep_constant=false) args=List.map(fun(name,value)->name,if deferred value && not(keep_constant && name="values" && constant value) then
               ok(E.Private.force_reference ~resolve:(Attribute_kernel.resolve ~geometry)
                 value ~live:(Sop.Context.input context)) else value)args in
+          (* sop/mesh, sop/mesh_planes and sop/remap build their node directly from the evaluated arguments: the former
+             synthetic one-node workspace was checked, evaluated and lowered per call. *)
+          let host_geometry_arrays ty name args =
+            let op=match Flow.Op.find ~extra:checked.ops name Context.sop with Some op->op
+              |None->fail "E_DATA_SOURCE" "A host call has no checked operator." in
+            (try
+              op.Flow.Op.check args;
+              let scalar=function E.Int n->Some(Param.Int_value n)|Float n->Some(Param.Float_value n)
+                |Bool b->Some(Param.Bool_value b)|Text t->Some(Param.Text_value t)|_->None in
+              ignore(Flow.Op.result_type op (List.map(fun(n,v)->n,Flow.Value.ty_of v,scalar v)args))
+             with Flow.Value.Fail(code,message,span)->raise(Fail(Diagnostic.error ?span ~code message))
+               |Flow.Value.Diagnostic_fail d->raise(Fail d));
+            let sources=let direct=geo_of args in
+              direct @ List.filter(fun id->not(List.mem id direct))(Attribute_kernel.sources(geometry_arrays_data args)) in
+            let inputs=List.map(fun id->
+              let actual=match Hashtbl.find_opt handles id with Some(actual,_,_)->actual
+                |None->fail "E_DATA_SOURCE" "A cooked handle is missing from this execution." in
+              ignore(ok(handle actual id));
+              Sop.Node.Private.make ~operation:"lisp_host_capture" ~version:1 ~parameters:(string_of_int id)
+                ~cook_mode:Sop.Node.Generator ~inputs:[||] ~dependencies:Sop.Context.Dependencies.static
+                (fun ~node_id:_ _context _inputs->
+                  Result.map_error(Diagnostic_bridge.to_sop)
+                    (Result.map(fun(output:Sop.Session.output)->Sop.Node.Private.{payload=output.payload;
+                      diagnostics=output.diagnostics;instances=output.instances})(snapshot actual id))))sources in
+            let node=geometry_arrays_node ~strict_body:true ~host:true ~operation:name ~args ~sources inputs in
+            let id= !next in decr next;
+            Hashtbl.add handles id(ty,Some node,ref None);Ok(E.Deferred(ty,id)) in
           let call ty catalog name args =
             if catalog && not(List.exists(fun(n:Workspace.node_definition)->n.kind.qualified=name)checked.nodes)
               && not(List.exists(fun factory->"sop/"^Edit.factory_key factory=name)factories)
@@ -318,6 +386,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
               |_->Ok None in
             Result.bind borrowed(function Some result->Ok result|None->
             let args=force_args args in
+            if not catalog && is_geometry_arrays name then host_geometry_arrays ty name args else
             let call_context=if ty=Ty.image then Flow.Context.image else Context.sop in
             let form=Syntax.make(List[]) in
             let capture_factories=ref [] and overrides=ref [] in
@@ -384,43 +453,6 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
     let group_data args = E.Record(List.filter(fun(name,_)->name="values"||name="order")args) in
     let attribute_data args=if not(List.mem_assoc "selection" args || List.mem_assoc "default" args) then List.assoc "values" args
       else E.Record(List.filter(fun(name,_)->name="values"||name="selection"||name="default")args) in
-    let is_geometry_arrays kind=kind="sop/mesh" || kind="sop/mesh_planes" || kind="sop/remap" in
-    let geometry_arrays_data args=E.Record(List.filter(fun(name,_)->name<>"source" && name<>"target")args) in
-    let geometry_arrays_node ?state ?elems ~operation ~args ~sources inputs =
-      let data=geometry_arrays_data args in
-      let program=Attribute_kernel.prepare ~profile ~strict:strict_body ~approx:checked.approx
-        ~sink:Flow_ir.Sop_input ~sources inputs data in
-      if strict_body then ignore(ok program);
-      let parameters=Lazy.force kernel_source ^ (if operation="sop/remap" then ";remap;" else ";mesh;") ^ Flow.Value.key_of ~residual:E.Private.residual_id data
-        ^Option.fold ~none:"" ~some:E.state_stamp state
-        ^Option.fold ~none:"" ~some:(fun fields->Flow.Value.key_of ~residual:E.Private.residual_id(E.Record fields))elems in
-      let node=Sop.Node.Private.make_geometry ~label:(if operation="sop/remap" then "Remap" else "Mesh") ~operation:(if operation="sop/remap" then "flow.remap" else "flow.mesh") ~version:1
-        ~parameters ~cook_mode:(if operation="sop/remap" then Sop.Node.Generic else Sop.Node.Generator)
-        ~dependencies:(if E.frame_dependent data then Sop.Context.Dependencies.one Input
-          else Sop.Context.Dependencies.static) ~inputs:(Array.of_list inputs)
-        (fun ~node_id:_ context geometries->
-          let cancelled ()=Sop.Context.cancelled context in
-          let error ()=Error(Diagnostic.error ~code:"E_CANCELLED" "Mesh kernel cancelled.")in
-          let geometry id=Option.map(fun index->geometries.(index))(List.find_index((=)id)sources)in
-          let result=if cancelled()then error()else Result.bind program(fun program->
-            Result.bind(Flow_ir.Executor.force ?state ?elems ~reference ~strict:strict_body
-              ~resolve:(Attribute_kernel.resolve ~geometry) program ~live:(Sop.Context.input context))
-              (function E.Record fields->if cancelled()then error()else
-                  let result=if operation<>"sop/remap" then Topology_kernel.mesh fields else
-                    let cooked name=match List.assoc_opt name args with
-                      |Some(E.Deferred(ty,id)) when ty=Ty.geometry->
-                          (match geometry id with Some geometry->Ok geometry|None->
-                            Error(Diagnostic.error ~code:"E_DATA_SOURCE" "Remap needs two cooked geometries."))
-                      |_->Error(Diagnostic.error ~code:"E_DATA_SOURCE" "Remap needs two cooked geometries.") in
-                    Result.bind(cooked "source")(fun source->Result.bind(cooked "target")(fun target->
-                      Topology_kernel.remap ~cancel:(Sop.Context.cancel_token context)
-                        ~grain:(Sop.Context.grain context) ~source ~target fields)) in
-                  Result.bind result(fun geometry->if cancelled()then error()else Ok geometry)
-                |_->Error(Diagnostic.error ~code:"E_TOPOLOGY_TYPE" "Mesh data must be a record.")))in
-          Result.map_error(Diagnostic_bridge.to_sop)
-            (Result.map(fun geometry->Sop.Node.Private.{geometry;diagnostics=[];instances=None})result))in
-      Sop.Node.Private.with_facts {(Sop.Node.facts node) with reads=(if operation="sop/remap" then ["*"] else Attribute_kernel.reads data);
-        writes=["*"];topology=Changed;elementwise=None}node in
     let group_node ?state ?elems ~args ~sources inputs =
       let text key default = match List.assoc_opt key args with
         | None -> default | Some(E.Text text) -> text | _ -> fail "E_GROUP_TYPE" ("Group "^key^" must be static text") in
