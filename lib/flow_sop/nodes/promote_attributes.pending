@@ -1,0 +1,14 @@
+; STUB Promote Attributes draft (BLOCKED: parameter block only; the body reports not-ported). The block is copied
+; from lib/sop_catalog/flow_manifest.sexp so the gate's descriptor and cache checks can be exercised.
+(defnode sop/promote_attributes :label "Promote Attributes" :category ["Attribute" "Promote"]
+  [(in0 : geometry)
+   (source : text "Point" :label "Source owner" :choices ["Point" "Vertex" "Primitive" "Detail"])
+   (destination : text "Primitive" :label "Destination owner" :choices ["Point" "Vertex" "Primitive" "Detail"])
+   (pattern : text "*" :label "Attribute pattern")
+   (method_ : text "Average" :label "Promotion method"
+     :choices ["First" "Last" "Average" "Minimum" "Maximum" "Mode" "Median" "Sum" "Sum of squares" "Root mean square" "Array of all" "Unique values"])
+   (delete_source : bool false :label "Delete source")
+   (piece_attribute : text "" :label "Piece attribute" :folder ["Partition"])
+   (into_pattern : text "" :label "Rename pattern" :folder ["Output"])
+   (index_pattern : text "" :label "Index pattern" :folder ["Output"])]
+  (error "E_PORT_TODO" "promote_attributes is not ported"))
