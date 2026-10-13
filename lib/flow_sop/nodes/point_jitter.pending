@@ -1,0 +1,106 @@
+; Whole-node draft; keep unregistered until every recipe and performance gate passes.
+(defnode sop/point_jitter :label "Point Jitter" :category "Point"
+  [(in0 : geometry)
+   (group : text "" :label "Group")
+   (mask_attribute : text "" :label "Mask attribute")
+   (id_attribute : text "" :label "ID attribute")
+   (seed_mode : text "Explicit" :label "Seed mode" :choices ["Explicit" "Auto"])
+   (seed : int 0 :label "Seed" :min 0 :max 9999)
+   (scale : float 1.0 :label "Scale" :min 0 :max 2 :hard_min 0)
+   (use_point_scale : bool false :label "Use point scale")
+   (axis_x : float 1.0 :label "Axis X" :folder "Axis scales" :min 0 :max 2 :hard_min 0 :vec3 ["axis" 0])
+   (axis_y : float 1.0 :label "Axis Y" :folder "Axis scales" :min 0 :max 2 :hard_min 0 :vec3 ["axis" 1])
+   (axis_z : float 1.0 :label "Axis Z" :folder "Axis scales" :min 0 :max 2 :hard_min 0 :vec3 ["axis" 2])]
+  (let* [group_name (text/trim group)
+         mask_name (text/trim mask_attribute)
+         id_name (text/trim id_attribute)
+         found_group (or (text/blank? group)
+           (fold [found false] [name (sop/group_names in0 "" :owner "point")]
+             (or found (equal? name group_name))))]
+    (cond
+      (not found_group)
+        (error "missing_group" (str "point_jitter could not find point group " (text/repr group_name)))
+      (and (not (text/blank? mask_name))
+        (or (equal? mask_name "P") (not (sop/has_attr in0 mask_name))))
+        (error "invalid_attribute" "point_jitter could not produce valid geometry"
+          :cause (str "point_jitter [invalid_attribute]: Rdk_gen.Point_jitter.point_jitter: point float attribute "
+            (text/repr mask_name) " does not exist"))
+      (and (not (text/blank? mask_name)) (not (sop/has_attr in0 mask_name :type float)))
+        (error "invalid_attribute" "point_jitter could not produce valid geometry"
+          :cause (str "point_jitter [invalid_attribute]: Rdk_gen.Point_jitter.point_jitter: point attribute "
+            (text/repr mask_name) " must use float storage"))
+      (and use_point_scale (and (sop/has_attr in0 "pscale") (not (sop/has_attr in0 "pscale" :type float))))
+        (error "invalid_attribute" "point_jitter could not produce valid geometry"
+          :cause "point_jitter [invalid_attribute]: Rdk_gen.Point_jitter.point_jitter: point attribute \"pscale\" must use float storage")
+      (and (not (text/blank? id_name))
+        (and (not (equal? id_name "P"))
+          (and (sop/has_attr in0 id_name) (not (sop/has_attr in0 id_name :type int)))))
+        (error "invalid_attribute" "point_jitter could not produce valid geometry"
+          :cause (str "point_jitter [invalid_attribute]: Rdk_gen.Point_jitter.point_jitter: point attribute "
+            (text/repr id_name) " must use int storage"))
+      :else
+        (let* [count (sop/count in0 :points)
+               effective_seed (if (equal? seed_mode "Auto") (sop/context_seed "point_jitter") seed)
+               position_data (sop/attr_checked in0 "P")
+               positions position_data.values
+               selection (if (text/blank? group_name) (array/int count 1)
+                             (sop/group in0 :name group_name :owner "point"))
+               mask_data (if (text/blank? mask_name)
+                            {:values (array/float count 1.0) :valid (array/int count 1)}
+                            (sop/attr_checked in0 mask_name :type float))
+               point_scale_data (if (and use_point_scale (sop/has_attr in0 "pscale"))
+                               (sop/attr_checked in0 "pscale" :type float)
+                               {:values (array/float count 1.0) :valid (array/int count 1)})
+               ids (if (and (not (text/blank? id_name))
+                          (and (not (equal? id_name "P")) (sop/has_attr in0 id_name)))
+                       (sop/attr in0 id_name :type int) (array/range count :type int))
+               weights (map (fn [(weight : float) (weight_valid : int) (p_valid : int)]
+                 [weight (if (and (int/eq weight_valid 1) (int/eq p_valid 1)) 1.0 0.0)])
+                 mask_data.values mask_data.valid position_data.valid)
+               point_scales (map (fn [(ps : float) (ps_valid : int)]
+                 [ps (if (int/eq ps_valid 1) 1.0 0.0)]) point_scale_data.values point_scale_data.valid)
+               amplitudes (map (fn [(selected : int) (weight : vec2) (ps : vec2)]
+                 (if (int/eq selected 0) [0.0 1.0 0.0]
+                   (if (and (= weight.y 1.0) (= ps.y 1.0))
+                     (let* [scaled (float/mul_checked scale weight.x)
+                            amplitude (float/mul_checked scaled.value ps.x)]
+                       [amplitude.value (if (and scaled.valid amplitude.valid) 1.0 0.0) 1.0])
+                     [0.0 0.0 1.0]))) selection weights point_scales)
+               displaced (map (fn [(p : vec3) (state : vec3) (id : int)]
+                 (if (= state.z 0.0) [p.x p.y p.z 1.0]
+                   (if (= state.y 1.0)
+                   (let* [amplitude state.x
+                          identity (int/mul id 2177342782468422677)
+                          sx (- (rand/at effective_seed (int/xor identity 1276007651554290947)) 0.5)
+                          sy (- (rand/at effective_seed (int/xor identity 2552015303108581894)) 0.5)
+                          sz (- (rand/at effective_seed (int/xor identity 3828022954662872841)) 0.5)
+                          dx (float/mul_checked sx amplitude)
+                          dy (float/mul_checked sy amplitude)
+                          dz (float/mul_checked sz amplitude)
+                          nx (float/fma_checked dx.value axis_x p.x)
+                          ny (float/fma_checked dy.value axis_y p.y)
+                          nz (float/fma_checked dz.value axis_z p.z)]
+                     [nx.value ny.value nz.value
+                       (if (and dx.valid (and dy.valid (and dz.valid
+                            (and nx.valid (and ny.valid nz.valid))))) 1.0 0.0)])
+                   [0.0 0.0 0.0 0.0])))
+                 positions amplitudes ids)
+               invalid_index (if (int/eq count 0) count
+                 (array/min (map (fn [(selected : int) (after : vec4) (index : int)]
+                   (if (and (int/eq selected 1) (= after.w 0.0)) index count))
+                   selection displaced (array/range count :type int))))
+               changed (if (int/eq count 0) 0
+                 (array/max (map (fn [(before : vec3) (after : vec4) (selected : int)]
+                   (if (or (int/eq selected 0)
+                           (and (= before.x after.x) (and (= before.y after.y) (= before.z after.z)))) 0 1))
+                   positions displaced selection)))]
+          (if (int/lt invalid_index count)
+            (error "invalid_attribute" "point_jitter could not produce valid geometry"
+              :cause (str "point_jitter [invalid_attribute]: Rdk_gen.Point_jitter.point_jitter: selected point "
+                          invalid_index " has non-finite input or output"))
+            (if (int/eq changed 0) in0
+              (sop/delete_attr
+                (sop/delete_attr (sop/with_attr in0 "P"
+                  (exact (map (fn [(p : vec4)] [p.x p.y p.z]) displaced))
+                  :selection selection :default [0.0 0.0 0.0]) "N" :owner "point")
+                "N" :owner "vertex")))))))

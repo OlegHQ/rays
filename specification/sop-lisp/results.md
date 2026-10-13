@@ -1287,6 +1287,75 @@ one domain still fails the unchanged 2× limit. Set Transform remains pending.
 This run also includes the separately validated lazy state/source forcing
 changes, so its timing difference is not attributed solely to buffer adoption.
 
+### Group Invert draft and generic prerequisites
+
+`nodes/group_invert.pending` remains unregistered. Its full declaration keeps
+Any/Points/Vertices/Primitives/Edges and Skip/Error/Overwrite/Union. The body
+snapshots globally ordered ordinary group entries followed by edge entries,
+complements typed masks and uses the existing generic rename operation.
+Overwrite tracks removed entry identities; Union preserves destinations for
+later processing. There is no native Group Invert callback in the body.
+
+The generic `text/glob_literal`, `text/glob_rewrite` and `sop/group_entries`
+prerequisites reuse the native pattern parser and expose cards with direct
+argument gestures. Byte fixtures cover all 256 bytes, literal backslashes,
+hyphens, UTF-8 and the parser's exact ASCII whitespace. Inventory and strict
+text-loop fixtures exceed 4,096 entries. A compiled SOP Fold traverses 5,001
+entries with a geometry/record accumulator; public graph array-node folds
+and collecting geometry forms remain refused. Lazy record/error accumulators
+retain exact code, message and cause in native Core and compiled JavaScript.
+Focused requests 28128 (FlowSOP/Web/tools) and 45926 (Flow/IR and draft build)
+exited 0. Existing numeric strict qualification and goldens remain unchanged.
+Request 64691 (Flow/FlowSOP and draft build) also exited 0 after checking the
+actual Fold accumulator type: an `Any` error body cannot bypass the public
+geometry-fold refusal. The mixed draft fixture covers all eight attribute
+storage kinds at every owner.
+
+Request 8184 identified a timing
+mismatch: malformed replacement `"\\ "` is trimmed to a dangling escape and
+raises `invalid_group` while constructing the Lisp body, whereas native
+accepts parameters and returns the same error during cooking. The shared
+cook-body error correction in `edae8274` resolves that mismatch. Checker gate
+88831 exited 0 for the complete draft semantic recipe, including all owners,
+conflicts, snapshot ordering, exact error causes, native/reference parity and
+the real grid with one/four/eight-domain bytes. Structured geometry folds
+retain conservative Generic/Changed facts; native declares
+Duplicate_input 0/Changed. No registration is claimed.
+
+Quiet session 16978 exited 0 for `opam exec -- ./test_group_invert.exe --bench`
+from `_build/default/lib/flow_sop`. Apple M1, OCaml 5.3.0, one group on
+1,000,000 points, no rename, grain 4096, median of three fresh-session cold
+cooks. Exact native geometry bytes pass at both domain counts before timing:
+
+| Domains | Native seconds | Lisp seconds | Ratio | Native allocated bytes | Lisp allocated bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.000301 | 0.033164 | 110.135 | 135,344 | 52,048,984 |
+| 4 | 0.000157 | 0.025888 | 164.768 | 144,616 | 49,590,912 |
+
+Four-domain allocations record the initial domain only. Both ratios fail
+the unchanged 2× gate. Native complements packed membership bits directly;
+the draft materializes, maps and rewrites integer masks through structured
+cooked calls. Group Invert and B.13 remain incomplete.
+
+The test-only ordinary-record word prototype uses
+`{:length Int :words (array Int)}` with 56-, 62- and signed 63-bit tiles.
+Packing, genuine typed Lisp XOR, tail masking and unpacking preserve native
+membership/geometry bytes, empty/tail/padding validation and edge topology;
+ordered group metadata stays separate. Quiet requests 49060 and 84234 exited
+0 with all seven samples retained in `/tmp/rays-group-word-prototype3.log`
+and `/tmp/rays-group-word-prototype4.log`. No language API was added.
+On the same Apple M1 / OCaml 5.3.0 million-point fixture, the refined signed
+63-bit whole path took 0.000809 seconds versus native 0.000298 (2.715×) at
+one domain, and 0.000665 versus 0.000114 (5.837×) at four domains. Allocations
+fell to approximately 0.94 MB, but both ratios still fail the unchanged 2×
+gate. The first measurements (3.246×/4.820×) remain in the earlier log.
+The refined one-domain pack/map/unpack stages take approximately
+0.227/0.502/0.092 milliseconds. A million memberships occupy 15,874 signed
+63-bit words: the existing 1,024-row blocks and 16-block chunks put that map
+in one execution chunk, so the four-domain pool cannot distribute it.
+This identifies a shared kernel ceiling; it does not approve a new group
+representation or claim a completed port.
+
 ### Set Vector production port
 
 Candidate request 82998 exited 0 for the authoritative `set_vector` recipe
@@ -1510,6 +1579,44 @@ the unchanged 2× gate. The complete production log is
 `/tmp/rays-set-transform-production-bench.log`; earlier failing shared
 compiler measurements remain above as evidence of the optimization.
 
+### Point Jitter draft and numerical-validation prerequisite
+
+`nodes/point_jitter.pending` remains unregistered. Its finite-input body uses
+existing typed attributes, groups, exact signed-integer ID hashing, `rand/at`
+and `sop/context_seed "point_jitter"`. Native object disassembly confirms
+the final axis multiply and position addition use FMADD; the draft uses the
+existing explicit `fma` at those sites. Unchanged output returns the original
+geometry, preserving point and vertex N exactly; changed output removes both.
+
+Focused request 20011 exited 0 for `@lib/flow_sop/point_jitter_draft`.
+Finite inputs cover Explicit/Auto seeds, selected/empty/full groups, optional
+mask/point scale, absent IDs and signed integer bounds, whitespace names,
+empty/single/6-point/4,225-point quad-grid/32,769-point fixtures, native
+four-ULP geometry, exact strict/reference and 1/4/8-domain bytes at grains
+1/97/4096. Factory/runtime metadata, every physical field's native cache key,
+one public miss and warm hit, context Seed dependency, nonfinite parameter
+atomicity and graph/inspector/direct gestures pass. Missing-group and
+mask/point-scale/ID storage refusal precedence retain native code/message/cause.
+
+The same executable explicitly records 36 current nonfinite mismatches:
+mask and pscale NaN/±Inf at index 1, empty/alternating/full selection, and both
+strict and reference paths. Native empty selection preserves all geometry
+bytes; alternating selection ignores the bad unselected value. Full selection
+reports `invalid_attribute` with the exact first selected point 1 cause.
+Both Lisp paths instead report `E_NONFINITE` before selection. A finite
+`max_float` mask with scale 2 separately proves that unselected multiplication
+overflow is ignored correctly, while selected overflow still loses the native
+code/message/cause. Log: `/tmp/rays-point-jitter-draft-focused5.log`.
+
+`sop/attr` resolves through `Eval.resolve_source` and whole-array
+`Value.validate`. The immutable raw-column path exists only at the attribute
+writer's `force_into` boundary; it cannot supply this draft's preceding change
+reduction or reference evaluation. A shared safe validity/default query and
+controlled arithmetic-result validation require design review before a new
+API. These passing prerequisite assertions document the missing behavior;
+they are not the whole port Verification gate. No registration, million-point
+timing or B.10 completion is claimed.
+
 ### Checked native attribute query foundation
 
 `sop/attr_checked` is a generic query with the same geometry, name, owner and
@@ -1543,6 +1650,123 @@ preserve invalid unselected coordinates or normals. Those policies belong in
 Lisp node bodies and must not be collapsed into this query's validity rule.
 No additional whole-node or phase checkbox is marked by this foundation.
 
+### Remaining B.10 native behavior audit
+
+The native deformation kernels require distinct Lisp policies beyond the
+checked-input query. `mesh/deform.ml` Peak and Mountain overwrite each range's
+error index on every bad selected point, then report the first failing range.
+Their reported index is therefore the last bad point in that range and can
+change with grain. Exact failure parity needs the actual SOP context grain or
+an equivalent generic range-policy boundary; the current language exposes
+context seed but no context-grain query. Bend, Point Jitter and Snap preserve
+the first bad selected point. A shared first-invalid reduction cannot replace
+both policies. Peak's
+zero-distance path validates direction/mask storage but skips finite-value
+checks; Bend reads its mask only in the selected active capture interval.
+Bend clamps with `max 0 (min 1 raw)` before checking finiteness: positive and
+negative infinities become 1 and 0, while NaN remains a failure.
+
+Native Float3 and geometry validation check cardinality and topology rather
+than finite coordinate values. These deformers can retain invalid unselected
+P bytes while modifying other points; selected overlays must preserve those
+opaque original rows. Transform and Match Size also retain or create raw
+nonfinite N through their native normalization order. Sanitized input alone
+does not preserve these outputs. No draft adopts a blanket finite fallback.
+
+Peak/Mountain direction fallback additionally needs vertex-normal aggregation
+or face vectors, selection promotion through vertex/primitive/edge incidence,
+and native normal recomputation. Match Size perimeter/area/volume modes call
+the same canonical measurement implementation for source and target primitive
+selections (`mesh/match_size.ml`); they require C.15's canonical triangulation
+and gather prerequisites unless explicitly delegated to the existing node.
+Snap's optional fuse mode requires the complete Fuse/Fuse Reduce behavior;
+its weight attribute is used only in that mode. These are whole-mode
+dependencies, not permission to omit modes or mark B.10 complete.
+
+### Name From Groups whole-node draft
+
+`nodes/name_from_groups.pending` uses the existing Text-array structured Core
+tier, cooked group inventory/membership queries, integer reductions and
+generic attribute/group writers. It preserves raw destination names,
+unassigned existing Text, stored group inventory order and ascending overlap
+member precedence. Canonical point P is refused after overlap processing,
+matching native ordering rather than the generic attribute query's virtual P.
+No native algorithm callback, primitive registration or numeric fallback was
+added.
+
+Focused request 40448 exited 0 for `@lib/flow_sop/name_from_groups_draft`
+(`/tmp/rays-name-from-groups-focused2.log`). Point/vertex/primitive owners,
+First/Last/Error overlap and source-group deletion pass exact native geometry
+and strict/reference bytes on empty/single/mixed/real 4,225-point quad-grid
+and 5,001-point fixtures, domains 1/4/8 and grains 1/97/4096. Existing Text,
+all seven incompatible storages, default/UTF-8/control text, blank/malformed
+patterns, owner filtering, source preservation and native code/message/cause
+precedence pass. Full factory/runtime metadata, every physical parameter's
+native key, one public miss/warm hit and graph/inspector/direct-edit parity
+pass. The initial request 13456 failed the omitted explicit `exact` writer
+boundary; the corrected draft passed without changing shared semantics.
+
+Focused request 22219 also exited 0, adding a genuinely cooked 5,001-group
+inventory and invalid-parameter atomic refusals. Log:
+`/tmp/rays-name-from-groups-focused3.log`. The runnable `--bench` harness has
+72 rows for all three owners, three overlap modes, existing/absent Text,
+deletion on/off and domains 1/4, each with one million owner elements.
+
+The first decisive quiet sample (`--bench-first`, request 6294) used Point,
+First group, absent Text and no deletion. Exact native bytes passed before
+three fresh-session cold-cook samples; median wall time/allocated bytes on
+Apple Silicon, OCaml 5.3 dev profile, grain 4096 were:
+
+| Domains | Native | Lisp | Ratio | Native allocated | Lisp allocated |
+|---|---:|---:|---:|---:|---:|
+| 1 | 0.011703 s | 0.790935 s | 67.584× | 16,009,720 B | 1,762,506,104 B |
+| 4 | 0.007472 s | 0.792458 s | 106.056× | 16,056,592 B | 1,754,801,008 B |
+
+Four-domain allocations measure the initial domain. Full log:
+`/tmp/rays-name-from-groups-bench-first1.log`. Both rows fail the unchanged
+2× gate; the full 72-row timing table was held after this decisive failure.
+A body-only assignment-buffer reuse is being tested to remove repeated Text
+maps. Folding numeric group indices first refused `E_PACKED_FORM` correctly
+(request 38163); the revised draft retains the existing cooked Text-inventory
+structured tier and strictly packed per-group numeric maps. Its next
+qualification refusal (33793) was a Text overlap selector captured inside a
+numeric map, diagnosed through the existing `Packed.Private.trace` hook
+(56146). Lifting that comparison to a Boolean uniform preserves strict
+qualification. Request 33758 exited 0 for the unchanged recipe after also
+correcting the accumulator record field order. It adds whitespace group names,
+opaque NaN/±Inf P/N bytes and unassigned invalid UTF-8/control Text bytes, and
+retains the genuinely cooked 5,001-group inventory. Revised log:
+`/tmp/rays-name-from-groups-focused7.log`.
+
+The unchanged first two million-element rows were rerun after that semantic
+gate (quiet request 13268, `/tmp/rays-name-from-groups-bench-first2.log`):
+
+| Domains | Native | Lisp | Ratio | Native allocated | Lisp allocated |
+|---|---:|---:|---:|---:|---:|
+| 1 | 0.011569 s | 0.603541 s | 52.169× | 16,009,720 B | 1,779,507,240 B |
+| 4 | 0.007589 s | 0.516101 s | 68.008× | 16,056,776 B | 1,520,113,360 B |
+
+The assignment-buffer reuse improves wall time but still fails the 2× gate
+and retains high allocations. Read-only tracing found that Known Source
+captures emit repeated Core Source instructions; those are not loop-hoisted.
+The next body-only experiment materializes the selected Text inventory once
+with existing `array/slice` before the fold/map. Request 26881 exited 0 for
+the unchanged full semantic recipe, including the 5,001-group inventory and
+opaque-byte preservation (`/tmp/rays-name-from-groups-focused8.log`). Its
+representative timing followed in quiet request 31574, using the freshly
+linked executable from that semantic gate and the same native-byte checks and
+median-of-three cold cooks (`/tmp/rays-name-from-groups-bench-first3.log`):
+
+| Domains | Native | Lisp | Ratio | Native allocated | Lisp allocated |
+|---|---:|---:|---:|---:|---:|
+| 1 | 0.011662 s | 0.328521 s | 28.170× | 16,009,720 B | 808,842,064 B |
+| 4 | 0.007600 s | 0.232245 s | 30.558× | 16,056,088 B | 549,448,568 B |
+
+Materializing the small cooked inventory reduces wall time and allocations,
+but both rows still fail the unchanged 2× gate. The full 72-row table remains
+held after this decisive failure. No shared Source caching policy was changed,
+and no registration, performance success or whole-node completion is claimed.
+
 ### Checked attribute Core and JavaScript host contract
 
 The checked query also has its required `specification/core.md` intrinsic row
@@ -1563,6 +1787,428 @@ Log: `/tmp/rays-checked-attribute-host-contract2.log`. The preceding host-contra
 request 59880 also exited 0; request60554 adds the exact JavaScript bit checks.
 Checked arithmetic and the selected raw-byte-preserving writer are still
 required before Point Jitter or grouped Set Color can pass their whole gates.
+
+### Set Color refreshed full-owner audit (still unregistered)
+
+Fresh focused request 28013, `@lib/flow_sop/set_color_draft`, exited 0.
+The finite-data recipe retains every prior owner/storage/group/error/schema,
+cache and graph/inspector assertion. It now also cooks partial/full/empty
+selections on 32,769-point/32,769-primitive line topology with 65,538 vertices,
+including absent, matching Float4 and wrong Float Cd. This exercises distinct
+owner cardinalities through strict/reference and native geometry comparisons,
+domains 1/4/8 and grains 1/97/4096. No registration changed.
+
+Raw-Cd diagnostic request 7207 exited 0 for `test_set_color.exe --audit-raw-cd`
+from `_build/default/lib/flow_sop`; log
+`/tmp/rays-set-color-raw-cd-audit.log`. Across 72 native cases (Point/Vertex/
+Primitive, all four channels, selected/unselected element, payload NaN/+Inf/
+-Inf), native Set Color overwrites selected channels and preserves unselected
+bits exactly. Both the reference and strict draft refuse `E_NONFINITE` in all
+72 cases each. These 144 refusals are an explicit whole-node semantic gap,
+including selected old values that native discards. Ordinary numeric trust
+checks remain intact. The pending recipe needs a genuine selected attribute
+writer that preserves unselected source storage without evaluating it as
+numeric input.
+
+Native grouped fallback is white `[1,1,1,1]` when Cd is absent or has any storage
+other than owner-matching Float4. Even an empty group installs that fallback;
+matching Float4 is copied unchanged. Ungrouped writes ignore previous Cd.
+An explicit writer default belongs in the Lisp recipe, rather than a node-
+specific default in the shared writer.
+
+Quiet request 51553 exited 0 for `opam exec -- ./test_set_color.exe --bench`
+from `_build/default/lib/flow_sop`; full log
+`/tmp/rays-set-color-current-bench.log`. Apple M1, OCaml 5.3.0, grain 4096,
+median of three fresh-session cold cooks, current compiler including source
+borrowing/range improvements and checked-attribute foundation 2600599d.
+Point, Vertex and Primitive each have 1,000,000 target elements; Detail has one
+on a 1,000,000-point input. Vertex topology has 500,000 line primitives;
+Primitive topology has 1,000,000 line primitives and 2,000,000 vertices.
+Alternating selected groups, full and empty groups, and absent/matching
+Float4/wrong Float Cd are all measured at domains 1/4. Allocations count the
+initial domain only. All 78 rows are retained below; 57 exceed 2×. Detail's
+microsecond-scale ratios are retained without a speed claim. The whole-node
+performance gate fails, independently of the raw-Cd semantic gap.
+
+| Owner | Elements | Cd | Group | Domains | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---|---:|---|---|---:|---:|---:|---:|---:|---:|
+| Point | 1000000 | absent | all | 1 | 0.001346 | 0.000685 | 0.509 | 32010016 | 32030496 |
+| Point | 1000000 | absent | all | 4 | 0.001382 | 0.000767 | 0.555 | 32010248 | 32030728 |
+| Point | 1000000 | absent | selected | 1 | 0.003957 | 0.130838 | 33.065 | 32010432 | 376014192 |
+| Point | 1000000 | absent | selected | 4 | 0.003817 | 0.046351 | 12.144 | 32010664 | 171286480 |
+| Point | 1000000 | absent | full | 1 | 0.004852 | 0.095389 | 19.660 | 32010424 | 312076696 |
+| Point | 1000000 | absent | full | 4 | 0.004857 | 0.038622 | 7.952 | 32010656 | 155537632 |
+| Point | 1000000 | absent | empty | 1 | 0.002887 | 0.092310 | 31.974 | 32010424 | 312014168 |
+| Point | 1000000 | absent | empty | 4 | 0.002953 | 0.038430 | 13.014 | 32010656 | 155521448 |
+| Point | 1000000 | vec4 | all | 1 | 0.001353 | 0.000720 | 0.532 | 32010168 | 32031800 |
+| Point | 1000000 | vec4 | all | 4 | 0.001270 | 0.000683 | 0.538 | 32010400 | 32032032 |
+| Point | 1000000 | vec4 | selected | 1 | 0.004357 | 0.128216 | 29.427 | 32010776 | 376016056 |
+| Point | 1000000 | vec4 | selected | 4 | 0.004720 | 0.044227 | 9.370 | 32011008 | 171301992 |
+| Point | 1000000 | vec4 | full | 1 | 0.005799 | 0.096971 | 16.722 | 32010768 | 312078560 |
+| Point | 1000000 | vec4 | full | 4 | 0.005425 | 0.036029 | 6.641 | 32011000 | 155552568 |
+| Point | 1000000 | vec4 | empty | 1 | 0.003512 | 0.096181 | 27.385 | 32010768 | 312016040 |
+| Point | 1000000 | vec4 | empty | 4 | 0.003526 | 0.035922 | 10.188 | 32011000 | 155537456 |
+| Point | 1000000 | wrong_float | all | 1 | 0.001241 | 0.000671 | 0.541 | 32010168 | 32044832 |
+| Point | 1000000 | wrong_float | all | 4 | 0.001205 | 0.000647 | 0.537 | 32010400 | 32032032 |
+| Point | 1000000 | wrong_float | selected | 1 | 0.003818 | 0.125393 | 32.842 | 32010600 | 376015640 |
+| Point | 1000000 | wrong_float | selected | 4 | 0.003772 | 0.046580 | 12.349 | 32010832 | 175741152 |
+| Point | 1000000 | wrong_float | full | 1 | 0.005007 | 0.096364 | 19.246 | 32010592 | 312078144 |
+| Point | 1000000 | wrong_float | full | 4 | 0.004921 | 0.039018 | 7.929 | 32010824 | 158944304 |
+| Point | 1000000 | wrong_float | empty | 1 | 0.002838 | 0.093656 | 33.002 | 32010592 | 312015624 |
+| Point | 1000000 | wrong_float | empty | 4 | 0.002907 | 0.037730 | 12.979 | 32010824 | 155523080 |
+| Vertex | 1000000 | absent | all | 1 | 0.001240 | 0.000750 | 0.605 | 32010024 | 32043536 |
+| Vertex | 1000000 | absent | all | 4 | 0.001387 | 0.000845 | 0.609 | 32010256 | 32030736 |
+| Vertex | 1000000 | absent | selected | 1 | 0.004045 | 0.125358 | 30.991 | 32010440 | 376014192 |
+| Vertex | 1000000 | absent | selected | 4 | 0.003792 | 0.046234 | 12.193 | 32010672 | 175739504 |
+| Vertex | 1000000 | absent | full | 1 | 0.004837 | 0.096033 | 19.854 | 32010424 | 312076696 |
+| Vertex | 1000000 | absent | full | 4 | 0.004926 | 0.040917 | 8.306 | 32010656 | 158939680 |
+| Vertex | 1000000 | absent | empty | 1 | 0.002931 | 0.092329 | 31.500 | 32010432 | 312138504 |
+| Vertex | 1000000 | absent | empty | 4 | 0.002855 | 0.037869 | 13.264 | 32010664 | 155522232 |
+| Vertex | 1000000 | vec4 | all | 1 | 0.001247 | 0.000666 | 0.534 | 32010176 | 32044848 |
+| Vertex | 1000000 | vec4 | all | 4 | 0.001194 | 0.000706 | 0.591 | 32010408 | 32032048 |
+| Vertex | 1000000 | vec4 | selected | 1 | 0.004623 | 0.126565 | 27.378 | 32010784 | 376016064 |
+| Vertex | 1000000 | vec4 | selected | 4 | 0.004465 | 0.043773 | 9.803 | 32011016 | 175754456 |
+| Vertex | 1000000 | vec4 | full | 1 | 0.005377 | 0.096885 | 18.019 | 32010768 | 312078576 |
+| Vertex | 1000000 | vec4 | full | 4 | 0.005416 | 0.035996 | 6.646 | 32011000 | 158956192 |
+| Vertex | 1000000 | vec4 | empty | 1 | 0.003436 | 0.097241 | 28.302 | 32010776 | 312016048 |
+| Vertex | 1000000 | vec4 | empty | 4 | 0.003618 | 0.035676 | 9.861 | 32011008 | 155539584 |
+| Vertex | 1000000 | wrong_float | all | 1 | 0.001190 | 0.000666 | 0.559 | 32010176 | 32031816 |
+| Vertex | 1000000 | wrong_float | all | 4 | 0.001247 | 0.000686 | 0.550 | 32010408 | 32032048 |
+| Vertex | 1000000 | wrong_float | selected | 1 | 0.003735 | 0.124568 | 33.351 | 32010608 | 376140016 |
+| Vertex | 1000000 | wrong_float | selected | 4 | 0.003811 | 0.046782 | 12.276 | 32010840 | 175742208 |
+| Vertex | 1000000 | wrong_float | full | 1 | 0.004909 | 0.095801 | 19.515 | 32010592 | 312078160 |
+| Vertex | 1000000 | wrong_float | full | 4 | 0.005131 | 0.039173 | 7.635 | 32010824 | 158943592 |
+| Vertex | 1000000 | wrong_float | empty | 1 | 0.002934 | 0.092569 | 31.551 | 32010600 | 312015632 |
+| Vertex | 1000000 | wrong_float | empty | 4 | 0.002863 | 0.037938 | 13.250 | 32010832 | 155522328 |
+| Primitive | 1000000 | absent | all | 1 | 0.001281 | 0.000672 | 0.525 | 32010040 | 32030536 |
+| Primitive | 1000000 | absent | all | 4 | 0.001281 | 0.000712 | 0.556 | 32010272 | 32030768 |
+| Primitive | 1000000 | absent | selected | 1 | 0.004021 | 0.128358 | 31.921 | 32010456 | 376014216 |
+| Primitive | 1000000 | absent | selected | 4 | 0.003831 | 0.047760 | 12.466 | 32010688 | 175740232 |
+| Primitive | 1000000 | absent | full | 1 | 0.004857 | 0.096161 | 19.798 | 32010432 | 312076736 |
+| Primitive | 1000000 | absent | full | 4 | 0.004806 | 0.038289 | 7.967 | 32010664 | 158942488 |
+| Primitive | 1000000 | absent | empty | 1 | 0.002879 | 0.092707 | 32.199 | 32010440 | 312014208 |
+| Primitive | 1000000 | absent | empty | 4 | 0.002851 | 0.038113 | 13.368 | 32010672 | 158927272 |
+| Primitive | 1000000 | vec4 | all | 1 | 0.001265 | 0.000698 | 0.552 | 32010200 | 32031856 |
+| Primitive | 1000000 | vec4 | all | 4 | 0.001253 | 0.000640 | 0.511 | 32010432 | 32032088 |
+| Primitive | 1000000 | vec4 | selected | 1 | 0.004769 | 0.126094 | 26.440 | 32010808 | 376016112 |
+| Primitive | 1000000 | vec4 | selected | 4 | 0.004320 | 0.043882 | 10.158 | 32011040 | 171302168 |
+| Primitive | 1000000 | vec4 | full | 1 | 0.005512 | 0.098077 | 17.793 | 32010784 | 312202904 |
+| Primitive | 1000000 | vec4 | full | 4 | 0.005331 | 0.036749 | 6.893 | 32011016 | 158968448 |
+| Primitive | 1000000 | vec4 | empty | 1 | 0.003426 | 0.093719 | 27.355 | 32010792 | 312140376 |
+| Primitive | 1000000 | vec4 | empty | 4 | 0.003481 | 0.035489 | 10.195 | 32011024 | 155536664 |
+| Primitive | 1000000 | wrong_float | all | 1 | 0.001313 | 0.000824 | 0.628 | 32010200 | 32031856 |
+| Primitive | 1000000 | wrong_float | all | 4 | 0.001298 | 0.000734 | 0.566 | 32010432 | 32032088 |
+| Primitive | 1000000 | wrong_float | selected | 1 | 0.004086 | 0.126305 | 30.912 | 32010632 | 376015696 |
+| Primitive | 1000000 | wrong_float | selected | 4 | 0.003743 | 0.046235 | 12.353 | 32010864 | 175741792 |
+| Primitive | 1000000 | wrong_float | full | 1 | 0.004871 | 0.094694 | 19.440 | 32010608 | 312202552 |
+| Primitive | 1000000 | wrong_float | full | 4 | 0.004978 | 0.038129 | 7.660 | 32010840 | 158943464 |
+| Primitive | 1000000 | wrong_float | empty | 1 | 0.003106 | 0.094406 | 30.396 | 32010616 | 312015688 |
+| Primitive | 1000000 | wrong_float | empty | 4 | 0.002850 | 0.037990 | 13.330 | 32010848 | 155524152 |
+| Detail | 1 | absent | all | 1 | 0.000018 | 0.000034 | 1.882 | 10064 | 26344 |
+| Detail | 1 | absent | all | 4 | 0.000021 | 0.000048 | 2.270 | 10296 | 27232 |
+| Detail | 1 | vec4 | all | 1 | 0.000019 | 0.000021 | 1.100 | 10216 | 27072 |
+| Detail | 1 | vec4 | all | 4 | 0.000019 | 0.000039 | 2.050 | 10448 | 27960 |
+| Detail | 1 | wrong_float | all | 1 | 0.000015 | 0.000040 | 2.667 | 10216 | 27072 |
+| Detail | 1 | wrong_float | all | 4 | 0.000022 | 0.000042 | 1.913 | 10448 | 27960 |
+
+The diagnostic harness `test_set_color.exe --trace-grouped` (build 93746,
+direct run exit 0; `/tmp/rays-set-color-current-trace.log`) confirms the actual
+grouped map compiles into a 15-register packed ArrayVec4 region with ArrayInt
+mask and ArrayVec4 previous-color inputs. The group-name ArrayText fold is
+outside the numeric packed tier. This is compiled numeric execution, with
+the old color array as input, rather than an unsupported numeric fallback.
+The shared direct writer only accepts a packed root through readback, while
+the grouped recipe wraps its map in a cooked conditional. It therefore forces
+the structured result and installs storage after collection. A generic writer
+selection plus explicit finite default can remove both the previous numeric
+read and this map/collection route, preserving raw unselected source bytes.
+That capability and a fresh whole-node semantic/performance proof are required
+before Set Color registration; no limits or comparisons were relaxed.
+
+After selected-writer foundation b9abd271, the pending recipe now writes a
+constant color array with the native group mask and explicit white default.
+Its old-Cd numeric source and packed selection map are removed. Fresh focused
+5753, `@lib/flow_sop/set_color_draft`, exited 0, including every finite owner,
+storage and group mode, physical schema/cache/edit/UI assertion, and precise
+missing-group code/message/cause. The former raw-Cd diagnostic is now a normal
+success regression: all 72 cases match complete native geometry bytes in
+strict and reference modes at domains 1/4/8 and grains 1/97/4096, with input
+immutability. This closes the observed raw-color semantic gap. A fresh full
+performance table is still required; Set Color remains unregistered.
+
+Fresh selected-writer timing 51920 exited 0 for the same full 78-row command,
+using the built semantic snapshot 5753 without overlapping builds or timing
+runs; log `/tmp/rays-set-color-selected-bench.log`. The methodology, target
+owner cardinalities, domains, grain and initial-domain allocation convention
+are unchanged. All 54 grouped ordinary-owner rows and two Detail rows exceed
+2× (56 of 78 total); maximum ratio is 89.898×. Grouped allocations increase to
+approximately 1.23 GB per cold cook, with similar time and allocation at four
+domains. Thus the semantic repair does not pass the performance gate, and no
+registration is authorized by this evidence. The selected branch currently
+forces the values/selection/default record before installing selected storage,
+which bypasses the existing constant-constructor plane writer.
+
+| Owner | Elements | Cd | Group | Domains | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---|---:|---|---|---:|---:|---:|---:|---:|---:|
+| Point | 1000000 | absent | all | 1 | 0.001537 | 0.000688 | 0.448 | 32010016 | 32030504 |
+| Point | 1000000 | absent | all | 4 | 0.001246 | 0.000727 | 0.583 | 32010248 | 32030736 |
+| Point | 1000000 | absent | selected | 1 | 0.003808 | 0.307926 | 80.868 | 32010432 | 1229489664 |
+| Point | 1000000 | absent | selected | 4 | 0.003831 | 0.255345 | 66.650 | 32010664 | 1229535504 |
+| Point | 1000000 | absent | full | 1 | 0.004967 | 0.255865 | 51.513 | 32010424 | 1229489552 |
+| Point | 1000000 | absent | full | 4 | 0.004888 | 0.258428 | 52.869 | 32010656 | 1229536672 |
+| Point | 1000000 | absent | empty | 1 | 0.002872 | 0.251839 | 87.688 | 32010424 | 1229489608 |
+| Point | 1000000 | absent | empty | 4 | 0.002998 | 0.249416 | 83.191 | 32010656 | 1229535608 |
+| Point | 1000000 | vec4 | all | 1 | 0.001210 | 0.000832 | 0.688 | 32010168 | 32031808 |
+| Point | 1000000 | vec4 | all | 4 | 0.001550 | 0.000742 | 0.479 | 32010400 | 32032040 |
+| Point | 1000000 | vec4 | selected | 1 | 0.004572 | 0.269848 | 59.023 | 32010776 | 1229490400 |
+| Point | 1000000 | vec4 | selected | 4 | 0.004375 | 0.247071 | 56.474 | 32011008 | 1229537704 |
+| Point | 1000000 | vec4 | full | 1 | 0.005507 | 0.246597 | 44.779 | 32010768 | 1229490160 |
+| Point | 1000000 | vec4 | full | 4 | 0.005455 | 0.251833 | 46.167 | 32011000 | 1229537040 |
+| Point | 1000000 | vec4 | empty | 1 | 0.003510 | 0.255083 | 72.673 | 32010768 | 1229490216 |
+| Point | 1000000 | vec4 | empty | 4 | 0.003548 | 0.244843 | 69.011 | 32011000 | 1229536440 |
+| Point | 1000000 | wrong_float | all | 1 | 0.001347 | 0.000758 | 0.563 | 32010168 | 32031808 |
+| Point | 1000000 | wrong_float | all | 4 | 0.001232 | 0.000671 | 0.545 | 32010400 | 32032040 |
+| Point | 1000000 | wrong_float | selected | 1 | 0.003753 | 0.260336 | 69.368 | 32010600 | 1229490304 |
+| Point | 1000000 | wrong_float | selected | 4 | 0.003764 | 0.246525 | 65.497 | 32010832 | 1229536864 |
+| Point | 1000000 | wrong_float | full | 1 | 0.004922 | 0.252868 | 51.376 | 32010592 | 1229490064 |
+| Point | 1000000 | wrong_float | full | 4 | 0.004870 | 0.250075 | 51.351 | 32010824 | 1229537992 |
+| Point | 1000000 | wrong_float | empty | 1 | 0.002913 | 0.251913 | 86.479 | 32010592 | 1229490120 |
+| Point | 1000000 | wrong_float | empty | 4 | 0.002905 | 0.246438 | 84.829 | 32010824 | 1229536856 |
+| Vertex | 1000000 | absent | all | 1 | 0.001334 | 0.000642 | 0.481 | 32010024 | 32043352 |
+| Vertex | 1000000 | absent | all | 4 | 0.001380 | 0.000745 | 0.540 | 32010256 | 32030744 |
+| Vertex | 1000000 | absent | selected | 1 | 0.003831 | 0.270566 | 70.623 | 32010440 | 1229489824 |
+| Vertex | 1000000 | absent | selected | 4 | 0.004292 | 0.252166 | 58.756 | 32010672 | 1229536272 |
+| Vertex | 1000000 | absent | full | 1 | 0.005585 | 0.261727 | 46.861 | 32010424 | 1229489552 |
+| Vertex | 1000000 | absent | full | 4 | 0.004897 | 0.253430 | 51.753 | 32010656 | 1229535816 |
+| Vertex | 1000000 | absent | empty | 1 | 0.002919 | 0.258585 | 88.588 | 32010432 | 1229489600 |
+| Vertex | 1000000 | absent | empty | 4 | 0.002882 | 0.255711 | 88.727 | 32010664 | 1229536904 |
+| Vertex | 1000000 | vec4 | all | 1 | 0.001212 | 0.000662 | 0.546 | 32010176 | 32044664 |
+| Vertex | 1000000 | vec4 | all | 4 | 0.001249 | 0.000672 | 0.538 | 32010408 | 32032056 |
+| Vertex | 1000000 | vec4 | selected | 1 | 0.005547 | 0.321802 | 58.013 | 32010784 | 1229490560 |
+| Vertex | 1000000 | vec4 | selected | 4 | 0.004746 | 0.242107 | 51.013 | 32011016 | 1229536456 |
+| Vertex | 1000000 | vec4 | full | 1 | 0.005634 | 0.252001 | 44.730 | 32010768 | 1229490288 |
+| Vertex | 1000000 | vec4 | full | 4 | 0.005516 | 0.247736 | 44.912 | 32011000 | 1229537536 |
+| Vertex | 1000000 | vec4 | empty | 1 | 0.003485 | 0.250067 | 71.756 | 32010776 | 1229490336 |
+| Vertex | 1000000 | vec4 | empty | 4 | 0.003596 | 0.246656 | 68.591 | 32011008 | 1229537128 |
+| Vertex | 1000000 | wrong_float | all | 1 | 0.001265 | 0.000764 | 0.604 | 32010176 | 32031824 |
+| Vertex | 1000000 | wrong_float | all | 4 | 0.001342 | 0.000791 | 0.589 | 32010408 | 32032056 |
+| Vertex | 1000000 | wrong_float | selected | 1 | 0.004238 | 0.299940 | 70.776 | 32010608 | 1229490464 |
+| Vertex | 1000000 | wrong_float | selected | 4 | 0.003944 | 0.249304 | 63.212 | 32010840 | 1229538152 |
+| Vertex | 1000000 | wrong_float | full | 1 | 0.005054 | 0.252341 | 49.929 | 32010592 | 1229490192 |
+| Vertex | 1000000 | wrong_float | full | 4 | 0.004921 | 0.247958 | 50.388 | 32010824 | 1229535712 |
+| Vertex | 1000000 | wrong_float | empty | 1 | 0.002961 | 0.256209 | 86.523 | 32010600 | 1229490240 |
+| Vertex | 1000000 | wrong_float | empty | 4 | 0.002962 | 0.247382 | 83.515 | 32010832 | 1229536816 |
+| Primitive | 1000000 | absent | all | 1 | 0.001249 | 0.000689 | 0.552 | 32010040 | 32043384 |
+| Primitive | 1000000 | absent | all | 4 | 0.001345 | 0.000745 | 0.554 | 32010272 | 32030776 |
+| Primitive | 1000000 | absent | selected | 1 | 0.003741 | 0.269578 | 72.064 | 32010456 | 1229490064 |
+| Primitive | 1000000 | absent | selected | 4 | 0.003785 | 0.250558 | 66.199 | 32010688 | 1229537368 |
+| Primitive | 1000000 | absent | full | 1 | 0.004867 | 0.252183 | 51.814 | 32010432 | 1229489720 |
+| Primitive | 1000000 | absent | full | 4 | 0.004897 | 0.254666 | 52.003 | 32010664 | 1229536480 |
+| Primitive | 1000000 | absent | empty | 1 | 0.003915 | 0.259110 | 66.187 | 32010440 | 1229489808 |
+| Primitive | 1000000 | absent | empty | 4 | 0.002919 | 0.262431 | 89.898 | 32010672 | 1229537184 |
+| Primitive | 1000000 | vec4 | all | 1 | 0.001251 | 0.000699 | 0.559 | 32010200 | 32044704 |
+| Primitive | 1000000 | vec4 | all | 4 | 0.001252 | 0.000692 | 0.553 | 32010432 | 32032096 |
+| Primitive | 1000000 | vec4 | selected | 1 | 0.004323 | 0.332187 | 76.842 | 32010808 | 1229490816 |
+| Primitive | 1000000 | vec4 | selected | 4 | 0.004378 | 0.240351 | 54.899 | 32011040 | 1229538056 |
+| Primitive | 1000000 | vec4 | full | 1 | 0.005504 | 0.248706 | 45.185 | 32010784 | 1229490472 |
+| Primitive | 1000000 | vec4 | full | 4 | 0.005469 | 0.242821 | 44.399 | 32011016 | 1229537232 |
+| Primitive | 1000000 | vec4 | empty | 1 | 0.003451 | 0.253475 | 73.452 | 32010792 | 1229490688 |
+| Primitive | 1000000 | vec4 | empty | 4 | 0.003564 | 0.242784 | 68.119 | 32011024 | 1229538192 |
+| Primitive | 1000000 | wrong_float | all | 1 | 0.001214 | 0.000661 | 0.544 | 32010200 | 32044704 |
+| Primitive | 1000000 | wrong_float | all | 4 | 0.001200 | 0.000778 | 0.648 | 32010432 | 32032096 |
+| Primitive | 1000000 | wrong_float | selected | 1 | 0.004063 | 0.258199 | 63.547 | 32010632 | 1229490720 |
+| Primitive | 1000000 | wrong_float | selected | 4 | 0.003741 | 0.253559 | 67.778 | 32010864 | 1229537816 |
+| Primitive | 1000000 | wrong_float | full | 1 | 0.004828 | 0.253739 | 52.556 | 32010608 | 1229490376 |
+| Primitive | 1000000 | wrong_float | full | 4 | 0.004985 | 0.247903 | 49.729 | 32010840 | 1229537504 |
+| Primitive | 1000000 | wrong_float | empty | 1 | 0.002860 | 0.250905 | 87.727 | 32010616 | 1229490464 |
+| Primitive | 1000000 | wrong_float | empty | 4 | 0.002904 | 0.248924 | 85.719 | 32010848 | 1229536792 |
+| Detail | 1 | absent | all | 1 | 0.000013 | 0.000035 | 2.673 | 10064 | 26352 |
+| Detail | 1 | absent | all | 4 | 0.000020 | 0.000039 | 1.952 | 10296 | 27240 |
+| Detail | 1 | vec4 | all | 1 | 0.000022 | 0.000021 | 0.957 | 10216 | 27080 |
+| Detail | 1 | vec4 | all | 4 | 0.000025 | 0.000036 | 1.438 | 10448 | 27968 |
+| Detail | 1 | wrong_float | all | 1 | 0.000023 | 0.000041 | 1.792 | 10216 | 27080 |
+| Detail | 1 | wrong_float | all | 4 | 0.000034 | 0.000085 | 2.490 | 10448 | 27968 |
+
+A bounded stage diagnostic (build 7280, direct 65067, both exit 0;
+`test_set_color.exe --trace-grouped`, log
+`/tmp/rays-set-color-selected-stages.log`) separates the public typed
+constructor, actual native group source and selected writer from the full
+cold wrapper on 65,538 Vertex elements. These are one diagnostic sample each,
+not a replacement for the median whole-node table. The direct constructor,
+source and writer allocate about 8.9 MB together versus 88.5 MB for the whole
+cook. Most of this extra allocation therefore occurs upstream of the concrete
+selected writer. The old numeric map is absent from the packed trace.
+
+| Stage | Seconds | Allocated bytes |
+|---|---:|---:|
+| Typed constant ArrayVec4 constructor | 0.000723 | 2,097,616 |
+| Native group Source resolution | 0.001019 | 525,080 |
+| Selected writer, concrete inputs | 0.002159 | 6,298,896 |
+| Whole strict cold cook | 0.027246 | 88,515,832 |
+
+Reusing the existing constant-constructor recognition before selected record
+materialization is the next proposed shared cut. It must retain strict
+qualification, producer errors and validation order, fresh owned output
+planes, the explicit default, and raw unselected bytes. No per-node callback
+or relaxed numeric trust boundary is needed. A fresh whole-node speed table
+will be required after any actual optimization.
+
+Shared constant-constructor contracts passed 43289, but that alias does not
+relink `test_set_color.exe`; the stale binary was detected by executable/library
+timestamps before accepting shortcut evidence. Fresh draft alias 81739 exited
+0 after relinking, retaining every semantic/raw-byte/schema/cache/UI assertion.
+Its bounded stage still allocated 88,515,968 bytes for the full 65,538-Vertex
+cook, so this particular recipe did not reach the new recognition path.
+The subsequent table 45747 was stopped at the owner's request (exit 130)
+after 34 rows; all emitted rows remain in
+`/tmp/rays-set-color-selected-constant-bench.log`. It is an incomplete
+diagnostic, not a new full-table acceptance or a replacement for 51920.
+
+Actual descriptor trace build 57782 and direct run with `RAYS_SELECTED_TRACE=1`
+exited 0 (`/tmp/rays-set-color-actual-descriptor-trace.log`). The public lowered
+plan contains only the input and Set Color wrapper. A temporary shared writer
+observer reports `selected constant=false`, ArrayVec4 values and ArrayInt
+selection, with no residual constructor or capture terms at the dynamically
+constructed attribute node. The cooked-host call currently declines concrete
+dispatch while its mask is still a Source, hydrates that mask on the fallback
+path, then creates a fresh node with the arrays in its cache parameters. This
+explains why constructor recognition at that later node cannot apply. Resolving
+the mask/default before concrete selected dispatch is the proposed shared
+root-cause fix; Set Color remains unregistered.
+
+Hydration-before-dispatch now passes fresh shared and draft gate 33031,
+including all 72 raw-color cases, reference/domain bytes, schema, cache and UI
+checks. The temporary shared observer is removed. The bounded current stage
+diagnostic exited 0 (`/tmp/rays-set-color-hydrated-stages.log`), after verifying
+the executable was newer than Lower's compiled object. Whole-cook allocation
+falls from 88,515,968 to 8,942,520 bytes on the same 65,538-Vertex fixture. The
+upstream dense cache-parameter route is removed; the remaining allocation now
+closely follows the concrete constructor, group source and writer. These
+single-sample diagnostics do not establish the whole-node 2× gate.
+
+| Stage after source hydration fix | Seconds | Allocated bytes |
+|---|---:|---:|
+| Typed constant ArrayVec4 constructor | 0.000883 | 2,097,616 |
+| Native group Source resolution | 0.000450 | 525,080 |
+| Selected writer, concrete inputs | 0.001760 | 6,298,960 |
+| Whole strict cold cook | 0.002896 | 8,942,520 |
+
+The writer's extra approximately 4.2 MB over its 2.1 MB of owned planes matches
+the per-Float callback boxing in its finite scan. A direct unboxed scan is the
+next shared optimization under review, preserving exact diagnostics and error
+order. Full timing remains held until that change is validated.
+
+Fresh shared finite-scan contracts and draft alias 75121 exited 0. The
+current binary was verified newer than both Attribute_kernel and Lower's
+compiled objects. Quiet bounded stages and full 78-row table 72712 then ran on
+that built snapshot, without builds or shared performance changes during the
+window. Logs are `/tmp/rays-set-color-finite2-stages.log` and
+`/tmp/rays-set-color-finite2-bench.log`. A later source-only cancellation guard
+was outside the timed binary. Raw 72-case parity, finite modes, all UI/cache/
+schema assertions remain green; no registration changed.
+
+The writer's unboxed finite scan removes its approximately 4.2 MB of callback
+allocation on the 65,538-Vertex diagnostic. Whole allocation is now 4,747,928
+bytes, compared with the original 88,515,832 bytes. These are one bounded
+sample each; they are not whole-node acceptance measurements.
+
+| Stage after hydration and finite scan | Seconds | Allocated bytes |
+|---|---:|---:|
+| Typed constant ArrayVec4 constructor | 0.000675 | 2,097,616 |
+| Native group Source resolution | 0.000420 | 525,080 |
+| Selected writer, concrete inputs | 0.000880 | 2,103,504 |
+| Whole strict cold cook | 0.002131 | 4,747,928 |
+
+The complete median-of-three table still fails the unchanged 2× gate: all 54
+ordinary-owner grouped rows exceed it, with maximum ratio 10.377×. The 24
+ungrouped and Detail rows pass this particular table; earlier Detail failures
+remain retained. Grouped allocation is now approximately 72 MB rather than
+1.23 GB (32 MB replacement array, 8 MB mask and 32 MB output planes). All
+required owner cardinalities, Cd states, group modes and domain counts remain
+measured. Constructor filling and mask/writer traversal need further shared
+work; no per-node path or threshold exception is introduced.
+
+| Owner | Elements | Cd | Group | Domains | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---|---:|---|---|---:|---:|---:|---:|---:|---:|
+| Point | 1000000 | absent | all | 1 | 0.001216 | 0.000692 | 0.569 | 32010016 | 32030512 |
+| Point | 1000000 | absent | all | 4 | 0.001245 | 0.000637 | 0.512 | 32010248 | 32030744 |
+| Point | 1000000 | absent | selected | 1 | 0.003823 | 0.029929 | 7.829 | 32010432 | 72027224 |
+| Point | 1000000 | absent | selected | 4 | 0.003738 | 0.023436 | 6.270 | 32010664 | 72075296 |
+| Point | 1000000 | absent | full | 1 | 0.004906 | 0.027913 | 5.690 | 32010424 | 72027344 |
+| Point | 1000000 | absent | full | 4 | 0.004874 | 0.022337 | 4.583 | 32010656 | 72073976 |
+| Point | 1000000 | absent | empty | 1 | 0.002879 | 0.027919 | 9.698 | 32010424 | 72027344 |
+| Point | 1000000 | absent | empty | 4 | 0.002889 | 0.022700 | 7.858 | 32010656 | 72075328 |
+| Point | 1000000 | vec4 | all | 1 | 0.001309 | 0.000726 | 0.555 | 32010168 | 32031816 |
+| Point | 1000000 | vec4 | all | 4 | 0.001271 | 0.000753 | 0.592 | 32010400 | 32032048 |
+| Point | 1000000 | vec4 | selected | 1 | 0.004697 | 0.030222 | 6.435 | 32010776 | 72027600 |
+| Point | 1000000 | vec4 | selected | 4 | 0.004490 | 0.025057 | 5.580 | 32011008 | 72074736 |
+| Point | 1000000 | vec4 | full | 1 | 0.005394 | 0.027475 | 5.094 | 32010768 | 72027592 |
+| Point | 1000000 | vec4 | full | 4 | 0.005330 | 0.022834 | 4.284 | 32011000 | 72081144 |
+| Point | 1000000 | vec4 | empty | 1 | 0.003448 | 0.029588 | 8.581 | 32010768 | 72027592 |
+| Point | 1000000 | vec4 | empty | 4 | 0.003458 | 0.023426 | 6.774 | 32011000 | 72074352 |
+| Point | 1000000 | wrong_float | all | 1 | 0.001225 | 0.000641 | 0.523 | 32010168 | 32031816 |
+| Point | 1000000 | wrong_float | all | 4 | 0.001188 | 0.000729 | 0.613 | 32010400 | 32032048 |
+| Point | 1000000 | wrong_float | selected | 1 | 0.003852 | 0.029300 | 7.607 | 32010600 | 72027632 |
+| Point | 1000000 | wrong_float | selected | 4 | 0.003735 | 0.023314 | 6.242 | 32010832 | 72074752 |
+| Point | 1000000 | wrong_float | full | 1 | 0.005000 | 0.027804 | 5.561 | 32010592 | 72027496 |
+| Point | 1000000 | wrong_float | full | 4 | 0.004948 | 0.022408 | 4.529 | 32010824 | 72074048 |
+| Point | 1000000 | wrong_float | empty | 1 | 0.002857 | 0.029646 | 10.377 | 32010592 | 72027496 |
+| Point | 1000000 | wrong_float | empty | 4 | 0.002854 | 0.022710 | 7.957 | 32010824 | 72074384 |
+| Vertex | 1000000 | absent | all | 1 | 0.001236 | 0.000645 | 0.522 | 32010024 | 32030520 |
+| Vertex | 1000000 | absent | all | 4 | 0.001433 | 0.000703 | 0.491 | 32010256 | 32030752 |
+| Vertex | 1000000 | absent | selected | 1 | 0.003910 | 0.031077 | 7.948 | 32010440 | 72027352 |
+| Vertex | 1000000 | absent | selected | 4 | 0.004021 | 0.023884 | 5.940 | 32010672 | 72074112 |
+| Vertex | 1000000 | absent | full | 1 | 0.004954 | 0.027476 | 5.546 | 32010424 | 72027216 |
+| Vertex | 1000000 | absent | full | 4 | 0.004941 | 0.023512 | 4.759 | 32010656 | 72088216 |
+| Vertex | 1000000 | absent | empty | 1 | 0.002986 | 0.028491 | 9.541 | 32010432 | 72027216 |
+| Vertex | 1000000 | absent | empty | 4 | 0.003126 | 0.022785 | 7.289 | 32010664 | 72073848 |
+| Vertex | 1000000 | vec4 | all | 1 | 0.001241 | 0.000664 | 0.535 | 32010176 | 32044672 |
+| Vertex | 1000000 | vec4 | all | 4 | 0.001286 | 0.000723 | 0.562 | 32010408 | 32032064 |
+| Vertex | 1000000 | vec4 | selected | 1 | 0.004305 | 0.029989 | 6.966 | 32010784 | 72027728 |
+| Vertex | 1000000 | vec4 | selected | 4 | 0.004331 | 0.024319 | 5.615 | 32011016 | 72075096 |
+| Vertex | 1000000 | vec4 | full | 1 | 0.005440 | 0.027469 | 5.049 | 32010768 | 72027592 |
+| Vertex | 1000000 | vec4 | full | 4 | 0.005396 | 0.022301 | 4.133 | 32011000 | 72074728 |
+| Vertex | 1000000 | vec4 | empty | 1 | 0.003511 | 0.030650 | 8.730 | 32010776 | 72027720 |
+| Vertex | 1000000 | vec4 | empty | 4 | 0.003883 | 0.023420 | 6.031 | 32011008 | 72074224 |
+| Vertex | 1000000 | wrong_float | all | 1 | 0.001203 | 0.000672 | 0.558 | 32010176 | 32031832 |
+| Vertex | 1000000 | wrong_float | all | 4 | 0.001360 | 0.000676 | 0.497 | 32010408 | 32032064 |
+| Vertex | 1000000 | wrong_float | selected | 1 | 0.003836 | 0.029169 | 7.604 | 32010608 | 72027632 |
+| Vertex | 1000000 | wrong_float | selected | 4 | 0.003780 | 0.023559 | 6.233 | 32010840 | 72073808 |
+| Vertex | 1000000 | wrong_float | full | 1 | 0.005150 | 0.028494 | 5.533 | 32010592 | 72027496 |
+| Vertex | 1000000 | wrong_float | full | 4 | 0.005223 | 0.022752 | 4.356 | 32010824 | 72075032 |
+| Vertex | 1000000 | wrong_float | empty | 1 | 0.003007 | 0.028517 | 9.484 | 32010600 | 72027624 |
+| Vertex | 1000000 | wrong_float | empty | 4 | 0.002874 | 0.023089 | 8.034 | 32010832 | 72074248 |
+| Primitive | 1000000 | absent | all | 1 | 0.001202 | 0.000719 | 0.598 | 32010040 | 32030552 |
+| Primitive | 1000000 | absent | all | 4 | 0.001295 | 0.000771 | 0.595 | 32010272 | 32030784 |
+| Primitive | 1000000 | absent | selected | 1 | 0.004087 | 0.030742 | 7.522 | 32010456 | 72027376 |
+| Primitive | 1000000 | absent | selected | 4 | 0.003896 | 0.023459 | 6.021 | 32010688 | 72074008 |
+| Primitive | 1000000 | absent | full | 1 | 0.004970 | 0.028011 | 5.636 | 32010432 | 72027224 |
+| Primitive | 1000000 | absent | full | 4 | 0.005067 | 0.022683 | 4.477 | 32010664 | 72073912 |
+| Primitive | 1000000 | absent | empty | 1 | 0.002867 | 0.028023 | 9.774 | 32010440 | 72027352 |
+| Primitive | 1000000 | absent | empty | 4 | 0.002915 | 0.022593 | 7.750 | 32010672 | 72074592 |
+| Primitive | 1000000 | vec4 | all | 1 | 0.001166 | 0.000666 | 0.571 | 32010200 | 32031872 |
+| Primitive | 1000000 | vec4 | all | 4 | 0.001286 | 0.000728 | 0.566 | 32010432 | 32032104 |
+| Primitive | 1000000 | vec4 | selected | 1 | 0.004277 | 0.030445 | 7.118 | 32010808 | 72027760 |
+| Primitive | 1000000 | vec4 | selected | 4 | 0.004567 | 0.024699 | 5.408 | 32011040 | 72074408 |
+| Primitive | 1000000 | vec4 | full | 1 | 0.005364 | 0.027985 | 5.217 | 32010784 | 72027608 |
+| Primitive | 1000000 | vec4 | full | 4 | 0.005370 | 0.023203 | 4.321 | 32011016 | 72075424 |
+| Primitive | 1000000 | vec4 | empty | 1 | 0.003733 | 0.029525 | 7.909 | 32010792 | 72027736 |
+| Primitive | 1000000 | vec4 | empty | 4 | 0.003381 | 0.023548 | 6.965 | 32011024 | 72074144 |
+| Primitive | 1000000 | wrong_float | all | 1 | 0.001188 | 0.000669 | 0.563 | 32010200 | 32044712 |
+| Primitive | 1000000 | wrong_float | all | 4 | 0.001216 | 0.000664 | 0.546 | 32010432 | 32032104 |
+| Primitive | 1000000 | wrong_float | selected | 1 | 0.003745 | 0.029416 | 7.855 | 32010632 | 72027664 |
+| Primitive | 1000000 | wrong_float | selected | 4 | 0.003755 | 0.023749 | 6.325 | 32010864 | 72074784 |
+| Primitive | 1000000 | wrong_float | full | 1 | 0.004951 | 0.027744 | 5.604 | 32010608 | 72027512 |
+| Primitive | 1000000 | wrong_float | full | 4 | 0.005163 | 0.022862 | 4.428 | 32010840 | 72074272 |
+| Primitive | 1000000 | wrong_float | empty | 1 | 0.003181 | 0.028271 | 8.887 | 32010616 | 72027512 |
+| Primitive | 1000000 | wrong_float | empty | 4 | 0.002957 | 0.022930 | 7.754 | 32010848 | 72074144 |
+| Detail | 1 | absent | all | 1 | 0.000019 | 0.000036 | 1.887 | 10064 | 26360 |
+| Detail | 1 | absent | all | 4 | 0.000021 | 0.000038 | 1.818 | 10296 | 27248 |
+| Detail | 1 | vec4 | all | 1 | 0.000027 | 0.000042 | 1.566 | 10216 | 27088 |
+| Detail | 1 | vec4 | all | 4 | 0.000031 | 0.000053 | 1.715 | 10448 | 27976 |
+| Detail | 1 | wrong_float | all | 1 | 0.000026 | 0.000045 | 1.718 | 10216 | 27088 |
+| Detail | 1 | wrong_float | all | 4 | 0.000026 | 0.000040 | 1.532 | 10448 | 27976 |
+
 
 ### Selected numeric attribute writer Lisp and host contract
 
@@ -1673,6 +2319,235 @@ Point Jitter can now express native arithmetic validation and error sequencing
 in its Lisp body. Its whole-node semantic and speed gates still have to pass;
 no new SOP registration or whole-node completion is claimed here.
 
+The generic vector constant-array constructor now fills its already-validated
+sample using prefix-doubling standard-library `Array.blit`, replacing one tiny
+blit per row. Scalar/Int/Text constructors, empty-fill laziness, count bounds,
+validation and newly owned output arrays are unchanged. Fresh Flow/FlowSOP/
+Color gate 67753 exited 0. The exact reference-builder regression for Vec3/
+Vec4 counts 0/1/2/3/5/17/4097/32769 checks every Float bit, including signed zero
+and a subnormal. That regression is now in regular `lib/flow/test_op.ml`, so
+it is independent of the unregistered Color recipe.
+
+Quiet bounded constructor diagnostic then exited 0, followed by the complete
+78-row median table 73970 (exit 0) on the built 67753 snapshot; logs
+`/tmp/rays-set-color-bulk-constructor-stages.log` and
+`/tmp/rays-set-color-bulk-constructor-bench.log`. No overlapping builds,
+benchmarks or shared performance edits occurred. On the 65,538-Vertex
+single-sample diagnostic, constructor wall time falls from 0.000675 to
+0.000256 seconds with unchanged 2,097,616-byte allocation. This diagnostic
+comparison is separate from whole-node acceptance.
+
+| Stage after constructor bulk fill | Seconds | Allocated bytes |
+|---|---:|---:|
+| Typed constant ArrayVec4 constructor | 0.000256 | 2,097,616 |
+| Native group Source resolution | 0.000593 | 525,080 |
+| Selected writer, concrete inputs | 0.000896 | 2,102,104 |
+| Whole strict cold cook | 0.002053 | 4,747,928 |
+
+The whole-node table still fails: all 54 ordinary-owner grouped rows exceed
+2×, maximum ratio 8.542×, with approximately 72 MB of allocation. All 24
+ungrouped/Detail rows pass this table, and all prior tables/failures are kept.
+Set Color remains unregistered. The constructor optimization is a shared
+language improvement; another shared writer/source cut and fresh whole-node
+proof are required before production switching.
+
+| Owner | Elements | Cd | Group | Domains | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---|---:|---|---|---:|---:|---:|---:|---:|---:|
+| Point | 1000000 | absent | all | 1 | 0.001299 | 0.000635 | 0.489 | 32010016 | 32030512 |
+| Point | 1000000 | absent | all | 4 | 0.001531 | 0.000697 | 0.455 | 32010248 | 32030744 |
+| Point | 1000000 | absent | selected | 1 | 0.003745 | 0.023190 | 6.192 | 32010432 | 72027224 |
+| Point | 1000000 | absent | selected | 4 | 0.003739 | 0.017488 | 4.677 | 32010664 | 72074464 |
+| Point | 1000000 | absent | full | 1 | 0.004860 | 0.021694 | 4.464 | 32010424 | 72027216 |
+| Point | 1000000 | absent | full | 4 | 0.004895 | 0.016733 | 3.418 | 32010656 | 72074104 |
+| Point | 1000000 | absent | empty | 1 | 0.002849 | 0.022528 | 7.908 | 32010424 | 72027344 |
+| Point | 1000000 | absent | empty | 4 | 0.002846 | 0.016803 | 5.904 | 32010656 | 72074128 |
+| Point | 1000000 | vec4 | all | 1 | 0.001209 | 0.000634 | 0.524 | 32010168 | 32044656 |
+| Point | 1000000 | vec4 | all | 4 | 0.001330 | 0.000652 | 0.490 | 32010400 | 32032048 |
+| Point | 1000000 | vec4 | selected | 1 | 0.004432 | 0.024182 | 5.456 | 32010776 | 72027600 |
+| Point | 1000000 | vec4 | selected | 4 | 0.004228 | 0.018164 | 4.296 | 32011008 | 72074104 |
+| Point | 1000000 | vec4 | full | 1 | 0.005371 | 0.021547 | 4.012 | 32010768 | 72027720 |
+| Point | 1000000 | vec4 | full | 4 | 0.005470 | 0.018110 | 3.311 | 32011000 | 72076520 |
+| Point | 1000000 | vec4 | empty | 1 | 0.003543 | 0.023981 | 6.769 | 32010768 | 72027592 |
+| Point | 1000000 | vec4 | empty | 4 | 0.003442 | 0.017485 | 5.080 | 32011000 | 72075008 |
+| Point | 1000000 | wrong_float | all | 1 | 0.001204 | 0.000659 | 0.547 | 32010168 | 32031816 |
+| Point | 1000000 | wrong_float | all | 4 | 0.001249 | 0.000744 | 0.596 | 32010400 | 32032048 |
+| Point | 1000000 | wrong_float | selected | 1 | 0.003967 | 0.022639 | 5.707 | 32010600 | 72027504 |
+| Point | 1000000 | wrong_float | selected | 4 | 0.003820 | 0.017764 | 4.650 | 32010832 | 72075232 |
+| Point | 1000000 | wrong_float | full | 1 | 0.005366 | 0.022737 | 4.237 | 32010592 | 72027496 |
+| Point | 1000000 | wrong_float | full | 4 | 0.005112 | 0.018296 | 3.579 | 32010824 | 72071144 |
+| Point | 1000000 | wrong_float | empty | 1 | 0.002935 | 0.022873 | 7.793 | 32010592 | 72027496 |
+| Point | 1000000 | wrong_float | empty | 4 | 0.002848 | 0.017057 | 5.989 | 32010824 | 72074312 |
+| Vertex | 1000000 | absent | all | 1 | 0.001227 | 0.000666 | 0.543 | 32010024 | 32030520 |
+| Vertex | 1000000 | absent | all | 4 | 0.001200 | 0.000661 | 0.551 | 32010256 | 32030752 |
+| Vertex | 1000000 | absent | selected | 1 | 0.003771 | 0.023369 | 6.197 | 32010440 | 72027224 |
+| Vertex | 1000000 | absent | selected | 4 | 0.003797 | 0.017686 | 4.658 | 32010672 | 72073904 |
+| Vertex | 1000000 | absent | full | 1 | 0.004985 | 0.022086 | 4.430 | 32010424 | 72027216 |
+| Vertex | 1000000 | absent | full | 4 | 0.004969 | 0.016666 | 3.354 | 32010656 | 72074160 |
+| Vertex | 1000000 | absent | empty | 1 | 0.002884 | 0.022196 | 7.696 | 32010432 | 72027216 |
+| Vertex | 1000000 | absent | empty | 4 | 0.002855 | 0.016991 | 5.951 | 32010664 | 72073904 |
+| Vertex | 1000000 | vec4 | all | 1 | 0.001206 | 0.000692 | 0.574 | 32010176 | 32044672 |
+| Vertex | 1000000 | vec4 | all | 4 | 0.001190 | 0.000658 | 0.553 | 32010408 | 32032064 |
+| Vertex | 1000000 | vec4 | selected | 1 | 0.004943 | 0.028091 | 5.683 | 32010784 | 72027600 |
+| Vertex | 1000000 | vec4 | selected | 4 | 0.004383 | 0.019225 | 4.386 | 32011016 | 72074728 |
+| Vertex | 1000000 | vec4 | full | 1 | 0.005570 | 0.021844 | 3.922 | 32010768 | 72027720 |
+| Vertex | 1000000 | vec4 | full | 4 | 0.005446 | 0.016831 | 3.091 | 32011000 | 72074552 |
+| Vertex | 1000000 | vec4 | empty | 1 | 0.003521 | 0.024669 | 7.006 | 32010776 | 72027592 |
+| Vertex | 1000000 | vec4 | empty | 4 | 0.003362 | 0.017971 | 5.345 | 32011008 | 72074480 |
+| Vertex | 1000000 | wrong_float | all | 1 | 0.001200 | 0.000668 | 0.557 | 32010176 | 32031832 |
+| Vertex | 1000000 | wrong_float | all | 4 | 0.001264 | 0.000681 | 0.539 | 32010408 | 32032064 |
+| Vertex | 1000000 | wrong_float | selected | 1 | 0.003845 | 0.022963 | 5.972 | 32010608 | 72027504 |
+| Vertex | 1000000 | wrong_float | selected | 4 | 0.003882 | 0.017528 | 4.515 | 32010840 | 72074520 |
+| Vertex | 1000000 | wrong_float | full | 1 | 0.005270 | 0.022184 | 4.209 | 32010592 | 72027496 |
+| Vertex | 1000000 | wrong_float | full | 4 | 0.005073 | 0.017210 | 3.393 | 32010824 | 72074344 |
+| Vertex | 1000000 | wrong_float | empty | 1 | 0.002934 | 0.023351 | 7.959 | 32010600 | 72027496 |
+| Vertex | 1000000 | wrong_float | empty | 4 | 0.002940 | 0.017307 | 5.886 | 32010832 | 72073792 |
+| Primitive | 1000000 | absent | all | 1 | 0.001231 | 0.000725 | 0.589 | 32010040 | 32030552 |
+| Primitive | 1000000 | absent | all | 4 | 0.001210 | 0.000689 | 0.569 | 32010272 | 32030784 |
+| Primitive | 1000000 | absent | selected | 1 | 0.003784 | 0.022943 | 6.063 | 32010456 | 72027248 |
+| Primitive | 1000000 | absent | selected | 4 | 0.003756 | 0.019210 | 5.114 | 32010688 | 72074312 |
+| Primitive | 1000000 | absent | full | 1 | 0.005290 | 0.022336 | 4.222 | 32010432 | 72027224 |
+| Primitive | 1000000 | absent | full | 4 | 0.004847 | 0.016736 | 3.453 | 32010664 | 72073520 |
+| Primitive | 1000000 | absent | empty | 1 | 0.002862 | 0.024447 | 8.542 | 32010440 | 72027224 |
+| Primitive | 1000000 | absent | empty | 4 | 0.002927 | 0.016955 | 5.792 | 32010672 | 72074376 |
+| Primitive | 1000000 | vec4 | all | 1 | 0.001233 | 0.000687 | 0.557 | 32010200 | 32031872 |
+| Primitive | 1000000 | vec4 | all | 4 | 0.001230 | 0.000670 | 0.545 | 32010432 | 32032104 |
+| Primitive | 1000000 | vec4 | selected | 1 | 0.004243 | 0.024421 | 5.756 | 32010808 | 72027760 |
+| Primitive | 1000000 | vec4 | selected | 4 | 0.004332 | 0.018712 | 4.319 | 32011040 | 72075352 |
+| Primitive | 1000000 | vec4 | full | 1 | 0.005366 | 0.021752 | 4.054 | 32010784 | 72027608 |
+| Primitive | 1000000 | vec4 | full | 4 | 0.005816 | 0.016734 | 2.877 | 32011016 | 72076104 |
+| Primitive | 1000000 | vec4 | empty | 1 | 0.003416 | 0.024032 | 7.035 | 32010792 | 72027608 |
+| Primitive | 1000000 | vec4 | empty | 4 | 0.003436 | 0.018093 | 5.266 | 32011024 | 72074776 |
+| Primitive | 1000000 | wrong_float | all | 1 | 0.001450 | 0.000709 | 0.489 | 32010200 | 32031872 |
+| Primitive | 1000000 | wrong_float | all | 4 | 0.001252 | 0.000678 | 0.541 | 32010432 | 32032104 |
+| Primitive | 1000000 | wrong_float | selected | 1 | 0.003788 | 0.022717 | 5.997 | 32010632 | 72027664 |
+| Primitive | 1000000 | wrong_float | selected | 4 | 0.003823 | 0.018184 | 4.756 | 32010864 | 72074056 |
+| Primitive | 1000000 | wrong_float | full | 1 | 0.004885 | 0.021604 | 4.423 | 32010608 | 72027512 |
+| Primitive | 1000000 | wrong_float | full | 4 | 0.005276 | 0.017936 | 3.400 | 32010840 | 72074264 |
+| Primitive | 1000000 | wrong_float | empty | 1 | 0.002881 | 0.022470 | 7.799 | 32010616 | 72027512 |
+| Primitive | 1000000 | wrong_float | empty | 4 | 0.002873 | 0.018295 | 6.368 | 32010848 | 72073920 |
+| Detail | 1 | absent | all | 1 | 0.000025 | 0.000030 | 1.200 | 10064 | 26360 |
+| Detail | 1 | absent | all | 4 | 0.000024 | 0.000042 | 1.743 | 10296 | 27248 |
+| Detail | 1 | vec4 | all | 1 | 0.000015 | 0.000019 | 1.270 | 10216 | 27088 |
+| Detail | 1 | vec4 | all | 4 | 0.000023 | 0.000020 | 0.875 | 10448 | 27976 |
+| Detail | 1 | wrong_float | all | 1 | 0.000028 | 0.000040 | 1.424 | 10216 | 27088 |
+| Detail | 1 | wrong_float | all | 4 | 0.000014 | 0.000025 | 1.810 | 10448 | 27976 |
+
+Final focused request **20157** exited 0 after moving the constructor check
+into `lib/flow/test_op.ml`: `@lib/flow/runtest @lib/flow_sop/runtest
+@lib/flow_sop/set_color_draft @tools/api_manifest/runtest`. The regular Flow
+check compares every vector component bit against the element builder for
+empty, single, odd-tail and multi-block arrays, including signed zero and a
+subnormal. Set Color's raw 72-case parity, metadata, cache and graph gestures
+remain green. Log: `/tmp/rays-set-color-bulk-constructor-final.log`.
+
+#### Set Color copied-plane overlay: complete table, still failing
+
+The generic selected writer now seeds owned planes with `Array.copy` of
+matching existing storage or `Array.make` of the explicit default, then
+writes selected rows. Focused request **96907** exited 0 with FlowSOP and
+Set Color, including raw 72-case native-byte parity. The diagnostic and
+whole table below used that freshly linked executable; no runtime edits or
+other validation ran during timing.
+
+At 65,538 Vertex elements, the single bounded diagnostic measured the
+constructor at 0.000250 s / 2,097,616 B, group source at 0.000493 s /
+525,080 B, concrete selected writer at 0.000950 s / 2,102,904 B, and whole
+strict cold cook at 0.001537 s / 4,747,880 B. The preceding bulk-constructor
+diagnostic measured whole cook at 0.002053 s / 4,747,928 B. These are
+single samples, not the throughput acceptance test. Diagnostic log:
+`/tmp/rays-set-color-copy-overlay-stages.log`.
+
+Complete request **83150** exited 0. The unchanged 78-row test uses median
+three fresh Sessions, cold cooks, one/four domains, grain 4096, one million
+ordinary-owner elements, and one Detail element on a million-point input.
+Allocations are measured on the initial domain. All 54 grouped rows still
+exceed 2×; one Detail microcase also exceeds 2×, for 55 failures in total.
+Maximum ratio is 5.676× and grouped allocation remains about 72 MB. The
+whole Set Color gate remains unmet; no registration or completion tick.
+All previous tables remain above. Full log:
+`/tmp/rays-set-color-copy-overlay-bench.log`.
+
+| Owner | Elements | Cd | Group | Domains | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---|---:|---|---|---:|---:|---:|---:|---:|---:|
+| Point | 1000000 | absent | all | 1 | 0.001566 | 0.000672 | 0.429 | 32010016 | 32030512 |
+| Point | 1000000 | absent | all | 4 | 0.001292 | 0.000662 | 0.512 | 32015272 | 32030744 |
+| Point | 1000000 | absent | selected | 1 | 0.003757 | 0.019264 | 5.127 | 32010432 | 72027280 |
+| Point | 1000000 | absent | selected | 4 | 0.003735 | 0.017094 | 4.577 | 32010664 | 72075368 |
+| Point | 1000000 | absent | full | 1 | 0.004868 | 0.020399 | 4.191 | 32010424 | 72027400 |
+| Point | 1000000 | absent | full | 4 | 0.004948 | 0.016519 | 3.339 | 32010656 | 72074216 |
+| Point | 1000000 | absent | empty | 1 | 0.002942 | 0.015903 | 5.406 | 32010424 | 72027400 |
+| Point | 1000000 | absent | empty | 4 | 0.003045 | 0.016432 | 5.396 | 32010656 | 72096360 |
+| Point | 1000000 | vec4 | all | 1 | 0.001224 | 0.000684 | 0.559 | 32010168 | 32044656 |
+| Point | 1000000 | vec4 | all | 4 | 0.001208 | 0.000693 | 0.574 | 32010400 | 32032048 |
+| Point | 1000000 | vec4 | selected | 1 | 0.004435 | 0.019272 | 4.345 | 32010776 | 72027680 |
+| Point | 1000000 | vec4 | selected | 4 | 0.004301 | 0.017550 | 4.081 | 32011008 | 72074936 |
+| Point | 1000000 | vec4 | full | 1 | 0.005363 | 0.020658 | 3.852 | 32010768 | 72027544 |
+| Point | 1000000 | vec4 | full | 4 | 0.005340 | 0.016846 | 3.155 | 32011000 | 72073968 |
+| Point | 1000000 | vec4 | empty | 1 | 0.003338 | 0.016139 | 4.835 | 32010768 | 72027544 |
+| Point | 1000000 | vec4 | empty | 4 | 0.003381 | 0.015736 | 4.654 | 32011000 | 72079072 |
+| Point | 1000000 | wrong_float | all | 1 | 0.001185 | 0.000664 | 0.560 | 32010168 | 32031816 |
+| Point | 1000000 | wrong_float | all | 4 | 0.001212 | 0.000642 | 0.530 | 32010400 | 32032048 |
+| Point | 1000000 | wrong_float | selected | 1 | 0.003756 | 0.021190 | 5.642 | 32010600 | 72027560 |
+| Point | 1000000 | wrong_float | selected | 4 | 0.003746 | 0.017420 | 4.650 | 32010832 | 72076376 |
+| Point | 1000000 | wrong_float | full | 1 | 0.004965 | 0.020269 | 4.082 | 32010592 | 72027680 |
+| Point | 1000000 | wrong_float | full | 4 | 0.004915 | 0.017003 | 3.459 | 32010824 | 72075312 |
+| Point | 1000000 | wrong_float | empty | 1 | 0.002914 | 0.015805 | 5.424 | 32010592 | 72027680 |
+| Point | 1000000 | wrong_float | empty | 4 | 0.002888 | 0.015266 | 5.286 | 32010824 | 72079272 |
+| Vertex | 1000000 | absent | all | 1 | 0.001246 | 0.000652 | 0.523 | 32010024 | 32030520 |
+| Vertex | 1000000 | absent | all | 4 | 0.001210 | 0.000893 | 0.738 | 32010256 | 32030752 |
+| Vertex | 1000000 | absent | selected | 1 | 0.003769 | 0.020099 | 5.333 | 32010440 | 72027408 |
+| Vertex | 1000000 | absent | selected | 4 | 0.003780 | 0.017171 | 4.543 | 32010672 | 72075456 |
+| Vertex | 1000000 | absent | full | 1 | 0.004914 | 0.020878 | 4.249 | 32010424 | 72027272 |
+| Vertex | 1000000 | absent | full | 4 | 0.004851 | 0.017244 | 3.555 | 32010656 | 72075744 |
+| Vertex | 1000000 | absent | empty | 1 | 0.003088 | 0.015734 | 5.095 | 32010432 | 72027272 |
+| Vertex | 1000000 | absent | empty | 4 | 0.003058 | 0.016001 | 5.233 | 32010664 | 72079680 |
+| Vertex | 1000000 | vec4 | all | 1 | 0.001327 | 0.000705 | 0.531 | 32010176 | 32031832 |
+| Vertex | 1000000 | vec4 | all | 4 | 0.001234 | 0.000637 | 0.516 | 32010408 | 32032064 |
+| Vertex | 1000000 | vec4 | selected | 1 | 0.004297 | 0.019274 | 4.485 | 32010784 | 72027552 |
+| Vertex | 1000000 | vec4 | selected | 4 | 0.004322 | 0.017766 | 4.111 | 32011016 | 72074592 |
+| Vertex | 1000000 | vec4 | full | 1 | 0.005401 | 0.020861 | 3.862 | 32010768 | 72027672 |
+| Vertex | 1000000 | vec4 | full | 4 | 0.005331 | 0.017426 | 3.269 | 32011000 | 72074928 |
+| Vertex | 1000000 | vec4 | empty | 1 | 0.003446 | 0.016274 | 4.723 | 32010776 | 72027672 |
+| Vertex | 1000000 | vec4 | empty | 4 | 0.003435 | 0.016092 | 4.685 | 32011008 | 72080288 |
+| Vertex | 1000000 | wrong_float | all | 1 | 0.001230 | 0.000707 | 0.575 | 32010176 | 32044672 |
+| Vertex | 1000000 | wrong_float | all | 4 | 0.001194 | 0.000657 | 0.550 | 32010408 | 32032064 |
+| Vertex | 1000000 | wrong_float | selected | 1 | 0.003755 | 0.018741 | 4.991 | 32010608 | 72027688 |
+| Vertex | 1000000 | wrong_float | selected | 4 | 0.003768 | 0.017367 | 4.609 | 32010840 | 72076136 |
+| Vertex | 1000000 | wrong_float | full | 1 | 0.004993 | 0.021547 | 4.315 | 32010592 | 72027680 |
+| Vertex | 1000000 | wrong_float | full | 4 | 0.005011 | 0.016776 | 3.348 | 32010824 | 72074368 |
+| Vertex | 1000000 | wrong_float | empty | 1 | 0.003058 | 0.015961 | 5.219 | 32010600 | 72027680 |
+| Vertex | 1000000 | wrong_float | empty | 4 | 0.003060 | 0.015387 | 5.028 | 32010832 | 72079104 |
+| Primitive | 1000000 | absent | all | 1 | 0.001501 | 0.000683 | 0.455 | 32010040 | 32030552 |
+| Primitive | 1000000 | absent | all | 4 | 0.001212 | 0.000759 | 0.626 | 32010272 | 32030784 |
+| Primitive | 1000000 | absent | selected | 1 | 0.004041 | 0.018899 | 4.677 | 32010456 | 72027304 |
+| Primitive | 1000000 | absent | selected | 4 | 0.003900 | 0.017291 | 4.434 | 32010688 | 72075536 |
+| Primitive | 1000000 | absent | full | 1 | 0.004965 | 0.020535 | 4.136 | 32010432 | 72027408 |
+| Primitive | 1000000 | absent | full | 4 | 0.005013 | 0.016809 | 3.353 | 32010664 | 72074192 |
+| Primitive | 1000000 | absent | empty | 1 | 0.002888 | 0.016394 | 5.676 | 32010440 | 72027408 |
+| Primitive | 1000000 | absent | empty | 4 | 0.003055 | 0.016543 | 5.415 | 32010672 | 72080120 |
+| Primitive | 1000000 | vec4 | all | 1 | 0.001228 | 0.000792 | 0.645 | 32010200 | 32031872 |
+| Primitive | 1000000 | vec4 | all | 4 | 0.001288 | 0.000657 | 0.510 | 32010432 | 32032104 |
+| Primitive | 1000000 | vec4 | selected | 1 | 0.004628 | 0.019721 | 4.261 | 32010808 | 72027584 |
+| Primitive | 1000000 | vec4 | selected | 4 | 0.004266 | 0.017495 | 4.101 | 32011040 | 72075496 |
+| Primitive | 1000000 | vec4 | full | 1 | 0.005393 | 0.020898 | 3.875 | 32010784 | 72027688 |
+| Primitive | 1000000 | vec4 | full | 4 | 0.005322 | 0.016988 | 3.192 | 32011016 | 72074400 |
+| Primitive | 1000000 | vec4 | empty | 1 | 0.003531 | 0.016872 | 4.778 | 32010792 | 72027688 |
+| Primitive | 1000000 | vec4 | empty | 4 | 0.003389 | 0.015793 | 4.660 | 32011024 | 72077312 |
+| Primitive | 1000000 | wrong_float | all | 1 | 0.001213 | 0.000679 | 0.560 | 32010200 | 32031872 |
+| Primitive | 1000000 | wrong_float | all | 4 | 0.001269 | 0.000680 | 0.536 | 32010432 | 32032104 |
+| Primitive | 1000000 | wrong_float | selected | 1 | 0.003782 | 0.018861 | 4.987 | 32010632 | 72027592 |
+| Primitive | 1000000 | wrong_float | selected | 4 | 0.003739 | 0.017206 | 4.602 | 32010864 | 72075296 |
+| Primitive | 1000000 | wrong_float | full | 1 | 0.004941 | 0.020504 | 4.150 | 32010608 | 72027696 |
+| Primitive | 1000000 | wrong_float | full | 4 | 0.004909 | 0.016716 | 3.405 | 32010840 | 72082928 |
+| Primitive | 1000000 | wrong_float | empty | 1 | 0.002850 | 0.015613 | 5.479 | 32010616 | 72027568 |
+| Primitive | 1000000 | wrong_float | empty | 4 | 0.002845 | 0.015453 | 5.432 | 32010848 | 72079600 |
+| Detail | 1 | absent | all | 1 | 0.000017 | 0.000029 | 1.681 | 10064 | 26360 |
+| Detail | 1 | absent | all | 4 | 0.000020 | 0.000032 | 1.595 | 10296 | 27248 |
+| Detail | 1 | vec4 | all | 1 | 0.000026 | 0.000034 | 1.312 | 10216 | 27088 |
+| Detail | 1 | vec4 | all | 4 | 0.000025 | 0.000046 | 1.838 | 10448 | 27976 |
+| Detail | 1 | wrong_float | all | 1 | 0.000029 | 0.000042 | 1.443 | 10216 | 27088 |
+| Detail | 1 | wrong_float | all | 4 | 0.000028 | 0.000066 | 2.359 | 10448 | 27976 |
+
 ### Shared constant vector fill accepted
 
 The generic `array/vec3` and `array/vec4` constructors now grow a validated
@@ -1717,92 +2592,191 @@ still exceed 2x, plus one Detail row: wrong-float Cd at four domains is 2.359x
 5.676x. Grouped allocation remains about 72 MB. Full rows are retained above;
 Set Color stays unregistered and the ledger remains six of 128 ports.
 
-### Delete Edge Group production port
+### Point Jitter checked semantics and first whole-node timings (unregistered)
 
-Whole-node completion: `sop/delete_edge_group` now loads its checked Lisp body
-from `lib/flow_sop/nodes/delete_edge_group.rays`, using the existing generic
-`sop/delete_edge` primitive. The independent `Sop.Nodes.Delete_edge_group`
-factory remains the oracle. This is port 7 of 128 (5.47%); the other 121 remain
-required, and B.12 remains unchecked until its other six nodes pass.
-The promoted catalog digest is `fafaf06693fe67896fcf22b27dbf357b`.
-Default, schema, operation/version, slots and literal-name behavior are unchanged.
+The pending body now uses the shared checked P/mask/pscale query, separately
+rounded checked multiplication, explicit checked FMA and selected P writer.
+Validity flags survive subsequent zero products; the first invalid selected
+index determines the native code/message/cause. Unselected nonfinite native
+rows retain their original bytes, and Point/Vertex N is removed only if any
+point changes numerically. Canonical P is missing as a native mask attribute
+and supplies the point-index fallback as a native ID attribute.
 
-The authoritative `lib/sop/test_lisp_ports.ml` and regular Flow SOP tests cover
-all eight attribute storages and four owners; ordered groups and mixed
-polygon/polyline edges; empty, single, 4,225-point grid and 32,769-point geometry;
-whitespace, glob-looking and UTF-8 literal names; raw canonical P with NaN
-payloads and infinities; immutable input; exact reference/native parity at
-1/4/8 domains and grains 1/97/4096; malformed parameters and inputs; cache
-miss/hit and relabel identity. Graph tests compare the native and Lisp card and
-inspector, edit the name directly, then actually cook the bypassed graph.
+Focused request 82147 exited 0 for `@lib/flow_sop/point_jitter_draft`
+(`/tmp/rays-point-jitter-checked6.log`). Defaults and every physical field,
+explicit/automatic seed, groups, missing/disabled optional columns, signed63
+IDs, all eight attribute storages on all four owners, ordered groups and
+edges pass. Fixtures include empty/single/ordinary/32,769 points and the real
+4,225-point quad grid. Native finite geometry remains within four ULPs;
+strict/reference and domains 1/4/8 at grains 1/97/4096 retain identical bytes.
+NaN and both infinities in P/mask/pscale, every incompatible optional storage,
+blank/group/type precedence, overflow followed by zero, finite FMA cancellation
+of an overflowing product, final-output overflow and first errors across grain
+ranges pass the native result or exact code/message/cause. Metadata, parameter
+keys, every field's one public miss/warm hit, seed dependency, graph/inspector
+parity, all direct gestures, bypass and invalid-choice refusal pass. Earlier
+request 20011 remains historical evidence of the now-resolved gaps.
 
-All commands use `opam exec -- _build/default/tools/check.exe`:
+Request 9109 rebuilt the benchmark executable and reran that full semantic
+recipe successfully (`/tmp/rays-point-jitter-perf-build1.log`). The quiet
+`--bench-first` request 8238 exited 0 on Apple M1, OCaml 5.3.0 dev profile.
+It uses a deterministic real 999-by-999 quad grid: 1,000,000 points, 998,001
+quads, optional finite mask/pscale/signed63 ID columns, point groups, and Point
+and Vertex N. Native four-ULP comparison and exact strict/reference/domain
+checks precede timing. Each row is the median of three fresh-session cold
+whole-node cooks at grain 4096; setup and full-major collection precede the
+timed cook. Four-domain allocations measure the initial domain only.
 
-- `@lib/flow_sop/metadata_ports_draft`: terminal 39424, exit 0;
-  `/tmp/rays-metadata-edge-focused2.log`.
-- `@tools/api_manifest/runtest @lib/sop_catalog/runtest
-  @lib/flow_sop/metadata_ports_draft @test/dependency_gate
-  @test/test_workspace_source`: terminal 15070, exit 0;
-  `/tmp/rays-delete-edge-group-confirm.log`. Initial production/API runs had
-  intended generated differences; those were reviewed and promoted. Shared
-  compiler APIs were accepted separately in commit `6bc7f726`.
-- `@test/sop_render_parity @test/test_rays_editor`: terminal 40922, exit 0;
-  `/tmp/rays-delete-edge-group-native.log`. All 23 native render graphs retain
-  identical one/four-domain PNGs; actual editor and workspace tests pass.
-- `@lib/sop/runtest @lib/flow_sop/runtest
-  @lib/flow_sop/metadata_ports_draft @lib/sop_catalog/runtest
-  @tools/api_manifest/runtest @test/test_workspace_source
-  @test/dependency_gate`: terminal 4307, exit 0;
-  `/tmp/rays-delete-edge-group-final.log`.
-- Final actual bypass-cook regression: `@lib/flow_sop/runtest
-  @lib/flow_sop/metadata_ports_draft`, terminal 47419, exit 0;
-  `/tmp/rays-delete-edge-group-bypass.log`.
+| Mode | Domains | Native seconds | Lisp seconds | Ratio | Native allocated bytes | Lisp allocated bytes |
+|---|---:|---:|---:|---:|---:|---:|
+| Defaults, no group | 1 | 0.021372 | 1.220160 | 57.091× | 72,015,704 | 4,678,113,184 |
+| Defaults, no group | 4 | 0.008722 | 0.437272 | 50.134× | 35,885,280 | 1,431,068,528 |
+| Selected group, mask/ID/pscale | 1 | 0.023941 | 1.505549 | 62.886× | 48,016,440 | 4,919,631,312 |
+| Selected group, mask/ID/pscale | 4 | 0.007411 | 0.536836 | 72.438× | 30,171,592 | 1,531,346,296 |
 
-Performance command: from `_build/default/lib/flow_sop`,
-`opam exec -- ./test_metadata_ports.exe --bench-edge`. Apple M1 arm64,
-OCaml 5.3 development build; 1,000,000 points and 998,001 actual quads,
-grain 4096. Each row first checks exact native/Lisp output, then takes the
-median of three fresh cold sessions; major collection is outside timing.
-Allocation counts are bytes on the initial domain (four-domain counts omit
-worker allocations). The clean binary was built by terminal 39424, timestamp
-2026-10-12 21:26:08. The acceptance run had no concurrent validation or timing
-process; terminal 45820, exit 0, `/tmp/rays-delete-edge-group-bench2.log`.
-All twelve rows meet the unchanged 2× gate; maximum 1.373×.
+The selected case also uses anisotropic axes and a scale outside the soft
+slider range. All four rows fail the unchanged 2× gate. Full log:
+`/tmp/rays-point-jitter-bench-first1.log`. The broader mode table is held
+after this decisive failure. Point Jitter remains unregistered; no whole-port
+or performance completion is claimed, and no shared compiler/API change was
+made by this draft.
 
-| Groups | Name | Domains | Native s | Lisp s | Ratio | Native bytes | Lisp bytes |
-|---:|---|---:|---:|---:|---:|---:|---:|
-| 0 | edges | 1 | .000022 | .000028 | 1.272 | 6688 | 13448 |
-| 0 | edges | 4 | .000041 | .000027 | .657 | 6920 | 13680 |
-| 0 | absent | 1 | .000022 | .000028 | 1.272 | 6688 | 13448 |
-| 0 | absent | 4 | .000022 | .000030 | 1.355 | 6920 | 13680 |
-| 1 | edges | 1 | .000026 | .000036 | 1.373 | 6872 | 13704 |
-| 1 | edges | 4 | .000022 | .000030 | 1.370 | 7104 | 13936 |
-| 1 | absent | 1 | .000047 | .000029 | .619 | 7008 | 13912 |
-| 1 | absent | 4 | .000027 | .000035 | 1.301 | 7240 | 14144 |
-| 8 | edges | 1 | .000051 | .000046 | .902 | 8824 | 16664 |
-| 8 | edges | 4 | .000033 | .000036 | 1.094 | 9056 | 16896 |
-| 8 | absent | 1 | .000029 | .000026 | .901 | 8912 | 16824 |
-| 8 | absent | 4 | .000025 | .000032 | 1.288 | 9144 | 17056 |
+The owned `--trace` harness was rebuilt by request 43196 and ran successfully
+as request 55281 (`/tmp/rays-point-jitter-trace1.log`). It observed seven genuine
+numeric packed programs, each with one stage and one Core Invoke. The largest
+displacement program has 58 instructions, including 45 guarded instructions,
+three Rand-at calls and both value/valid projections of three checked products
+and three checked FMAs. The only qualification refusal is the cooked Text group
+inventory, not a numeric fallback. The diagnostic whole-cook allocations are
+4,678,263,360 bytes at one domain and 1,434,013,384 bytes on the initial domain
+at four domains. These are diagnostic measurements, not additional performance
+acceptance rows. The seven nominal output arrays total about 128 MB; execution
+counts, source hydration and per-invocation allocations still need measurement
+before assigning the remaining cost to a shared compiler path.
 
-The earlier run overlapped another agent's compiler validation and is retained
-as diagnostic evidence, not acceptance: terminal 16353, exit 0,
-`/tmp/rays-delete-edge-group-bench1.log`. Its complete table follows; the
-verified contention was the reason for the quiet repeat.
+The coordinated temporary Core executor diagnostic ran as request 23657 and
+exited 0 (`/tmp/rays-point-jitter-core-alloc-trace.log`). Each numeric Invoke
+executed once per cook. Allocation around its force call was:
 
-| Groups | Name | Domains | Native s | Lisp s | Ratio | Native bytes | Lisp bytes |
-|---:|---|---:|---:|---:|---:|---:|---:|
-| 0 | edges | 1 | .000025 | .000031 | 1.250 | 6688 | 13448 |
-| 0 | edges | 4 | .000026 | .000028 | 1.083 | 6920 | 13680 |
-| 0 | absent | 1 | .000020 | .000034 | 1.702 | 6688 | 13448 |
-| 0 | absent | 4 | .000028 | .000032 | 1.136 | 6920 | 13680 |
-| 1 | edges | 1 | .000021 | .000031 | 1.477 | 6872 | 13704 |
-| 1 | edges | 4 | .000021 | .000032 | 1.523 | 7104 | 13936 |
-| 1 | absent | 1 | .000029 | .000027 | .926 | 7008 | 13912 |
-| 1 | absent | 4 | .000020 | .000030 | 1.518 | 7240 | 14144 |
-| 8 | edges | 1 | .000029 | .000027 | .934 | 8824 | 16664 |
-| 8 | edges | 4 | .000024 | .000032 | 1.337 | 9056 | 16896 |
-| 8 | absent | 1 | .000028 | .000039 | 1.390 | 8912 | 16824 |
-| 8 | absent | 4 | .000034 | .000071 | 2.099 | 9144 | 17056 |
+| Stage | Instructions | One-domain bytes | Four-domain initial-domain bytes |
+|---|---:|---:|---:|
+| Weights | 10 | 130,847,904 | 52,233,848 |
+| Point scales | 7 | 87,777,592 | 34,964,080 |
+| Amplitudes | 30 | 1,128,324,904 | 314,525,472 |
+| Displaced positions | 58 | 2,854,751,544 | 746,214,208 |
+| First invalid index | 13 | 117,776,048 | 117,775,304 |
+| Changed flag | 18 | 258,824,336 | 88,139,000 |
+| Final P extraction | 4 | 26,397,432 | 24,633,464 |
+
+The seven force calls account for 4,604,699,760 of the whole cook's
+4,678,291,320 bytes at one domain (98.4%). Amplitude and displacement alone
+account for 85.1%. Argument binding allocates 63,208 bytes in total; the three
+geometry Host-source calls allocate 25,438,352 bytes (0.54% of the whole cook).
+At four domains the force calls account for 1,378,485,376 of 1,452,128,112
+initial-domain bytes. This isolates the large cost to numeric forces rather
+than geometry host-node construction on this route. Force still includes
+source preparation and arithmetic, so the next minimal diagnostic is a split
+inside the typed runner before attributing the remaining cost to its boxed
+numeric/finite helpers or guarded execution. Temporary hooks were removed
+from source immediately; their CPU-clock values are diagnostic, not wall-time
+acceptance evidence. No optimization or registration follows from this trace.
+
+Temporary typed-runner checkpoints were linked by requests 96170/12076 and
+ran as request 72931, exit 0
+(`/tmp/rays-point-jitter-packed-split-trace.log`). Six of the seven forces use
+the typed runner; the final P extraction uses the plain float runner. The
+checkpoints split source hydration/count preparation, output/uniform setup,
+and execution including register-bank allocation and collection:
+
+| Typed stage | Sources bytes, d1 | Setup bytes, d1 | Execution bytes, d1 | Execution initial-domain bytes, d4 |
+|---|---:|---:|---:|---:|
+| Weights | 8,024,048 | 16,000,608 | 106,822,808 | 29,943,728 |
+| Point scales | 13,088 | 16,000,584 | 71,763,480 | 18,949,072 |
+| Amplitudes | 42,392 | 24,000,768 | 1,104,281,304 | 290,482,496 |
+| Displaced positions | 24,078,320 | 32,000,992 | 2,798,671,792 | 690,121,944 |
+| First invalid index | 24,952 | 8,000,800 | 109,749,856 | 109,749,856 |
+| Changed flag | 24,029,792 | 8,000,672 | 226,793,432 | 33,825,344 |
+
+At one domain, sources total 56,212,592 bytes and setup totals 104,004,424;
+typed execution totals 4,418,082,672 bytes, 94.4% of the 4,678,289,904-byte
+whole cook. Amplitude and displacement have no deferred uniforms, so their
+execution cost does not conceal delayed capture hydration. The displacement
+kernel's two 58-register, 1,024-lane scratch banks over 62 chunks require
+about 59 MB, far below its 2.80 GB execution allocation. This identifies the
+shared typed per-lane instruction/guard execution as the next profiling target;
+it does not yet distinguish numeric helper boxing from guard recursion.
+Only the first-invalid-index kernel has a deferred uniform. CPU-clock and
+whole-wall measurements in this concurrent diagnostic are not acceptance
+timings. All temporary checkpoints were removed immediately, with no feature
+change, optimization, public API change or registration.
+
+The owned test-only `--profile` mode repeats cleared-session default one-domain
+cooks for eight seconds on the same real million-point geometry. Request 77959
+linked it. The first run 12978 completed eleven cooks but the sampler attached
+too late; its failed attach log is retained. The corrected coordinated launch
+32587 and macOS sampler 24540 both exited 0, with PID 42078 sampled for five
+seconds at one-millisecond intervals and seven complete cooks. Logs:
+`/tmp/rays-point-jitter-profile2.log` and
+`/tmp/rays-point-jitter-profile2.sample.txt`. Sampling affects runtime; cook
+counts and wall time here are not acceptance measurements.
+
+Of 1,911 main-thread samples, 497 are guard-predicate leaf samples (26.0%).
+The two dominant guard-wrapper paths contain 607 samples inclusive (31.8%);
+typed instruction execution has 839 leaf samples (43.9%, including guard
+wrapper self time). A 276-sample arithmetic path maps in ARM assembly to
+per-lane register-bank loading/bounds checks and binary-operator dispatch.
+Rand has 15 leaf samples, and GC is not the dominant hot path. Dormant pool
+threads are excluded from these percentages. The next proposed shared
+experiment is reuse of identical guard-list active spans within one Collect
+block, built lazily at their first use; gather and accumulator paths would
+retain their current execution. This remains a proposal, and the guard cost
+share alone cannot explain or close the remaining whole-node speed gap.
+
+### Typed numeric helpers stay unboxed (shared foundation)
+
+The preceding unregistered Point Jitter draft section retains the detailed
+allocation-attribution diagnostics. Native-object inspection identified an
+actual 16-byte float allocation
+on both branches of the typed runner's numeric register reader. Every guard
+test called that reader. The minimal generic change forces scalar reader,
+arithmetic and checked-projection helpers inline, with an inline finite
+predicate retaining the exact existing error code/message. Guard traversal,
+integer banks, checked arithmetic order/opacity, selected errors, gather
+ordering and source preparation are unchanged. The rebuilt ARM guard predicate
+now loads or converts directly into a float register and compares it without
+allocating a float box. Focused request 59212 exited 0 for the full Flow IR
+suite and Point Jitter recipe, including all existing lazy/finite/status,
+signed-zero, integer, gather, cause, domain and grain proofs
+(`/tmp/rays-point-jitter-unboxed-focused.log`).
+
+The before table is quiet request 8238
+(`/tmp/rays-point-jitter-bench-first1.log`):
+
+| Mode | Domains | Native seconds | Lisp seconds | Ratio | Native allocated bytes | Lisp allocated bytes |
+|---|---:|---:|---:|---:|---:|---:|
+| Defaults, no group | 1 | 0.021372 | 1.220160 | 57.091× | 72,015,704 | 4,678,113,184 |
+| Defaults, no group | 4 | 0.008722 | 0.437272 | 50.134× | 35,885,280 | 1,431,068,528 |
+| Selected group, mask/ID/pscale | 1 | 0.023941 | 1.505549 | 62.886× | 48,016,440 | 4,919,631,312 |
+| Selected group, mask/ID/pscale | 4 | 0.007411 | 0.536836 | 72.438× | 30,171,592 | 1,531,346,296 |
+
+Quiet request 28993 repeated those same four predetermined rows, with the
+same median-three cold-cook harness and native/reference preflights, and exited
+0 (`/tmp/rays-point-jitter-unboxed-bench-first.log`). Both runs use Apple M1,
+OCaml 5.3.0 dev profile, a real 1,000,000-point/998,001-quad grid, domains 1/4
+and grain 4096. Allocations at four domains cover the initial domain only.
+All output checks pass. The after table is:
+
+| Mode | Domains | Native seconds | Lisp seconds | Ratio | Native allocated bytes | Lisp allocated bytes |
+|---|---:|---:|---:|---:|---:|---:|
+| Defaults, no group | 1 | 0.021278 | 0.779768 | 36.646× | 72,015,704 | 612,604,368 |
+| Defaults, no group | 4 | 0.010221 | 0.295018 | 28.864× | 36,675,288 | 358,899,544 |
+| Selected group, mask/ID/pscale | 1 | 0.024053 | 1.005076 | 41.786× | 48,016,440 | 535,779,504 |
+| Selected group, mask/ID/pscale | 4 | 0.009449 | 0.370817 | 39.244× | 31,062,944 | 354,419,112 |
+
+The measured allocation cut is substantial, but all four rows still fail the
+unchanged 2× gate. The original failed table remains above; the broader table
+stays held. There is no node-specific optimization, public API change,
+registration or whole-port performance claim.
 
 ### Validated constant-array storage descriptors (shared foundation)
 
@@ -1948,6 +2922,94 @@ in the Set Color history above.
 | Detail | 1 | wrong_float | all | 1 | 0.000025 | 0.000044 | 1.762 | 10216 | 27088 |
 | Detail | 1 | wrong_float | all | 4 | 0.000026 | 0.000042 | 1.615 | 10448 | 27976 |
 
+
+### Delete Edge Group production port
+
+Whole-node completion: `sop/delete_edge_group` now loads its checked Lisp body
+from `lib/flow_sop/nodes/delete_edge_group.rays`, using the existing generic
+`sop/delete_edge` primitive. The independent `Sop.Nodes.Delete_edge_group`
+factory remains the oracle. This is port 7 of 128 (5.47%); the other 121 remain
+required, and B.12 remains unchecked until its other six nodes pass.
+The promoted catalog digest is `fafaf06693fe67896fcf22b27dbf357b`.
+Default, schema, operation/version, slots and literal-name behavior are unchanged.
+
+The authoritative `lib/sop/test_lisp_ports.ml` and regular Flow SOP tests cover
+all eight attribute storages and four owners; ordered groups and mixed
+polygon/polyline edges; empty, single, 4,225-point grid and 32,769-point geometry;
+whitespace, glob-looking and UTF-8 literal names; raw canonical P with NaN
+payloads and infinities; immutable input; exact reference/native parity at
+1/4/8 domains and grains 1/97/4096; malformed parameters and inputs; cache
+miss/hit and relabel identity. Graph tests compare the native and Lisp card and
+inspector, edit the name directly, then actually cook the bypassed graph.
+
+All commands use `opam exec -- _build/default/tools/check.exe`:
+
+- `@lib/flow_sop/metadata_ports_draft`: terminal 39424, exit 0;
+  `/tmp/rays-metadata-edge-focused2.log`.
+- `@tools/api_manifest/runtest @lib/sop_catalog/runtest
+  @lib/flow_sop/metadata_ports_draft @test/dependency_gate
+  @test/test_workspace_source`: terminal 15070, exit 0;
+  `/tmp/rays-delete-edge-group-confirm.log`. Initial production/API runs had
+  intended generated differences; those were reviewed and promoted. Shared
+  compiler APIs were accepted separately in commit `6bc7f726`.
+- `@test/sop_render_parity @test/test_rays_editor`: terminal 40922, exit 0;
+  `/tmp/rays-delete-edge-group-native.log`. All 23 native render graphs retain
+  identical one/four-domain PNGs; actual editor and workspace tests pass.
+- `@lib/sop/runtest @lib/flow_sop/runtest
+  @lib/flow_sop/metadata_ports_draft @lib/sop_catalog/runtest
+  @tools/api_manifest/runtest @test/test_workspace_source
+  @test/dependency_gate`: terminal 4307, exit 0;
+  `/tmp/rays-delete-edge-group-final.log`.
+- Final actual bypass-cook regression: `@lib/flow_sop/runtest
+  @lib/flow_sop/metadata_ports_draft`, terminal 47419, exit 0;
+  `/tmp/rays-delete-edge-group-bypass.log`.
+
+Performance command: from `_build/default/lib/flow_sop`,
+`opam exec -- ./test_metadata_ports.exe --bench-edge`. Apple M1 arm64,
+OCaml 5.3 development build; 1,000,000 points and 998,001 actual quads,
+grain 4096. Each row first checks exact native/Lisp output, then takes the
+median of three fresh cold sessions; major collection is outside timing.
+Allocation counts are bytes on the initial domain (four-domain counts omit
+worker allocations). The clean binary was built by terminal 39424, timestamp
+2026-10-12 21:26:08. The acceptance run had no concurrent validation or timing
+process; terminal 45820, exit 0, `/tmp/rays-delete-edge-group-bench2.log`.
+All twelve rows meet the unchanged 2× gate; maximum 1.373×.
+
+| Groups | Name | Domains | Native s | Lisp s | Ratio | Native bytes | Lisp bytes |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 0 | edges | 1 | .000022 | .000028 | 1.272 | 6688 | 13448 |
+| 0 | edges | 4 | .000041 | .000027 | .657 | 6920 | 13680 |
+| 0 | absent | 1 | .000022 | .000028 | 1.272 | 6688 | 13448 |
+| 0 | absent | 4 | .000022 | .000030 | 1.355 | 6920 | 13680 |
+| 1 | edges | 1 | .000026 | .000036 | 1.373 | 6872 | 13704 |
+| 1 | edges | 4 | .000022 | .000030 | 1.370 | 7104 | 13936 |
+| 1 | absent | 1 | .000047 | .000029 | .619 | 7008 | 13912 |
+| 1 | absent | 4 | .000027 | .000035 | 1.301 | 7240 | 14144 |
+| 8 | edges | 1 | .000051 | .000046 | .902 | 8824 | 16664 |
+| 8 | edges | 4 | .000033 | .000036 | 1.094 | 9056 | 16896 |
+| 8 | absent | 1 | .000029 | .000026 | .901 | 8912 | 16824 |
+| 8 | absent | 4 | .000025 | .000032 | 1.288 | 9144 | 17056 |
+
+The earlier run overlapped another agent's compiler validation and is retained
+as diagnostic evidence, not acceptance: terminal 16353, exit 0,
+`/tmp/rays-delete-edge-group-bench1.log`. Its complete table follows; the
+verified contention was the reason for the quiet repeat.
+
+| Groups | Name | Domains | Native s | Lisp s | Ratio | Native bytes | Lisp bytes |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 0 | edges | 1 | .000025 | .000031 | 1.250 | 6688 | 13448 |
+| 0 | edges | 4 | .000026 | .000028 | 1.083 | 6920 | 13680 |
+| 0 | absent | 1 | .000020 | .000034 | 1.702 | 6688 | 13448 |
+| 0 | absent | 4 | .000028 | .000032 | 1.136 | 6920 | 13680 |
+| 1 | edges | 1 | .000021 | .000031 | 1.477 | 6872 | 13704 |
+| 1 | edges | 4 | .000021 | .000032 | 1.523 | 7104 | 13936 |
+| 1 | absent | 1 | .000029 | .000027 | .926 | 7008 | 13912 |
+| 1 | absent | 4 | .000020 | .000030 | 1.518 | 7240 | 14144 |
+| 8 | edges | 1 | .000029 | .000027 | .934 | 8824 | 16664 |
+| 8 | edges | 4 | .000024 | .000032 | 1.337 | 9056 | 16896 |
+| 8 | absent | 1 | .000028 | .000039 | 1.390 | 8912 | 16824 |
+| 8 | absent | 4 | .000034 | .000071 | 2.099 | 9144 | 17056 |
+
 ### Ordinary group-mask byte unpack (shared foundation)
 
 `Group_kernel.read` now borrows immutable ordinary-group packed bytes once,
@@ -1997,51 +3059,156 @@ table remains intact.
 | empty | 4 | group_source | 0.005114 | 0.001124 | 8001200 | 8001168 |
 | empty | 4 | descriptor_selected_writer | 0.003872 | 0.003684 | 32046960 | 32055440 |
 
-### Typed numeric helpers stay unboxed (shared foundation)
+### Set Color after shared byte-mask unpack (still unregistered)
 
-The preceding unregistered Point Jitter draft section retains the detailed
-allocation-attribution diagnostics. Native-object inspection identified an
-actual 16-byte float allocation
-on both branches of the typed runner's numeric register reader. Every guard
-test called that reader. The minimal generic change forces scalar reader,
-arithmetic and checked-projection helpers inline, with an inline finite
-predicate retaining the exact existing error code/message. Guard traversal,
-integer banks, checked arithmetic order/opacity, selected errors, gather
-ordering and source preparation are unchanged. The rebuilt ARM guard predicate
-now loads or converts directly into a float register and compares it without
-allocating a float box. Focused request 59212 exited 0 for the full Flow IR
-suite and Point Jitter recipe, including all existing lazy/finite/status,
-signed-zero, integer, gather, cause, domain and grain proofs
-(`/tmp/rays-point-jitter-unboxed-focused.log`).
+The shared ordinary-group mask cut shipped separately as **b85a50f6**.
+Fresh focused/relink request **44079** exited 0 with
+`@lib/flow_sop/set_color_draft`: whole finite semantics, raw 72-case native
+bytes, all parameters/cache and native card/inspector/direct gestures pass.
+Log: `/tmp/rays-set-color-mask-full-focused.log`.
 
-The before table is quiet request 8238
-(`/tmp/rays-point-jitter-bench-first1.log`):
+The unchanged complete quiet table **8280** exited 0 on that freshly linked
+clean executable. It retains median three cold cooks with fresh Sessions,
+one/four domains, grain 4096, a million ordinary-owner elements, and one
+Detail element on a million-point input. Allocation counts are initial-domain
+measurements. No other agent built or timed during this run; no runtime
+edits occurred. All previous complete and failed tables remain above.
+Log: `/tmp/rays-set-color-byte-mask-bench.log`.
 
-| Mode | Domains | Native seconds | Lisp seconds | Ratio | Native allocated bytes | Lisp allocated bytes |
-|---|---:|---:|---:|---:|---:|---:|
-| Defaults, no group | 1 | 0.021372 | 1.220160 | 57.091× | 72,015,704 | 4,678,113,184 |
-| Defaults, no group | 4 | 0.008722 | 0.437272 | 50.134× | 35,885,280 | 1,431,068,528 |
-| Selected group, mask/ID/pscale | 1 | 0.023941 | 1.505549 | 62.886× | 48,016,440 | 4,919,631,312 |
-| Selected group, mask/ID/pscale | 4 | 0.007411 | 0.536836 | 72.438× | 30,171,592 | 1,531,346,296 |
+**18 of 78 rows still exceed 2×:** eight selected-group and nine full-group
+rows, all at one domain, plus the Detail wrong-Float/four-domain microcase.
+All 18 empty-group rows now pass. The maximum ordinary-owner ratio is
+**2.523×** (Primitive/absent/selected/one domain); the overall maximum is
+**3.336×** in the Detail microcase. Grouped allocations remain about 40 MB,
+including owned output and selection. The whole-node gate remains unmet;
+Set Color stays unregistered and B.11 remains incomplete.
 
-Quiet request 28993 repeated those same four predetermined rows, with the
-same median-three cold-cook harness and native/reference preflights, and exited
-0 (`/tmp/rays-point-jitter-unboxed-bench-first.log`). Both runs use Apple M1,
-OCaml 5.3.0 dev profile, a real 1,000,000-point/998,001-quad grid, domains 1/4
-and grain 4096. Allocations at four domains cover the initial domain only.
-All output checks pass. The after table is:
+| Owner | Elements | Cd | Group | Domains | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---|---:|---|---|---:|---:|---:|---:|---:|---:|
+| Point | 1000000 | absent | all | 1 | 0.001286 | 0.000638 | 0.496 | 32010016 | 32032200 |
+| Point | 1000000 | absent | all | 4 | 0.001303 | 0.000676 | 0.519 | 32010248 | 32032432 |
+| Point | 1000000 | absent | selected | 1 | 0.003750 | 0.009275 | 2.473 | 32010432 | 40030320 |
+| Point | 1000000 | absent | selected | 4 | 0.003754 | 0.006766 | 1.802 | 32010664 | 40077552 |
+| Point | 1000000 | absent | full | 1 | 0.004787 | 0.011170 | 2.333 | 32010424 | 40030312 |
+| Point | 1000000 | absent | full | 4 | 0.004806 | 0.006830 | 1.421 | 32010656 | 40077040 |
+| Point | 1000000 | absent | empty | 1 | 0.002880 | 0.004615 | 1.603 | 32010424 | 40030312 |
+| Point | 1000000 | absent | empty | 4 | 0.002848 | 0.004186 | 1.470 | 32010656 | 40082248 |
+| Point | 1000000 | vec4 | all | 1 | 0.001220 | 0.000633 | 0.519 | 32010168 | 32047240 |
+| Point | 1000000 | vec4 | all | 4 | 0.001297 | 0.000652 | 0.503 | 32010400 | 32033736 |
+| Point | 1000000 | vec4 | selected | 1 | 0.004841 | 0.009248 | 1.910 | 32010776 | 40030656 |
+| Point | 1000000 | vec4 | selected | 4 | 0.004880 | 0.007432 | 1.523 | 32011008 | 40079176 |
+| Point | 1000000 | vec4 | full | 1 | 0.005534 | 0.011660 | 2.107 | 32010768 | 40030584 |
+| Point | 1000000 | vec4 | full | 4 | 0.005404 | 0.007388 | 1.367 | 32011000 | 40078696 |
+| Point | 1000000 | vec4 | empty | 1 | 0.003336 | 0.005119 | 1.534 | 32010768 | 40030648 |
+| Point | 1000000 | vec4 | empty | 4 | 0.003422 | 0.004983 | 1.456 | 32011000 | 40085520 |
+| Point | 1000000 | wrong_float | all | 1 | 0.001151 | 0.000660 | 0.573 | 32010168 | 32033504 |
+| Point | 1000000 | wrong_float | all | 4 | 0.001236 | 0.000639 | 0.517 | 32010400 | 32033736 |
+| Point | 1000000 | wrong_float | selected | 1 | 0.003742 | 0.008912 | 2.382 | 32010600 | 40030664 |
+| Point | 1000000 | wrong_float | selected | 4 | 0.004190 | 0.006876 | 1.641 | 32010832 | 40092240 |
+| Point | 1000000 | wrong_float | full | 1 | 0.005192 | 0.011599 | 2.234 | 32010592 | 40030592 |
+| Point | 1000000 | wrong_float | full | 4 | 0.005135 | 0.007301 | 1.422 | 32010824 | 40081752 |
+| Point | 1000000 | wrong_float | empty | 1 | 0.003052 | 0.004687 | 1.536 | 32010592 | 40030592 |
+| Point | 1000000 | wrong_float | empty | 4 | 0.002853 | 0.004171 | 1.462 | 32010824 | 40082944 |
+| Vertex | 1000000 | absent | all | 1 | 0.001361 | 0.000647 | 0.475 | 32010024 | 32032208 |
+| Vertex | 1000000 | absent | all | 4 | 0.001216 | 0.000655 | 0.539 | 32010256 | 32032440 |
+| Vertex | 1000000 | absent | selected | 1 | 0.003954 | 0.009330 | 2.360 | 32010440 | 40030320 |
+| Vertex | 1000000 | absent | selected | 4 | 0.003873 | 0.006729 | 1.737 | 32010672 | 40077864 |
+| Vertex | 1000000 | absent | full | 1 | 0.004781 | 0.011089 | 2.319 | 32010424 | 40030376 |
+| Vertex | 1000000 | absent | full | 4 | 0.005199 | 0.006774 | 1.303 | 32010656 | 40077856 |
+| Vertex | 1000000 | absent | empty | 1 | 0.003093 | 0.004899 | 1.584 | 32010432 | 40030312 |
+| Vertex | 1000000 | absent | empty | 4 | 0.002982 | 0.004236 | 1.421 | 32010664 | 40082312 |
+| Vertex | 1000000 | vec4 | all | 1 | 0.001321 | 0.000680 | 0.515 | 32010176 | 32033520 |
+| Vertex | 1000000 | vec4 | all | 4 | 0.001387 | 0.000787 | 0.567 | 32010408 | 32033752 |
+| Vertex | 1000000 | vec4 | selected | 1 | 0.004609 | 0.009326 | 2.023 | 32010784 | 40030656 |
+| Vertex | 1000000 | vec4 | selected | 4 | 0.004309 | 0.006990 | 1.622 | 32011016 | 40079320 |
+| Vertex | 1000000 | vec4 | full | 1 | 0.005375 | 0.011569 | 2.152 | 32010768 | 40030648 |
+| Vertex | 1000000 | vec4 | full | 4 | 0.005340 | 0.007291 | 1.365 | 32011000 | 40077600 |
+| Vertex | 1000000 | vec4 | empty | 1 | 0.003392 | 0.005253 | 1.549 | 32010776 | 40030584 |
+| Vertex | 1000000 | vec4 | empty | 4 | 0.003384 | 0.004659 | 1.377 | 32011008 | 40084400 |
+| Vertex | 1000000 | wrong_float | all | 1 | 0.001259 | 0.000676 | 0.537 | 32010176 | 32047256 |
+| Vertex | 1000000 | wrong_float | all | 4 | 0.001256 | 0.000715 | 0.569 | 32010408 | 32033752 |
+| Vertex | 1000000 | wrong_float | selected | 1 | 0.003736 | 0.008954 | 2.397 | 32010608 | 40030600 |
+| Vertex | 1000000 | wrong_float | selected | 4 | 0.003769 | 0.006736 | 1.787 | 32010840 | 40079176 |
+| Vertex | 1000000 | wrong_float | full | 1 | 0.004855 | 0.011118 | 2.290 | 32010592 | 40030592 |
+| Vertex | 1000000 | wrong_float | full | 4 | 0.004824 | 0.006839 | 1.418 | 32010824 | 40078528 |
+| Vertex | 1000000 | wrong_float | empty | 1 | 0.002865 | 0.004748 | 1.657 | 32010600 | 40030656 |
+| Vertex | 1000000 | wrong_float | empty | 4 | 0.002859 | 0.004180 | 1.462 | 32010832 | 40084048 |
+| Primitive | 1000000 | absent | all | 1 | 0.001474 | 0.000765 | 0.519 | 32010040 | 32032240 |
+| Primitive | 1000000 | absent | all | 4 | 0.001393 | 0.000682 | 0.490 | 32010272 | 32032472 |
+| Primitive | 1000000 | absent | selected | 1 | 0.003744 | 0.009447 | 2.523 | 32010456 | 40030344 |
+| Primitive | 1000000 | absent | selected | 4 | 0.003922 | 0.006815 | 1.738 | 32010688 | 40078504 |
+| Primitive | 1000000 | absent | full | 1 | 0.005063 | 0.012019 | 2.374 | 32010432 | 40030320 |
+| Primitive | 1000000 | absent | full | 4 | 0.005016 | 0.006806 | 1.357 | 32010664 | 40077328 |
+| Primitive | 1000000 | absent | empty | 1 | 0.002867 | 0.004679 | 1.632 | 32010440 | 40030320 |
+| Primitive | 1000000 | absent | empty | 4 | 0.002866 | 0.004236 | 1.478 | 32010672 | 40083488 |
+| Primitive | 1000000 | vec4 | all | 1 | 0.001175 | 0.000711 | 0.605 | 32010200 | 32033560 |
+| Primitive | 1000000 | vec4 | all | 4 | 0.001361 | 0.000677 | 0.497 | 32010432 | 32033792 |
+| Primitive | 1000000 | vec4 | selected | 1 | 0.004300 | 0.009334 | 2.171 | 32010808 | 40030624 |
+| Primitive | 1000000 | vec4 | selected | 4 | 0.004305 | 0.007192 | 1.671 | 32011040 | 40078112 |
+| Primitive | 1000000 | vec4 | full | 1 | 0.005457 | 0.011630 | 2.131 | 32010784 | 40030600 |
+| Primitive | 1000000 | vec4 | full | 4 | 0.005566 | 0.007317 | 1.315 | 32011016 | 40076952 |
+| Primitive | 1000000 | vec4 | empty | 1 | 0.003493 | 0.005308 | 1.520 | 32010792 | 40030600 |
+| Primitive | 1000000 | vec4 | empty | 4 | 0.003414 | 0.004793 | 1.404 | 32011024 | 40084192 |
+| Primitive | 1000000 | wrong_float | all | 1 | 0.001211 | 0.000653 | 0.539 | 32010200 | 32047296 |
+| Primitive | 1000000 | wrong_float | all | 4 | 0.001206 | 0.000672 | 0.557 | 32010432 | 32033792 |
+| Primitive | 1000000 | wrong_float | selected | 1 | 0.003806 | 0.008751 | 2.299 | 32010632 | 40030632 |
+| Primitive | 1000000 | wrong_float | selected | 4 | 0.003838 | 0.006590 | 1.717 | 32010864 | 40077816 |
+| Primitive | 1000000 | wrong_float | full | 1 | 0.004830 | 0.011217 | 2.322 | 32010608 | 40030608 |
+| Primitive | 1000000 | wrong_float | full | 4 | 0.004970 | 0.007025 | 1.414 | 32010840 | 40077496 |
+| Primitive | 1000000 | wrong_float | empty | 1 | 0.003031 | 0.004683 | 1.545 | 32010616 | 40030608 |
+| Primitive | 1000000 | wrong_float | empty | 4 | 0.002932 | 0.004501 | 1.535 | 32010848 | 40098696 |
+| Detail | 1 | absent | all | 1 | 0.000020 | 0.000037 | 1.845 | 10064 | 26360 |
+| Detail | 1 | absent | all | 4 | 0.000035 | 0.000034 | 0.973 | 10296 | 27248 |
+| Detail | 1 | vec4 | all | 1 | 0.000013 | 0.000025 | 1.909 | 10216 | 27088 |
+| Detail | 1 | vec4 | all | 4 | 0.000032 | 0.000029 | 0.903 | 10448 | 27976 |
+| Detail | 1 | wrong_float | all | 1 | 0.000022 | 0.000027 | 1.215 | 10216 | 27088 |
+| Detail | 1 | wrong_float | all | 4 | 0.000027 | 0.000090 | 3.336 | 10448 | 27976 |
 
-| Mode | Domains | Native seconds | Lisp seconds | Ratio | Native allocated bytes | Lisp allocated bytes |
-|---|---:|---:|---:|---:|---:|---:|
-| Defaults, no group | 1 | 0.021278 | 0.779768 | 36.646× | 72,015,704 | 612,604,368 |
-| Defaults, no group | 4 | 0.010221 | 0.295018 | 28.864× | 36,675,288 | 358,899,544 |
-| Selected group, mask/ID/pscale | 1 | 0.024053 | 1.005076 | 41.786× | 48,016,440 | 535,779,504 |
-| Selected group, mask/ID/pscale | 4 | 0.009449 | 0.370817 | 39.244× | 31,062,944 | 354,419,112 |
+#### Set Color selected-writer attribution (no runtime change)
 
-The measured allocation cut is substantial, but all four rows still fail the
-unchanged 2× gate. The original failed table remains above; the broader table
-stays held. There is no node-specific optimization, public API change,
-registration or whole-port performance claim.
+Fresh test-only harness relink **36742** exited 0. Quiet direct host
+attribution **55274** exited 0 after the coordinated Rename Edge Group and
+Point Jitter windows. It uses the preceding million-Vertex fixture, matching
+old Float4 Cd, selected/full/empty masks, one/four domains and median three
+samples with major GC before each sample. No writer runtime code changed.
+Log: `/tmp/rays-color-writer-attribution.log`.
+
+The same `Array.exists` zero/one validation takes 2.0–2.7 ms per million
+rows; copying the four borrowed old planes takes about 1.3 ms and allocates
+the required owned 32 MB output. At one domain the complete descriptor
+writer takes 7.640/9.232/4.151 ms for selected/full/empty. Subtracting the
+separate validation/copy samples leaves about 3.6/5.9/0.6 ms respectively;
+that residual includes overlay, scheduler, installation and short checks,
+and is not an independent overlay timer. The measured first candidate is
+an inline zero/one validation loop preserving the same first-invalid refusal
+and ordering. No whole-node speed or registration claim follows.
+
+| Group | Domains | Stage | Seconds | Initial-domain bytes |
+|---|---:|---|---:|---:|
+| selected | 1 | group_source | 0.001981 | 8000936 |
+| selected | 1 | selection_validation | 0.002668 | 224 |
+| selected | 1 | owned_plane_copy | 0.001357 | 32000248 |
+| selected | 1 | descriptor_selected_writer | 0.007640 | 32002272 |
+| selected | 4 | group_source | 0.002185 | 8006192 |
+| selected | 4 | selection_validation | 0.002676 | 456 |
+| selected | 4 | owned_plane_copy | 0.001222 | 32000480 |
+| selected | 4 | descriptor_selected_writer | 0.005457 | 32013640 |
+| full | 1 | group_source | 0.002663 | 8000936 |
+| full | 1 | selection_validation | 0.002022 | 224 |
+| full | 1 | owned_plane_copy | 0.001316 | 32000248 |
+| full | 1 | descriptor_selected_writer | 0.009232 | 32002272 |
+| full | 4 | group_source | 0.002522 | 8001168 |
+| full | 4 | selection_validation | 0.001894 | 456 |
+| full | 4 | owned_plane_copy | 0.001157 | 32000480 |
+| full | 4 | descriptor_selected_writer | 0.004731 | 32049032 |
+| empty | 1 | group_source | 0.001114 | 8000936 |
+| empty | 1 | selection_validation | 0.002222 | 224 |
+| empty | 1 | owned_plane_copy | 0.001372 | 32000248 |
+| empty | 1 | descriptor_selected_writer | 0.004151 | 32002272 |
+| empty | 4 | group_source | 0.001175 | 8001168 |
+| empty | 4 | selection_validation | 0.002372 | 456 |
+| empty | 4 | owned_plane_copy | 0.001280 | 32000480 |
+| empty | 4 | descriptor_selected_writer | 0.003985 | 32054568 |
 
 ### Numeric gather compiler foundation accepted
 
@@ -2862,33 +4029,6 @@ pass, maximum 1.621×. Log: `/tmp/rays-delete-attributes-bench-first.log`.
 | exclusions_inverse | selected | 1 | 1000 | 0.000010 | 0.000011 | 1.160 | 20000 | 30624 |
 | exclusions_inverse | selected | 4 | 1000 | 0.000009 | 0.000012 | 1.407 | 24584 | 35208 |
 
-### Text gather compiler foundation accepted
-
-C.2 now combines the numeric implementation `8319b320` with immutable Text
-leaves. Public additions were reviewed separately in `03437c73`: five Text
-instructions and `text_register`, without new Value/Ty storage or a numeric
-Text width. The body compiler, separate bank, Collect ownership, fusion,
-source/capture snapshots, strict Core execution, GPU refusal and actual
-JavaScript/export/worker paths are recorded in
-[text-gather-validation.md](text-gather-validation.md). Unsupported Text
-transformations retain structured Core or explicit qualification refusals.
-
-Final feature requests 60211 and 31650 exited 0, including actual one/eight
-worker execution, arbitrary byte/NUL tables and causes, independent Text
-Cartesian sources, skipped chunk boundaries and error ordering. Earlier
-46783 passed Flow/Graph/GPU/dependency checks; its JavaScript quoting failure
-is retained and fixed with the existing reversible codec. Root full-native,
-production catalog/editor/source/CLI/API/dependency request 93275 exited 0.
-Existing numeric region goldens and render fixtures remain unchanged.
-
-Quiet million-row assignment request 90509 exited 0 with exact native bytes.
-Median-three costs at one/four domains are 14.377×/4.117× the direct native
-indexed loop, with all timings and initial-domain allocations retained in
-the evidence document. These measurements do not qualify Name From Groups
-or any other whole SOP. C.2's language checks are complete; the whole-node
-2× gate and B.13/B.14 remain open. This acceptance excludes the independently
-measured 43-line Float-span optimization in `Packed.run_typed`.
-
 ### Typed Float operands dispatch once per active span (shared prerequisite)
 
 The typed CPU runner adds 43 lines specializing Float-bank Binary, Fma,
@@ -2938,6 +4078,170 @@ unchanged 2× gates still fail. This is a shared execution improvement with
 measured limits, not acceptance of a Point Jitter port. No registration or
 native removal is claimed, and no unchanged-code repeat replaces this table.
 
+### Explicit Vec3/Vec4 constant plane constructors: Detail route audit
+
+The proposed shared `write_constant_source` Vec3/Vec4 change replaces a
+temporary row array and `Array.map` callback with explicit `Array.make`
+planes. All validation and ownership rules remain unchanged. Focused
+**76791** exited 0 for FlowSOP and the Set Color draft, including descriptor
+counts 0/1/32769, all masks, default errors, raw nonfinite old storage,
+strict/reference/domain bytes and schema/cache/UI tests. Log:
+`/tmp/rays-constant-planes-direct-focused.log`.
+
+Quiet **19837** exited 0 on the fresh **76791** binary with the unchanged
+predetermined six Detail configurations, 1,000 fresh cold Sessions per
+sample, median three samples, the same million-point input and grain 4096.
+Session creation/closure and major GC remain outside timing; context and
+cook remain inside. Each configuration passes native-byte preflight.
+All baseline **92958** and current rows follow; no case was repeated or
+omitted. Logs: `/tmp/rays-set-color-detail-batch-bench.log`,
+`/tmp/rays-set-color-direct-planes-detail-bench.log`.
+
+| Cd | Domains | Before native seconds | Before Lisp seconds | Before ratio | After native seconds | After Lisp seconds | After ratio | Before Lisp bytes | After Lisp bytes |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| absent | 1 | 0.000004695 | 0.000008615 | 1.835 | 0.000004425 | 0.000008909 | 2.013 | 26256 | 26256 |
+| absent | 4 | 0.000004652 | 0.000009084 | 1.953 | 0.000004781 | 0.000008882 | 1.858 | 27144 | 27144 |
+| vec4 | 1 | 0.000004715 | 0.000008854 | 1.878 | 0.000004697 | 0.000008842 | 1.883 | 26992 | 26992 |
+| vec4 | 4 | 0.000006077 | 0.000009346 | 1.538 | 0.000004604 | 0.000010523 | 2.286 | 27880 | 27880 |
+| wrong_float | 1 | 0.000004654 | 0.000009373 | 2.014 | 0.000004802 | 0.000009776 | 2.036 | 26992 | 26992 |
+| wrong_float | 4 | 0.000004690 | 0.000009231 | 1.968 | 0.000004570 | 0.000009045 | 1.979 | 27880 | 27880 |
+
+**Three current rows still fail 2×** (absent/one-domain 2.013×, matching
+Float4/four-domain 2.286× and wrong Float/one-domain 2.036×). Allocations
+are identical in every paired row. This does not demonstrate improvement
+in the actual Detail route; its literal count and parameter-known fill
+may reach the dense materialized sink instead of `write_constant_source`.
+A bounded actual-value-category trace is required before another runtime
+change. Set Color remains unregistered, B.11 incomplete, and all previous
+failures remain retained.
+
+### Text gather compiler foundation accepted
+
+C.2 now combines the numeric implementation `8319b320` with immutable Text
+leaves. Public additions were reviewed separately in `03437c73`: five Text
+instructions and `text_register`, without new Value/Ty storage or a numeric
+Text width. The body compiler, separate bank, Collect ownership, fusion,
+source/capture snapshots, strict Core execution, GPU refusal and actual
+JavaScript/export/worker paths are recorded in
+[text-gather-validation.md](text-gather-validation.md). Unsupported Text
+transformations retain structured Core or explicit qualification refusals.
+
+Final feature requests 60211 and 31650 exited 0, including actual one/eight
+worker execution, arbitrary byte/NUL tables and causes, independent Text
+Cartesian sources, skipped chunk boundaries and error ordering. Earlier
+46783 passed Flow/Graph/GPU/dependency checks; its JavaScript quoting failure
+is retained and fixed with the existing reversible codec. Root full-native,
+production catalog/editor/source/CLI/API/dependency request 93275 exited 0.
+Existing numeric region goldens and render fixtures remain unchanged.
+
+Quiet million-row assignment request 90509 exited 0 with exact native bytes.
+Median-three costs at one/four domains are 14.377×/4.117× the direct native
+indexed loop, with all timings and initial-domain allocations retained in
+the evidence document. These measurements do not qualify Name From Groups
+or any other whole SOP. C.2's language checks are complete; the whole-node
+2× gate and B.13/B.14 remain open. This acceptance excludes the independently
+measured 43-line Float-span optimization in `Packed.run_typed`.
+
+A bounded three-point Detail cook proves the route. Temporary category-only
+logging at `Lower.call` produced no dynamic host writer call. Temporary
+logging at the actual attribute node then reported
+`owner=detail values=Vec4_array`, followed by
+`write_storage owner=detail kind=vec4`. Build **46303** and the one-cook
+probe exited 0; log `/tmp/rays-color-detail-attribute-route.log`. All temporary
+observers were removed immediately, and the unused explicit-plane change
+was reverted. `attribute_kernel.ml` and `lower.ml` returned to their committed
+state before the next measurement. The Detail count is a literal one and
+its parameter-known constructor reaches a dense array, not the modified
+constant-source consumer.
+
+The actual generic numeric host writer baseline **87949** exited 0 after
+a fresh clean harness build **56866**. These six rows isolate
+`Attribute_kernel.write` (including owned planes and geometry installation)
+on the same million-point input, a dense one-row Vec4, all three Cd states,
+one/four domains and grain 4096. Each sample performs 1,000 direct host
+write calls, median three samples with major GC before timing; there are no
+Sessions in this isolated measurement. The baseline is only about
+0.165–0.171 microseconds/824 bytes at one domain and
+0.298–0.309 microseconds/1,480 bytes at four domains, around 2% of the
+whole cold-cook wall time. No whole-node performance improvement is claimed.
+Log: `/tmp/rays-color-one-row-writer-before.log`.
+
+| Cd | Domains | Calls/sample | Seconds/write | Bytes/write |
+|---|---:|---:|---:|---:|
+| absent | 1 | 1000 | 0.000000171 | 824 |
+| absent | 4 | 1000 | 0.000000309 | 1480 |
+| vec4 | 1 | 1000 | 0.000000165 | 824 |
+| vec4 | 4 | 1000 | 0.000000299 | 1480 |
+| wrong_float | 1 | 1000 | 0.000000166 | 824 |
+| wrong_float | 4 | 1000 | 0.000000298 | 1480 |
+### Group Delete candidate: all modes and no-op finalization
+
+Native wrapper audit: `lib/sop/groups.ml:505-549`; kernel and local store
+`lib/rdk/attrib/group_ops.ml:1809-1877,3836-3852`. The rule table retains
+native owner aliases, encoded diagnostics and canonical keys. Group patterns
+are compiled during cooking, blank patterns select nothing, and unused-group
+selection counts ordinary and edge memberships. Metadata commits preserve
+surviving group order, ordered indices, topology and all attribute storage.
+The draft composes existing generic metadata primitives without calling the
+old SOP body.
+
+Original-body focused request 57986 exited 0 for
+`@lib/flow_sop/metadata_ports_draft` and the benchmark executable. Log:
+`/tmp/rays-group-delete-draft-focused.log`. Existing tests cover required
+geometries, all eight attribute storage types, native schema/key/identity,
+strict/reference/domain/grain bytes and causes, encoded refusals and every
+physical parameter edit/cache. Additional Group Delete-only cases and graph
+checks have been authored; their current focused validation is pending.
+
+Quiet first full table request 46431 exited 0. Apple M1, OCaml 5.3.0 dev,
+1,000,000 points, 998,001 quads, 12 groups across all four owners, grain 4096,
+domains 1/4. Each sample uses 1,000 fresh cold sessions, median of three;
+session creation/close and major GC are outside the clock. Every row first
+passes exact native geometry-byte preflight. Four-domain allocation figures
+cover the initial domain only. Log:
+`/tmp/rays-group-delete-bench-before.log`.
+
+| Mode | Domains | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+|---|---:|---:|---:|---:|---:|---:|
+| default | 1 | 0.000006 | 0.000007 | 1.287× | 14120 | 23128 |
+| default | 4 | 0.000007 | 0.000012 | 1.677× | 14352 | 23360 |
+| unused | 1 | 0.009196 | 0.009191 | 0.999× | 17424 | 26072 |
+| unused | 4 | 0.009195 | 0.009209 | 1.002× | 17656 | 26304 |
+| point | 1 | 0.000007 | 0.000011 | 1.590× | 18336 | 34584 |
+| point | 4 | 0.000008 | 0.000011 | 1.343× | 18568 | 34816 |
+| vertex | 1 | 0.000007 | 0.000011 | 1.516× | 18352 | 34600 |
+| vertex | 4 | 0.000008 | 0.000011 | 1.476× | 18584 | 34832 |
+| primitive | 1 | 0.000007 | 0.000016 | **2.343× — fails** | 18352 | 34608 |
+| primitive | 4 | 0.000007 | 0.000012 | 1.687× | 18584 | 34840 |
+| edge | 1 | 0.000008 | 0.000011 | 1.413× | 18384 | 34680 |
+| edge | 4 | 0.000007 | 0.000012 | 1.766× | 18616 | 34912 |
+| any | 1 | 0.000008 | 0.000010 | 1.366× | 17712 | 32464 |
+| any | 4 | 0.000007 | 0.000011 | 1.503× | 17944 | 32696 |
+| all | 1 | 0.000006 | 0.000010 | 1.642× | 15616 | 26616 |
+| all | 4 | 0.000006 | 0.000009 | 1.403× | 15848 | 26848 |
+| exclusions | 1 | 0.000007 | 0.000012 | 1.697× | 17264 | 30184 |
+| exclusions | 4 | 0.000008 | 0.000011 | 1.294× | 17496 | 30416 |
+| blank | 1 | 0.000007 | 0.000011 | 1.596× | 14200 | 30904 |
+| blank | 4 | 0.000006 | 0.000009 | 1.613× | 14432 | 31136 |
+| missing | 1 | 0.000006 | 0.000010 | 1.595× | 15240 | 31960 |
+| missing | 4 | 0.000007 | 0.000010 | 1.454× | 15472 | 32192 |
+| selected_unused | 1 | 0.009221 | 0.005835 | 0.633× | 17536 | 34568 |
+| selected_unused | 4 | 0.009209 | 0.005820 | 0.632× | 17768 | 34800 |
+| successive | 1 | 0.009203 | 0.005840 | 0.635× | 20432 | 67832 |
+| successive | 4 | 0.009226 | 0.005846 | 0.634× | 20664 | 68064 |
+
+25 of 26 rows pass the unchanged 2× gate. Primitive deletion at one domain
+fails at 2.343×, so Group Delete remains unregistered and uncounted. Earlier
+intermediate progress text incorrectly called the first 22 rows passing;
+the complete-table audit found the missed row and corrected that statement.
+All 26 measurements are retained here without an unchanged-code repeat.
+
+The body has now been changed to execute its final unused-group deletion
+only when `delete_unused` is true. The old body always performed a generic
+metadata cook even when that option was false and the final operation did
+nothing. Validation and a new full 26-row table are pending; this candidate
+change does not claim that the remaining timing gate has passed.
+
 ### Ordered one-lane guards avoid repeated predicate allocations
 
 The shared typed runner hoists its predicate closure once per chunk and
@@ -2958,55 +4262,6 @@ but both 2× gates still fail. All prior tables and the contaminated sampled
 profile caveat are preserved in [text-gather-validation.md](text-gather-validation.md).
 Logs: `/tmp/rays-text-one-lane-guard-focused.log` and
 `/tmp/rays-text-one-lane-guard-bench.log`. No whole port is qualified.
-
-### One-row numeric writes validate and install owned planes directly
-
-The actual Detail route is a dense Vec4 array through `Attribute_kernel.write_storage`, not the constant-source consumer. The shared writer now handles count one after the existing shape/count check: it checks each finite component in order, then installs fresh one-element planes. This avoids the atomic finite flag and parallel range dispatch. Counts zero and greater than one retain their existing paths; all ordinary and source-descriptor callers share this boundary. No API or node-specific callback was added.
-
-Combined focused request **92200** exited 0 for FlowSOP, Set Color, IR, Web, Point Jitter, Group Delete and Rename Attributes. The regular XYZ writer regression now includes count one alongside zero and 32769, exact signed-zero/domain bytes, fresh ownership and count/nonfinite failure immutability. Existing all-owner/type/raw-72 and strict/reference/UI/cache proofs passed unchanged. Files: `lib/flow_sop/attribute_kernel.ml` and `lib/flow_sop/test_attribute_kernel.ml`; the draft harness remains outside this shared change.
-
-Quiet actual-writer request **52627** exited 0, following the unchanged six-config baseline **87949**. Both use the same million-point input, dense one-row Vec4, domains one/four, grain 4096, median three samples of 1000 direct writes and GC outside timing. These measurements include owned-plane creation and geometry installation, with no Sessions. Allocations decrease in every row; five wall times decrease and the absent/one-domain outlier increases. Both outcomes are retained. Logs: `/tmp/rays-color-one-row-writer-before.log`, `/tmp/rays-color-one-row-writer-after.log`.
-
-| Cd | Domains | Before seconds/write | After seconds/write | Before bytes | After bytes |
-|---|---:|---:|---:|---:|---:|
-| absent | 1 | 0.000000171 | 0.000000274 | 824 | 696 |
-| absent | 4 | 0.000000309 | 0.000000099 | 1480 | 696 |
-| vec4 | 1 | 0.000000165 | 0.000000103 | 824 | 696 |
-| vec4 | 4 | 0.000000299 | 0.000000102 | 1480 | 696 |
-| wrong_float | 1 | 0.000000166 | 0.000000096 | 824 | 696 |
-| wrong_float | 4 | 0.000000298 | 0.000000097 | 1480 | 696 |
-
-Quiet whole-cook request **1647** exited 0 on the freshly linked 92200 snapshot. This retains every predetermined Detail configuration, median three samples of 1000 fresh cold Sessions, million-point input, grain 4096 and native exact-byte preflight. Session create/close and GC remain outside the clock; context and cook remain inside. Four-domain allocations cover the initial domain. Earlier six-row failures and the unused constant-consumer cut remain above. Log: `/tmp/rays-set-color-one-row-detail-bench.log`.
-
-| Cd | Domains | Native seconds | Lisp seconds | Printed ratio | Native bytes | Lisp bytes |
-|---|---:|---:|---:|---:|---:|---:|
-| absent | 1 | 0.000004535 | 0.000009071 | 2.000× | 9960 | 26128 |
-| absent | 4 | 0.000004806 | 0.000009258 | 1.926× | 10192 | 26360 |
-| vec4 | 1 | 0.000004579 | 0.000008513 | 1.859× | 10120 | 26864 |
-| vec4 | 4 | 0.000004639 | 0.000009025 | 1.945× | 10352 | 27096 |
-| wrong_float | 1 | 0.000004869 | 0.000009137 | 1.877× | 10120 | 26864 |
-| wrong_float | 4 | 0.000005256 | 0.000010315 | 1.962× | 10352 | 27096 |
-
-The absent/one-domain ratio prints 2.000 at three-decimal precision. The logged nine-decimal times cannot distinguish a pass from a slight failure at the exact 2× boundary; there is no unrounded predicate in this harness. This row is unresolved and is not accepted as passing. Set Color stays unregistered and B.11 incomplete. The isolated writer occupies only a small part of the whole cold cook, so the next diagnostic should profile that whole route rather than repeat unchanged timings or add another unmeasured writer branch.
-
-### Encoded normalization retains workspace phase counts
-
-The first production encoded-field port exposed a shared instrumentation gap:
-normalizers evaluate their pure checked helper twice for canonicalization,
-outside the existing suppressed node-body compilation scope. The bloom
-workspace therefore reported extra workspace Evaluate invocations during
-checked lowering. Original production request 67783 retained that failure
-in `/tmp/rays-rename-attributes-production-focused.log`.
-
-`Encoded_parameters.for_node` now uses the existing `Phase_timer.without`
-around internal normalization. Canonicalization, idempotence checks, errors
-and execution remain unchanged; their duration belongs to the surrounding
-phase. Request 19605 passed every semantic test including bloom's unchanged
-one-Evaluate/one-Lower assertion, with only the intended manifest diff.
-The direct encoded parameter-edit regression also asserts zero workspace
-Evaluate invocations and passed in request 11682. Logs:
-`/tmp/rays-rename-attributes-production-focused2.log` and
-`/tmp/rays-rename-attributes-native-integration.log`.
 
 ## Rename Attributes production port
 
@@ -3127,74 +4382,76 @@ Logs: `/tmp/rays-text-one-lane-guard-focused.log` and
 | overwrite_order | 1 | 10.637 | 13.991 | 1.315 | 25120 | 40336 |
 | overwrite_order | 4 | 9.243 | 13.097 | 1.417 | 25352 | 40568 |
 
-### Group Delete candidate: all modes and no-op finalization
+### One-row numeric writes validate and install owned planes directly
 
-Native wrapper audit: `lib/sop/groups.ml:505-549`; kernel and local store
-`lib/rdk/attrib/group_ops.ml:1809-1877,3836-3852`. The rule table retains
-native owner aliases, encoded diagnostics and canonical keys. Group patterns
-are compiled during cooking, blank patterns select nothing, and unused-group
-selection counts ordinary and edge memberships. Metadata commits preserve
-surviving group order, ordered indices, topology and all attribute storage.
-The draft composes existing generic metadata primitives without calling the
-old SOP body.
+The actual Detail route is a dense Vec4 array through `Attribute_kernel.write_storage`, not the constant-source consumer. The shared writer now handles count one after the existing shape/count check: it checks each finite component in order, then installs fresh one-element planes. This avoids the atomic finite flag and parallel range dispatch. Counts zero and greater than one retain their existing paths; all ordinary and source-descriptor callers share this boundary. No API or node-specific callback was added.
 
-Original-body focused request 57986 exited 0 for
-`@lib/flow_sop/metadata_ports_draft` and the benchmark executable. Log:
-`/tmp/rays-group-delete-draft-focused.log`. Existing tests cover required
-geometries, all eight attribute storage types, native schema/key/identity,
-strict/reference/domain/grain bytes and causes, encoded refusals and every
-physical parameter edit/cache. Additional Group Delete-only cases and graph
-checks have been authored; their current focused validation is pending.
+Combined focused request **92200** exited 0 for FlowSOP, Set Color, IR, Web, Point Jitter, Group Delete and Rename Attributes. The regular XYZ writer regression now includes count one alongside zero and 32769, exact signed-zero/domain bytes, fresh ownership and count/nonfinite failure immutability. Existing all-owner/type/raw-72 and strict/reference/UI/cache proofs passed unchanged. Files: `lib/flow_sop/attribute_kernel.ml` and `lib/flow_sop/test_attribute_kernel.ml`; the draft harness remains outside this shared change.
 
-Quiet first full table request 46431 exited 0. Apple M1, OCaml 5.3.0 dev,
-1,000,000 points, 998,001 quads, 12 groups across all four owners, grain 4096,
-domains 1/4. Each sample uses 1,000 fresh cold sessions, median of three;
-session creation/close and major GC are outside the clock. Every row first
-passes exact native geometry-byte preflight. Four-domain allocation figures
-cover the initial domain only. Log:
-`/tmp/rays-group-delete-bench-before.log`.
+Quiet actual-writer request **52627** exited 0, following the unchanged six-config baseline **87949**. Both use the same million-point input, dense one-row Vec4, domains one/four, grain 4096, median three samples of 1000 direct writes and GC outside timing. These measurements include owned-plane creation and geometry installation, with no Sessions. Allocations decrease in every row; five wall times decrease and the absent/one-domain outlier increases. Both outcomes are retained. Logs: `/tmp/rays-color-one-row-writer-before.log`, `/tmp/rays-color-one-row-writer-after.log`.
 
-| Mode | Domains | Native seconds | Lisp seconds | Ratio | Native bytes | Lisp bytes |
+| Cd | Domains | Before seconds/write | After seconds/write | Before bytes | After bytes |
+|---|---:|---:|---:|---:|---:|
+| absent | 1 | 0.000000171 | 0.000000274 | 824 | 696 |
+| absent | 4 | 0.000000309 | 0.000000099 | 1480 | 696 |
+| vec4 | 1 | 0.000000165 | 0.000000103 | 824 | 696 |
+| vec4 | 4 | 0.000000299 | 0.000000102 | 1480 | 696 |
+| wrong_float | 1 | 0.000000166 | 0.000000096 | 824 | 696 |
+| wrong_float | 4 | 0.000000298 | 0.000000097 | 1480 | 696 |
+
+Quiet whole-cook request **1647** exited 0 on the freshly linked 92200 snapshot. This retains every predetermined Detail configuration, median three samples of 1000 fresh cold Sessions, million-point input, grain 4096 and native exact-byte preflight. Session create/close and GC remain outside the clock; context and cook remain inside. Four-domain allocations cover the initial domain. Earlier six-row failures and the unused constant-consumer cut remain above. Log: `/tmp/rays-set-color-one-row-detail-bench.log`.
+
+| Cd | Domains | Native seconds | Lisp seconds | Printed ratio | Native bytes | Lisp bytes |
 |---|---:|---:|---:|---:|---:|---:|
-| default | 1 | 0.000006 | 0.000007 | 1.287× | 14120 | 23128 |
-| default | 4 | 0.000007 | 0.000012 | 1.677× | 14352 | 23360 |
-| unused | 1 | 0.009196 | 0.009191 | 0.999× | 17424 | 26072 |
-| unused | 4 | 0.009195 | 0.009209 | 1.002× | 17656 | 26304 |
-| point | 1 | 0.000007 | 0.000011 | 1.590× | 18336 | 34584 |
-| point | 4 | 0.000008 | 0.000011 | 1.343× | 18568 | 34816 |
-| vertex | 1 | 0.000007 | 0.000011 | 1.516× | 18352 | 34600 |
-| vertex | 4 | 0.000008 | 0.000011 | 1.476× | 18584 | 34832 |
-| primitive | 1 | 0.000007 | 0.000016 | **2.343× — fails** | 18352 | 34608 |
-| primitive | 4 | 0.000007 | 0.000012 | 1.687× | 18584 | 34840 |
-| edge | 1 | 0.000008 | 0.000011 | 1.413× | 18384 | 34680 |
-| edge | 4 | 0.000007 | 0.000012 | 1.766× | 18616 | 34912 |
-| any | 1 | 0.000008 | 0.000010 | 1.366× | 17712 | 32464 |
-| any | 4 | 0.000007 | 0.000011 | 1.503× | 17944 | 32696 |
-| all | 1 | 0.000006 | 0.000010 | 1.642× | 15616 | 26616 |
-| all | 4 | 0.000006 | 0.000009 | 1.403× | 15848 | 26848 |
-| exclusions | 1 | 0.000007 | 0.000012 | 1.697× | 17264 | 30184 |
-| exclusions | 4 | 0.000008 | 0.000011 | 1.294× | 17496 | 30416 |
-| blank | 1 | 0.000007 | 0.000011 | 1.596× | 14200 | 30904 |
-| blank | 4 | 0.000006 | 0.000009 | 1.613× | 14432 | 31136 |
-| missing | 1 | 0.000006 | 0.000010 | 1.595× | 15240 | 31960 |
-| missing | 4 | 0.000007 | 0.000010 | 1.454× | 15472 | 32192 |
-| selected_unused | 1 | 0.009221 | 0.005835 | 0.633× | 17536 | 34568 |
-| selected_unused | 4 | 0.009209 | 0.005820 | 0.632× | 17768 | 34800 |
-| successive | 1 | 0.009203 | 0.005840 | 0.635× | 20432 | 67832 |
-| successive | 4 | 0.009226 | 0.005846 | 0.634× | 20664 | 68064 |
+| absent | 1 | 0.000004535 | 0.000009071 | 2.000× | 9960 | 26128 |
+| absent | 4 | 0.000004806 | 0.000009258 | 1.926× | 10192 | 26360 |
+| vec4 | 1 | 0.000004579 | 0.000008513 | 1.859× | 10120 | 26864 |
+| vec4 | 4 | 0.000004639 | 0.000009025 | 1.945× | 10352 | 27096 |
+| wrong_float | 1 | 0.000004869 | 0.000009137 | 1.877× | 10120 | 26864 |
+| wrong_float | 4 | 0.000005256 | 0.000010315 | 1.962× | 10352 | 27096 |
 
-25 of 26 rows pass the unchanged 2× gate. Primitive deletion at one domain
-fails at 2.343×, so Group Delete remains unregistered and uncounted. Earlier
-intermediate progress text incorrectly called the first 22 rows passing;
-the complete-table audit found the missed row and corrected that statement.
-All 26 measurements are retained here without an unchanged-code repeat.
+The absent/one-domain ratio prints 2.000 at three-decimal precision. The logged nine-decimal times cannot distinguish a pass from a slight failure at the exact 2× boundary; there is no unrounded predicate in this harness. This row is unresolved and is not accepted as passing. Set Color stays unregistered and B.11 incomplete. The isolated writer occupies only a small part of the whole cold cook, so the next diagnostic should profile that whole route rather than repeat unchanged timings or add another unmeasured writer branch.
 
-The body has now been changed to execute its final unused-group deletion
-only when `delete_unused` is true. The old body always performed a generic
-metadata cook even when that option was false and the final operation did
-nothing. Validation and a new full 26-row table are pending; this candidate
-change does not claim that the remaining timing gate has passed.
+### Encoded normalization retains workspace phase counts
 
+The first production encoded-field port exposed a shared instrumentation gap:
+normalizers evaluate their pure checked helper twice for canonicalization,
+outside the existing suppressed node-body compilation scope. The bloom
+workspace therefore reported extra workspace Evaluate invocations during
+checked lowering. Original production request 67783 retained that failure
+in `/tmp/rays-rename-attributes-production-focused.log`.
+
+`Encoded_parameters.for_node` now uses the existing `Phase_timer.without`
+around internal normalization. Canonicalization, idempotence checks, errors
+and execution remain unchanged; their duration belongs to the surrounding
+phase. Request 19605 passed every semantic test including bloom's unchanged
+one-Evaluate/one-Lower assertion, with only the intended manifest diff.
+The direct encoded parameter-edit regression also asserts zero workspace
+Evaluate invocations and passed in request 11682. Logs:
+`/tmp/rays-rename-attributes-production-focused2.log` and
+`/tmp/rays-rename-attributes-native-integration.log`.
+
+### Full cold Detail cook profile: shared hashing and eager domain defaults
+
+The committed count-one writer cut is `29f171d8`. To inspect the remaining exact 2× boundary rather than repeat the unchanged six-row benchmark, the draft harness adds `--profile-detail`: absent Cd, Detail owner, million-point input, domains one and grain 4096, eight seconds of fresh cold Sessions. The actual prebuilt body is the static dense Vec4 route recorded above. Fresh profile linking exited 0, and parent combined focused **78499** also exited 0. No runtime instrumentation was added. Future Detail benchmark output records twelve-decimal seconds, nine-decimal ratios and an explicit pass/fail computed from unrounded measurements; no table was rerun merely to obtain that precision.
+
+First diagnostic request **41541** completed 914815 fresh-session cooks, but its sampling command rejected the unsupported `-i` option. Both logs are retained. The corrected diagnostic **72343** and positional `sample PID 5 1` capture exited 0: PID 63004, 510089 fresh-session cooks over eight seconds and a full five-second capture at a one-millisecond sampling interval. Logs: `/tmp/rays-color-detail-profile.log`, `/tmp/rays-color-detail-profile-sample.log`, `/tmp/rays-color-detail-profile-full.log`, `/tmp/rays-color-detail-profile-full.sample.txt`. The sampling tool changes process throughput, so these cook counts are diagnostics, not benchmark comparisons.
+
+The main thread has 1208 recorded sample stacks. The following exclusive leaf counts are obtained by subtracting direct child counts from each call-tree node and summing identical symbols. Percentages use only those 1208 main-thread stacks; parked worker threads are excluded. Session creation/close and the loop's `gettimeofday` are part of this sampled process, unlike the cold-cook benchmark timer. These percentages therefore describe the complete profile lifecycle and cannot be presented as cook-only wall-time attribution.
+
+| Exclusive leaf | Main-thread samples | Share |
+|---|---:|---:|
+| caml_string_hash | 152 | 12.58% |
+| __sysctl | 114 | 9.44% |
+| __psynch_cvwait | 87 | 7.20% |
+| compare_val | 72 | 5.96% |
+| caml_hash | 68 | 5.63% |
+| _tlv_get_addr | 53 | 4.39% |
+| caml_uniform_array_make | 41 | 3.39% |
+| caml_c_call | 37 | 3.06% |
+| mach_absolute_time | 33 | 2.73% |
+
+Source inspection identifies a small shared cause for the system-query samples: `Sop.Context.create` and `Rays_math.Parallel.run` both pass `recommended_domains ()` as an eagerly evaluated `Option.value` default. Consequently, an explicit domain count still performs the hardware query. A lazy `Some domains`/`None` match in both shared helpers would preserve explicit/omitted/invalid domain behavior while removing the unused query. This is a proposal only at this evidence point. The largest exclusive leaf is string hashing in the cache/session route, with additional polymorphic hash/compare costs; no cache representation change is proposed without a separate contract audit. The profile does not support another speculative one-row writer optimization. Set Color remains unregistered and the printed 2.000× timing boundary is unresolved.
 ## Group Delete production port
 
 The full body is now in `nodes/group_delete.rays`: ordered generic group
@@ -3286,22 +4543,7 @@ Group Delete is completed port 11/128 (8.59%); 117 whole ports remain.
 B.12 remains unchecked until all seven metadata ports and its boundary gate
 are complete.
 
-### Typed one-lane fills and copies retain bulk spans
 
-The typed runner directly stores one-element Int/Float/Text fills and copies
-one-element contiguous Int inputs, retaining original bulk operations for
-longer spans. IR/Web/SOP/lowering request 35825 passed its new boundary,
-lazy-source and exact-byte regression at 1/4/8 domains. No public API changed.
-
-Quiet request 92162 exited 0. One million rows, strict Packed Collect, native
-byte preflight and median-three force-only protocol: domains 1 Native
-0.006332 s / 8000168 B, Packed 0.065951 s / 17211496 B, **10.416×**; domains 4
-Native 0.006226 s / 8000168 B, Packed 0.018644 s / 10396176 initial-domain B,
-**2.995×**. Packed times improve about 17% against 99638. The one-domain
-allocation increase of 30888 B is retained; no allocation-free claim is made.
-Both 2× gates still fail. Full measured profile/caveats and before/after
-evidence are in `text-gather-validation.md`; no whole node is counted.
-Log: `/tmp/rays-text-one-lane-fill-bench.log`.
 ## Group Rename whole recipe and candidate performance
 
 Focused request **78499** exited 0 including `@lib/flow_sop/group_rename_draft`.
@@ -3426,6 +4668,33 @@ B.12 stays open until Swap Attributes completes. The earlier unexplained
 Rename Attributes failure remains recorded under Group Delete for phase review;
 this integration passed with the mismatch diagnostics enabled.
 
+### Typed one-lane fills and copies retain bulk spans
+
+The typed runner directly stores one-element Int/Float/Text fills and copies
+one-element contiguous Int inputs, retaining original bulk operations for
+longer spans. IR/Web/SOP/lowering request 35825 passed its new boundary,
+lazy-source and exact-byte regression at 1/4/8 domains. No public API changed.
+
+Quiet request 92162 exited 0. One million rows, strict Packed Collect, native
+byte preflight and median-three force-only protocol: domains 1 Native
+0.006332 s / 8000168 B, Packed 0.065951 s / 17211496 B, **10.416×**; domains 4
+Native 0.006226 s / 8000168 B, Packed 0.018644 s / 10396176 initial-domain B,
+**2.995×**. Packed times improve about 17% against 99638. The one-domain
+allocation increase of 30888 B is retained; no allocation-free claim is made.
+Both 2× gates still fail. Full measured profile/caveats and before/after
+evidence are in `text-gather-validation.md`; no whole node is counted.
+Log: `/tmp/rays-text-one-lane-fill-bench.log`.
+
+### Cold-cook cache hashing audit (read-only)
+
+The sampled string hashing reaches the shared `Sop.Session` entry cache, instantiated as `Lru.Make(String)`. Every uncached node serializes an unambiguous binary cache key containing its stable id, version, operation, immutable parameters, canonical exposed parameter key, facts, selected input identities/layout and declared context projection. The source portion is already a 16-byte digest from `Lower.kernel_source`; the current path does not repeatedly hash raw workspace/prelude text. Removing fields or substituting a digest without exact equality would change the cache contract and is not proposed.
+
+On a cold retained insert, the same key is hashed for lookup, `Session.insert`'s replacement `peek`, `Lru.add`'s existing-entry lookup and the final table replace. Session closure removes entries and adds lifecycle hashes. The sample resolves 28 inclusive string-hash frames under `Session.insert → Lru.add`, and eight under `Session.insert → Lru.peek`; most remaining parents are missing from the unwound stack. Accordingly, the full 12.58% exclusive string-hash figure cannot be assigned entirely to cook-only insertion.
+
+An additional shared cost exists in the zero-retention sessions used by Lisp bodies and cooked structural programs: `Session.evaluate_uncached` still builds a persistent cache key and looks it up in the empty table, and `Session.insert` computes payload components before its `max_entries > 0` guard. Per-cook identity memoization is separate and must remain. A possible subsequent change is to avoid unused persistent-key work only when retention is zero and there is no transaction journal, and move retention-only component accounting inside its existing guard. It must preserve `delta`/fact verification, diagnostics, cancellation, timing, instance materialization, per-cook sharing and counters. Worker snapshots journal reads/writes for replay, and cache prediction/placement also build keys; these paths need explicit proof before any implementation. No cache source or API was changed by this audit.
+
+The proposed lazy domain defaults are still held outside the worktree in `/tmp/rays-lazy-domain-defaults.patch` until the current metadata production integrations finish. The actual benchmark cook calls `Context.create ~domains` then `Session.cook → Parallel.run ~domains`; both native and Lisp incur those eager system queries. Removing this common fixed cost need not improve their ratio, so changed whole-node timing coverage is required as well as the six-case helper microbenchmark.
+
 ### Proven-total prefixes reuse typed spans
 
 Gather/Text Collect now batches only its leading proven-total instructions
@@ -3496,6 +4765,7 @@ contract in `specification/sop.md`; no public API changed. Set Color remains
 unregistered pending its complete current-runtime performance table and whole
 production/native oracle gates. No 4-ULP thresholds, exact byte comparisons,
 render goldens or target counts changed.
+
 
 ## Swap Attributes whole recipe and initial candidate performance
 
@@ -4203,6 +5473,54 @@ claim. C1 topology construction, IEEE computed arrays, normal fallbacks and
 native diagnostic mapping remain separate prerequisites. B.5 remains complete;
 whole completion stays14/128 and20/60 milestones.
 
+## C.1 owned topology queries and mesh construction
+
+2026-10-13. The complete C.1 focused gate passes. Full details and retained
+failure history are in [geometry-arrays-validation.md](geometry-arrays-validation.md).
+`Topology_kernel` wraps existing native owned topology/geometry construction;
+the ordinary typed operators, retained Lower arrays, graph edits, editor menu
+and JavaScript geometry host protocol carry the capability. No new Core
+instruction, topology algorithm, dependency or SOP-specific callback is added.
+
+The final focused launcher request covers Flow SOP/graph/IR/web, CLI cram,
+dependency/API gates and the actual editor menu. Process57033 EXIT0;
+`/tmp/rays-c1-focused11.log`. Five native plain-topology/P fixtures match complete
+geometry bytes at domains1/4/8, grains1/97/4096, direct arrays and authored
+reconstruction, strict compiled and reference execution. A32769-point authored
+packed map preserves signed zero/small-normal bytes; the strengthened actual
+subnormal fixture also passes in request25298 (its unrelated live cache assertion
+failed separately). Input/query ownership, captured/direct
+distinct counts, warm caches, fresh unread components, topology/attribute-layout
+invalidation, native validator order/messages,
+exact Int values above2^53, kinds, cancellation, lazy causes, live/state/zone
+captures and failed-state rollback pass. Mesh/topology cards, typed Int defaults,
+checked keyword/connection edits and production menu insertion pass. Actual
+native→JavaScript fixtures cover both host heads and malformed inputs.
+
+An explicit host source is refused by the JS frame printer E_WEB_SOURCE;
+the production 2D CLI rejects a reached SOP graph containing both operators
+E_WEB_GRAPH before writing output. Earlier packed-printer assertions were
+incorrect because that printer expects region source bindings separately.
+No numeric/error/cache oracle was relaxed. The public existing reads helper
+needed by mesh facts was accepted separately in ed8eb646.
+
+C.1 moves to B.1/B.2/B.4 prerequisites to remove the B.10→C.1→B.R→B.10 cycle;
+indexed consumers additionally need C.2. C.1 constructs only explicit topology
+and finite Flow points. Attribute/group/instance remap, raw NaN/Inf point
+transport and maximum-count AoS/SoA parity remain separate work. There is no
+whole-port or 2× performance qualification in this capability gate.
+Accepted ports remain14/128; accepted milestones advance20/60→21/60.
+
+Final native-video shipping request54530 completes EXIT0 with
+`OCAMLRUNPARAM=b opam exec -- _build/default/tools/check.exe --ship`;
+log `/tmp/rays-c1-native-ship.log`. All14 whole-node tests, strengthened cache
+tests and the complete workspace IR sweep pass:43 standard files,1 custom
+catalog executable,13 fixtures, cooked payload comparisons at domains1/8.
+The launcher completes @all/@runtest/native smoke/git diff --check. Earlier
+dummy-video shipping request91290 failed native smoke and exposed the shared
+Lisp cache issue; focused cache request50009 and this final shipping check
+pass after the reviewed source-key fix and stronger fresh-oracle assertions.
+
 ## Private IEEE arithmetic experiment and actual JavaScript proof
 
 2026-10-13, Apple M1 arm64, OCaml5.3 development profile, Node24.19.0.
@@ -4277,54 +5595,6 @@ The strengthened packed fixture now uses actual `Float.next_after 0. 1.`
 subnormals; the earlier `Float.min_float` spelling represented the smallest
 positive normal, so its earlier success alone did not prove subnormal coverage.
 
-## C.1 owned topology queries and mesh construction
-
-2026-10-13. The complete C.1 focused gate passes. Full details and retained
-failure history are in [geometry-arrays-validation.md](geometry-arrays-validation.md).
-`Topology_kernel` wraps existing native owned topology/geometry construction;
-the ordinary typed operators, retained Lower arrays, graph edits, editor menu
-and JavaScript geometry host protocol carry the capability. No new Core
-instruction, topology algorithm, dependency or SOP-specific callback is added.
-
-The final focused launcher request covers Flow SOP/graph/IR/web, CLI cram,
-dependency/API gates and the actual editor menu. Process57033 EXIT0;
-`/tmp/rays-c1-focused11.log`. Five native plain-topology/P fixtures match complete
-geometry bytes at domains1/4/8, grains1/97/4096, direct arrays and authored
-reconstruction, strict compiled and reference execution. A32769-point authored
-packed map preserves signed zero/small-normal bytes; the strengthened actual
-subnormal fixture also passes in request25298 (its unrelated live cache assertion
-failed separately). Input/query ownership, captured/direct
-distinct counts, warm caches, fresh unread components, topology/attribute-layout
-invalidation, native validator order/messages,
-exact Int values above2^53, kinds, cancellation, lazy causes, live/state/zone
-captures and failed-state rollback pass. Mesh/topology cards, typed Int defaults,
-checked keyword/connection edits and production menu insertion pass. Actual
-native→JavaScript fixtures cover both host heads and malformed inputs.
-
-An explicit host source is refused by the JS frame printer E_WEB_SOURCE;
-the production 2D CLI rejects a reached SOP graph containing both operators
-E_WEB_GRAPH before writing output. Earlier packed-printer assertions were
-incorrect because that printer expects region source bindings separately.
-No numeric/error/cache oracle was relaxed. The public existing reads helper
-needed by mesh facts was accepted separately in ed8eb646.
-
-C.1 moves to B.1/B.2/B.4 prerequisites to remove the B.10→C.1→B.R→B.10 cycle;
-indexed consumers additionally need C.2. C.1 constructs only explicit topology
-and finite Flow points. Attribute/group/instance remap, raw NaN/Inf point
-transport and maximum-count AoS/SoA parity remain separate work. There is no
-whole-port or 2× performance qualification in this capability gate.
-Accepted ports remain14/128; accepted milestones advance20/60→21/60.
-
-Final native-video shipping request54530 completes EXIT0 with
-`OCAMLRUNPARAM=b opam exec -- _build/default/tools/check.exe --ship`;
-log `/tmp/rays-c1-native-ship.log`. All14 whole-node tests, strengthened cache
-tests and the complete workspace IR sweep pass:43 standard files,1 custom
-catalog executable,13 fixtures, cooked payload comparisons at domains1/8.
-The launcher completes @all/@runtest/native smoke/git diff --check. Earlier
-dummy-video shipping request91290 failed native smoke and exposed the shared
-Lisp cache issue; focused cache request50009 and this final shipping check
-pass after the reviewed source-key fix and stronger fresh-oracle assertions.
-
 ## Lazy diagnostic scopes and native row selection
 
 2026-10-13. `with_error` is a mapping-only scope: pure record-to-record mapping
@@ -4389,6 +5659,7 @@ Final native shipping request72554 EXIT0 passes with that fix;
 standard files, one custom-catalog executable and13 fixtures; native examples,
 all default tests, the build and whitespace check pass. These capabilities add no whole SOP
 port and tick no additional milestone:14/128 ports and21/60 milestones remain.
+
 ## Typed Mesh coordinate-plane integration
 
 2026-10-13. `sop/mesh_planes` accepts an exact x/y/z Float-array record and

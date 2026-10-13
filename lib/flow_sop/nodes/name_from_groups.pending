@@ -1,0 +1,55 @@
+; Whole-node draft; keep unregistered until all recipe and performance gates pass.
+(defn name_from_groups_error :context value [(reason : text)]
+  (error "invalid_group" "name_from_groups could not produce valid geometry"
+    :cause (str "name_from_groups [invalid_group]: " reason)))
+(defnode sop/name_from_groups :label "Name from Groups" :category ["Group" "Convert"]
+  [(in0 : geometry)
+   (owner : text "Primitive" :label "Group type" :choices ["Point" "Vertex" "Primitive"])
+   (attribute : text "name" :label "Name attribute")
+   (pattern : text "*" :label "Group pattern")
+   (default : text "" :label "Default value")
+   (overlap : text "First group" :label "Overlapping groups"
+     :choices ["First group" "Last group" "Error on overlap"])
+   (delete_groups : bool false :label "Delete source groups")]
+  (if (text/blank? attribute) (name_from_groups_error "Name from Groups: attribute name must not be empty")
+    (let* [pattern_error (text/glob_error pattern)]
+      (if (not (equal? pattern_error "")) (name_from_groups_error pattern_error)
+        (let* [selected_owner (text/lower owner)
+               count (case owner "Point" (sop/count in0 :points)
+                         "Vertex" (sop/count in0 :vertices) :else (sop/count in0 :primitives))
+               canonical_p (and (equal? owner "Point") (equal? attribute "P"))
+               existing (and (not canonical_p) (sop/has_attr in0 attribute :owner selected_owner))]
+          (if (and existing (not (sop/has_attr in0 attribute :owner selected_owner :type text)))
+            (name_from_groups_error (str "Name from Groups: " selected_owner " attribute "
+                                       (text/repr attribute) " must have text storage"))
+            (let* [selected_source (sop/group_names in0 pattern :owner selected_owner)
+                   selected (array/slice selected_source 0 (array/count selected_source))
+                   first_group (equal? overlap "First group")
+                   initial (if existing (sop/attr in0 attribute :owner selected_owner :type text)
+                               (array/text count default))
+                   assignment (fold [state {:indices (array/int count -1) :next 0}] [name selected]
+                     (let* [indices state.indices
+                            group_index state.next
+                            mask (sop/group in0 :name name :owner selected_owner)
+                            conflict_index (if (and (equal? overlap "Error on overlap") (int/gt count 0))
+                              (array/min (map (fn [(member : int) (previous : int) (index : int)]
+                                (if (and (int/eq member 1) (int/ge previous 0)) index count))
+                                mask indices (array/range count :type int))) count)]
+                       (if (int/lt conflict_index count)
+                         (name_from_groups_error (str "Name from Groups: element " conflict_index
+                           " belongs to both " (text/repr (array/nth selected (array/nth indices conflict_index)))
+                           " and " (text/repr name)))
+                         {:indices (map (fn [(member : int) (previous : int)]
+                                    (if (and (int/eq member 1)
+                                          (or (not first_group) (int/lt previous 0)))
+                                      group_index previous)) mask indices)
+                          :next (int/add group_index 1)})))
+                   names (map (fn [(index : int) (old : text)]
+                            (if (int/ge index 0) (array/nth selected index) old)) assignment.indices initial)
+                   output (if canonical_p
+                            (name_from_groups_error "Geometry.with_attribute: use with_positions to replace canonical P")
+                            (sop/with_attr in0 attribute (exact names) :owner selected_owner :type text))]
+              (if delete_groups
+                (fold [geometry output] [name selected]
+                  (sop/delete_group geometry (text/glob_literal name) :owner selected_owner))
+                output))))))))

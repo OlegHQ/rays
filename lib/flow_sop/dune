@@ -194,6 +194,41 @@
  (deps (alias test_projection) (alias test_workspace_edit)
   (alias test_workspace_cook) (alias test_workspace_zone)))
 
+(executable
+ (name test_group_invert)
+ (modules test_group_invert)
+ (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop unix))
+
+(rule
+ (alias group_invert_draft)
+ (deps nodes/group_invert.pending)
+ (action (run %{exe:test_group_invert.exe})))
+
+(executable
+ (name test_point_jitter)
+ (modules test_point_jitter)
+ (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop unix))
+
+(rule
+ (alias point_jitter_draft)
+ (deps nodes/point_jitter.pending)
+ (action (run %{exe:test_point_jitter.exe})))
+
+(executable
+ (name test_name_from_groups)
+ (modules test_name_from_groups)
+ (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop unix))
+
+(rule
+ (alias name_from_groups_draft)
+ (deps nodes/name_from_groups.pending)
+ (action (run %{exe:test_name_from_groups.exe})))
+
+(rule
+ (alias name_from_groups_trace)
+ (deps nodes/name_from_groups.pending)
+ (action (run %{exe:test_name_from_groups.exe} --trace)))
+
 (test
  (name test_error_rows)
  (modules test_error_rows)

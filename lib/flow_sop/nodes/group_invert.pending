@@ -1,0 +1,49 @@
+; Whole Group Invert draft, unregistered until the complete port recipe passes.
+(defn group_invert_error :context value [(reason : text)]
+  (error "invalid_group" "group_invert could not produce valid geometry"
+    :cause (str "group_invert [invalid_group]: " reason)))
+(defnode sop/group_invert :label "Group Invert" :category ["Group" "Edit"]
+  [(in0 : geometry)
+   (owner : text "Any" :label "Group type" :choices ["Any" "Points" "Vertices" "Primitives" "Edges"])
+   (pattern : text "*" :label "Group pattern")
+   (new_name : text "" :label "New name pattern")
+   (conflict : text "Overwrite" :label "Conflict" :choices ["Skip" "Error" "Overwrite" "Union"])]
+  (let* [selection_error (if (text/blank? pattern) "Group Invert: empty group pattern" (text/glob_error pattern))
+         replacement (text/trim new_name)]
+    (if (not (equal? selection_error "")) (group_invert_error selection_error)
+      (let* [rewrite_error (if (equal? replacement "") "" (text/glob_rewrite_error pattern replacement))]
+        (if (not (equal? rewrite_error "")) (group_invert_error rewrite_error)
+          (let* [selected_owner (case owner "Points" "point" "Vertices" "vertex"
+                                  "Primitives" "primitive" "Edges" "edge" :else "any")
+                 entries (sop/group_entries in0 pattern :owner selected_owner)
+                 ; ponytail: removed identity scans are quadratic in selected groups;
+                 ; use a typed identity set if group-count benchmarks require it.
+                 result (fold [state {:geometry in0 :removed (array/text 0)}]
+                   [index (array/range (array/count entries.names) :type int)]
+                   (let* [name (array/nth entries.names index)
+                          current_owner (array/nth entries.owners index)
+                          identity (str current_owner ":" name)
+                          removed (fold [found false] [dead state.removed] (or found (equal? dead identity)))]
+                     (if removed state
+                       (let* [output_name (if (equal? replacement "") name (text/glob_rewrite pattern replacement name))]
+                         (if (text/blank? output_name) (group_invert_error "Group Invert: rewrite produced an empty group name")
+                           (let* [destination (and (not (equal? name output_name))
+                                   (fold [found false] [candidate (sop/group_names state.geometry (text/glob_literal output_name)
+                                                               :owner current_owner)] true))]
+                             (cond
+                               (and destination (equal? conflict "Skip")) state
+                               (and destination (equal? conflict "Error"))
+                                 (group_invert_error (str "Group Rename: destination " current_owner " group "
+                                                         (text/repr output_name) " already exists"))
+                               :else
+                                 (let* [complement (map (fn [(value : int)] (int/sub 1 value))
+                                                    (sop/group state.geometry :name name :owner current_owner))
+                                        inverted (sop/with_group state.geometry (exact complement) :name name :owner current_owner)
+                                        renamed (if (equal? name output_name) inverted
+                                                  (sop/rename_group inverted (text/glob_literal name) (text/glob_literal output_name)
+                                                    :owner current_owner :conflict (text/lower conflict)))
+                                        dead (if (and destination (equal? conflict "Overwrite"))
+                                               (array/concat state.removed (array/text 1 (str current_owner ":" output_name)))
+                                               state.removed)]
+                                   {:geometry renamed :removed dead}))))))))]
+            result.geometry))))))
