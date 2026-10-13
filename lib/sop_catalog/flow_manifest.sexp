@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "3fe1cf826ed88a0da2e8804fe3c05936")
+  (digest "148aa1bc41cd8a092b8e7ebeed1d6032")
   (kinds
     (kind "sop/platonic"
       (key "platonic")
@@ -840,26 +840,6 @@
         (field "make_isolated_loops_closed" "Close isolated loops" (folder) (bool) (bool false) (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/attribute_noise_quaternion"
-      (key "attribute_noise_quaternion")
-      (aliases)
-      (operation "attribute_noise")
-      (label "Attribute Noise (Quaternion)")
-      (category "Attribute" "Noise")
-      (slots (slot "in0" required))
-      (fields
-        (field "group" "Group" (folder) (text) (text "") (primary false) (vec3))
-        (field "owner" "Owner" (folder) (choice "Point" "Vertex" "Primitive" "Detail") (choice "Point") (primary false) (vec3))
-        (field "name" "Attribute" (folder) (text) (text "orient") (primary false) (vec3))
-        (field "location" "Location" (folder) (text) (text "element-number") (primary false) (vec3))
-        (field "range" "Range" (folder) (text) (text "zero-centered") (primary false) (vec3))
-        (field "seed" "Seed" (folder) (int (soft 0 9999) (hard nil nil)) (int 0) (primary false) (vec3))
-        (field "frequency_x" "Frequency X" (folder "Frequency") (float (soft 0.01 4) (hard 0 nil)) (float 1) (primary false) (vec3 "frequency" 0))
-        (field "frequency_y" "Frequency Y" (folder "Frequency") (float (soft 0.01 4) (hard 0 nil)) (float 1) (primary false) (vec3 "frequency" 1))
-        (field "frequency_z" "Frequency Z" (folder "Frequency") (float (soft 0.01 4) (hard 0 nil)) (float 1) (primary false) (vec3 "frequency" 2))
-        (field "octaves" "Octaves" (folder) (int (soft 1 8) (hard 1 nil)) (int 1) (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise points) (reads "P" "orient") (writes "orient") (topology preserved) (exact false)))
     (kind "sop/boolean_fracture"
       (key "boolean_fracture")
       (aliases)
@@ -2620,6 +2600,28 @@
         (field "original_blend" "Original blend" (folder "Blend") (float (soft 0 1) (hard nil nil)) (float 0) (primary false) (vec3))
         (field "blurred_blend" "Blurred blend" (folder "Blend") (float (soft 0 1) (hard nil nil)) (float 1) (primary false) (vec3)))
       (outputs (output "geo" geometry))
+      (body lisp)
+      (calls))
+    (kind "sop/attribute_noise_quaternion"
+      (key "attribute_noise_quaternion")
+      (aliases)
+      (operation "attribute_noise")
+      (label "Attribute Noise (Quaternion)")
+      (category "Attribute" "Noise")
+      (slots (slot "in0" required))
+      (fields
+        (field "group" "Group" (folder) (text) (text "") (primary false) (vec3))
+        (field "owner" "Owner" (folder) (choice "Point" "Vertex" "Primitive" "Detail") (choice "Point") (primary false) (vec3))
+        (field "name" "Attribute" (folder) (text) (text "orient") (primary false) (vec3))
+        (field "location" "Location" (folder) (text) (text "element-number") (primary false) (vec3))
+        (field "range" "Range" (folder) (text) (text "zero-centered") (primary false) (vec3))
+        (field "seed" "Seed" (folder) (int (soft 0 9999) (hard nil nil)) (int 0) (primary false) (vec3))
+        (field "frequency_x" "Frequency X" (folder "Frequency") (float (soft 0.01 4) (hard 0 nil)) (float 1) (primary false) (vec3 "frequency" 0))
+        (field "frequency_y" "Frequency Y" (folder "Frequency") (float (soft 0.01 4) (hard 0 nil)) (float 1) (primary false) (vec3 "frequency" 1))
+        (field "frequency_z" "Frequency Z" (folder "Frequency") (float (soft 0.01 4) (hard 0 nil)) (float 1) (primary false) (vec3 "frequency" 2))
+        (field "octaves" "Octaves" (folder) (int (soft 1 8) (hard 1 nil)) (int 1) (primary false) (vec3)))
+      (outputs (output "geo" geometry))
+      (facts (cook-mode generic) (elementwise points) (reads "P" "orient") (writes "orient") (topology preserved) (exact false))
       (body lisp)
       (calls))
     (kind "sop/blast"

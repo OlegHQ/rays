@@ -1,0 +1,202 @@
+; Whole Attribute Noise (Quaternion) draft: one fractal noise sample per quaternion component
+; (component k shifted by 47.117 k), normalized, blended into an existing vec4 attribute
+; (blend 1, Set) and normalized again. Location and range are the native encoded strings.
+(defn noise_quaternion_refuse :context value [(reason : text)]
+  (error "E_PARAM" (str "sop/attribute_noise_quaternion: " reason)))
+(defn noise_quaternion_fail :context value [(reason : text)]
+  (error "invalid_noise" "attribute_noise could not produce valid geometry"
+    :cause (str "attribute_noise [invalid_noise]: Rdk.Attribute_ops.noise: " reason)))
+; Parse "scalar,x", "vec2,x,y", "vec3,x,y,z" or "vec4,x,y,z,w": {:valid :dim :a :b :c :d}.
+(defn noise_quaternion_numeric :context value [(text : text)]
+  (let* [parts (text/split text ",")
+         n (array/count parts)
+         kind (array/nth parts 0)
+         dim (cond (and (equal? kind "scalar") (int/eq n 2)) 1
+                   (and (equal? kind "vec2") (int/eq n 3)) 2
+                   (and (equal? kind "vec3") (int/eq n 4)) 3
+                   (and (equal? kind "vec4") (int/eq n 5)) 4
+                   :else 0)
+         a (if (int/gt n 1) (text/to_float (array/nth parts 1)) {:value 0.0 :valid false})
+         b (if (int/gt n 2) (text/to_float (array/nth parts 2)) {:value 0.0 :valid true})
+         c (if (int/gt n 3) (text/to_float (array/nth parts 3)) {:value 0.0 :valid true})
+         d (if (int/gt n 4) (text/to_float (array/nth parts 4)) {:value 0.0 :valid true})]
+    {:valid (and (int/gt dim 0) (and a.valid (and b.valid (and c.valid d.valid))))
+     :dim dim :a a.value :b b.value :c c.value :d d.value}))
+; Parse the range: {:kind 0 positive / 1 zero-centered / 2 min-max, :bad_bounds, :low vec4, :high vec4, :four}.
+(defn noise_quaternion_range :context value [(range : text)]
+  (let* [parts (text/split range ";")
+         n (array/count parts)
+         head (array/nth parts 0)
+         low (noise_quaternion_numeric (if (int/eq n 3) (array/nth parts 1) "scalar,0"))
+         high (noise_quaternion_numeric (if (int/eq n 3) (array/nth parts 2) "scalar,0"))
+         kind (cond (and (equal? head "positive") (int/eq n 1)) 0
+                    (and (equal? head "zero-centered") (int/eq n 1)) 1
+                    (and (equal? head "min-max") (int/eq n 3)) 2
+                    :else 3)]
+    {:kind kind :bad_bounds (and (int/eq kind 2) (not (and low.valid high.valid)))
+     :four (and (int/eq low.dim 4) (int/eq high.dim 4))
+     :low [low.a low.b low.c low.d] :high [high.a high.b high.c high.d]}))
+; Location: {:kind 0 position / 1 element-number / 2 attribute / 3 invalid, :name}.
+(defn noise_quaternion_location :context value [(location : text)]
+  (let* [parts (text/split location ":")
+         n (array/count parts)
+         kind (cond (equal? location "position") 0
+                    (equal? location "element-number") 1
+                    (and (equal? (array/nth parts 0) "attribute") (int/gt n 1)) 2
+                    :else 3)
+         joined (fold [state {:name "" :first true}] [part (array/slice parts 1 (int/sub n 1))]
+                  {:name (if state.first part (str state.name ":" part)) :first false})]
+    {:kind kind :name joined.name}))
+(defn noise_quaternion_validate :context value
+  [(group : text) (owner : text) (name : text) (location : text) (range : text)
+   (fx : float) (fy : float) (fz : float) (octaves : int)]
+  (let* [where (noise_quaternion_location location)
+         bounds (noise_quaternion_range range)]
+    (cond
+      (text/blank? name) (noise_quaternion_refuse "attribute name must be nonblank")
+      (and (equal? owner "Point") (equal? name "P")) (noise_quaternion_refuse "quaternion output cannot replace P")
+      (and (equal? owner "Detail") (not (text/blank? group)))
+        (noise_quaternion_refuse "detail attributes do not accept a group")
+      (not (and (= (- fx fx) 0.0) (and (= (- fy fy) 0.0) (and (= (- fz fz) 0.0)
+                (and (>= fx 0.0) (and (>= fy 0.0) (>= fz 0.0)))))))
+        (noise_quaternion_refuse "frequency must be finite and nonnegative")
+      (or (int/lt octaves 1) (int/gt octaves 64)) (noise_quaternion_refuse "octaves must be in [1,64]")
+      (int/eq where.kind 3)
+        (noise_quaternion_refuse "location must be position, element-number, or attribute:name")
+      (and (int/eq where.kind 2) (text/blank? where.name))
+        (noise_quaternion_refuse "location attribute must be nonblank")
+      (int/eq bounds.kind 3)
+        (noise_quaternion_refuse "range must be positive, zero-centered, or min-max bounds")
+      bounds.bad_bounds (noise_quaternion_refuse "invalid noise range bounds")
+      (and (int/eq bounds.kind 2) (not bounds.four))
+        (noise_quaternion_refuse "quaternion range bounds must have four components")
+      (and (int/eq bounds.kind 2)
+           (not (and (= (- bounds.low.x bounds.low.x) 0.0) (and (= (- bounds.low.y bounds.low.y) 0.0)
+                (and (= (- bounds.low.z bounds.low.z) 0.0) (and (= (- bounds.low.w bounds.low.w) 0.0)
+                (and (= (- bounds.high.x bounds.high.x) 0.0) (and (= (- bounds.high.y bounds.high.y) 0.0)
+                (and (= (- bounds.high.z bounds.high.z) 0.0) (and (= (- bounds.high.w bounds.high.w) 0.0)
+                (and (<= bounds.low.x bounds.high.x) (and (<= bounds.low.y bounds.high.y)
+                (and (<= bounds.low.z bounds.high.z) (<= bounds.low.w bounds.high.w))))))))))))))
+        (noise_quaternion_refuse "range bounds must be finite and ordered")
+      :else true)))
+(defnode sop/attribute_noise_quaternion :label "Attribute Noise (Quaternion)" :operation "attribute_noise" :category ["Attribute" "Noise"]
+  :facts {:elementwise points :reads ["P" "orient"] :writes ["orient"] :topology preserved :exact false}
+  :validate (noise_quaternion_validate group owner name location range frequency_x frequency_y frequency_z octaves)
+  [(in0 : geometry)
+   (group : text "" :label "Group")
+   (owner : text "Point" :label "Owner" :choices ["Point" "Vertex" "Primitive" "Detail"])
+   (name : text "orient" :label "Attribute")
+   (location : text "element-number" :label "Location")
+   (range : text "zero-centered" :label "Range")
+   (seed : int 0 :label "Seed" :min 0 :max 9999)
+   (frequency_x : float 1.0 :label "Frequency X" :folder ["Frequency"] :min 0.01 :max 4 :hard_min 0 :vec3 ["frequency" 0])
+   (frequency_y : float 1.0 :label "Frequency Y" :folder ["Frequency"] :min 0.01 :max 4 :hard_min 0 :vec3 ["frequency" 1])
+   (frequency_z : float 1.0 :label "Frequency Z" :folder ["Frequency"] :min 0.01 :max 4 :hard_min 0 :vec3 ["frequency" 2])
+   (octaves : int 1 :label "Octaves" :min 1 :max 8 :hard_min 1)]
+  (let* [kind (text/lower owner)
+         count (case owner "Point" (sop/count in0 :points) "Vertex" (sop/count in0 :vertices)
+                 "Primitive" (sop/count in0 :primitives) :else 1)
+         group_name (text/trim group)
+         has_group (not (text/blank? group_name))
+         group_found (if has_group
+           (fold [found false] [probe (sop/group_names in0 "" :owner kind)]
+             (or found (equal? probe group_name)))
+           true)
+         where (noise_quaternion_location location)
+         bounds (noise_quaternion_range range)
+         exists (sop/has_attr in0 name :owner kind)
+         location_ok (cond (int/eq where.kind 2)
+                      (if (and (equal? owner "Point") (equal? where.name "P")) true (sop/has_attr in0 where.name :owner kind))
+                      :else true)
+         location_float3 (cond (int/eq where.kind 2)
+                      (if (and (equal? owner "Point") (equal? where.name "P")) true
+                        (sop/has_attr in0 where.name :owner kind :type vec3))
+                      :else true)]
+    (cond
+      (not group_found)
+        (error "missing_group" (str "attribute_noise could not find " kind " group " (text/repr group_name)))
+      (not location_ok) (noise_quaternion_fail (str "missing location attribute " where.name))
+      (not location_float3)
+        (noise_quaternion_fail (str "location attribute " where.name " must have float3 storage"))
+      (and exists (not (sop/has_attr in0 name :owner kind :type vec4)))
+        (if (or (sop/has_attr in0 name :owner kind :type float)
+                (or (sop/has_attr in0 name :owner kind :type vec2) (sop/has_attr in0 name :owner kind :type vec3)))
+          (noise_quaternion_fail "output dimension does not match target")
+          (noise_quaternion_fail "existing attribute is not floating point"))
+      :else
+        (let* [positions (sop/attr in0 :P)
+               topo (sop/topology in0)
+               points (cond
+                 (int/eq where.kind 1)
+                   (map (fn [(i : int)] [(float i) 0.0 0.0]) (array/range count :type int))
+                 (int/eq where.kind 2)
+                   (if (and (equal? owner "Point") (equal? where.name "P")) positions
+                     (sop/attr in0 where.name :owner kind :type vec3))
+                 (equal? owner "Point") positions
+                 (equal? owner "Vertex")
+                   (map (fn [(p : int)] (array/nth positions p)) topo.vertex_points)
+                 (equal? owner "Primitive")
+                   (let* [sums (array/segment_sum (map (fn [(p : int)] (array/nth positions p)) topo.vertex_points)
+                                 topo.primitive_offsets)
+                          sizes (map (fn [(first : int) (last : int)] (int/sub last first))
+                                  (array/slice topo.primitive_offsets 0 count)
+                                  (array/slice topo.primitive_offsets 1 count))]
+                     (map (fn [(s : vec3) (size : int)] (if (int/gt size 0) (* s (/ 1.0 (float size))) s)) sums sizes))
+                 :else
+                   (let* [total (array/sum positions)
+                          n (array/count positions)]
+                     (array/vec3 1 (if (int/gt n 0) (* total (/ 1.0 (float n))) total))))
+               low (if (int/eq bounds.kind 2) bounds.low (if (int/eq bounds.kind 1) [-1.0 -1.0 -1.0 -1.0] [0.0 0.0 0.0 0.0]))
+               high (if (int/eq bounds.kind 2) bounds.high [1.0 1.0 1.0 1.0])
+               samples (exact (map (fn [(p : vec3)]
+                 (let* [x (* (+ p.x 0.0) frequency_x)
+                        y (* (+ p.y 0.0) frequency_y)
+                        z (* (+ p.z 0.0) frequency_z)
+                        s0 (noise3 [(+ x (* 0.0 47.117)) (- y (* (* 0.0 47.117) 0.37)) (+ z (* (* 0.0 47.117) 0.73))]
+                             :seed seed :octaves octaves :lacunarity 2.0 :gain 0.5)
+                        s1 (noise3 [(+ x (* 1.0 47.117)) (- y (* (* 1.0 47.117) 0.37)) (+ z (* (* 1.0 47.117) 0.73))]
+                             :seed seed :octaves octaves :lacunarity 2.0 :gain 0.5)
+                        s2 (noise3 [(+ x (* 2.0 47.117)) (- y (* (* 2.0 47.117) 0.37)) (+ z (* (* 2.0 47.117) 0.73))]
+                             :seed seed :octaves octaves :lacunarity 2.0 :gain 0.5)
+                        s3 (noise3 [(+ x (* 3.0 47.117)) (- y (* (* 3.0 47.117) 0.37)) (+ z (* (* 3.0 47.117) 0.73))]
+                             :seed seed :octaves octaves :lacunarity 2.0 :gain 0.5)
+                        ]
+                   [s0 s1 s2 s3]))
+                 points))
+               generated (exact (map (fn [(s : vec4)]
+                 (let* [g0 (+ low.x (* s.x (- high.x low.x)))
+                        g1 (+ low.y (* s.y (- high.y low.y)))
+                        g2 (+ low.z (* s.z (- high.z low.z)))
+                        g3 (+ low.w (* s.w (- high.w low.w)))
+                        len (sqrt (fma g3 g3 (fma g2 g2 (fma g1 g1 (fma g0 g0 0.0)))))]
+                   (if (and (> len 1e-15) (= (- len len) 0.0))
+                     [(/ g0 len) (/ g1 len) (/ g2 len) (/ g3 len)]
+                     [0.0 0.0 0.0 1.0])))
+                 samples))
+               previous (if exists (sop/attr in0 name :owner kind :type vec4)
+                          (array/vec4 count [0.0 0.0 0.0 1.0]))
+               selection (if has_group (sop/group in0 :name group_name :owner kind) (array/int count 1))
+               blended (exact (map (fn [(member : int) (old : vec4) (noise : vec4)]
+                 (if (int/eq member 1)
+                   (let* [base (if exists old [0.0 0.0 0.0 0.0])] (+ base (- noise base)))
+                   old))
+                 selection previous generated))
+               bad (if (int/eq count 0) count
+                 (array/min (map (fn [(member : int) (v : vec4) (index : int)]
+                   (if (and (int/eq member 1)
+                            (not (and (= (- v.x v.x) 0.0) (and (= (- v.y v.y) 0.0)
+                                 (and (= (- v.z v.z) 0.0) (= (- v.w v.w) 0.0))))))
+                     index count))
+                   selection blended (array/range count :type int))))]
+          (if (int/lt bad count)
+            (noise_quaternion_fail (str "non-finite output at element " bad))
+            (sop/with_attr in0 name
+              (exact (map (fn [(member : int) (v : vec4)]
+                (if (int/eq member 1)
+                  (let* [len (sqrt (+ (+ (+ (* v.x v.x) (* v.y v.y)) (* v.z v.z)) (* v.w v.w)))]
+                    (if (and (> len 1e-15) (= (- len len) 0.0))
+                      [(/ v.x len) (/ v.y len) (/ v.z len) (/ v.w len)]
+                      [0.0 0.0 0.0 1.0]))
+                  v))
+                selection blended))
+              :owner kind :type vec4))))))
