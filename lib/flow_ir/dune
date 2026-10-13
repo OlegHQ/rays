@@ -155,3 +155,8 @@
  (name test_array_max_length)
  (modules test_array_max_length)
  (libraries flow flow_ir rays_math))
+
+(test
+ (name test_array_composition)
+ (modules test_array_composition array_composition_cases)
+ (libraries flow_ir flow rays_math))

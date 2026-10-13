@@ -88,3 +88,11 @@
  (modules test_array_max_length)
  (deps (glob_files ../../tools/web/runtime/*.js))
  (libraries flow flow_ir flow_web rays_math))
+
+(copy_files ../flow_ir/array_composition_cases.ml)
+
+(test
+ (name test_array_composition_web)
+ (modules test_array_composition_web array_composition_cases)
+ (deps (glob_files ../../tools/web/runtime/*.js))
+ (libraries flow_web flow flow_ir rays_math))

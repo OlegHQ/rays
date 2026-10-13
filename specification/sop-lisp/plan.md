@@ -649,7 +649,7 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 - [x] C.3 — exact identity/permutation/all-owner payload transfer, ordered groups, explicit edge ancestry, raw storage, strict/reference/domain/grain, cache/editor and native/JavaScript gates pass; original public Rewire bytes and before/after timings retained. Evidence in `payload-remap-validation.md` and `results.md`.
 - [x] C.4 — ordered compact indices, exclusive Int offsets and scatter-add pass native/reference/Core/domain, ownership/error/state, geometry composition, graph/editor, actual JavaScript runtime/worker and final shipping gates; evidence in the three bulk-array validation notes and `results.md`.
 - [x] C.5 — stable Int/Float/byte-Text grade and exact first-match Int/Text lookup pass native/reference/Core/domain, ownership/error/state, consumer, graph/editor, actual JavaScript runtime/worker and final shipping gates; evidence in `grade-index-validation.md` and `results.md`.
-- [ ] C.6
+- [x] C.6 — six physical array types compose through standalone Core and invariant packed gathers, including scoped lazy count/captures, exact domains, graph defaults/edits and actual JavaScript workers. Final native/shipping gates pass; evidence in `array-composition-validation.md` and `results.md`.
 - [ ] C.7 — Line and Points are complete (2/11 generators); full recipes, performance, production menu, native and shipping evidence is in `line-port-audit.md`, `points-port-audit.md` and `results.md`. The other nine remain unaccepted.
 - [ ] C.8
 - [ ] C.9

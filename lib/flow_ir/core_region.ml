@@ -294,6 +294,12 @@ let lower ?(fusion = true) ?(dynamic = false)
           Hashtbl.add captures (name, fields, !guards) e; e in
     let captured at name fields = let name,fields = capture_path name fields in
       capture at name fields in
+    let invariant_value at =
+      let bindings=match !capture_scope with
+        |None->bindings
+        |Some(name,fields)->(match captured_value bindings name fields with
+            |E.Fn fn->E.Private.function_bindings fn|_->raise Unsupported) in
+      uniform at ("",[]) (E.Residual(E.Private.with_bindings residual ~term:at bindings)) in
     let field at e name = match List.assoc_opt name e.fields with
       | Some value -> value
       | None -> match name with
@@ -377,12 +383,21 @@ let lower ?(fusion = true) ?(dynamic = false)
             let condition = {t with ty = Ty.Bool;
               node = Op {op = "="; args = ["a", left; "b", right]; skip = []}} in
             {t with node = If (condition, yes, no)}) arms default)
+      | Op {op=("array/concat"|"array/slice"|"array/count" as op);_}
+          when (match op,t.ty with "array/count",Ty.Int -> true
+            |("array/concat"|"array/slice"),Ty.Array _->true|_->false)
+          && not(List.exists(fun name->List.mem_assoc name env)(E.Private.free_names t))
+          && Option.bind(Flow.Op.find ~extra:(E.Private.residual_ops residual) op Flow.Context.value)
+              Flow.Op.packed_kind=Some Flow.Op.Constant_only ->
+          (* Preserve checked argument order and copying. Invariant composition
+             and its count use the existing selected table/integer captures. *)
+          invariant_value t
       | If _ when (match t.ty with Ty.Array _ -> true | _ -> false)
           && not(List.exists(fun name->List.mem_assoc name env)(E.Private.free_names t)) ->
           (* An invariant array choice is a lazy table preparation, not a numeric
              select. Keep its checked conditional and captures until a selected
              lane reaches Array_prepare; row-dependent choices still refuse. *)
-          table t ("",[]) (E.Residual(E.Private.with_bindings residual ~term:t bindings))
+          invariant_value t
       | If (condition, yes, no) ->
           let condition = as_float (expression env condition) in
           (match condition.constant with

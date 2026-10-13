@@ -595,6 +595,20 @@ its argument expression still evaluates. Slice/concat copy existing validated
 storage without re-quantizing or coercing components. Published arrays are
 immutable, including empty arrays.
 
+Canonical slice/concat expressions invariant in the current packed function
+may supply a gather table directly, for Int, Float, Vec2/3/4 and Text. They use
+the existing lazy `Array_prepare`: arguments and copying execute only when a
+selected lane first reaches the table, in ordinary checked evaluation order.
+Each force prepares fresh storage from that force's captures. Row-dependent
+composition remains refused by the region tier; its structured Core primitive
+is unchanged. Composition does not inherit a source count origin. Prepared
+tables retain the existing GPU/WGSL refusal.
+An invariant canonical `array/count` uses the existing lazy exact Int capture
+path, including when its array is composed; qualification does not force it.
+JavaScript kernels whose sources or captures read frame facts use per-frame
+preparation even when they declare no computed arguments; fixed kernels keep
+the existing static export metadata path.
+
 ## Coercion and color leaves
 
 `coerce(wanted,value)` uses a statically supplied checker type. It is a

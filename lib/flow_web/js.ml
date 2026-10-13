@@ -625,7 +625,11 @@ and statement ctx depth (s : C.statement) =
         let p = match P.of_region ctx.program.regions.(region) with
           | Ok p -> p | Error (d :: _) -> raise (Refused (d.code,d.message,d.span))
           | Error [] -> assert false in
-        let dynamic = ctx.templated in
+        let r=P.to_region p in
+        let dynamic = ctx.templated || Array.exists(fun(residual,term)->
+          Flow.Eval.frame_dependent(Flow.Eval.Residual
+            (Flow.Eval.Private.with_bindings residual ~term [])))r.sources
+          || Array.exists Flow.Eval.frame_dependent r.uniforms in
         let plan = if dynamic then ", B" ^ string_of_int region else "" in
         if dynamic && not (Hashtbl.mem ctx.plans region) then
           Hashtbl.add ctx.plans region (binding_plan p);

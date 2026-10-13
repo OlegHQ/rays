@@ -5050,3 +5050,47 @@ plus CLI catalog digest8c2fb554841c77bc3a09e9450d3273539af443902882f845576ede60d
 Authored-source digest, render goldens and public API remain unchanged.
 Accepted whole ports:16/128 (12.5%),112 remaining. Milestones remain24/60 (40%);
 C.7 stays unchecked with2/11 generators accepted.
+
+## C.6 accepted — array composition and scoped lazy captures
+
+Canonical array/concat and array/slice now supply invariant packed lookup tables
+for Int, Float, Vec2/3/4 and Text through existing lazy Array_prepare. Invariant
+array/count uses the existing exact lazy Int uniform. Standalone copied arrays,
+checked argument/error order, ownership and allocation bounds remain unchanged.
+Row-dependent composition stays refused by the region tier; composed arrays
+receive no fabricated owner/count origin. No new primitive/tag/API/dependency.
+
+A shared capture defect affected both new composition and existing array-If:
+helper-local terms used outer bindings. invariant_value now selects the active
+callable's immutable bindings. Checked supplied-Fn regressions distinguish
+outer[7] from helper nine values of9, including count18 and frame-selected9/11.
+The fixture uses the actual compiled_function/packed-function boundary, keeping
+graph shadowing, escaping functions and Fn graph-input refusals intact.
+
+The JavaScript emitter now checks scoped source/uniform frame dependence for
+each CPU Invoke, selecting existing dynamic plans even with no declared args.
+This fixes changing counts, fixed-count changing contents and scoped dynamic
+captures. Truly fixed exports retain existing metadata. Original programs run
+without synthetic argument declarations, runtime shims or oracle input arrays.
+Graph defaults reuse existing Float-map Vec2 and array/vec4 constructors.
+
+Focused80564 EXIT0: /tmp/rays-c6-array-composition-focused10-20261013.log;
+compiler/IR/Web/graph/GPU/Flow runtest and API/dependency gates. Six types cover
+0/1/13/4097/5001/32769, full raw integer/Float/Text bytes, fresh ownership,
+native/reference/Core/strict Executor, fusion on/off, domains1/4/8, selected
+errors/causes, changing sources, lazy empty/untaken spans, caller-state rollback,
+count origins, graph/socket/default/edit/save parity and WGSL/GPU refusal.
+Actual Node runtime runs51 programs ×six frame settings ×pools null/1/8,
+including12 helper-capture programs. All previous compiler/Web cases remain.
+
+Native79782 EXIT0: /tmp/rays-c6-array-composition-native-20261013.log,
+@runtest-native. Shipping84732 EXIT0:
+/tmp/rays-c6-array-composition-ship-20261013.log, @all/@runtest/@smoke/diffcheck;
+43 standard files,1 custom-catalog executable and13 fixtures across four frames
+and domains1/8 pass complete cooked-payload/render-command parity.
+API/catalog/render snapshots are unchanged. Earlier fixture/product failures
+remain recorded in array-composition-validation.md and their original logs.
+
+Accepted language milestones advance24/60→25/60 (41.7%). Accepted whole ports
+stay16/128 (12.5%),112 remaining. This does not implement repetition or port any
+whole generator/reindexing SOP; their complete recipe/performance gates remain.

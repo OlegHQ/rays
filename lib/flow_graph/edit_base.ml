@@ -505,7 +505,12 @@ let rec default_for ?(fresh = Fun.id) (ty : Flow.Ty.t) label = match ty with
   | Array (Float | Any) -> Some (call "array/float" [mk (S.Num "4")])
   | Array Int -> Some (call "array/int" [mk (S.Num "0")])
   | Array Text -> Some (call "array/text" [mk (S.Num "4")])
+  | Array Vec2 ->
+      let name=fresh "element" in
+      Some(call "map" [call "fn" [vec[sym name];vec[sym name;sym name]];
+        call "array/float" [mk(S.Num "4")]])
   | Array Vec3 -> Some (call "array/vec3" [mk (S.Num "4")])
+  | Array Vec4 -> Some (call "array/vec4" [mk (S.Num "4")])
   | Record _ -> branch_default ty
   | Named _ -> Flow.Ty.default ty
   | Fn (Some signature) -> Option.map (fun body ->
