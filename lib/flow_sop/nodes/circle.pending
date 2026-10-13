@@ -1,0 +1,177 @@
+; Whole Circle candidate. No native Circle call/delegate occurs in this body.
+(defn circle_axis :context value [(axis : vec3)]
+    (let* [scale (max (abs axis.x) (max (abs axis.y) (abs axis.z)))]
+      (if (= scale 0.0)
+        {:value [0.0 0.0 0.0] :valid false :reason "must be non-zero"}
+        (let* [sx (/ axis.x scale) sy (/ axis.y scale) sz (/ axis.z scale)
+               ; Native ARM rounds xx, then fuses yy and zz in this order.
+               magnitude (sqrt (fma sz sz (fma sy sy (* sx sx))))]
+          (if (<= magnitude 1e-15)
+            {:value [0.0 0.0 0.0] :valid false :reason "cannot be normalized"}
+            {:value [(/ sx magnitude) (/ sy magnitude) (/ sz magnitude)]
+             :valid true :reason ""})))))
+
+  (defn circle_perpendicular :context value [(h : vec3) (v : vec3)]
+    (let* [projection (fma v.z h.z (fma v.y h.y (* v.x h.x)))
+           negative_projection (* -1.0 projection)]
+      [(fma negative_projection h.x v.x) (fma negative_projection h.y v.y)
+       (fma negative_projection h.z v.z)]))
+
+  (defn circle_custom_valid :context value [(h : vec3) (v : vec3)]
+    (let* [horizontal_axis (circle_axis h) vertical_axis (circle_axis v)]
+      (if (and horizontal_axis.valid vertical_axis.valid)
+        (let* [perpendicular (circle_axis
+                  (circle_perpendicular horizontal_axis.value vertical_axis.value))]
+          perpendicular.valid)
+        false)))
+
+  (defn circle_validate :context value
+    [(auto_radius : float) (explicit_x : float) (explicit_y : float)
+     (scale : float) (x_mode : text) (y_mode : text) (count : int)
+     (mode : text) (first_angle : float) (last_angle : float)
+     (plane : text) (h : vec3) (v : vec3)]
+    ; A single ordered validator preserves constructor precedence and messages.
+    (if (not (and (and (> auto_radius 0.0) (> explicit_x 0.0))
+                  (and (> explicit_y 0.0) (> scale 0.0))))
+      (error "E_PARAM" "sop/circle: radii and scale must be positive")
+      (let* [scaled_x (float/mul_checked (if (equal? x_mode "Auto") auto_radius explicit_x) scale)
+             scaled_y (float/mul_checked (if (equal? y_mode "Auto") auto_radius explicit_y) scale)]
+        (cond
+          (not (and (and scaled_x.valid scaled_y.valid)
+                    (and (> scaled_x.value 0.0) (> scaled_y.value 0.0))))
+            (error "E_PARAM" "sop/circle: scaled radii must be finite and positive")
+          (int/lt count 3)
+            (error "E_PARAM" "sop/circle: segments must be at least three")
+          (int/gt count (int/sub (array/max_length :type int)
+                (if (equal? mode "Closed") 0 (if (equal? mode "Sliced") 2 1))))
+            (error "E_PARAM" "sop/circle: output cardinality exceeds array limits")
+          :else
+            (let* [sweep (float/fma_checked -1.0 first_angle last_angle)]
+              (cond
+                (and (not (equal? mode "Closed"))
+                     (or (not sweep.valid) (= sweep.value 0.0)))
+                  (error "E_PARAM" "sop/circle: arc must have finite nonzero sweep")
+                (and (equal? plane "Custom axes") (not (circle_custom_valid h v)))
+                  (error "E_PARAM" "sop/circle: custom axes must be nonzero and independent")
+                :else true))))))
+
+  (defn circle_frame :context value [(h : vec3) (v : vec3) (angle : float)]
+    (let* [horizontal_axis (circle_axis h) vertical_axis (circle_axis v)]
+      (cond
+        (not horizontal_axis.valid)
+          {:horizontal [0.0 0.0 0.0] :vertical [0.0 0.0 0.0]
+           :failure (str "horizontal axis " horizontal_axis.reason)}
+        (not vertical_axis.valid)
+          {:horizontal [0.0 0.0 0.0] :vertical [0.0 0.0 0.0]
+           :failure (str "vertical axis " vertical_axis.reason)}
+        :else
+          (let* [perpendicular_axis (circle_axis
+                    (circle_perpendicular horizontal_axis.value vertical_axis.value))]
+            (if (not perpendicular_axis.valid)
+              {:horizontal [0.0 0.0 0.0] :vertical [0.0 0.0 0.0]
+               :failure (str "vertical axis " perpendicular_axis.reason)}
+              (let* [base_h horizontal_axis.value base_v perpendicular_axis.value
+                     cosine (cos angle) sine (sin angle) negative_sine (* -1.0 sine)
+                     rotated_h (if (= angle 0.0) base_h
+                       [(fma sine base_v.x (* cosine base_h.x))
+                        (fma sine base_v.y (* cosine base_h.y))
+                        (fma sine base_v.z (* cosine base_h.z))])
+                     rotated_v (if (= angle 0.0) base_v
+                       [(fma cosine base_v.x (* negative_sine base_h.x))
+                        (fma cosine base_v.y (* negative_sine base_h.y))
+                        (fma cosine base_v.z (* negative_sine base_h.z))])
+                     ; Keep the unused native normal's validation as an actual guard.
+                     normal_axis (circle_axis (cross rotated_v rotated_h))]
+                {:horizontal rotated_h :vertical rotated_v
+                 :failure (if normal_axis.valid "" (str "normal axis " normal_axis.reason))}))))))
+
+  (defnode sop/circle :label "Circle" :version 2 :category ["Create" "Curve"]
+    :validate (circle_validate radius radius_x radius_y uniform_scale radius_x_mode radius_y_mode
+                  segments arc start_angle end_angle orientation
+                  [horizontal_x horizontal_y horizontal_z] [vertical_x vertical_y vertical_z])
+    [(arc : text "Closed" :label "Arc" :choices ["Closed" "Open arc" "Chord closed" "Sliced"])
+     (start_angle : float 0.0 :label "Start angle" :folder "Arc" :min -6.283185 :max 6.283185)
+     (end_angle : float 6.283185307179586 :label "End angle" :folder "Arc" :min -6.283185 :max 6.283185)
+     (orientation : text "XZ" :label "Orientation" :choices ["XZ" "XY" "YZ" "Custom axes"])
+     (horizontal_x : float 1.0 :label "Horizontal X" :min -1 :max 1 :vec3 ["horizontal" 0])
+     (horizontal_y : float 0.0 :label "Horizontal Y" :min -1 :max 1 :vec3 ["horizontal" 1])
+     (horizontal_z : float 0.0 :label "Horizontal Z" :min -1 :max 1 :vec3 ["horizontal" 2])
+     (vertical_x : float 0.0 :label "Vertical X" :min -1 :max 1 :vec3 ["vertical" 0])
+     (vertical_y : float 0.0 :label "Vertical Y" :min -1 :max 1 :vec3 ["vertical" 1])
+     (vertical_z : float 1.0 :label "Vertical Z" :min -1 :max 1 :vec3 ["vertical" 2])
+     (radius : float 1.0 :label "Auto radius" :min 0.01 :max 10 :hard_min 0)
+     (radius_x_mode : text "Explicit" :label "Radius X mode" :choices ["Explicit" "Auto"])
+     (radius_y_mode : text "Explicit" :label "Radius Y mode" :choices ["Explicit" "Auto"])
+     (reverse : bool false :label "Reverse")
+     (center_x : float 0.0 :label "Center X" :folder "Transform" :min -10 :max 10 :vec3 ["center" 0])
+     (center_y : float 0.0 :label "Center Y" :folder "Transform" :min -10 :max 10 :vec3 ["center" 1])
+     (center_z : float 0.0 :label "Center Z" :folder "Transform" :min -10 :max 10 :vec3 ["center" 2])
+     (radius_x : float 1.0 :label "Radius X" :folder "Size" :min 0.01 :max 10 :hard_min 0 :primary true)
+     (radius_y : float 1.0 :label "Radius Y" :folder "Size" :min 0.01 :max 10 :hard_min 0 :primary true)
+     (rotation : float 0.0 :label "Rotation" :folder "Transform" :min -3.14159 :max 3.14159)
+     (uniform_scale : float 1.0 :label "Uniform scale" :folder "Size" :min 0.01 :max 10 :hard_min 0)
+     (segments : int 48 :label "Segments" :min 3 :max 256 :hard_min 3 :primary true)]
+    (let* [frame (circle_frame
+               (cond (equal? orientation "XY") [1.0 0.0 0.0]
+                     (equal? orientation "XZ") [1.0 0.0 0.0]
+                     (equal? orientation "YZ") [0.0 1.0 0.0] :else [horizontal_x horizontal_y horizontal_z])
+               (cond (equal? orientation "XY") [0.0 1.0 0.0]
+                     (equal? orientation "XZ") [0.0 0.0 1.0]
+                     (equal? orientation "YZ") [0.0 0.0 1.0] :else [vertical_x vertical_y vertical_z])
+               rotation)]
+      (if (not (equal? frame.failure ""))
+        (error "invalid_parameter" "circle could not produce valid geometry"
+          :cause (str "circle [invalid_parameter]: Rdk.Plane_generators.circle: " frame.failure))
+        (let* [h frame.horizontal v frame.vertical
+               effective_x (* (if (equal? radius_x_mode "Auto") radius radius_x) uniform_scale)
+               effective_y (* (if (equal? radius_y_mode "Auto") radius radius_y) uniform_scale)
+               closed (equal? arc "Closed") sliced (equal? arc "Sliced")
+               first_angle (if closed 0.0 start_angle)
+               last_angle (if closed 6.283185307179586 end_angle)
+               step (/ (- last_angle first_angle) (float segments))
+               arc_points (if closed segments (int/add segments 1))
+               final_index (int/sub arc_points 1)
+               point_count (if sliced (int/add arc_points 1) arc_points)
+               indices (array/range arc_points :type int)
+               angles (exact (map (fn [(index : int)]
+                 (let* [sample (if reverse (int/sub final_index index) index)]
+                   (if (and (not closed) (int/eq sample final_index)) last_angle
+                     (let* [computed (float/fma_checked (float sample) step first_angle)] computed.value)))) indices))
+               horizontal_values (exact (map (fn [(angle_value : float)]
+                 (* effective_x (cos angle_value))) angles))
+               vertical_values (exact (map (fn [(angle_value : float)]
+                 (* effective_y (sin angle_value))) angles))
+               plane_x (exact (map (fn [(u : float) (w : float)]
+                 (let* [inner (float/fma_checked h.x u center_x)
+                        outer (float/fma_checked v.x w inner.value)] outer.value))
+                 horizontal_values vertical_values))
+               plane_y (exact (map (fn [(u : float) (w : float)]
+                 (let* [inner (float/fma_checked h.y u center_y)
+                        outer (float/fma_checked v.y w inner.value)] outer.value))
+                 horizontal_values vertical_values))
+               plane_z (exact (map (fn [(u : float) (w : float)]
+                 (let* [inner (float/fma_checked h.z u center_z)
+                        outer (float/fma_checked v.z w inner.value)] outer.value))
+                 horizontal_values vertical_values))
+               invalid_rows (exact (map (fn [(index : int) (u : float) (w : float)]
+                 (let* [sample (if reverse (int/sub final_index index) index)
+                        angle_result (float/fma_checked (float sample) step first_angle)
+                        valid_angle (or (and (not closed) (int/eq sample final_index)) angle_result.valid)
+                        ix (float/fma_checked h.x u center_x) ox (float/fma_checked v.x w ix.value)
+                        iy (float/fma_checked h.y u center_y) oy (float/fma_checked v.y w iy.value)
+                        iz (float/fma_checked h.z u center_z) oz (float/fma_checked v.z w iz.value)]
+                   (if (and valid_angle (and (and ix.valid ox.valid)
+                     (and (and iy.valid oy.valid) (and iz.valid oz.valid)))) 0 1)))
+                 indices horizontal_values vertical_values))
+               checked_rows (error_rows invalid_rows
+                 (fn [(index : int)] {:code "invalid_parameter"
+                   :message "circle could not produce valid geometry"
+                   :cause (list (str "circle [invalid_parameter]: Rdk.Plane_generators.circle: generated point "
+                     index " is not finite"))}) :policy "first")]
+          (sop/mesh_planes
+            :points {:x (if sliced (array/concat plane_x (array/float 1 center_x)) plane_x)
+                     :y (if sliced (array/concat plane_y (array/float 1 center_y)) plane_y)
+                     :z (if sliced (array/concat plane_z (array/float 1 center_z)) plane_z)}
+            :vertex_points (if sliced (array/concat indices (array/int 1 arc_points)) indices)
+            :primitive_offsets (array/concat (array/int 1) (array/int 1 point_count))
+            :kinds (array/int 1 (if (equal? arc "Open arc") 1 2)))))))
