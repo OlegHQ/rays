@@ -25,7 +25,10 @@ let () =
         (sop/with_attr geo :P (exact
           (map (fn [p] (+ p [shift 0.0 0.0])) (sop/attr geo :P))))))
     (graph g :context sop (sop/helper_seed (sop/line :kind "Points" :points 2))))|} in
-  let lowered = Flow_sop.Lower.workspace ~factories source |> ok in
+  let catalog = Flow_sop.Catalog.of_factories ~version:1 ~nodes:[] factories |> ok in
+  let workspace = Flow_sop.Catalog.check_workspace ~sources:[]
+    ~ops:Flow_sop.Operators.all catalog source |> checked in
+  let lowered = Flow_sop.Lower.of_checked ~factories workspace |> ok in
   let graph = List.hd lowered.graphs in
   let node = Sop.Edit_graph.compile_node graph.network.geometry ~node_id:(Option.get graph.root)
     |> Result.get_ok in
@@ -57,8 +60,9 @@ let () =
     (defnode sop/fn_seed_scope [(geo : geometry) (enabled : bool false)]
       (let* [shift (fn_seed_helper)] geo))
     (graph g :context sop (sop/fn_seed_scope (sop/line :points 2))))|} in
-  let catalog = Flow_sop.Catalog.of_factories ~version:1 [Sop.Nodes.Line.factory] |> ok in
-  let workspace = Flow_sop.Catalog.check_workspace ~ops:Flow_sop.Operators.all catalog source |> checked in
+  let catalog = Flow_sop.Catalog.of_factories ~version:1 ~nodes:[] [Sop.Nodes.Line.factory] |> ok in
+  let workspace = Flow_sop.Catalog.check_workspace ~sources:[]
+    ~ops:Flow_sop.Operators.all catalog source |> checked in
   let definition = List.find (fun (node:Flow.Workspace.node_definition) ->
     node.kind.qualified="sop/fn_seed_scope") workspace.Flow.Workspace.nodes in
   assert (Flow_sop.Context_kernel.depends ~inputs:["enabled", Flow.Eval.Bool false]

@@ -161,13 +161,6 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
     let kernel_source = lazy (Digest.string (fst (Lisp.print (checked.source @ checked.macros @
       List.map (fun (g : Workspace.graph) -> g.form) checked.defs @
       List.map (fun (d : Workspace.node_definition) -> d.body.form) checked.nodes)))) in
-    (* Public Lisp nodes already key parameters and cooked inputs separately.
-       A call-site edit must not invalidate an unchanged sibling's body.
-       ponytail: all declarations invalidate these factories; narrow to called
-       declaration cones if unrelated helper edits measurably recook them. *)
-    let declaration_source = lazy (Digest.string (fst (Lisp.print (checked.macros @
-      List.map (fun (g : Workspace.graph) -> g.form) checked.defs @
-      List.map (fun (d : Workspace.node_definition) -> d.body.form) checked.nodes)))) in
     let attribute_options args =
       let text key default code=match List.assoc_opt key args with
         |None->default|Some(E.Text text)->text|_->fail code ("Attribute "^key^" must be static text") in
@@ -534,6 +527,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
           let parameters = ok (Port.parameters (Edit.factory_fields factory)) in
           Hashtbl.add params_cache key parameters; parameters in
     let lisp_factory ?(functions = []) (definition : Workspace.node_definition) =
+      let declaration_source=lazy(Context_kernel.declaration_source checked definition) in
       let rec function_elements = function
         | E.Fn fn -> [fn]
         | E.List values -> Array.to_list values |> List.concat_map function_elements

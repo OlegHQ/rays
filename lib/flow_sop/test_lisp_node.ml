@@ -614,6 +614,69 @@ let () =
       "Helper invalidation returned stale cached geometry"))) [1;8];
   print_endline "Lisp declaration cache keys preserve unchanged siblings and invalidate edited helpers at one/eight domains"
 
+let ()=
+  let source values=Printf.sprintf {|(workspace declaration_cones
+    (defn unrelated :context value [] %s)
+    (defn leaf :context value [(p : vec3)] (+ p [%s 0.0 0.0]))
+    (defmacro unrelated_adjusted [p] `(+ ~p [%s 0.0 0.0]))
+    (defmacro adjusted_inner [p] `(+ ~p [%s 0.0 0.0]))
+    (defmacro adjusted [p] `(adjusted_inner ~p))
+    (defn through :context value [(p : vec3)] (leaf (adjusted p)))
+    (defn allowed :context value [(amount : float)] (>= amount %s))
+    (defn canonical_owner :context value [(raw : text)] %S)
+    (defn owner :context value [(raw : text)] (canonical_owner raw))
+    (defnode sop/cone_child :validate (allowed amount)
+      [(geo : geometry) (amount : float %s)]
+      (let* [moved (exact (map through (sop/attr geo :P)))]
+        (sop/with_attr geo :P (exact (map (fn [(p : vec3)]
+          (+ p [(+ amount %s) 0.0 0.0])) moved)))))
+    (defnode sop/cone_parent
+      [(geo : geometry) (delta : float 0.0)
+       (rules : text " POINT " :kind encoded :normalize (fn [(raw : text)] (owner raw)))]
+      (let* [child (sop/cone_child geo)]
+        (sop/with_attr child :P (exact (map (fn [(p : vec3)]
+          (+ p [delta 0.0 0.0])) (sop/attr child :P))))))
+    (graph g :context sop (let* [upstream (sop/line :kind "Points" :points 3)
+      edited (sop/cone_parent upstream :delta 1.0)
+      sibling (sop/cone_parent upstream :delta 0.0)] (sop/merge edited sibling))))|}
+      values.(0) values.(1) values.(7) values.(6) values.(4) values.(5) values.(2) values.(3) in
+  let initial=[|"0.0";"2.0";"0.0";"0.0";"-10.0";"point";"0.0";"0.0"|] in
+  let lower ?previous values=
+    let compiled_ids,sites=match previous with None->None,None
+      |Some(lowered:Flow_sop.Lower.t)->Some lowered.compiled_ids,Some lowered.sites in
+    let lowered=match Flow_sop.Lower.workspace ?compiled_ids ?sites
+      ~factories:Sop_catalog.Editor.factories (parse(source values))with
+      |Ok lowered->lowered|Error d->failwith(Flow.Diagnostic.to_string d) in
+    let graph=List.hd lowered.graphs in
+    lowered,ok(Sop.Edit_graph.compile_node graph.network.geometry ~node_id:(Option.get graph.root)) in
+  List.iter(fun domains->List.iter(fun(index,value,label)->with_session(fun session->
+    let first,node=lower initial in
+    let before_bytes=Rdk_test_support.geometry_bytes(cook session ~domains node) in
+    let before=Sop.Session.stats session in
+    let changed=Array.copy initial in changed.(index)<-value;
+    let _,node=lower ~previous:first changed in
+    let output=cook session ~domains node in
+    let after=Sop.Session.stats session in
+    if index=0 || index=7 then begin
+      check(after.misses=before.misses && after.hits>before.hits)
+        "An unrelated helper edit recooked a declaration outside its dependency cone";
+      check(Rdk_test_support.geometry_bytes output=before_bytes)
+        "An unrelated helper edit changed cached geometry"
+    end else check(after.misses-before.misses=3 && after.hits-before.hits=1)
+      (label^": a transitive declaration edit must invalidate both consumers and keep Line warm");
+    let _,oracle=lower changed in
+    with_session(fun fresh->check(Rdk_test_support.geometry_bytes output=
+      Rdk_test_support.geometry_bytes(cook fresh ~domains oracle))
+      (label^": declaration edit returned stale geometry"));
+    let before=Sop.Session.stats session in ignore(cook session ~domains node);
+    check((Sop.Session.stats session).misses=before.misses)
+      (label^": unchanged declaration cone missed its warm cache")))
+    [0,"9.0","unrelated helper";1,"4.0","transitive helper/Fn_ref";
+     2,"0.5","child default";3,"0.75","child body";
+     4,"-9.0","child validation helper";5,"detail","transitive normalizer helper";
+     6,"1.25","nested macro";7,"2.0","unrelated macro"]) [1;8];
+  print_endline "Declaration cones: unrelated helpers retain hits; Fn_ref/helper, child body/default/validator, normalizer and macro edits invalidate at one/eight domains"
+
 (* Deferred child cooking stays inside its authored error boundary. *)
 let ()=
   let calls=ref 0 in

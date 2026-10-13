@@ -117,3 +117,59 @@ let specialize ~context ~label graph = map (fun t -> match t.W.node with
       {t with node=W.Lit (Param.Int_value seed)}
   | W.Op {op="sop/context_seed";_} -> invalid_arg "E_SEED_NAMESPACE: Context seed requires a literal namespace."
   | _ -> t) graph
+
+let declaration_source (checked:W.t) (root:W.node_definition) =
+  let nodes=Hashtbl.create 8 and defs=Hashtbl.create 8
+  and graphs=Hashtbl.create 4 and macros=Hashtbl.create 4 in
+  let rec node (definition:W.node_definition) =
+    let name=definition.kind.qualified in
+    if not(Hashtbl.mem nodes name) then begin
+      Hashtbl.add nodes name ();
+      graph definition.body;
+      List.iter(fun(t,_,_)->term t)definition.validations;
+      List.iter(fun(_,t)->term t)definition.normalizers
+    end
+  and definition table (g:W.graph) =
+    if not(Hashtbl.mem table g.name) then begin
+      Hashtbl.add table g.name ();graph g
+    end
+  and named name =
+    Option.iter (definition defs)
+      (List.find_opt(fun(g:W.graph)->g.name=name)checked.defs);
+    Option.iter node (List.find_opt(fun(d:W.node_definition)->
+      d.kind.qualified=name || List.mem name d.kind.aliases)checked.nodes)
+  and macro name =
+    if not(Hashtbl.mem macros name) then
+      Option.iter(fun form->Hashtbl.add macros name ();syntax form)
+        (List.find_opt(fun form->match Flow.Syntax.children form with
+          | _::{node=Flow.Syntax.Sym selected;_}::_ -> selected=name
+          | _ -> false)checked.macros)
+  and syntax form =
+    (* Macro.expand erases inner Expanded names. Follow their template heads. *)
+    Option.iter macro (Flow.Syntax.head form);
+    List.iter syntax (Flow.Syntax.children form)
+  and transform (t:W.term) =
+    (match t.node with
+     | W.Call c -> named c.kind
+     | Call_fn c -> named c.fn
+     | Fn_ref name -> named name;
+         Option.iter(fun(qualified,_,_)->named qualified)
+           (List.assoc_opt name checked.kind_fns)
+     | Graph_ref g ->
+         Option.iter (definition graphs)
+           (List.find_opt(fun(d:W.graph)->d.name=g.graph)checked.graphs);
+         named g.graph
+     | Expanded e -> macro e.macro
+     | _ -> ());t
+  and graph (g:W.graph) = ignore(map transform g)
+  and term t = graph {root.body with body=t;inputs=[]} in
+  node root;
+  let forms=root.body.form::List.filter_map(fun(d:W.node_definition)->
+      if d.kind.qualified<>root.kind.qualified && Hashtbl.mem nodes d.kind.qualified
+      then Some d.body.form else None)checked.nodes
+    @ List.filter_map(fun(g:W.graph)->if Hashtbl.mem defs g.name then Some g.form else None)checked.defs
+    @ List.filter_map(fun(g:W.graph)->if Hashtbl.mem graphs g.name then Some g.form else None)checked.graphs
+    @ List.filter(fun form->match Flow.Syntax.children form with
+      | _::{node=Flow.Syntax.Sym name;_}::_ -> Hashtbl.mem macros name
+      | _ -> false)checked.macros in
+  Digest.string(fst(Flow.Lisp.print forms))

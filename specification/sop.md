@@ -313,9 +313,12 @@ library-aware checker as loading; editable navigation includes only authored
 definitions. Kernel identity includes checked library bodies, so editing a body
 invalidates the cook even when the authored call is unchanged.
 For nodes without supplied function slots, the factory source key contains
-checked declarations, helpers and macros; call-site parameters and cooked inputs
-have their own keys. Editing a call therefore preserves an unchanged sibling's
-cache. Declaration changes conservatively invalidate these factories. Supplied
+its own declaration and transitively referenced declarations, helpers and macros,
+including references in defaults, validation and normalizers. Call-site parameters
+and cooked inputs have their own keys. Editing a call therefore preserves an
+unchanged sibling's cache; unrelated helper or macro edits also preserve hits.
+Changing a referenced body, default, validator, normalizer or nested macro
+invalidates its consumers. Supplied
 function slots retain the whole-source key until their closure identities can
 be narrowed without losing capture or body invalidation.
 

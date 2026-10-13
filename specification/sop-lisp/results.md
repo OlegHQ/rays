@@ -4890,3 +4890,26 @@ and were released after terminal results. Desktop/VM inactivity is not claimed.
 Earlier failed Line tables remain evidence. Production registration, manifest,
 catalog/CLI/editor and native render acceptance must finish before Line counts
 as a fifteenth whole port; its draft speed pass alone does not tick C.7.
+
+## Scoped declaration cache correction during Line production integration
+
+The production candidate caught a real shared cache regression: editing an
+unrelated helper recooked the newly Lisp-authored upstream Line because every
+factory used one global declaration digest. `Context_kernel.declaration_source`
+now follows each node's own/transitive body, child, helper, default, validator,
+normalizer, graph/function reference and nested macro dependencies. Unrelated
+helper/macro changes retain hits; related edits still invalidate all consumers.
+Captured function-slot factories retain their whole-source capture key.
+
+Actual one/eight-domain exact cache counters, fresh-oracle geometry bytes and warm
+hits pass, without changing the existing assertions. Request24819 EXIT0,
+`/tmp/rays-declaration-cone-focused2-20261013.log`, covers @check, Flow SOP,
+Flow/graph/IR, dependency and API gates plus the separate Points semantic draft.
+Initial request98103 EXIT1 preserves a private-interface stale-consumer linker
+failure; its cache tests passed. The scoped native source fixture now explicitly
+loads its native catalog and empty library, and the final request passes without
+cleaning or forcing Dune. No public API snapshot changed.
+
+Evidence: `declaration-cache-validation.md`. Accepted whole ports remain14/128;
+milestones24/60. Line's registration and final native integration are still under
+review, and this foundation does not count that candidate as a completed port.
