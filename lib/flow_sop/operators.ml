@@ -448,7 +448,16 @@ let remap : Flow.Op.t = {
   body=(fun ~live:_ ~node args->node "sop/remap" args);
 }
 
-let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; adjacency; components; shortest_paths; color; chains; mesh; mesh_planes; remap;
+let concat : Flow.Op.t = {
+  mesh with name="sop/concat";
+  signature={pos=["sources",Flow.Ty.List Flow.Ty.geometry];opt=[];rest=None;
+    kw=["source_attribute",Text;"source_base",Int]};
+  out_args=None;
+  check=(fun _->());
+  body=(fun ~live:_ ~node args->node "sop/concat" args);
+}
+
+let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; adjacency; components; shortest_paths; color; chains; mesh; mesh_planes; remap; concat;
   group; group_order; group_names; group_entries; with_group; context_seed;
   rename_attr;swap_attr;delete_attrs;rename_group;delete_group;rename_edge;delete_edge;attr_type;attr_names;attr_entries;
   glob_error;glob_rewrite_error;glob_rewrite;glob_literal;group_name_valid;group_name_forced]

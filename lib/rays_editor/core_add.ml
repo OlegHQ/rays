@@ -78,9 +78,10 @@ let value_expression ~ops context key =
   | "sop/with_attr" ->
       List.hd (Result.get_ok (S.parse
         "(sop/with_attr (sop/mesh :points (array/vec3 0) :vertex_points (array/int 0) :primitive_offsets (array/int 1) :kinds (array/int 0)) \"attribute\" (array/vec3 0))")), "attribute"
-  | ("sop/mesh" | "sop/remap" as op) ->
+  | ("sop/mesh" | "sop/remap" | "sop/concat" as op) ->
       let mesh = "(sop/mesh :points (array/vec3 0) :vertex_points (array/int 0) :primitive_offsets (array/int 1) :kinds (array/int 0))" in
-      let text, name = if op = "sop/mesh" then mesh, "mesh" else
+      let text, name = if op = "sop/mesh" then mesh, "mesh" else if op = "sop/concat" then
+        Printf.sprintf "(sop/concat (list %s %s))" mesh mesh, "concatenated" else
         Printf.sprintf "(sop/remap %s %s :points (array/int 0) :vertices (array/int 0) :primitives (array/int 0))" mesh mesh, "remap" in
       List.hd (Result.get_ok (S.parse text)), name
   | "sop/mesh_planes" ->

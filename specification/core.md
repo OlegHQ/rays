@@ -1315,6 +1315,26 @@ that callback is not authored data. Host fixtures compare every numeric storage
 bit and exact integer/text contents against native results. The current 2D
 exporter still refuses reached SOP geometry with `E_WEB_GRAPH`, and direct
 reached native host sources keep `E_WEB_SOURCE`; a host twin is not a browser
-fallback. Multi-source concatenation and its schema/detail/order policy are a
-separate prerequisite. Single-source remap does not qualify Merge, the full
-piece modes of Copy To Points, or any consuming whole production node.
+fallback. Single-source remap does not qualify the full piece modes of Copy To
+Points, or any consuming whole production node.
+
+### Geometry concatenation
+
+`sop/concat` is a cooked geometry host intrinsic and wraps the exact function
+the native Merge node runs, `Rdk.Mesh_merge.run`:
+
+```lisp
+(sop/concat geometries :source_attribute "src" :source_base 0)
+```
+
+`geometries` is a list of cooked geometry (a `nil` element is skipped; an empty
+list gives empty geometry). Points, vertices and primitives are appended in list
+order with indices shifted; every attribute of every storage type and owner, and
+every ordinary, ordered and edge group, follows native Merge: group names are
+unioned in first-seen order and a missing group contributes no members, matching
+attribute schemas are required, and Detail attributes are refused. Errors keep
+native's code, message, cause and hints. `:source_attribute` (trimmed; blank means
+none) adds a primitive Int attribute holding `:source_base` plus the input index,
+and an input that already has it keeps its values. No Core or Region instruction
+is added, there is no JavaScript twin (the rdk function is compiled for the
+browser later), and facts read and write all payload with changed topology.

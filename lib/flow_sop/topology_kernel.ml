@@ -232,3 +232,20 @@ let remap ?cancel ~grain ~source ~target args =
         ~attributes ~groups ~edge_groups ()) in
     check (); Ok output
   with Failure.Error diagnostic -> Error diagnostic
+
+(* Native [merge] on a list of cooked geometries: the same [Rdk.Mesh_merge.run],
+   so attribute and group policies, errors and provenance tagging are native's. *)
+let concat ?cancel ~grain ~sources args =
+  let text name = match List.assoc_opt name args with
+    | None -> Ok "" | Some (E.Text value) -> Ok (String.trim value)
+    | Some _ -> error "E_CONCAT_TYPE" ("Concat " ^ name ^ " must be text.") in
+  let base = match List.assoc_opt "source_base" args with
+    | None -> Ok 0 | Some (E.Int value) -> Ok value
+    | Some _ -> error "E_CONCAT_TYPE" "Concat source_base must be an integer." in
+  Result.bind (text "source_attribute") (fun attribute -> Result.bind base (fun source_base ->
+    if grain <= 0 then error "E_CONCAT" "Concat grain must be positive."
+    else Result.map_error (fun e -> Flow.Diagnostic.error ~code:(Rdk.Error.code e)
+        ~cause:(Rdk.Error.to_string e) ~hints:(Rdk.Error.hints e)
+        (Rdk.Error.operation e ^ " could not produce valid geometry"))
+      (Rdk.Mesh_merge.run ?cancel ~grain
+        ?source_attribute:(if attribute = "" then None else Some attribute) ~source_base sources)))

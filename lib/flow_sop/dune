@@ -247,7 +247,12 @@
 (test
  (name test_remap)
  (modules test_remap)
- (libraries flow_sop flow flow_ir flow_graph sop rdk rdk_test_support lisp_sop))
+ (libraries flow_sop flow flow_ir flow_graph sop sop_catalog rdk rdk_test_support lisp_sop))
+
+(test
+ (name test_concat)
+ (modules test_concat)
+ (libraries flow_sop flow flow_ir flow_graph sop sop_catalog rdk rdk_test_support lisp_sop))
 
 (executable
  (name test_points_port)

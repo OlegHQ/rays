@@ -1588,6 +1588,12 @@ rollback. Both forms project as ordinary cards; topology exposes its three
 outputs, and mesh keyword rows accept normal checked argument/connection
 gestures. Integer-array socket defaults use `(array/int 0)`.
 
+`(sop/concat geometries :source_attribute "name" :source_base n)` appends a list
+of geometries with native Merge semantics for every attribute type and group
+(it runs `Rdk.Mesh_merge.run`), so a body never reads attributes whose storage
+type is only known at cook time. It projects as an ordinary card with a
+geometry-list row.
+
 `(sop/mesh_planes :points {:x xs :y ys :z zs} :vertex_points vp
 :primitive_offsets po :kinds k)` is the separately typed coordinate-plane form
 of the same constructor. Its points socket is exactly a three-field record of
