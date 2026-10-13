@@ -18,6 +18,7 @@
 
 import { checkIsolation, createPool } from './workers.js';
 import * as prims from './prims.js';
+import {sourceInputs, lazyUniforms} from './region_bindings.js';
 import * as shapes from './shape2.js';
 import { createPresenter } from './present.js';
 import { createGpu, requestDevice } from './gpu.js';
@@ -142,8 +143,8 @@ export function createRuntime(program, { now = () => performance.now() / 1000, f
     program, pool, gpu, gpuErrors, data, input: new Input(size), slots: [], frameValue, marks: [], current: null,
     counts: { invoke: 0, gpu: 0 },   // CPU region invocations and GPU dispatches, for tests
     // A region as a function, compiled once per source text; calls run on the calling thread.
-    region(id) {
-      const source = (this.program.regions[id] ?? prims.fail('E_CORE', 'Unknown region.')).source;
+    region(id, bindingSource) {
+      const source = bindingSource ?? (this.program.regions[id] ?? prims.fail('E_CORE', 'Unknown region.')).source;
       if (!compiled.has(source)) compiled.set(source, new Function(`${source}\nreturn region;`)());
       return compiled.get(source);
     },
@@ -151,21 +152,28 @@ export function createRuntime(program, { now = () => performance.now() / 1000, f
     // frame facts come from the frame being run. Collecting regions only (the export refuses the rest); the
     // value is the packed array Packed.force returns. Native falls back to the tree walker on a non-finite value;
     // there is none here, so it is E_KERNEL.
-    async invoke(k, args) {
+    async invoke(k, args, binding) {
       rt.counts.invoke++;
-      const r = this.program.regions[k] ?? prims.fail('E_CORE', 'Unknown region.'), input = rt.current;
-      const inputs = r.inputs.map(spec => spec.texts ?? new (spec[2] ? BigInt64Array : Float64Array)(rt.data, spec[0], spec[1]));
+      if (!binding && args.length !== 0) prims.fail('E_CORE_ARGUMENT', 'Compiled region argument count differs from its declaration.');
+      const r = binding ?? this.program.regions[k] ?? prims.fail('E_CORE', 'Unknown region.'), input = rt.current;
+      const dynamic = binding ? await sourceInputs(binding, args, input, this) : null;
+      const inputs = dynamic?.inputs ?? r.inputs.map(spec => spec.texts ?? new (spec[2] ? BigInt64Array : Float64Array)(rt.data, spec[0], spec[1]));
       const facts = Array(r.length).fill(0);
       for (const [slot, name, integer] of r.frame) facts[slot] = integer ? BigInt(FACTS[name](input)) : Number(FACTS[name](input));
-      const uniforms = [...r.uniforms.map(u => u.texts ?? (u.text !== undefined ? u.text : u.table
+      const uniforms = binding ? lazyUniforms(binding, args, input, this) : [...r.uniforms.map(u => u.texts ?? (u.text !== undefined ? u.text : u.table
         ? new (u.table[2] ? BigInt64Array : Float64Array)(rt.data, u.table[0], u.table[1])
         : typeof u[0] === 'string' ? BigInt64Array.from(u, BigInt) : Float64Array.from(u))), facts];
-      const pool = rt.pool;
+      const pool = rt.pool, count = dynamic?.count ?? r.count, kept = dynamic?.kept ?? r.kept;
+      const skip = dynamic?.skip ?? r.skip, id = binding ? r.source : (r.id ?? k);
+      if (binding && pool && held.get(id) !== r.source) { pool.load(id, r.source); held.set(id, r.source); }
+      const captures = binding ? {plan:binding, args, input, frameValue:binding.frameValue ? rt.frameValue(input) : null} : null;
       const ArrayType = r.integer ? BigInt64Array : Float64Array;
-      const outputs = [r.text ? Array(r.kept).fill('') : pool ? pool.alloc(r.kept * r.width, ArrayType) : new ArrayType(r.kept * r.width)];
+      let outputs;
+      try { outputs = [r.text ? Array(kept).fill('') : pool ? pool.alloc(kept * r.width, ArrayType) : new ArrayType(kept * r.width)]; }
+      catch (error) { if (error instanceof RangeError) prims.fail('E_ARRAY_MEMORY', 'Frame data exceeds available memory.'); throw error; }
       let status;
-      try { status = pool ? await pool.collect(r.id ?? k, inputs, uniforms, outputs, r.count, r.skip)
-        : this.region(k)(inputs, uniforms, outputs, 0, r.count); }
+      try { status = pool ? await pool.collect(id, inputs, uniforms, outputs, count, skip, captures)
+        : this.region(k, binding?.source)(inputs, uniforms, outputs, 0, count); }
       catch (error) { throw prims.diagnosticError(error); }
       if (status !== 0) prims.fail('E_KERNEL', 'Kernel needs reference evaluation.');
       return r.text ? new prims.TextArray(outputs[0]) : new prims.PArray(r.width, outputs[0]);

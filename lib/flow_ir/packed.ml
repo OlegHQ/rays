@@ -833,22 +833,29 @@ let rec run_all ?column_source ?plane_outputs ?expected_count ?state ?elems ?res
         ~evaluate:(fun r term->get(evaluate r term))
         ~uniform:(fun value -> get (uniform value))
     else
-    let borrowed=Array.map (fun (residual,term)->match column_source with
-      |None->None|Some source->get (source residual term)) t.sources in
+    let borrowed=Array.make (Array.length t.sources) None in
+    let lengths=Array.make (Array.length t.sources) 0 in
+    let empty_product=ref false in
     let inputs = Array.mapi (fun i (residual, term) ->
-      if borrowed.(i)<>None then [||] else
-      let value = get (evaluate residual term) in
-      match value, t.widths.(i) with
-      | E.Float_array xs, 1 | Vec2_array xs, 2 | Vec3_array xs, 3 | Vec4_array xs, 4 -> xs
-      | _ -> V.fail "E_ARRAY_TYPE" "Kernel input changed its packed element type.") t.sources in
+      if !empty_product then [||] else begin
+        borrowed.(i)<-(match column_source with
+          |None->None|Some source->get(source residual term));
+        let data=match borrowed.(i) with
+          |Some columns->lengths.(i)<-borrowed_count t.widths.(i) columns;[||]
+          |None->
+              let value=get(evaluate residual term) in
+              let data=match value,t.widths.(i) with
+                |E.Float_array xs,1|Vec2_array xs,2|Vec3_array xs,3|Vec4_array xs,4->xs
+                |_->V.fail "E_ARRAY_TYPE" "Kernel input changed its packed element type." in
+              lengths.(i)<-Array.length data/t.widths.(i);data in
+        if t.iteration=Product && lengths.(i)=0 then empty_product:=true;
+        data
+      end) t.sources in
     let columns=Array.mapi (fun i array->match borrowed.(i) with
       |None->Array.init t.widths.(i) (fun component->{data=array;offset=component;stride=t.widths.(i)})
       |Some columns->
           if Array.length columns<>t.widths.(i) then V.fail "E_ARRAY_TYPE" "Borrowed columns changed the packed element width.";
           columns) inputs in
-    let lengths=Array.mapi (fun i columns->match borrowed.(i) with
-      |None->Array.length inputs.(i)/t.widths.(i)
-      |Some _->borrowed_count t.widths.(i) columns) columns in
     let count = if t.iteration = Product && Array.exists ((=) 0) lengths then 0 else
       Array.fold_left (fun a b -> match t.iteration with
       | Zip -> min a b | Product ->
@@ -858,7 +865,8 @@ let rec run_all ?column_source ?plane_outputs ?expected_count ?state ?elems ?res
     let strides = Array.make (Array.length inputs) 1 in
     if t.iteration = Product && count > 0 then
       for i = Array.length inputs - 2 downto 0 do strides.(i) <- strides.(i + 1) * lengths.(i + 1) done;
-    let uniforms = Array.map (fun value -> components (get (uniform value))) t.uniforms in
+    let uniforms = if count=0 then [||] else
+      Array.map (fun value -> components (get (uniform value))) t.uniforms in
     let frame = Array.map (fun instruction -> match unguarded instruction with
       | Frame "t" -> live.Frame_input.t
       | Frame name ->

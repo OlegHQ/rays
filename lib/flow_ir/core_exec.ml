@@ -229,7 +229,7 @@ let primitive ~track ~locals op args =
     | Sequence_get -> generic_named "nth" args | Sequence_length -> generic_named "count" args
     | Sequence_build ->
         let count = List.assoc "count" args and width = List.assoc_opt "width" args
-        and integer = List.assoc_opt "type" args in
+        and integer = List.assoc_opt "type" args and cooked=List.assoc_opt "cooked" args in
         (* With a width the builder is packed storage, which has no list cap. *)
         fun st ->
           let count=V.int_of st.values.(count) in
@@ -240,7 +240,9 @@ let primitive ~track ~locals op args =
           (match width with
            | None ->
                if element<>Flow.Ty.Float then V.fail "E_ARRAY_TYPE" "Typed builders require width one.";
-               if count<0 || count>4096 then V.fail "E_ITER_BOUND" "Core list length exceeds its bound.";
+               let limit=match cooked with None->4096|Some n->(match st.values.(n) with V.Bool true->Sys.max_array_length|Bool false->4096
+                   |_->V.fail "E_TYPE" "Core cooked collection flag must be boolean.") in
+               if count<0 || count>limit then V.fail "E_ITER_BOUND" "Core list length exceeds its bound.";
                V.List (Array.make count V.No_geo)
            | Some width ->
                let width=V.int_of st.values.(width) in
@@ -641,7 +643,8 @@ let prepare ?(fused=true) (program : C.program) =
     | Fields xs -> fun st -> V.Record (List.map (fun (name,n) -> seal st n;name,st.values.(n)) xs)
     | Items ns -> fun st ->
         let xs=Array.of_list (List.map (fun n -> seal st n;st.values.(n)) ns) in
-        if Array.length xs>4096 then V.fail "E_ITER_BOUND" "Core list exceeds 4,096 values.";
+        if Array.length xs>4096 && not(List.for_all(fun n->program.locals.(n)=Flow.Ty.geometry)ns) then
+          V.fail "E_ITER_BOUND" "Core list exceeds 4,096 values.";
         let ty=V.elem_ty xs in V.List (Array.map (V.coerce_to ty) xs)
     | Field (n,name) ->
         let slow st = match st.values.(n),name with

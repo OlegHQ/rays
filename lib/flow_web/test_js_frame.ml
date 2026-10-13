@@ -359,3 +359,20 @@ let ()=
   |Some(_,program)->(match Flow_web.Js.frame program with
       |Error d->assert(d.code="E_WEB_SOURCE")|Ok _->assert false)
   |None->assert false
+
+let ()=if node then begin
+  let source:C.source={site=["cooked-collection"];owner=[];instance=0;prefix=[];iter=[];span=None} in
+  let statement id node:C.statement={id;source;node} in
+  let program count cooked:C.program={constants=[|Int count;Bool cooked|];
+    locals=[|Flow.Ty.Int;Bool;List Flow.Ty.geometry|];
+    body=[statement 0(Assign(0,Constant 0));statement 1(Assign(1,Constant 1));
+      statement 2(Assign(2,Prim(Sequence_build,["count",0;"cooked",1])))];
+    results=[|2|];state_slots=[||];regions=[||];call_slots=0} in
+  let programs=["geometry_collection_5001",program 5001 true;
+    "ordinary_collection_5001",program 5001 false;"geometry_collection_negative",program (-1) true] in
+  let lives=[Frame_input.at_time 0.] in
+  let cases=List.map(fun(name,program)->{name;program;mode=`Value;lives;
+    expected=List.map(fun live->outcome canon_value(I.Core_exec.run ~strict:true program ~live))lives})programs in
+  let actual=run_node cases in
+  List.iter(fun c->assert(List.assoc(c.name,0)actual=List.hd c.expected))cases
+end

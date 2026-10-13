@@ -513,3 +513,27 @@ let ()=if Array.exists(fun arg->arg="--bench-text" || arg="--profile-text" || ar
       domains nt nb pt pb(pt/.nt)(if pt<=2.*.nt then "pass" else "fail")))[1;4]
   end
 end
+
+let ()=
+  (* Inline invariant table choices retain selected-lane forcing and exact causes.
+     They are compiled tables, not eager outer-let rewrites. *)
+  let body="(fn [(index : int)] (if (int/lt index 0) 0 (array/nth (if (> t 0.) data (error \"E_TABLE\" \"selected inline table\" :cause \"raw\255\000cause\")) (int/mod index 3))))" in
+  let domain=Domain.self() in
+  List.iter(fun count->let value=instantiate (Flow.Ty.Array Flow.Ty.Int)body(Array.init count Fun.id)in
+    List.iter(fun fusion->let p=packed ~fusion value in
+      List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+        List.iter(fun time->let live=Frame_input.at_time time and calls=ref 0 in
+          let resolve=function E.Source("probe/table",_,_)->
+            assert(Domain.self()=domain);incr calls;Ok(E.Int_array[|min_int;max_int;9007199254740993|])
+            |_->assert false in
+          let reference=E.Private.force_reference ~resolve value ~live in
+          calls:=0;let actual=P.force ~strict:true ~resolve p ~live in
+          (match reference,actual with Ok expected,Ok got->assert(bytes got=bytes expected)
+            |Error _,Error _->same_error actual reference|_->assert false);
+          assert(!calls=(if count=0 || time<0. then 0 else 1))) [0.25;-0.25])) [1;4;8]) [false;true]) [0;1;32769];
+  let value=instantiate (Flow.Ty.Array Flow.Ty.Int)body[|-1|]in
+  let resolve _=assert false in
+  assert(ok(P.force ~strict:true ~resolve(packed value)~live:(Frame_input.at_time(-0.25)))=E.Int_array[|0|]);
+  let varying=instantiate (Flow.Ty.Array Flow.Ty.Int)
+    "(fn [(index : int)] (array/nth (if (int/eq index 0) data (array/int 1 7)) 0))"[|0;1|]in
+  (match varying with E.Residual r->assert(Result.is_error(P.compile_result r(E.Private.residual_view r).term))|_->assert false)

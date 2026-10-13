@@ -4625,3 +4625,64 @@ record a genuine Float-bank before/after cost with unchanged fixtures/trials.
 
 The broad native shipping run is in progress in
 `/tmp/rays-bulk-array-native-ship1.log`; no terminal result is claimed here.
+
+## Bulk-array boundary closure — 2026-10-13
+
+The previous snapshot's native shipping run completed: session56174 EXIT0,
+`/tmp/rays-bulk-array-native-ship1.log`. Its 43 standard workspaces, one custom
+catalog executable and 13 fixtures passed the IR sweep; existing accepted whole
+SOP ports and finite native smoke checks remained green.
+
+Three review findings are now corrected in shared execution boundaries:
+
+- Ordinary Float-bank Cartesian Product evaluates inputs in written order and
+  suppresses later producer/borrowed-source callbacks after an empty input.
+  Zero-iteration execution does not force body captures. Zip still reaches all
+  inputs; malformed reached borrowed columns retain their original refusal.
+- Recursive JavaScript argument validation checks every physical PArray layout,
+  including Int width3 and unknown Float width5 nested inside Lists/Records.
+  Valid mixed lists retain native widening/fallback typing and exact signed63
+  leaves; selected arguments are validated even for empty output.
+- Actual workers preserve a capture preparer's statement location in the error
+  envelope before the outer frame can assign its Invoke location. Code, message,
+  raw-byte cause and statement are compared across null/one/eight-worker pools
+  and small/multiblock outputs.
+
+Focused command (dummy SDL video/audio):
+
+```
+opam exec -- _build/default/tools/check.exe @check @lib/flow/runtest @lib/flow_ir/runtest @lib/flow_sop/runtest @lib/flow_graph/runtest @lib/flow_web/runtest @lib/flow_gpu/runtest @tools/lisp/runtest @test/dependency_gate @test/test_workspace_shell @tools/api_manifest/runtest
+```
+
+Session95283 EXIT0, `/tmp/rays-region-binding-focused9.log`. The preceding run
+exposed a test type annotation and then different OCaml empty-array block tags;
+the regression now compares cardinality and every binary64 element bit, rather
+than Marshal's internal empty block representation. Actual JS boundary/worker
+checks ran and passed in `/tmp/rays-region-binding-focused7.log`; Dune retained
+those successful unchanged checks in the final focused invocation. No semantic
+oracle, tolerance, worker count, fixture or strict execution requirement was
+dropped.
+
+Measured the existing genuine Float-bank Product before and after the native
+fix using the same `test_packed.exe --bench-float-product`: 1,000,000 outer rows
+×16 inner rows, four instructions, fusion disabled, exact independent native
+preflight, median3, domains1/4. Apple M1 Macmini9,1, 16GiB, macOS arm64,
+OCaml5.3.0/Dune dev. All three agents acknowledged a quiet window before each
+direct built-executable run and were released immediately after it terminated.
+This does not claim machine-wide desktop inactivity.
+
+| domains | before packed seconds | after packed seconds | before bytes | after bytes |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.168021 | 0.167417 | 181999456 | 181999400 |
+| 4 | 0.072880 | 0.066169 | 147004768 | 147579000 |
+
+Before session6481 EXIT0, `/tmp/rays-float-product-before-20261013.log`; after
+session60312 EXIT0, `/tmp/rays-float-product-after-20261013.log`. Allocation is
+initial-domain only. These timings show no observed slowdown for the fix;
+the generic packed/native ratios remain17.327× and6.876× after it, so they do
+not qualify a whole SOP port or relax the2× gate.
+
+The corrected snapshot's final native `check.exe --ship` is running as
+session11075, `/tmp/rays-bulk-array-native-ship2.log`. Its terminal result must
+be recorded before C.4/C.5 are checked. Accepted ports remain14/128 and completed
+milestones21/60. Circle and payload remap/concat remain unaccepted candidates.

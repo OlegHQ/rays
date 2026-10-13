@@ -17,8 +17,9 @@ type primitive =
   | Integer of integer | Integer_compare of Flow.Packed_ops.comparison | Equal | Show | Text_concat | Text_blank
   | Text_trim | Text_lower | Text_repr | Text_table_decode | Text_table_encode
   | Sequence_length | Sequence_get | Sequence_build | Sequence_slice | Sequence_concat
-  | Array_range | Array_int | Array_text | Array_float | Array_vec3 | Array_vec4 | Array_nth | Array_count | Array_slice | Array_concat
+  | Array_max_length | Array_range | Array_int | Array_text | Array_float | Array_vec3 | Array_vec4 | Array_nth | Array_count | Array_slice | Array_concat
   | Array_reduce of Flow.Op.Private.reduction | Array_segment of Flow.Op.Private.reduction
+  | Array_scatter_add | Array_compact | Array_scan_sum | Array_grade | Array_index_of
   | Rand | Rand_at | Fma | Checked_mul | Checked_fma | Noise3 | Color_parse | Color_byte of byte_mode
   | Coerce of Flow.Ty.t | Truthy | Error | Fail of string * string | Fail_diagnostic of Flow.Diagnostic.t
 
@@ -163,9 +164,12 @@ let primitive_name = function
   | Array_reduce operation | Array_segment operation as primitive ->
       let suffix=match operation with Flow.Op.Private.Sum -> "sum" | Minimum -> "min" | Maximum -> "max" in
       "array/" ^ (match primitive with Array_segment _ -> "segment_" | _ -> "") ^ suffix
+  | Array_grade -> "array/grade" | Array_index_of -> "array/index_of"
+  | Array_compact -> "array/compact" | Array_scan_sum -> "array/scan_sum"
+  | Array_scatter_add -> "array/scatter_add"
   | Sequence_length -> "sequence/length" | Sequence_get -> "sequence/get"
   | Sequence_build -> "sequence/build" | Sequence_slice -> "sequence/slice" | Sequence_concat -> "sequence/concat"
-  | Array_range -> "array/range" | Array_int -> "array/int" | Array_float -> "array/float" | Array_vec3 -> "array/vec3" | Array_vec4 -> "array/vec4"
+  | Array_max_length -> "array/max_length" | Array_range -> "array/range" | Array_int -> "array/int" | Array_float -> "array/float" | Array_vec3 -> "array/vec3" | Array_vec4 -> "array/vec4"
   | Array_text -> "array/text"
   | Array_nth -> "array/nth" | Array_count -> "array/count" | Array_slice -> "array/slice" | Array_concat -> "array/concat"
   | Rand -> "value/rand" | Rand_at -> "rand/at" | Fma -> "fma" | Noise3 -> "noise3" | Color_parse -> "color/parse" | Color_byte _ -> "color/byte"

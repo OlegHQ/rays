@@ -39,7 +39,8 @@ let contains text needle =
 
 let rec files dir = Sys.readdir dir |> Array.to_list |> List.concat_map (fun name ->
   let path = Filename.concat dir name in
-  if Sys.is_directory path then (if name = "_build" then [] else files path) else [path])
+  if Sys.file_exists path && Sys.is_directory path then
+    (if name = "_build" then [] else files path) else [path])
 
 (* library name -> direct dependencies (public names resolved; a library from
    outside the repo keeps its name and has no entry of its own) *)

@@ -6,7 +6,7 @@ checked workspace and the tree walker remain the language contract and the
 native exactness oracle. A target prints or executes this core; it does not
 walk `Workspace.term`, expand macros, or interpret Lisp operator names.
 
-The frame primitive inventory below has **90 entries**. Region instruction
+The frame primitive inventory below has **96 entries**. Region instruction
 constructors, structured control, drawing statements and host intrinsics are
 listed separately: none is a hidden primitive in a target's numeric runtime.
 The P0.R review must confirm this inventory before product implementation.
@@ -297,7 +297,10 @@ unlisted calls in `prims.js`.
 | `text/repr` | 1 | Text to quoted text with exactly `Printf.%S` byte escaping: ASCII quotes and backslashes escape, backspace/tab/LF/CR use named escapes, and every other nonprintable byte uses three decimal digits. UTF-8 is quoted byte by byte, yielding ASCII output. Native text includes arbitrary bytes; JavaScript quotes their reversible byte representation. Wrong storage is `E_TYPE`. This is a structured text operation. |
 | `text/table_decode`, `text/table_encode` | 2 | Exact ordered text-cell tables, with tab-separated cells, LF-separated rows and only backslash, `t` and `n` escapes. Empty text decodes to an empty table; encoding empty rows retains the native codec's empty-row ambiguity. Invalid escapes are `E_TABLE`, invalid cell storage is `E_TYPE`. |
 | `sequence/length`, `sequence/get`, `sequence/build`, `sequence/slice`, `sequence/concat` | 5 | Element count, checked list element access, fresh bounded-list storage, checked copying slice, and ordered concatenation with the 4,096-element cap. Element layouts and nested record field order are explicit. Given an element width of 1 to 4, `sequence/build` allocates packed storage with no list cap, filled by the same ordered stores (the walker's `array_init` checks per element). Integer and text builders require width one and explicit type `int` or `text`. Text builders store strings and do not create packed numeric storage. |
-| `array/range`, `array/int`, `array/text`, `array/float`, `array/vec3`, `array/vec4`, `array/nth`, `array/count`, `array/slice`, `array/concat` | 10 | Typed-array construction, indexing, length and copying operations, including exact integer and decoded text storage. Range defaults to float and accepts the literal type `int`. Vector constructors accept the matching vector or broadcast a scalar; omitted values are typed zero. Count is in elements, not components; all products and offsets are checked before allocation or access. An array is not converted to a list. |
+| `array/max_length`, `array/range`, `array/int`, `array/text`, `array/float`, `array/vec3`, `array/vec4`, `array/nth`, `array/count`, `array/slice`, `array/concat` | 11 | Typed-array construction, indexing, length and copying operations, including exact integer and decoded text storage. Range defaults to float and accepts the literal type `int`. Vector constructors accept the matching vector or broadcast a scalar; omitted values are typed zero. Count is in elements, not components; all products and offsets are checked before allocation or access. An array is not converted to a list. |
+| `array/grade`, `array/index_of` | 2 | Whole-array CPU operations returning fresh IntArray indices. Grade accepts Int/finite Float/native-byte Text keys and stably grades original indices; descending mode swaps comparator orientation while retaining equal-key order, including ±0. Index_of accepts matching Int or Text keys/queries, preserves query order/count, returns the first original key index or -1, and allows duplicate keys. Inputs are immutable. Grade count is keys count; lookup count is queries count, never an implicit first-input owner origin. Text uses unsigned byte order/equality through the reversible JS codec, without Unicode normalization/UTF-16 collation. No Region/GPU sort or lookup instruction is implied. |
+| `array/compact`, `array/scan_sum` | 2 | Whole-array ordered Int operations, structured Core on CPU. Compact accepts an Int 0/1 mask (`E_ARRAY_MASK` otherwise) and returns fresh increasing kept indices. Scan returns fresh exclusive boundary offsets of length n+1: initial zero then ordered signed63 `int/add` prefixes, including the terminal total; empty input gives `[0]`. Negative entries and wrap remain ordinary integer arithmetic. n must be below native Int-array capacity before n+1 is formed. No count/topology origin is inherited: compact cardinality depends on mask data, scan cardinality is n+1. Strict packed producers/consumers remain numeric kernels; dynamic per-row compact/scan is refused by the Region/GPU tier. |
+| `array/scatter_add` | 1 | Fresh, zero-filled Int/Float/Vec2/3/4 array of the specified Int size. Indices must be IntArray and have exactly the values' length (`E_ARRAY_COUNT`). Source rows and vector components are added in order, including duplicate indices; Int additions wrap at signed 63 bits and Float additions round separately and reject nonfinite inputs/sums (`E_NONFINITE`). Each index must be inside the output (`E_ARRAY_RANGE`). No atomic GPU scatter or index regrouping is implied: the whole-array operation runs on the CPU; strict packed input maps retain their ordinary qualification. |
 | `array/min`, `array/max`, `array/segment_sum`, `array/segment_min`, `array/segment_max` | 5 | Ordered typed numeric reductions, componentwise for vectors. Integer sums wrap at signed 63 bits; floating extrema retain `Float.min`/`Float.max` signed-zero semantics. Segment offsets must be an integer array starting at zero, nondecreasing and ending at the value count (`E_ARRAY_OFFSETS`). Duplicate offsets yield typed zero for sums and `E_ARRAY_EMPTY` for extrema. Global empty extrema also fail; offsets `[0]` yield zero output rows. Independent contiguous segments may use the shared pool; additions within each segment retain source order. These operations do not gather or rearrange values. |
 | `value/rand`, `noise3`, `color/parse`, `color/byte` | 4 | The deterministic keyed hash, seeded Perlin/fBm sample, source drawing-color decoding, and channel conversion. Static noise permutations become data; dynamic-seed caches are bounded to 16 entries. Color conversion preserves native byte quantization. |
 | `rand/at` | 1 | Two exact signed63 integers, seed and index, to a Float with the exact `Rand.float_at` keyed-hash bits. No floating conversion precedes hashing. The independently authored `rand_at` Lisp arithmetic helper remains an oracle, rather than a compiler-recognized name. |
@@ -570,6 +573,7 @@ a count just below the ceiling but above that quotient fails with `E_ARRAY_RANGE
 
 | Leaf | Behavior |
 | --- | --- |
+| `array/max_length(:type float\|int\|text\|vec2\|vec3\|vec4)` | Exact Int logical element capacity, with `float` default. Native `int` and `text` use `Sys.max_array_length`; numeric arrays use `Sys.max_floatarray_length / width`. The selector must be recognized literal Text (`E_ARRAY_TYPE`); the checker rejects non-Text with `E_TYPE`. On Apple64, width one is 18014398509481983; widths two, three and four are 9007199254740991, 6004799503160661 and 4503599627370495. JavaScript returns the identical BigInt. This is a pure value and allocates no array; it does not promise available RAM or browser TypedArray capacity. Constructor limits are unchanged. Ordinary exact Int instructions retain GPU refusal; explicit Float conversion and folding follow ordinary Float qualification. |
 | `array/range(count :type float\|int)` | Fresh width-1 storage containing values 0 through count-1. Default type is Float; explicit `int` retains exact integer storage. |
 | `array/int(count,value)` | Fresh exact integer storage, with Int zero when value is omitted. Values use the ordinary Int coercion boundary and must then be Int. |
 | `array/text(count,value)` | Fresh typed string-array storage, with empty text when value is omitted. Count/get/slice/concat preserve exact decoded string contents and copying ownership. Maps may collect immutable Text leaves in a separate region bank; Text transformations use structured compiled loops. Neither storage has the bounded-list cap. |
@@ -970,6 +974,7 @@ operation. A user function/macro row is not a new runtime primitive.
 | `array/concat` | primitive | `array/concat` |
 | `array/count` | primitive | `array/count` |
 | `array/nth` | primitive | Scalar `array/nth`; invariant numeric/Text captures use `Array_prepare` and `Gather`/`Int_gather`/`Text_gather`, with lazy preparation, independent counts and CPU/JavaScript execution. |
+| `array/max_length` | primitive | `array/max_length` |
 | `array/range` | primitive | `array/range` |
 | `array/slice` | primitive | `array/slice` |
 | `array/vec3` | primitive | `array/vec3` |
@@ -1174,3 +1179,45 @@ current 2D JavaScript emitter supports `first` and refuses reached
 real checked raw-attribute validity, including grain boundaries and tails.
 There is no authored grain getter, numeric result, GPU fallback or automatic
 change to ordinary packed arithmetic.
+
+Checked geometry rest collections and their live `map`/`filter` results use native
+array capacity in structured Core, matching the evaluator's existing variadic
+geometry collection semantics. Their private `Sequence_build` flag follows the
+static `list geometry` type; it is unavailable as authored numeric data or a Lisp
+option. Repeated cooked handles keep their source order and output multiplicity;
+the host still cooks each dependency once. Ordinary value lists, `concat`,
+`range`, and authored `for`/`scan`/`fold` iteration bounds retain their existing
+4,096 limits. A large dynamic AST remains subject to the independent compiler
+budget. JavaScript mirrors typed collection building; reached cooked captures
+continue to require a geometry host and are refused by the current 2D exporter.
+
+### Compiled region argument binding in JavaScript
+
+When any region in a frame consumes computed arguments, every CPU Invoke in that
+frame carries a compiled preparation plan, including argument-free producers.
+This evaluates nested producer sources and captures against the actual current
+frame. Frames whose regions are all argument-free retain their existing fixed
+`data.bin` preparation and artifact contract.
+
+An argument-bearing `Core.Invoke` passes its actual computed locals and a private
+compiled preparation plan to the runtime. Preparation uses ordinary Core lowering
+and the frame printer; it is not an evaluator for workspace terms. The internal
+`$core/argument` marker is available only to those preparers. Other cooked/host
+sources retain `E_WEB_SOURCE` in the 2D target. Existing fixed export admission
+and its `data.bin` path remain unchanged.
+
+The invocation validates argument count, exact storage tags, vector shapes and
+finite ordinary values before preparing sources. Source preparation keeps written
+Zip/Product order, including suppression after an empty Product clause. Actual
+source lengths determine iteration and output counts; native language capacity
+checks precede the separate browser addressing/allocation guard. Output storage
+follows the terminal registers, including exact signed63 Int and immutable Text.
+
+Captured uniforms are compiled synchronous functions, memoized only when a
+selected instruction reads their slot. Empty outputs and untaken guards do not
+force captures. Stateful/call-index or asynchronous capture preparers are target
+refusals. Workers reconstruct typed immutable argument wrappers without numeric
+conversion, then use the same lazy capture mechanism and earliest-chunk failure
+order. Each force has fresh values; only immutable preparer functions are retained
+in a FIFO capped at 64. Region source and argument buffers retain existing
+immutable ownership and copying rules. This bridge does not add SOP web export.

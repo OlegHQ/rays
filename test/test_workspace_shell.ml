@@ -317,7 +317,24 @@ let run_values () =
   let e = add "str" in
   check (has (source e) "(str \"text\")") ("a str binding: " ^ source e);
   E3.close e;
+  List.iter(fun(name,expression)->let e=add name in
+    check(E3.undo_label e=Some "Add node" && has(source e)expression)
+      ("ordered integer array menu insertion: "^source e);E3.close e)
+    ["array/compact","(array/compact (array/int 0))";
+     "array/scan_sum","(array/scan_sum (array/int 0))"];
+  List.iter(fun(name,expression)->let e=add name in
+    check(E3.undo_label e=Some "Add node" && has(source e)expression)
+      ("grade/index menu insertion: "^source e);E3.close e)
+    ["array/grade","(array/grade (array/float 4))";
+     "array/index_of","(array/index_of (array/int 0) (array/int 0))"];
+  let e = add "array/scatter_add" in
+
+  check (E3.undo_label e = Some "Add node"
+    && has (source e) "(array/scatter_add (array/int 0) (array/float 0) 0)")
+    ("empty ordered scatter menu insertion: " ^ source e);
+  E3.close e;
   let e = add "sop/mesh" in
+
   check (E3.undo_label e = Some "Add node" && has (source e) "(sop/mesh"
     && has (source e) ":points (array/vec3 0)"
     && has (source e) ":vertex_points (array/int 0)"
@@ -2275,7 +2292,30 @@ let run_lisp_inspector () =
     check (E3.undo_label !e = Some "Add node" && count_of (source !e) "(sop/local_card" = 2)
       ("local Lisp kind was absent from the add menu: " ^ source !e))
 
-let run () = run_lisp_inspector (); run_context_menus (); run_expression_chip (); run_nested_inspector (); run_op_inspector (); run_spreadsheet (); run_panels (); run_studio (); run_copy_lisp (); run_hide_and_order (); run_root_section (); run_layouts (); run_compose (); run_ref_picker (); run_result_view (); run_loop_view (); run_geometry_view (); run_panel_states (); run_camera_zoom (); run_cameras (); run_lowering (); run_ops (); run_panel_keys (); run_unbound_panels (); run_values (); run_duplicate_and_view (); run_movers (); run_frame_key (); run_loop_copies (); run_loop_expression (); run_editor (); run_restore (); run_views (); run_instances (); run_host_scene_edit (); run_panel_chain ();
+let run_array_capacity_menu () =
+  let text={|(workspace capacity_menu
+    (graph g :context host (let* [limit 0] limit))
+    (graph editor :context editor (ui/workspace (ui/graph "g"))))|}in
+  let e=ref(editor text)and count=ref 0 in
+  Fun.protect ~finally:(fun()->E3.close !e)(fun()->
+    let step events=incr count;e:=E3.update !e(frame(150.,300.)events !count)in
+    step [];step [];
+    step[Event.MouseMoved(150.,300.)];
+    step[Event.KeyPressed(Input.KeyChar '/');Event.KeyPressed(Input.KeyChar 'a')];
+    step[Event.TextInput "array/max_length"];step[Event.KeyPressed Input.Enter];step[];
+    check(E3.undo_label !e=Some "Add node" && has(source !e)"(array/max_length)")
+      ("Array capacity add menu default invalid: "^source !e);
+    let ws=E3.workspace !e in
+    ignore(build_ok ws);
+    let pane=Flow_graph.Projection.of_graph catalog ws.checked "g" in
+    let card=List.find(fun(n:Flow_graph.Projection.node)->n.head="array/max_length")pane.nodes in
+    check(card.ty=Flow.Ty.Int)"Array capacity menu output was not Int";
+    let row=List.find(fun(r:Flow_graph.Projection.row)->r.key=E.Kw "type")card.rows in
+    check(row.control=Flow_graph.Projection.Choice && not row.socket)"Array capacity selector lost its literal choice row";
+    let value=List.assoc card.path(Result.get_ok(Flow.Eval.static ~record:true ws.checked)).records|>List.hd|>snd in
+    check(value=Flow.Eval.Int Sys.max_floatarray_length)"Array capacity menu lost exact native Int")
+
+let run () = run_array_capacity_menu (); run_lisp_inspector (); run_context_menus (); run_expression_chip (); run_nested_inspector (); run_op_inspector (); run_spreadsheet (); run_panels (); run_studio (); run_copy_lisp (); run_hide_and_order (); run_root_section (); run_layouts (); run_compose (); run_ref_picker (); run_result_view (); run_loop_view (); run_geometry_view (); run_panel_states (); run_camera_zoom (); run_cameras (); run_lowering (); run_ops (); run_panel_keys (); run_unbound_panels (); run_values (); run_duplicate_and_view (); run_movers (); run_frame_key (); run_loop_copies (); run_loop_expression (); run_editor (); run_restore (); run_views (); run_instances (); run_host_scene_edit (); run_panel_chain ();
   run_undo_under_pane (); run_atomic_frame (); run_undo_and_input (); run_carry_reaches_no_history ()
 
 (* Native VIEW regression over the reported sketch, including its piece renderer and a following

@@ -17,8 +17,9 @@ type primitive =
   | Integer of integer | Integer_compare of Flow.Packed_ops.comparison | Equal | Show | Text_concat | Text_blank
   | Text_trim | Text_lower | Text_repr | Text_table_decode | Text_table_encode
   | Sequence_length | Sequence_get | Sequence_build | Sequence_slice | Sequence_concat
-  | Array_range | Array_int | Array_text | Array_float | Array_vec3 | Array_vec4 | Array_nth | Array_count | Array_slice | Array_concat
+  | Array_max_length | Array_range | Array_int | Array_text | Array_float | Array_vec3 | Array_vec4 | Array_nth | Array_count | Array_slice | Array_concat
   | Array_reduce of Flow.Op.Private.reduction | Array_segment of Flow.Op.Private.reduction
+  | Array_scatter_add | Array_compact | Array_scan_sum | Array_grade | Array_index_of
   | Rand | Rand_at | Fma | Checked_mul | Checked_fma | Noise3 | Color_parse | Color_byte of byte_mode
   | Coerce of Flow.Ty.t | Truthy | Error | Fail of string * string | Fail_diagnostic of Flow.Diagnostic.t
 

@@ -97,6 +97,17 @@ preserve integer storage. Integer `array/sum` folds `int/add` in element order,
 including signed wrap, and returns integer zero for empty input. Empty scans
 retain their declared array type; empty folds and reductions retain their seed.
 
+`(array/max_length)` returns the exact Int logical Float-array element capacity.
+Its optional literal `:type` choice is `int`, `text`, `float`, `vec2`, `vec3` or
+`vec4`; vector capacities divide the native scalar-slot bound by width. Bare
+choice names normalize like `array/range :type int`. Unknown or dynamic selectors
+are `E_ARRAY_TYPE`; wrong keyword types are `E_TYPE`. The add menu inserts a
+valid default call, with an Int card and a literal selector choice row. This
+pure accessor allocates no storage and does not promise available RAM or browser
+TypedArray capacity. Native and JavaScript preserve the result as Int/BigInt,
+including values above 2^53. Existing constructor limits and general Float
+conversion/GPU qualification remain unchanged.
+
 `(array text)` stores decoded strings with their exact UTF-8 contents.
 `array/text count [value]` fills fresh storage with the supplied string, defaulting
 to `""`. Count, indexing, slice and concatenation operate on elements; slice and

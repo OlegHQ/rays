@@ -564,3 +564,68 @@ let ()=
     Flow_ir.Packed.count_origin packed|>Option.get)planes|_->assert false in
   check(List.length(List.sort_uniq compare origins)=1)"Coordinate fields acquired false independent owner counts";
   print_endline "Mesh planes keep precise P read facts, source ownership and a shared point-owner count through captured records"
+
+let ()=
+  (* Count-then-fill offsets use both the initial zero and terminal total.
+     Compaction remains an ordinary index array used by generic gather maps. *)
+  let source={|(workspace compact_mesh
+    (defnode sop/compact_mesh []
+      (let* [points (array/vec3 6 [1 -0. 2])
+        mask (exact (map (fn [(i : int)] (if (int/eq (int/mod i 2) 0) 1 0)) (array/range 6 :type int)))
+        kept (array/compact mask)
+        selected (exact (map (fn [(i : int)] (array/nth points i)) kept))
+        counts (array/int 1 3)]
+        (sop/mesh :points selected :vertex_points (array/range 3 :type int)
+          :primitive_offsets (array/scan_sum counts) :kinds (array/int 1 0))))
+    (graph g :context sop (sop/compact_mesh)))|}in
+  let topology=Topology.create_owned ~point_count:3 ~vertex_points:[|0;1;2|]
+    ~primitive_offsets:[|0;3|] ~primitive_kinds:[|Topology.Polygon|]|>get_string_ok in
+  let positions=Packed.Float3.Private.of_owned_exn ~x:[|1.;1.;1.|] ~y:[|-0.;-0.;-0.|] ~z:[|2.;2.;2.|]in
+  let expected=Geometry.create ~positions ~topology ()|>get_string_ok|>geometry_bytes in
+  List.iter(fun reference->let _,node=L.workspace ~reference ~factories(parse source)|>flow|>compile in
+    List.iter(fun domains->List.iter(fun grain->with_session(fun session->
+      check(geometry_bytes(geometry(cook session ~domains ~grain node))=expected)
+        "C4 authored compact/gather and scan/mesh composition differs")) [1;97;4096]) [1;4;8]) [false;true];
+  print_endline "C4 authored compact→gather and exclusive scan→mesh offsets preserve native geometry bytes"
+
+let ()=
+  let invoke name args=(Option.get(Flow.Op.find name Flow.Context.value)).body
+    ~live:(Frame_input.at_time 0.) ~node:(fun _ _->assert false)args in
+  let int_attribute name geometry=match Geometry.find_attribute ~owner:Attribute.Point name geometry with
+    |Some attribute->(match Attribute.Private.storage attribute with Attribute.Int a->a|_->assert false)
+    |None->assert false in
+  let texts=[|"b";"a";"b";"\255\128";"x\000y";"é日本😀";"\240\144\128\128";"\238\128\128"|]in
+  List.iter(fun(storage,keys)->let count=match keys with
+    |E.Int_array a->Array.length a|E.Float_array a->Array.length a|E.Text_array a->Array.length a|_->assert false in
+    let source=Line_geometry.points(Array.init count(fun i->float i,0.,0.))in
+    let attribute=Attribute.create_owned ~owner:Attribute.Point ~name:"key" storage|>get_string_ok in
+    let source=Geometry.with_attribute attribute source|>get_string_ok in
+    let before=geometry_bytes source in
+    List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->List.iter(fun descending->
+      let permutation=match invoke "array/grade"["keys",keys;"descending",E.Bool descending]with
+        |E.Int_array a->a|_->assert false in
+      let ranks=Array.make count 0 in Array.iteri(fun rank source->ranks.(source)<-rank)permutation;
+      let native=Ordering.sort ~grain:1 ~owner:Ordering.Points
+        ~key:(Ordering.Attribute_component{name="key";component=0}) ~descending
+        ~output_indices:"rank" source|>get_rdk in
+      check(ranks=int_attribute "rank" native)"Grade stable ranks differ from native Ordering.sort";
+      check(geometry_bytes source=before)"Grade changed native key geometry") [false;true]))[1;4;8];
+    (match keys with
+     |E.Int_array _|E.Text_array _->
+       let first=invoke "array/index_of"["keys",keys;"queries",keys]in
+       let first_indices=match first with E.Int_array a->a|_->assert false in
+       let mask=Array.mapi(fun i position->if i=position then 1 else 0)first_indices in
+       let compact=invoke "array/compact"["mask",E.Int_array mask]in
+       let dense=invoke "array/index_of"["keys",compact;"queries",first]in
+       List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+         let native=Attribute_ops.enumerate ~grain:1 ~piece_attribute:"key"
+           ~mode:Attribute_ops.Enumerate_pieces ~owner:Attribute.Point ~name:"dense" source|>get_rdk in
+         check(dense=E.Int_array(int_attribute "dense" native))
+           "Index_of first occurrence/compact composition differs from native piece IDs"))[1;4;8]
+     |_->()))
+    [Attribute.Int[|max_int;min_int;max_int;9007199254740993;min_int|],
+       E.Int_array[|max_int;min_int;max_int;9007199254740993;min_int|];
+     Attribute.Float[|0.;-0.;1.;1.;Float.next_after 0. 1.|],
+       E.Float_array[|0.;-0.;1.;1.;Float.next_after 0. 1.|];
+     Attribute.Text texts,E.Text_array texts];
+  print_endline "C5 native consumer oracles: stable scalar ranks and first-occurrence piece IDs, without full SOP mode claims"

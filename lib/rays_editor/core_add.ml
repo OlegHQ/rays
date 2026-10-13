@@ -55,7 +55,7 @@ let value_entries =
       entry ~output:(match sub with "Loop" | "Data" | "Function" -> Flow.Ty.List Flow.Ty.Float | _ -> Flow.Ty.Float)
         sub ("=" ^ form) form) forms
   @ List.filter_map (fun op -> if List.exists (fun (_, form, _, _) -> form = op) forms then None
-      else Some (entry (categorize op) ("=" ^ op) op)) Flow.Workspace.value_ops
+      else Some (entry ?output:(if op="array/max_length" then Some Flow.Ty.Int else None) (categorize op) ("=" ^ op) op)) Flow.Workspace.value_ops
 
 (* the expression and the name a "Value" entry makes *)
 let value_expression ~ops context key =
@@ -69,7 +69,13 @@ let value_expression ~ops context key =
   | "vec3" -> mk (S.Vec [ num "0.0"; num "0.0"; num "0.0" ]), "vector"
   | "text" -> mk (S.Str "text"), "text"
   | "str" -> mk (S.List [ mk (S.Sym "str"); mk (S.Str "text") ]), "text"
+  | "array/index_of" ->
+      List.hd (Result.get_ok (S.parse "(array/index_of (array/int 0) (array/int 0))")), "matched"
+  | "array/scatter_add" ->
+      List.hd (Result.get_ok (S.parse
+        "(array/scatter_add (array/int 0) (array/float 0) 0)")), "added"
   | "sop/mesh" ->
+
       List.hd (Result.get_ok (S.parse
         "(sop/mesh :points (array/vec3 0) :vertex_points (array/int 0) :primitive_offsets (array/int 1) :kinds (array/int 0))")), "mesh"
   | "sop/mesh_planes" ->

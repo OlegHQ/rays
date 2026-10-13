@@ -47,7 +47,7 @@ let check (o : Op.t) args =
   with Value.Fail (code, msg, _) -> failwith (o.name ^ ": " ^ code ^ ": " ^ msg)
 
 let () =
-  assert (List.length Op.all = 153);
+  assert (List.length Op.all = 159);
   let repr=Option.get(Op.find "text/repr" Context.value) in
   List.iter(fun text -> assert(check repr ["text",Text text]=Text(Printf.sprintf "%S" text)))
     [String.init 256 Char.chr;"";"é日本😀\000\b\t\n\r\\\""];
@@ -56,7 +56,13 @@ let () =
     assert (Option.is_some (Op.packed_kind o) = (o.ctx = Context.value && o.shape = Op.Scalar));
     let s = o.signature in
     let base = List.map (fun (n,t) -> n,
-      if List.mem o.name ["asin";"acos"] then Float 0.5 else sample n t) s.pos in
+      match o.name,n with
+      | "array/scatter_add","indices" -> Int_array[|0;1|]
+      | "array/compact","mask" -> Int_array[|0;1|]
+      | "array/index_of","keys" -> Int_array[|1;2|]
+      | "array/index_of","queries" -> Int_array[|2;3|]
+      | ("asin"|"acos"),_ -> Float 0.5
+      | _ -> sample n t) s.pos in
     let optional = [base; base @ List.map (fun (n,t) -> n, sample n t) s.opt] in
     List.iter (fun args ->
       ignore (check o args);
@@ -331,3 +337,55 @@ let () =
   List.iter(fun args->match capture(fun()->Op.Private.constant_array_descriptor "array/vec4" args)with
     |Error("E_ARRAY_TYPE",_)->()|_->assert false) [[];["count",Int 1;"count",Int 1];["count",Int 1;"extra",Int 0]];
   print_endline "Constant array descriptors: canonical count/bounds/empty/fill checks match dense constructor errors"
+
+let ()=
+  let apply name args=check(Option.get(Op.find name Context.value))args in
+  List.iter(fun name->let op=Option.get(Op.find name Context.value)in
+    assert(op.shape=Op.Scalar && op.ctx=Context.value))
+    ["array/scatter_add";"array/compact";"array/scan_sum";"array/grade";"array/index_of"];
+  let grade=Option.get(Op.find "array/grade" Context.value)in
+  assert(grade.signature.pos=["keys",Ty.Array Ty.Any] && grade.signature.kw=["descending",Ty.Bool]);
+  assert(apply "array/grade"["keys",Int_array[|2;1;2|]]=Int_array[|1;0;2|]);
+  assert(apply "array/grade"["keys",Int_array[|2;1;2|];"descending",Bool false]=Int_array[|1;0;2|]);
+  assert(apply "array/grade"["keys",Int_array[|2;1;2|];"descending",Bool true]=Int_array[|0;2;1|]);
+  assert(apply "array/index_of"["keys",Int_array[|9007199254740993;2;2|];
+    "queries",Int_array[|2;7;9007199254740993;2;7|]]=Int_array[|1;-1;0;1;-1|]);
+  assert(apply "array/index_of"["keys",Text_array[|"\255\000";"é";"é"|];
+    "queries",Text_array[|"é";"missing";"\255\000"|]]=Int_array[|1;-1;0|]);
+  assert(apply "array/compact"["mask",Int_array[|1;0;1|]]=Int_array[|0;2|]);
+  assert(apply "array/scan_sum"["array",Int_array[|max_int;1;-1|]]=Int_array[|0;max_int;min_int;max_int|]);
+  assert(apply "array/scatter_add"["indices",Int_array[|0;0;1|];"values",Float_array[|1.;2.;3.|];"size",Int 3]
+    =Float_array[|3.;3.;0.|]);
+  assert(apply "array/scatter_add"["indices",Int_array[|0;0;1|];"values",Int_array[|max_int;1;2|];"size",Int 3]
+    =Int_array[|min_int;2;0|]);
+  assert(apply "array/scatter_add"["indices",Int_array[|0;0;1|];
+    "values",Vec3_array[|1.;2.;3.;4.;5.;6.;1.;1.;1.|];"size",Int 2]=Vec3_array[|5.;7.;9.;1.;1.;1.|]);
+  List.iter(fun(name,args,expected)->assert(apply name args=expected))
+    ["array/grade",["keys",Float_array[||]],Int_array[||];
+     "array/index_of",["keys",Int_array[||];"queries",Int_array[|1;2|]],Int_array[|-1;-1|];
+     "array/index_of",["keys",Text_array[|"a"|];"queries",Text_array[||]],Int_array[||];
+     "array/compact",["mask",Int_array[||]],Int_array[||];
+     "array/scan_sum",["array",Int_array[||]],Int_array[|0|];
+     "array/scatter_add",["indices",Int_array[||];"values",Float_array[||];"size",Int 2],Float_array[|0.;0.|]];
+  List.iter(fun(name,args)->let before=Marshal.to_string args[Marshal.No_sharing]in
+    let result=apply name args in
+    (match result with Int_array a->if Array.length a>0 then a.(0)<-999
+      |Float_array a->if Array.length a>0 then a.(0)<-999.|_->assert false);
+    assert(Marshal.to_string args[Marshal.No_sharing]=before))
+    ["array/grade",["keys",Int_array[|1;0;1|]];
+     "array/index_of",["keys",Int_array[|1;2|];"queries",Int_array[|2;1|]];
+     "array/compact",["mask",Int_array[|1;0;1|]];
+     "array/scan_sum",["array",Int_array[|1;2|]];
+     "array/scatter_add",["indices",Int_array[|0;0|];"values",Float_array[|1.;2.|];"size",Int 1]];
+  let reject code name args=let op=Option.get(Op.find name Context.value)in
+    try ignore(op.body ~live:(Frame_input.at_time 0.) ~node:(fun _ _->assert false)args);
+      failwith("accepted "^name)
+    with Value.Fail(actual,_,_)->assert(actual=code)in
+  List.iter(fun(code,name,args)->reject code name args)
+    ["E_ARRAY_MASK","array/compact",["mask",Int_array[|2|]];
+     "E_ARRAY_TYPE","array/scan_sum",["array",Float_array[|1.|]];
+     "E_NONFINITE","array/grade",["keys",Float_array[|nan|]];
+     "E_ARRAY_TYPE","array/index_of",["keys",Int_array[||];"queries",Text_array[||]];
+     "E_ARRAY_RANGE","array/scatter_add",["indices",Int_array[|1|];"values",Int_array[|2|];"size",Int 1];
+     "E_ARRAY_COUNT","array/scatter_add",["indices",Int_array[||];"values",Float_array[|1.|];"size",Int 1]];
+  print_endline "Whole-array primitive census: canonical shapes, grade default, counts, exact outputs, ownership and refusals"

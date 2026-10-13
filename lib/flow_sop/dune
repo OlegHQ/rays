@@ -34,6 +34,11 @@
  (libraries flow flow_sop sop sop_catalog rdk rdk_test_support lisp_sop))
 
 (test
+ (name test_geometry_collections)
+ (modules test_geometry_collections)
+ (libraries flow flow_sop sop sop_catalog rdk rdk_test_support))
+
+(test
  (name test_encoded_parameters)
  (modules test_encoded_parameters)
  (libraries flow flow_sop flow_graph sop sop_catalog rdk))

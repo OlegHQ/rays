@@ -38,7 +38,7 @@ let inventory = [
   Equal; Show; Text_concat; Text_blank; Text_trim; Text_lower; Text_repr; Text_table_decode; Text_table_encode;
   Sequence_length; Sequence_get; Sequence_build; Sequence_slice; Sequence_concat;
   Array_reduce Minimum; Array_reduce Maximum; Array_segment Sum; Array_segment Minimum; Array_segment Maximum;
-  Array_range; Array_int; Array_text; Array_float; Array_vec3; Array_vec4; Array_nth; Array_count; Array_slice; Array_concat;
+  Array_grade; Array_index_of; Array_compact; Array_scan_sum; Array_scatter_add; Array_max_length; Array_range; Array_int; Array_text; Array_float; Array_vec3; Array_vec4; Array_nth; Array_count; Array_slice; Array_concat;
   Rand; Rand_at; Fma; Checked_mul; Checked_fma; Noise3; Color_parse; Color_byte Clamped; Coerce T.Any; Truthy; Error; Fail ("", "") ]
 
 let export name = match name with
@@ -84,6 +84,7 @@ let arg_name prim i = match prim, i with
   | C.Numeric _, _ | Integer _, _ | Integer_compare _, _ | Equal, _ | Remainder, _ -> if i = 0 then "a" else "b"
   | Math P.Not, _ -> "a"
   | Math _, _ | Floor, _ | Ceil, _ | Round, _ | Int_convert, _ | Float_convert, _ -> "x"
+  | Array_max_length, _ -> "type"
   | Array_range, _ -> if i = 0 then "count" else "type"
   | Sequence_build, _ -> [|"count";"width";"type"|].(i)
   | Array_int, _ | Array_text, _ | Array_float, _ | Array_vec3, _ | Array_vec4, _ -> if i = 0 then "count" else "value"
@@ -94,6 +95,9 @@ let arg_name prim i = match prim, i with
   | Rand_at, 0 -> "seed" | Rand_at, _ -> "index"
   | Fma, _ | Checked_fma, _ | Checked_mul, _ -> [|"a";"b";"c"|].(i)
   | Error, 0 -> "code" | Error, 1 -> "message" | Error, _ -> "cause"
+  | Array_grade, _ -> [|"keys";"descending"|].(i) | Array_index_of, _ -> [|"keys";"queries"|].(i)
+  | Array_compact, _ -> "mask" | Array_scan_sum, _ -> "array"
+  | Array_scatter_add, _ -> [|"indices";"values";"size"|].(i)
   | Array_segment _, _ -> if i=0 then "values" else "offsets"
   | Array_nth, _ -> if i = 0 then "array" else "index"
   | Exp, _ -> "x"
@@ -237,7 +241,31 @@ let () =
      digits[digits[txt "é日本😀";txt "\t\n\\"];digits[txt ""]];digits[digits[];digits[]];
      int 0;digits[int 0];digits[digits[int 0]]];
   add C.Text_table_decode[int 0];
-  let arrays=[arr1[];arr1[0.;-0.;0.];arr1[1e16;1.;-1e16];
+  List.iter(fun primitive->List.iter(fun array->add primitive[array])
+    [E.Int_array[||];E.Int_array[|0|];E.Int_array[|1|];E.Int_array[|0;1;0;1|];
+     E.Int_array[|1;1;1|];E.Int_array[|1;2;0|];E.Int_array[|-1;1|];
+     E.Int_array[|max_int;1;min_int;9007199254740993|];
+     E.Int_array(Array.init 32769(fun i->i mod 2));
+     arr1[];arr1[0.;1.];E.Vec3_array[|0.;1.|];E.Text_array[|"0";"1"|];
+     int 1;digits[int 0;int 1];E.Bool false;E.No_geo]) [C.Array_compact;C.Array_scan_sum];
+  let text_keys=[|"";"a";"a";"x\000y";"\255\128";"é日本😀";"\240\144\128\128";"\238\128\128";
+    String.init 256 Char.chr|]in
+  let byte_keys=Array.init 256(fun i->String.make 1(Char.chr i))in
+  let grade_keys=[E.Int_array[||];E.Int_array[|min_int;max_int;9007199254740993;0;0;-1|];
+    arr1[0.;-0.;Float.next_after 0. 1.;Float.max_float;-.Float.max_float;1.;1.];
+    arr1[nan];arr1[infinity];arr1[neg_infinity];E.Text_array text_keys;E.Text_array byte_keys;
+    E.Vec3_array[|0.;1.|];E.Text "not array"]in
+  List.iter(fun keys->List.iter(fun descending->add C.Array_grade[keys;E.Bool descending])[false;true])grade_keys;
+  List.iter(fun(keys,queries)->add C.Array_index_of[keys;queries])
+    [E.Int_array[|4;4;7|],E.Int_array[|4;7;9;4|];E.Int_array[||],E.Int_array[|min_int;max_int|];
+     E.Int_array[|min_int;max_int;9007199254740993|],E.Int_array[|9007199254740993;min_int;7|];
+     E.Text_array text_keys,E.Text_array(Array.append text_keys[|"missing"|]);
+     E.Text_array byte_keys,E.Text_array(Array.append byte_keys[|"missing"|]);
+     E.Text_array[||],E.Text_array[|"";"x\000y"|];E.Int_array[|1|],E.Int_array[||];
+     E.Text_array[|"1"|],E.Int_array[|1|];arr1[1.],arr1[1.];E.Int 0,E.Int_array[||];
+     E.Int_array[||],E.Text "bad"];
+  let arrays=[arr1[];
+arr1[0.;-0.;0.];arr1[1e16;1.;-1e16];
     E.Int_array[|min_int;max_int;9007199254740993;-9007199254740993|];
     arr2[3.;-0.;1.;0.];arr3[3.;2.;-0.;1.;4.;0.];arr4[3.;2.;1.;-0.;1.;4.;5.;0.];
     arr1[nan];arr1[infinity];E.Text_array[|"x"|]] in
@@ -249,7 +277,21 @@ let () =
       [[|0;count|];[|0;0;count|];[|0|];[||];[|0;count+1;count|];[|0;-1;count|];[|0;max_int;count|]];
     add(C.Array_segment operation)[array;arr1[0.;float count]]) arrays)
     [Flow.Op.Private.Sum;Minimum;Maximum];
+  List.iter(fun values->let n=Flow.Value.array_length values in
+    let indices=E.Int_array(Array.init n(fun i->i mod 2)) in
+    List.iter(fun size->add C.Array_scatter_add[indices;values;int size])[0;1;2;4;-1;max_int];
+    add C.Array_scatter_add[E.Int_array[||];values;int 2];
+    add C.Array_scatter_add[arr1[];values;int 2];
+    add C.Array_scatter_add[indices;values;flt_ 2.]) arrays;
+  List.iter(fun(indices,values,size)->add C.Array_scatter_add[indices;values;int size])
+    [E.Int_array[|0;0;1|],arr1[Float.max_float;Float.max_float;1.],1;
+     E.Int_array[|1;0;0|],arr1[1.;Float.max_float;Float.max_float],1;
+     E.Int_array[|0;0;0|],arr1[1e16;1.;-1e16],1;
+     E.Int_array[|0;0|],E.Int_array[|max_int;1|],1;
+     E.Int_array[|0|],E.Int_array[|9007199254740993|],1;
+     E.Int_array[|0|],E.Vec3_array[|1.;2.|],1];
   (* sequences *)
+
   let l3 = digits [int 1; int 2; int 3] in
   let mixed = digits [int 1; flt_ 2.; txt "z"] in
   List.iter (fun v -> add C.Sequence_length [v])
@@ -291,7 +333,12 @@ let () =
       [0,0;0,1;1,2;0,19;-1,1;1,-1]) text_arrays;
   List.iter (fun pair -> match pair with [a;b] -> add C.Array_concat [a;b] | _ -> assert false)
     (pairs text_arrays (text_arrays @ [arr1 [1.]]));
+  add C.Array_max_length [];
+  List.iter(fun kind->add C.Array_max_length [kind])
+    [txt "int";txt "text";txt "float";txt "vec2";txt "vec3";txt "vec4";
+     txt "unknown";txt "";int 1;E.Bool true;E.Text_array [|"float"|]];
   List.iter (fun c -> add C.Array_range [c]) counts;
+
   List.iter (fun c -> add C.Array_range [c;txt "int"];
     add C.Array_int [c]) (int 4097::counts);
   List.iter(fun kind -> add C.Array_range[int 3;kind]) [txt "float";txt "invalid";int 1];
@@ -986,7 +1033,7 @@ List.iter(fun bad->
     [geometry_value geometry;E.Record["grain",E.Int grain]](diagnose flags grain)) [1;97;4096])
   [[];[0;1;96;97;98];[96;97;98];[4095;4096;4097];[32768]];
   (* write *)
-  assert (List.length inventory = 90);
+  assert (List.length inventory = 96);
   if not (Sys.file_exists outdir) then Sys.mkdir outdir 0o755;
   List.iter (fun name ->
     let body = String.concat ",\n" (List.rev !(Hashtbl.find cases name)) in

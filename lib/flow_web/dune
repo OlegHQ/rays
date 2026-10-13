@@ -27,7 +27,7 @@
  (deps (glob_files goldens/frame_*.js)
   ../../sketches/flow_vectors/sketch.rays ../../examples/basic/sketch.rays
   ../../tools/web/test/frame_semantics.mjs ../../tools/web/test/rt_shim.mjs
-  ../../tools/web/runtime/prims.js ../../tools/web/runtime/shape2.js ../../tools/web/runtime/runtime.js ../../tools/web/runtime/workers.js)
+  ../../tools/web/runtime/prims.js ../../tools/web/runtime/shape2.js ../../tools/web/runtime/runtime.js ../../tools/web/runtime/workers.js ../../tools/web/runtime/region_bindings.js)
  (libraries flow_web flow flow_ir frame_input scene_command str))
 
 (test
@@ -58,3 +58,33 @@
  (modules test_text_bytes)
  (deps ../../tools/web/runtime/prims.js)
  (libraries flow_web))
+
+(test
+ (name test_scatter)
+ (modules test_scatter)
+ (deps (glob_files ../../tools/web/runtime/*.js))
+ (libraries flow_web flow flow_ir rays_math))
+
+(test
+ (name test_compact_scan)
+ (modules test_compact_scan)
+ (deps (glob_files ../../tools/web/runtime/*.js))
+ (libraries flow flow_ir flow_web rays_math))
+
+(test
+ (name test_grade_index)
+ (modules test_grade_index)
+ (deps (glob_files ../../tools/web/runtime/*.js))
+ (libraries flow flow_ir flow_web rays_math))
+
+(test
+ (name test_region_arguments)
+ (modules test_region_arguments)
+ (deps (glob_files ../../tools/web/runtime/*.js))
+ (libraries flow_web flow flow_ir frame_input))
+
+(test
+ (name test_array_max_length)
+ (modules test_array_max_length)
+ (deps (glob_files ../../tools/web/runtime/*.js))
+ (libraries flow flow_ir flow_web rays_math))

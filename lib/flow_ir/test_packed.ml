@@ -60,17 +60,27 @@ let compile ?fusion residual term =
    | _ -> assert false);
   legacy
 let () =
-  if Array.exists (fun arg -> arg="--bench-product" || arg="--bench-product-row" || arg="--bench-int-scale") Sys.argv then begin
+  if Array.exists (fun arg -> arg="--bench-product" || arg="--bench-product-row" || arg="--bench-float-product" || arg="--bench-int-scale") Sys.argv then begin
     I.Packed.Private.trace := ignore;
     let count = 1_000_000 and width = 16 in
     let integer = Array.exists ((=) "--bench-int-scale") Sys.argv in
     let repeated_row = Array.exists ((=) "--bench-product-row") Sys.argv in
+    let float_product = Array.exists ((=) "--bench-float-product") Sys.argv in
     let packed = Test_program.compile ~fusion:false (if integer then Printf.sprintf
       "(map (fn [index] (int/mul index %d)) (array/range (int/add %d (int t)) :type int))" width count else Printf.sprintf
       (if repeated_row then
          "(for [index (array/range %d :type int) component (map (fn [x] (+ x t)) (array/range %d))] component)"
+       else if float_product then
+         "(for [index (array/range %d) component (array/range %d)] (+ component t))"
        else "(for [index (array/range %d :type int) component (array/range %d)] (+ component t))")
       count width) in
+    if float_product then begin
+      let region=I.Packed.to_region packed in
+      assert(region.iteration=I.Core.Region.Product);
+      assert(Array.for_all(fun(_,term)->term.Flow.Workspace.ty=Flow.Ty.Array Flow.Ty.Float)region.sources);
+      assert(Array.for_all(function
+        |I.Core.Region.Input _|Const _|Frame _|Binary _->true|_->false)region.code)
+    end;
     let live = Frame_input.at_time (-0.25) in
     let row = Array.init width (fun i -> float i -. 0.25) in
     let native () =
@@ -92,7 +102,7 @@ let () =
       let native_seconds, native_bytes = measure native in
       let seconds, allocated = measure (fun () -> ok (I.Packed.force ~strict:true packed ~live)) in
       Printf.printf "%s count=%d width=%d registers=%d domains=%d native_seconds=%.6f packed_seconds=%.6f ratio=%.3f native_allocated_bytes=%.0f packed_allocated_bytes=%.0f\n%!"
-        (if integer then "integer_scale" else "product_float") count width (Array.length (I.Packed.Private.view packed).code) domains
+        (if integer then "integer_scale" else if float_product then "product_float_bank" else "product_float") count width (Array.length (I.Packed.Private.view packed).code) domains
         native_seconds seconds (seconds /. native_seconds) native_bytes allocated)) [1;4];
     exit 0
   end
@@ -759,3 +769,53 @@ let () =
   ignore (I.Packed.force ~measure overflow ~live);
   assert (List.mem true !references);
   print_endline "Strict numeric bodies: tiny packed execution, early refusal and no error fallback passed"
+
+let () =
+  let trace= !I.Packed.Private.trace in
+  Fun.protect ~finally:(fun()->I.Packed.Private.trace:=trace)(fun()->
+    I.Packed.Private.trace:=ignore;
+    let producer=Test_program.compile ~fusion:false
+      "(for [x (array/float (int/sub (frame/index) 1)) y (array/float (if (> t 0.) -1 2))] (+ x y))" in
+    let captured=Test_program.compile ~fusion:false
+      "(let* [gain (exp (* t 100000.))] (for [x (array/float (int/sub (frame/index) 1)) y (array/float 2)] (+ x gain)))" in
+    let float_bank packed=
+      let region=I.Packed.to_region packed in
+      assert(region.iteration=I.Core.Region.Product);
+      assert(Array.for_all(fun(_,term)->term.Flow.Workspace.ty=Flow.Ty.Array Flow.Ty.Float)region.sources);
+      assert(Array.for_all(function
+        |I.Core.Region.Input _|Const _|Uniform _|Frame _|Binary _|Unary _->true|_->false)region.code) in
+    let equal expected actual=match expected,actual with
+      |Ok(E.Float_array expected),Ok(E.Float_array actual)->
+          (* Empty Array.sub and Array.make have different OCaml block tags.
+             Compare the language's element bits and cardinality directly. *)
+          assert(Array.length expected=Array.length actual);
+          Array.iteri(fun i x->assert(Int64.bits_of_float x=Int64.bits_of_float actual.(i)))expected
+      |Error (expected:Flow.Diagnostic.t),Error (actual:Flow.Diagnostic.t)->
+          assert(expected.code=actual.code && expected.message=actual.message && expected.cause=actual.cause)
+      |_->failwith "Float Product forcing differs from reference" in
+    List.iter(fun packed->float_bank packed;
+      List.iter(fun(frame,time)->let live={(Frame_input.at_time time)with frame} in
+        let expected=I.Packed.reference packed ~live in
+        List.iter(fun domains->Rays_math.Parallel.run ~domains(fun()->
+          try equal expected(I.Packed.force ~strict:true packed ~live)
+          with exn->failwith(Printf.sprintf "Float Product frame=%d time=%g domains=%d: %s"
+            frame time domains(Printexc.to_string exn)))) [1;4;8])
+        [0,0.25;1,0.25;2,0.25;32770,(-0.25)]) [producer;captured];
+    let region=I.Packed.to_region producer in
+    List.iter(fun iteration->
+      let packed=ok(Result.map_error List.hd(I.Packed.of_region{region with iteration})) in
+      let calls=ref 0 in
+      let source _ _=incr calls;if !calls=1 then
+        Ok(Some[|I.Packed.{data=[||];offset=0;stride=1}|])
+        else Error(Flow.Diagnostic.error ~code:"E_LATER_SOURCE" "Later column source was reached.") in
+      let actual=I.Packed.force_into ~strict:true ~column_source:source ~count:0
+        ~outputs:[|[|Some[||]|]|] packed ~live:(Frame_input.at_time 0.25) in
+      match iteration,actual with
+      |I.Core.Region.Product,Ok _->assert(!calls=1)
+      |Zip,Error d->assert(!calls=2 && d.code="E_LATER_SOURCE")
+      |_->assert false) [I.Core.Region.Product;Zip];
+    let malformed _ _=Ok(Some[||]) in
+    (match I.Packed.force_into ~strict:true ~column_source:malformed ~count:0
+        ~outputs:[|[|Some[||]|]|] producer ~live:(Frame_input.at_time 0.25) with
+     |Error d->assert(d.code="E_ARRAY_TYPE")|_->assert false);
+    print_endline "Float Product: empty first input suppresses later producers, borrowed sources and captures; reached errors and Zip forcing remain exact")

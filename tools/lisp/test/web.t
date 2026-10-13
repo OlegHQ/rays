@@ -12,6 +12,7 @@ The web export: a draw graph becomes a standalone browser application. A second 
   out/runtime/marks.wgsl
   out/runtime/present.js
   out/runtime/prims.js
+  out/runtime/region_bindings.js
   out/runtime/runtime.js
   out/runtime/shape2.js
   out/runtime/workers.js

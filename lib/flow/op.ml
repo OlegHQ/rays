@@ -298,8 +298,124 @@ let reduction_type segmented = function
       if segmented then Ty.Array element else element
   | Ty.Array Ty.Any :: _ -> if segmented then Ty.Array Ty.Any else Ty.Any
   | _ -> fail "E_ARRAY_TYPE" "Array reductions need int, float or vector arrays."
+(* Ordered scatter owns only its zero-initialized result. Never regroup duplicate
+   indices: that would change separately rounded floating additions.
+   ponytail: one bulk scan is not internally cancellable, as for reductions;
+   thread a shared execution checkpoint through bulk primitives if required. *)
+let scatter_add indices values size =
+  let indices=match indices with Int_array data->data
+    |_->fail "E_ARRAY_TYPE" "Scatter indices must be an integer array." in
+  let count=array_length values in
+  let width=match values with Int_array _|Float_array _->1|Vec2_array _->2
+    |Vec3_array _->3|Vec4_array _->4
+    |_->fail "E_ARRAY_TYPE" "Scatter values must be int, float or vector arrays." in
+  let integer=match values with Int_array _->true|_->false in
+  let size=match size with Int _->array_count
+      ~limit:(if integer then Sys.max_array_length else Sys.max_floatarray_length/width)
+      "array/scatter_add" size
+    |_->fail "E_ARRAY_TYPE" "Scatter size must be an integer." in
+  if Array.length indices<>count then
+    fail "E_ARRAY_COUNT" "Scatter indices and values must have equal lengths.";
+  let index row=let index=indices.(row) in
+    if index<0 || index>=size then fail "E_ARRAY_RANGE" "Scatter index is outside its output length.";
+    index in
+  match values with
+  |Int_array values->
+      let result=Array.make size 0 in
+      for row=0 to count-1 do let index=index row in
+        result.(index)<-result.(index)+values.(row)
+      done;
+      Int_array result
+  |Float_array values|Vec2_array values|Vec3_array values|Vec4_array values->
+      let result=Array.make(size*width) 0. in
+      for row=0 to count-1 do let at=index row*width in
+        for component=0 to width-1 do
+          let value=fin "array/scatter_add" values.(row*width+component) in
+          result.(at+component)<-fin "array/scatter_add" (result.(at+component)+.value)
+        done
+      done;
+      (match width with 1->Float_array result|2->Vec2_array result
+        |3->Vec3_array result|_->Vec4_array result)
+  |_->assert false
+let scatter_type = function
+  |_::(Ty.Array (Ty.Int|Float|Vec2|Vec3|Vec4|Any) as values)::size::_ ->
+      if size<>Ty.Int && size<>Ty.Any then fail "E_ARRAY_TYPE" "Scatter size must be an integer.";
+      values
+  |_->fail "E_ARRAY_TYPE" "Scatter values must be int, float or vector arrays."
+(* These ordered whole-array operations share the reduction forcing boundary.
+   ponytail: bulk scans have no internal cancellation checkpoint; thread the
+   host execution checkpoint through bulk primitives if that ceiling matters. *)
+let compact_mask = function
+  |Int_array mask->
+      let kept=ref 0 in
+      Array.iter(fun value->if value=1 then incr kept else if value<>0 then
+        fail "E_ARRAY_MASK" "Compact mask entries must be 0 or 1.")mask;
+      let indices=Array.make !kept 0 and at=ref 0 in
+      Array.iteri(fun index value->if value=1 then begin indices.(!at)<-index;incr at end)mask;
+      Int_array indices
+  |_->fail "E_ARRAY_TYPE" "Compaction needs an integer mask array."
+let scan_sum = function
+  |Int_array values->
+      let count=Array.length values in
+      if count>=Sys.max_array_length then
+        fail "E_ARRAY_RANGE" "Scan output length is outside native storage bounds.";
+      let offsets=Array.make(count+1)0 in
+      for row=0 to count-1 do offsets.(row+1)<-offsets.(row)+values.(row) done;
+      Int_array offsets
+  |_->fail "E_ARRAY_TYPE" "Prefix sum needs an integer array."
+let integer_array_type = function
+  |[Ty.Array Ty.Int]|[Ty.Any]->Ty.Array Ty.Int
+  |_->fail "E_ARRAY_TYPE" "This operation needs an integer array."
+module Int_keys = Hashtbl.Make(struct type t=int let equal=Int.equal let hash=Hashtbl.hash end)
+module Text_keys = Hashtbl.Make(struct type t=string let equal=String.equal let hash=Hashtbl.hash end)
+(* Own only result/scratch, never the key arrays. Equal keys retain input order.
+   ponytail: stdlib sorting/hash construction have no internal host cancellation
+   checkpoint; thread a shared bulk checkpoint if that ceiling matters. *)
+let grade keys descending =
+  let count,compare=match keys with
+    |Int_array values->Array.length values,(fun a b->Int.compare values.(a) values.(b))
+    |Float_array values->
+        Array.iter(fun value->ignore(fin "array/grade" value))values;
+        Array.length values,(fun a b->Float.compare values.(a) values.(b))
+    |Text_array values->Array.length values,(fun a b->String.compare values.(a) values.(b))
+    |_->fail "E_ARRAY_TYPE" "Grade keys must be int, float or text arrays." in
+  let order=Array.init count Fun.id in
+  Array.stable_sort (if descending then (fun a b->compare b a)else compare)order;
+  Int_array order
+let index_of keys queries=match keys,queries with
+  |Int_array keys,Int_array queries->
+      let table=Int_keys.create(min(Array.length keys)65_536)in
+      Array.iteri(fun i key->if not(Int_keys.mem table key)then Int_keys.add table key i)keys;
+      Int_array(Array.map(fun key->Option.value ~default:(-1)(Int_keys.find_opt table key))queries)
+  |Text_array keys,Text_array queries->
+      let table=Text_keys.create(min(Array.length keys)65_536)in
+      Array.iteri(fun i key->if not(Text_keys.mem table key)then Text_keys.add table key i)keys;
+      Int_array(Array.map(fun key->Option.value ~default:(-1)(Text_keys.find_opt table key))queries)
+  |_->fail "E_ARRAY_TYPE" "Index lookup needs matching int or text arrays."
+let grade_type = function
+  |[Ty.Array (Ty.Int|Float|Text|Any)]|[Ty.Any]->Ty.Array Ty.Int
+  |_->fail "E_ARRAY_TYPE" "Grade keys must be int, float or text arrays."
+let index_type = function
+  |[Ty.Array Ty.Int;Ty.Array Ty.Int]|[Ty.Array Ty.Text;Ty.Array Ty.Text]
+  |[Ty.Array (Ty.Int|Text|Any);Ty.Array Ty.Any]|[Ty.Array Ty.Any;Ty.Array (Ty.Int|Text)]
+  |[Ty.Any;Ty.Array (Ty.Int|Text)]|[Ty.Array (Ty.Int|Text);Ty.Any]|[Ty.Any;Ty.Any]->Ty.Array Ty.Int
+  |_->fail "E_ARRAY_TYPE" "Index lookup needs matching int or text arrays."
 let reductions =
-  List.map (fun operation ->
+  [mk ~category:"Array" ~kw:["descending",Ty.Bool]
+    "array/grade" ["keys",Ty.Array Ty.Any] grade_type
+    {run=fun ~name:_ ~node:_ args->grade(List.assoc "keys" args)(Option.fold ~none:false ~some:truthy(List.assoc_opt "descending" args))};
+   mk ~category:"Array" "array/index_of" ["keys",Ty.Array Ty.Any;"queries",Ty.Array Ty.Any] index_type
+    {run=fun ~name:_ ~node:_ args->index_of(List.assoc "keys" args)(List.assoc "queries" args)};
+   mk ~category:"Array" "array/compact" ["mask",Ty.Array Ty.Int] integer_array_type
+    {run=fun ~name:_ ~node:_ args->compact_mask(List.assoc "mask" args)};
+   mk ~category:"Array" "array/scan_sum" ["array",Ty.Array Ty.Int] integer_array_type
+    {run=fun ~name:_ ~node:_ args->scan_sum(List.assoc "array" args)};
+   mk ~category:"Array" "array/scatter_add"
+
+    ["indices",Ty.Array Ty.Int;"values",Ty.Array Ty.Any;"size",Ty.Int] scatter_type
+    {run=fun ~name:_ ~node:_ args->scatter_add (List.assoc "indices" args)
+      (List.assoc "values" args) (List.assoc "size" args)}]
+  @ List.map (fun operation ->
     let name="array/" ^ Private.reduction_name operation in
     mk ~category:"Array" name ["array",Ty.Array Ty.Any] (reduction_type false)
       {run=fun ~name:_ ~node:_ args -> Private.reduce_array operation (List.assoc "array" args)})
@@ -332,6 +448,24 @@ let constant_array ty count value =
       (match width with 2->Vec2_array values|3->Vec3_array values|_->Vec4_array values)
   | _->assert false
 let arrays = [
+  (let types=["float";"int";"text";"vec2";"vec3";"vec4"] in
+   let message="Array capacity type is the literal int, text, float, vec2, vec3 or vec4." in
+   let capacity = function
+     | "int" | "text" -> Sys.max_array_length
+     | "float" -> Sys.max_floatarray_length
+     | "vec2" -> Sys.max_floatarray_length / 2
+     | "vec3" -> Sys.max_floatarray_length / 3
+     | "vec4" -> Sys.max_floatarray_length / 4
+     | _ -> fail "E_ARRAY_TYPE" message in
+   let op=mk ~category:"Array" ~kw:["type",Ty.Text] ~choices:["type",types]
+     "array/max_length" [] (fun _->Ty.Int)
+     {run=fun ~name:_ ~node:_ args ->Int(capacity(match List.assoc_opt "type" args with
+       |None->"float"|Some(Text ty)->ty|_->fail "E_ARRAY_TYPE" message))} in
+   {op with out_args=Some(fun args->
+      (match List.find_opt(fun(name,_,_)->name="type")args with
+       |None->()|Some(_,_,Some(Param.Text_value ty))->ignore(capacity ty)
+       |_->fail "E_ARRAY_TYPE" message);Ty.Int)});
+
   (let op = mk ~category:"Array" ~kw:["type",Ty.Text] ~choices:["type",["float";"int"]]
     "array/range" ["count", Ty.Int] (fun _ -> Ty.Array fl)
     {run = fun ~name ~node:_ args ->

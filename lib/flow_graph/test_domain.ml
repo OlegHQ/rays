@@ -267,3 +267,92 @@ let () =
     (Set_arg {node = body.path; key = Pos 1; sub = []; value = Syntax.make (Num "5.0")})) in
   let probe = Probe.make (ok (Eval.static ~record:true edited)) in
   assert ((Probe.footer probe body ~probes:[2]).value = "6")
+
+let () =
+  let source=ok(Syntax.parse "(workspace scatter (graph g :context host (let* [added (array/scatter_add (array/int 3 0) (array/vec3 3 [1 2 3]) 2)] added)))")in
+  let workspace=match Workspace.check catalog source with Some w,[]->w|_->assert false in
+  let card=Option.get(Projection.find(Projection.of_graph catalog workspace "g")["g";"added"])in
+  assert(card.head="array/scatter_add" && card.ty=Ty.Array Ty.Vec3);
+  let op=Option.get(Op.find card.head Context.value)in
+  assert(op.signature.pos=["indices",Ty.Array Ty.Int;"values",Ty.Array Ty.Any;"size",Ty.Int]);
+  let edited_source,edited=ok(Flow_edit.apply_checked catalog source
+    (Set_arg{node=card.path;key=Pos 2;sub=[];value=Syntax.make(Num "3")}))in
+  assert(List.assoc "g"(ok(Eval.run ~time:0. edited)).results=
+    Eval.Vec3_array[|3.;6.;9.;0.;0.;0.;0.;0.;0.|]);
+  let saved,_=Lisp.print edited_source in
+  let restored=ok(Syntax.parse saved)in
+  assert(match Workspace.check catalog restored with Some _,[]->true|_->false);
+  List.iter(fun(index,replacement)->assert(Result.is_error(Flow_edit.apply_checked catalog source
+    (Set_arg{node=card.path;key=Pos index;sub=[];value=List.hd(ok(Syntax.parse replacement))}))))
+    [0,"(array/float 3)";1,"(array/text 3)";2,"\"bad\"";2,"2.5"]
+
+let ()=
+  List.iter(fun(name,argument,expected,edited_argument,edited_expected)->
+    let source=ok(Syntax.parse("(workspace integer_arrays (graph g :context host (let* [tested ("^name^" "^argument^")] tested)))"))in
+    let workspace=match Workspace.check catalog source with Some w,[]->w|_->assert false in
+    let card=Option.get(Projection.find(Projection.of_graph catalog workspace "g")["g";"tested"])in
+    assert(card.head=name && card.ty=Ty.Array Ty.Int);
+    let signature=(Option.get(Op.find name Context.value)).signature in
+    assert(signature.pos=[(if name="array/compact"then "mask"else "array"),Ty.Array Ty.Int]);
+    assert(List.assoc "g"(ok(Eval.run ~time:0. workspace)).results=Eval.Int_array expected);
+    let changed,checked=ok(Flow_edit.apply_checked catalog source(Set_arg{node=card.path;key=Pos 0;sub=[];
+      value=List.hd(ok(Syntax.parse edited_argument))}))in
+    assert(List.assoc "g"(ok(Eval.run ~time:0. checked)).results=Eval.Int_array edited_expected);
+    let saved,_=Lisp.print changed in
+    assert(match Workspace.check catalog(ok(Syntax.parse saved))with Some _,[]->true|_->false);
+    List.iter(fun value->assert(Result.is_error(Flow_edit.apply_checked catalog source
+      (Set_arg{node=card.path;key=Pos 0;sub=[];value=List.hd(ok(Syntax.parse value))}))))
+      ["(array/float 3)";"(array/text 3)";"3"])
+    ["array/compact","(array/int 3 1)",[|0;1;2|],"(array/int 5 0)",[||];
+     "array/scan_sum","(array/int 3 2)",[|0;2;4;6|],"(array/int 5 -1)",[|0;-1;-2;-3;-4;-5|]]
+
+let ()=
+  List.iter(fun(name,args,expected)->
+    let source=ok(Syntax.parse("(workspace ordering (graph g :context host (let* [tested ("^name^" "^args^")] tested)))"))in
+    let workspace=match Workspace.check catalog source with Some w,[]->w|_->assert false in
+    let card=Option.get(Projection.find(Projection.of_graph catalog workspace "g")["g";"tested"])in
+    assert(card.head=name && card.ty=Ty.Array Ty.Int);
+    assert((List.hd card.rows).ty=Some(Ty.Array Ty.Any) && (List.hd card.rows).socket);
+    if name="array/grade"then assert(List.exists(fun(row:Projection.row)->row.key=Kw "descending" && row.ty=Some Ty.Bool)card.rows);
+    let signature=(Option.get(Op.find name Context.value)).signature in
+    assert(signature.pos=(if name="array/grade"then ["keys",Ty.Array Ty.Any]
+      else ["keys",Ty.Array Ty.Any;"queries",Ty.Array Ty.Any]));
+    assert(List.assoc "g"(ok(Eval.run ~time:0. workspace)).results=Eval.Int_array expected);
+    let key,value,expected=if name="array/grade"then Flow_edit.Kw "descending","true",[|0;1;2|]
+      else Flow_edit.Pos 1,"(array/int 5 2)",[|-1;-1;-1;-1;-1|]in
+    let changed,checked=ok(Flow_edit.apply_checked catalog source(Set_arg{node=card.path;key;sub=[];
+      value=List.hd(ok(Syntax.parse value))}))in
+    assert(List.assoc "g"(ok(Eval.run ~time:0. checked)).results=Eval.Int_array expected);
+    let saved,_=Lisp.print changed in
+    assert(match Workspace.check catalog(ok(Syntax.parse saved))with Some _,[]->true|_->false);
+    let _,checked=ok(Flow_edit.apply_checked catalog source(Set_arg{node=card.path;key=Pos 0;sub=[];
+      value=List.hd(ok(Syntax.parse "(array/int 0)"))}))in
+    assert(List.assoc "g"(ok(Eval.run ~time:0. checked)).results=
+      (if name="array/grade"then Eval.Int_array[||]else Eval.Int_array[|-1;-1;-1;-1|]));
+    List.iter(fun(key,value)->assert(Result.is_error(Flow_edit.apply_checked catalog source
+      (Set_arg{node=card.path;key;sub=[];value=List.hd(ok(Syntax.parse value))}))))
+      (if name="array/grade"then [Pos 0,"(array/vec3 3)";Pos 0,"3";Kw "descending","\"bad\""]
+       else [Pos 0,"(array/text 3)";Pos 1,"(array/float 3)";Pos 1,"3"]))
+    ["array/grade","(array/int 3 2)",[|0;1;2|];
+     "array/index_of","(array/int 3 1) (array/int 4 1)",[|0;0;0;0|]]
+
+let ()=
+  let source=ok(Syntax.parse "(workspace capacities (graph g :context host (let* [limit (array/max_length)] limit)))")in
+  let checked=match Workspace.check catalog source with Some w,[]->w|_->assert false in
+  let card=Option.get(Projection.find(Projection.of_graph catalog checked "g")["g";"limit"])in
+  assert(card.ty=Ty.Int && card.head="array/max_length");
+  let selector=List.find(fun(row:Projection.row)->row.key=Flow_edit.Kw "type")card.rows in
+  assert(selector.ty=Some Ty.Text && selector.control=Projection.Choice && not selector.socket);
+  List.iter(fun(kind,expected)->
+    let changed,checked=ok(Flow_edit.apply_checked catalog source(Set_arg{node=card.path;key=Kw "type";sub=[];
+      value=Syntax.make(Sym kind)}))in
+    assert(List.assoc "g"(ok(Eval.run ~time:0. checked)).results=Eval.Int expected);
+    let printed,_=Lisp.print changed in
+    let saved=match Workspace.check catalog(ok(Syntax.parse printed))with Some w,[]->w|_->assert false in
+    assert(List.assoc "g"(ok(Eval.run ~time:0. saved)).results=Eval.Int expected))
+    ["int",Sys.max_array_length;"text",Sys.max_array_length;"float",Sys.max_floatarray_length;
+     "vec2",Sys.max_floatarray_length/2;"vec3",Sys.max_floatarray_length/3;"vec4",Sys.max_floatarray_length/4];
+  List.iter(fun text->assert(Result.is_error(Flow_edit.apply_checked catalog source
+    (Set_arg{node=card.path;key=Kw "type";sub=[];value=List.hd(ok(Syntax.parse text))}))))
+    ["\"unknown\"";"1";"(if (> t 0.) \"int\" \"float\")"];
+  assert(List.assoc "g"(ok(Eval.run ~time:0. checked)).results=Eval.Int Sys.max_floatarray_length)

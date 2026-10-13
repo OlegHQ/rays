@@ -270,6 +270,7 @@ let rec literal ?store : C.literal -> string = function
 let rec ty_json : Flow.Ty.t -> string = function
   | Float -> {|"float"|} | Int -> {|"int"|} | Bool -> {|"bool"|} | Text -> {|"text"|}
   | Vec2 -> {|"vec2"|} | Vec3 -> {|"vec3"|} | Vec4 -> {|"vec4"|} | Any -> {|"any"|}
+  | Array t -> "{array: " ^ ty_json t ^ "}"
   | List t -> "{list: " ^ ty_json t ^ "}"
   | Record fields -> "{record: [" ^ String.concat ", "
       (List.map (fun (n, t) -> "[" ^ escape n ^ ", " ^ ty_json t ^ "]") fields) ^ "]}"
@@ -290,10 +291,14 @@ let signature : C.primitive -> string list option = function
   | Show | Truthy | Coerce _ -> Some ["value"]
   | Text_blank | Text_trim | Text_lower | Text_repr -> Some ["text"]
   | Text_table_decode -> Some ["text"] | Text_table_encode -> Some ["rows"]
+  | Array_grade -> Some ["keys";"descending"] | Array_index_of -> Some ["keys";"queries"]
+  | Array_compact -> Some ["mask"] | Array_scan_sum -> Some ["array"]
+  | Array_scatter_add -> Some ["indices";"values";"size"]
   | Array_reduce _ -> Some ["array"] | Array_segment _ -> Some ["values";"offsets"]
   | Sequence_length -> Some ["list"] | Sequence_get -> Some ["list"; "index"]
-  | Sequence_build -> Some ["count"; "width"; "type"]
+  | Sequence_build -> Some ["count"; "width"; "type"; "cooked"]
   | Sequence_slice -> Some ["list"; "first"; "count"]
+  | Array_max_length -> Some ["type"]
   | Array_range -> Some ["count";"type"] | Array_int | Array_text | Array_float | Array_vec3 | Array_vec4 -> Some ["count"; "value"]
   | Array_count -> Some ["array"] | Array_nth -> Some ["array"; "index"]
   | Array_slice -> Some ["array"; "first"; "count"] | Array_concat -> Some ["first"; "second"]
@@ -462,7 +467,8 @@ const transform = (rt, kind, v) => {
 |}]
 
 type context = { program : C.program; body : Buffer.t; used : (string, unit) Hashtbl.t;
-  mutable map : (int * Flow.Diagnostic.span) list; mutable async : bool; gpu : int -> bool; state_slot : int -> int }
+  mutable map : (int * Flow.Diagnostic.span) list; mutable async : bool; gpu : int -> bool; state_slot : int -> int;
+  bindings : bool; templated : bool; plans : (int, string) Hashtbl.t }
 
 let local n = "l" ^ string_of_int n
 let use ctx name = Hashtbl.replace ctx.used name ()
@@ -497,6 +503,8 @@ let expression ctx : C.expr -> string = function
   | Constant n -> Printf.sprintf "K[%d]" n
   | Local n -> local n
   | Call_index slot -> Printf.sprintf "BigInt(calls[%d]++)" slot
+| Source (Flow.Eval.Source ("$core/argument", _, ["index", Flow.Eval.Int index]))
+      when ctx.bindings && index >= 0 -> Printf.sprintf "rt.coreArgument(%d)" index
   | Source _ | Host_source _ | Source_descriptor _ -> raise (Refused ("E_WEB_SOURCE", "This host-owned source is outside the 2D web target.", None))
   | Frame field -> (match field with
       | Time -> "input.t" | Dt -> "input.dt" | Index -> "BigInt(input.frame)" | Tick -> "BigInt(input.tick)"
@@ -546,6 +554,9 @@ and statement ctx depth (s : C.statement) =
     use ctx "cell";
     Printf.sprintf "cell(state, %d, %s, %s)" (ctx.state_slot slot) key stamp in
   match s.node with
+  | Assign (n, Items ns) when ctx.program.locals.(n)=Flow.Ty.List Flow.Ty.geometry ->
+      line "%s%s = rt.sequence_cooked(%s);" at(local n)
+        ("[" ^ String.concat "," (List.map local ns) ^ "]")
   | Assign (n, e) -> line "%s%s = %s;" at (local n) (expression ctx e)
   | Reset_call slot -> line "%scalls[%d] = 0;" at slot
   | Draw d -> line "%s%s" at (draw ctx d)
@@ -610,11 +621,94 @@ and statement ctx depth (s : C.statement) =
   | Invoke {region; args; result} ->
       ctx.async <- true;
       if ctx.gpu region then line "%s%s = await rt.gpuArray(%d);" at (local result) region
-      else line "%s%s = await rt.invoke(%d, [%s]);" at (local result) region (String.concat ", " (List.map local args))
+      else begin
+        let p = match P.of_region ctx.program.regions.(region) with
+          | Ok p -> p | Error (d :: _) -> raise (Refused (d.code,d.message,d.span))
+          | Error [] -> assert false in
+        let dynamic = ctx.templated in
+        let plan = if dynamic then ", B" ^ string_of_int region else "" in
+        if dynamic && not (Hashtbl.mem ctx.plans region) then
+          Hashtbl.add ctx.plans region (binding_plan p);
+        line "%s%s = await rt.invoke(%d, [%s]%s);" at (local result) region
+          (String.concat ", " (List.map local args)) plan
+      end
 
-let frame_result ?store ?(gpu = fun _ -> false) ?(state_slot = Fun.id) (program : C.program) =
+and binding_plan packed =
+  let r=P.to_region packed in
+  let refuse message = raise (Refused ("E_WEB_SOURCE",message,None)) in
+  if r.result<>R.Collect || Array.length r.outputs<>1 then
+    refuse "Dynamic region arguments require a single Collect output.";
+  let rec supported = function
+    |Flow.Ty.Int|Float|Bool|Text|Vec2|Vec3|Vec4 -> true
+    |Array(Int|Float|Text|Vec2|Vec3|Vec4)|List Any -> true
+    |List ty->supported ty|Record fields->List.for_all(fun(_,ty)->supported ty)fields
+    |_->false in
+  if not(Array.for_all supported(P.Private.argument_types packed)) then
+    refuse "This compiled region argument type is outside the 2D web target.";
+  let needs_frame_value=ref false in
+  let prepare ~uniform program =
+    if Array.length program.C.state_slots<>0 || program.call_slots<>0 then
+      refuse "Region preparation cannot own state or call-index slots.";
+    (* A capture is read by synchronous selected instructions, including workers. *)
+    let rec asynchronous statements=List.exists(fun (s:C.statement)->match s.node with
+      |Invoke _->true|If{yes;no;_}->asynchronous yes||asynchronous no
+      |Iterate{body;_}->asynchronous body|Counted{init;body;_}->asynchronous init||asynchronous body
+      |State_read{init;_}->asynchronous init|Protect{body;handler;_}->asynchronous body||asynchronous handler
+      |Diagnose_rows{handler;_}->asynchronous handler|_->false)statements in
+    let rec frame_input statements=List.exists(fun (s:C.statement)->match s.node with
+      |Assign(_,Frame Input)->true|If{yes;no;_}->frame_input yes||frame_input no
+      |Iterate{body;_}->frame_input body|Counted{init;body;_}->frame_input init||frame_input body
+      |State_read{init;_}->frame_input init|Protect{body;handler;_}->frame_input body||frame_input handler
+      |Diagnose_rows{handler;_}->frame_input handler|_->false)statements in
+    if uniform && frame_input program.body then needs_frame_value:=true;
+    if uniform && asynchronous program.body then
+      refuse "Asynchronous region captures require a compiled synchronous preparation path.";
+    fst(frame_result ~bindings:true ~internal:true program) in
+  let source (residual,term) =
+    let view=Flow.Eval.Private.residual_view residual in
+    let residual=Flow.Eval.Private.with_bindings residual ~term view.bindings in
+    let program=match Flow_ir.Core_lower.lower ~strict:true residual with
+      |Ok p->p|Error form->refuse("Region input preparation: "^form) in
+    "{type:"^ty_json term.Flow.Workspace.ty^",source:"^escape(prepare ~uniform:false program)^"}" in
+  let uniform value =
+    let view=Flow.Eval.Private.residual_view r.residual in
+    let source:C.source={site=view.site;owner=view.owner;instance=view.instance;prefix=view.prefix;
+      iter=List.map(fun i->C.Static_index i)view.iter;span=Some view.term.form.span} in
+    let result=ref(-1) in
+    let program=match Flow_ir.Core_lower.lower_draw ~root:(lazy r.residual)
+      (fun ctx->result:=ctx.value source value) with
+      |Ok p->{p with results=[| !result |]}|Error form->refuse("Region capture preparation: "^form) in
+    let ty=match value with Flow.Eval.Residual residual->(Flow.Eval.Private.residual_view residual).term.ty
+      |v->Flow.Value.ty_of v in
+    "{type:"^ty_json ty^",source:"^escape(prepare ~uniform:true program)^"}" in
+  let rec facts slot = function
+    |R.Frame name-> [Printf.sprintf "[%d,%s,false]" slot (escape name)]
+    |Int_frame name->[Printf.sprintf "[%d,%s,true]" slot (escape name)]
+    |Guarded(_,body)->facts slot body|_->[] in
+  let sources=Array.map source r.sources and captures=Array.map uniform r.uniforms in
+  let terminal=r.outputs.(0) in
+  let integer=Array.length terminal=1 && R.integer_register r.code.(terminal.(0))
+  and text=Array.length terminal=1 && R.text_register r.code.(terminal.(0)) in
+  Printf.sprintf
+    "{source:%s,argumentTypes:[%s],sources:[%s],captures:[%s],product:%b,skip:[%s],frame:[%s],length:%d,width:%d,integer:%b,text:%b,frameValue:%b,arrayLimit:%sn,countLimit:%sn}"
+    (escape(region packed))
+    (String.concat ","(Array.to_list(Array.map ty_json(P.Private.argument_types packed))))
+    (String.concat ","(Array.to_list sources))
+    (String.concat ","(Array.to_list captures))
+    (r.iteration=R.Product) (String.concat ","(Array.to_list(Array.map string_of_int r.skip)))
+    (String.concat ","(List.concat(Array.to_list(Array.mapi facts r.code))))
+    (Array.length r.code)(Array.length r.outputs.(0))
+    integer text !needs_frame_value
+    (string_of_int(if integer || text then Sys.max_array_length else Sys.max_floatarray_length))
+    (string_of_int max_int)
+and frame_result ?store ?(gpu = fun _ -> false) ?(state_slot = Fun.id)
+    ?(bindings=false) ?(internal=false) (program : C.program) =
   let body = Buffer.create 4096 in
-  let ctx = { program; body; used = Hashtbl.create 8; map = []; async = false; gpu; state_slot } in
+  (* Once one region consumes computed locals, its producer Invokes need real
+     source preparation too. Argument-free fixed exports keep data.bin calls. *)
+  let templated=bindings || Array.exists(fun r->match P.of_region r with
+    |Ok p->P.Private.argument_types p<>[||]|Error _->false)program.regions in
+  let ctx = { program; body; used = Hashtbl.create 8; map = []; async = false; gpu; state_slot; bindings; templated; plans=Hashtbl.create 4 } in
   statements ctx 2 program.body;
   let code = Buffer.contents body in
   let mentions name = Hashtbl.mem ctx.used name in
@@ -623,7 +717,10 @@ let frame_result ?store ?(gpu = fun _ -> false) ?(state_slot = Fun.id) (program 
   if Array.length program.constants > 0 then Buffer.add_string out "let K;\n";
   List.iter (fun (name, text) ->
     if mentions name then Buffer.add_string out text) helpers;
-  Printf.bprintf out "export %sfunction frame(input, state, rt) {\n" (if ctx.async then "async " else "");
+  Hashtbl.to_seq ctx.plans |> List.of_seq |> List.sort (fun (a,_) (b,_)->Int.compare a b)
+    |> List.iter(fun (id,plan)->Printf.bprintf out "const B%d = %s;\n" id plan);
+  Printf.bprintf out "%s%sfunction frame(input, state, rt) {\n"
+    (if internal then "" else "export ") (if ctx.async then "async " else "");
   if Array.length program.constants > 0 then
     Printf.bprintf out "  K ??= [%s];\n" (String.concat ", " (List.map (literal ?store) (Array.to_list program.constants)));
   let n = Array.length program.locals in

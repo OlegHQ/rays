@@ -12,6 +12,7 @@
 // per execution; workers return disjoint chunk-local string arrays into a fresh caller-owned output.
 
 import { diagnosticError } from './prims.js';
+import {transportArguments} from './region_bindings.js';
 
 export const CHUNK = 16 * 1024;
 
@@ -30,11 +31,13 @@ const port = typeof require === 'function' ? require('node:worker_threads').pare
 const listen = f => port.on ? port.on('message', f) : (port.onmessage = e => f(e.data));
 const regions = new Map();
 let prepared;
-listen(m => {
+const bindingsReady = import(${JSON.stringify(new URL('./region_bindings.js', import.meta.url).href)});
+let tail = Promise.resolve();
+listen(m => { tail = tail.then(async () => {
   try {
     if (m.op === 'load') regions.set(m.id, new Function(m.source + '\\nreturn region;')());
     else if (m.op === 'unload') regions.delete(m.id);
-    else if (m.op === 'prepare') prepared = m;
+    else if (m.op === 'prepare') { prepared = m; if (m.binding) prepared.uniforms = (await bindingsReady).workerUniforms(m.binding); }
     else if (m.op === 'release') prepared = undefined;
     else {
       const p = prepared ?? m;
@@ -42,8 +45,8 @@ listen(m => {
       const status = regions.get(m.id)(p.inputs, p.uniforms, outputs, m.start, m.stop, m.base);
       port.postMessage({ status, texts: outputs.map((o, i) => m.outputs[i] === null ? o : null) });
     }
-  } catch (error) { port.postMessage({ error: { message: error?.message ?? String(error), code: error?.code, cause: error?.cause, hints: error?.hints, trace: error?.trace } }); }
-});`;
+  } catch (error) { port.postMessage({ error: { message: error?.message ?? String(error), code: error?.code, cause: error?.cause, hints: error?.hints, trace: error?.trace, statement: error?.statement } }); }
+}); });`;
 
 // The one adapter: {post(message), onMessage(f), stop()}.
 export async function spawnWorker() {
@@ -85,16 +88,17 @@ export async function createPool({ size = Math.max(1, (globalThis.navigator?.har
       for (const s of slots) s.w.post({ op: 'unload', id });
     },
     // Run a Collect region over [0, count) -> 0 | 1. Calls are served in order.
-    collect(id, inputs, uniforms, outputs, count, skip = []) {
+    collect(id, inputs, uniforms, outputs, count, skip = [], binding = null) {
       const run = () => new Promise((resolve, reject) => {
         const chunks = Math.ceil(count / CHUNK);
         if (chunks <= 1) { try { return resolve(compiled.get(id)(inputs, uniforms, outputs, 0, count)); }
           catch (error) { return reject(diagnosticError(error)); } }
         if (!outputs.every(o => Array.isArray(o) || o.buffer instanceof SharedArrayBuffer)) return reject(new TypeError('collect outputs must be pool.alloc arrays or Text arrays'));
         const ins = inputs.map(shared);
-        const captures = uniforms.map(u => ArrayBuffer.isView(u) ? shared(u) : u);
+        const captures = binding ? null : uniforms.map(u => ArrayBuffer.isView(u) ? shared(u) : u);
+        const packet = binding ? {...binding, args:transportArguments(binding.plan.argumentTypes, binding.args, shared)} : null;
         // Stage immutable tables once per execution, not once per chunk.
-        for (const slot of slots) slot.w.post({ op: 'prepare', inputs: ins, uniforms: captures });
+        for (const slot of slots) slot.w.post({ op: 'prepare', inputs: ins, uniforms: captures, binding:packet });
         const lower = n => { let lo = 0, hi = skip.length; while (lo < hi) {
           const mid = (lo + hi) >>> 1; if (skip[mid] < n) lo = mid + 1; else hi = mid;
         } return lo; };

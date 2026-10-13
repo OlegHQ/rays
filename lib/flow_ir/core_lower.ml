@@ -5,7 +5,9 @@ module C = Core
 module Names = Map.Make (String)
 exception Unsupported of string
 let refuse name = raise (Unsupported name)
+let geometry_collection ty = ty=Flow.Ty.List Flow.Ty.geometry
 type cache_key = Residual_key of int | Cooked_key of Flow.Ty.t * int
+  | Cooked_list_key of E.value array
 type lowered = Known of E.value | Computed of int * Flow.Ty.t
   | Record_fields of (string * lowered) list
   | Record_choice of lowered * lowered * lowered
@@ -116,10 +118,19 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
         ensure statements cache source value
     | Known (V.Record fields) -> ensure statements cache source (Record_fields (List.map (fun (name,v) -> name,Known v) fields))
     | Known (V.List items) when C.literal_of_value (V.List items)=None ->
-        if Array.length items>4096 then refuse "list_limit";
-        let result=primitive statements cache source (type_of (Known (V.List items))) C.Sequence_build
-          ["count",Known (V.Int (Array.length items))] in
-        Array.iteri (fun index item -> store statements cache source result (Known (V.Int index)) (Known item)) items;
+        let ty=type_of(Known(V.List items)) in
+        if Array.length items>4096 && not(geometry_collection ty) then refuse "list_limit";
+        let cooked=geometry_collection ty && Array.for_all(function
+          |V.Deferred(ty,_)->ty=Flow.Ty.geometry|V.No_geo->true|_->false)items in
+        let key=Cooked_list_key items in
+        let result=match if cooked then Hashtbl.find_opt cache key else None with
+          |Some result->result
+          |None->
+              let result=primitive statements cache source ty C.Sequence_build
+                ["count",Known (V.Int (Array.length items))] in
+              Array.iteri (fun index item -> store statements cache source result (Known (V.Int index)) (Known item)) items;
+              if cooked then Hashtbl.add cache key result;
+              result in
         ensure statements cache source result
     | Record_choice (condition,yes,no) as value ->
         let condition=ensure statements cache source condition in
@@ -141,6 +152,10 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
         let index = !next_constant in incr next_constant; constants := value_literal :: !constants;
         match emit statements source (V.ty_of value) (Constant index) with Computed (n,_) -> n | _ -> assert false
   and primitive statements cache source ty op args =
+    (* Geometry rest slots already have native collection capacity. This internal
+       builder flag follows their checked type, never an authored count option. *)
+    let args=if op=C.Sequence_build && geometry_collection ty then
+        args @ ["cooked",Known(V.Bool true)] else args in
     let args = List.map (fun (name,v) -> name,ensure statements cache source v) args in
     emit statements source ty (Prim (op,args))
   and known_values args =
@@ -219,6 +234,9 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
     | "float/fma_checked" -> Some Checked_fma
     | "text/table_decode" -> Some Text_table_decode
     | "text/table_encode" -> Some Text_table_encode
+    | "array/grade" -> Some Array_grade | "array/index_of" -> Some Array_index_of
+    | "array/compact" -> Some Array_compact | "array/scan_sum" -> Some Array_scan_sum
+    | "array/scatter_add" -> Some Array_scatter_add
     | "array/min" -> Some (Array_reduce Minimum) | "array/max" -> Some (Array_reduce Maximum)
     | "array/segment_sum" -> Some (Array_segment Sum)
     | "array/segment_min" -> Some (Array_segment Minimum)
@@ -230,7 +248,7 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
     | "int/lt" -> Some (Integer_compare Ilt) | "int/le" -> Some (Integer_compare Ile)
     | "int/gt" -> Some (Integer_compare Igt) | "int/ge" -> Some (Integer_compare Ige)
     | "int/eq" -> Some (Integer_compare Ieq)
-    | "array/range" -> Some Array_range | "array/int" -> Some Array_int
+    | "array/max_length" -> Some Array_max_length | "array/range" -> Some Array_range | "array/int" -> Some Array_int
     | "array/text" -> Some Array_text
     | "array/float" -> Some Array_float | "array/vec3" -> Some Array_vec3 | "array/vec4" -> Some Array_vec4
     | "array/nth" -> Some Array_nth | "array/count" -> Some Array_count | "array/slice" -> Some Array_slice
@@ -277,7 +295,7 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
       | ty when ty=Flow.Ty.geometry -> true
       | Flow.Ty.Record fields -> List.exists(fun(_,ty)->geometry_accumulator ty)fields
       | _ -> false in
-    let numeric_candidate=x.ty<>Flow.Ty.Array Flow.Ty.Text && x.ty<>Flow.Ty.Text && (match x.node with
+    let numeric_candidate=not(geometry_collection x.ty) && x.ty<>Flow.Ty.Array Flow.Ty.Text && x.ty<>Flow.Ty.Text && (match x.node with
       | Loop {kind=`Fold;_} when geometry_accumulator x.ty -> false
       | W.Hof (_, _::rest) when text_input rest -> false
       | Loop {clauses;_} when text_input (List.map snd clauses) -> false
@@ -322,7 +340,7 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
     | Record fields -> Record_fields (List.map (fun (name,t) -> name,
         term ~borrow statements cache source env t) fields)
     | List_lit items ->
-        if List.length items>4096 then refuse "list_limit";
+        if List.length items>4096 && not(geometry_collection x.ty) then refuse "list_limit";
         let items=List.map compile items in
         (match known_values (List.map (fun v -> "",v) items) with
          | Some items ->
@@ -630,6 +648,7 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
          with V.Fail (code,message,_) -> primitive statements cache source Flow.Ty.Any (Fail (code,message)) []
            | V.Diagnostic_fail d -> primitive statements cache source Flow.Ty.Any (Fail_diagnostic d) [])
     | Known (V.List items),index when C.literal_of_value (V.List items)=None ->
+        if Array.length items>4096 then refuse "list_limit";
         let indices=Known (V.List (Array.init (Array.length items) (fun i -> V.Int i))) in
         let index=sequence_get statements cache source indices index in
         Selected (Array.map (fun v -> Known v) items,index)
@@ -739,7 +758,15 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
         let width=match ty with
           | Flow.Ty.Array (Int|Text|Float|Any) -> 1 | Array Vec2 -> 2 | Array Vec3 -> 3 | Array Vec4 -> 4
           | Array _ -> refuse "packed_higher_order" | _ -> 0 in
-        let items=List.map compile items in
+        let items=List.map (fun item ->
+          let value=compile item in
+          match value with
+          | Known (V.List xs) when geometry_collection (type_of value) &&
+              Array.for_all (function V.Deferred (ty,_) -> ty=Flow.Ty.geometry | V.No_geo -> true | _ -> false) xs ->
+              (* Homogeneous handles need no lazy heterogeneous selection tree.
+                 Publish their builder before the loop; residual elements stay lazy. *)
+              hold statements cache source value
+          | value -> value) items in
         let counts=List.map (sequence_count statements cache source) items in
         let count=match counts with [] -> refuse "higher_order" | first::rest ->
           List.fold_left (fun count next -> primitive statements cache source Flow.Ty.Int (Numeric Min)
@@ -750,7 +777,7 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
                 | Array Text -> ["type",Known (V.Text "text")] | _ -> []) else []) in
         let kept=hold statements cache source (Known (V.Int 0)) in
         counted ~limit:(if ty=Flow.Ty.Array Flow.Ty.Int || ty=Flow.Ty.Array Flow.Ty.Text then Sys.max_array_length
-          else if width>0 then Sys.max_floatarray_length else 4096) statements cache source (Known (V.Int 0)) count (fun body cache index ->
+          else if width>0 then Sys.max_floatarray_length else if geometry_collection ty then Sys.max_array_length else 4096) statements cache source (Known (V.Int 0)) count (fun body cache index ->
           let args=List.map (fun sequence -> sequence_get body cache source sequence index) items in
           let item=List.hd args in
           let result_ty=if kind=`Map then Option.value ~default:Flow.Ty.Any (Flow.Ty.elem ty) else Flow.Ty.Bool in
@@ -763,7 +790,7 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
         if kind=`Filter && width>0 then primitive statements cache source ty Array_slice
           ["array",result;"first",Known (V.Int 0);"count",kept]
         else if kind=`Filter then slice statements cache source ty result (Known (V.Int 0)) kept
-        else if width>0 then result
+        else if width>0 || geometry_collection ty then result
         else primitive statements cache source ty Sequence_concat ["list",result]
     | _ -> refuse "higher_order"
   and sort_by statements cache source ty fn items =

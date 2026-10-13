@@ -757,9 +757,6 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
           let live = List.filter (fun (_, v) -> E.is_live v) node.args in
           let resource = node.ty=Ty.image && node.kind="exact"
             || node.kind="image/load" || node.kind="image/render" || node.kind="image/map" in
-          if not template && node.kind <> "sop/with_attr" && node.kind<>"sop/with_group" && not(is_mesh node.kind) && not resource then
-            pending := List.rev_append (List.map (fun (field, value) ->
-              {node = cid; field; value}) live) !pending;
           (* a template node keeps its live arguments: each element forces them *)
           let args = if template || node.kind = "sop/with_attr" || node.kind="sop/with_group" || is_mesh node.kind || resource then node.args
             else List.map (fun (n, v) -> n, at_zero v) node.args in
@@ -970,6 +967,13 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
                 {cid; factory; arity = !arity; dynamic = []; zone = None;
                  slots = List.rev !slots; changes = List.rev !changes; kernels = List.rev !kernels} in
           let p = { p with dynamic = List.rev !dynamic } in
+          if not template && node.kind <> "sop/with_attr" && node.kind<>"sop/with_group" && not(is_mesh node.kind) && not resource then begin
+            let parameters = parameters p.factory in
+            pending := List.rev_append (List.filter_map (fun (field, value) ->
+              let field = if node.kind="image/noise" && field="freq" then "frequency" else field in
+              if List.exists (fun (parameter : Port.parameter) -> parameter.path=field) parameters
+              then Some {node=cid; field; value} else None) live) !pending
+          end;
           Hashtbl.add prepared node.id p; p
     (* the zone node of a lowered graph: it cooks [z.root] once per element *)
     and kernel_node ?state ?elems (k : kernel_input) inputs =

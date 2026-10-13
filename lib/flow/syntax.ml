@@ -249,7 +249,8 @@ let attribute_args head args =
   let attribute_metadata=List.mem head ["sop/rename_attr";"sop/swap_attr"] in
   let group_metadata=List.mem head ["sop/rename_group";"sop/delete_group"] in
   let positional=attribute || head="sop/count" in
-  if not positional && not group && not attribute_metadata && not group_metadata && head<>"array/range" then args else
+  if not positional && not group && not attribute_metadata && not group_metadata
+      && head<>"array/range" && head<>"array/max_length" then args else
   let rec selectors position=function
     |({node=Kw("owner"|"type"|"selection"|"default");_}as key)::value::rest->key::value::selectors position rest
     |({node=Kw name;_}as selector)::rest when position=1->
@@ -265,7 +266,7 @@ let attribute_args head args =
         || (group_metadata && kind="owner" && List.mem name ["point";"vertex";"primitive";"edge";"any"])
         || ((attribute_metadata || group_metadata) && kind="conflict" && List.mem name ["skip";"error";"overwrite";"union"])
         || (head="sop/swap_attr" && kind="method" && List.mem name ["swap";"move";"copy"])
-        || (kind="type" && (attribute || head="array/range") && List.mem name (if attribute then ["float";"int";"vec2";"vec3";"vec4";"text";"float_array";"int_array"] else ["float";"int"])) ->
+        || (kind="type" && (attribute || head="array/range" || head="array/max_length") && List.mem name (if attribute then ["float";"int";"vec2";"vec3";"vec4";"text";"float_array";"int_array"] else if head="array/max_length" then ["float";"int";"text";"vec2";"vec3";"vec4"] else ["float";"int"])) ->
         key::{value with node=Str name}::enums rest
     | first::rest->first::enums rest|[]->[] in
   enums args

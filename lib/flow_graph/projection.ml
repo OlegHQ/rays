@@ -254,7 +254,12 @@ let call_rows c (e : S.t) h args =
   let npos = List.length pos in
   let at i = List.nth_opt pos i in
   let posrow ?ty ?socket label i = row c ?ty ?socket label (E.Pos i) (at i) in
-  let kwrow ?ty label = row c ?ty label (E.Kw label) (List.assoc_opt label kws) in
+  let kwrow ?ty label =
+    let choices=W.op_choices ~ops:c.w.ops h label in
+    let literal=choices<>[] && Option.fold ~none:false
+      ~some:(fun (op:Flow.Op.t)->op.out_args<>None)(Flow.Op.find ~extra:c.w.ops h c.ctx) in
+    row c ?ty ~control:(if choices=[] then Plain else Choice) ~socket:(not literal)
+      label (E.Kw label) (List.assoc_opt label kws) in
   let items label prefix ty =
     List.mapi (fun i a -> row c ?ty ~kind:Rest (label i) (E.Pos i) (Some a)) pos
     @ [ add c prefix (E.Pos npos) ty ] in

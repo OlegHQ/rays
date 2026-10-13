@@ -20,6 +20,20 @@ const prims = await import(pathToFileURL(resolve(primsPath)).href);
 const { Fail, PArray, TextArray } = prims;
 const TOLERANCE = 1e-12;
 
+// Private geometry builder capacity follows checked Core List geometry, while
+// ordinary authored lists retain their independent 4096-value limit.
+{
+  const xs=prims.sequence_build(5001n,undefined,undefined,true);
+  if(xs.length!==5001 || xs.some(x=>x!==null)) throw new Error('cooked collection capacity');
+  if(prims.sequence_cooked(xs).length!==5001) throw new Error('cooked literal collection capacity');
+  for(const f of [()=>prims.sequence_build(5001n),()=>prims.sequence_build(-1n,undefined,undefined,true),
+      ()=>prims.sequence_concat(new Array(4096).fill(1n),[2n])]) {
+    let failed=false;try{f();}catch(e){if(!(e instanceof Fail)||e.code!=='E_ITER_BOUND')throw e;failed=true;}
+    if(!failed)throw new Error('ordinary list capacity guard was widened');
+  }
+}
+
+
 for (const [name, args, expected] of [
   ['sign', [-0], -0], ['sign', [0], 0], ['sign', [-Number.MIN_VALUE], -1],
   ['atan2', [-0, 1], -0], ['atan2', [0, -0], Math.PI],

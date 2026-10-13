@@ -317,7 +317,7 @@ export function sequence_get(l, index) {
   return i < 0n || i >= BigInt(xs.length)
     ? err('E_LIST_RANGE', `nth index ${i} is out of range for a list of length ${xs.length}.`) : xs[Number(i)];
 }
-export function sequence_build(count, width, type) {
+export function sequence_build(count, width, type, cooked = false) {
   if (type !== undefined && type !== 'int' && type !== 'float' && type !== 'text')
     err('E_ARRAY_TYPE', 'Core array type is int, float or text.');
   if (type === 'text') {
@@ -339,8 +339,12 @@ export function sequence_build(count, width, type) {
     return n < 0n || n > MAX_LENGTH / BigInt(w) ? err('E_ARRAY_RANGE', 'Array length is outside native storage bounds.')
       : new PArray(w, new Float64Array(Number(n) * w));
   }
-  return n < 0n || n > 4096n ? err('E_ITER_BOUND', 'Core list length exceeds its bound.') : new Array(Number(n)).fill(null);
+  if (typeof cooked !== 'boolean') err('E_TYPE', 'Core cooked collection flag must be boolean.');
+  return n < 0n || n > (cooked ? MAX_LENGTH : 4096n)
+    ? err('E_ITER_BOUND', 'Core list length exceeds its bound.') : new Array(Number(n)).fill(null);
 }
+// Private typed geometry-list construction; no authored list operator exposes it.
+export const sequence_cooked = values => list(values).slice();
 export function sequence_slice(l, first, count) {
   const xs = list(l), f = intOf(first), c = intOf(count);
   return f < 0n || c < 0n || f > BigInt(xs.length) || c > BigInt(xs.length) - f
@@ -398,6 +402,17 @@ export const fail = (code, message, cause, hints, trace) => err(code, message, c
 
 // ---- packed arrays ----
 const MAX_LENGTH = 2n ** 54n - 1n; // Sys.max_floatarray_length
+// Logical native element capacity, not an allocation or browser TypedArray limit.
+export function array_max_length(type = 'float') {
+  switch (type) {
+    case 'int': case 'text': case 'float': return MAX_LENGTH;
+    case 'vec2': return MAX_LENGTH / 2n;
+    case 'vec3': return MAX_LENGTH / 3n;
+    case 'vec4': return MAX_LENGTH / 4n;
+    default: return err('E_ARRAY_TYPE', 'Array capacity type is the literal int, text, float, vec2, vec3 or vec4.');
+  }
+}
+
 function count(name, v) {
   if (typeof v === 'bigint') {
     if (v < 0n || v > MAX_LENGTH) err('E_ARRAY_RANGE', `${name} needs a non-negative whole length.`);
@@ -487,7 +502,84 @@ function arrayReduce(operation, a, offsets) {
     result[row * width + c] = reduce(Number(offsets.data[row]), Number(offsets.data[row + 1]), c);
   return new PArray(width, result);
 }
-export const array_min = a => arrayReduce('min', a);
+// Whole-array ordered operations: input buffers are borrowed and never changed.
+// Byte keys reuse the reversible native text codec, not Unicode collation.
+const arrayTextKey = text => Array.from(textBytes(text), byte => String.fromCharCode(byte)).join('');
+export function array_grade(keys, descending = false) {
+  let data;
+  if (keys instanceof TextArray) data = keys.data.map(arrayTextKey);
+  else if (keys instanceof PArray && keys.width === 1 && keys.data instanceof BigInt64Array) data = keys.data;
+  else if (keys instanceof PArray && keys.width === 1 && keys.data instanceof Float64Array) {
+    for (const value of keys.data) fin('array/grade', value);
+    data = keys.data;
+  } else err('E_ARRAY_TYPE', 'Grade keys must be int, float or text arrays.');
+  const order = Array.from({length:data.length}, (_, i) => i);
+  order.sort((a, b) => {
+    const x = data[a], y = data[b], compared = x < y ? -1 : x > y ? 1 : 0;
+    return compared === 0 ? a - b : descending ? -compared : compared;
+  });
+  return new PArray(1, BigInt64Array.from(order, BigInt));
+}
+export function array_index_of(keys, queries) {
+  let source, wanted;
+  if (keys instanceof TextArray && queries instanceof TextArray) {
+    source = keys.data.map(arrayTextKey); wanted = queries.data.map(arrayTextKey);
+  } else if (keys instanceof PArray && queries instanceof PArray && keys.width === 1 && queries.width === 1
+      && keys.data instanceof BigInt64Array && queries.data instanceof BigInt64Array) {
+    source = keys.data; wanted = queries.data;
+  } else err('E_ARRAY_TYPE', 'Index lookup needs matching int or text arrays.');
+  const table = new Map();
+  for (let i = 0; i < source.length; i++) if (!table.has(source[i])) table.set(source[i], BigInt(i));
+  return new PArray(1, BigInt64Array.from(wanted, key => table.get(key) ?? -1n));
+}
+export function array_compact(mask) {
+  if (!(mask instanceof PArray) || mask.width !== 1 || !(mask.data instanceof BigInt64Array))
+    err('E_ARRAY_TYPE', 'Compaction needs an integer mask array.');
+  let kept = 0;
+  for (const value of mask.data) {
+    if (value === 1n) kept++;
+    else if (value !== 0n) err('E_ARRAY_MASK', 'Compact mask entries must be 0 or 1.');
+  }
+  const result = new BigInt64Array(kept);
+  for (let i = 0, at = 0; i < mask.data.length; i++) if (mask.data[i] === 1n) result[at++] = BigInt(i);
+  return new PArray(1, result);
+}
+export function array_scan_sum(array) {
+  if (!(array instanceof PArray) || array.width !== 1 || !(array.data instanceof BigInt64Array))
+    err('E_ARRAY_TYPE', 'Prefix sum needs an integer array.');
+  const n = array.data.length;
+  if (BigInt(n) >= MAX_LENGTH) err('E_ARRAY_RANGE', 'Scan output length is outside native storage bounds.');
+  const result = new BigInt64Array(n + 1);
+  for (let i = 0; i < n; i++) result[i + 1] = wrap(result[i] + array.data[i]);
+  return new PArray(1, result);
+}
+export function array_scatter_add(indices, values, size) {
+  if (!(indices instanceof PArray) || indices.width !== 1 || !(indices.data instanceof BigInt64Array))
+    err('E_ARRAY_TYPE', 'Scatter indices must be an integer array.');
+  const n = length(values);
+  if (!(values instanceof PArray) || ![1,2,3,4].includes(values.width)
+      || !(values.data instanceof Float64Array || values.width === 1 && values.data instanceof BigInt64Array))
+    err('E_ARRAY_TYPE', 'Scatter values must be int, float or vector arrays.');
+  const integer = values.data instanceof BigInt64Array, width = values.width;
+  if (typeof size !== 'bigint') err('E_ARRAY_TYPE', 'Scatter size must be an integer.');
+  if (size < 0n || size > MAX_LENGTH / BigInt(width))
+    err('E_ARRAY_RANGE', 'array/scatter_add needs a non-negative whole length.');
+  if (indices.data.length !== n) err('E_ARRAY_COUNT', 'Scatter indices and values must have equal lengths.');
+  const result = integer ? new BigInt64Array(Number(size)) : new Float64Array(Number(size) * width);
+  for (let row = 0; row < n; row++) {
+    const index = indices.data[row];
+    if (index < 0n || index >= size) err('E_ARRAY_RANGE', 'Scatter index is outside its output length.');
+    const at = Number(index) * width;
+    if (integer) result[at] = wrap(result[at] + values.data[row]);
+    else for (let c = 0; c < width; c++) {
+      const value = fin('array/scatter_add', values.data[row * width + c]);
+      result[at + c] = fin('array/scatter_add', result[at + c] + value);
+    }
+  }
+  return new PArray(width, result);
+}
+export const array_min =
+ a => arrayReduce('min', a);
 export const array_max = a => arrayReduce('max', a);
 export const array_segment_sum = (a, offsets) => arrayReduce('sum', a, offsets);
 export const array_segment_min = (a, offsets) => arrayReduce('min', a, offsets);

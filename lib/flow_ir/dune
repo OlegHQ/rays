@@ -135,3 +135,23 @@
  (name test_error_rows)
  (modules test_error_rows)
  (libraries flow_ir flow flow_graph))
+
+(test
+ (name test_scatter)
+ (modules test_scatter)
+ (libraries flow_ir flow rays_math unix))
+
+(test
+ (name test_compact_scan)
+ (modules test_compact_scan)
+ (libraries flow flow_ir rays_math))
+
+(test
+ (name test_grade_index)
+ (modules test_grade_index)
+ (libraries flow flow_ir rays_math))
+
+(test
+ (name test_array_max_length)
+ (modules test_array_max_length)
+ (libraries flow flow_ir rays_math))

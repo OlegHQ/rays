@@ -52,3 +52,77 @@ let () =
      [statement 0 (Assign (1,Constant 3));statement 1 (Assign (2,Constant 1));
       statement 2 (Assign (3,Constant 2));store]];
   print_endline "Core list stores: local builder ownership and alias publication passed"
+
+let () =
+  let module C=I.Core in
+  let source:C.source={site=["cooked-builder"];owner=[];instance=0;prefix=[];iter=[];span=None} in
+  let statement id node:C.statement={id;source;node} in
+  let program count cooked:C.program={constants=[|Int count;Bool cooked|];
+    locals=[|Flow.Ty.Int;Bool;List Flow.Ty.geometry|];
+    body=[statement 0(Assign(0,Constant 0));statement 1(Assign(1,Constant 1));
+      statement 2(Assign(2,Prim(Sequence_build,["count",0;"cooked",1])))];
+    results=[|2|];state_slots=[||];regions=[||];call_slots=0} in
+  let live=Frame_input.at_time 0. in
+  (match I.Core_exec.run ~strict:true(program 5001 true) ~live with
+   |Ok(E.List xs)->assert(Array.length xs=5001 && Array.for_all((=)E.No_geo)xs)
+   |_->failwith "Typed cooked collection retained an unrelated value-list cap");
+  List.iter(fun(count,cooked)->match I.Core_exec.run ~strict:true(program count cooked) ~live with
+    |Error d->assert(d.code="E_ITER_BOUND" && d.message="Core list length exceeds its bound.")
+    |_->failwith "Ordinary list or negative cooked builder lost its existing guard") [5001,false;-1,true];
+  assert(match I.Core_exec.run ~strict:true(program 4096 false) ~live with
+    |Ok(E.List xs)->Array.length xs=4096|_->false)
+
+let () =
+  let module C=I.Core in
+  let captured ty body value =
+    let default=if ty="geometry" then "(list nil)" else "(list 1)" in
+    let source="(workspace captures (graph g :context host [(parts : (list "^ty^") "^default^")] "^
+      "(let* [clock t tested "^body^"] 0.)))" in
+    let ws=match Flow.Workspace.check {Flow.Check.version=1;kinds=[]}(ok(Flow.Syntax.parse source))with
+      |Some ws,[]->ws|_,ds->failwith(String.concat "; "(List.map Flow.Diagnostic.to_string ds))in
+    let r=match snd(List.hd(List.assoc["g";"clock"](ok(E.static ~record:true ws)).records))with
+      |E.Residual r->r|_->failwith "Capture context needs a live clock"in
+    let term=match (List.hd ws.graphs).body.node with
+      |Flow.Workspace.Let(bindings,_)->List.find_map(function
+        |Flow.Workspace.Name "tested",term->Some term|_->None)bindings|>Option.get
+      |_->failwith "Missing checked capture term"in
+    E.Private.with_bindings r ~term ["parts",value] in
+  let xs=Array.init 5001(fun i->if i mod 11=10 then E.No_geo
+    else E.Deferred(Flow.Ty.geometry,if i mod 2=0 then 17 else 23))in
+  let resolve=function
+    |E.Source("$core/cooked",ty,["id",E.Int id])when ty=Flow.Ty.geometry->Ok(E.Deferred(ty,id))
+    |E.Source("$core/operator",ty,("$name",E.Text name)::args)
+      when ty=Flow.Ty.geometry && (name="nth" || name="first")->
+        let op=Option.get(Flow.Op.find name Flow.Context.host)in
+        Ok(op.body ~live:(Frame_input.at_time 0.)
+          ~node:(fun _ _->failwith "Collection selector unexpectedly constructed a node")args)
+    |E.Source(name,ty,args)->Error(Flow.Diagnostic.error ~code:"E_DATA_SOURCE"
+      ("Unexpected capture source: "^name^" : "^Flow.Ty.to_string ty^" "^
+        String.concat "; "(List.map(fun(name,value)->name^"="^E.show value)args)))
+    |value->Error(Flow.Diagnostic.error ~code:"E_DATA_SOURCE" ("Unexpected capture value: "^E.show value))in
+  List.iter(fun body->
+    let r=captured "geometry" body (E.List xs)in
+    let core=match I.Core_lower.lower ~strict:true r with
+      |Ok p->p|Error why->failwith("Known geometry HOF refused: "^why)in
+    (* A homogeneous captured collection is constructed once before Counted.
+       Its loop must not contain a 5001-arm selector or rebuild its input. *)
+    let rec assignments statements=List.fold_left(fun total(s:C.statement)->total+1+
+      match s.node with C.If{yes;no;_}->assignments yes+assignments no
+        |Counted{init;body;_}->assignments init+assignments body|_->0)0 statements in
+    let loops=List.filter_map(fun(s:C.statement)->match s.node with C.Counted{body;_}->Some body|_->None)core.body in
+    if loops=[] || List.exists(fun body->assignments body>=100)loops then
+      failwith(Printf.sprintf "Known collection loop shape: %s loops=%d statements=%s"
+        body (List.length loops)(String.concat ","(List.map(fun body->string_of_int(assignments body))loops)));
+    let rec builds statements=List.fold_left(fun count(s:C.statement)->count+
+      match s.node with C.Assign(_,Prim(Sequence_build,_))->1
+        |If{yes;no;_}->builds yes+builds no|_->0)0 statements in
+    assert(List.for_all(fun body->builds body=0)loops);
+    List.iter(fun time->let live=Frame_input.at_time time in
+      let expected=ok(E.Private.force_reference ~resolve(E.Residual r) ~live)in
+      let actual=ok(I.Core_exec.run ~strict:true ~resolve core ~live)in
+      assert(same actual expected)) [0.;0.25;0.75;1.])
+    ["(map (fn [(geo : geometry)] (nth (list geo) (int/mod (frame/index) 1))) parts)";
+     "(filter (fn [(geo : geometry)] (if (< t 0.5) true (equal? geo (first parts)))) parts)"];
+  let ordinary=captured "int" "(filter (fn [(x : int)] (< t 0.5)) parts)"(E.List(Array.make 5001(E.Int 1)))in
+  assert(match I.Core_lower.lower ~strict:true ordinary with Error _->true|Ok _->false);
+  print_endline "Known 5001 geometry map/filter captures: bounded loop shape, ordered native/reference handles and unchanged ordinary list guard"

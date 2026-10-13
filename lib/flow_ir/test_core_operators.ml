@@ -10,6 +10,8 @@ let rec same (a : E.value) (b : E.value) = match a,b with
 (* Every value-context scalar operator the closure compiler accepts, with at least one
    live expression. The coverage check below fails when an operator is added without a case. *)
 let cases = [
+  "array/max_length","(int/sub (array/max_length :type int) (frame/index))";
+
   "text/repr","(text/repr (str \"é日本😀\\t\\n\\\\\\\"\" t))";
   "fma","(fma t 0.9999999999999998 -1.)";
   "float/mul_checked","(float/mul_checked t 1.7976931348623157e308)";
@@ -18,6 +20,11 @@ let cases = [
   "text/table_decode","(text/table_decode (if (> t 0.) \"a\\t猫\\n\" \"\"))";
   "text/table_encode","(text/table_encode (list (list (if (> t 0.) \"猫\\n\" \"a\\t\") \"\\\\\")))";
   "text/blank?","(text/blank? (if (> t 0.) \" \\t\\r\\n\" \" \"))";
+  "array/grade","(array/nth (array/grade (array/float 13 t) :descending true) 0)";
+  "array/index_of","(array/nth (array/index_of (array/int 13 (frame/index)) (array/int 13 3)) 0)";
+  "array/compact", "(array/count (array/compact (array/int 13 (if (> t 0.) 1 0))))";
+  "array/scan_sum", "(array/nth (array/scan_sum (array/int 13 (frame/index))) 13)";
+  "array/scatter_add","(array/nth (array/scatter_add (array/int 7 0) (array/vec3 7 [t 1 2]) 3) 0)";
   "array/min","(array/min (array/float 7 t))";
   "array/max","(array/max (array/int 7 (frame/index)))";
   "array/segment_sum","(array/nth (array/segment_sum (array/vec3 5 [t 1 2]) (map (fn [x] (int x)) (array/range 6))) 3)";
