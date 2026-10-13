@@ -449,7 +449,7 @@
   (defn gen_normalize :context value [(value : vec3)]
     (let* [scale (max (abs value.x) (max (abs value.y) (abs value.z)))
            x (/ value.x scale) y (/ value.y scale) z (/ value.z scale)
-           length (sqrt (fma z z (fma x x (* y y))))]
+           length (sqrt (fma z z (fma y y (* x x))))]
       [(/ x length) (/ y length) (/ z length)]))
   (defn gen_custom_frame :context value [(axis : vec3)]
     (let* [pole (gen_normalize axis)
@@ -459,7 +459,8 @@
            radial (gen_normalize [(fma (* -1.0 projection) pole.x reference.x)
                                   (fma (* -1.0 projection) pole.y reference.y)
                                   (fma (* -1.0 projection) pole.z reference.z)])]
-      {:r radial :p pole :t (gen_normalize (vec3_cross radial pole))}))
+      {:r radial :p pole
+       :t (gen_normalize (vec3_cross radial pole))}))
   (defn gen_frame :context value [(orientation : text) (axis : vec3) (rotation : vec3) (order : text)]
     (let* [
            frame0 (cond (equal? orientation "X axis") {:r [0.0 1.0 0.0] :p [1.0 0.0 0.0] :t [0.0 0.0 -1.0]}
@@ -477,8 +478,8 @@
              :else (mat4_mul mx (mat4_mul my mz)))
            direction (fn [(v : vec3)]
              (if rotation_zero v
-               [(fma matrix.r0.z v.z (fma matrix.r0.x v.x (* matrix.r0.y v.y)))
-                (fma matrix.r1.z v.z (fma matrix.r1.x v.x (* matrix.r1.y v.y)))
-                (fma matrix.r2.z v.z (fma matrix.r2.x v.x (* matrix.r2.y v.y)))]))]
+               [(+ (fma matrix.r0.x v.x (* matrix.r0.y v.y)) (* matrix.r0.z v.z))
+                (+ (fma matrix.r1.x v.x (* matrix.r1.y v.y)) (* matrix.r1.z v.z))
+                (+ (fma matrix.r2.x v.x (* matrix.r2.y v.y)) (* matrix.r2.z v.z))]))]
       {:r (direction frame0.r) :p (direction frame0.p) :t (direction frame0.t)}))
 )

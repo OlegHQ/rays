@@ -1,7 +1,4 @@
-(* ulps = 16, not 4: with a rotated custom axis a point normal component is a sum of three products of
-   magnitude about 0.2 that cancels to about 0.014, so the one-ulp (of the terms) difference in where the
-   native arm64 code fuses the multiply-adds shows as 8 ulps of the result. Every other case is within 4.
-   sop/tube: zero-input generator (pending draft). Every connectivity, normals mode, tips, caps, UVs, cap group,
+(* sop/tube: zero-input generator (pending draft). Every connectivity, normals mode, tips, caps, UVs, cap group,
    orientations, rotation orders, overflow and refusal paths. *)
 open Port_gate
 module P = Param
@@ -67,4 +64,4 @@ let cases =
      "invalid_cap_group_no_caps", [bl "end_caps" false];
      "invalid_custom_axis_zero", [ch "orientation" "Custom axis"; fl "axis_x" 0.; fl "axis_y" 0.; fl "axis_z" 0.]]
 let bench () = [], [it "rows" 400; it "columns" 1200; ch "connectivity" "Quads"; ch "normals" "Vertex"; tx "uv_attribute" "uv"]
-let () = register { key = "tube"; native = Sop.Nodes.Tube.factory; inputs = no_input; cases; ulps = 16; bench = Some bench }
+let () = register { key = "tube"; native = Sop.Nodes.Tube.factory; inputs = no_input; cases; ulps = 4; bench = Some bench }
