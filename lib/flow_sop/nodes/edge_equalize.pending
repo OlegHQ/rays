@@ -1,0 +1,200 @@
+; Whole Edge Equalize draft: lengths and the target are array passes over the edge table; the
+; relaxation is the native two-path scheme (closed form when every point has one selected edge,
+; otherwise Jacobi sweeps at step 0.9 with a tolerance stop that must converge).
+(defn equalize_error :context value [(code : text) (reason : text)]
+  (error code "edge_equalize could not produce valid geometry"
+    :cause (str "edge_equalize [" code "]: " reason)))
+(defn equalize_finite :context value [(x : float)] (= (- x x) 0.0))
+(defn equalize_safe :context value [(index : int)] (if (int/ge index 0) index 0))
+(defn equalize_all_finite :context value [(plane : (array float))]
+  (exact (int/eq (array/sum (exact (map (fn [(x : float)] (if (= (- x x) 0.0) 0 1)) plane))) 0)))
+; Edge_ops.edge_length
+(defn equalize_between :context value
+  [(ax : float) (ay : float) (az : float) (bx : float) (by : float) (bz : float)]
+  (let* [scale (max (max (max (abs ax) (abs bx)) (max (abs ay) (abs by))) (max (abs az) (abs bz)))]
+    (if (= scale 0.0) 0.0
+      (let* [dx (- (/ bx scale) (/ ax scale)) dy (- (/ by scale) (/ ay scale)) dz (- (/ bz scale) (/ az scale))]
+        (* scale (sqrt (fma dz dz (fma dy dy (* dx dx)))))))))
+; Edge_constraints.length
+(defn equalize_vector :context value [(dx : float) (dy : float) (dz : float)]
+  (let* [scale (max (max (abs dx) (abs dy)) (abs dz))]
+    (if (= scale 0.0) 0.0
+      (let* [a (/ dx scale) b (/ dy scale) c (/ dz scale)]
+        (* scale (sqrt (+ (+ (pow a 2.0) (pow b 2.0)) (pow c 2.0))))))))
+(defn equalize_owners :context value [(offsets : (array int)) (total : int)]
+  (let* [points (int/sub (array/count offsets) 1)
+         starts (exact (map (fn [(p : int)] (array/nth offsets p)) (array/range points :type int)))
+         prefix (array/scan_sum (array/scatter_add starts (array/int points 1) (int/add total 1)))]
+    (exact (map (fn [(s : int)] (int/sub (array/nth prefix (int/add s 1)) 1)) (array/range total :type int)))))
+(defn equalize_moves :context value
+  [(plane : (array float)) (edge_a : (array int)) (edge_b : (array int)) (hot : (array int))]
+  (exact (int/gt (array/sum (exact (map (fn [(e : int) (h : int)]
+    (if (and (int/eq h 1) (not (= (array/nth plane (array/nth edge_a e)) (array/nth plane (array/nth edge_b e))))) 1 0))
+    (array/range (array/count hot) :type int) hot))) 0)))
+; Closed-form placement: each point sits on at most one selected edge.
+(defn equalize_place :context value
+  [(plane : (array float)) (active : bool) (owner_edge : (array int))
+   (edge_a : (array int)) (edge_b : (array int)) (factor : (array float))]
+  (if active
+    (exact (map (fn [(p : int) (v : float)]
+      (let* [raw (array/nth owner_edge p) e (equalize_safe raw)]
+        (if (int/ge raw 0)
+          (let* [a (array/nth edge_a e) b (array/nth edge_b e)
+                 dx (- (array/nth plane b) (array/nth plane a)) f (array/nth factor e)]
+            (if (int/eq p a) (fma f dx (array/nth plane a)) (fma (* -1.0 f) dx (array/nth plane b))))
+          v)))
+      (array/range (array/count plane) :type int) plane))
+    plane))
+; next[p] = fma chain over the point's slots in slot order, starting at current[p]
+(defn equalize_fused :context value
+  [(plane : (array float)) (other : (array int)) (factor : (array float)) (offsets : (array int)) (slots : int)]
+  (get (iterate slots {:v plane :k 0}
+    (fn [(s : {:v (array float) :k int})]
+      {:v (exact (map (fn [(p : int) (v : float)]
+          (let* [first (array/nth offsets p) slot (int/add first s.k)]
+            (if (int/lt slot (array/nth offsets (int/add p 1)))
+              (let* [raw (array/nth other slot) o (equalize_safe raw)]
+                (if (int/ge raw 0) (fma (array/nth factor slot) (- (array/nth plane o) (array/nth plane p)) v) v))
+              v)))
+          (array/range (array/count plane) :type int) s.v))
+       :k (int/add s.k 1)})) :v))
+(defn equalize_max_error :context value
+  [(x : (array float)) (y : (array float)) (z : (array float)) (selected : (array int))
+   (edge_a : (array int)) (edge_b : (array int)) (target : float)]
+  (array/max (exact (map (fn [(e : int)]
+    (if (int/eq (array/nth selected e) 1)
+      (let* [a (array/nth edge_a e) b (array/nth edge_b e)
+             l (equalize_vector (- (array/nth x b) (array/nth x a)) (- (array/nth y b) (array/nth y a))
+                                (- (array/nth z b) (array/nth z a)))]
+        (abs (- l target)))
+      0.0)) (array/range (array/count selected) :type int)))))
+
+(defnode sop/edge_equalize :label "Edge Equalize" :category ["Topology" "Edge"]
+  [(in0 : geometry)
+   (group : text "" :label "Edge group")
+   (method_ : text "Average" :label "Method" :choices ["Average" "Longest" "Shortest"])
+   (iterations : int 64 :label "Iterations" :min 1 :max 256 :hard_min 1)
+   (tolerance : float 0.000001 :label "Tolerance" :min 0.000000001 :max 0.01 :hard_min 0
+     :validate (> tolerance 0.0)
+     :code "E_PARAM" :message "sop/edge_equalize: tolerance must be finite and positive")
+   (output_group : text "" :label "Output group")]
+  (let* [group_name (text/trim group) output_name (text/trim output_group)
+         group_literal (text/glob_literal (if (text/blank? group_name) "x" group_name))
+         has_group (not (text/blank? group_name)) has_output (not (text/blank? output_name))
+         point_count (sop/count in0 :points)
+         edge_count (sop/count in0 :edges)
+         selected (if has_group (sop/group in0 :name group_name :owner "edge") (array/int edge_count 1))
+         selected_count (array/sum selected)
+         unchanged (if has_output (sop/with_group in0 (exact selected) :name output_name :owner "edge") in0)
+         core
+           (cond
+             (and has_group (equal? (array/count (sop/group_names in0 group_literal :owner "edge")) 0))
+               (equalize_error "missing_group" (str "edge_equalize could not find native edge group " (text/repr group_name)))
+             (or (int/eq edge_count 0) (int/eq selected_count 0)) unchanged
+             :else
+               (let* [adj (sop/adjacency in0)
+                      edge_a adj.edge_a edge_b adj.edge_b
+                      edges (array/range edge_count :type int)
+                      positions (sop/attr in0 "P")
+                      px (exact (map (fn [(p : vec3)] p.x) positions)) py (exact (map (fn [(p : vec3)] p.y) positions))
+                      pz (exact (map (fn [(p : vec3)] p.z) positions))
+                      lengths (exact (map (fn [(e : int)]
+                        (if (int/eq (array/nth selected e) 1)
+                          (equalize_between (array/nth px (array/nth edge_a e)) (array/nth py (array/nth edge_a e))
+                            (array/nth pz (array/nth edge_a e)) (array/nth px (array/nth edge_b e))
+                            (array/nth py (array/nth edge_b e)) (array/nth pz (array/nth edge_b e))) 0.0)) edges))
+                      invalid (not (and (equalize_all_finite px) (and (equalize_all_finite py)
+                                (and (equalize_all_finite pz) (equalize_all_finite lengths)))))]
+                 (if invalid (equalize_error "invalid_edge_equalize" "Edge Equalize selected edge has a non-finite or unrepresentable length")
+                   (let* [maximum_length (array/max lengths)
+                          minimum_length (array/min (exact (map (fn [(s : int) (l : float)]
+                            (if (int/eq s 1) l 1.7976931348623157e308)) selected lengths)))
+                          average (if (= maximum_length 0.0) 0.0
+                            (* maximum_length (/ (array/sum (exact (map (fn [(s : int) (l : float)]
+                                                  (if (int/eq s 1) (/ l maximum_length) 0.0)) selected lengths)))
+                                                (float selected_count))))
+                          target (cond (equal? method_ "Longest") maximum_length
+                                       (equal? method_ "Shortest") minimum_length
+                                       :else average)
+                          zero_edge (and (> target 0.0)
+                            (int/gt (array/sum (exact (map (fn [(s : int) (l : float)] (if (and (int/eq s 1) (= l 0.0)) 1 0))
+                                                  selected lengths))) 0))]
+                     (cond
+                       (not (equalize_finite target)) (equalize_error "invalid_edge_equalize" "Edge Equalize target length is not representable")
+                       zero_edge (equalize_error "invalid_edge_equalize" "Edge Equalize cannot expand zero-length selected edge without a direction")
+                       :else
+                         (let* [scale (max target maximum_length)
+                                threshold (* tolerance scale)
+                                errors (exact (map (fn [(s : int) (l : float)] (if (int/eq s 1) (abs (- l target)) 0.0)) selected lengths))
+                                initial_error (array/max errors)
+                                hot (exact (map (fn [(s : int) (er : float)] (if (and (int/eq s 1) (> er threshold)) 1 0)) selected errors))
+                                moves_x (equalize_moves px edge_a edge_b hot)
+                                moves_y (equalize_moves py edge_a edge_b hot)
+                                moves_z (equalize_moves pz edge_a edge_b hot)
+                                full_degree (exact (map (fn [(i : int)]
+                                  (int/sub (array/nth adj.point_edge_offsets (int/add i 1)) (array/nth adj.point_edge_offsets i)))
+                                  (array/range point_count :type int)))
+                                selected_degree (array/scatter_add
+                                  (array/concat edge_a edge_b)
+                                  (array/concat selected
+                                    (exact (map (fn [(s : int) (a : int) (b : int)]
+                                      (if (and (int/eq s 1) (not (int/eq a b))) 1 0)) selected edge_a edge_b)))
+                                  point_count)
+                                maximum_degree (if has_group (array/max selected_degree) (array/max full_degree))]
+                           (if (<= initial_error threshold) unchanged
+                             (let* [independent (int/eq maximum_degree 1)
+                                    tagged (exact (map (fn [(e : int) (s : int)]
+                                      (if (and independent (and (int/eq s 1) (not (int/eq (array/nth edge_a e) (array/nth edge_b e)))))
+                                        (int/add e 1) 0)) edges selected))
+                                    owner_edge (exact (map (fn [(a : int) (b : int)] (int/sub (int/add a b) 1))
+                                      (array/scatter_add edge_a tagged point_count)
+                                      (array/scatter_add edge_b tagged point_count)))
+                                    factor (exact (map (fn [(l : float)]
+                                      (if (= l 0.0) 0.5 (/ (* 0.5 (- l target)) l))) lengths))
+                                    closed {:x (equalize_place px moves_x owner_edge edge_a edge_b factor)
+                                            :y (equalize_place py moves_y owner_edge edge_a edge_b factor)
+                                            :z (equalize_place pz moves_z owner_edge edge_a edge_b factor)}
+                                    points (array/range point_count :type int)
+                                    max_slots (array/max full_degree)
+                                    slot_total (array/count adj.point_edges)
+                                    slots_range (array/range slot_total :type int)
+                                    slot_owner (equalize_owners adj.point_edge_offsets slot_total)
+                                    first_bad (and independent
+                                      (not (equalize_all_finite (exact (array/concat (array/concat closed.x closed.y) closed.z)))))
+                                    planes
+                                      (if independent closed
+                                        (iterate iterations {:x px :y py :z pz}
+                                          (fn [(c : {:x (array float) :y (array float) :z (array float)})]
+                                            (let* [slot_other (exact (map (fn [(s : int)]
+                                                     (let* [p (array/nth slot_owner s) e (array/nth adj.point_edges s)
+                                                            o (if (int/eq (array/nth edge_a e) p) (array/nth edge_b e) (array/nth edge_a e))
+                                                            len (equalize_vector (- (array/nth c.x o) (array/nth c.x p))
+                                                                  (- (array/nth c.y o) (array/nth c.y p)) (- (array/nth c.z o) (array/nth c.z p)))]
+                                                       (if (and (int/eq (array/nth selected e) 1) (> len 0.0)) o -1)))
+                                                     slots_range))
+                                                   slot_factor (exact (map (fn [(s : int) (raw : int)]
+                                                     (let* [p (array/nth slot_owner s) o (equalize_safe raw)
+                                                            len (equalize_vector (- (array/nth c.x o) (array/nth c.x p))
+                                                                  (- (array/nth c.y o) (array/nth c.y p)) (- (array/nth c.z o) (array/nth c.z p)))]
+                                                       (if (int/ge raw 0)
+                                                         (/ (/ (* 0.9 (- len target)) (if (> len 0.0) len 1.0)) (float maximum_degree)) 0.0)))
+                                                     slots_range slot_other))
+                                                   sweep {:x (equalize_fused c.x slot_other slot_factor adj.point_edge_offsets max_slots)
+                                                          :y (equalize_fused c.y slot_other slot_factor adj.point_edge_offsets max_slots)
+                                                          :z (equalize_fused c.z slot_other slot_factor adj.point_edge_offsets max_slots)}]
+                                              (if (and (equalize_all_finite sweep.x) (and (equalize_all_finite sweep.y) (equalize_all_finite sweep.z)))
+                                                sweep (equalize_error "invalid_edge_equalize" "Edge Equalize produced a non-finite point"))))
+                                          :until (fn [(a : {:x (array float) :y (array float) :z (array float)})
+                                                      (b : {:x (array float) :y (array float) :z (array float)})]
+                                            (<= (equalize_max_error b.x b.y b.z selected edge_a edge_b target) threshold))))
+                                    converged (<= (equalize_max_error planes.x planes.y planes.z selected edge_a edge_b target) threshold)]
+                               (cond
+                                 first_bad (equalize_error "invalid_edge_equalize" "Edge Equalize produced a non-finite point at a selected edge")
+                                 (and (not independent) (not converged))
+                                   (equalize_error "invalid_edge_equalize" (str "Edge Equalize did not converge within " iterations " iterations"))
+                                 :else
+                                   (sop/delete_attr (sop/delete_attr
+                                     (sop/with_attr unchanged "P" (exact (map (fn [(x : float) (y : float) (z : float)] [x y z])
+                                       planes.x planes.y planes.z)))
+                                     "N" :owner "point") "N" :owner "vertex"))))))))))]
+    core))
