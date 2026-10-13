@@ -1,0 +1,316 @@
+; Whole PolyFrame draft (Rdk.Polyframe). Six styles over four selection owners. The point styles
+; (first edge, two edges, primitive centroid) take the tangent from the point's first incident corner;
+; Texture UV and the two gradient styles solve the per-corner uv gradient frame (tangent, bitangent)
+; and sum it over a point's corners (Texture UV) or keep it per vertex (gradients). Every style ends
+; in the same normalisation (normal, tangent projected off the normal when orthogonal, bitangent as
+; the handed cross product when orthogonal else normalised). Raw frames are built for every element
+; and the authored selection picks them over the existing attribute (or zero) base. Finite inputs only.
+(defn frame_error :context value [(reason : text)]
+  (error "invalid_geometry" "polyframe could not produce valid geometry"
+    :cause (str "polyframe [invalid_geometry]: " reason)))
+(defn frame_max :context value [(v : vec3)] (max (abs v.x) (max (abs v.y) (abs v.z))))
+(defn frame_zero :context value [(v : vec3)] (and (= v.x 0.0) (and (= v.y 0.0) (= v.z 0.0))))
+(defn frame_unit :context value [(v : vec3)]
+  (let* [scale (frame_max v)
+         s (/ v (if (= scale 0.0) 1.0 scale))
+         length (sqrt (fused_dot s s))]
+    (if (= scale 0.0) [0.0 0.0 0.0] (/ s length))))
+(defn frame_finite :context value [(plane : (array float))]
+  (int/eq (array/sum (exact (map (fn [(x : float)] (if (= (- x x) 0.0) 0 1)) plane))) 0))
+
+; Fan of cross products from the first vertex, summed per primitive; polygons only.
+(defn frame_faces :context sop [(geo : geometry)]
+  (let* [topo (sop/topology geo)
+         adjacency (sop/adjacency geo)
+         positions (sop/attr geo :P)
+         vertices (sop/count geo :vertices)
+         prims (sop/count geo :primitives)
+         starts (array/slice topo.primitive_offsets 0 prims)
+         ends (array/slice topo.primitive_offsets 1 prims)
+         contributions (map (fn [(vertex : int) (prim : int)]
+           (let* [first (array/nth starts prim)
+                  last (array/nth ends prim)
+                  a (array/nth positions (array/nth topo.vertex_points first))
+                  b (array/nth positions (array/nth topo.vertex_points vertex))
+                  c (array/nth positions (array/nth topo.vertex_points
+                      (if (int/lt (int/add vertex 1) vertices) (int/add vertex 1) vertex)))
+                  u (- b a)
+                  v (- c a)]
+             (if (and (int/eq (array/nth topo.kinds prim) 0)
+                      (and (int/ge vertex (int/add first 1)) (int/le vertex (int/sub last 2))))
+               [(fma (* -1.0 u.z) v.y (* u.y v.z))
+                (fma (* -1.0 u.x) v.z (* u.z v.x))
+                (fma (* -1.0 u.y) v.x (* u.x v.y))]
+               [0.0 0.0 0.0])))
+           (array/range vertices :type int) adjacency.primitive_of_vertex)]
+    (array/segment_sum contributions topo.primitive_offsets)))
+
+(defn frame_any :context value [(counts : (array int))]
+  (exact (map (fn [(n : int)] (if (int/gt n 0) 1 0)) counts)))
+
+; The authored group (of owner go) as a 0/1 mask on points or vertices (Deform.point_selected and
+; PolyFrame.selected_vertex).
+(defn frame_selection :context sop [(geo : geometry) (go : text) (name : text) (target : text)]
+  (let* [topo (sop/topology geo)
+         adjacency (sop/adjacency geo)
+         points (sop/count geo :points)
+         edges (sop/count geo :edges)
+         mask (sop/group geo :name name :owner go)
+         padded (array/concat (if (equal? go "edge") mask (array/int edges 0)) (array/int 1 0))
+         outgoing (exact (map (fn [(e : int)] (array/nth padded (if (int/lt e 0) edges e)))
+                    adjacency.edge_of_vertex))
+         incoming (exact (map (fn [(pv : int)]
+                    (let* [e (array/nth adjacency.edge_of_vertex (if (int/lt pv 0) 0 pv))]
+                      (if (int/lt pv 0) 0 (array/nth padded (if (int/lt e 0) edges e)))))
+                    adjacency.previous_vertex))
+         per_vertex (cond (equal? go "point") (int_gather mask topo.vertex_points)
+                          (equal? go "vertex") mask
+                          (equal? go "primitive") (int_gather mask adjacency.primitive_of_vertex)
+                          :else (exact (map (fn [(a : int) (b : int)] (int/or a b)) outgoing incoming)))]
+    (cond
+      (equal? target "vertex") per_vertex
+      (equal? go "point") mask
+      (equal? go "edge")
+        (frame_any (array/segment_sum (int_gather mask adjacency.point_edges) adjacency.point_edge_offsets))
+      :else (frame_any (array/scatter_add topo.vertex_points per_vertex points)))))
+
+(defn frame_pick :context value [(sel : (array int)) (fresh : (array vec3)) (base : (array vec3))]
+  (exact (map (fn [(m : int) (a : vec3) (b : vec3)] (if (int/eq m 1) a b)) sel fresh base)))
+
+; Per-primitive centroid: anchor + (sum of corner offsets from the anchor) / corners.
+(defn frame_centroids :context sop [(geo : geometry)]
+  (let* [topo (sop/topology geo)
+         adjacency (sop/adjacency geo)
+         positions (sop/attr geo :P)
+         prims (sop/count geo :primitives)
+         vertices (sop/count geo :vertices)
+         starts (array/slice topo.primitive_offsets 0 prims)
+         ends (array/slice topo.primitive_offsets 1 prims)
+         offsets (exact (map (fn [(vertex : int) (prim : int)]
+           (let* [first (array/nth starts prim)
+                  a (array/nth positions (array/nth topo.vertex_points first))]
+             (if (int/eq vertex first) [0.0 0.0 0.0]
+               (- (array/nth positions (array/nth topo.vertex_points vertex)) a))))
+           (array/range vertices :type int) adjacency.primitive_of_vertex))
+         sums (array/segment_sum offsets topo.primitive_offsets)]
+    (exact (map (fn [(prim : int) (total : vec3)]
+      (let* [first (array/nth starts prim)
+             count (int/sub (array/nth ends prim) first)
+             a (array/nth positions (array/nth topo.vertex_points first))
+             inverse (/ 1.0 (float count))]
+        [(fma total.x inverse a.x) (fma total.y inverse a.y) (fma total.z inverse a.z)]))
+      (array/range prims :type int) sums))))
+
+; Raw tangent of each point from its first corner; mode 0 first edge, 1 two edges, 2 centroid.
+(defn frame_edge_tangents :context sop
+  [(geo : geometry) (corner : (array int)) (mode : int) (centroids : (array vec3))]
+  (let* [topo (sop/topology geo)
+         adjacency (sop/adjacency geo)
+         positions (sop/attr geo :P)
+         points (sop/count geo :points)]
+    (if (or (int/eq (sop/count geo :vertices) 0) (int/eq (sop/count geo :primitives) 0))
+      (array/vec3 points [0.0 0.0 0.0])
+      (exact (map (fn [(point : int) (c : int)]
+        (let* [k (if (int/lt c 0) 0 c)
+               prev (array/nth adjacency.previous_vertex k)
+               next (array/nth adjacency.next_vertex k)
+               p (array/nth positions point)
+               next_p (array/nth positions (array/nth topo.vertex_points (if (int/lt next 0) k next)))
+               prev_p (array/nth positions (array/nth topo.vertex_points (if (int/lt prev 0) k prev)))
+               before (if (int/lt prev 0) p prev_p)
+               after (if (int/lt next 0) p next_p)]
+          (cond (int/eq mode 0) (cond (int/ge next 0) (- next_p p)
+                                      (int/ge prev 0) (- p prev_p)
+                                      :else [0.0 0.0 0.0])
+                (int/eq mode 1) (+ (- before p) (- after p))
+                :else (- p (array/nth centroids (array/nth adjacency.primitive_of_vertex k))))))
+        (array/range points :type int) corner)))))
+
+; Per-corner uv gradient frame {:t :b} (zero for non-polygon corners and tiny determinants).
+(defn frame_gradient :context sop
+  [(geo : geometry) (u : (array float)) (v : (array float)) (point_values : bool)]
+  (let* [topo (sop/topology geo)
+         adjacency (sop/adjacency geo)
+         positions (sop/attr geo :P)
+         vertices (sop/count geo :vertices)
+         all (array/range vertices :type int)
+         previous (exact (map (fn [(vertex : int) (other : int)] (if (int/lt other 0) vertex other))
+                    all adjacency.previous_vertex))
+         next (exact (map (fn [(vertex : int) (other : int)] (if (int/lt other 0) vertex other))
+                    all adjacency.next_vertex))
+         polygon (exact (map (fn [(prim : int)] (array/nth topo.kinds prim)) adjacency.primitive_of_vertex))
+         differences (exact (map (fn [(vertex : int) (before : int) (after : int)]
+           (let* [vi (if point_values (array/nth topo.vertex_points vertex) vertex)
+                  pi_ (if point_values (array/nth topo.vertex_points before) before)
+                  ni (if point_values (array/nth topo.vertex_points after) after)
+                  du1 (- (array/nth u ni) (array/nth u vi))
+                  dv1 (- (array/nth v ni) (array/nth v vi))
+                  du2 (- (array/nth u pi_) (array/nth u vi))
+                  dv2 (- (array/nth v pi_) (array/nth v vi))
+                  ab (max (abs du1) (abs dv1))
+                  cd (max (abs du2) (abs dv2))
+                  scale (max ab cd)
+                  s (if (= scale 0.0) 1.0 scale)]
+             (if (= scale 0.0) [0.0 0.0 0.0 0.0] [(/ du1 s) (/ dv1 s) (/ du2 s) (/ dv2 s)])))
+           all previous next))
+         forward (exact (map (fn [(vertex : int) (other : int)]
+           (- (array/nth positions (array/nth topo.vertex_points other))
+              (array/nth positions (array/nth topo.vertex_points vertex))))
+           all next))
+         backward (exact (map (fn [(vertex : int) (other : int)]
+           (- (array/nth positions (array/nth topo.vertex_points other))
+              (array/nth positions (array/nth topo.vertex_points vertex))))
+           all previous))
+         ; zero where the corner is not a polygon corner or the determinant is tiny
+         determinants (exact (map (fn [(d : vec4) (kind : int)]
+           (let* [det (fma (* -1.0 d.z) d.y (* d.x d.w))]
+             (if (and (int/eq kind 0) (> (abs det) 1e-15)) det 0.0)))
+           differences polygon))
+         tangent_numerators (exact (map (fn [(d : vec4) (e1 : vec3) (e2 : vec3)]
+           [(fma (* -1.0 d.y) e2.x (* d.w e1.x))
+            (fma (* -1.0 d.y) e2.y (* d.w e1.y))
+            (fma (* -1.0 d.y) e2.z (* d.w e1.z))])
+           differences forward backward))
+         bitangent_numerators (exact (map (fn [(d : vec4) (e1 : vec3) (e2 : vec3)]
+           [(fma (* -1.0 d.z) e1.x (* d.x e2.x))
+            (fma (* -1.0 d.z) e1.y (* d.x e2.y))
+            (fma (* -1.0 d.z) e1.z (* d.x e2.z))])
+           differences forward backward))
+         tangents (exact (map (fn [(num : vec3) (det : float)]
+           (if (= det 0.0) [0.0 0.0 0.0] (/ num det))) tangent_numerators determinants))
+         bitangents (exact (map (fn [(num : vec3) (det : float)]
+           (if (= det 0.0) [0.0 0.0 0.0] (/ num det))) bitangent_numerators determinants))]
+    {:tan tangents :bit bitangents}))
+
+; The gradient attribute: "" when usable, else the reason. Vertex-owned wins over point-owned.
+(defn frame_uv_problem :context sop [(geo : geometry) (name : text)]
+  (let* [on_vertex (sop/has_attr geo name :owner "vertex")
+         on_point (sop/has_attr geo name :owner "point")
+         owner (if on_vertex "vertex" "point")]
+    (cond (and (not on_vertex) (not on_point))
+            (str "point or vertex gradient attribute " (text/repr name) " does not exist")
+          (not (or (equal? (sop/attr_type geo name :owner owner) "vec2")
+                   (equal? (sop/attr_type geo name :owner owner) "vec3")))
+            (str owner " attribute " (text/repr name) " must have float2 or float3 storage")
+          :else
+            (let* [planes (sop/attr_planes geo name :owner owner)]
+              (if (and (frame_finite planes.x) (frame_finite planes.y)) ""
+                (str owner " gradient attribute contains a non-finite value"))))))
+
+; Normalise the raw frames of every element; the caller picks selected results over the base.
+(defn frame_finish :context value
+  [(n_raw : (array vec3)) (t_raw : (array vec3)) (b_raw : (array vec3)) (orthogonal : bool) (left_handed : bool)]
+  (let* [n1 (exact (map (fn [(n : vec3)] (frame_unit n)) n_raw))
+         t1 (exact (map (fn [(tg : vec3) (n : vec3)]
+           (let* [projection (if (and orthogonal (> (frame_max n) 0.0)) (fused_dot tg n) 0.0)]
+             (frame_unit [(fma (* -1.0 projection) n.x tg.x)
+                          (fma (* -1.0 projection) n.y tg.y)
+                          (fma (* -1.0 projection) n.z tg.z)])))
+           t_raw n1))
+         handed (if left_handed -1.0 1.0)
+         crossed (exact (map (fn [(n : vec3) (tg : vec3)] (* handed (vec3_cross n tg))) n1 t1))
+         normed (exact (map (fn [(b : vec3)] (frame_unit b)) b_raw))
+         flags (exact (map (fn [(n : vec3) (tg : vec3)]
+           (if (and orthogonal (and (> (frame_max n) 0.0) (> (frame_max tg) 0.0))) 1 0)) n1 t1))
+         b1 (exact (map (fn [(f : int) (c : vec3) (u : vec3)] (if (int/eq f 1) c u)) flags crossed normed))]
+    {:n n1 :tan t1 :bit b1}))
+
+(defn frame_put :context sop [(geo : geometry) (name : text) (owner : text) (data : (array vec3))]
+  (if (equal? owner "vertex")
+    (sop/with_attr geo name data :owner "vertex" :type vec3)
+    (sop/with_attr geo name data :owner "point" :type vec3)))
+(defn frame_bad_type :context sop [(geo : geometry) (name : text) (owner : text)]
+  (and (sop/has_attr geo name :owner owner) (not (sop/has_attr geo name :owner owner :type vec3))))
+
+(defnode sop/polyframe :label "PolyFrame" :category "Attribute"
+  :validate (and (not (text/blank? normal_attribute))
+              (and (not (or (equal? normal_attribute "P")
+                            (or (equal? (text/trim tangent_attribute) "P") (equal? (text/trim bitangent_attribute) "P"))))
+                (and (not (or (and (not (text/blank? tangent_attribute)) (equal? normal_attribute (text/trim tangent_attribute)))
+                              (or (and (not (text/blank? bitangent_attribute)) (equal? normal_attribute (text/trim bitangent_attribute)))
+                                  (and (not (text/blank? tangent_attribute))
+                                       (and (not (text/blank? bitangent_attribute))
+                                            (equal? (text/trim tangent_attribute) (text/trim bitangent_attribute)))))))
+                     (not (and (equal? style "Attribute gradient") (text/blank? style_attribute))))))
+  :code "E_PARAM" :message "sop/polyframe: output names must be distinct, nonblank and not P; gradient attribute must be named"
+  [(in0 : geometry)
+   (group_owner : text "Primitive" :label "Group type" :choices ["Point" "Vertex" "Primitive" "Edge"])
+   (group : text "" :label "Group")
+   (style : text "First edge" :label "Style" :choices ["First edge" "Two edges" "Primitive centroid" "Texture UV" "Texture UV gradient" "Attribute gradient"])
+   (style_attribute : text "uv" :label "Style attribute")
+   (orthogonal : bool false :label "Make orthogonal")
+   (left_handed : bool false :label "Left handed")
+   (normal_attribute : text "N" :label "Normal" :folder ["Output attributes"])
+   (tangent_attribute : text "tangentu" :label "Tangent" :folder ["Output attributes"])
+   (bitangent_attribute : text "tangentv" :label "Bitangent" :folder ["Output attributes"])]
+  (let* [group_name (text/trim group)
+         has_group (not (text/blank? group_name))
+         go (text/lower group_owner)
+         mode (cond (equal? style "First edge") 0 (equal? style "Two edges") 1
+                    (equal? style "Primitive centroid") 2 (equal? style "Texture UV") 3
+                    (equal? style "Texture UV gradient") 4 :else 5)
+         vertex_out (int/ge mode 4)
+         oo (if vertex_out "vertex" "point")
+         tn (text/trim tangent_attribute)
+         bn (text/trim bitangent_attribute)
+         has_t (not (text/blank? tn))
+         has_b (not (text/blank? bn))
+         uv_name (if (int/eq mode 5) style_attribute (if (text/blank? style_attribute) "uv" style_attribute))
+         problem (if (int/ge mode 3) (frame_uv_problem in0 uv_name) "")]
+    (cond
+      (deform_group_missing in0 go group_name)
+        (error "missing_group" (str "polyframe could not find " go " group " (text/repr group_name)))
+      (frame_bad_type in0 normal_attribute oo)
+        (frame_error (str oo " attribute " normal_attribute " must have float3 storage"))
+      (and has_t (frame_bad_type in0 tn oo))
+        (frame_error (str oo " attribute " tn " must have float3 storage"))
+      (and has_b (frame_bad_type in0 bn oo))
+        (frame_error (str oo " attribute " bn " must have float3 storage"))
+      (not (text/blank? problem)) (frame_error problem)
+      :else
+      (let* [topo (sop/topology in0)
+             adjacency (sop/adjacency in0)
+             points (sop/count in0 :points)
+             vertices (sop/count in0 :vertices)
+             count (if vertex_out vertices points)
+             zero (array/vec3 count [0.0 0.0 0.0])
+             faces (frame_faces in0)
+             face_of_vertex (exact (map (fn [(prim : int)] (array/nth faces prim)) adjacency.primitive_of_vertex))
+             point_normals (array/scatter_add topo.vertex_points face_of_vertex points)
+             sel (if has_group (frame_selection in0 go group_name oo) (array/int count 1))
+             base_n (if (sop/has_attr in0 normal_attribute :owner oo)
+                      (sop/attr in0 normal_attribute :owner oo :type vec3) zero)
+             base_t (if (and has_t (sop/has_attr in0 tn :owner oo)) (sop/attr in0 tn :owner oo :type vec3) zero)
+             base_b (if (and has_b (sop/has_attr in0 bn :owner oo)) (sop/attr in0 bn :owner oo :type vec3) zero)
+             compute_b (and (not orthogonal) has_b)
+             raw (cond
+               (int/le mode 2)
+                 (let* [offsets adjacency.point_vertex_offsets
+                        total (array/count adjacency.point_vertices)
+                        padded (array/concat adjacency.point_vertices (array/int 1 -1))
+                        corner (exact (map (fn [(p : int)]
+                          (array/nth padded (if (int/lt (array/nth offsets p) (array/nth offsets (int/add p 1)))
+                                              (array/nth offsets p) total)))
+                          (array/range points :type int)))
+                        known (exact (map (fn [(c : int)] (if (int/ge c 0) 1 0)) corner))
+                        centroids (if (int/eq mode 2) (frame_centroids in0) (array/vec3 0 [0.0 0.0 0.0]))
+                        edge_t (frame_edge_tangents in0 corner mode centroids)
+                        edge_b (exact (map (fn [(n : vec3) (tg : vec3)] (vec3_cross n tg)) point_normals edge_t))]
+                   {:n point_normals :tan (frame_pick known edge_t base_t) :bit (frame_pick known edge_b base_b)})
+               (int/eq mode 3)
+                 (let* [planes (sop/attr_planes in0 uv_name :owner (if (sop/has_attr in0 uv_name :owner "vertex") "vertex" "point"))
+                        frames (frame_gradient in0 planes.x planes.y (not (sop/has_attr in0 uv_name :owner "vertex")))]
+                   {:n point_normals
+                    :tan (array/scatter_add topo.vertex_points frames.tan points)
+                    :bit (if compute_b (array/scatter_add topo.vertex_points frames.bit points) zero)})
+               :else
+                 (let* [planes (sop/attr_planes in0 uv_name :owner (if (sop/has_attr in0 uv_name :owner "vertex") "vertex" "point"))
+                        frames (frame_gradient in0 planes.x planes.y (not (sop/has_attr in0 uv_name :owner "vertex")))]
+                   {:n face_of_vertex :tan frames.tan :bit (if compute_b frames.bit zero)}))
+             done (frame_finish raw.n raw.tan raw.bit orthogonal left_handed)
+             n_out (frame_pick sel done.n base_n)
+             t_out (frame_pick sel done.tan base_t)
+             b_out (frame_pick sel done.bit base_b)
+             with_n (frame_put in0 normal_attribute oo n_out)
+             with_t (if has_t (frame_put with_n tn oo t_out) with_n)]
+        (if has_b (frame_put with_t bn oo b_out) with_t)))))
