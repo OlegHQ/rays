@@ -1290,6 +1290,259 @@ export function sop_topology(geometry) {
     ['kinds', new PArray(1, BigInt64Array.from(geometry.get('primitive_kinds'), c => BigInt(c.charCodeAt(0))))]
   ]);
 }
+// D.1: the dense adjacency tables of Topology_index, in the same orders:
+// edges by first outgoing corner, point rows by ascending vertex/edge index.
+export function sop_adjacency(geometry) {
+  topologyGeometry(geometry);
+  const points = Array.from(geometry.get('vertex_points'), Number);
+  const offsets = Array.from(geometry.get('primitive_offsets'), Number);
+  const kinds = geometry.get('primitive_kinds');
+  const vertexCount = points.length, pointCount = Number(length(geometry.get('positions')));
+  const fill = () => new Array(vertexCount).fill(-1);
+  const primitive = fill(), next = fill(), previous = fill(), edgeOf = fill(), opposite = fill();
+  const edgeA = [], edgeB = [], edgeVertices = [], keys = new Map();
+  for (let p = 0; p < kinds.length; p++) {
+    const first = offsets[p], last = offsets[p + 1], cyclic = kinds.charCodeAt(p) !== 1;
+    for (let vertex = first; vertex < last; vertex++) {
+      primitive[vertex] = p;
+      if (vertex + 1 < last) next[vertex] = vertex + 1; else if (cyclic) next[vertex] = first;
+      if (vertex > first) previous[vertex] = vertex - 1; else if (cyclic) previous[vertex] = last - 1;
+    }
+  }
+  for (let vertex = 0; vertex < vertexCount; vertex++) {
+    if (next[vertex] < 0) continue;
+    const from = points[vertex], to = points[next[vertex]];
+    const lo = Math.min(from, to), hi = Math.max(from, to), key = `${lo}:${hi}`;
+    let edge = keys.get(key);
+    if (edge === undefined) { edge = edgeA.length; keys.set(key, edge); edgeA.push(lo); edgeB.push(hi); edgeVertices.push([]); }
+    edgeOf[vertex] = edge; edgeVertices[edge].push(vertex);
+  }
+  for (const pair of edgeVertices) if (pair.length === 2) { opposite[pair[0]] = pair[1]; opposite[pair[1]] = pair[0]; }
+  const rows = (count, list) => {
+    const start = [0], values = [];
+    for (let i = 0; i < count; i++) { for (const v of list[i]) values.push(v); start.push(values.length); }
+    return [start, values];
+  };
+  const byPoint = Array.from({ length: pointCount }, () => []);
+  for (let vertex = 0; vertex < vertexCount; vertex++) byPoint[points[vertex]].push(vertex);
+  const edgesByPoint = Array.from({ length: pointCount }, () => []);
+  for (let edge = 0; edge < edgeA.length; edge++) {
+    edgesByPoint[edgeA[edge]].push(edge);
+    if (edgeB[edge] !== edgeA[edge]) edgesByPoint[edgeB[edge]].push(edge);
+  }
+  const [vertexOffsets, vertexRows] = rows(pointCount, byPoint);
+  const [edgeOffsets, edgeRows] = rows(pointCount, edgesByPoint);
+  const int = values => new PArray(1, BigInt64Array.from(values, BigInt));
+  return new Map([['primitive_of_vertex', int(primitive)], ['next_vertex', int(next)],
+    ['previous_vertex', int(previous)], ['edge_of_vertex', int(edgeOf)], ['opposite_vertex', int(opposite)],
+    ['edge_a', int(edgeA)], ['edge_b', int(edgeB)], ['point_edge_offsets', int(edgeOffsets)],
+    ['point_edges', int(edgeRows)], ['point_vertex_offsets', int(vertexOffsets)], ['point_vertices', int(vertexRows)]]);
+}
+// D.2: the labelling of Analysis.classify_connectivity (no seams, no UVs):
+// classes number the included elements by first element; excluded ones are -1.
+export function sop_components(geometry, over = 'edges', mask) {
+  if (over !== 'edges' && over !== 'points')
+    err('E_COMPONENTS_OVER', 'Components :over is edges or points.');
+  topologyGeometry(geometry);
+  const points = over === 'edges';
+  const count = Number(sop_count(geometry, points ? 'points' : 'primitives'));
+  if (mask !== undefined) {
+    if (!(mask instanceof PArray) || mask.width !== 1 || !(mask.data instanceof BigInt64Array))
+      err('E_COMPONENTS_MASK', 'Components mask is an integer array.');
+    if (mask.data.length !== count)
+      err('E_COMPONENTS_MASK', 'Components mask length differs from the labelled element count.');
+    if (!mask.data.every(bit => bit === 0n || bit === 1n))
+      err('E_COMPONENTS_MASK', 'Components mask holds only 0 and 1.');
+  }
+  const included = i => mask === undefined || mask.data[i] === 1n;
+  const parent = Array.from({ length: count }, (_, i) => i);
+  const root = i => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+  const union = (a, b) => { if (included(a) && included(b)) { const x = root(a), y = root(b); if (x !== y) parent[y] = x; } };
+  if (points) {
+    const edges = sop_edges(geometry), a = edges.get('a').data, b = edges.get('b').data;
+    for (let e = 0; e < a.length; e++) union(Number(a[e]), Number(b[e]));
+  } else {
+    const vertices = geometry.get('vertex_points'), offsets = geometry.get('primitive_offsets');
+    const first = new Map();
+    for (let p = 0; p < count; p++) {
+      if (!included(p)) continue;
+      for (let v = Number(offsets[p]); v < Number(offsets[p + 1]); v++) {
+        const point = Number(vertices[v]);
+        if (first.has(point)) union(p, first.get(point)); else first.set(point, p);
+      }
+    }
+  }
+  const ids = new BigInt64Array(count).fill(-1n), label = new Map();
+  for (let i = 0; i < count; i++) if (included(i)) {
+    const r = root(i);
+    if (!label.has(r)) label.set(r, label.size);
+    ids[i] = BigInt(label.get(r));
+  }
+  return new Map([['id', new PArray(1, ids)], ['count', BigInt(label.size)]]);
+}
+// E.1-E.3: pure graph algorithms over arrays, in the same orders as the RDK code.
+const graphInt = value => value instanceof PArray && value.width === 1 && value.data instanceof BigInt64Array;
+function graphRecord(record) {
+  if (!(record instanceof Map)) err('E_GRAPH_ADJACENCY', 'Graph adjacency must be a record of integer arrays.');
+  return record;
+}
+function graphInts(record, name) {
+  const value = record.get(name);
+  if (!graphInt(value)) err('E_GRAPH_ADJACENCY', `Graph adjacency needs the integer array ${name}.`);
+  return Array.from(value.data, Number);
+}
+function graphRows(label, rows, limit, offsets, values) {
+  if (offsets.length !== rows + 1 || offsets[0] !== 0 || offsets[rows] !== values.length)
+    err('E_GRAPH_ADJACENCY', `${label} offsets must start at zero and end at the value count.`);
+  for (let row = 0; row < rows; row++)
+    if (offsets[row + 1] < offsets[row]) err('E_GRAPH_ADJACENCY', `${label} offsets must be monotone.`);
+  for (const value of values) if (value < 0 || value >= limit) err('E_GRAPH_ADJACENCY', `${label} value is out of range.`);
+}
+function graphPoints(adjacency) {
+  const record = graphRecord(adjacency);
+  const pointEdgeOffsets = graphInts(record, 'point_edge_offsets'), pointEdges = graphInts(record, 'point_edges');
+  const edgeA = graphInts(record, 'edge_a'), edgeB = graphInts(record, 'edge_b');
+  if (pointEdgeOffsets.length === 0)
+    err('E_GRAPH_ADJACENCY', 'Graph adjacency point_edge_offsets must hold the point count plus one.');
+  const points = pointEdgeOffsets.length - 1, edges = edgeA.length;
+  if (edgeB.length !== edges) err('E_GRAPH_ADJACENCY', 'Graph adjacency edge_a and edge_b differ in length.');
+  for (const p of edgeA) if (p < 0 || p >= points) err('E_GRAPH_ADJACENCY', 'Graph adjacency edge endpoint is out of range.');
+  for (const p of edgeB) if (p < 0 || p >= points) err('E_GRAPH_ADJACENCY', 'Graph adjacency edge endpoint is out of range.');
+  graphRows('Graph adjacency point_edges', points, edges, pointEdgeOffsets, pointEdges);
+  return { points, edges, pointEdgeOffsets, pointEdges, edgeA, edgeB };
+}
+const graphFloats = values => new PArray(1, Float64Array.from(values));
+const graphIntegers = values => new PArray(1, BigInt64Array.from(values, BigInt));
+
+// Indexed decrease-key heap ordered by (distance, point); see Shortest_paths.search.
+export function graph_shortest_paths(adjacency, lengths, roots, radius) {
+  const { points, edges, pointEdgeOffsets, pointEdges, edgeA, edgeB } = graphPoints(adjacency);
+  if (!(lengths instanceof PArray) || lengths.width !== 1 || !(lengths.data instanceof Float64Array)
+      || lengths.data.length !== edges)
+    err('E_GRAPH_LENGTH', 'Graph lengths is a float array with one entry per edge.');
+  for (const length of lengths.data) if (!(length >= 0)) err('E_GRAPH_LENGTH', 'Graph lengths must not be negative.');
+  if (!graphInt(roots)) err('E_GRAPH_ROOT', 'Graph roots is an integer array of point indices.');
+  const rootList = Array.from(roots.data, Number);
+  for (const root of rootList) if (root < 0 || root >= points) err('E_GRAPH_ROOT', 'Graph root is not a point index.');
+  if (radius === undefined) radius = Infinity;
+  else if (typeof radius !== 'number' || !(radius >= 0)) err('E_GRAPH_RADIUS', 'Graph radius is a non-negative float.');
+  const distances = new Float64Array(points).fill(Infinity), parents = new Array(points).fill(-1);
+  const heapPoints = new Array(points).fill(0), heapPositions = new Array(points).fill(-1);
+  let heapSize = 0;
+  const less = (left, right) => distances[left] < distances[right] || (distances[left] === distances[right] && left < right);
+  const assign = (slot, point) => { heapPoints[slot] = point; heapPositions[point] = slot; };
+  const bubbleUp = (slot, point) => {
+    while (slot > 0) {
+      const parent = (slot - 1) >> 1, parentPoint = heapPoints[parent];
+      if (!less(point, parentPoint)) break;
+      assign(slot, parentPoint); slot = parent;
+    }
+    assign(slot, point);
+  };
+  const enqueue = point => {
+    const slot = heapPositions[point];
+    if (slot === -1) bubbleUp(heapSize++, point); else if (slot >= 0) bubbleUp(slot, point);
+  };
+  const siftDown = (slot, point) => {
+    for (;;) {
+      const left = slot * 2 + 1;
+      if (left >= heapSize) break;
+      const right = left + 1;
+      const child = right < heapSize && less(heapPoints[right], heapPoints[left]) ? right : left;
+      const childPoint = heapPoints[child];
+      if (!less(childPoint, point)) break;
+      assign(slot, childPoint); slot = child;
+    }
+    assign(slot, point);
+  };
+  const pop = () => {
+    const point = heapPoints[0];
+    heapPositions[point] = -2;
+    heapSize--;
+    if (heapSize > 0) siftDown(0, heapPoints[heapSize]);
+    return point;
+  };
+  for (const point of rootList) { distances[point] = 0; enqueue(point); }
+  while (heapSize > 0) {
+    const point = pop(), distance = distances[point];
+    if (distance <= radius)
+      for (let slot = pointEdgeOffsets[point]; slot < pointEdgeOffsets[point + 1]; slot++) {
+        const edge = pointEdges[slot];
+        const neighbor = edgeA[edge] === point ? edgeB[edge] : edgeA[edge];
+        if (neighbor === point) continue;
+        const candidate = distance + lengths.data[edge];
+        if (candidate <= radius && candidate < distances[neighbor]) {
+          distances[neighbor] = candidate; parents[neighbor] = point; enqueue(neighbor);
+        }
+      }
+  }
+  return new Map([['distance', graphFloats(Array.from(distances, d => d === Infinity ? -1 : d))],
+    ['parent', graphIntegers(parents)]]);
+}
+
+export function graph_color(adjacency, order) {
+  const record = graphRecord(adjacency);
+  const offsets = graphInts(record, 'offsets'), neighbors = graphInts(record, 'values');
+  if (offsets.length === 0)
+    err('E_GRAPH_ADJACENCY', 'Graph adjacency offsets must hold the node count plus one.');
+  const nodes = offsets.length - 1;
+  graphRows('Graph adjacency', nodes, nodes, offsets, neighbors);
+  if (!graphInt(order)) err('E_GRAPH_ORDER', 'Graph order is an integer array of node indices.');
+  const seen = new Array(nodes).fill(false), sequence = Array.from(order.data, Number);
+  for (const node of sequence) {
+    if (node < 0 || node >= nodes) err('E_GRAPH_ORDER', 'Graph order holds a node outside the graph.');
+    if (seen[node]) err('E_GRAPH_ORDER', 'Graph order lists a node twice.');
+    seen[node] = true;
+  }
+  const colors = new Array(nodes).fill(-1), marks = new Array(nodes).fill(-1);
+  for (const element of sequence) {
+    for (let at = offsets[element]; at < offsets[element + 1]; at++) {
+      const color = colors[neighbors[at]];
+      if (color >= 0) marks[color] = element;
+    }
+    let color = 0;
+    while (color < nodes && marks[color] === element) color++;
+    colors[element] = color;
+  }
+  return new Map([['color', graphIntegers(colors)], ['count', BigInt(1 + colors.reduce((a, b) => Math.max(a, b), -1))]]);
+}
+
+export function graph_chains(adjacency, mask) {
+  const { points, edges, edgeA, edgeB } = graphPoints(adjacency);
+  if (mask !== undefined) {
+    if (!graphInt(mask) || mask.data.length !== edges)
+      err('E_GRAPH_MASK', 'Graph chains mask is an integer array with one entry per edge.');
+    if (!mask.data.every(bit => bit === 0n || bit === 1n)) err('E_GRAPH_MASK', 'Graph chains mask holds only 0 and 1.');
+  }
+  const a = [], b = [];
+  for (let edge = 0; edge < edges; edge++)
+    if ((mask === undefined || mask.data[edge] === 1n) && edgeA[edge] !== edgeB[edge]) { a.push(edgeA[edge]); b.push(edgeB[edge]); }
+  const count = a.length, rows = Array.from({ length: points }, () => []);
+  for (let edge = 0; edge < count; edge++) { rows[a[edge]].push(edge); rows[b[edge]].push(edge); }
+  const other = (edge, point) => a[edge] === point ? b[edge] : a[edge];
+  const visited = new Array(count).fill(false);
+  const chains = [], closed = [];
+  const trace = (start, first, isolated) => {
+    const chain = [start];
+    let current = start, edge = first;
+    while (edge >= 0 && !visited[edge]) {
+      visited[edge] = true;
+      current = other(edge, current);
+      chain.push(current);
+      if (rows[current].length !== 2) break;
+      const [left, right] = rows[current];
+      edge = left === edge ? right : left;
+    }
+    chains.push(chain); closed.push(isolated ? 1 : 0);
+  };
+  for (let point = 0; point < points; point++)
+    if (rows[point].length !== 2)
+      for (const edge of rows[point]) if (!visited[edge]) trace(point, edge, false);
+  for (let edge = 0; edge < count; edge++) if (!visited[edge]) trace(a[edge], edge, true);
+  const offsets = [0], values = [];
+  for (const chain of chains) { values.push(...chain); offsets.push(values.length); }
+  return new Map([['offsets', graphIntegers(offsets)], ['values', graphIntegers(values)], ['closed', graphIntegers(closed)]]);
+}
 const meshInteger = value => value instanceof PArray && value.width === 1 && value.data instanceof BigInt64Array;
 function meshGeometry(pointCount, positions, vertex_points, primitive_offsets, kinds) {
   for (const kind of kinds.data) if (kind < 0n || kind > 2n)

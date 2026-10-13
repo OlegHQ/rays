@@ -1,7 +1,7 @@
 {
   "generator": "tools/api_manifest/api_manifest.exe",
   "kind": "stable_high_level",
-  "module_count": 181,
+  "module_count": 183,
   "modules": [
     {
       "api": [
@@ -507,7 +507,7 @@
         "val context_name : context -> string",
         "type pattern = Name of string | Seq of pattern list | Keys of string list",
         "type diagnostic_policy = First | Range_last",
-        "type term = { path : path option ; ty : Ty.t ; node : node ; form : Syntax.t } and node = | Lit of Param.value | Text of string | Nil | Time | Vec of term list | Ref_binding of string * string list | Call of { kind : string ; ctx : Context.t ; args : ( string * term ) list } | Op of { op : string ; args : ( string * term ) list ; skip : int list list } | Call_fn of { fn : string ; args : term list ; body : term option } | Fn_ref of string | Graph_ref of { graph : string ; inputs : ( string * term ) list } | Let of ( pattern * term ) list * term | State of { binder : pattern ; init : term ; step : term ; zone : path } | Loop of { kind : [ `For | `Fold | `Scan | `Sum ] ; accs : ( pattern * term ) list ; clauses : ( pattern * term ) list ; skip : int list list ; body : term ; zone : path } | With_error of term * term | Error_rows of { rows : term ; policy : diagnostic_policy ; mapper : term } | If of term * term * term | Cond of ( term * term ) list * term | Case of term * ( Syntax.t * term ) list * term | Fn of { params : ( pattern * Ty.t option ) list ; body : term ; zone : path ; capture : term option } | Hof of [ `Map | `Filter | `Reduce | `Sort_by ] * term list | List_lit of term list | Record of ( string * term ) list | Get of term * string | Assoc of term * ( string * term ) list | Str of term list | List_op of string * term list | Bypass of term | Expanded of { macro : string ; body : term }",
+        "type term = { path : path option ; ty : Ty.t ; node : node ; form : Syntax.t } and node = | Lit of Param.value | Text of string | Nil | Time | Vec of term list | Ref_binding of string * string list | Call of { kind : string ; ctx : Context.t ; args : ( string * term ) list } | Op of { op : string ; args : ( string * term ) list ; skip : int list list } | Call_fn of { fn : string ; args : term list ; body : term option } | Fn_ref of string | Graph_ref of { graph : string ; inputs : ( string * term ) list } | Let of ( pattern * term ) list * term | State of { binder : pattern ; init : term ; step : term ; zone : path } | Loop of { kind : [ `For | `Fold | `Scan | `Sum ] ; accs : ( pattern * term ) list ; clauses : ( pattern * term ) list ; skip : int list list ; body : term ; zone : path } | With_error of term * term | Error_rows of { rows : term ; policy : diagnostic_policy ; mapper : term } | If of term * term * term | Cond of ( term * term ) list * term | Case of term * ( Syntax.t * term ) list * term | Fn of { params : ( pattern * Ty.t option ) list ; body : term ; zone : path ; capture : term option } | Hof of [ `Map | `Filter | `Reduce | `Sort_by | `Iterate ] * term list | List_lit of term list | Record of ( string * term ) list | Get of term * string | Assoc of term * ( string * term ) list | Str of term list | List_op of string * term list | Bypass of term | Expanded of { macro : string ; body : term }",
         "type graph = { name : string ; context : context ; inputs : ( string * Ty.t * term option ) list ; body : term ; form : Syntax.t ; }",
         "type node_definition = { kind : Check.kind ; slots : Check.slot list ; keyword_inputs : string list ; fields : Param.field_view list ; label : string ; category : string list ; description : string option ; operation : string ; version : int ; body : graph ; validations : ( term * string * string ) list ; normalizers : ( string * term ) list ; }",
         "val kind_calls : term -> string list",
@@ -528,7 +528,7 @@
         "val group_writer : Check.kind -> Check.parameter -> bool",
         "val validate_parameter : ? ty : Ty.t -> ( Diagnostic.severity -> string -> string -> unit ) -> Check.parameter -> term -> unit"
       ],
-      "api_sha256": "208a224f8f192e8c26013ea3e5152d264cf7cb02e5c660da17f02eff90659749",
+      "api_sha256": "ea0106e625843a34178b175ad5fe862c9d81371a8e971845a943c723d39c7026",
       "excluded_legacy_symbols": [],
       "library": "flow",
       "module": "Workspace",
@@ -3134,9 +3134,11 @@
       "api": [
         "type connectivity = | Graph_primitives_by_point | Graph_points_by_primitive | Graph_primitives_by_edge",
         "type worksets = { begin_attribute : string ; length_attribute : string ; }",
-        "val run : ? cancel : Cancel.t -> ? grain : int -> ? selection : Transform_ops.deform_selection -> ? connectivity : connectivity -> ? color_attribute : string -> ? sort_output : bool -> ? worksets : worksets -> Geometry.t -> ( Geometry.t , Error.t ) result"
+        "val run : ? cancel : Cancel.t -> ? grain : int -> ? selection : Transform_ops.deform_selection -> ? connectivity : connectivity -> ? color_attribute : string -> ? sort_output : bool -> ? worksets : worksets -> Geometry.t -> ( Geometry.t , Error.t ) result",
+        "val greedy : offsets : int array -> neighbors : int array -> int array -> int array",
+        "exception Graph_color_error of string"
       ],
-      "api_sha256": "f0dc5916935bd03c0e717529b27e7810d71977fe0e6f0c17b495b7fd4845d51b",
+      "api_sha256": "957660cafcbfa8fdf0655027c548c2a4629023d2695ec3857b452a67fbacf597",
       "excluded_legacy_symbols": [],
       "library": "rdk",
       "module": "Graph_color",
@@ -3657,6 +3659,18 @@
     },
     {
       "api": [
+        "exception Poly_path_error of string",
+        "val run : ? cancel : Rdk_core.Cancel.t -> ? grain : int -> ? edges : Rdk_core.Edge_group.t -> ? preserve_source_payload : bool -> ? connect_end_points : bool -> ? maximum_distance : float -> ? connect_only_to_other_end_points : bool -> ? make_isolated_loops_closed : bool -> Rdk_core.Geometry.t -> ( Rdk_core.Geometry.t , string ) result",
+        "val chains : ? cancel : Rdk_core.Cancel.t -> point_count : int -> edge_a : int array -> edge_b : int array -> ( int -> bool ) -> ( int array * int array * int array , string ) result"
+      ],
+      "api_sha256": "4e3d04ffe72e3510bbb27717b57e3bc63bdbfdcf7c10d38f971db166212a2787",
+      "excluded_legacy_symbols": [],
+      "library": "rdk",
+      "module": "Poly_path",
+      "source": "lib/rdk/curve/poly_path.mli"
+    },
+    {
+      "api": [
         "type plan = { edges : Edge_group.t ; removed_primitives : int ; }",
         "type scratch",
         "type target = | Reduce_ratio of float | Reduce_primitive_count of int",
@@ -3759,6 +3773,16 @@
       "library": "rdk",
       "module": "Separate_pieces",
       "source": "lib/rdk/mesh/separate_pieces.mli"
+    },
+    {
+      "api": [
+        "val search : ? cancel : Cancel.t -> ? radius : float -> point_edge_offsets : int array -> point_edges : int array -> edge_a : int array -> edge_b : int array -> lengths : float array -> int array -> float array * int array"
+      ],
+      "api_sha256": "75af451d9b449fb6a5fadf6cf674ad603d3ed5d3f54a58ecc305b81822ea61da",
+      "excluded_legacy_symbols": [],
+      "library": "rdk",
+      "module": "Shortest_paths",
+      "source": "lib/rdk/mesh/shortest_paths.mli"
     },
     {
       "api": [

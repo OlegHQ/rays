@@ -298,79 +298,19 @@ let soft_edge_distances ?cancel ~radius selected geometry =
   let reverse = Topology_index.create ?cancel topology_value
       |> Topology_index.Private.view in
   let positions = Packed.Float3.Private.view (Geometry.positions geometry) in
-  let distances = Array.make count infinity in
-  (* An indexed decrease-key heap admits each point at most once. [positions]
-     is -1 before insertion, a heap slot while queued, and -2 after pop. *)
-  let heap_points = Array.make count 0 and heap_positions = Array.make count (-1)
-  and heap_size = ref 0 in
-  let less_point left right = distances.(left) < distances.(right)
-      || (distances.(left) = distances.(right) && left < right) in
-  let assign slot point =
-    heap_points.(slot) <- point; heap_positions.(point) <- slot in
-  let rec bubble_up slot point =
-    if slot = 0 then assign 0 point
-    else
-      let parent = (slot - 1) / 2 and parent_point = heap_points.((slot - 1) / 2) in
-      if less_point point parent_point then begin
-        assign slot parent_point;
-        bubble_up parent point
-      end else assign slot point in
-  let enqueue_or_decrease point =
-    let slot = heap_positions.(point) in
-    if slot = -1 then begin
-      let slot = !heap_size in
-      incr heap_size;
-      bubble_up slot point
-    end else if slot >= 0 then bubble_up slot point in
-  let rec sift_down slot point =
-    let left = (slot * 2) + 1 in
-    if left >= !heap_size then assign slot point
-    else
-      let right = left + 1 in
-      let child = if right < !heap_size
-          && less_point heap_points.(right) heap_points.(left)
-        then right else left in
-      let child_point = heap_points.(child) in
-      if less_point child_point point then begin
-        assign slot child_point;
-        sift_down child point
-      end else assign slot point in
-  let pop () =
-    let point = heap_points.(0) in
-    heap_positions.(point) <- -2;
-    decr heap_size;
-    if !heap_size > 0 then sift_down 0 heap_points.(!heap_size);
-    point in
+  let lengths = Array.init (Array.length reverse.edge_a) (fun edge ->
+    let a = reverse.edge_a.(edge) and b = reverse.edge_b.(edge) in
+    let dx = positions.x.(b) -. positions.x.(a) and dy = positions.y.(b) -. positions.y.(a)
+    and dz = positions.z.(b) -. positions.z.(a) in
+    sqrt (dx*.dx +. dy*.dy +. dz*.dz)) in
+  let roots = Array.make source_count 0 and filled = ref 0 in
   for point = 0 to count - 1 do
     if point land 16_383 = 0 then Cancel.check_opt cancel;
     if match selected with None -> true | Some group -> Group.mem point group
-    then begin distances.(point) <- 0.; enqueue_or_decrease point end
+    then begin roots.(!filled) <- point; incr filled end
   done;
-  let visits = ref 0 in
-  while !heap_size > 0 do
-    if !visits land 16_383 = 0 then Cancel.check_opt cancel;
-    incr visits;
-    let point = pop () in
-    let distance = distances.(point) in
-    if distance <= radius then
-      for slot = reverse.point_edge_offsets.(point)
-          to reverse.point_edge_offsets.(point + 1) - 1 do
-        let edge = reverse.point_edges.(slot) in
-        let a = reverse.edge_a.(edge) and b = reverse.edge_b.(edge) in
-        let neighbor = if a = point then b else a in
-        if neighbor <> point then begin
-          let dx = positions.x.(neighbor) -. positions.x.(point)
-          and dy = positions.y.(neighbor) -. positions.y.(point)
-          and dz = positions.z.(neighbor) -. positions.z.(point) in
-          let candidate = distance +. sqrt (dx*.dx +. dy*.dy +. dz*.dz) in
-          if candidate <= radius && candidate < distances.(neighbor) then begin
-            distances.(neighbor) <- candidate;
-            enqueue_or_decrease neighbor
-          end
-        end
-      done
-  done;
-  distances
+  fst (Shortest_paths.search ?cancel ~radius ~point_edge_offsets:reverse.point_edge_offsets
+    ~point_edges:reverse.point_edges ~edge_a:reverse.edge_a ~edge_b:reverse.edge_b ~lengths roots)
 
 let point_float_output ~operation ~name ~default geometry =
   match Geometry.find_attribute ~owner:Attribute.Point name geometry with

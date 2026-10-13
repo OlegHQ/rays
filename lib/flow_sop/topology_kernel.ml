@@ -11,6 +11,50 @@ let topology geometry component =
       (fun i -> Char.code (Bytes.get view.primitive_kinds i))))
   | _ -> error "E_DATA_SOURCE" "Topology source requires vertex_points, primitive_offsets or kinds."
 
+let adjacency geometry component =
+  let view = Rdk.Topology_index.Private.view (Rdk.Topology_index.create (G.topology geometry)) in
+  let array a = Ok (E.Int_array (Array.copy a)) in
+  match component with
+  | "primitive_of_vertex" -> array view.primitive_of_vertex
+  | "next_vertex" -> array view.next_vertex
+  | "previous_vertex" -> array view.previous_vertex
+  | "edge_of_vertex" -> array view.edge_of_vertex
+  | "opposite_vertex" -> array view.opposite_vertex
+  | "edge_a" -> array view.edge_a
+  | "edge_b" -> array view.edge_b
+  | "point_edge_offsets" -> array view.point_edge_offsets
+  | "point_edges" -> array view.point_edges
+  | "point_vertex_offsets" -> array view.point_offsets
+  | "point_vertices" -> array view.point_vertices
+  | _ -> error "E_DATA_SOURCE" "Unknown adjacency component."
+
+(* The union-find of [Analysis.classify_connectivity]: [over] edges labels
+   points, [over] points labels primitives; a 0/1 mask keeps the labelled
+   elements (-1 elsewhere, not counted). *)
+let components geometry args =
+  let owner = match List.assoc_opt "over" args with
+    | None | Some (E.Text "edges") -> Ok (Rdk.Analysis.Connectivity_points, Rdk.Group.Point, G.point_count geometry)
+    | Some (E.Text "points") -> Ok (Rdk.Analysis.Connectivity_primitives, Rdk.Group.Primitive, G.primitive_count geometry)
+    | _ -> error "E_COMPONENTS_OVER" "Components :over is edges or points." in
+  Result.bind owner (fun (owner, group_owner, count) ->
+    let group = match List.assoc_opt "mask" args with
+      | None -> Ok None
+      | Some (E.Int_array mask) when Array.length mask = count ->
+          if Array.exists (fun bit -> bit <> 0 && bit <> 1) mask then
+            error "E_COMPONENTS_MASK" "Components mask holds only 0 and 1."
+          else Ok (Some (Rdk.Group.init ~owner:group_owner ~name:"mask" count (fun i -> mask.(i) = 1)))
+      | Some (E.Int_array _) -> error "E_COMPONENTS_MASK" "Components mask length differs from the labelled element count."
+      | Some _ -> error "E_COMPONENTS_MASK" "Components mask is an integer array." in
+    Result.bind group (fun group ->
+      let primitives = if owner = Rdk.Analysis.Connectivity_primitives then group else None
+      and points = if owner = Rdk.Analysis.Connectivity_points then group else None in
+      match Rdk.Analysis.classify_connectivity ?primitives ?points owner geometry with
+      | Error e -> error "E_COMPONENTS" (Rdk.Error.to_string e)
+      | Ok (ids, n) -> (match List.assoc_opt "component" args with
+          | Some (E.Text "count") -> Ok (E.Int n)
+          | Some (E.Text "id") -> Ok (E.Int_array ids)
+          | _ -> error "E_DATA_SOURCE" "Components source requires id or count.")))
+
 (* Flow arrays remain reusable immutable inputs: owned native constructors
    receive copies, never the evaluator's retained input buffers. *)
 let mesh_points = function
@@ -77,7 +121,7 @@ let count geometry = function
   | _ -> error "E_TOPOLOGY_COUNT" "Count element is points, vertices, primitives or edges."
 
 let resolve ~geometry = function
-  | E.Source (("sop/count" | "sop/edges" | "sop/topology" as name), _, args) ->
+  | E.Source (("sop/count" | "sop/edges" | "sop/topology" | "sop/adjacency" | "sop/components" as name), _, args) ->
       (match List.assoc_opt "geometry" args with
        | Some (E.Deferred (ty, id)) when Flow.Ty.is_geometry ty ->
            (match geometry id with
@@ -91,6 +135,11 @@ let resolve ~geometry = function
                   (match List.assoc_opt "component" args with
                    | Some (E.Text component) -> topology geometry component
                    | _ -> error "E_DATA_SOURCE" "Topology source requires vertex_points, primitive_offsets or kinds.")
+                else if name="sop/components" then components geometry args
+                else if name="sop/adjacency" then
+                  (match List.assoc_opt "component" args with
+                   | Some (E.Text component) -> adjacency geometry component
+                   | _ -> error "E_DATA_SOURCE" "Adjacency source requires a component name.")
                 else
                   let index = Rdk.Topology_index.Private.view
                     (Rdk.Topology_index.create (G.topology geometry)) in

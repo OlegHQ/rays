@@ -135,7 +135,53 @@ let topology : Flow.Op.t = {
     component,Flow.Value.Source("sop/topology",Flow.Ty.Array Flow.Ty.Int,
       args@["component",Flow.Value.Text component]))["vertex_points";"primitive_offsets";"kinds"]));
 }
-let mesh_fields = ["points",Flow.Ty.Array Flow.Ty.Vec3;
+let adjacency_fields = ["primitive_of_vertex";"next_vertex";"previous_vertex";"edge_of_vertex";
+  "opposite_vertex";"edge_a";"edge_b";"point_edge_offsets";"point_edges";
+  "point_vertex_offsets";"point_vertices"]
+let adjacency : Flow.Op.t = {
+  edges with name="sop/adjacency";
+  out=(fun _->Flow.Ty.Record(List.map(fun name->name,Flow.Ty.Array Flow.Ty.Int)adjacency_fields));
+  body=(fun ~live:_ ~node:_ args->Flow.Value.Record(List.map(fun component->
+    component,Flow.Value.Source("sop/adjacency",Flow.Ty.Array Flow.Ty.Int,
+      args@["component",Flow.Value.Text component]))adjacency_fields));
+}
+let components_type=Flow.Ty.Record["id",Array Int;"count",Int]
+let components : Flow.Op.t = {
+  edges with name="sop/components";
+  signature={pos=["geometry",Flow.Ty.geometry];opt=[];rest=None;
+    kw=["over",Flow.Ty.Text;"mask",Flow.Ty.Array Flow.Ty.Int]};
+  out=(fun _->components_type);choices=["over",["edges";"points"]];
+  check=(fun args->Option.iter(function
+    | Flow.Value.Text("edges"|"points")->()
+    | _->Flow.Value.fail "E_COMPONENTS_OVER" "Components :over is edges or points.")(List.assoc_opt "over" args));
+  body=(fun ~live:_ ~node:_ args->Flow.Value.Record(List.map(fun(component,ty)->
+    component,Flow.Value.Source("sop/components",ty,args@["component",Flow.Value.Text component]))
+    ["id",Flow.Ty.Array Flow.Ty.Int;"count",Flow.Ty.Int]));
+}
+(* graph/ operators: pure array functions over the adjacency record. *)
+let adjacency_type=Flow.Ty.Record(List.map(fun name->name,Flow.Ty.Array Flow.Ty.Int)adjacency_fields)
+let rows_type=Flow.Ty.Record["offsets",Array Int;"values",Array Int]
+let graph_op name ~pos ~kw ~out ~fields : Flow.Op.t = {
+  count with name;category="Topology";
+  signature={pos;opt=[];rest=None;kw};
+  out=(fun _->out);choices=[];check=(fun _->());
+  body=(fun ~live:_ ~node:_ args->Flow.Value.Record(List.map(fun(component,ty)->
+    component,Flow.Value.Source(name,ty,args@["component",Flow.Value.Text component]))fields));
+}
+let shortest_paths = graph_op "graph/shortest_paths"
+  ~pos:["adjacency",adjacency_type;"lengths",Flow.Ty.Array Flow.Ty.Float;"roots",Flow.Ty.Array Flow.Ty.Int]
+  ~kw:["radius",Flow.Ty.Float]
+  ~out:(Flow.Ty.Record["distance",Array Float;"parent",Array Int])
+  ~fields:["distance",Flow.Ty.Array Flow.Ty.Float;"parent",Flow.Ty.Array Flow.Ty.Int]
+let color = graph_op "graph/color"
+  ~pos:["adjacency",rows_type;"order",Flow.Ty.Array Flow.Ty.Int] ~kw:[]
+  ~out:(Flow.Ty.Record["color",Array Int;"count",Int])
+  ~fields:["color",Flow.Ty.Array Flow.Ty.Int;"count",Flow.Ty.Int]
+let chains = graph_op "graph/chains"
+  ~pos:["adjacency",adjacency_type] ~kw:["mask",Flow.Ty.Array Flow.Ty.Int]
+  ~out:(Flow.Ty.Record["offsets",Array Int;"values",Array Int;"closed",Array Int])
+  ~fields:["offsets",Flow.Ty.Array Flow.Ty.Int;"values",Flow.Ty.Array Flow.Ty.Int;"closed",Flow.Ty.Array Flow.Ty.Int]
+let mesh_fields =["points",Flow.Ty.Array Flow.Ty.Vec3;
   "vertex_points",Flow.Ty.Array Flow.Ty.Int;
   "primitive_offsets",Flow.Ty.Array Flow.Ty.Int;"kinds",Flow.Ty.Array Flow.Ty.Int]
 let mesh : Flow.Op.t = {
@@ -378,7 +424,7 @@ let remap : Flow.Op.t = {
   body=(fun ~live:_ ~node args->node "sop/remap" args);
 }
 
-let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; mesh; mesh_planes; remap;
+let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; adjacency; components; shortest_paths; color; chains; mesh; mesh_planes; remap;
   group; group_order; group_names; group_entries; with_group; context_seed;
   rename_attr;swap_attr;delete_attrs;rename_group;delete_group;rename_edge;delete_edge;attr_type;attr_names;
   glob_error;glob_rewrite_error;glob_rewrite;glob_literal]

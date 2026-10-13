@@ -1,8 +1,8 @@
 (library
  (name flow_sop)
  (public_name rays.flow_sop)
- (modules diagnostic_bridge port instance_path curve merge_source network value_lane catalog manifest operators attribute_kernel attribute_metadata topology_kernel group_kernel context_kernel function_kernel image_kernel lisp_node encoded_parameters node_sources lower)
- (private_modules diagnostic_bridge function_kernel merge_source lisp_node encoded_parameters node_sources attribute_metadata topology_kernel group_kernel context_kernel)
+ (modules diagnostic_bridge port instance_path curve merge_source network value_lane catalog manifest operators attribute_kernel attribute_metadata topology_kernel graph_kernel group_kernel context_kernel function_kernel image_kernel lisp_node encoded_parameters node_sources lower)
+ (private_modules diagnostic_bridge function_kernel merge_source lisp_node encoded_parameters node_sources attribute_metadata topology_kernel graph_kernel group_kernel context_kernel)
  (libraries flow flow_ir param sop unix))
 
 (rule
@@ -268,3 +268,13 @@
  (name test_iterate)
  (modules test_iterate)
  (libraries flow flow_ir flow_graph flow_sop sop sop_catalog rdk rdk_test_support lisp_sop))
+
+(test
+ (name test_adjacency)
+ (modules test_adjacency)
+ (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop))
+
+(test
+ (name test_graph)
+ (modules test_graph)
+ (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop))

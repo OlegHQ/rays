@@ -1549,6 +1549,30 @@ count, kinds use primitive-owner count, and offsets contain primitive count plus
 one entries. These distinct count origins survive direct field access and
 captured records. The query reads topology, without reading positions or attributes.
 
+`(sop/adjacency geometry)` returns the dense topology tables as a record of
+owned `(array int)` fields: `primitive_of_vertex`, `next_vertex`,
+`previous_vertex`, `edge_of_vertex`, `opposite_vertex` (vertex-sized, -1 where
+absent), `edge_a`, `edge_b` (as `sop/edges`), `point_edge_offsets` and
+`point_edges`, `point_vertex_offsets` and `point_vertices` (point CSR rows).
+It reads topology only.
+
+`(sop/components geometry :over "edges" :mask m)` returns `{:id (array int)
+:count int}`: connected-component ids as `Analysis.classify_connectivity`
+computes them. `:over "edges"` (default) labels points joined along edges;
+`:over "points"` labels primitives joined through shared points. Ids number the
+classes in order of their first element. The optional 0/1 `:mask` (one entry per
+labelled element) removes elements as deleted topology: they get id -1 and are
+not counted.
+
+The `graph/` operators are pure array functions over the adjacency record, so
+they need no geometry. `(graph/shortest_paths adjacency lengths roots)` returns
+`{:distance (array float) :parent (array int)}` (distance -1 where unreached;
+optional `:radius`), `(graph/color rows order)` returns `{:color (array int)
+:count int}` by first fit in the given order over `{:offsets :values}` neighbour
+rows, and `(graph/chains adjacency :mask m)` returns the ragged point chains
+`{:offsets :values :closed}` of the selected edges. Each wraps the RDK routine
+that the matching modeling node uses, with the same tie-breaks.
+
 `(sop/mesh :points p :vertex_points vp :primitive_offsets po :kinds k)` builds
 geometry from four required typed keyword rows. Points are a vec3 array; the
 other rows are exact integer arrays. An empty mesh uses empty points, vertex
