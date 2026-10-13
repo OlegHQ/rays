@@ -1,0 +1,127 @@
+; Whole Ends draft. Output rows are described per primitive, then the geometry is
+; rebuilt with sop/mesh and carried by sop/remap, as the native op copies payload.
+; A plan code packs size*32 + kind*8 + new_point*4 + bad*2 + changed.
+(defn ends_pack :context value [(size : int) (kind : int) (fresh : int) (bad : int) (changed : int)]
+  (int/add (int/mul size 32) (int/add (int/mul kind 8)
+    (int/add (int/mul fresh 4) (int/add (int/mul bad 2) changed)))))
+
+(defn ends_plan :context value
+  [(mode : int) (kind : int) (selected : int) (size : int) (repeated : int)]
+  (let* [same (ends_pack size kind 0 0 0)]
+    (if (int/eq selected 0) same
+      (cond
+        (int/eq mode 0) (if (int/eq kind 1) same (ends_pack size 1 0 0 1))
+        (int/eq mode 1)
+          (cond (int/eq kind 0) same
+                (int/eq kind 2) (ends_pack size 0 0 0 1)
+                :else (let* [output (int/sub size repeated)]
+                        (ends_pack output 0 0 (if (int/lt output 3) 1 0) 1)))
+        (int/eq mode 2) (if (int/eq kind 1) same (ends_pack (int/add size 1) 1 0 0 1))
+        :else (if (int/eq kind 1) same (ends_pack (int/add size 1) 1 1 0 1))))))
+
+(defnode sop/ends :label "Ends" :category ["Topology" "Curve"]
+  [(in0 : geometry)
+   (group : text "" :label "Primitive group")
+   (mode : text "Open" :label "U end"
+     :choices ["Open" "Close straight" "Unroll shared point" "Unroll new point"])]
+  (let* [group_name (text/trim group)
+         found_group (or (text/blank? group)
+           (fold [found false] [name (sop/group_names in0 "" :owner "primitive")]
+             (or found (equal? name group_name))))]
+    (if (not found_group)
+      (error "missing_group" (str "ends could not find primitive group " (text/repr group_name)))
+      (let* [primitives (sop/count in0 :primitives)
+             point_total (sop/count in0 :points)
+             topology (sop/topology in0)
+             vertex_points topology.vertex_points
+             offsets topology.primitive_offsets
+             kinds topology.kinds
+             mode_code (case mode "Open" 0 "Close straight" 1 "Unroll shared point" 2 :else 3)
+             selection (if (text/blank? group_name) (array/int primitives 1)
+                         (sop/group in0 :name group_name :owner "primitive"))
+             codes (map (fn [(p : int) (selected : int) (kind : int)]
+                 (let* [first (array/nth offsets p)
+                        size (int/sub (array/nth offsets (int/add p 1)) first)
+                        repeated (if (int/gt size 0)
+                                   (if (int/eq (array/nth vertex_points first)
+                                               (array/nth vertex_points (int/sub (int/add first size) 1))) 1 0)
+                                   0)]
+                   (ends_plan mode_code kind selected size repeated)))
+               (array/range primitives :type int) selection kinds)
+             bad (exact (map (fn [(code : int)] (int/and (int/shr code 1) 1)) codes))
+             checked (error_rows bad
+               (fn [(index : int)] {:code "invalid_geometry"
+                 :message "ends could not produce valid geometry"
+                 :cause (list (str "ends [invalid_geometry]: Ends cannot close primitive " index
+                                   " with fewer than three vertices"))}) :policy "first")
+             changed (array/sum (map (fn [(code : int)] (int/and code 1)) codes))]
+        (if (int/eq changed 0) in0
+          (let* [sizes (exact (map (fn [(code : int)] (int/shr code 5)) codes))
+                 output_kinds (exact (map (fn [(code : int)] (int/and (int/shr code 3) 3)) codes))
+                 fresh (exact (map (fn [(code : int)] (int/and (int/shr code 2) 1)) codes))
+                 output_offsets (array/scan_sum sizes)
+                 vertex_total (array/nth output_offsets primitives)
+                 fresh_rank (array/scan_sum fresh)
+                 fresh_primitives (array/compact fresh)
+                 point_map (array/concat (array/range point_total :type int)
+                   (exact (map (fn [(p : int)] (array/nth vertex_points (array/nth offsets p))) fresh_primitives)))
+                 marks (array/scatter_add (array/slice output_offsets 0 primitives)
+                         (array/int primitives 1) (int/add vertex_total 1))
+                 cumulative (array/scan_sum marks)
+                 owners (exact (map (fn [(v : int)] (int/sub (array/nth cumulative (int/add v 1)) 1))
+                          (array/range vertex_total :type int)))
+                 vertex_map (exact (map (fn [(v : int) (p : int)]
+                     (let* [local (int/sub v (array/nth output_offsets p))
+                            size (int/sub (array/nth offsets (int/add p 1)) (array/nth offsets p))]
+                       (int/add (array/nth offsets p) (int/mod local size))))
+                   (array/range vertex_total :type int) owners))
+                 output_points (exact (map (fn [(v : int) (p : int) (source : int)]
+                     (let* [local (int/sub v (array/nth output_offsets p))
+                            size (int/sub (array/nth offsets (int/add p 1)) (array/nth offsets p))]
+                       (if (and (int/eq local size) (int/eq (array/nth fresh p) 1))
+                         (int/add point_total (array/nth fresh_rank p))
+                         (array/nth vertex_points source))))
+                   (array/range vertex_total :type int) owners vertex_map))
+                 point_count (int/add point_total (array/count fresh_primitives))
+                 target (sop/mesh :points (array/vec3 point_count) :vertex_points output_points
+                          :primitive_offsets output_offsets :kinds output_kinds)
+                 source_adjacency (sop/adjacency in0)
+                 target_adjacency (sop/adjacency target)
+                 target_edge_total (array/count target_adjacency.edge_a)
+                 ; Ancestor of a target edge: the source edge leaving the mapped vertex when
+                 ; both ends agree. Rows holding several ancestors would conflict.
+                 ancestry (exact (map (fn [(v : int) (source : int)]
+                     (let* [edge (array/nth target_adjacency.edge_of_vertex v)
+                            next (array/nth target_adjacency.next_vertex v)]
+                       (if (or (int/lt edge 0) (int/lt next 0)) -1
+                         (let* [source_next (array/nth vertex_map next)
+                                candidate (array/nth source_adjacency.edge_of_vertex source)]
+                           (if (int/lt candidate 0) -1
+                             (let* [a (array/nth vertex_points source)
+                                    b (array/nth vertex_points source_next)
+                                    ea (array/nth source_adjacency.edge_a candidate)
+                                    eb (array/nth source_adjacency.edge_b candidate)]
+                               (if (or (and (int/eq a ea) (int/eq b eb)) (and (int/eq a eb) (int/eq b ea)))
+                                 candidate -1)))))))
+                   (array/range vertex_total :type int) vertex_map))
+                 used (exact (map (fn [(candidate : int)] (if (int/lt candidate 0) 0 1)) ancestry))
+                 used_vertices (array/compact used)
+                 used_edges (exact (map (fn [(v : int)]
+                     (array/nth target_adjacency.edge_of_vertex v)) used_vertices))
+                 used_sources (exact (map (fn [(v : int)] (int/add (array/nth ancestry v) 1)) used_vertices))
+                 edge_count (array/scatter_add used_edges (array/int (array/count used_edges) 1) target_edge_total)
+                 edge_sum (array/scatter_add used_edges used_sources target_edge_total)
+                 edge_square (array/scatter_add used_edges
+                   (exact (map (fn [(s : int)] (int/mul s s)) used_sources)) target_edge_total)
+                 conflicts (array/sum (map (fn [(n : int) (s : int) (q : int)]
+                     (if (int/eq (int/mul q n) (int/mul s s)) 0 1)) edge_count edge_sum edge_square))
+                 has (exact (map (fn [(n : int)] (if (int/gt n 0) 1 0)) edge_count))
+                 edge_values (exact (map (fn [(e : int)]
+                     (int/sub (int/div (array/nth edge_sum e) (array/nth edge_count e)) 1))
+                   (array/compact has)))]
+            (if (int/gt conflicts 0)
+              (error "invalid_geometry" "ends could not produce valid geometry"
+                :cause "ends [invalid_geometry]: Ends target edge has conflicting ancestry")
+              (sop/remap in0 target :points point_map :vertices vertex_map
+                :primitives (array/range primitives :type int) :positions "mapped"
+                :edges {:offsets (array/scan_sum has) :values edge_values}))))))))
