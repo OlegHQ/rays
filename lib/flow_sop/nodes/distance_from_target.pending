@@ -1,0 +1,114 @@
+; Whole-node draft.
+  ; Soft_transform weight; falloff is 0 linear, 1 quadratic, 2 cubic.
+  (defn distance_from_target_weight :context value [(falloff : int) (distance : float) (radius : float)]
+    (if (> distance radius) 0.0
+      (let* [ratio (max 0.0 (min 1.0 (/ distance radius))) squared (* ratio ratio)]
+        ; Native arm64 fuses 1 - t*t and 3*t2 - (2*t2)*t into fused multiply-subtracts.
+        (case falloff 1 (fma (* -1.0 ratio) ratio 1.0)
+                      2 (- 1.0 (fma (* -1.0 (* 2.0 squared)) ratio (* 3.0 squared)))
+                      :else (- 1.0 ratio)))))
+  ; projection: 0 spherical, 1 cylindrical, 2 planar.
+  (defn distance_from_target_raw :context value
+    [(p : vec3) (origin : vec3) (axis : vec3) (projection : int) (signed : int)]
+    (let* [dx (- p.x origin.x) dy (- p.y origin.y) dz (- p.z origin.z)
+           ; Native arm64 contracts a*b + c into a fused multiply-add, left product first.
+           squared (fma dz dz (fma dy dy (* dx dx)))
+           axial (fma dz axis.z (fma dy axis.y (* dx axis.x)))]
+      (case projection 0 (sqrt squared)
+                       1 (sqrt (max 0.0 (fma (* -1.0 axial) axial squared)))
+                       :else (if (int/eq signed 1) axial (abs axial)))))
+
+  (defnode sop/distance_from_target :label "Distance from Target" :category ["Attribute" "Distance"]
+    :validate
+      (let* [names (filter (fn [(n : text)] (not (text/blank? n)))
+                     (list (text/trim distance_attribute) (text/trim mask_attribute)))
+             squared (+ (+ (* direction_x direction_x) (* direction_y direction_y)) (* direction_z direction_z))]
+        (cond
+          (or (< radius 0.0) (and (equal? radius_mode "Fixed") (= radius 0.0)))
+            (error "E_PARAM" "sop/distance_from_target: fixed radius must be positive and finite")
+          (or (= (count names) 0) (or (> (count (filter (fn [(n : text)] (equal? n "P")) names)) 0)
+                (and (and (not (text/blank? distance_attribute)) (not (text/blank? mask_attribute)))
+                     (equal? (text/trim distance_attribute) (text/trim mask_attribute)))))
+            (error "E_PARAM" "sop/distance_from_target: output names must be present, distinct and cannot be P")
+          (and (equal? metric "Signed") (not (equal? projection "Planar")))
+            (error "E_PARAM" "sop/distance_from_target: signed distance requires planar projection")
+          (and (not (equal? projection "Spherical")) (<= squared 0.0))
+            (error "E_PARAM" "sop/distance_from_target: cylindrical and planar direction must be nonzero")
+          :else true))
+    [(in0 : geometry)
+     (affected_owner : text "Point" :label "Affected group type" :choices ["Point" "Vertex" "Primitive" "Edge"])
+     (affected_group : text "" :label "Affected group")
+     (projection : text "Spherical" :label "Projection" :choices ["Spherical" "Cylindrical" "Planar"])
+     (origin_x : float 0.0 :label "Origin X" :folder ["Target" "Origin"] :min -100 :max 100 :vec3 ["origin" 0])
+     (origin_y : float 0.0 :label "Origin Y" :folder ["Target" "Origin"] :min -100 :max 100 :vec3 ["origin" 1])
+     (origin_z : float 0.0 :label "Origin Z" :folder ["Target" "Origin"] :min -100 :max 100 :vec3 ["origin" 2])
+     (direction_x : float 0.0 :label "Direction X" :folder ["Target" "Direction"] :min -1 :max 1 :vec3 ["direction" 0])
+     (direction_y : float 1.0 :label "Direction Y" :folder ["Target" "Direction"] :min -1 :max 1 :vec3 ["direction" 1])
+     (direction_z : float 0.0 :label "Direction Z" :folder ["Target" "Direction"] :min -1 :max 1 :vec3 ["direction" 2])
+     (metric : text "Absolute" :label "Metric" :choices ["Absolute" "Signed"])
+     (falloff : text "Linear" :label "Falloff" :choices ["Linear" "Quadratic" "Cubic"])
+     (radius_mode : text "Maximum distance" :label "Radius" :choices ["Fixed" "Maximum distance"])
+     (radius : float 1.0 :label "Fixed radius" :min 0.0001 :max 1000 :hard_min 0)
+     (distance_attribute : text "distance" :label "Distance attribute" :folder ["Output"])
+     (mask_attribute : text "" :label "Mask attribute" :folder ["Output"])]
+    (let* [owner (text/lower affected_owner)
+           group_name (text/trim affected_group)
+           distance_name (text/trim distance_attribute)
+           mask_name (text/trim mask_attribute)
+           found (or (text/blank? group_name)
+             (fold [seen false] [name (sop/group_names in0 "" :owner owner)]
+               (or seen (equal? name group_name))))
+           count (sop/count in0 :points)
+           positions (sop/attr in0 :P)
+           invalid_index (if (int/eq count 0) count
+             (array/min (map (fn [(p : vec3) (index : int)]
+               (if (and (= (- p.x p.x) 0.0) (and (= (- p.y p.y) 0.0) (= (- p.z p.z) 0.0))) count index))
+               positions (array/range count :type int))))]
+      (cond
+        (not found)
+          (error "missing_group" "distance_from_target could not produce valid geometry"
+            :cause (str "distance_from_target affected could not find " owner " group " (text/repr group_name)))
+        (int/lt invalid_index count)
+          (error "invalid_distance" "distance_from_target could not produce valid geometry"
+            :cause (str "point " invalid_index " has a non-finite position"))
+        (and (not (text/blank? distance_name))
+             (and (sop/has_attr in0 distance_name) (not (sop/has_attr in0 distance_name :type float))))
+          (error "invalid_distance" "distance_from_target could not produce valid geometry"
+            :cause (str "point attribute " (text/repr distance_name) " must be float"))
+        (and (not (text/blank? mask_name))
+             (and (sop/has_attr in0 mask_name) (not (sop/has_attr in0 mask_name :type float))))
+          (error "invalid_distance" "distance_from_target could not produce valid geometry"
+            :cause (str "point attribute " (text/repr mask_name) " must be float"))
+        :else
+          (let* [selection (if (text/blank? group_name) (array/int count 1)
+                             (sop/group in0 :name group_name :owner owner :as_owner "point"))
+                 origin [origin_x origin_y origin_z]
+                 squared (fma direction_z direction_z (fma direction_x direction_x (* direction_y direction_y)))
+                 spherical (equal? projection "Spherical")
+                 inverse (if spherical 0.0 (/ 1.0 (sqrt squared)))
+                 axis [(* direction_x inverse) (* direction_y inverse) (* direction_z inverse)]
+                 mode (case projection "Cylindrical" 1 "Planar" 2 :else 0)
+                 signed (if (equal? metric "Signed") 1 0)
+                 falloff_mode (case falloff "Quadratic" 1 "Cubic" 2 :else 0)
+                 fixed (equal? radius_mode "Fixed")
+                 raws (map (fn [(p : vec3) (selected : int)]
+                         (if (int/eq selected 1) (distance_from_target_raw p origin axis mode signed) 0.0))
+                         positions selection)
+                 maximum (if (int/eq count 0) 0.0
+                   (array/max (map (fn [(raw : float) (selected : int)]
+                     (if (int/eq selected 1) (abs raw) 0.0)) raws selection)))
+                 old_distance (if (and (not (text/blank? distance_name)) (sop/has_attr in0 distance_name))
+                                (sop/attr in0 distance_name :type float) (array/float count -1.0))
+                 old_mask (if (and (not (text/blank? mask_name)) (sop/has_attr in0 mask_name))
+                            (sop/attr in0 mask_name :type float) (array/float count 0.0))
+                 distances (map (fn [(raw : float) (selected : int) (old : float)]
+                             (if (int/eq selected 1) raw old)) raws selection old_distance)
+                 masks (map (fn [(raw : float) (selected : int) (old : float)]
+                         (if (int/eq selected 1)
+                           (if fixed (distance_from_target_weight falloff_mode (abs raw) radius)
+                             (if (= maximum 0.0) 1.0 (distance_from_target_weight falloff_mode (abs raw) maximum)))
+                           old)) raws selection old_mask)
+                 with_distance (if (text/blank? distance_name) in0
+                   (sop/with_attr in0 distance_name (exact distances) :owner "point" :type float))]
+            (if (text/blank? mask_name) with_distance
+              (sop/with_attr with_distance mask_name (exact masks) :owner "point" :type float))))))
