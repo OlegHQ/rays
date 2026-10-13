@@ -1001,3 +1001,19 @@ scratch reuse, 256-element blocks, constant prefill, specialized integer loops.
 4. Ports: 19 pending drafts and 65 nodes without a draft (tables above).
 5. Closure: B.F, the review tasks B.R/C.R/D.R/E.R with `check.exe --ship`, and
    the final `results.md` write-up. New ports wait for 1.1 and 1.2.
+
+Interpreter speed 1.2 and 1.1, measured (Lisp seconds at 1,000,000 elements,
+1 / 4 domains, baseline → after `35cd2f33`, `73d1a0ed`, `490a8954`; full port
+gate and focused aliases exit 0): `reverse` 1.0 / 0.82 → 0.58 / 0.42;
+`compact_points` 0.22 / 0.19 → 0.054 / 0.042; `blast` 0.99 / 0.72 →
+0.71 / 0.50; `grid` 2.1 / 1.0 → 1.35 / 0.39; `circle` 0.4 / 0.2 →
+0.205 / 0.07; `ends` 1.45 / 1.27 → 0.94 / 0.79; `color_by_height`
+0.092 / 0.052 → 0.073 / 0.038; `mirror`, `uv_transform`,
+`distance_from_target` unchanged. Host calls now build `sop/mesh`,
+`sop/mesh_planes` and `sop/remap` nodes directly; large array constants are
+shared by identity; forced captures are shared inside one outermost run.
+Not done: an identity option for `sop/remap` (estimated under 3% of
+`reverse`, unmeasured), a direct build for `sop/delete_attr`, sharing between
+two separate outermost runs in one body. Remaining top costs: kernel passes in
+`grid`; edge index, `array/index_of` and gathers in `reverse`; `mirror` is
+not profiled.
