@@ -1,0 +1,385 @@
+; Whole Spiral draft. A curve is described per point of one turn table (angle, radius, height) and replicated
+; by spiral phase; ramps are knot arrays (an unset ramp is the constant 1, a single knot a constant), the
+; equal-arc option integrates the speed by 5-point Gauss rules per knot interval and refines each target with
+; four Newton steps (one map per step), and frames, quaternions and distances follow from positions.
+(defn spiral_error :context value [(reason : text)]
+  (error "invalid_parameter" "spiral could not produce valid geometry"
+    :cause (str "spiral [invalid_parameter]: Rdk.Spiral.spiral: " reason)))
+; One half of a "position:value" knot: the number, valid only for two colon-separated parts.
+(defn spiral_part :context value [(token : text) (index : int)]
+  (let* [parts (text/split token ":")]
+    (if (int/eq (array/count parts) 2) (text/to_float (array/nth parts index)) {:value 0.0 :valid false})))
+; A ramp text is valid when blank, a single knot, or knots starting at 0, strictly increasing and ending at 1.
+(defn spiral_ramp_ok :context value [(raw : text)]
+  (if (text/blank? raw) true
+    (let* [tokens (text/split raw ",")
+           count (array/count tokens)
+           positions (exact (map (fn [(token : text)] (let* [r (spiral_part token 0)] r.value)) tokens))
+           vals (exact (map (fn [(token : text)] (let* [r (spiral_part token 1)] r.value)) tokens))
+           good (exact (map (fn [(token : text)]
+             (let* [a (spiral_part token 0) b (spiral_part token 1)]
+               (if (and a.valid (and b.valid (and (>= a.value 0.0) (<= a.value 1.0)))) 1 0))) tokens))]
+      (and (int/eq (array/sum good) count)
+        (or (int/eq count 1)
+          (and (= (array/nth positions 0) 0.0) (and (= (array/nth positions (int/sub count 1)) 1.0)
+            (int/eq (array/sum (exact (map (fn [(i : int)] (if (> (array/nth positions (int/add i 1)) (array/nth positions i)) 1 0))
+              (array/range (int/sub count 1) :type int)))) (int/sub count 1)))))))))
+; Effective turns of an extent: finite and positive, else -1.
+(defn spiral_turns :context value [(mode : text) (turns : float) (height : float) (pitch : float)]
+  (if (equal? mode "Height and pitch")
+    (if (= pitch 0.0) -1.0
+      (let* [q (float/mul_checked height (/ 1.0 pitch))] (if q.valid (/ height pitch) -1.0)))
+    turns))
+(defn spiral_segments :context value [(mode : text) (turns : float) (count : int)]
+  (if (equal? mode "Per curve") (float count)
+    (let* [product (float/mul_checked turns (float count))]
+      (if product.valid (max 1.0 (float (ceil product.value))) -1.0))))
+(defn spiral_names_ok :context value
+  [(a : text) (b : text) (c : text) (d : text) (e : text) (f : text)]
+  (let* [names (exact (map (fn [(n : text)] (text/trim n)) (array/concat (array/concat (array/concat
+                  (array/concat (array/concat (array/text 1 a) (array/text 1 b)) (array/text 1 c)) (array/text 1 d))
+                  (array/text 1 e)) (array/text 1 f))))
+         present (exact (map (fn [(n : text)] (if (text/blank? n) 0 1)) names))
+         pole (exact (map (fn [(n : text)] (if (equal? n "P") 1 0)) names))
+         repeated (exact (map (fn [(i : int)]
+           (if (int/eq (array/nth present i) 0) 0
+             (if (int/gt (array/sum (exact (map (fn [(j : int)]
+                    (if (and (int/lt j i) (equal? (array/nth names j) (array/nth names i))) 1 0)) (array/range 6 :type int)))) 0) 1 0)))
+           (array/range 6 :type int)))]
+    (and (int/eq (array/sum pole) 0) (int/eq (array/sum repeated) 0))))
+(defn spiral_base_radius :context value
+  [(mode : int) (start : float) (increase : float) (end : float) (scale : float) (turns : float) (u : float)]
+  (cond (int/eq mode 0) (fma (* increase turns) u start)
+        (int/eq mode 1) (fma (- end start) u start)
+        (int/eq mode 2) (* start (exp (* (* (log scale) turns) u)))
+        :else (* start (exp (* (log (/ end start)) u)))))
+(defn spiral_segment :context value [(positions : (array float)) (u : float)]
+  (let* [below (fold [n 0] [p positions] (if (<= p u) (int/add n 1) n))
+         last (int/sub (array/count positions) 2)
+         m (int/sub below 1)]
+    (if (int/lt m 0) 0 (if (int/gt m last) last m))))
+(defn spiral_ramp_value :context value [(p : (array float)) (v : (array float)) (s : (array float)) (u : float)]
+  (let* [i (spiral_segment p u)] (+ (array/nth v i) (* (- u (array/nth p i)) (array/nth s i)))))
+(defn spiral_ramp_slope :context value [(p : (array float)) (s : (array float)) (u : float)]
+  (array/nth s (spiral_segment p u)))
+; Knot arrays of a ramp text, padded so every ramp has at least two knots.
+(defn spiral_knots :context value [(raw : text)]
+  (if (text/blank? raw) {:p (array/concat (array/float 1 0.0) (array/float 1 1.0)) :v (array/float 2 1.0)}
+    (let* [tokens (text/split raw ",")
+           positions (exact (map (fn [(token : text)] (let* [r (spiral_part token 0)] r.value)) tokens))
+           vals (exact (map (fn [(token : text)] (let* [r (spiral_part token 1)] r.value)) tokens))]
+      (if (int/eq (array/count tokens) 1)
+        {:p (array/concat (array/float 1 0.0) (array/float 1 1.0)) :v (array/float 2 (array/nth vals 0))}
+        {:p positions :v vals}))))
+(defn spiral_slopes :context value [(p : (array float)) (v : (array float))]
+  (exact (map (fn [(i : int)]
+    (/ (- (array/nth v (int/add i 1)) (array/nth v i)) (- (array/nth p (int/add i 1)) (array/nth p i))))
+    (array/range (int/sub (array/count p) 1) :type int))))
+(defnode sop/spiral :label "Spiral" :category ["Create" "Curve"]
+  :validate (let* [eff (spiral_turns extent_mode turns height pitch)
+                   exponent (* (log (if (> logarithmic_scale 0.0) logarithmic_scale 1.0)) (if (> eff 0.0) eff 1.0))
+                   change (float/fma_checked radius_change (if (> eff 0.0) eff 1.0) start_radius)
+                   grown (float/mul_checked start_radius (exp (min 700.0 (max -700.0 exponent))))]
+              (and (and (>= start_radius 0.0) (and (>= end_radius 0.0) (and (>= logarithmic_scale 0.0)
+                    (and (> radius_scale 0.0) (> uniform_scale 0.0)))))
+                (and (> eff 0.0)
+                  (cond (equal? radius_mode "Archimedean change") (and change.valid (>= change.value 0.0))
+                        (equal? radius_mode "Logarithmic change")
+                          (and (> start_radius 0.0) (and (> logarithmic_scale 0.0) (and (< (abs exponent) 700.0) (and grown.valid (> grown.value 0.0)))))
+                        (equal? radius_mode "Logarithmic end") (and (> start_radius 0.0) (> end_radius 0.0))
+                        :else true))))
+  :code "E_PARAM" :message "sop/spiral: invalid extent, radius or scale"
+  [(extent_mode : text "Turns and height" :label "Extent" :choices ["Turns and height" "Height and pitch"])
+   (turns : float 3.0 :label "Turns" :folder ["Extent"] :min 0.01 :max 20 :hard_min 0)
+   (height : float 2.0 :label "Height" :folder ["Extent"] :min -20 :max 20)
+   (pitch : float 0.6666666666666666 :label "Pitch" :folder ["Extent"] :min -10 :max 10)
+   (radius_mode : text "Archimedean change" :label "Radius model"
+     :choices ["Archimedean change" "Archimedean end" "Logarithmic change" "Logarithmic end"])
+   (start_radius : float 1.0 :label "Start radius" :folder ["Radius"] :min 0.001 :max 10 :hard_min 0)
+   (radius_change : float 0.0 :label "Increase per turn" :folder ["Radius"] :min -5 :max 5)
+   (end_radius : float 1.0 :label "End radius" :folder ["Radius"] :min 0.001 :max 10 :hard_min 0)
+   (logarithmic_scale : float 1.0 :label "Scale per turn" :folder ["Radius"] :min 0.01 :max 4 :hard_min 0)
+   (height_ramp : text "" :label "Height ramp"
+     :description "Comma-separated position:value knots; blank is unset, one knot is constant, multiple knots span 0 through 1."
+     :validate (spiral_ramp_ok height_ramp)
+     :code "E_PARAM" :message "sop/spiral: invalid height ramp")
+   (radius_ramp : text "" :label "Radius ramp"
+     :description "Comma-separated position:value knots; blank is unset, one knot is constant, multiple knots span 0 through 1."
+     :validate (spiral_ramp_ok radius_ramp)
+     :code "E_PARAM" :message "sop/spiral: invalid radius ramp")
+   (radius_scale : float 1.0 :label "Radius scale" :folder ["Radius"] :min 0.01 :max 10 :hard_min 0)
+   (direction : text "Counterclockwise" :label "Direction" :choices ["Counterclockwise" "Clockwise"])
+   (start_angle : float 0.0 :label "Start angle" :min -6.283185307179586 :max 6.283185307179586)
+   (divisions_mode : text "Per turn" :label "Divisions" :choices ["Per curve" "Per turn"])
+   (divisions : int 32 :label "Division count" :min 2 :max 512 :hard_min 1
+     :validate (let* [segments (spiral_segments divisions_mode (spiral_turns extent_mode turns height pitch) divisions)
+                      limit (array/max_length :type int)]
+                 (and (and (>= segments 1.0) (< segments (float limit)))
+                   (and (int/le spiral_count (int/sub limit 1))
+                        (int/le spiral_count (int/div limit (int/add (int segments) 1))))))
+     :code "E_PARAM" :message "sop/spiral: output cardinality exceeds array limits")
+   (uniform_angle : bool true :label "Uniform angle")
+   (spiral_count : int 1 :label "Spiral count" :min 1 :max 64 :hard_min 1)
+   (orientation : text "Y axis" :label "Orientation" :folder ["Transform"] :choices ["X axis" "Y axis" "Z axis" "Custom axis"]
+     :validate (not (and (equal? orientation "Custom axis") (and (= axis_x 0.0) (and (= axis_y 0.0) (= axis_z 0.0)))))
+     :code "E_PARAM" :message "sop/spiral: custom axis must be non-zero")
+   (axis_x : float 0.0 :label "Axis X" :folder ["Transform" "Custom axis"] :min -1 :max 1 :vec3 ["axis" 0])
+   (axis_y : float 1.0 :label "Axis Y" :folder ["Transform" "Custom axis"] :min -1 :max 1 :vec3 ["axis" 1])
+   (axis_z : float 0.0 :label "Axis Z" :folder ["Transform" "Custom axis"] :min -1 :max 1 :vec3 ["axis" 2])
+   (center_x : float 0.0 :label "Center X" :folder ["Transform" "Center"] :min -10 :max 10 :vec3 ["center" 0])
+   (center_y : float 0.0 :label "Center Y" :folder ["Transform" "Center"] :min -10 :max 10 :vec3 ["center" 1])
+   (center_z : float 0.0 :label "Center Z" :folder ["Transform" "Center"] :min -10 :max 10 :vec3 ["center" 2])
+   (rotation_x : float 0.0 :label "Rotate X" :folder ["Transform" "Rotate"] :min -3.14159 :max 3.14159 :vec3 ["rotation" 0])
+   (rotation_y : float 0.0 :label "Rotate Y" :folder ["Transform" "Rotate"] :min -3.14159 :max 3.14159 :vec3 ["rotation" 1])
+   (rotation_z : float 0.0 :label "Rotate Z" :folder ["Transform" "Rotate"] :min -3.14159 :max 3.14159 :vec3 ["rotation" 2])
+   (rotation_order : text "XYZ" :label "Rotation order" :folder ["Transform" "Rotate"]
+     :choices ["XYZ" "XZY" "YXZ" "YZX" "ZXY" "ZYX"])
+   (uniform_scale : float 1.0 :label "Uniform scale" :folder ["Transform"] :min 0.01 :max 10 :hard_min 0)
+   (angle_attribute : text "" :label "Angle" :folder ["Attributes"])
+   (x_axis_attribute : text "" :label "X axis" :folder ["Attributes"])
+   (y_axis_attribute : text "" :label "Y axis" :folder ["Attributes"])
+   (tangent_attribute : text "" :label "Tangent" :folder ["Attributes"])
+   (orient_attribute : text "" :label "Orient" :folder ["Attributes"])
+   (distance_attribute : text "" :label "Distance" :folder ["Attributes"]
+     :validate (spiral_names_ok angle_attribute x_axis_attribute y_axis_attribute tangent_attribute orient_attribute distance_attribute)
+     :code "E_PARAM" :message "sop/spiral: output names must be unique and cannot be P")]
+  (let* [pi_value 3.141592653589793
+         turns_eff (spiral_turns extent_mode turns height pitch)
+         segments_float (spiral_segments divisions_mode turns_eff divisions)
+         segments (int segments_float)
+         per_curve (int/add segments 1)
+         total (int/mul spiral_count per_curve)
+         sign (if (equal? direction "Clockwise") -1.0 1.0)
+         rate (* (* (* sign turns_eff) 2.0) pi_value)
+         mode_code (case radius_mode "Archimedean change" 0 "Archimedean end" 1 "Logarithmic change" 2 :else 3)
+         log_scale (if (> logarithmic_scale 0.0) logarithmic_scale 1.0)
+         log_end (if (and (> start_radius 0.0) (> end_radius 0.0)) end_radius start_radius)
+         hk (spiral_knots height_ramp) rk (spiral_knots radius_ramp)
+         hp hk.p hv hk.v rp rk.p rv rk.v
+         hs (spiral_slopes hp hv) rs (spiral_slopes rp rv)
+         base_at (fn [(u : float)]
+           (spiral_base_radius mode_code start_radius radius_change (if (int/eq mode_code 3) log_end end_radius) log_scale turns_eff u))
+         radius_at (fn [(u : float)] (* (* (base_at u) radius_scale) (spiral_ramp_value rp rv rs u)))
+         height_at (fn [(u : float)] (* (* height u) (spiral_ramp_value hp hv hs u)))
+         ; ---- parameter t of every point of one curve ----
+         t_values (if uniform_angle
+           (exact (map (fn [(i : int)] (/ (float i) (float segments))) (array/range per_curve :type int)))
+           (let* [
+         grid (exact (map (fn [(i : int)] (/ (float i) (float segments))) (array/range per_curve :type int)))
+         derivative_at (fn [(u : float)]
+           (cond (int/eq mode_code 0) (* radius_change turns_eff)
+                 (int/eq mode_code 1) (- end_radius start_radius)
+                 (int/eq mode_code 2) (* (* (base_at u) (log log_scale)) turns_eff)
+                 :else (* (base_at u) (log (/ log_end start_radius)))))
+         speed_at (fn [(u : float)]
+           (let* [b (base_at u) d (derivative_at u)
+                  rr (spiral_ramp_value rp rv rs u) rsl (spiral_ramp_slope rp rs u)
+                  hr (spiral_ramp_value hp hv hs u) hsl (spiral_ramp_slope hp hs u)
+                  radius (* (* b radius_scale) rr)
+                  dr (* radius_scale (fma b rsl (* d rr)))
+                  dh (* height (fma u hsl hr))
+                  a (* radius rate)]
+             (* uniform_scale (sqrt (fma dh dh (fma a a (* dr dr)))))))
+         ; Gauss rule of five points over each [lo, hi]: five speed maps, then the weighted sum.
+         gauss (fn [(lo : (array float)) (hi : (array float))]
+           (let* [mid (exact (map (fn [(a : float) (b : float)] (* (+ a b) 0.5)) lo hi))
+                  half (exact (map (fn [(a : float) (b : float)] (* (- b a) 0.5)) lo hi))
+                  s0 (exact (map (fn [(m : float)] (speed_at m)) mid))
+                  s1 (exact (map (fn [(m : float) (h : float)] (speed_at (fma (* -1.0 h) 0.5384693101056831 m))) mid half))
+                  s2 (exact (map (fn [(m : float) (h : float)] (speed_at (fma h 0.5384693101056831 m))) mid half))
+                  s3 (exact (map (fn [(m : float) (h : float)] (speed_at (fma (* -1.0 h) 0.9061798459386640 m))) mid half))
+                  s4 (exact (map (fn [(m : float) (h : float)] (speed_at (fma h 0.9061798459386640 m))) mid half))
+                  inner (exact (map (fn [(a : float) (b : float) (c : float)] (+ (* 0.5688888888888889 a) (* 0.4786286704993665 (+ b c)))) s0 s1 s2))
+                  outer (exact (map (fn [(a : float) (b : float)] (+ a b)) s3 s4))
+                  weighted (exact (map (fn [(h : float) (i : float) (o : float)] (* h (+ i (* 0.2369268850561891 o)))) half inner outer))]
+             (exact (map (fn [(l : float) (a : float) (b : float)] (if (<= b a) 0.0 l)) weighted lo hi))))
+         breaks (array/concat (array/slice hp 1 (int/sub (array/count hp) 2)) (array/slice rp 1 (int/sub (array/count rp) 2)))
+         merged (array/concat grid breaks)
+         order (array/grade merged)
+         sorted (exact (map (fn [(i : int)] (array/nth merged i)) order))
+         fresh (array/compact (exact (map (fn [(i : int)]
+           (if (int/eq i 0) 1 (if (= (array/nth sorted i) (array/nth sorted (int/sub i 1))) 0 1))) (array/range (array/count sorted) :type int))))
+         candidates (exact (map (fn [(i : int)] (array/nth sorted i)) fresh))
+         intervals (int/sub (array/count candidates) 1)
+         lowers (array/slice candidates 0 intervals)
+         uppers (array/slice candidates 1 intervals)
+         lengths (gauss lowers uppers)
+         cumulative (scan [acc 0.0] [x lengths] (+ acc x))
+         prefix (array/concat (array/float 1 0.0) cumulative)
+         length_total (array/nth prefix intervals)
+         interior (int/sub segments 1)
+         targets (exact (map (fn [(i : int)] (/ (* length_total (float (int/add i 1))) (float segments))) (array/range interior :type int)))
+         bins (exact (map (fn [(tg : float)]
+           (fold [n 0] [pj (array/slice prefix 1 (int/sub intervals 1))] (if (<= pj tg) (int/add n 1) n))) targets))
+         bin_lower (exact (map (fn [(b : int)] (array/nth candidates b)) bins))
+         bin_upper (exact (map (fn [(b : int)] (array/nth candidates (int/add b 1))) bins))
+         bin_start (exact (map (fn [(b : int)] (array/nth prefix b)) bins))
+         fractions (exact (map (fn [(b : int) (tg : float)]
+           (let* [len (array/nth lengths b)]
+             (if (= len 0.0) 0.0 (/ (- tg (array/nth prefix b)) len)))) bins targets))
+         start_estimate (exact (map (fn [(fr : float) (lo : float) (hi : float)] (fma (- hi lo) fr lo)) fractions bin_lower bin_upper))
+         refine (fn [(estimates : (array float))]
+           (let* [partial (gauss bin_lower estimates)
+                  speeds (exact (map (fn [(e : float)] (speed_at e)) estimates))
+                  cur (exact (map (fn [(bs : float) (p : float)] (+ bs p)) bin_start partial))
+                  diff (exact (map (fn [(c : float) (tg : float)] (- c tg)) cur targets))
+                  cand (exact (map (fn [(e : float) (df : float) (sp : float)] (if (> sp 0.0) (- e (/ df sp)) e)) estimates diff speeds))
+                  moved (exact (map (fn [(sp : float)] (if (> sp 0.0) 1 0)) speeds))
+                  clamped (exact (map (fn [(c : float) (lo : float) (hi : float)] (max lo (min hi c))) cand bin_lower bin_upper))]
+             (exact (map (fn [(m : int) (c : float) (e : float)] (if (int/eq m 1) c e)) moved clamped estimates))))
+                  ]
+             (if (<= length_total 0.0) (spiral_error "equal-arc integration produced a non-finite or zero curve length")
+               (array/concat (array/float 1 0.0)
+                 (array/concat (refine (refine (refine (refine start_estimate)))) (array/float 1 1.0))))))
+         ; ---- sample table with finite checks ----
+         bad_samples (array/compact (map (fn [(u : float)]
+           (let* [b (base_at u)
+                  r1 (float/mul_checked b radius_scale) r2 (float/mul_checked r1.value (spiral_ramp_value rp rv rs u))
+                  r3 (float/mul_checked r2.value uniform_scale)
+                  h1 (float/mul_checked (* height u) (spiral_ramp_value hp hv hs u)) h2 (float/mul_checked h1.value uniform_scale)
+                  a (float/fma_checked rate u start_angle)]
+             (if (and (and r1.valid (and r2.valid r3.valid)) (and (and h1.valid h2.valid) a.valid)) 0 1))) t_values))]
+    (if (int/gt (array/count bad_samples) 0)
+      (spiral_error (str "generated sample " (array/nth bad_samples 0) " is not finite"))
+      (let* [angles (exact (map (fn [(u : float)] (fma rate u start_angle)) t_values))
+             local_radius (exact (map (fn [(u : float)] (* (radius_at u) uniform_scale)) t_values))
+             local_height (exact (map (fn [(u : float)] (* (height_at u) uniform_scale)) t_values))
+             base_sine (exact (map (fn [(a : float)] (sin a)) angles))
+             base_cosine (exact (map (fn [(a : float)] (cos a)) angles))
+             frame (gen_frame orientation [axis_x axis_y axis_z] [rotation_x rotation_y rotation_z] rotation_order)
+             phase_sine (exact (map (fn [(s : int)] (sin (/ (* (* 2.0 pi_value) (float s)) (float spiral_count)))) (array/range spiral_count :type int)))
+             phase_cosine (exact (map (fn [(s : int)] (cos (/ (* (* 2.0 pi_value) (float s)) (float spiral_count)))) (array/range spiral_count :type int)))
+             all (array/range total :type int)
+             curve_of (exact (map (fn [(p : int)] (int/div p per_curve)) all))
+             local_of (exact (map (fn [(p : int)] (int/mod p per_curve)) all))
+             local_of_curve (fn [(spiral : int) (local : int)]
+               (let* [bc (array/nth base_cosine local) bs (array/nth base_sine local)
+                      pc (array/nth phase_cosine spiral) ps (array/nth phase_sine spiral)
+                      cosine (fma bc pc (* -1.0 (* bs ps)))
+                      sine (fma bs pc (* bc ps))]
+                 [(* (array/nth local_radius local) cosine) (array/nth local_height local)
+                  (* (array/nth local_radius local) sine)]))
+             safe (and (< (max (abs center_x) (max (abs center_y) (abs center_z))) 1e307)
+                    (and (< (array/max local_radius) 1e307) (< (max (array/max local_height) (* -1.0 (array/min local_height))) 1e307)))
+             bad_points (if safe (array/int 0)
+               (array/compact (map (fn [(spiral : int) (local : int)]
+                 (let* [l (local_of_curve spiral local)
+                        x1 (float/fma_checked frame.r.x l.x center_x) x2 (float/fma_checked frame.p.x l.y x1.value)
+                        x3 (float/fma_checked frame.t.x l.z x2.value)
+                        y1 (float/fma_checked frame.r.y l.x center_y) y2 (float/fma_checked frame.p.y l.y y1.value)
+                        y3 (float/fma_checked frame.t.y l.z y2.value)
+                        z1 (float/fma_checked frame.r.z l.x center_z) z2 (float/fma_checked frame.p.z l.y z1.value)
+                        z3 (float/fma_checked frame.t.z l.z z2.value)]
+                   (if (and (and x1.valid (and x2.valid x3.valid)) (and (and y1.valid (and y2.valid y3.valid))
+                         (and z1.valid (and z2.valid z3.valid)))) 0 1))) curve_of local_of)))]
+        (if (int/gt (array/count bad_points) 0)
+          (spiral_error (str "generated point " (array/nth bad_points 0) " is not finite"))
+          (let* [positions (exact (map (fn [(spiral : int) (local : int)]
+                   (let* [l (local_of_curve spiral local)]
+                     [(fma frame.t.x l.z (fma frame.p.x l.y (fma frame.r.x l.x center_x)))
+                      (fma frame.t.y l.z (fma frame.p.y l.y (fma frame.r.y l.x center_y)))
+                      (fma frame.t.z l.z (fma frame.p.z l.y (fma frame.r.z l.x center_z)))])) curve_of local_of))
+                 base (sop/mesh :points positions :vertex_points all
+                        :primitive_offsets (exact (map (fn [(s : int)] (int/mul s per_curve)) (array/range (int/add spiral_count 1) :type int)))
+                        :kinds (array/int spiral_count 1))
+                 angle_name (text/trim angle_attribute) x_name (text/trim x_axis_attribute) y_name (text/trim y_axis_attribute)
+                 tangent_name (text/trim tangent_attribute) orient_name (text/trim orient_attribute)
+                 distance_name (text/trim distance_attribute)
+                 frames_wanted (not (and (text/blank? x_name) (and (text/blank? y_name) (and (text/blank? tangent_name) (text/blank? orient_name)))))
+                 ; ---- frames: tangent, up, side axis, quaternion ----
+                 stationary (if frames_wanted
+                   (array/compact (map (fn [(p : int) (local : int)]
+                     (let* [prev (if (int/eq local 0) p (int/sub p 1)) nxt (if (int/eq local segments) p (int/add p 1))
+                            a (array/nth positions prev) b (array/nth positions nxt)]
+                       (if (= (max (abs (- b.x a.x)) (max (abs (- b.y a.y)) (abs (- b.z a.z)))) 0.0) 1 0))) all local_of))
+                   (array/int 0))]
+            (if (int/gt (array/count stationary) 0)
+              (spiral_error (str "cannot construct a frame at stationary point " (array/nth stationary 0)))
+              (let* [tangents (if frames_wanted
+                       (exact (map (fn [(p : int) (local : int)]
+                         (let* [prev (if (int/eq local 0) p (int/sub p 1)) nxt (if (int/eq local segments) p (int/add p 1))
+                                a (array/nth positions prev) b (array/nth positions nxt)
+                                dx (- b.x a.x) dy (- b.y a.y) dz (- b.z a.z)
+                                scale (max (abs dx) (max (abs dy) (abs dz)))
+                                sx (/ dx scale) sy (/ dy scale) sz (/ dz scale)
+                                inverse (/ 1.0 (sqrt (fma sz sz (fma sy sy (* sx sx)))))]
+                           [(* sx inverse) (* sy inverse) (* sz inverse)])) all local_of))
+                       (array/vec3 0))
+                     up_raw (exact (map (fn [(t0 : vec3)]
+                       (let* [projection (fma frame.p.z t0.z (fma frame.p.y t0.y (* frame.p.x t0.x)))
+                              k (* -1.0 projection)]
+                         [(fma k t0.x frame.p.x) (fma k t0.y frame.p.y) (fma k t0.z frame.p.z)])) tangents))
+                     up_length (exact (map (fn [(u0 : vec3)] (sqrt (fma u0.z u0.z (fma u0.y u0.y (* u0.x u0.x))))) up_raw))
+                     fallback (exact (map (fn [(spiral : int) (local : int) (t0 : vec3)]
+                       (let* [phase (/ (* (* 2.0 pi_value) (float spiral)) (float spiral_count))
+                              ang (+ (array/nth angles local) phase)
+                              c (cos ang) s (sin ang)
+                              rx (fma frame.t.x s (* frame.r.x c)) ry (fma frame.t.y s (* frame.r.y c))
+                              rz (fma frame.t.z s (* frame.r.z c))
+                              dot (fma rz t0.z (fma ry t0.y (* rx t0.x)))
+                              k (* -1.0 dot)
+                              xx (fma k t0.x rx) xy (fma k t0.y ry) xz (fma k t0.z rz)
+                              length (sqrt (fma xz xz (fma xy xy (* xx xx))))
+                              nx (/ xx length) ny (/ xy length) nz (/ xz length)]
+                         [(fma (* -1.0 t0.y) nz (* t0.z ny)) (fma (* -1.0 t0.z) nx (* t0.x nz)) (fma (* -1.0 t0.x) ny (* t0.y nx))]))
+                       curve_of local_of tangents))
+                     up (exact (map (fn [(u0 : vec3) (len : float) (f : vec3)]
+                       (if (> len 1e-12) [(/ u0.x len) (/ u0.y len) (/ u0.z len)] f)) up_raw up_length fallback))
+                     side (exact (map (fn [(u0 : vec3) (t0 : vec3)]
+                       [(fma (* -1.0 u0.z) t0.y (* u0.y t0.z)) (fma (* -1.0 u0.x) t0.z (* u0.z t0.x)) (fma (* -1.0 u0.y) t0.x (* u0.x t0.y))])
+                       up tangents))
+                     with_angle (if (text/blank? angle_name) base
+                       (sop/with_attr base angle_name
+                         (exact (map (fn [(spiral : int) (local : int)]
+                           (+ (array/nth angles local) (/ (* (* 2.0 pi_value) (float spiral)) (float spiral_count)))) curve_of local_of))
+                         :owner "point" :type float))
+                     with_x (if (text/blank? x_name) with_angle (sop/with_attr with_angle x_name side :owner "point" :type vec3))
+                     with_y (if (text/blank? y_name) with_x (sop/with_attr with_x y_name up :owner "point" :type vec3))
+                     with_tangent (if (text/blank? tangent_name) with_y (sop/with_attr with_y tangent_name tangents :owner "point" :type vec3))
+                     with_orient (if (text/blank? orient_name) with_tangent
+                       (sop/with_attr with_tangent orient_name
+                         (exact (map (fn [(xa : vec3) (ua : vec3) (ta : vec3)]
+                           (let* [trace (+ (+ xa.x ua.y) ta.z)]
+                             (cond
+                               (> trace 0.0)
+                                 (let* [scale (* (sqrt (+ trace 1.0)) 2.0)
+                                        qx (/ (- ua.z ta.y) scale) qy (/ (- ta.x xa.z) scale) qz (/ (- xa.y ua.x) scale) qw (* 0.25 scale)
+                                        length (sqrt (fma qw qw (fma qz qz (fma qy qy (* qx qx)))))]
+                                   [(/ qx length) (/ qy length) (/ qz length) (/ qw length)])
+                               (and (> xa.x ua.y) (> xa.x ta.z))
+                                 (let* [scale (* (sqrt (- (- (+ 1.0 xa.x) ua.y) ta.z)) 2.0)
+                                        qx (* 0.25 scale) qy (/ (+ ua.x xa.y) scale) qz (/ (+ xa.z ta.x) scale) qw (/ (- ua.z ta.y) scale)
+                                        length (sqrt (fma qw qw (fma qz qz (fma qy qy (* qx qx)))))]
+                                   [(/ qx length) (/ qy length) (/ qz length) (/ qw length)])
+                               (> ua.y ta.z)
+                                 (let* [scale (* (sqrt (- (- (+ 1.0 ua.y) xa.x) ta.z)) 2.0)
+                                        qx (/ (+ ua.x xa.y) scale) qy (* 0.25 scale) qz (/ (+ ta.y ua.z) scale) qw (/ (- ta.x xa.z) scale)
+                                        length (sqrt (fma qw qw (fma qz qz (fma qy qy (* qx qx)))))]
+                                   [(/ qx length) (/ qy length) (/ qz length) (/ qw length)])
+                               :else
+                                 (let* [scale (* (sqrt (- (- (+ 1.0 ta.z) xa.x) ua.y)) 2.0)
+                                        qx (/ (+ xa.z ta.x) scale) qy (/ (+ ta.y ua.z) scale) qz (* 0.25 scale) qw (/ (- xa.y ua.x) scale)
+                                        length (sqrt (fma qw qw (fma qz qz (fma qy qy (* qx qx)))))]
+                                   [(/ qx length) (/ qy length) (/ qz length) (/ qw length)]))))
+                           side up tangents))
+                         :owner "point" :type vec4))
+                     ; ---- distance along each curve, accumulated in blocks of 4096 points as natively ----
+                     step (exact (map (fn [(p : int) (local : int)]
+                       (if (int/eq local 0) 0.0
+                         (let* [a (array/nth positions (int/sub p 1)) b (array/nth positions p)
+                                dx (- b.x a.x) dy (- b.y a.y) dz (- b.z a.z)]
+                           (sqrt (fma dz dz (fma dy dy (* dx dx))))))) all local_of))
+                     blocks_per_curve (int/div (int/add segments 4095) 4096)
+                     block_of (exact (map (fn [(p : int) (local : int)]
+                       (int/add (int/mul (int/div p per_curve) blocks_per_curve)
+                                (if (int/eq local 0) 0 (int/div (int/sub local 1) 4096)))) all local_of))
+                     block_totals (array/scatter_add block_of step (int/mul spiral_count blocks_per_curve))
+                     block_bases (scan [acc 0.0] [k (array/range (int/mul spiral_count blocks_per_curve) :type int)]
+                       (if (int/eq (int/mod k blocks_per_curve) 0) 0.0 (+ acc (array/nth block_totals (int/sub k 1)))))
+                     distances (scan [acc 0.0] [p all]
+                       (let* [local (array/nth local_of p)]
+                         (cond (int/eq local 0) 0.0
+                               (int/eq (int/mod (int/sub local 1) 4096) 0) (+ (array/nth block_bases (array/nth block_of p)) (array/nth step p))
+                               :else (+ acc (array/nth step p)))))]
+                (if (text/blank? distance_name) with_orient
+                  (sop/with_attr with_orient distance_name distances :owner "point" :type float))))))))))
