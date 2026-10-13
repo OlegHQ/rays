@@ -1,0 +1,218 @@
+; Whole Attribute Blur draft. Point attributes matching the pattern (and P) are blurred plane by plane;
+; each pass averages edge neighbours (CSR slots segment-summed in source order) and moves the value
+; step * weight of the way towards the average, exactly as Attribute_ops.blur_points does.
+(defn blur_error :context value [(code : text) (reason : text)]
+  (error code "attribute_blur could not produce valid geometry"
+    :cause (str "attribute_blur [" code "]: " reason)))
+(defn blur_finite :context value [(plane : (array float))]
+  (exact (int/eq (array/sum (exact (map (fn [(x : float)] (if (= (- x x) 0.0) 0 1)) plane))) 0)))
+
+; Per-slot neighbour, coefficients and per-point weight totals. A slot is one entry of
+; point_edges; its owner point comes from a prefix sum of the segment starts.
+(defn blur_slots :context value
+  [(offsets : (array int)) (point_edges : (array int)) (edge_a : (array int)) (edge_b : (array int))
+   (alpha : (array float)) (lengths : (array float)) (edge_method : bool)]
+  (let* [slot_count (array/count point_edges)
+         point_count (int/sub (array/count offsets) 1)
+         starts (exact (map (fn [(p : int)] (array/nth offsets p)) (array/range point_count :type int)))
+         marks (array/scatter_add starts (array/int point_count 1) (int/add slot_count 1))
+         prefix (array/scan_sum marks)
+         slots (array/range slot_count :type int)
+         owner (exact (map (fn [(s : int)] (int/sub (array/nth prefix (int/add s 1)) 1)) slots))
+         nb (exact (map (fn [(s : int) (p : int)]
+              (let* [e (array/nth point_edges s)]
+                (if (int/eq (array/nth edge_a e) p) (array/nth edge_b e) (array/nth edge_a e))))
+              slots owner))
+         influence (exact (map (fn [(n : int)] (max 0.0 (min 1.0 (array/nth alpha n)))) nb))
+         contribute (exact (map (fn [(s : int) (p : int) (i : float)]
+              (if (and (not (int/eq (array/nth nb s) p)) (> i 0.0)) 1 0)) slots owner influence))
+         length (exact (map (fn [(e : int)] (array/nth lengths e)) point_edges))
+         zero_slot (exact (map (fn [(c : int) (l : float)] (if (and (int/eq c 1) (and edge_method (= l 0.0))) 1 0))
+              contribute length))
+         coefficient (exact (map (fn [(i : float) (l : float) (z : int)]
+              (if (int/eq z 1) i (if edge_method (/ i (if (= l 0.0) 1.0 l)) i))) influence length zero_slot))
+         zc (exact (map (fn [(z : int) (c : float)] (if (int/eq z 1) c 0.0)) zero_slot coefficient))
+         rc (exact (map (fn [(s : int) (c : float)]
+              (if (and (int/eq (array/nth contribute s) 1) (int/eq (array/nth zero_slot s) 0)) c 0.0))
+              slots coefficient))
+         zw (array/segment_sum zc offsets)
+         rw (array/segment_sum rc offsets)]
+    {:nb nb :zc zc :rc rc
+     :use_zero (exact (map (fn [(z : float)] (if (> z 0.0) 1 0)) zw))
+     :total (exact (map (fn [(z : float) (r : float)] (if (> z 0.0) z r)) zw rw))}))
+
+(defn blur_plane :context value
+  [(cfg : {:offsets (array int) :nb (array int) :zc (array float) :rc (array float) :use_zero (array int)
+           :total (array float) :weight (array float) :laplacian bool :step float :odd float :even float
+           :n int :ob float :bb float})
+   (plane : (array float))]
+  (let* [offsets cfg.offsets nb cfg.nb zc cfg.zc rc cfg.rc use_zero cfg.use_zero total cfg.total
+         weight cfg.weight laplacian cfg.laplacian step cfg.step odd cfg.odd even cfg.even n cfg.n
+         original_blend cfg.ob blurred_blend cfg.bb
+         slots (array/range (array/count nb) :type int)
+         points (array/range (array/count plane) :type int)
+         blurred (get (iterate n {:v plane :k 0}
+           (fn [(s : {:v (array float) :k int})]
+             (let* [src s.v
+                    amount (if laplacian step (if (int/eq (int/mod s.k 2) 0) odd even))
+                    gathered (exact (map (fn [(i : int)] (array/nth src i)) nb))
+                    zsum (array/segment_sum (exact (map (fn [(i : int) (g : float)] (* (array/nth zc i) g)) slots gathered)) offsets)
+                    rsum (array/segment_sum (exact (map (fn [(i : int) (g : float)] (* (array/nth rc i) g)) slots gathered)) offsets)
+                    next (exact (map (fn [(i : int) (v : float)]
+                      (let* [tw (array/nth total i)]
+                        (if (= tw 0.0) v
+                          (let* [part (if (int/eq (array/nth use_zero i) 1) (array/nth zsum i) (array/nth rsum i))
+                                 average (/ part tw)]
+                            (+ v (* (* amount (array/nth weight i)) (- average v))))))) points src))]
+               {:v next :k (int/add s.k 1)}))) :v)
+         output (if (and (= original_blend 0.0) (= blurred_blend 1.0)) blurred
+                  (exact (map (fn [(o : float) (b : float)] (fma blurred_blend b (* original_blend o))) plane blurred)))]
+    (if (blur_finite output) output
+      (blur_error "invalid_blur" "output plane is non-finite"))))
+
+(defnode sop/attribute_blur :label "Attribute Blur" :category ["Attribute" "Filter"]
+  :validate (equal? (text/glob_error attributes) "")
+  :code "E_PARAM" :message "sop/attribute_blur: invalid attribute pattern"
+  [(in0 : geometry)
+   (attributes : text "P" :label "Attributes")
+   (group : text "" :label "Point group")
+   (iterations : int 1 :label "Iterations" :min 1 :max 100 :hard_min 0)
+   (method_ : text "Uniform" :label "Method" :choices ["Uniform" "Edge length"])
+   (mode : text "Laplacian" :label "Mode" :folder ["Step"] :choices ["Laplacian" "Custom steps"])
+   (laplacian_step : float 0.5 :label "Step" :folder ["Step"] :min -1 :max 1)
+   (odd_step : float 0.5 :label "Odd step" :folder ["Step" "Custom"] :min -1 :max 1)
+   (even_step : float -0.51 :label "Even step" :folder ["Step" "Custom"] :min -1 :max 1)
+   (weight_attribute : text "" :label "Weight attribute" :folder ["Mask"])
+   (alpha_attribute : text "" :label "Alpha attribute" :folder ["Mask"])
+   (pin_borders : bool false :label "Pin borders")
+   (original_blend : float 0.0 :label "Original blend" :folder ["Blend"] :min 0 :max 1)
+   (blurred_blend : float 1.0 :label "Blurred blend" :folder ["Blend"] :min 0 :max 1)]
+  (let* [group_name (text/trim group)
+         group_literal (text/glob_literal (if (text/blank? group_name) "x" group_name))
+         weight_name (text/trim weight_attribute) alpha_name (text/trim alpha_attribute)
+         point_count (sop/count in0 :points)
+         edge_method (equal? method_ "Edge length")
+         laplacian (equal? mode "Laplacian")
+         mask (if (text/blank? group_name) (array/int point_count 1) (sop/group in0 :name group_name :owner "point"))
+         selected (array/sum mask)]
+    (cond
+      (and (not (text/blank? group_name)) (equal? (array/count (sop/group_names in0 group_literal :owner "point")) 0))
+        (blur_error "missing_group" (str "attribute_blur could not find point group " (text/repr group_name)))
+      (or (or (text/blank? attributes) (int/eq iterations 0)) (or (int/eq selected 0) (int/eq point_count 0))) in0
+      :else
+        (let* [probe (sop/with_attr (sop/mesh :points (array/vec3 1) :vertex_points (array/int 0)
+                                      :primitive_offsets (array/int 1) :kinds (array/int 0))
+                       "P" (array/float 1) :owner "detail" :type float)
+               position_matches (int/gt (array/count (sop/attr_names probe attributes :owner "detail")) 0)
+               names (sop/attr_names in0 attributes :owner "point")
+               ; names of blurrable attributes: float, vec2, vec3, vec4
+               usable (fold [found (array/text 0)] [name names]
+                 (let* [kind (sop/attr_type in0 name :owner "point")]
+                   (if (or (or (equal? kind "float") (equal? kind "vec2")) (or (equal? kind "vec3") (equal? kind "vec4")))
+                     (array/concat found (array/text 1 name)) found)))
+               target_count (int/add (array/count usable) (if position_matches 1 0))]
+          (if (int/eq target_count 0) in0
+            (let* [positions (sop/attr in0 "P")
+                   px (exact (map (fn [(p : vec3)] p.x) positions))
+                   py (exact (map (fn [(p : vec3)] p.y) positions))
+                   pz (exact (map (fn [(p : vec3)] p.z) positions))
+                   first_bad (fold [bad ""] [name usable]
+                     (if (not (equal? bad "")) bad
+                       (let* [kind (sop/attr_type in0 name :owner "point")]
+                         (cond
+                           (equal? kind "float") (if (blur_finite (sop/attr in0 name :owner "point" :type float)) "" name)
+                           (equal? kind "vec2") (let* [v (sop/attr in0 name :owner "point" :type vec2)]
+                             (if (and (blur_finite (exact (map (fn [(q : vec2)] q.x) v)))
+                                      (blur_finite (exact (map (fn [(q : vec2)] q.y) v)))) "" name))
+                           (equal? kind "vec3") (let* [v (sop/attr in0 name :owner "point" :type vec3)]
+                             (if (and (blur_finite (exact (map (fn [(q : vec3)] q.x) v)))
+                                      (and (blur_finite (exact (map (fn [(q : vec3)] q.y) v)))
+                                           (blur_finite (exact (map (fn [(q : vec3)] q.z) v))))) "" name))
+                           :else (let* [v (sop/attr in0 name :owner "point" :type vec4)]
+                             (if (and (and (blur_finite (exact (map (fn [(q : vec4)] q.x) v)))
+                                           (blur_finite (exact (map (fn [(q : vec4)] q.y) v))))
+                                      (and (blur_finite (exact (map (fn [(q : vec4)] q.z) v)))
+                                           (blur_finite (exact (map (fn [(q : vec4)] q.w) v))))) "" name))))))
+                   positions_bad (if position_matches
+                     (not (and (blur_finite px) (and (blur_finite py) (blur_finite pz)))) false)
+                   weight_ok (or (text/blank? weight_name) (sop/has_attr in0 weight_name :owner "point" :type float))
+                   alpha_ok (or (text/blank? alpha_name) (sop/has_attr in0 alpha_name :owner "point" :type float))
+                   weights (if (and (not (text/blank? weight_name)) weight_ok)
+                     (sop/attr in0 weight_name :owner "point" :type float) (array/float point_count 1.0))
+                   alphas (if (and (not (text/blank? alpha_name)) alpha_ok)
+                     (sop/attr in0 alpha_name :owner "point" :type float) (array/float point_count 1.0))
+                   control_bad (not (and (blur_finite weights) (blur_finite alphas)))]
+              (cond
+                (or positions_bad (not (equal? first_bad "")))
+                  (blur_error "invalid_blur" "input plane contains a non-finite value")
+                (not weight_ok) (blur_error "invalid_blur" (str "weight attribute " (text/repr weight_name) " must be a scalar point float"))
+                (not alpha_ok) (blur_error "invalid_blur" (str "alpha attribute " (text/repr alpha_name) " must be a scalar point float"))
+                control_bad (blur_error "invalid_blur" "weight or alpha attribute is non-finite")
+                :else
+                  (let* [adj (sop/adjacency in0)
+                         edge_count (sop/count in0 :edges)
+                         lengths (if edge_method
+                           (exact (map (fn [(a : int) (b : int)]
+                             (let* [dx (- (array/nth px b) (array/nth px a))
+                                    dy (- (array/nth py b) (array/nth py a))
+                                    dz (- (array/nth pz b) (array/nth pz a))]
+                               (sqrt (+ (+ (* dx dx) (* dy dy)) (* dz dz)))))
+                             adj.edge_a adj.edge_b))
+                           (array/float edge_count 1.0))
+                         lengths_ok (blur_finite lengths)]
+                    (if (not lengths_ok) (blur_error "invalid_blur" "edge has non-finite length")
+                      (let* [slots (blur_slots adj.point_edge_offsets adj.point_edges adj.edge_a adj.edge_b alphas lengths edge_method)
+                             uses (array/scatter_add
+                                    (exact (map (fn [(e : int)] (if (int/lt e 0) edge_count e)) adj.edge_of_vertex))
+                                    (array/int (array/count adj.edge_of_vertex) 1) (int/add edge_count 1))
+                             border_slot (exact (map (fn [(e : int)] (if (int/eq (array/nth uses e) 1) 1 0)) adj.point_edges))
+                             pinned (array/segment_sum border_slot adj.point_edge_offsets)
+                             total (exact (map (fn [(tw : float) (m : int) (b : int)]
+                                     (if (and (int/eq m 1) (not (and pin_borders (int/gt b 0)))) tw 0.0))
+                                     slots.total mask pinned))
+                             cfg {:offsets adj.point_edge_offsets :nb slots.nb :zc slots.zc :rc slots.rc
+                                  :use_zero slots.use_zero :total total :weight weights :laplacian laplacian
+                                  :step laplacian_step :odd odd_step :even even_step :n iterations
+                                  :ob original_blend :bb blurred_blend}
+                             out_x (if position_matches (blur_plane cfg px) px)
+                             out_y (if position_matches (blur_plane cfg py) py)
+                             out_z (if position_matches (blur_plane cfg pz) pz)
+                             changed_x (if position_matches
+                               (exact (int/gt (array/sum (exact (map (fn [(a : float) (b : float)] (if (= a b) 0 1)) out_x px))) 0))
+                               false)
+                             changed_y (or changed_x (if position_matches
+                               (exact (int/gt (array/sum (exact (map (fn [(a : float) (b : float)] (if (= a b) 0 1)) out_y py))) 0)) false))
+                             changed (or changed_y (if position_matches
+                               (exact (int/gt (array/sum (exact (map (fn [(a : float) (b : float)] (if (= a b) 0 1)) out_z pz))) 0)) false))
+                             base (if changed
+                               (sop/delete_attr (sop/delete_attr
+                                 (sop/with_attr in0 "P" (exact (map (fn [(x : float) (y : float) (z : float)] [x y z]) out_x out_y out_z)))
+                                 "N" :owner "point") "N" :owner "vertex")
+                               in0)]
+                        (fold [geometry base] [name usable]
+                          (let* [kind (sop/attr_type in0 name :owner "point")]
+                            (cond
+                              (equal? kind "float")
+                                (sop/with_attr geometry name (blur_plane cfg (sop/attr in0 name :owner "point" :type float)) :owner "point" :type float)
+                              (equal? kind "vec2")
+                                (let* [v (sop/attr in0 name :owner "point" :type vec2)
+                                       a (blur_plane cfg (exact (map (fn [(q : vec2)] q.x) v)))
+                                       b (blur_plane cfg (exact (map (fn [(q : vec2)] q.y) v)))]
+                                  (sop/with_attr geometry name (exact (map (fn [(x : float) (y : float)] [x y]) a b)) :owner "point" :type vec2))
+                              (equal? kind "vec3")
+                                (let* [v (sop/attr in0 name :owner "point" :type vec3)
+                                       a (blur_plane cfg (exact (map (fn [(q : vec3)] q.x) v)))
+                                       b (blur_plane cfg (exact (map (fn [(q : vec3)] q.y) v)))
+                                       c (blur_plane cfg (exact (map (fn [(q : vec3)] q.z) v)))]
+                                  (sop/with_attr geometry name (exact (map (fn [(x : float) (y : float) (z : float)] [x y z]) a b c))
+                                    :owner "point" :type vec3))
+                              :else
+                                (let* [v (sop/attr in0 name :owner "point" :type vec4)
+                                       a (blur_plane cfg (exact (map (fn [(q : vec4)] q.x) v)))
+                                       b (blur_plane cfg (exact (map (fn [(q : vec4)] q.y) v)))
+                                       c (blur_plane cfg (exact (map (fn [(q : vec4)] q.z) v)))
+                                       d (blur_plane cfg (exact (map (fn [(q : vec4)] q.w) v)))]
+                                  (sop/with_attr geometry name
+                                    (exact (map (fn [(i : int) (x : float) (y : float)]
+                                      [x y (array/nth c i) (array/nth d i)]) (array/range point_count :type int) a b))
+                                    :owner "point" :type vec4)))))))))))))))
