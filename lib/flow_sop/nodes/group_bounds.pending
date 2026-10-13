@@ -1,0 +1,130 @@
+; Whole Group by Bounds draft. Point tests are analytic; vertices gather them, primitives and
+; edges reduce them (empty primitives are never selected), edges also test segments when partial.
+(defn group_bounds_error :context value [(reason : text)]
+  (error "invalid_group" "group_bounds could not produce valid geometry"
+    :cause (str "group_bounds [invalid_group]: " reason)))
+(defn group_bounds_finite :context value [(v : vec3)]
+  (and (<= (abs v.x) 1.7976931348623157e308)
+    (and (<= (abs v.y) 1.7976931348623157e308) (<= (abs v.z) 1.7976931348623157e308))))
+(defn group_bounds_scale :context value [(v : vec3)]
+  (max (abs v.x) (max (abs v.y) (abs v.z))))
+(defn group_bounds_point :context value
+  [(p : vec3) (sphere : bool) (low : vec3) (high : vec3) (radius : float)]
+  (if sphere
+    (let* [dx (abs (- p.x low.x)) dy (abs (- p.y low.y)) dz (abs (- p.z low.z))]
+      (if (or (> dx radius) (or (> dy radius) (> dz radius))) false
+        (let* [scale (max dx (max dy dz))
+               nx (/ dx (if (= scale 0.0) 1.0 scale)) ny (/ dy (if (= scale 0.0) 1.0 scale))
+               nz (/ dz (if (= scale 0.0) 1.0 scale))
+               limit (/ radius (if (= scale 0.0) 1.0 scale))]
+          (or (= scale 0.0)
+            (<= (+ (+ (* nx nx) (* ny ny)) (* nz nz)) (* limit limit))))))
+    (and (and (>= p.x low.x) (<= p.x high.x))
+      (and (and (>= p.y low.y) (<= p.y high.y)) (and (>= p.z low.z) (<= p.z high.z))))))
+(defn group_bounds_segment_box :context value [(a : vec3) (b : vec3) (low : vec3) (high : vec3)]
+  (let* [scale (max (max (group_bounds_scale a) (group_bounds_scale b))
+                 (max (group_bounds_scale low) (group_bounds_scale high)))
+         divisor (if (= scale 0.0) 1.0 scale)
+         na (/ a divisor) nb (/ b divisor) l (/ low divisor) h (/ high divisor)
+         mx (- (* (+ na.x nb.x) 0.5) (* (+ l.x h.x) 0.5))
+         my (- (* (+ na.y nb.y) 0.5) (* (+ l.y h.y) 0.5))
+         mz (- (* (+ na.z nb.z) 0.5) (* (+ l.z h.z) 0.5))
+         dx (* (- nb.x na.x) 0.5) dy (* (- nb.y na.y) 0.5) dz (* (- nb.z na.z) 0.5)
+         ex (* (- h.x l.x) 0.5) ey (* (- h.y l.y) 0.5) ez (* (- h.z l.z) 0.5)
+         adx (abs dx) ady (abs dy) adz (abs dz)
+         separated (and (<= (abs mx) (+ ex adx))
+                     (and (<= (abs my) (+ ey ady))
+                       (and (<= (abs mz) (+ ez adz))
+                         (and (<= (abs (- (* my dz) (* mz dy))) (+ (* ey adz) (* ez ady)))
+                           (and (<= (abs (- (* mz dx) (* mx dz))) (+ (* ez adx) (* ex adz)))
+                             (<= (abs (- (* mx dy) (* my dx))) (+ (* ex ady) (* ey adx))))))))]
+    (or (group_bounds_point a false low high 0.0)
+      (or (group_bounds_point b false low high 0.0)
+        (or (= scale 0.0) separated)))))
+(defn group_bounds_segment_sphere :context value [(a : vec3) (b : vec3) (center : vec3) (radius : float)]
+  (if (or (group_bounds_point a true center center radius) (group_bounds_point b true center center radius)) true
+    (let* [scale (max (group_bounds_scale a) (max (group_bounds_scale b) (group_bounds_scale center)))]
+      (if (= scale 0.0) (>= radius 0.0)
+        (let* [na (/ a scale) nb (/ b scale) c (/ center scale)
+               dx (- nb.x na.x) dy (- nb.y na.y) dz (- nb.z na.z)
+               qx (- c.x na.x) qy (- c.y na.y) qz (- c.z na.z)
+               denominator (+ (+ (* dx dx) (* dy dy)) (* dz dz))]
+          (if (= denominator 0.0) false
+            (let* [parameter (max 0.0 (min 1.0 (/ (+ (+ (* qx dx) (* qy dy)) (* qz dz)) denominator)))
+                   ex (- (+ na.x (* parameter dx)) c.x)
+                   ey (- (+ na.y (* parameter dy)) c.y)
+                   ez (- (+ na.z (* parameter dz)) c.z)
+                   limit (/ radius scale)]
+              (<= (+ (+ (* ex ex) (* ey ey)) (* ez ez)) (* limit limit)))))))))
+(defn group_bounds_missing :context sop [(geo : geometry) (name : text) (owner : text)]
+  (let* [found (group_exists geo owner (if (equal? name "") "x" name))]
+    (and (not (equal? name "")) (not found))))
+(defn group_bounds_finish :context sop
+  [(geo : geometry) (owner : text) (name : text) (operation : text) (base_name : text) (fixed : (array int))]
+  (if (group_bounds_missing geo base_name owner)
+    (group_bounds_error (str "Group Bounds: missing " owner " base group " (text/repr base_name)))
+    (if (equal? base_name "")
+      (group_publish geo owner name operation fixed)
+      (group_publish geo owner name operation
+        (exact (map (fn [(a : int) (b : int)] (int/and a b)) fixed
+                 (sop/group geo :name base_name :owner owner)))))))
+(defnode sop/group_bounds :label "Group by Bounds" :category ["Group" "Create"]
+  [(in0 : geometry)
+   (owner : text "Points" :label "Group type" :choices ["Points" "Vertices" "Primitives" "Edges"])
+   (name : text "bounds" :label "Group name")
+   (shape : text "Box" :label "Bounding shape" :choices ["Box" "Sphere"])
+   (center_x : float 0.0 :label "Center X" :folder ["Bounds" "Center"] :min -10 :max 10 :vec3 ["center" 0])
+   (center_y : float 0.0 :label "Center Y" :folder ["Bounds" "Center"] :min -10 :max 10 :vec3 ["center" 1])
+   (center_z : float 0.0 :label "Center Z" :folder ["Bounds" "Center"] :min -10 :max 10 :vec3 ["center" 2])
+   (size_x : float 1.0 :label "Size X" :folder ["Bounds" "Size"] :min 0 :max 20 :hard_min 0 :vec3 ["size" 0])
+   (size_y : float 1.0 :label "Size Y" :folder ["Bounds" "Size"] :min 0 :max 20 :hard_min 0 :vec3 ["size" 1])
+   (size_z : float 1.0 :label "Size Z" :folder ["Bounds" "Size"] :min 0 :max 20 :hard_min 0 :vec3 ["size" 2])
+   (radius : float 0.5 :label "Radius" :folder ["Bounds"] :min 0 :max 10 :hard_min 0)
+   (base : text "" :label "Base group" :folder ["Combine"])
+   (containment : text "Fully contained" :label "Containment" :folder ["Combine"]
+     :choices ["Fully contained" "Partially contained"])
+   (merge : text "Replace" :label "Operation" :folder ["Combine"]
+     :choices ["Replace" "Union" "Intersection" "Subtract" "Exclusive or"])]
+  (let* [sphere (equal? shape "Sphere")
+         center [center_x center_y center_z]
+         half (* [size_x size_y size_z] 0.5)
+         low (if sphere center (- center half))
+         high (if sphere center (+ center half))
+         valid (if sphere (and (group_bounds_finite center) (and (<= (abs radius) 1.7976931348623157e308) (>= radius 0.0)))
+                 (and (group_bounds_finite low) (and (group_bounds_finite high)
+                   (and (<= low.x high.x) (and (<= low.y high.y) (<= low.z high.z))))))
+         selected (case owner "Vertices" "vertex" "Primitives" "primitive" "Edges" "edge" :else "point")
+         base_name (text/trim base)
+         partial (equal? containment "Partially contained")
+         operation (case merge "Union" "union" "Intersection" "intersection" "Subtract" "subtract"
+                     "Exclusive or" "xor" :else "replace")]
+    (cond
+      (text/blank? name) (group_bounds_error "Group Bounds: empty output name")
+      (not valid) (group_bounds_error "Group Bounds: bounds must be finite, ordered, and have non-negative radius")
+      :else
+        (let* [positions (sop/attr in0 :P)
+               inside (map (fn [(p : vec3)] (if (group_bounds_point p sphere low high radius) 1 0)) positions)
+               topology (sop/topology in0)
+               gathered (map (fn [(p : int)] (array/nth inside p)) topology.vertex_points)
+               primitives (sop/count in0 :primitives)
+               sums (array/segment_sum gathered topology.primitive_offsets)
+               lengths (map (fn [(first : int) (last : int)] (int/sub last first))
+                         (array/slice topology.primitive_offsets 0 primitives)
+                         (array/slice topology.primitive_offsets 1 primitives))
+               edges (sop/edges in0)
+               edge_full (map (fn [(a : int) (b : int)] (int/and (array/nth inside a) (array/nth inside b)))
+                           edges.a edges.b)
+               end_a (map (fn [(a : int)] (array/nth positions a)) edges.a)
+               end_b (map (fn [(b : int)] (array/nth positions b)) edges.b)
+               edge_partial (map (fn [(pa : vec3) (pb : vec3)]
+                              (if (if sphere (group_bounds_segment_sphere pa pb low radius) (group_bounds_segment_box pa pb low high)) 1 0))
+                              end_a end_b)
+               raw (case selected
+                     "vertex" gathered
+                     "primitive" (if partial
+                                   (map (fn [(s : int)] (if (int/gt s 0) 1 0)) sums)
+                                   (map (fn [(s : int) (n : int)] (if (and (int/gt n 0) (int/eq s n)) 1 0)) sums lengths))
+                     "edge" (if partial edge_partial edge_full)
+                     :else inside)
+               fixed (exact raw)]
+          (group_bounds_finish in0 selected name operation base_name fixed)))))
