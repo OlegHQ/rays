@@ -1,0 +1,88 @@
+; Whole-node draft of Blast by Attribute: classifies an attribute into a selection mask,
+; then either writes it as a group or deletes it through the sop/blast kind (which owns
+; deletion, healing and payload remap). The temporary selection group never survives.
+(defn blast_by_attribute_validate :context value
+  [(attribute : text) (owner : text) (mode : text) (threshold : float) (minimum : float)
+   (maximum : float) (center : float) (width : float) (output : text) (output_group : text)
+   (remove_unused : bool)]
+  (cond
+    (text/blank? attribute) (error "E_PARAM" "sop/blast_by_attribute: empty attribute name")
+    (and (equal? output "Create group") (text/blank? output_group))
+      (error "E_PARAM" "sop/blast_by_attribute: empty output group name")
+    (and remove_unused (or (not (equal? owner "Primitives")) (not (equal? output "Delete elements"))))
+      (error "E_PARAM" "sop/blast_by_attribute: remove_unused_points is only valid for primitive deletion")
+    (not (and (= (- threshold threshold) 0.0) (and (= (- minimum minimum) 0.0) (and (= (- maximum maximum) 0.0)
+              (and (= (- center center) 0.0) (= (- width width) 0.0))))))
+      (error "E_PARAM" "sop/blast_by_attribute: comparison controls must be finite")
+    (< width 0.0) (error "E_PARAM" "sop/blast_by_attribute: width must be nonnegative")
+    (and (equal? mode "Range") (> minimum maximum))
+      (error "E_PARAM" "sop/blast_by_attribute: reversed comparison range")
+    (and (equal? mode "Center and width")
+         (not (and (= (- (- center (* width 0.5)) (- center (* width 0.5))) 0.0)
+                   (= (- (+ center (* width 0.5)) (+ center (* width 0.5))) 0.0))))
+      (error "E_PARAM" "sop/blast_by_attribute: width interval must be finite")
+    :else true))
+(defnode sop/blast_by_attribute :label "Blast by Attribute" :category ["Topology" "Delete"]
+  :validate (blast_by_attribute_validate attribute owner mode threshold minimum maximum center width
+              output output_group remove_unused_points)
+  [(in0 : geometry)
+   (owner : text "Points" :label "Owner" :choices ["Points" "Primitives"])
+   (attribute : text "mask" :label "Attribute")
+   (mode : text "Below threshold" :label "Comparison" :choices ["Below threshold" "Range" "Center and width"])
+   (threshold : float 0.5 :label "Threshold" :folder ["Comparison" "Below"] :min -10 :max 10)
+   (minimum : float 0.0 :label "Minimum" :folder ["Comparison" "Range"] :min -10 :max 10)
+   (maximum : float 1.0 :label "Maximum" :folder ["Comparison" "Range"] :min -10 :max 10)
+   (center : float 0.5 :label "Center" :folder ["Comparison" "Width"] :min -10 :max 10)
+   (width : float 0.5 :label "Width" :folder ["Comparison" "Width"] :min 0 :max 10 :hard_min 0)
+   (group : text "" :label "Base group")
+   (invert : bool false :label "Invert selection")
+   (output : text "Delete elements" :label "Output" :choices ["Delete elements" "Create group"])
+   (output_group : text "selected" :label "Output group" :folder "Output")
+   (remove_unused_points : bool false :label "Remove unused points" :folder "Output")]
+  (let* [kind (if (equal? owner "Points") "point" "primitive")
+         base_name (text/trim group)
+         has_base (not (text/blank? base_name))
+         base_found (or (not has_base)
+           (fold [found false] [name (sop/group_names in0 "" :owner kind)]
+             (or found (equal? name base_name))))
+         count (sop/count in0 (if (equal? owner "Points") "points" "primitives"))
+         is_float (sop/has_attr in0 attribute :owner kind :type float)
+         is_int (sop/has_attr in0 attribute :owner kind :type int)]
+    (cond
+      (not base_found)
+        (error "missing_group" (str "blast_by_attribute could not find " kind " group " (text/repr base_name)))
+      (not (sop/has_attr in0 attribute :owner kind))
+        (error "invalid_blast" (str "could not find " kind " attribute " (text/repr attribute)))
+      (not (or is_float is_int))
+        (error "invalid_blast" (str kind " attribute " (text/repr attribute)
+                                    " must have scalar float or integer storage"))
+      :else
+        (let* [half (* width 0.5)
+               low (if (equal? mode "Center and width") (- center half) minimum)
+               high (if (equal? mode "Center and width") (+ center half) maximum)
+               below (equal? mode "Below threshold")
+               flip (if invert 1 0)
+               base (if has_base (sop/group in0 :name base_name :owner kind) (array/int count 1))
+               data (if is_float (sop/attr_checked in0 attribute :owner kind :type float)
+                      {:values (map (fn [(v : int)] (float v)) (sop/attr in0 attribute :owner kind :type int))
+                       :valid (array/int count 1)})
+               invalid_index (if (int/eq count 0) count
+                 (array/min (map (fn [(member : int) (valid : int) (index : int)]
+                   (if (and (int/eq member 1) (int/eq valid 0)) index count))
+                   base data.valid (array/range count :type int))))
+               selection (exact (map (fn [(member : int) (value : float)]
+                 (if (int/eq member 0) 0
+                   (int/xor (if (if below (< value threshold) (and (>= value low) (<= value high))) 1 0)
+                            flip)))
+                 base data.values))]
+          (if (int/lt invalid_index count)
+            (error "invalid_blast" (str kind " attribute " (text/repr attribute)
+              " contains a non-finite value at element " invalid_index))
+            (if (equal? output "Create group")
+              (sop/with_group in0 selection :name output_group :owner kind)
+              (sop/delete_group
+                (sop/blast (sop/with_group in0 selection :name "__blast_by_attribute_selection" :owner kind)
+                  :owner (if (equal? owner "Points") "Points" "Primitives")
+                  :group "__blast_by_attribute_selection" :selected true
+                  :compact_points remove_unused_points :policy "Destroy touched primitives")
+                "__blast_by_attribute_selection" :owner kind)))))))
