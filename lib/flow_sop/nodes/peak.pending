@@ -3,35 +3,6 @@
 ; Arithmetic keeps the native order and its arm64 multiply-add fusion; finite inputs only.
 (defn peak_error :context value [(reason : text)]
   (deform_error "peak" "invalid_deformation" reason))
-; Face_normals.polygon_area_vector: fan triangles from each polygon's first vertex, summed per
-; polygon, then added to every point of the polygon in vertex order.
-(defn peak_area_directions :context sop [(geo : geometry)]
-  (let* [topo (sop/topology geo)
-         adjacency (sop/adjacency geo)
-         positions (sop/attr geo :P)
-         vertices (sop/count geo :vertices)
-         prims (sop/count geo :primitives)
-         points (sop/count geo :points)
-         starts (array/slice topo.primitive_offsets 0 prims)
-         ends (array/slice topo.primitive_offsets 1 prims)
-         contributions (map (fn [(vertex : int) (prim : int)]
-           (let* [first (array/nth starts prim)
-                  last (array/nth ends prim)
-                  a (array/nth positions (array/nth topo.vertex_points first))
-                  b (array/nth positions (array/nth topo.vertex_points vertex))
-                  c (array/nth positions (array/nth topo.vertex_points (if (int/lt (int/add vertex 1) vertices) (int/add vertex 1) vertex)))
-                  u (- b a)
-                  v (- c a)]
-             (if (and (int/eq (array/nth topo.kinds prim) 0)
-                      (and (int/ge vertex (int/add first 1)) (int/le vertex (int/sub last 2))))
-               [(fma (* -1.0 u.z) v.y (* u.y v.z))
-                (fma (* -1.0 u.x) v.z (* u.z v.x))
-                (fma (* -1.0 u.y) v.x (* u.x v.y))]
-               [0.0 0.0 0.0])))
-           (array/range vertices :type int) adjacency.primitive_of_vertex)
-         faces (array/segment_sum contributions topo.primitive_offsets)
-         per_vertex (map (fn [(prim : int)] (array/nth faces prim)) adjacency.primitive_of_vertex)]
-    (array/scatter_add topo.vertex_points per_vertex points)))
 (defnode sop/peak :label "Peak" :category "Deform"
   :facts {:elementwise points :reads ["P" "N"] :writes ["P" "N"] :topology preserved :exact false}
   :validate (= (- distance distance) 0.0)
@@ -73,17 +44,7 @@
         (if recompute_normals (sop/normals in0 :owner "Point" :weighting "Face area") in0)
       :else
         (let* [positions (sop/attr in0 :P)
-               directions (cond named (sop/attr in0 direction_name :type vec3)
-                                point_normal (sop/attr in0 "N" :type vec3)
-                                vertex_normal
-                                  (let* [topo (sop/topology in0)
-                                         sums (array/scatter_add topo.vertex_points
-                                                (sop/attr in0 "N" :owner "vertex" :type vec3) count)
-                                         incidence (array/scatter_add topo.vertex_points
-                                                (array/int (sop/count in0 :vertices) 1) count)]
-                                    (map (fn [(total : vec3) (n : int)]
-                                      (if (int/gt n 1) (* total (/ 1.0 (float n))) total)) sums incidence))
-                                :else (peak_area_directions in0))
+               directions (if named (sop/attr in0 direction_name :type vec3) (deform_default_directions in0))
                selection (deform_mask in0 owner group_name)
                masks (if (text/blank? mask_name) (array/float count 1.0)
                        (sop/attr in0 mask_name :type float))
