@@ -24,4 +24,27 @@ let () =
     let seconds, bytes, promoted, major = List.nth samples 3 in
     Printf.printf "topology vertices=%d case=%s domains=1 trials=7 median_seconds=%.9f allocated_bytes=%.0f promoted_words=%.0f major_words=%.0f\n%!"
       count (if invalid then "invalid_last" else "valid") seconds bytes promoted major)
-    [false; true]
+    [false; true];
+  if Array.exists ((=) "--copy") Sys.argv then begin
+    let input = Array.init count (fun i -> if i mod 2 = 0 then i else -i) in
+    List.iter (fun (name, copy) ->
+      let samples = List.init 7 (fun _ ->
+        Gc.full_major ();
+        let before = Gc.quick_stat () and allocated = Gc.allocated_bytes () in
+        let started = Unix.gettimeofday () in
+        let output = copy input in
+        let elapsed = Unix.gettimeofday () -. started and after = Gc.quick_stat () in
+        assert (output = input && output != input);
+        output.(0) <- min_int;
+        assert (input.(0) = 0);
+        elapsed, Gc.allocated_bytes () -. allocated,
+        after.promoted_words -. before.promoted_words, after.major_words -. before.major_words)
+        |> List.sort (fun (a,_,_,_) (b,_,_,_) -> Float.compare a b) in
+      let seconds, bytes, promoted, major = List.nth samples 3 in
+      Printf.printf "integer_copy elements=%d implementation=%s domains=1 trials=7 median_seconds=%.9f allocated_bytes=%.0f promoted_words=%.0f major_words=%.0f\n%!"
+        count name seconds bytes promoted major)
+      ["Array.copy", Array.copy; "typed_loop", (fun (input : int array) ->
+        let output = Array.make (Array.length input) 0 in
+        for i = 0 to Array.length input - 1 do output.(i) <- input.(i) done;
+        output)]
+  end

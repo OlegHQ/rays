@@ -4505,3 +4505,78 @@ follow-up executable printed all eight rows before exit 2, with full million
 point native/reference/domain byte preflight intact. Remaining work is the
 shared constructor cost and atomic production registration/source integration;
 no points-only substitution, weakened speed threshold, or count increment.
+
+## Native Rewire baseline and rejected integer-copy shortcut (2026-10-13)
+
+Whole-port acceptance remains **14/128** and plan acceptance **21/60**.
+No payload-remap/concat production change or new whole SOP is accepted here.
+
+Before changing Rewire's shared edge-ancestry consumer, the new runnable
+`tools/bench_rewire_payload.exe` captured complete native output byte strings
+for five fixed public `Rewire_vertices.run` cases. Fixtures include repeated
+shared triangle edges, coalesced OR ancestry, Point compaction, ordered groups,
+raw exceptional Float/P words, arbitrary Text bytes, immutable Detail data and
+Vertex provenance. Independent counts/corners/group assertions and full-byte
+one/four-domain comparisons passed; all seven timed outputs per row also matched
+and left source bytes unchanged.
+
+Build: `opam exec -- _build/default/tools/check.exe tools/bench_rewire_payload.exe`
+(`/tmp/rays-rewire-benchmark-build1.log`, exit0). Actual baseline:
+
+```sh
+opam exec -- _build/default/tools/bench_rewire_payload.exe \
+  --record /tmp/rays-rewire-before-bytes-20261013 \
+  --machine 'Apple M1 Macmini9,1 16GiB macOS arm64' --profile dev \
+  --revision 6e684d5e49d29a7302dd8955a038d097c31d9568 \
+  > /tmp/rays-rewire-payload-before.log 2>&1
+```
+
+Root session32239 exited0. RDK was unchanged from that revision. All three agents
+paused and acknowledged before timing, then were released immediately afterward;
+no other root validation or benchmark ran during the table. Ordinary desktop/VM
+background activity remained. OCaml5.3.0, grain4096, seven-sample medians;
+699052 points,1048578 corners,349526 primitives per source. Source construction,
+pool startup, serialization and byte validation are outside timing; changed
+outputs create fresh target topology. Counters are initial-domain only, and heap
+high-water is process-lifetime, not per-call peak. Allocation columns describe
+that row's median-time sample; the original log retains all70 samples.
+
+| Case | Domains | Median seconds | Allocated bytes | Promoted bytes | Major bytes |
+|---|---:|---:|---:|---:|---:|
+| no_edges_permute | 1 | 0.007125854 | 19926920 | 0 | 19923024 |
+| no_edges_permute | 4 | 0.005103827 | 19976728 | 0 | 19923024 |
+| edges_metadata_only | 1 | 0.009342909 | 16781416 | 0 | 16777264 |
+| edges_metadata_only | 4 | 0.007108927 | 16829896 | 0 | 16777264 |
+| edges_permute | 1 | 0.167464018 | 274821464 | 856 | 232872904 |
+| edges_permute | 4 | 0.119697094 | 274935504 | 2128 | 232874176 |
+| edges_coalesce | 1 | 0.164947033 | 235499800 | 856 | 210328488 |
+| edges_coalesce | 4 | 0.130802870 | 235609608 | 2128 | 210329760 |
+| edges_coalesce_compact | 1 | 0.204488039 | 293020320 | 1160 | 267847856 |
+| edges_coalesce_compact | 4 | 0.158887863 | 293355056 | 2432 | 267849128 |
+
+The later factoring must relink this same harness and use `--verify` with these
+saved full byte strings, identical fixtures/trials/grain. No before/after speed
+claim is made until that paired run exists. Mesh_merge factoring needs a separate
+public-path baseline; this Rewire table does not cover it.
+
+The Line curve-copy hypothesis was also measured before a production change.
+`opam exec -- _build/default/tools/bench_topology.exe 1000000 --copy` completed
+session71291 exit0 (`/tmp/rays-integer-copy-benchmark1.log`) with all agents paused
+and acknowledged. Seven-sample one-domain medians were0.001564980sec for
+`Array.copy` and0.043588877sec for the typed allocation/for-loop copy, both
+8000328 allocated bytes,0 promoted words and1000001 major words. The harness
+checks exact values, distinct ownership and mutation isolation. Keep the standard
+library implementation; the typed loop does not solve Line's failed whole
+performance gate.
+
+Current integration evidence, still pending acceptance: the shared lowering fix
+uses real factory parameter paths to distinguish live geometry/rest inputs from
+parameter drives. The actual 5001-item SOP map/static-filter collection passed
+native full-byte, child-cook, reference, domains1/4/8 and grains1/97/4096 checks.
+Known 5001-handle Core map/filter captures passed strict/reference comparisons
+at times0,0.25,0.75,1 after adding builder sharing. Their ordinary Int-list refusal
+exposed a recursive selector expansion on a >4096-element index list; the shared
+selector now refuses before recursive expansion. The diagnostic run90992 exited0.
+The corresponding broader gate and emitted region-argument worker proof still
+need to finish before capability/milestone acceptance. The geometry time-shape
+checker refusals and strict4ULP/2× whole-port gates remain unchanged.
