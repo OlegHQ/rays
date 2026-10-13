@@ -4,6 +4,13 @@ let type_argument args = match List.find_opt (fun (name,_,_)->name="type") args 
   | Some (_,_,Some(Param.Text_value kind)) -> ignore(checked(Attribute_kernel.value_type kind));kind
   | Some _ -> Flow.Value.fail "E_ATTR_TYPE" "Attribute type must be a literal storage type."
 let attribute_type args = checked(Attribute_kernel.value_type (type_argument args))
+let planar_values kind = function
+  | Flow.Ty.Record fields ->
+      let names=match kind with "vec2"->["x";"y"]|"vec3"->["x";"y";"z"]
+        |"vec4"->["x";"y";"z";"w"]|_->[] in
+      names<>[] && List.sort String.compare(List.map fst fields)=List.sort String.compare names
+      && List.for_all(fun(_,ty)->Flow.Ty.fits ty (Flow.Ty.Array Flow.Ty.Float))fields
+  | _ -> false
 let validate_args args =
   (match List.assoc "attribute" args with
    | Flow.Value.Text name when String.trim name<>""->()
@@ -66,7 +73,8 @@ let with_attr : Flow.Op.t = {
         Flow.Value.fail "E_ATTR_TYPE" ("Attribute default requires "^Flow.Ty.to_string expected^"."))
         (List.find_opt(fun(name,_,_)->name="default")args)
     end;
-    Option.iter(fun(_,actual,_)->if not(Flow.Ty.fits actual ty)then
+    Option.iter(fun(_,actual,_)->if not(Flow.Ty.fits actual ty
+        || (not(present "selection") && planar_values (type_argument args) actual))then
       Flow.Value.fail "E_ATTR_TYPE" ("Attribute values require "^Flow.Ty.to_string ty^"."))
       (List.find_opt(fun(name,_,_)->name="values")args);
     Flow.Ty.geometry); shape = Flow.Op.Scalar;

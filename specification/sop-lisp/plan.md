@@ -626,7 +626,7 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 - [x] A.5 — structural card/inspector/gesture parity, actual menu addition and production source/editor rerun passed; evidence in `results.md`.
 - [x] A.6 — complete production noise_displace port; oracle, reference/domain/grain, metadata, cache, refusal, native and million-point timing gates passed; evidence in results.md.
 - [x] A.R — final check.exe --ship and @runtest-native passed after the integration audit; specs and declaration guidance updated.
-- [x] B.1 — all-owner/type attribute round trips, strict query guards, native/web and final integration gates passed; evidence in results.md.
+- [x] B.1 — all-owner/type attribute round trips, strict query guards, native/web and final integration gates passed. The full vec2/3/4 Float-plane Record extension, actual menu/graph/cooked-source checks and fixed before/after costs are recorded in `planar-attribute-validation.md` and `results.md`.
 - [x] B.2 — exact integer arrays/operators, native/JavaScript fixtures and one/eight-domain checks passed; final shipping/native/web gates passed.
 - [x] B.3 — owned Text arrays, all-owner round trips and compiled structured Core/JavaScript checks passed; unsupported numeric producers retain strict refusals.
 - [x] B.4 — owner counts and canonical unique-edge arrays match five native fixtures; focused language/source/graph gates passed.
@@ -702,3 +702,24 @@ node in that group has passed.
 - [x] `swap_attributes` — B.12, all owners, storage and copy/move/swap modes, canonical P, eager rewrite validation and native schema/cache/graph parity.
 - [x] `line` — C.7, both output kinds, all fields, native FMA/error/capacity parity, actual production menu and all eight performance rows; native/shipping gates pass.
 - [x] `points` — C.7, complete bounded zero-input generator, all four fields/counts/groups/raw names, native/reference/domain/cache/editor parity and all 48 fixed performance rows; native/shipping gates pass.
+
+### Stop-request checkpoint — 2026-10-13
+
+The owner requested finishing in-flight work, recording progress and stopping.
+Accepted totals are 16/128 whole ports (12.5%), 112 remaining, and 25/60 milestones
+(41.7%). C.6 array composition is committed as `193a28d7`; the full planar
+attribute extension closes the current B.1 work with evidence in
+`planar-attribute-validation.md`. This extension accepts no additional node or
+milestone, and its direct Record/native-copy costs do not establish a whole
+SOP performance pass.
+
+Grid and Circle source recipes and verification helpers are prepared but
+unaccepted: neither candidate is applied, timed or registered in production.
+Their frozen source artifacts remain `/tmp/rays-grid-candidate.patch` and
+`/tmp/rays-circle-candidate.patch`, with reviewed loader/menu/error/capacity
+follow-ups. Their complete recipe, fixed performance tables and production
+gates are still required if work resumes. Older Group Invert, Name From Groups
+and Point Jitter drafts remain unaccepted in the worktree; payload-concat and
+IEEE source proposals are also held. None contributes to the completed counts.
+
+All helper agents are idle. No new port batch starts at this checkpoint.

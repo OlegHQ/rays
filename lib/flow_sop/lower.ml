@@ -255,12 +255,18 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
               then fail "E_DATA_SOURCE" "A host call has no checked catalog kind.";
             if not catalog && Option.is_none(Flow.Op.find ~extra:checked.ops name Context.sop)
               then fail "E_DATA_SOURCE" "A host call has no checked operator.";
+            let selected=List.mem_assoc "selection" args || List.mem_assoc "default" args in
             let args=if not catalog && name="sop/with_attr"
-                && (List.mem_assoc "selection" args || List.mem_assoc "default" args)
-                && (match List.assoc_opt "values" args with
+                && (if selected then (match List.assoc_opt "values" args with
                     |Some(E.Float_array _|Vec2_array _|Vec3_array _|Vec4_array _)->true|Some value->constant value|_->false)
+                  else match List.assoc_opt "geometry" args,List.assoc_opt "values" args with
+                    |Some(E.Deferred(ty,_)),Some(E.Record _ as values) when ty=Ty.geometry && deferred values->
+                        (match List.assoc_opt "type" args with
+                         |None->true|Some(E.Text kind)->List.mem kind["vec2";"vec3";"vec4"]|_->false)
+                    |_->false)
               then begin
                 if Sop.Context.cancelled context then fail "E_CANCELLED" "Attribute kernel cancelled.";
+                if not selected then ignore(attribute_options args);
                 force_args ~keep_constant:true args
               end else args in
             let borrowed=if catalog || name<>"sop/with_attr" then Ok None else
@@ -271,7 +277,9 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
                   let target=Option.get(geometry id) in
                   let materialized=match values with
                     |E.Float_array _|Int_array _|Text_array _|Vec2_array _|Vec3_array _|Vec4_array _->true
-                    |Record fields->(match List.assoc_opt "offsets" fields,List.assoc_opt "values" fields with
+                    |Record fields->if not selected && List.mem kind["vec2";"vec3";"vec4"] then
+                        not(E.is_live values)
+                      else (match List.assoc_opt "offsets" fields,List.assoc_opt "values" fields with
                         |Some(E.Int_array _),Some(E.Float_array _|Int_array _)->true|_->false)
                     |_->false in
                   let selection=List.assoc_opt "selection" args and default=List.assoc_opt "default" args in

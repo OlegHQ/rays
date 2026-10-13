@@ -702,6 +702,77 @@ arr1[0.;-0.;0.];arr1[1e16;1.;-1e16];
         (host_result(fun()->read typed name owner requested true))) [kind;wrong;""]) ["typed";"missing";"P"])
     ["float";"int";"vec2";"vec3";"vec4";"text";"float_array";"int_array"])
     ["point",3;"vertex",3;"primitive",1;"detail",1];
+  (* Full planar vector writes use independently packed native storage as the
+     valid oracle, including empty owner rows. Invalid cases exercise the same
+     direct writer boundary as the JS geometry-host primitive. *)
+  let planar_pack planes=match Array.length planes with
+    |2->Rdk.Attribute.Float2(Rdk.Packed.Float2.of_owned ~x:planes.(0) ~y:planes.(1)|>Result.get_ok)
+    |3->Float3(Rdk.Packed.Float3.Private.of_owned_exn ~x:planes.(0) ~y:planes.(1) ~z:planes.(2))
+    |_->Float4(Rdk.Packed.Float4.of_owned ~x:planes.(0) ~y:planes.(1) ~z:planes.(2) ~w:planes.(3)|>Result.get_ok) in
+  let planar_record planes=E.Record(List.mapi(fun c data->[|"x";"y";"z";"w"|].(c),E.Float_array data)(Array.to_list planes)) in
+  let planar_add args expected =
+    let name="sop/with_attr" in
+    let entries=match Hashtbl.find_opt cases name with Some entries->entries|None->
+      let entries=ref []in Hashtbl.add cases name entries;entries in
+    entries:=Printf.sprintf {|{"static":[],"args":%s,"result":%s,"planar_text_hex":"ff00c3a9"}|}
+      (seq raw_json args)(raw_json expected)::!entries in
+  let planar_write geo name owner kind values=
+    (op "sop/with_attr").check["geometry",E.No_geo;"attribute",E.Text name;"type",E.Text kind;"owner",E.Text owner;"values",values];
+    Result.bind(Flow_sop.Attribute_kernel.owner owner)(fun owner->
+      Result.map geometry_value(Flow_sop.Attribute_kernel.write ~grain:97 ~owner ~kind name values geo)) in
+  let empty=Rdk.Geometry.create
+    ~positions:(Rdk.Packed.Float3.Private.of_owned_exn ~x:[||] ~y:[||] ~z:[||])
+    ~topology:(Rdk.Topology.empty ~point_count:0)()|>Result.get_ok in
+  let bytes=Rdk.Attribute.create_owned ~owner:Rdk.Attribute.Detail ~name:"planar_bytes"
+    (Rdk.Attribute.Text[|"\255\000é"|])|>Result.get_ok in
+  List.iter(fun geo->
+    let geo=Rdk.Geometry.with_attribute bytes geo|>Result.get_ok in
+    List.iter(fun(owner,count)->List.iter(fun(kind,width)->
+    let planes=Array.init width(fun c->Array.init count(fun i->if i mod 2=0 then -0. else float c+.Float.next_after 0. 1.)) in
+    let values=planar_record planes and owner_enum=Flow_sop.Attribute_kernel.owner owner|>Result.get_ok in
+    let oracle name=if name="P" && owner="point" then match planar_pack(Array.map Array.copy planes)with
+      |Rdk.Attribute.Float3 positions->Rdk.Geometry.with_positions positions geo|>Result.get_ok|_->assert false
+      else Rdk.Geometry.with_attribute(Rdk.Attribute.create_owned ~owner:owner_enum ~name
+        (planar_pack(Array.map Array.copy planes))|>Result.get_ok)geo|>Result.get_ok in
+    let valid name values =
+      let expected=geometry_value(oracle name) in
+      let actual=planar_write geo name owner kind values|>Result.get_ok in
+      assert(json actual=json expected);
+      planar_add [geometry_value geo;E.Text name;E.Text owner;E.Text kind;values] expected in
+    valid "planar" values;
+    valid "planar"(match values with E.Record fields->E.Record(List.rev fields)|_->assert false);
+    if kind="vec3" || owner<>"point"then valid "P" values;
+    let cases=match values with E.Record fields->
+      [E.Record(List.tl fields);E.Record(("extra",E.Float_array[||])::fields);
+       E.Record(("x",E.Int_array(Array.make count 0))::List.remove_assoc "x" fields);
+       E.Record(("x",E.Vec3_array[||])::List.remove_assoc "x" fields);
+       E.Record(("x",E.Float_array(Array.make(count+1)nan))::List.remove_assoc "x" fields)]
+      @(if count=0 then []else List.map(fun bad->let data=Array.map Array.copy planes in
+          data.(width-1).(count-1)<-bad;planar_record data)[nan;infinity;neg_infinity])
+      |_->assert false in
+    List.iter(fun values->add_host "sop/with_attr"[geometry_value geo;E.Text"planar";E.Text owner;E.Text kind;values]
+      (host_result(fun()->planar_write geo "planar" owner kind values)))cases;
+    if owner="point" && kind<>"vec3"then add_host "sop/with_attr"
+      [geometry_value geo;E.Text"P";E.Text owner;E.Text kind;values](host_result(fun()->planar_write geo "P" owner kind values));
+    let default=if width=2 then E.Vec2(0.,0.)else if width=3 then Vec3(0.,0.,0.)else Vec4(0.,0.,0.,0.)in
+    add_host "sop/with_attr"[geometry_value geo;E.Text"planar";E.Text owner;E.Text kind;values;E.Int_array(Array.make count 1);default]
+      (host_result(fun()->selected_write geo "planar" owner kind values(E.Int_array(Array.make count 1))default)))
+      ["vec2",2;"vec3",3;"vec4",4])
+      ["point",Rdk.Geometry.point_count geo;"vertex",Rdk.Geometry.vertex_count geo;
+       "primitive",Rdk.Geometry.primitive_count geo;"detail",1]) [empty;geometry];
+  (* Native String.trim treats NBSP and arbitrary bytes as real names. *)
+  List.iter(fun name->
+    let values=E.Record["x",E.Float_array[|(-0.);1.;2.|];"y",E.Float_array[|0.;1.;2.|]] in
+    add_host "sop/with_attr"[geometry_value geometry;E.Text name;E.Text"point";E.Text"vec2";values]
+      (host_result(fun()->planar_write geometry name "point" "vec2" values));
+    if String.trim name<>"" then begin
+      let geo=Flow_sop.Attribute_kernel.write ~grain:97 ~owner:Rdk.Attribute.Point ~kind:"vec2" name values geometry|>Result.get_ok in
+      List.iter(fun query->let operation=if query then "sop/has_attr"else"sop/attr"in
+        add_host operation[geometry_value geo;E.Text name;E.Text"point";E.Text"vec2"]
+          (host_result(fun()->read geo name "point" "vec2"query))) [false;true];
+      add_host "sop/attr_checked"[geometry_value geo;E.Text name;E.Text"point";E.Text"vec2"]
+        (host_result(fun()->checked_read geo name "point" "vec2"))
+    end)["\194\160";"\255";" \t\r\n"];
   (* Cooked topology sources use the same immutable geometry protocol. *)
   let topology_fixture points vertices offsets kinds =
     let topology=Rdk.Topology.create_owned ~point_count:points ~vertex_points:vertices

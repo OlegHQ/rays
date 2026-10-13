@@ -387,6 +387,54 @@ console.log(`ok ${cases} cases, ${files.length} primitives`);
       || actual.trace !== original.trace) throw actual; }
 }
 
+// Full planar host writes use exact Float banks/keys and fresh tuple storage.
+// Independent native hex verifies byte Text preservation beside finite planes.
+{
+  const fixture=JSON.parse(readFileSync(join(fixtureDir,'sop_with_attr.json'),'utf8'));
+  let checked=0;
+  for(const test of fixture.cases) if(test.planar_text_hex!==undefined) {
+    const args=test.args.map(decodeValue), result=prims.sop_with_attr(...args);
+    const expected=decodeValue(test.result), mismatch=diff(expected,result);
+    if(mismatch)throw new Error(`planar native raw storage: ${mismatch}`);
+    const bytes=result.get('attributes').find(a=>a.get('owner')==='detail'&&a.get('name')==='planar_bytes').get('values').data[0];
+    const hex=Array.from(prims.textBytes(bytes),byte=>byte.toString(16).padStart(2,'0')).join('');
+    if(hex!==test.planar_text_hex)throw new Error('planar write changed independent native Text bytes');
+    checked++;
+  }
+  if(!checked)throw new Error('missing actual native planar host fixtures');
+  const geometry=new Map([['positions',new PArray(3,Float64Array.from([0,-0,0,1,0,0,2,0,0]))],
+    ['vertex_points',[0n,1n,2n]],['primitive_offsets',[0n,3n]],['primitive_kinds','\0'],['attributes',[]],['groups',[]],['edge_groups',[]]]);
+  for(const [type,width]of[['vec2',2],['vec3',3],['vec4',4]]) {
+    const source=Float64Array.from([-0,Number.MIN_VALUE,Number.MAX_VALUE]);
+    const values=new Map(['x','y','z','w'].slice(0,width).map(name=>[name,new PArray(1,source)]));
+    const output=prims.sop_with_attr(geometry,'planes','point',type,values);
+    const data=output.get('attributes')[0].get('values').data;
+    for(let i=0;i<source.length;i++)for(let c=0;c<width;c++)
+      if(!Object.is(data[i*width+c],source[i]))throw new Error('planar signedzero/subnormal/raw finite bits');
+    data[0]=99;
+    if(!Object.is(source[0],-0)||!Object.is(data[1],-0))throw new Error('planar output aliases source or sibling');
+    source[1]=77;
+    if(!Object.is(data[width],Number.MIN_VALUE))throw new Error('planar source aliases output');
+    let failure;
+    try{prims.sop_with_attr(geometry,'selected','point',type,values,new PArray(1,BigInt64Array.from([1n,1n,1n])),new Float64Array(width));}
+    catch(e){failure=e;}
+    if(!(failure instanceof Fail)||failure.code!=='E_ATTR_TYPE')throw new Error('selected planar values must retain refusal');
+    for(const bad of[
+      new Map([['x',new PArray(2,new Float64Array(6))],...Array.from(values).slice(1)]),
+      new Map([['x',new PArray(1,new BigInt64Array(3))],...Array.from(values).slice(1)]),
+    ]){
+      let failure;try{prims.sop_with_attr(geometry,'bad','point',type,bad);}catch(e){failure=e;}
+      if(!(failure instanceof Fail)||failure.code!=='E_ATTR_TYPE')throw new Error('planar bank/width boundary');
+    }
+  }
+  for(const name of['\u00a0','\udcff']){
+    const values=new Map([['x',new PArray(1,Float64Array.from([-0,1,2]))],['y',new PArray(1,new Float64Array(3))]]);
+    const output=prims.sop_with_attr(geometry,name,'point','vec2',values);
+    if(!prims.sop_has_attr(output,name,'point','vec2'))throw new Error('native byte-nonblank name was rejected');
+    if(!Object.is(prims.sop_attr(output,name,'point','vec2').data[0],-0))throw new Error('byte-name read lost negative zero');
+  }
+}
+
 // Real geometry-host copy/cancellation tests use the same native raw fixture,
 // independent of the 2D exporter (which still refuses reached SOP geometry).
 {

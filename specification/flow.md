@@ -1671,6 +1671,20 @@ once. Live inputs read the cook's frame, and fold inputs receive a snapshot
 from the environment-owned value lane. Inline and locally bound `fn` map
 bodies can use the CPU tier. See `sketches/flow_kernel/sketch.rays`.
 
+Full vector writes also accept Float-plane records: exactly `{:x xs :y ys}`
+for `:type vec2`, `{:x xs :y ys :z zs}` for vec3 (the default), and an additional
+`:w ws` for vec4. Field order is unrestricted; the storage boundary refuses
+extra, missing or duplicate fields and concrete non-Float arrays with
+`E_ATTR_TYPE`. Authored duplicate record fields retain the checker's `E_RECORD`
+diagnostic. Each plane must
+match the selected point/vertex/primitive/detail owner count (`E_ATTR_COUNT`).
+After finite validation, native storage owns separate copies of each scalar
+plane, preserving signed zero and finite bits without an interleaved temporary
+or a width-divided native capacity. Cooked source fields retain authored forcing
+order, dependencies, lazy branches and graph field/socket edits. Point P still
+requires vec3. `:selection`/`:default` writes keep their existing packed-array
+contract; planar records do not add a selected-write variant.
+
 Probes read the immutable geometries returned for the editor's bounded optional
 cook targets through that same attribute resolver. A packed map retains a call
 template alongside its capped preview records. Selecting an element materializes

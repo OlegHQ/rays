@@ -1406,3 +1406,368 @@ let ()=
   Fun.protect ~finally:(fun()->Session.close s)(fun()->
     let output=cook s ~domains:1 ~time:0. node|>geometry in
     assert(Geometry.point_count output=0 && Geometry.vertex_count output=0 && Geometry.primitive_count output=0))
+
+(* Full planar values are copied per scalar plane; tuple-array and selected
+   writers retain their independent contracts. *)
+let planar_storage planes = match Array.length planes with
+  |2->Attribute.Float2(Packed.Float2.of_owned ~x:planes.(0) ~y:planes.(1)|>get_string_ok)
+  |3->Float3(Packed.Float3.Private.of_owned_exn ~x:planes.(0) ~y:planes.(1) ~z:planes.(2))
+  |_->Float4(Packed.Float4.of_owned ~x:planes.(0) ~y:planes.(1) ~z:planes.(2) ~w:planes.(3)|>get_string_ok)
+let planar_record planes = E.Record(List.mapi(fun i data->[|"x";"y";"z";"w"|].(i),E.Float_array data)(Array.to_list planes))
+let planar_oracle ~owner ~kind:_ name planes original =
+  if owner=Attribute.Point && name="P" then
+    match planar_storage(Array.map Array.copy planes) with Attribute.Float3 positions->Geometry.with_positions positions original|>get_string_ok
+      |_->assert false
+  else Geometry.with_attribute(Attribute.create_owned ~owner ~name(planar_storage(Array.map Array.copy planes))|>get_string_ok)original|>get_string_ok
+
+let ()=
+  List.iter(fun n->
+    let base=Line_geometry.points(Array.init n(fun i->float i,-0.,0.)) in
+    let base=if n=6 then Geometry.create ~positions:(Geometry.positions base)
+      ~topology:(Topology.create_owned ~point_count:n ~vertex_points:[|0;1;2;3;4;5|]
+        ~primitive_offsets:[|0;3;6|] ~primitive_kinds:[|Topology.Polygon;Open_polyline|]|>get_string_ok)()|>get_string_ok else base in
+    let base=Geometry.with_group(Group.ordered ~owner:Group.Point ~name:"retained" ~length:n
+      (if n=0 then[||]else if n=1 then[|0|]else[|n-1;0|])|>get_string_ok)base|>get_string_ok in
+    let raw=Attribute.create_owned ~owner:Detail ~name:"untouched" (Float[|Int64.float_of_bits 0x7ff8000000001234L|])|>get_string_ok in
+    let text=Attribute.create_owned ~owner:Detail ~name:"bytes" (Text[|"\255\000é"|])|>get_string_ok in
+    let matrix=Packed.Float_array.create_owned ~offsets:[|0;16|] ~values:(Array.init 16(fun i->if i=0 then -0. else float i))|>get_string_ok in
+    let original=List.fold_left(fun geo attribute->Geometry.with_attribute attribute geo|>get_string_ok)base
+      [raw;text;Attribute.create_owned ~owner:Detail ~name:"matrix"(Float_array matrix)|>get_string_ok] in
+    let before=geometry_bytes original in
+    List.iter(fun(owner,owner_name,count)->List.iter(fun(kind,width)->
+      let data=Array.init width(fun c->Array.init count(fun i->if i mod 3=0 then -0.
+        else if i mod 3=1 then Float.next_after 0. 1. else float c+.float i*.0.125)) in
+      let values=planar_record data in
+      let expected=planar_oracle ~owner ~kind "planes" data original in
+      List.iter(fun domains->List.iter(fun grain->Rays_math.Parallel.run ~domains(fun()->
+        let output=Flow_sop.Attribute_kernel.write ~grain ~owner ~kind "planes" values original|>flow_ok in
+        assert(geometry_bytes output=geometry_bytes expected && geometry_bytes original=before);
+        let storage=Geometry.find_attribute ~owner "planes" output|>Option.get|>Attribute.Private.storage in
+        let owned=match storage with
+          |Float2 p->let p=Packed.Float2.Private.view p in [|p.x;p.y|]
+          |Float3 p->let p=Packed.Float3.Private.view p in [|p.x;p.y;p.z|]
+          |Float4 p->let p=Packed.Float4.Private.view p in [|p.x;p.y;p.z;p.w|]
+          |_->assert false in
+        if count>0 then begin
+          Array.iteri(fun c plane->assert(plane!=data.(c)))owned;
+          owned.(0).(0)<-77.;assert(Int64.bits_of_float data.(0).(0)=Int64.bits_of_float(-0.))
+        end)) [1;97;4096]) [1;4;8];
+      let error values code message = match Flow_sop.Attribute_kernel.write ~grain:97 ~owner ~kind "bad" values original with
+        |Error d->assert(d.code=code);Option.iter(fun text->assert(d.message=text))message
+        |Ok _->assert false in
+      let fields=match values with E.Record fields->fields|_->assert false in
+      List.iter(fun fields->error(E.Record fields)"E_ATTR_TYPE"None)
+        [List.tl fields;("extra",E.Float_array[||])::fields;List.hd fields::fields;
+         ("x",E.Int_array(Array.make count 0))::List.remove_assoc "x" fields;
+         ("x",E.Vec3_array[||])::List.remove_assoc "x" fields];
+      let bad=Array.copy data in bad.(0)<-Array.make(count+1)nan;
+      error(planar_record bad)"E_ATTR_COUNT"(Some(Printf.sprintf "bad needs %d %s values; got %d." count owner_name (count+1)));
+      if count>0 then begin
+        let bad=Array.map Array.copy data in bad.(width-1).(count-1)<-infinity;
+        error(planar_record bad)"E_NONFINITE"(Some"Attribute values must be finite.");
+        let alias=Array.make width data.(0) in
+        let output=Flow_sop.Attribute_kernel.write ~grain:97 ~owner ~kind "aliased"(planar_record alias)original|>flow_ok in
+        let output=Geometry.find_attribute ~owner "aliased" output|>Option.get|>Attribute.Private.storage in
+        let a,b=match output with Float2 p->let p=Packed.Float2.Private.view p in p.x,p.y
+          |Float3 p->let p=Packed.Float3.Private.view p in p.x,p.y
+          |Float4 p->let p=Packed.Float4.Private.view p in p.x,p.y|_->assert false in
+        assert(a!=b && a!=data.(0));a.(0)<-99.;assert(Int64.bits_of_float b.(0)=Int64.bits_of_float(-0.))
+      end;
+      if owner=Point then begin
+        if width=3 then assert(geometry_bytes(Flow_sop.Attribute_kernel.write ~grain:97 ~owner ~kind "P" values original|>flow_ok)
+          =geometry_bytes(planar_oracle ~owner ~kind "P" data original))
+        else match Flow_sop.Attribute_kernel.write ~grain:97 ~owner ~kind "P" values original with
+          |Error d->assert(d.code="E_ATTR_TYPE" && d.message="Canonical point P requires vec3 storage.")|Ok _->assert false
+      end;
+      (match Flow_sop.Attribute_kernel.write_selected ~grain:97 ~owner ~kind "planes" ~values
+        ~selection:(E.Int_array(Array.make count 1)) ~default:(if width=2 then E.Vec2(0.,0.) else if width=3 then Vec3(0.,0.,0.) else Vec4(0.,0.,0.,0.)) original with
+       |Error d->assert(d.code="E_ATTR_TYPE")|Ok _->assert false);
+      assert(geometry_bytes original=before)) ["vec2",2;"vec3",3;"vec4",4])
+      [Attribute.Point,"point",n;Vertex,"vertex",Geometry.vertex_count original;
+       Primitive,"primitive",Geometry.primitive_count original;Detail,"detail",1]) [0;1;6;32769];
+  let op=List.find(fun(op:Flow.Op.t)->op.name="sop/with_attr")Flow_sop.Operators.all in
+  List.iter(fun(kind,names)->
+    let args ty=["type",Flow.Ty.Text,Some(Param.Text_value kind);"values",ty,None] in
+    List.iter(fun fields->assert(Flow.Op.result_type op(args(Flow.Ty.Record fields))=Flow.Ty.geometry))
+      [List.map(fun name->name,Flow.Ty.Array Flow.Ty.Float)names;List.map(fun name->name,Flow.Ty.Any)names];
+    List.iter(fun ty->try ignore(Flow.Op.result_type op(args ty));assert false with Flow.Value.Fail(code,_,_)->assert(code="E_ATTR_TYPE"))
+      [Flow.Ty.Record(List.map(fun name->name,Flow.Ty.Array Flow.Ty.Int)names);
+       Flow.Ty.Record(("extra",Flow.Ty.Any)::List.map(fun name->name,Flow.Ty.Array Flow.Ty.Float)names)])
+    ["vec2",["x";"y"];"vec3",["x";"y";"z"];"vec4",["x";"y";"z";"w"]];
+  print_endline "Full planar attributes: all owners/vec widths, native raw payload bytes, positive ownership, capacity type boundary and exact1/4/8-domain errors"
+
+let ()=
+  let original=Line_geometry.points(Array.init 65537(fun i->float i,-0.,0.)) in
+  let data=Array.init 65537(fun i->float i*.0.125) in
+  let original=Geometry.with_attribute(Attribute.create_owned ~owner:Attribute.Point ~name:"scalar"(Float data)|>get_string_ok)original|>get_string_ok in
+  let before=geometry_bytes original and cooks=ref 0 in
+  let source=Sop.Node.Private.make_geometry ~operation:"test.planar_source" ~version:1 ~parameters:""
+    ~cook_mode:Sop.Node.Generator ~dependencies:Sop.Context.Dependencies.static ~inputs:[||]
+    (fun ~node_id:_ _ _->incr cooks;Ok Sop.Node.Private.{geometry=original;diagnostics=[];instances=None}) in
+  let factory=Edit.factory ~key:"ext_planar" ~label:"Planar" ~category:["Test"] ~arity:0(fun _->source) in
+  let source_text={|(workspace planar_sources
+    (defnode sop/planar_sources [(geo : geometry)]
+      (let* [make (fn [(xs : (array float))]
+                     {:z (array/float (array/count xs) -0.0)
+                      :y (exact (map (fn [(x : float)] (+ x (* t 0.25))) xs)) :x xs})
+             planes (make (sop/attr geo :scalar :type float)) alias planes]
+        (sop/with_attr geo :planar alias)))
+    (graph g :context sop (sop/planar_sources (sop/ext_planar))))|} in
+  List.iter(fun reference->
+    let lowered=L.workspace ~reference ~factories:(factory::factories)(Flow.Syntax.parse source_text|>flow_ok)|>flow_ok in
+    let graph=List.hd lowered.graphs and lane=Flow_sop.Value_lane.create() in
+    let session=session() in
+    Fun.protect ~finally:(fun()->Session.close session)(fun()->
+      List.iter(fun time->List.iter(fun domains->List.iter(fun grain->
+        let network=Flow_sop.Value_lane.resolve lane ~time graph.network|>flow_ok in
+        let node=Edit.compile_node network.geometry ~node_id:(Option.get graph.root)|>get_string_ok in
+        let context=Sop.Context.create ~time ~domains ~grain()|>get_string_ok in
+        Session.clear session;cooks:=0;
+        let output=Session.cook session ~context node|>geometry in
+        assert(!cooks=1);
+        let expected=planar_oracle ~owner:Point ~kind:"vec3" "planar"
+          [|data;Array.map(fun x->x+.time*.0.25)data;Array.make(Array.length data)(-0.)|] original in
+        assert(geometry_bytes output=geometry_bytes expected && geometry_bytes original=before);
+        let stats=Session.stats session in ignore(Session.cook session ~context node|>geometry);
+        assert((Session.stats session).misses=stats.misses);
+        let token=Sop.Context.Cancel.create() in Sop.Context.Cancel.cancel token;
+        let cancelled=Sop.Context.create ~time ~domains ~grain ~cancel:token()|>get_string_ok in
+        (match Session.cook session ~context:cancelled node with Error d->assert(d.code="E_CANCELLED"||d.code="cancelled")|Ok _->assert false)
+      ) [1;97;4096]) [1;4;8]) [0.;1.;0.];
+      let small=Line_geometry.points[|0.,-0.,0.;1.,-0.,0.|] in
+      let small=Geometry.with_attribute(Attribute.create_owned ~owner:Point ~name:"scalar"(Float[|0.5;1.5|])|>get_string_ok)small|>get_string_ok in
+      let node=Edit.compile_node graph.network.geometry ~node_id:(Option.get graph.root)|>get_string_ok in
+      let node=Sop.Node.Private.rebuild_with_inputs node[|Lisp_sop.snapshot small|] in
+      let expected=planar_oracle ~owner:Point ~kind:"vec3" "planar"[|[|0.5;1.5|];[|0.5;1.5|];[|-0.;-0.|]|]small in
+      assert(geometry_bytes(cook session ~domains:4 ~time:0. node|>geometry)=geometry_bytes expected))) [false;true];
+  (* Both sources hydrate in authored Record order only in the reached arm. *)
+  let lazy_text={|(workspace planar_lazy
+    (defnode sop/planar_lazy [(geo : geometry)]
+      (if (sop/has_attr geo :enabled :owner detail :type int)
+        (sop/with_attr geo :bad {:x (sop/attr geo :missing :type float)
+          :y (array/float (sop/count geo :points)) :z (array/float (sop/count geo :points))}) geo))
+    (graph g :context sop (sop/planar_lazy (sop/ext_planar))))|} in
+  List.iter(fun reference->
+    let node=L.workspace ~reference ~factories:(factory::factories)(Flow.Syntax.parse lazy_text|>flow_ok)|>flow_ok|>compiled in
+    let session=session() in Fun.protect ~finally:(fun()->Session.close session)(fun()->
+      assert(geometry_bytes(cook session ~domains:4 ~time:(-1.) node|>geometry)=before);
+      let enabled=Geometry.with_attribute(Attribute.create_owned ~owner:Detail ~name:"enabled"(Int[|1|])
+        |>get_string_ok)original|>get_string_ok in
+      let selected=Sop.Node.Private.rebuild_with_inputs node[|Lisp_sop.snapshot enabled|]in
+      (match cook session ~domains:4 ~time:1. selected with Error d->assert(d.code="E_ATTR_TYPE")|Ok _->assert false);
+      assert(geometry_bytes(cook session ~domains:4 ~time:(-1.) node|>geometry)=before))) [false;true];
+  print_endline "Full planar attributes: real strict/reference cooked-source/Fn/alias hydration, live rebinding, repeated-child sharing, lazy failures and cancellation"
+
+let ()=
+  let checker=Flow_sop.Catalog.check_workspace ~ops:Flow_sop.Operators.all in
+  let forms=Flow.Syntax.parse {|(workspace planar_projection (graph g :context sop
+    (let* [geo (sop/line) planes_values {:x (array/float 2) :y (array/float 2) :z (array/float 2)}
+      result (sop/with_attr geo :planes planes_values)] result)))|}|>flow_ok in
+  let check forms=match checker catalog forms with Some w,[]->w|_,ds->failwith(String.concat "; "(List.map Flow.Diagnostic.to_string ds)) in
+  let checked=check forms in
+  let pane=Flow_graph.Projection.of_graph catalog checked "g" in
+  let card=Flow_graph.Projection.find pane["g";"result"]|>Option.get in
+  assert(card.ty=Flow.Ty.geometry);
+  let record=Flow_graph.Projection.find pane["g";"planes_values"]|>Option.get in
+  assert(record.ty=Flow.Ty.Record["x",Array Float;"y",Array Float;"z",Array Float]);
+  let syntax text=List.hd(Flow.Syntax.parse text|>flow_ok) in
+  List.iter(fun name->ignore(Flow_graph.Flow_edit.apply_checked ~checker catalog forms
+    (Set_arg{node=["g";"planes_values"];key=Field name;sub=[];value=syntax"(array/float 2 -0.0)"})|>flow_ok)) ["x";"y";"z"];
+  List.iter(fun(key,value)->ignore(Flow_graph.Flow_edit.apply_checked ~checker catalog forms
+    (Set_arg{node=["g";"result"];key;sub=[];value=syntax value})|>flow_ok))
+    [Pos 2,"{:z (array/float 2) :x (array/float 2) :y (array/float 2)}";
+     Pos 1,"\"dynamic-name\"";Kw"owner","\"vertex\"";Kw"type","\"vec3\""];
+  ignore(Flow_graph.Flow_edit.apply_checked ~checker catalog forms
+    (Connect{node=["g";"result"];key=Pos 2;src="planes_values";iter=false})|>flow_ok);
+  List.iter(fun gesture->assert(Result.is_error(Flow_graph.Flow_edit.apply_checked ~checker catalog forms gesture)))
+    [Set_arg{node=["g";"planes_values"];key=Field"x";sub=[];value=syntax"(array/int 2)"};
+     Set_arg{node=["g";"result"];key=Kw"type";sub=[];value=syntax"\"vec2\""};
+     Set_arg{node=["g";"result"];key=Pos 2;sub=[];value=syntax"{:x (array/float 2) :y (array/float 2) :extra (array/float 2)}"}];
+  let printed=fst(Flow.Lisp.print forms) in ignore(check(Flow.Syntax.parse printed|>flow_ok));
+  let _,inserted=Flow_graph.Flow_edit.apply_checked ~checker catalog forms
+    (Add_node{scope=["g"];name="another";expr=syntax"(sop/with_attr geo :planes2 planes_values)"})|>flow_ok in
+  assert((Flow_graph.Projection.find(Flow_graph.Projection.of_graph catalog inserted "g")["g";"another"]|>Option.get).ty=Flow.Ty.geometry);
+  List.iter(fun name->let op=List.find(fun(op:Flow.Op.t)->op.name=name)Flow_sop.Operators.all in
+    List.iter(fun attribute->op.check["geometry",E.No_geo;"attribute",E.Text attribute]) ["\194\160";"\255"];
+    try op.check["geometry",E.No_geo;"attribute",E.Text" \t\r\n"];assert false with Flow.Value.Fail(code,_,_)->assert(code="E_ATTR_NAME"))
+    ["sop/attr";"sop/attr_checked";"sop/has_attr";"sop/with_attr"];
+  print_endline "Full planar attributes: typed projected Record/geometry cards, field/socket/link edits, exact-key atomic refusal and native byte-blank names"
+
+let ()=
+  let s=session() in
+  let grid=Fun.protect ~finally:(fun()->Session.close s)(fun()->
+    cook s ~domains:1 ~time:0.(Lisp_sop.node"(sop/grid :columns 64 :rows 64 :connectivity \"Quads\")")|>geometry) in
+  assert(Geometry.point_count grid=4225 && Geometry.vertex_count grid=16384 && Geometry.primitive_count grid=4096);
+  List.iter(fun grid->List.iter(fun(owner,owner_name,count)->
+    let data=Array.init 4(fun c->Array.init count(fun i->if c=0 then -0. else float i+.float c*.0.125)) in
+    let original=List.fold_left(fun geo c->Geometry.with_attribute
+      (Attribute.create_owned ~owner ~name:([|"px";"py";"pz";"pw"|].(c))(Float data.(c))|>get_string_ok)geo|>get_string_ok)grid [0;1;2;3] in
+    let before=geometry_bytes original in
+    let input=Lisp_sop.snapshot original in
+    let factory=Edit.factory ~key:"ext_planes" ~label:"Planes" ~category:["Test"] ~arity:0(fun _->input)in
+    List.iter(fun(kind,width)->
+      let fields=String.concat" "(List.init width(fun c->Printf.sprintf ":%s (sop/attr geo :%s :owner %s :type float)"
+        [|"x";"y";"z";"w"|].(c)[|"px";"py";"pz";"pw"|].(c)owner_name))in
+      let values=E.Record(List.init width(fun c->[|"x";"y";"z";"w"|].(c),
+        E.Source("sop/attr",Flow.Ty.Array Flow.Ty.Float,["geometry",E.Deferred(Flow.Ty.geometry,0);
+          "attribute",E.Text[|"px";"py";"pz";"pw"|].(c);"owner",E.Text owner_name;"type",E.Text"float"])))in
+      let direct=Flow_sop.Attribute_kernel.node ~owner ~kind ~strict:true ~source:"planar-facts"
+        ~name:"planes" ~values ~sources:[0][input]in
+      assert((Sop.Node.facts direct).reads=List.sort String.compare(List.init width(fun c->[|"px";"py";"pz";"pw"|].(c))));
+      assert((Sop.Node.facts direct).writes=["planes"] && (Sop.Node.facts direct).topology=Preserved);
+      let expected=planar_oracle ~owner ~kind "planes"(Array.sub data 0 width)original in
+      List.iter(fun reference->
+        let text=Printf.sprintf {|(workspace planar_owners
+          (defnode sop/planar_owners [(geo : geometry)]
+            (let* [planes_values {%s}] (sop/with_attr geo :planes planes_values :owner %s :type %s)))
+          (graph g :context sop (sop/planar_owners (sop/ext_planes))))|} fields owner_name kind in
+        let wrapped=L.workspace ~reference ~factories:(factory::factories)(Flow.Syntax.parse text|>flow_ok)|>flow_ok|>compiled in
+        let s=session()in Fun.protect ~finally:(fun()->Session.close s)(fun()->
+          List.iter(fun domains->List.iter(fun grain->let context=Sop.Context.create ~domains ~grain()|>get_string_ok in
+            assert(geometry_bytes(Session.cook s ~context wrapped|>geometry)=geometry_bytes expected);
+            assert(geometry_bytes(Session.cook s ~context direct|>geometry)=geometry_bytes expected);
+            assert(geometry_bytes original=before)) [1;97;4096]) [1;4;8])) [false;true])
+      ["vec2",2;"vec3",3;"vec4",4])
+    [Attribute.Point,"point",Geometry.point_count grid;Vertex,"vertex",Geometry.vertex_count grid;
+     Primitive,"primitive",Geometry.primitive_count grid;Detail,"detail",1])
+    [grid;Line_geometry.points[||];Line_geometry.points[|0.,-0.,0.|];
+     Line_geometry.points(Array.init 32769(fun i->float i,-0.,0.))];
+  (* A geometry fold forces a new cooked Record on each selected write; its
+     planes may be captured from the original child without count aliasing. *)
+  let source=Lisp_sop.snapshot(Line_geometry.points[|0.,0.,0.;1.,0.,0.|])in
+  let fold=Lisp_sop.workspace_node ~with_:["planes",source]{|(workspace planar_fold
+    (defnode sop/planar_fold [(geo : geometry)]
+      (fold [out geo] [i (range 2)]
+        (sop/with_attr out :folded {:x (array/float (sop/count geo :points) (float i))
+          :y (array/float (sop/count geo :points) -0.0) :z (array/float (sop/count geo :points) 0.25)})))
+    (graph g :context sop (sop/planar_fold (sop/ext_planes))))|}in
+  let s=session()in Fun.protect ~finally:(fun()->Session.close s)(fun()->List.iter(fun domains->
+    let geo=cook s ~domains ~time:0. fold|>geometry in
+    let attr=Geometry.find_attribute ~owner:Point "folded"geo|>Option.get|>Attribute.Private.storage in
+    match attr with Float3 p->let p=Packed.Float3.Private.view p in
+      assert(p.x=[|1.;1.|] && Int64.bits_of_float p.y.(0)=Int64.bits_of_float(-0.) && p.z=[|0.25;0.25|])
+    |_->assert false)[1;4;8]);
+  print_endline "Full planar attributes: real4225-point Quad owner/source identities, strict/reference domain/grain facts and geometry fold"
+
+let ()=
+  let original=Line_geometry.points[|0.,0.,0.;1.,0.,0.|] in
+  let original=Geometry.with_attribute(Attribute.create_owned ~owner:Detail ~name:"tag"(Int[|1|])|>get_string_ok)original|>get_string_ok in
+  let values=E.Record["x",E.Float_array[|-0.;0.25|];"y",E.Float_array[|1.;2.|];"z",E.Float_array[|3.;4.|]] in
+  let input=Lisp_sop.snapshot original in
+  let node=Flow_sop.Attribute_kernel.node ~strict:true ~source:"planar-component-cache"
+    ~name:"planes" ~values ~sources:[0][input]in
+  assert((Sop.Node.facts node).reads=[] && (Sop.Node.facts node).writes=["planes"]);
+  let changed=Geometry.with_attribute(Attribute.create_owned ~owner:Detail ~name:"tag"(Int[|2|])|>get_string_ok)original|>get_string_ok in
+  let s=session()in Fun.protect ~finally:(fun()->Session.close s)(fun()->
+    ignore(cook s ~domains:1 ~time:0. node|>geometry);
+    let input=Lisp_sop.snapshot changed in ignore(cook s ~domains:1 ~time:0. input|>geometry);
+    let stats=Session.stats s in
+    let output=cook s ~domains:4 ~time:0.(Sop.Node.Private.rebuild_with_inputs node[|input|])|>geometry in
+    assert((Session.stats s).misses=stats.misses && (Session.stats s).hits=stats.hits+2);
+    let expected=planar_oracle ~owner:Point ~kind:"vec3" "planes"[|[|-0.;0.25|];[|1.;2.|];[|3.;4.|]|]changed in
+    assert(geometry_bytes output=geometry_bytes expected));
+  let factory=Edit.factory ~key:"ext_state_planes" ~label:"State planes" ~category:["Test"] ~arity:0(fun _->Lisp_sop.snapshot original)in
+  let text={|(workspace planar_state
+    (graph g :context sop
+      (let* [geo (sop/ext_state_planes) tick (state [previous 0.0] (+ previous 0.5))
+        planes_values {:x (array/float (sop/count geo :points) tick)
+          :y (array/float (sop/count geo :points) -0.0)
+          :z (array/float (sop/count geo :points) 0.25)}]
+        (sop/with_attr geo :state_planes planes_values))))|}in
+  List.iter(fun reference->let lowered=L.workspace ~reference ~factories:(factory::factories)(Flow.Syntax.parse text|>flow_ok)|>flow_ok in
+    let graph=List.hd lowered.graphs and lane=Flow_sop.Value_lane.create()in
+    let s=session()in Fun.protect ~finally:(fun()->Session.close s)(fun()->List.iter(fun frame->
+      let live={(Frame_input.at_time(float frame)) with frame;tick=frame}in
+      let network=Flow_sop.Value_lane.resolve lane ~live ~time:(float frame)graph.network|>flow_ok in
+      let node=Edit.compile_node network.geometry ~node_id:(Option.get graph.root)|>get_string_ok in
+      let context=Sop.Context.create ~input:live ~frame:(Int64.of_int frame) ~time:(float frame) ~domains:4()|>get_string_ok in
+      let actual=Session.cook s ~context node|>geometry in
+      let expected=planar_oracle ~owner:Point ~kind:"vec3" "state_planes"
+        [|Array.make 2(0.5*.float(frame+1));[|-0.;-0.|];[|0.25;0.25|]|]original in
+      assert(geometry_bytes actual=geometry_bytes expected);
+      assert(geometry_bytes(Session.cook s ~context node|>geometry)=geometry_bytes expected)) [0;1;2]))[false;true];
+  print_endline "Full planar attributes: unrelated component refresh, prepared count rebinding, frame state and same-frame stability"
+
+let ()=
+  let original=Line_geometry.points[|0.,0.,0.;1.,0.,0.|]in
+  let input=Lisp_sop.snapshot original in
+  let factory=Edit.factory ~key:"ext_planar_error" ~label:"Planar error" ~category:["Test"] ~arity:0(fun _->input)in
+  List.iter(fun reference->List.iter(fun(body,code,message)->
+    let text=Printf.sprintf {|(workspace planar_error
+      (defnode sop/planar_error [(geo : geometry)]
+        (if (sop/has_attr geo :P) (sop/with_attr geo :out %s) geo))
+      (graph g :context sop (sop/planar_error (sop/ext_planar_error))))|}body in
+    let node=L.workspace ~reference ~factories:(factory::factories)(Flow.Syntax.parse text|>flow_ok)|>flow_ok|>compiled in
+    let s=session()in Fun.protect ~finally:(fun()->Session.close s)(fun()->List.iter(fun domains->
+      match cook s ~domains ~time:0. node with
+      |Error d->assert(d.code=code);Option.iter(fun text->assert(d.message=text))message
+      |Ok _->assert false)[1;4;8]))
+    ["{:y (sop/attr geo :missing_y :type float) :x (sop/attr geo :missing_x :type float) :z (array/float 1)}",
+      "E_ATTR_TYPE",Some"point attribute missing_y is missing or is not float.";
+     "{:z (array/float 1) :x (array/float 3) :y (array/float 2)}",
+      "E_ATTR_COUNT",Some"out needs 2 point values; got 3.";
+     "{:z (array/float 1 (exp 1000.0)) :x (array/float 3) :y (array/float 2)}",
+      "E_NONFINITE",None]) [false;true];
+  let body=E.Record["z",E.Float_array[||];"y",E.Float_array[||];"x",E.Float_array[|1.;2.;3.|]]in
+  (match Flow_sop.Attribute_kernel.write ~grain:97 ~owner:Point ~kind:"vec3" "out"body original with
+   |Error d->assert(d.code="E_ATTR_COUNT"&&d.message="out needs 2 point values; got 3.")|Ok _->assert false);
+  print_endline "Full planar attributes: authored source/producer order, canonical count error order and host finite-before-count trust boundary"
+
+let ()=
+  (* Session rejects an already-cancelled cook before the host call. Invoke the
+     actual structural node with immutable captured payloads to test Lower.call
+     itself, including options that must beat deferred Record hydration. *)
+  let original=Line_geometry.points[|0.,0.,0.|]in
+  let factory=Edit.factory ~key:"ext_planar_mixed" ~label:"Planar mixed" ~category:["Test"] ~arity:0
+    (fun _->Lisp_sop.snapshot original)in
+  let factories=factory::factories in
+  let catalog=Flow_sop.Catalog.of_factories ~version:1 factories|>flow_ok in
+  let source owner=Printf.sprintf {|(workspace planar_mixed
+    (graph g :context sop (let* [geo (sop/ext_planar_mixed)
+      planes_values {:x (sop/attr geo :missing :type float)
+        :y (sop/attr geo :missing :type float) :z (sop/attr geo :missing :type float)}]
+      (if (sop/has_attr geo :P)
+        (sop/with_attr geo :out planes_values :owner "%s" :type vec3) geo))))|}owner in
+  let checked owner=match Flow_sop.Catalog.check_workspace ~ops:Flow_sop.Operators.all catalog
+      (Flow.Syntax.parse(source owner)|>flow_ok)with
+    |Some checked,[]->checked|_,ds->failwith(String.concat "; "(List.map Flow.Diagnostic.to_string ds))in
+  (* Invalid type literals are correctly rejected by ordinary checking. This
+     single typed Text replacement exercises the malformed internal host-call
+     boundary without loosening that authored literal rule. *)
+  let invalid_type (checked:Flow.Workspace.t)=
+    let graph=List.hd checked.graphs in
+    let body=match graph.body.node with
+      |Flow.Workspace.Let(bindings,choice)->
+          let choice=match choice.node with
+            |Flow.Workspace.If(test,yes,no)->
+                let rec replace (term:Flow.Workspace.term)=match term.node with
+                  |Flow.Workspace.Let(bindings,body)->{term with node=Let(bindings,replace body)}
+                  |Flow.Workspace.Op call when call.op="sop/with_attr"->
+                      assert(List.length(List.filter(fun(name,_)->name="type")call.args)=1);
+                      let args=List.map(fun(name,(value:Flow.Workspace.term))->name,
+                        if name="type"then {value with node=Text "invalid-storage"}else value)call.args in
+                      {term with node=Op{call with args}}
+                  |_->assert false in
+                {choice with node=If(test,replace yes,no)}
+            |_->assert false in
+          {graph.body with node=Let(bindings,choice)}
+      |_->assert false in
+    {checked with graphs=[{graph with body}]}in
+  let cases=[checked "invalid-owner","E_ATTR_OWNER","Attribute owner is point, vertex, primitive or detail.";
+    invalid_type(checked "point"),"E_ATTR_TYPE","Attribute type is float, int, vec2, vec3, vec4, text, float_array or int_array.";
+    checked "point","E_ATTR_TYPE","point attribute missing is missing or is not float."]in
+  List.iter(fun reference->List.iter(fun(checked,code,message)->
+    let lowered=L.of_checked ~reference ~factories checked|>flow_ok in
+    let node=compiled lowered in
+    assert(Sop.Node.operation node="flow.geometry_select" && List.length(Sop.Node.inputs node)=1);
+    let payloads=[|Sop.Payload.Geometry original|]in
+    List.iter(fun domains->
+      let context=Sop.Context.create ~domains ~grain:97()|>get_string_ok in
+      (match Sop.Node.Private.cook node context payloads with
+       |Error d->assert(d.code=code && d.message=message)|Ok _->assert false);
+      let token=Sop.Context.Cancel.create()in Sop.Context.Cancel.cancel token;
+      let cancelled=Sop.Context.create ~domains ~grain:97 ~cancel:token()|>get_string_ok in
+      (match Sop.Node.Private.cook node cancelled payloads with
+       |Error d->assert(d.code="E_CANCELLED" && d.message="Attribute kernel cancelled.")|Ok _->assert false)) [1;4;8]
+  )cases) [false;true];
+  print_endline "Full planar host mixed failures: actual Lower call cancellation before invalid options before failing Record source hydration"

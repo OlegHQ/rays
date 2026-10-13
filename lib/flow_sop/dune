@@ -223,3 +223,8 @@
  (aliases runtest points_port)
  (deps nodes/points.rays)
  (action (run %{exe:test_points_port.exe})))
+
+(executable
+ (name bench_planar_attribute)
+ (modules bench_planar_attribute)
+ (libraries flow flow_sop rdk rdk_test_support rays_math unix))

@@ -1123,7 +1123,7 @@ export function sop_delete_attr(geometry, pattern, owner = 'point') {
 // Geometry host contracts; SOP graphs remain outside the 2D export target.
 const attributeTypes = ['float', 'int', 'vec2', 'vec3', 'vec4', 'text', 'float_array', 'int_array'];
 function attributeArgs(name, owner, type) {
-  if (typeof name !== 'string' || !name.trim()) err('E_ATTR_NAME', 'An attribute needs a nonblank name.');
+  if (typeof name !== 'string' || text_blank(name)) err('E_ATTR_NAME', 'An attribute needs a nonblank name.');
   if (!['point', 'vertex', 'primitive', 'detail'].includes(owner))
     err('E_ATTR_OWNER', 'Attribute owner is point, vertex, primitive or detail.');
   if (type !== undefined && !attributeTypes.includes(type))
@@ -1205,6 +1205,20 @@ export function sop_with_attr(geometry, name, owner, type, values, selection, de
     for (let i = 0; i < count; i++)
       for (let c = 0; c < width; c++) data[i * width + c] = selection.data[i] === 1n ? values.data[i * width + c]
         : old?.get('type') === type ? old.get('values').data[i * width + c] : defaults[c];
+    return installAttribute(geometry, name, owner, type, width, new PArray(width, data));
+  }
+  if (width > 1 && values instanceof Map) {
+    const names = ['x', 'y', 'z', 'w'].slice(0, width);
+    if (values.size !== width || names.some(key => !(values.get(key) instanceof PArray)
+        || values.get(key).width !== 1 || !(values.get(key).data instanceof Float64Array)))
+      err('E_ATTR_TYPE', `sop/with_attr requires ${type} storage.`);
+    const planes = names.map(key => values.get(key).data);
+    const bad = planes.find(data => data.length !== count);
+    if (bad) err('E_ATTR_COUNT', `${name} needs ${count} ${owner} values; got ${bad.length}.`);
+    if (planes.some(data => !data.every(Number.isFinite))) err('E_NONFINITE', 'Attribute values must be finite.');
+    // The opaque JS host protocol packs tuples; native writes copy each plane.
+    const data = new Float64Array(count * width);
+    for (let i = 0; i < count; i++) for (let c = 0; c < width; c++) data[i * width + c] = planes[c][i];
     return installAttribute(geometry, name, owner, type, width, new PArray(width, data));
   }
   if (type === 'int' && integer(values)) {

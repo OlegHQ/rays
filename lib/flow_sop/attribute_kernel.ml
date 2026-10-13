@@ -350,6 +350,23 @@ let write_storage ~owned_fields ~grain ~owner ~kind name values geometry =
       else owned(A.Int(Array.copy data))
   | "text",E.Text_array data -> if Array.length data<>count then error "E_ATTR_COUNT" "Text attribute count differs from owner count."
       else owned(A.Text(Array.copy data))
+  | ("vec2"|"vec3"|"vec4"),E.Record fields ->
+      let names=match kind with "vec2"->["x";"y"]|"vec3"->["x";"y";"z"]|_->["x";"y";"z";"w"] in
+      if List.sort String.compare(List.map fst fields)<>List.sort String.compare names
+        || not(List.for_all(function _,E.Float_array _->true|_->false)fields) then
+        error "E_ATTR_TYPE" ("sop/with_attr requires "^kind^" storage.")
+      else
+        let planes=Array.of_list(List.filter_map(fun name->match List.assoc name fields with
+          E.Float_array data->Some data|_->None)names) in
+        (match Array.find_opt(fun data->Array.length data<>count)planes with
+         |Some data->error "E_ATTR_COUNT" (Printf.sprintf "%s needs %d %s values; got %d."
+             name count (owner_name owner) (Array.length data))
+         |None->
+             let finite data=let i=ref 0 in
+               while !i<Array.length data && Float.is_finite data.(!i) do incr i done;
+               !i=Array.length data in
+             if not(Array.for_all finite planes)then error "E_NONFINITE" "Attribute values must be finite."
+             else install ~owner ~kind name(Array.map Array.copy planes)geometry)
   | ("float_array"|"int_array"),E.Record fields ->
       (match List.assoc_opt "offsets" fields,List.assoc_opt "values" fields with
        | Some(E.Int_array offsets),Some values ->

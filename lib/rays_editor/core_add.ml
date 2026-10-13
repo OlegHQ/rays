@@ -74,6 +74,9 @@ let value_expression ~ops context key =
   | "array/scatter_add" ->
       List.hd (Result.get_ok (S.parse
         "(array/scatter_add (array/int 0) (array/float 0) 0)")), "added"
+  | "sop/with_attr" ->
+      List.hd (Result.get_ok (S.parse
+        "(sop/with_attr (sop/mesh :points (array/vec3 0) :vertex_points (array/int 0) :primitive_offsets (array/int 1) :kinds (array/int 0)) \"attribute\" (array/vec3 0))")), "attribute"
   | ("sop/mesh" | "sop/remap" as op) ->
       let mesh = "(sop/mesh :points (array/vec3 0) :vertex_points (array/int 0) :primitive_offsets (array/int 1) :kinds (array/int 0))" in
       let text, name = if op = "sop/mesh" then mesh, "mesh" else

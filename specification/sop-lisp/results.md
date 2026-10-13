@@ -5094,3 +5094,34 @@ remain recorded in array-composition-validation.md and their original logs.
 Accepted language milestones advance24/60→25/60 (41.7%). Accepted whole ports
 stay16/128 (12.5%),112 remaining. This does not implement repetition or port any
 whole generator/reindexing SOP; their complete recipe/performance gates remain.
+
+## Full planar vector attribute writes — B.1 extension, 2026-10-13
+
+The shared full `sop/with_attr` writer accepts exact Float-plane records for
+vec2/3/4 on all four owners. Each plane is count/finite-checked and copied into
+owned native storage, preserving scalar-plane capacity. Point P remains vec3;
+selected/default writes retain packed tuple arrays. Lower hydrates reached
+Record sources in authored order after cancellation and owner/type checks.
+Native and JavaScript shared attribute-name validation agrees for NBSP and
+invalid-byte names. The production Add-node menu saves/reparses and cooks the
+ordinary writer with typed geometry and legacy tuple defaults.
+
+Focused 19592, native 39466 and final shipping 18178 all exited0. Logs are
+/tmp/rays-planar-attribute-focused8-20261013.log,
+/tmp/rays-planar-attribute-native-20261013.log and
+/tmp/rays-planar-attribute-ship-20261013.log. They cover strict/reference cooked
+sources/Fn/aliases, all-owner native raw payloads, cache/live/state/folds,
+domains 1/4/8, grains 1/97/4096, actual graph/menu gestures, JavaScript fixtures,
+native/render/export parity, dependency/API checks and the full shipping suite.
+
+Original-before 18164 and final-after 86835 each completed the same 26 fixed
+million-row direct-helper comparisons. All full bytes and diagnostics agree
+at domains 1/4. Retained 18 writer ratios are 0.872095–1.233498 after/before.
+All 8 new Record/native-plane ratios in the after run exceed 2×
+(3.282946–3.601610); native comparison excludes writer finite validation.
+These are foundation costs and qualify no whole SOP performance gate.
+Protocol, all timing/allocation tables, captures, fixture failures and final
+gate details are in [planar-attribute-validation.md](planar-attribute-validation.md).
+No new API, primitive, whole port or milestone is counted: 16/128 ports,
+112 remaining; 25/60 milestones. Grid and Circle remain unaccepted drafts.
+The owner's finish-and-stop request and pending drafts are recorded in plan.md.

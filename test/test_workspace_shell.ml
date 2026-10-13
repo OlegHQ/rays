@@ -431,6 +431,26 @@ let run_values () =
     && has (source e) ":primitive_offsets (array/int 1)")
     ("required typed mesh planes were absent from production menu insertion: " ^ source e);
   E3.close e;
+  let e = add "sop/with_attr" in
+  Fun.protect ~finally:(fun()->E3.close e)(fun()->
+    check(E3.undo_label e=Some "Add node" && has(source e)"(sop/with_attr (sop/mesh"
+      && has(source e)"\"attribute\"" && has(source e)"(array/vec3 0)")
+      ("ordinary full attribute menu starter lost typed legacy array/geometry defaults: "^source e);
+    let saved=of_text(source e) in
+    let doc=build_ok saved in
+    let lowered=snd doc.Document.workspace in
+    let graph=List.find(fun(graph:Flow_sop.Lower.graph)->graph.name="g")lowered.graphs in
+    let info=List.find(fun(info:Edit_graph.node_info)->info.operation="flow.with_attr")
+      (Edit_graph.inspect graph.network.geometry) in
+    let node=Edit_graph.compile_node graph.network.geometry ~node_id:info.id|>Result.get_ok in
+    let session=Session.create ~max_entries:32 ~max_payload_bytes:1_000_000|>Result.get_ok in
+    Fun.protect ~finally:(fun()->Session.close session)(fun()->
+      let output=Session.cook session ~context:(Context.create()|>Result.get_ok)node|>Result.get_ok in
+      let geo=Payload.geometry output.payload|>Result.get_ok in
+      check(Rdk.Geometry.point_count geo=0)"ordinary attribute menu starter did not cook actual empty geometry";
+      let attr=Rdk.Geometry.find_attribute ~owner:Rdk.Attribute.Point "attribute"geo|>Option.get in
+      check(Rdk.Attribute.Private.storage attr|>function Rdk.Attribute.Float3 data->Rdk.Packed.Float3.length data=0|_->false)
+        "ordinary attribute menu starter lost vec3 storage"));
   let e = add "sop/remap" in
   check (E3.undo_label e = Some "Add node" && has (source e) "(sop/remap (sop/mesh"
     && has (source e) ":points (array/int 0)"
