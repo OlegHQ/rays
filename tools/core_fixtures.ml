@@ -72,6 +72,20 @@ let rec json : E.value -> string = function
   | No_geo -> "null"
   | _ -> failwith "core_fixtures: unsupported value"
 and packed w d = Printf.sprintf {|{"array":%d,"data":%s}|} w (seq flt (Array.to_list d))
+
+(* Raw geometry fixtures compare storage bits, not arithmetic Float tolerance. *)
+let rec raw_json = function
+  | E.Float_array values -> raw_packed 1 values
+  | E.Vec2_array values -> raw_packed 2 values
+  | E.Vec3_array values -> raw_packed 3 values
+  | E.Vec4_array values -> raw_packed 4 values
+  | E.Record fields -> {|{"record":|} ^ seq (fun(name,value)->
+      "["^str name^","^raw_json value^"]") fields ^ "}"
+  | E.List values -> seq raw_json (Array.to_list values)
+  | value -> json value
+and raw_packed width values = Printf.sprintf {|{"array":%d,"bits":%s}|} width
+  (seq (fun value->str(Printf.sprintf "%016Lx" (Int64.bits_of_float value))) (Array.to_list values))
+
 let rec ty_json : T.t -> string = function
   | Any -> {|"any"|} | Int -> {|"int"|} | Float -> {|"float"|} | Bool -> {|"bool"|} | Text -> {|"text"|}
   | Vec2 -> {|"vec2"|} | Vec3 -> {|"vec3"|} | Vec4 -> {|"vec4"|}
@@ -1032,6 +1046,169 @@ List.iter(fun bad->
   List.iter(fun grain->add_host "$host/diagnostic_rows"
     [geometry_value geometry;E.Record["grain",E.Int grain]](diagnose flags grain)) [1;97;4096])
   [[];[0;1;96;97;98];[96;97;98];[4095;4096;4097];[32768]];
+  let words=[|0L;Int64.min_int;1L;0x7ff0000000000000L;0xfff0000000000000L;0x7ff8000000000011L;0x7ff8000000000022L|] in
+  let raw i=Int64.float_of_bits words.(i mod Array.length words) in
+  let remap_source count =
+    let open Rdk in
+    let get_string_ok = Result.get_ok in
+    let topology=if count<3 then Topology.empty ~point_count:count else
+      Topology.create_owned ~point_count:count ~vertex_points:[|0;1;2|]
+        ~primitive_offsets:[|0;3|] ~primitive_kinds:[|Topology.Polygon|] |>get_string_ok in
+    let attrs=List.concat_map(fun owner->let n=match owner with Attribute.Point->count
+        |Vertex->Topology.vertex_count topology|Primitive->Topology.primitive_count topology|Detail->1 in
+      let floats k=Array.init n(fun i->raw(i+k)) in
+      let offsets=Array.init(n+1)(fun i->i*16) in
+      let kinds=["float",Attribute.Float(floats 0);"int",Int(Array.init n(fun i->(1 lsl 55)+i));
+        "text",Text(Array.init n(fun i->if i mod 2=0 then "猫\255" else "😀\000"));
+        "vec2",Float2(Packed.Float2.of_owned ~x:(floats 1) ~y:(floats 2)|>get_string_ok);
+        "vec3",Float3(Packed.Float3.Private.of_owned_exn ~x:(floats 3) ~y:(floats 4) ~z:(floats 5));
+        "vec4",Float4(Packed.Float4.of_owned ~x:(floats 2) ~y:(floats 3) ~z:(floats 4) ~w:(floats 5)|>get_string_ok);
+        "mat16",Float_array(Packed.Float_array.create_owned ~offsets
+          ~values:(Array.init(n*16)raw)|>get_string_ok);
+        "ragged_float",Float_array(Packed.Float_array.create_owned
+          ~offsets:(Array.init(n+1)(fun i->i/2)) ~values:(Array.init(n/2)raw)|>get_string_ok);
+        "ragged",Int_array(Packed.Int_array.create_owned
+          ~offsets:(Array.init(n+1)(fun i->3*(i/3)+(i mod 3)*(i mod 3-1)/2))
+          ~values:(Array.init(3*(n/3)+(n mod 3)*(n mod 3-1)/2)(fun i->(1 lsl 55)+i))|>get_string_ok)] in
+      List.map(fun(name,storage)->Attribute.create_owned ~name ~owner storage |>get_string_ok)kinds)
+      [Attribute.Point;Vertex;Primitive;Detail] in
+    let groups=List.concat_map(fun owner->let n=match owner with Group.Point->count
+        |Vertex->Topology.vertex_count topology|Primitive->Topology.primitive_count topology in
+      [Group.init ~owner ~name:"plain" n(fun i->i mod 2=0);
+       Group.ordered ~owner ~name:"ordered" ~length:n (Array.init n(fun i->n-1-i))|>get_string_ok;
+       Group.ordered ~owner ~name:"ordered_empty" ~length:n [||]|>get_string_ok])
+      [Group.Point;Vertex;Primitive] in
+    let index=Topology_index.create topology in
+    let edge_groups=[Edge_group.init ~topology ~index ~name:"edges"(fun i->i mod 2=0)] in
+    Geometry.create ~positions:(Packed.Float3.Private.of_owned_exn
+      ~x:(Array.init count raw) ~y:(Array.init count(fun i->raw(i+1))) ~z:(Array.init count(fun i->raw(i+2))))
+      ~topology ~attributes:attrs ~groups ~edge_groups () |>get_string_ok in
+  let remap_target copies source =
+    let open Rdk in
+    let get_string_ok = Result.get_ok in
+    let t=Topology.Private.view(Geometry.topology source) in
+    let points=Geometry.point_count source and vertices=Geometry.vertex_count source
+    and primitives=Geometry.primitive_count source in
+    let topology=Topology.create_owned ~point_count:(copies*points)
+      ~vertex_points:(Array.init(copies*vertices)(fun i->t.vertex_points.(i mod vertices)+(i/vertices)*points))
+      ~primitive_offsets:(Array.init(copies*primitives+1)(fun i->if i=copies*primitives then copies*vertices
+        else t.primitive_offsets.(i mod primitives)+(i/primitives)*vertices))
+      ~primitive_kinds:(Array.init(copies*primitives)(fun _->Topology.Polygon)) |>get_string_ok in
+    Geometry.create ~positions:(Packed.Float3.Private.of_owned_exn ~x:(Array.make(copies*points)3.)
+      ~y:(Array.make(copies*points)(-0.)) ~z:(Array.make(copies*points)7.)) ~topology () |>get_string_ok
+ in
+(* Opaque affinity survives independently encoded source/target records. This
+   host-only token is not a Lisp argument or ordinary authored numeric data. *)
+let remap_geometry geometry = match geometry_value geometry with
+  |E.Record fields->E.Record(fields@["$topology_token",E.Text
+      ("rdk-topology:"^string_of_int(Rdk.Topology.data_id(Rdk.Geometry.topology geometry)))])
+  |_->assert false in
+let remap source target fields =
+  let snapshot geometry = Sop.Node.Private.make_geometry ~operation:"fixture.remap_source"
+    ~version:1 ~parameters:"" ~cook_mode:Sop.Node.Generator
+    ~dependencies:Sop.Context.Dependencies.static ~inputs:[||]
+    (fun ~node_id:_ _ _->Ok Sop.Node.Private.{geometry;diagnostics=[];instances=None}) in
+  let factory key geometry=Sop.Edit_graph.factory ~key ~label:key ~category:["Test"] ~arity:0
+    (fun _->snapshot geometry) in
+  let text=Printf.sprintf {|(workspace fixture_remap (graph g :context sop
+    [(points : (array int) (array/int 0)) (vertices : (array int) (array/int 0))
+     (primitives : (array int) (array/int 0)) (positions : text "target")
+     (edges : {:offsets (array int) :values (array int)}
+       {:offsets (array/int 1) :values (array/int 0)})]
+    (sop/remap (sop/src) (sop/dst) :points points :vertices vertices
+      :primitives primitives :positions positions%s)))|}
+      (if List.mem_assoc "edges" fields then " :edges edges" else "") in
+  Result.bind(Flow.Syntax.parse text)(fun forms->
+    Result.bind(Flow_sop.Lower.workspace ~reference:true
+      ~factories:[factory "src" source;factory "dst" target] ~inputs:["g",fields] forms)(fun lowered->
+      let graph=List.hd lowered.graphs in
+      match Sop.Edit_graph.compile_node graph.network.geometry ~node_id:(Option.get graph.root) with
+      |Error message->Error(Flow.Diagnostic.error ~code:"E_DATA_SOURCE" message)
+      |Ok node->let session=Sop.Session.create ~max_entries:8 ~max_payload_bytes:1_000_000|>Result.get_ok in
+          Fun.protect ~finally:(fun()->Sop.Session.close session)(fun()->
+            match Sop.Session.cook session ~context:(Sop.Context.create()|>Result.get_ok)node with
+            |Error d->Error(Flow.Diagnostic.error ?cause:d.cause ~code:d.code d.message)
+            |Ok output->Ok(Result.get_ok(Sop.Payload.geometry output.payload))))) in
+let remap_case source target fields =
+  let values=remap_geometry source::remap_geometry target::List.map snd fields in
+  let result,text_bytes=match remap source target fields with
+    |Error d->diagnostic d,[]
+    |Ok value->
+        (* Independent native byte oracle, not Text through the JSON codec. *)
+        let hex text=String.init(2*String.length text)(fun i->
+          "0123456789abcdef".[(Char.code text.[i/2] lsr (if i mod 2=0 then 4 else 0)) land 15]) in
+        let text_bytes=Rdk.Geometry.attributes value |>List.filter_map(fun attribute->
+          match Rdk.Attribute.Private.storage attribute with
+          |Rdk.Attribute.Text strings->Some(E.Record[
+              "owner",E.Text(match Rdk.Attribute.owner attribute with
+                Point->"point"|Vertex->"vertex"|Primitive->"primitive"|Detail->"detail");
+              "name",E.Text(Rdk.Attribute.name attribute);
+              "hex",E.List(Array.init(min 7(Array.length strings))(fun i->E.Text(hex strings.(i))))])
+          |_->None) in
+        raw_json(remap_geometry value),text_bytes in
+  (* add_host normally encodes Float values numerically. Override only these
+     raw-copy arguments, preserving the existing fixture protocol elsewhere. *)
+  let body=Printf.sprintf {|{"static":[],"args":%s,"result":%s,"native_text_bytes":%s}|}
+    (seq raw_json values) result (seq json text_bytes) in
+  let name="sop/remap" in
+  let cases_=match Hashtbl.find_opt cases name with Some cases_->cases_|None->
+    let cases_=ref [] in Hashtbl.add cases name cases_;cases_ in
+  cases_:=body :: !cases_ in
+List.iter(fun count->let source=remap_source count in
+  List.iter(fun copies->let target=remap_target copies source in
+    let source_points=Rdk.Geometry.point_count source and source_vertices=Rdk.Geometry.vertex_count source
+    and source_primitives=Rdk.Geometry.primitive_count source in
+    let edge_count=Rdk.Topology_index.edge_count(Rdk.Topology_index.create(Rdk.Geometry.topology target))
+    and source_edges=Rdk.Topology_index.edge_count(Rdk.Topology_index.create(Rdk.Geometry.topology source)) in
+    let fields=["points",E.Int_array(Array.init(Rdk.Geometry.point_count target)(fun i->i mod source_points));
+      "vertices",E.Int_array(Array.init(Rdk.Geometry.vertex_count target)(fun i->i mod source_vertices));
+      "primitives",E.Int_array(Array.init(Rdk.Geometry.primitive_count target)(fun i->i mod source_primitives))] in
+    List.iter(fun policy->remap_case source target(fields@["positions",E.Text policy;
+      "edges",E.Record["offsets",E.Int_array(Array.init(edge_count+1)Fun.id);
+        "values",E.Int_array(Array.init edge_count(fun i->i mod source_edges))]])) ["target";"mapped"])
+    [0;1;2]) [0;3;9];
+(* Lean, independently cooked native case for late ordered-group cancellation.
+   The small census above already carries every storage/owner combination. *)
+let large_count=32769 in
+let large_topology=Rdk.Topology.empty ~point_count:large_count in
+let large_text=[|"猫\255";"😀\000";"\192\128\254";"\239\191\189"|] in
+let large_attributes=[
+  Rdk.Attribute.create_owned ~owner:Point ~name:"float"
+    (Float(Array.init large_count raw))|>Result.get_ok;
+  Rdk.Attribute.create_owned ~owner:Point ~name:"text"
+    (Text(Array.init large_count(fun i->large_text.(i mod Array.length large_text))))|>Result.get_ok] in
+let large_order=Rdk.Group.ordered ~owner:Point ~name:"ordered" ~length:large_count
+  (Array.init large_count(fun i->large_count-1-i))|>Result.get_ok in
+let large_source=Rdk.Geometry.create ~positions:(Rdk.Packed.Float3.Private.of_owned_exn
+  ~x:(Array.init large_count raw) ~y:(Array.make large_count(-0.)) ~z:(Array.make large_count 0.))
+  ~topology:large_topology ~attributes:large_attributes ~groups:[large_order]()|>Result.get_ok in
+let large_target=Rdk.Geometry.create ~positions:(Rdk.Packed.Float3.Private.of_owned_exn
+  ~x:(Array.make large_count 0.) ~y:(Array.make large_count 0.) ~z:(Array.make large_count 0.))
+  ~topology:large_topology()|>Result.get_ok in
+remap_case large_source large_target ["points",E.Int_array(Array.init large_count Fun.id);
+  "vertices",E.Int_array[||];"primitives",E.Int_array[||];"positions",E.Text"mapped";
+  "edges",E.Record["offsets",E.Int_array[|0|];"values",E.Int_array[||]]];
+let source=remap_source 3 and target=remap_target 1(remap_source 3) in
+let fields=["points",E.Int_array[|2;1;0|];"vertices",E.Int_array[|1;2;0|];
+  "primitives",E.Int_array[|0|];"positions",E.Text"mapped";
+  "edges",E.Record["offsets",E.Int_array[|0;0;2;4|];"values",E.Int_array[|0;1;1;1|]]] in
+remap_case source target fields;
+List.iter(fun(name,value)->remap_case source target
+  (List.map(fun(key,old)->key,if key=name then value else old)fields))
+  ["points",E.Int_array[||];"points",E.Int_array[|-1;0;1|];"vertices",E.Int_array[|0;1;3|];
+   "primitives",E.Int_array[|1|];"positions",E.Text"other";
+   "edges",E.Record["offsets",E.Int_array[|0;2;1;3|];"values",E.Int_array[|0;1;2|]];
+   "edges",E.Record["offsets",E.Int_array[|0;1;2;3|];"values",E.Int_array[|0;1;3|]]];
+(* Native and host accept shared topology with changed P, but reject equal
+   connectivity allocated under a distinct native topology identity. *)
+let source=remap_source 3 in
+let changed_p=Rdk.Geometry.with_positions(Rdk.Packed.Float3.Private.of_owned_exn
+  ~x:[|8.;7.;6.|] ~y:[|-0.;0.;-0.|] ~z:[|2.;3.;4.|])source|>Result.get_ok in
+let unrelated=remap_target 1 source in
+let fields=["points",E.Int_array[|0;1;2|];"vertices",E.Int_array[|0;1;2|];
+  "primitives",E.Int_array[|0|];"positions",E.Text"target"] in
+remap_case source changed_p fields;
+remap_case source unrelated fields;
   (* write *)
   assert (List.length inventory = 96);
   if not (Sys.file_exists outdir) then Sys.mkdir outdir 0o755;
@@ -1039,7 +1216,7 @@ List.iter(fun bad->
     let body = String.concat ",\n" (List.rev !(Hashtbl.find cases name)) in
     Out_channel.with_open_bin (Filename.concat outdir (export name ^ ".json")) (fun oc ->
       Printf.fprintf oc "{\"primitive\":%s,\"export\":%s,\"cases\":[\n%s\n]}\n" (str name) (str (export name)) body))
-    (List.map C.primitive_name inventory @ ["array/sum";"sop/context_seed";"sop/delete_attr";"sop/attr";"sop/attr_checked";"sop/with_attr";"sop/has_attr";"sop/count";"sop/edges";"sop/topology";"sop/mesh";"sop/mesh_planes";
+    (List.map C.primitive_name inventory @ ["array/sum";"sop/context_seed";"sop/delete_attr";"sop/attr";"sop/attr_checked";"sop/with_attr";"sop/has_attr";"sop/count";"sop/edges";"sop/topology";"sop/mesh";"sop/mesh_planes";"sop/remap";
       "sop/group";"sop/group_names";"sop/group_order";"sop/with_group";
       "sop/attr_type";"sop/attr_names";"sop/rename_attr";"sop/swap_attr";"sop/delete_attrs";
       "sop/rename_group";"sop/delete_group";"sop/rename_edge";"sop/delete_edge";"text/glob_error";"text/glob_rewrite_error";

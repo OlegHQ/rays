@@ -1520,3 +1520,152 @@ export function diagnosticHost({grain, check = () => {}}) {
 export function diagnosticRowsThrow(mapped) {
   error_rethrow(new Fail('E_DIAGNOSTIC_ROW', 'A diagnostic row failed.'), mapped);
 }
+
+// Exact geometry-host remapping. Cooked storage remains opaque to arithmetic;
+// Uint8Array copies preserve NaN payloads and signed zero in every Float lane.
+function remapGeometry(source, target, points, vertices, primitives, positions = 'target', edges, check = () => {}) {
+  check();
+  topologyGeometry(source); topologyGeometry(target);
+  if (positions !== 'target' && positions !== 'mapped')
+    err('E_REMAP_POLICY', 'Remap positions is target or mapped.');
+  const integer = value => value instanceof PArray && value.width === 1 && value.data instanceof BigInt64Array;
+  const maps = new Map();
+  for (const [name, owner, value] of [['points','point',points],['vertices','vertex',vertices],['primitives','primitive',primitives]]) {
+    if (!integer(value)) err('E_REMAP_TYPE', `Remap ${name} requires an integer array.`);
+    const sourceCount = sop_count(source, name), targetCount = sop_count(target, name);
+    if (BigInt(value.data.length) !== targetCount)
+      err('E_REMAP_COUNT', `Remap ${name} map must match target owner count.`);
+    for (let i=0; i<value.data.length; i++) { if ((i & 4095) === 0) check(); const index=value.data[i]; if (index < 0n || index >= sourceCount)
+      err('E_REMAP_INDEX', `Remap ${name} source index is out of bounds.`); }
+    maps.set(owner, value.data);
+  }
+  let edgeGroups;
+  const nativeError = message => err('E_REMAP_EDGES', `Topology_remap.edge_groups_from_ancestry: ${message}`);
+  if (edges === undefined) {
+    if (!(source.get('edge_groups') ?? []).length) edgeGroups = [];
+    else if ((source.has('$topology_token') || target.has('$topology_token'))
+        ? typeof source.get('$topology_token')==='string'
+          && source.get('$topology_token')===target.get('$topology_token')
+        : source.get('vertex_points') === target.get('vertex_points')
+          && source.get('primitive_offsets') === target.get('primitive_offsets')
+          && source.get('primitive_kinds') === target.get('primitive_kinds')
+          && length(source.get('positions')) === length(target.get('positions'))) edgeGroups = source.get('edge_groups');
+    else err('E_REMAP_EDGES', 'Remap changed topology requires explicit edge ancestry.');
+  } else {
+    if (!(edges instanceof Map) || edges.size !== 2 || !integer(edges.get('offsets')) || !integer(edges.get('values')))
+      err('E_REMAP_EDGES', 'Remap edges requires offsets and values integer arrays.');
+    const offsets = edges.get('offsets').data, ancestors = edges.get('values').data;
+    const targetEdges = Number(sop_count(target,'edges')), sourceEdges = sop_count(source,'edges');
+    if (offsets.length !== targetEdges + 1 || offsets[0] !== 0n || offsets[targetEdges] !== BigInt(ancestors.length))
+      nativeError('invalid offsets');
+    // Native records invalid CSR entries, then finishes both cancellable scans.
+    let invalid = false;
+    for (let i = 0; i < targetEdges; i++) {
+      if ((i & 4095) === 0) check('edge_offsets');
+      if (offsets[i] < 0n || offsets[i + 1] < offsets[i]) invalid = true;
+    }
+    for (let i = 0; i < ancestors.length; i++) {
+      if ((i & 4095) === 0) check('edge_ancestors');
+      if (ancestors[i] < 0n || ancestors[i] >= sourceEdges) invalid = true;
+    }
+    if (invalid) nativeError('invalid source ancestry');
+    edgeGroups = (source.get('edge_groups') ?? []).map(group => {
+      const mask = group.get('mask').data;
+      if (BigInt(mask.length) !== sourceEdges) nativeError('source group affinity mismatch');
+      const output = new BigInt64Array(targetEdges);
+      for (let edge = 0; edge < targetEdges; edge++) {
+        if ((edge & 4095) === 0) check();
+        for (let at = Number(offsets[edge]); at < Number(offsets[edge + 1]); at++) {
+          if ((at & 4095) === 0) check();
+          if (mask[Number(ancestors[at])] !== 0n) { output[edge] = 1n; break; }
+        }
+      }
+      const result = new Map(group); result.set('mask',new PArray(1,output)); return result;
+    });
+  }
+  const rawRows = (value, map) => {
+    const width = value.width, rowBytes = width * value.data.BYTES_PER_ELEMENT;
+    const data = new value.data.constructor(map.length * width);
+    const input = new Uint8Array(value.data.buffer, value.data.byteOffset, value.data.byteLength);
+    const output = new Uint8Array(data.buffer);
+    for (let row = 0; row < map.length; row++) {
+      if ((row & 4095) === 0) check();
+      const first = Number(map[row]) * rowBytes;
+      output.set(input.subarray(first, first + rowBytes), row * rowBytes);
+    }
+    return new PArray(width,data);
+  };
+  const copy = (value,map) => {
+    if (value instanceof PArray) return rawRows(value,map);
+    if (value instanceof TextArray) return new TextArray(Array.from(map,(index,row)=>{
+      if ((row & 4095) === 0) check(); return value.data[Number(index)];
+    }));
+    const offsets = value.get('offsets').data, values = value.get('values');
+    const outOffsets = new BigInt64Array(map.length + 1);
+    for (let row = 0; row < map.length; row++) {
+      if ((row & 4095) === 0) check();
+      const index = Number(map[row]); outOffsets[row+1] = outOffsets[row] + offsets[index+1] - offsets[index];
+    }
+    const data = new values.data.constructor(Number(outOffsets[map.length]));
+    const input = new Uint8Array(values.data.buffer, values.data.byteOffset, values.data.byteLength);
+    const output = new Uint8Array(data.buffer), bytes = values.data.BYTES_PER_ELEMENT;
+    for (let row = 0; row < map.length; row++) {
+      if ((row & 4095) === 0) check();
+      const index = Number(map[row]), first = Number(offsets[index]) * bytes, last = Number(offsets[index+1]) * bytes;
+      output.set(input.subarray(first,last), Number(outOffsets[row]) * bytes);
+    }
+    return new Map([['offsets',new PArray(1,outOffsets)],['values',new PArray(1,data)]]);
+  };
+  check();
+  const attributes = (source.get('attributes') ?? []).map(attribute => {
+    if (attribute.get('owner') === 'detail') return attribute;
+    const result = new Map(attribute); result.set('values',copy(attribute.get('values'),maps.get(attribute.get('owner')))); return result;
+  });
+  const groups = (source.get('groups') ?? []).map(group => {
+    const map = maps.get(group.get('owner')), sourceMask = group.get('mask').data;
+    const mask = BigInt64Array.from(map,(index,row)=>{
+      if ((row & 4095) === 0) check(); return sourceMask[Number(index)];
+    }), result = new Map(group);
+    result.set('mask',new PArray(1,mask));
+    if (group.get('ordered')) {
+      // Counts/ranks are exact host array indices, not signed 32-bit values.
+      const rank = new Float64Array(sourceMask.length).fill(-1), sourceOrder = group.get('indices').data;
+      for (let i=0;i<sourceOrder.length;i++) {
+        if ((i & 4095) === 0) check('group_rank');
+        rank[Number(sourceOrder[i])]=i;
+      }
+      const counts = new Float64Array(sourceOrder.length);
+      for (let i=0;i<map.length;i++) {
+        if ((i & 4095) === 0) check('group_counts');
+        if (mask[i]) counts[rank[Number(map[i])]]++;
+      }
+      const starts = new Float64Array(counts.length+1);
+      for(let i=0;i<counts.length;i++) {
+        if ((i & 4095) === 0) check('group_starts');
+        starts[i+1]=starts[i]+counts[i];
+      }
+      const next=starts.slice(), order=new BigInt64Array(starts[counts.length]);
+      for(let i=0;i<map.length;i++) {
+        if ((i & 4095) === 0) check('group_fill');
+        if(mask[i])order[next[rank[Number(map[i])]]++]=BigInt(i);
+      }
+      result.set('indices',new PArray(1,order));
+    }
+    return result;
+  });
+  const result = new Map(target);
+  result.set('positions',positions==='mapped' ? rawRows(source.get('positions'),maps.get('point')) : target.get('positions'));
+  result.set('attributes',attributes);result.set('groups',groups);result.set('edge_groups',edgeGroups);
+  check(); return result;
+}
+
+// The callback is an environment-owned cancellation boundary, never an
+// authored numeric argument. Cancellation exceptions propagate unchanged.
+export function remapHost({check = () => {}} = {}) {
+  return {remap(source,target,points,vertices,primitives,positions='target',edges) {
+    return remapGeometry(source,target,points,vertices,primitives,positions,edges,check);
+  }};
+}
+export function sop_remap(source,target,points,vertices,primitives,positions='target',edges) {
+  return remapGeometry(source,target,points,vertices,primitives,positions,edges);
+}

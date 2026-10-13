@@ -360,7 +360,7 @@ let plane_rebuild={|(let* [topology (sop/topology geo) positions (sop/attr geo :
      :z (exact (map (fn [(p : vec3)] p.z) positions))}
     :vertex_points topology.vertex_points :primitive_offsets topology.primitive_offsets :kinds topology.kinds))|}
 let ()=
-  let large=Line_geometry.points(Array.init 32769(fun i->
+  let large=Line_geometry.points(Array.init 65537(fun i->
     float i,(if i mod 2=0 then -0. else Float.next_after 0. 1.),-2.))in
   List.iter(fun expected->let before=geometry_bytes expected in
     List.iter(fun reference->
@@ -383,7 +383,7 @@ let ()=
         List.iter(function _,E.Int_array values->Array.fill values 0(Array.length values)99|_->())args;
         check(geometry_bytes actual=before)"Mesh planes borrowed mutable caller buffers")) [false;true])
     (fixtures()@[large]);
-  print_endline "Mesh planes all five plain topologies and 32769-point authored maps own exact planes at 1/4/8 domains"
+  print_endline "Mesh planes all five plain topologies and 65537-point authored maps own exact planes at 1/4/8 domains"
 let ()=
   let base=plane_fields(List.nth(fixtures())1)in
   let replace key value=List.map(fun(name,old)->name,if key=name then value else old)base in
@@ -394,7 +394,7 @@ let ()=
   List.iter(fun(key,value,code)->List.iter(fun reference->List.iter(fun domains->with_session(fun session->
     match cook session ~domains(plane_arrays ~reference(replace key value))with
     |Error d->check(d.code=code)"Mesh planes malformed storage changed error code"
-    |Ok _->fail "Mesh planes malformed storage succeeded")) [1;8]) [false;true])bad;
+    |Ok _->fail "Mesh planes malformed storage succeeded")) [1;4;8]) [false;true])bad;
   List.iter(fun axis->List.iter(fun bad->let p=Packed.Float3.Private.view(Geometry.positions(List.nth(fixtures())1))in
     let point_fields=List.map(fun(name,values)->let values=Array.copy values in
       if name=axis then values.(0)<-bad;name,E.Float_array values)["x",p.x;"y",p.y;"z",p.z]in

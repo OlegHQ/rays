@@ -56,3 +56,12 @@ val split_point_edge_groups :
     target edge records its unique source edge through corresponding source
     corners. The implementation retains a lightweight target endpoint table
     and one integer ancestry plane, not a complete target reverse CSR index. *)
+
+(* Exact OR ancestry per target unique edge. Inputs remain borrowed immutable
+   arrays; outputs own their bitsets. CSR shape, index bounds and topology/group
+   affinity are validated before copying. Empty rows are unselected. *)
+val edge_groups_from_ancestry :
+  ?cancel:Cancel.t -> grain:int -> source_index:Topology_index.t ->
+  target_topology:Topology.t -> target_index:Topology_index.t ->
+  offsets:int array -> ancestors:int array -> Edge_group.t list ->
+  (Edge_group.t list, string) result

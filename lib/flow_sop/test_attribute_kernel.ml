@@ -1343,6 +1343,9 @@ let () =
         ["points",(if op.name="sop/mesh" then E.Vec3_array[||] else
           E.Record(List.map(fun axis->axis,E.Float_array[||])["x";"y";"z"]));"vertex_points",E.Int_array[||];
          "primitive_offsets",E.Int_array[|0|];"kinds",E.Int_array[||]]
+      else if op.name="sop/remap" then
+        ["source",E.Deferred(Flow.Ty.geometry,0);"target",E.Deferred(Flow.Ty.geometry,0);
+         "points",E.Int_array[||];"vertices",E.Int_array[||];"primitives",E.Int_array[||]]
       else if List.mem_assoc "name" op.signature.kw then ("name",E.Text "selected")::args else args in
     op.check args;
     let result = op.body ~live:(Frame_input.at_time 0.)
@@ -1394,3 +1397,12 @@ let () =
      Source("$core/constant-array/array/vec4",Flow.Ty.Array Flow.Ty.Vec4,[]);
      Source("$core/constant-array/missing",Flow.Ty.Array Flow.Ty.Float,["count",Int 1])];
   print_endline "Constant storage descriptors: full/selected numeric and exact Int/Text, resolver backstop, malformed types, owned bytes at1/4/8"
+
+let ()=
+  let mesh="(sop/mesh :points (array/vec3 0) :vertex_points (array/int 0) :primitive_offsets (array/int 1) :kinds (array/int 0))"in
+  let text=Printf.sprintf {|(workspace remap_census (graph g :context sop
+    (sop/remap %s %s :points (array/int 0) :vertices (array/int 0) :primitives (array/int 0))))|}mesh mesh in
+  let node=compiled(lower text)and s=session()in
+  Fun.protect ~finally:(fun()->Session.close s)(fun()->
+    let output=cook s ~domains:1 ~time:0. node|>geometry in
+    assert(Geometry.point_count output=0 && Geometry.vertex_count output=0 && Geometry.primitive_count output=0))

@@ -4798,3 +4798,95 @@ NaNs, all storage/CSR/matrix rows and source-tag retention/generation are real
 fixtures. After concat factoring, relink the SAME harness and `--verify` the
 SAME directory with unchanged sizes/trials/grain. This qualifies no whole Merge
 port. Accepted counts remain14/128 ports and23/60 milestones.
+
+## C.3 remap accepted; shared plane validation and complete Line speed gate
+
+Focused remap integration session59993 EXIT0,
+`/tmp/rays-payload-remap-focused1.log`: `@check`, RDK core, Flow/SOP, graph,
+IR/Web/GPU, tools Lisp, dependency, workspace shell and stable API checks.
+Actual native/reference/domain/grain and native/JS raw payload fixtures pass;
+the subsequent changed plane constructor reran Flow/SOP (session71782 EXIT0,
+`/tmp/rays-mesh-plane-validation-focused1.log`). Source/type/count/index/CSR/
+affinity errors, ordered groups, strict computed maps, semantic cache changes,
+real child envelopes and menu/card gestures are covered. JS malformed ancestry
+now preserves native cancellation priority through both validation scans.
+Existing native ordered-group rank/count/fill is not internally interruptible;
+no matching mid-phase responsiveness claim is made.
+
+API gate passed without a diff: Flow/SOP Topology_kernel is private, and RDK's
+Topology_remap is outside the frozen facade inventory. Both interface edits
+were reviewed; no unchanged API snapshot was promoted or called a new stable
+API acceptance.
+
+Paired PUBLIC native Rewire check against ORIGINAL exclusive full outputs:
+session6910 EXIT0, `/tmp/rays-rewire-payload-after-20261013.log`, same source
+sizes, five cases, seven samples, grain4096, domains1/4. Exact full bytes and
+immutable sources match `/tmp/rays-rewire-before-bytes-20261013` in every
+preflight and timed result. Source-index creation/GC/serialization are outside
+timing; initial-domain counters and lifetime heap high-water stay explicitly
+scoped. After revision label is `f603784d+reviewed-remap-working-tree`.
+
+| case | d1 before seconds | d1 after seconds | d4 before seconds | d4 after seconds |
+| --- | ---: | ---: | ---: | ---: |
+| no edges permutation | 0.007125854 | 0.007131100 | 0.005103827 | 0.005166054 |
+| edge metadata only | 0.009342909 | 0.009135008 | 0.007108927 | 0.007075071 |
+| edge permutation | 0.167464018 | 0.172599077 | 0.119697094 | 0.124365091 |
+| edge coalescing | 0.164947033 | 0.167877913 | 0.130802870 | 0.135243893 |
+| coalescing + compact | 0.204488039 | 0.210281134 | 0.158887863 | 0.164196968 |
+
+C.3's stated language gate is complete. Milestones24/60 (40%); accepted whole
+ports14/128 (10.9%),114 remaining. This does not port Rewire/Merge/Sort or any
+consumer recipe. No native error policy, four-ULP or2× whole-port gate changes.
+
+Next shared optimization measured the ACTUAL mesh_points implementation via
+Dune's copied .ml pattern, without a new public helper/API. Original snapshot
+capture is exclusive and cannot run together with comparison. Six fixed
+one-million-plane/seven-sample rows capture full constructor bytes or full
+Flow diagnostics outside timing. Only concrete Float_array coordinate records
+above65536 rows use the existing Parallel.init_array: authored field0 validates
+before tail scheduling; fields1/2 may validate concurrently, with their actual
+typed exceptions rethrown in original order. Count/kind/topology/copy order,
+ownership, source forcing and cancellation boundaries stay unchanged.
+
+| case | domains | before seconds | after seconds | before bytes | after bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| valid | 1 | 0.001974821 | 0.001976967 | 480 | 600 |
+| first plane nonfinite | 1 | 0.000000000 | 0.000000954 | 904 | 952 |
+| multiple nonfinite + bad count | 1 | 0.000684977 | 0.000684023 | 904 | 1480 |
+| valid | 4 | 0.001965046 | 0.001381874 | 480 | 1784 |
+| first plane nonfinite | 4 | 0.000000954 | 0.000000000 | 904 | 952 |
+| multiple nonfinite + bad count | 4 | 0.000686169 | 0.000702858 | 904 | 3176 |
+
+Before/after EXIT0 logs `/tmp/rays-mesh-plane-validation-before-20261013.log`
+and `/tmp/rays-mesh-plane-validation-after-20261013.log`; original snapshots
+`/tmp/rays-mesh-plane-before-bytes-20261013`. Private precedence/ownership and
+regular65537-point strict/reference/1/4/8 tests passed. The tool's first check
+corrected an impossible physical-copy assertion for canonical empty arrays;
+positive-size cells still require distinct owned storage and byte preservation.
+Stage timing excludes owned-copy closure execution; complete constructor byte
+preflights include it. Allocation is initial-domain only. Promoted/major words
+were zero in this stage table; zero printed time means timer resolution.
+
+The measured valid four-domain decrease (~30%) justified a new unchanged FULL
+eight-row Line table, session94760 EXIT0,
+`/tmp/rays-line-mesh-plane-after-20261013.log`.1M output points, grain4096,
+median3 fresh cold sessions, native/reference/domain byte preflights; all rows
+retained and all pass the strict unrounded2× predicate:
+
+| mode | domains | native seconds | Lisp seconds | ratio |
+| --- | ---: | ---: | ---: | ---: |
+| curve defaults | 1 | 0.005892992 | 0.005169153 | 0.877169559 |
+| curve defaults | 4 | 0.002386093 | 0.004029036 | 1.688549161 |
+| Points defaults | 1 | 0.005138874 | 0.002748966 | 0.534935511 |
+| Points defaults | 4 | 0.001872063 | 0.002110004 | 1.127101375 |
+| curve oblique | 1 | 0.005905151 | 0.005156994 | 0.873304264 |
+| curve oblique | 4 | 0.002365112 | 0.004094839 | 1.731350806 |
+| Points oblique | 1 | 0.005235910 | 0.002751112 | 0.525431447 |
+| Points oblique | 4 | 0.001890898 | 0.002097845 | 1.109443954 |
+
+Apple M1 Macmini9,1,16GiB, macOS27.0.1 arm64, OCaml5.3.0/Dune dev; all agents
+acknowledged quiet reservations before these direct executable measurements
+and were released after terminal results. Desktop/VM inactivity is not claimed.
+Earlier failed Line tables remain evidence. Production registration, manifest,
+catalog/CLI/editor and native render acceptance must finish before Line counts
+as a fifteenth whole port; its draft speed pass alone does not tick C.7.

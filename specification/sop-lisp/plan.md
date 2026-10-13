@@ -646,7 +646,7 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 - [ ] B.R
 - [x] C.1 — owned topology queries and required-array mesh construction match five native fixtures and authored packed reconstruction across domains/grains; cache, lazy errors/state, cards/menu, JavaScript host and production 2D refusal gates pass. Evidence in `geometry-arrays-validation.md` and `results.md`.
 - [x] C.2 — numeric and immutable Text gathers pass typed bounds, lazy/error-order, ownership, strict/reference/domain, actual JavaScript/export/worker and GPU refusal checks; separate Text cost evidence remains above 2× and qualifies no whole port.
-- [ ] C.3
+- [x] C.3 — exact identity/permutation/all-owner payload transfer, ordered groups, explicit edge ancestry, raw storage, strict/reference/domain/grain, cache/editor and native/JavaScript gates pass; original public Rewire bytes and before/after timings retained. Evidence in `payload-remap-validation.md` and `results.md`.
 - [x] C.4 — ordered compact indices, exclusive Int offsets and scatter-add pass native/reference/Core/domain, ownership/error/state, geometry composition, graph/editor, actual JavaScript runtime/worker and final shipping gates; evidence in the three bulk-array validation notes and `results.md`.
 - [x] C.5 — stable Int/Float/byte-Text grade and exact first-match Int/Text lookup pass native/reference/Core/domain, ownership/error/state, consumer, graph/editor, actual JavaScript runtime/worker and final shipping gates; evidence in `grade-index-validation.md` and `results.md`.
 - [ ] C.6

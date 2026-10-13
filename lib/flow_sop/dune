@@ -208,3 +208,8 @@
  (alias line_draft)
  (deps nodes/line.pending)
  (action (run %{exe:test_line_port.exe})))
+
+(test
+ (name test_remap)
+ (modules test_remap)
+ (libraries flow_sop flow flow_ir flow_graph sop rdk rdk_test_support lisp_sop))

@@ -350,6 +350,13 @@ let run_values () =
     && has (source e) ":primitive_offsets (array/int 1)")
     ("required typed mesh planes were absent from production menu insertion: " ^ source e);
   E3.close e;
+  let e = add "sop/remap" in
+  check (E3.undo_label e = Some "Add node" && has (source e) "(sop/remap (sop/mesh"
+    && has (source e) ":points (array/int 0)"
+    && has (source e) ":vertices (array/int 0)"
+    && has (source e) ":primitives (array/int 0)")
+    ("required remap maps and cooked empty geometry defaults were absent from production menu insertion: " ^ source e);
+  E3.close e;
   let e = add "attr_from_image" in
 
   check (E3.undo_label e = Some "Add node" && has (source e) "sop/attr_from_image"

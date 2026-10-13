@@ -358,7 +358,19 @@ let glob_literal : Flow.Op.t = {
     checked(Attribute_metadata.glob_literal(metadata_text args "text"))));
 }
 
-let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; mesh; mesh_planes;
+let remap : Flow.Op.t = {
+  mesh with name="sop/remap";
+  out_args=None;
+  signature={pos=["source",Flow.Ty.geometry;"target",Flow.Ty.geometry];opt=[];rest=None;
+    kw=["points",Flow.Ty.Array Int;"vertices",Flow.Ty.Array Int;"primitives",Flow.Ty.Array Int;
+      "positions",Text;"edges",Record ["offsets",Array Int;"values",Array Int]]};
+  choices=["positions",["target";"mapped"]];
+  check=(fun args->List.iter(fun name->if not(List.mem_assoc name args) then
+    Flow.Value.fail "E_ARGS" ("sop/remap needs :"^name^".")) ["points";"vertices";"primitives"]);
+  body=(fun ~live:_ ~node args->node "sop/remap" args);
+}
+
+let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; mesh; mesh_planes; remap;
   group; group_order; group_names; group_entries; with_group; context_seed;
   rename_attr;swap_attr;delete_attrs;rename_group;delete_group;rename_edge;delete_edge;attr_type;attr_names;
   glob_error;glob_rewrite_error;glob_rewrite;glob_literal]

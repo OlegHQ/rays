@@ -104,26 +104,10 @@ let remap_edge_groups ?cancel ~grain ~source_topology ~target_topology groups =
           cursor.(target_edge) <- at + 1
         end
       done;
-      List.map (fun group ->
-        let byte_count = (target_edge_count + 7) / 8 in
-        let bits = Bytes.make byte_count '\000' in
-        Support.parallel_for ?cancel ~grain byte_count (fun byte ->
-          let packed = ref 0 in
-          for bit = 0 to 7 do
-            let edge = (byte lsl 3) + bit in
-            if edge < target_edge_count then begin
-              let member = ref false and at = ref offsets.(edge) in
-              while not !member && !at < offsets.(edge + 1) do
-                member := Edge_group.mem ancestry.(!at) group;
-                incr at
-              done;
-              if !member then packed := !packed lor (1 lsl bit)
-            end
-          done;
-          Bytes.unsafe_set bits byte (Char.unsafe_chr !packed));
-        Edge_group.Private.of_owned_bits ~topology:target_topology
-          ~edge_count:target_edge_count ~name:(Edge_group.name group) bits)
-        groups
+      match Topology_remap.edge_groups_from_ancestry ?cancel ~grain ~source_index
+          ~target_topology ~target_index ~offsets ~ancestors:ancestry groups with
+      | Ok groups -> groups
+      | Error message -> fail message
 
 let select_float ?cancel ~grain mapping source =
   let output = Array.make (Array.length mapping) 0. in

@@ -188,6 +188,11 @@ const decodeValue = v => {
   if ('float' in v) return decodeFloat(v);
   if ('vec' in v) return Float64Array.from(v.vec, decodeFloat);
   if ('record' in v) return new Map(v.record.map(([name, x]) => [name, decodeValue(x)]));
+if ('array' in v && 'bits' in v) {
+  const data=new Float64Array(v.bits.length), view=new DataView(data.buffer);
+  v.bits.forEach((bits,i)=>view.setBigUint64(i*8,BigInt('0x'+bits),true));
+  const array=new PArray(v.array,data); array.rawBits=true; return array;
+}
   if ('array' in v && v.array === 'text') return new TextArray(v.data);
   if ('array' in v) return v.array === 'int'
     ? new PArray(1, BigInt64Array.from(v.data, BigInt))
@@ -227,6 +232,12 @@ const diff = (expected, got, path = '') => {
   if (expected instanceof PArray) {
     if (!(got instanceof PArray) || got.width !== expected.width || got.data.length !== expected.data.length)
       return mismatch();
+if (expected.rawBits) {
+  const left=new Uint8Array(expected.data.buffer,expected.data.byteOffset,expected.data.byteLength);
+  const right=new Uint8Array(got.data.buffer,got.data.byteOffset,got.data.byteLength);
+  if (left.length!==right.length || left.some((byte,i)=>byte!==right[i])) return mismatch();
+  return null;
+}
     for (let i = 0; i < expected.data.length; i++)
       if (typeof expected.data[i] === 'bigint' ? expected.data[i] !== got.data[i]
         : typeof got.data[i] !== 'number' || !floatEqual(expected.data[i], got.data[i])) return mismatch();
@@ -374,4 +385,103 @@ console.log(`ok ${cases} cases, ${files.length} primitives`);
     throw new Error('malformed mapping did not throw'); }
   catch (actual) { if (actual.code !== 'E_DIAGNOSTIC_MAP' || actual.cause !== original.cause
       || actual.trace !== original.trace) throw actual; }
+}
+
+// Real geometry-host copy/cancellation tests use the same native raw fixture,
+// independent of the 2D exporter (which still refuses reached SOP geometry).
+{
+  const fixture=JSON.parse(readFileSync(join(fixtureDir,'sop_remap.json'),'utf8')).cases
+    .find(test=>!test.result.error && test.args[2].data.length===6 && test.args[5]==='mapped');
+  if (!fixture) throw new Error('missing duplicated raw remap fixture');
+  const args=fixture.args.map(decodeValue), source=args[0];
+  const hex = text => Array.from(prims.textBytes(text), byte=>byte.toString(16).padStart(2,'0')).join('');
+  const remapCases=JSON.parse(readFileSync(join(fixtureDir,'sop_remap.json'),'utf8')).cases;
+  let nativeByteChecks=0;
+  for (const test of remapCases) if (!test.result.error) {
+    const result=prims.sop_remap(...test.args.map(decodeValue));
+    for (const encoded of test.native_text_bytes) {
+      const expected=decodeValue(encoded);
+      const values=result.get('attributes').find(a=>a.get('owner')===expected.get('owner')
+        && a.get('name')===expected.get('name')).get('values').data;
+      expected.get('hex').forEach((bytes,i)=>{
+        if (hex(values[i])!==bytes) throw new Error('remapped Text differs from independent native bytes');
+        nativeByteChecks++;
+      });
+    }
+  }
+  if (!nativeByteChecks) throw new Error('native Text-byte remap oracle was not exercised');
+  const before=Uint8Array.from(new Uint8Array(source.get('positions').data.buffer));
+  const output=prims.sop_remap(...args);
+  const first=output.get('attributes').find(a=>a.get('owner')==='point' && a.get('type')==='float').get('values');
+  const sourceFirst=source.get('attributes').find(a=>a.get('owner')==='point' && a.get('type')==='float').get('values');
+  const saved=Uint8Array.from(new Uint8Array(sourceFirst.data.buffer));
+  new Uint8Array(first.data.buffer).fill(0xff); new Uint8Array(output.get('positions').data.buffer).fill(0xff);
+  if (!saved.every((byte,i)=>byte===new Uint8Array(sourceFirst.data.buffer)[i])
+      || !before.every((byte,i)=>byte===new Uint8Array(source.get('positions').data.buffer)[i]))
+    throw new Error('remap output mutated source storage');
+  const identity=new PArray(1,BigInt64Array.from([0n,1n,2n]));
+  const one=new PArray(1,BigInt64Array.of(0n));
+  const unchanged=prims.sop_remap(source,source,identity,identity,one,'mapped');
+  if (unchanged.get('edge_groups')!==source.get('edge_groups'))
+    throw new Error('same-topology omitted edge ancestry did not retain native edge membership');
+  if (unchanged.get('attributes').find(a=>a.get('owner')==='detail')!==source.get('attributes').find(a=>a.get('owner')==='detail'))
+    throw new Error('remap detail sharing changed');
+  const stopped=new Error('host cancellation'); let checks=0;
+  try { prims.remapHost({check(){ if (++checks===5) throw stopped; }}).remap(...args);
+    throw new Error('remap host ignored cancellation');
+  } catch(error) { if(error!==stopped) throw error; }
+  if (!before.every((byte,i)=>byte===new Uint8Array(source.get('positions').data.buffer)[i]))
+    throw new Error('cancelled remap changed input');
+  // Cancellation must reach the CSR validation and ordered rank/count/fill
+  // phases, rather than only one of the initial entry/map checkpoints.
+  const large=remapCases.find(test=>!test.result.error && test.args[2].data.length===32769);
+  if (!large) throw new Error('missing large ordered remap fixture');
+  const largeArgs=large.args.map(decodeValue);
+  const edgeCount=8196, triangleCount=edgeCount/3;
+  const edgeTarget=prims.sop_mesh(new PArray(3,new Float64Array(edgeCount*3)),
+    new PArray(1,BigInt64Array.from({length:edgeCount},(_,i)=>BigInt(i))),
+    new PArray(1,BigInt64Array.from({length:triangleCount+1},(_,i)=>BigInt(i*3))),
+    new PArray(1,new BigInt64Array(triangleCount)));
+  const repeated=new PArray(1,BigInt64Array.from({length:edgeCount},(_,i)=>BigInt(i%3)));
+  const edgeArgs=[source,edgeTarget,repeated,repeated,new PArray(1,new BigInt64Array(triangleCount)),'mapped'];
+  const ancestors=new BigInt64Array(5002);
+  edgeArgs[6]=new Map([['offsets',new PArray(1,BigInt64Array.from(
+    {length:edgeCount+1},(_,i)=>i===0?0n:BigInt(ancestors.length)))],
+    ['values',new PArray(1,ancestors)]]);
+  for (const [phase,callArgs,stopAt] of [
+    ['edge_offsets',edgeArgs,2],['edge_ancestors',edgeArgs,2],
+    ...['group_rank','group_counts','group_starts','group_fill'].map(phase=>[phase,largeArgs,2]),
+  ]) {
+    let reached=0;
+    try {
+      prims.remapHost({check(actualPhase){if(actualPhase===phase && ++reached===stopAt)throw stopped;}}).remap(...callArgs);
+      throw new Error(`remap ignored cancellation inside ${phase}`);
+    } catch(error) { if(error!==stopped)throw error; }
+    if(reached!==stopAt)throw new Error(`remap never entered ${phase}`);
+  }
+  // An early malformed entry does not outrank cancellation later in either
+  // validation scan; native defers the invalid-ancestry diagnostic until both end.
+  for (const [badField,phase] of [
+    ['offsets','edge_offsets'],['values','edge_ancestors'],['offsets','edge_ancestors'],
+  ]) {
+    const badArgs=edgeArgs.slice(), relation=new Map(edgeArgs[6]);
+    const data=new BigInt64Array(relation.get(badField).data);
+    data[badField==='offsets'?1:0]=-1n;
+    relation.set(badField,new PArray(1,data));badArgs[6]=relation;
+    try {
+      prims.sop_remap(...badArgs);
+      throw new Error('malformed early ancestry was accepted');
+    } catch(error) {
+      if(error.code!=='E_REMAP_EDGES'||error.message!==
+          'Topology_remap.edge_groups_from_ancestry: invalid source ancestry')throw error;
+    }
+    let reached=0;
+    try {
+      prims.remapHost({check(actualPhase){if(actualPhase===phase && ++reached===2)throw stopped;}}).remap(...badArgs);
+      throw new Error(`early bad ${badField} hid late cancellation in ${phase}`);
+    } catch(error) { if(error!==stopped)throw error; }
+    if(reached!==2)throw new Error(`malformed ancestry stopped before the second ${phase} checkpoint`);
+  }
+  if (!before.every((byte,i)=>byte===new Uint8Array(source.get('positions').data.buffer)[i]))
+    throw new Error('phase-cancelled remap changed source');
 }

@@ -1221,3 +1221,75 @@ conversion, then use the same lazy capture mechanism and earliest-chunk failure
 order. Each force has fresh values; only immutable preparer functions are retained
 in a FIFO capped at 64. Region source and argument buffers retain existing
 immutable ownership and copying rules. This bridge does not add SOP web export.
+
+### Exact single-source geometry payload remap
+
+`sop/remap` is a cooked geometry host intrinsic. It adds no numeric Core or
+Region instruction, shader capability, or native SOP callback:
+
+```lisp
+(sop/remap source target
+  :points point_sources :vertices vertex_sources :primitives primitive_sources
+  :positions "target"
+  :edges {:offsets edge_offsets :values edge_sources})
+```
+
+The three required integer arrays map each **target** owner row to a **source**
+row. They must match target Point, Vertex and Primitive counts; every source
+index must be in bounds. Negative indices do not denote empty/default payload.
+Target supplies topology and, by default, canonical P. `:positions "mapped"`
+selects source P through the point map. This selection copies raw native bits,
+including signed zero, subnormals, infinities and NaN payloads; it is a storage
+transfer, not a numeric attribute read. It does not relax ordinary finite
+arithmetic, `sop/attr` or `sop/mesh` validation.
+
+Source attributes and ordinary groups replace target metadata, in source list
+order. Every native storage is supported: Float, exact Int, Text, Float2/3/4,
+ragged Int arrays and ragged Float arrays (including 16-value matrix rows).
+Detail attributes retain their immutable objects. Validated identity maps may
+retain unchanged owner storage; non-identity selections own their copied
+buffers. No normal transformation, interpolation, generated default, or owner
+conversion is inferred. Ordinary ordered groups follow native source rank,
+with target indices increasing within each rank; ordered-empty remains ordered.
+Callers that require native copy-major order author that policy with existing
+`sop/group_order` and `sop/with_group :order`, for example concatenating source
+order and a shifted copy after remapping two copies.
+
+`:edges` is integer CSR from each target unique-edge ordinal to its source
+edge ancestors. Offsets start at zero, are nondecreasing, have target edge
+count plus one entries and end at values length. Ancestors must be valid source
+unique-edge indices. Membership is OR across each row; an empty row is false,
+repeated ancestors are valid. Edge groups have native topology affinity and
+ascending edge ordinal traversal, not an independent explicit order. Omission
+is permitted when source has no edge groups or target shares the exact source
+topology; changed topology with existing edge groups requires explicit CSR.
+An explicit relation is validated even without source edge groups. The native
+consumer is the factored Rewire Vertices CSR consumer in `Topology_remap`.
+
+Cooked child failures keep their real code, message, cause, hints and trace.
+After arguments have been evaluated in authored order, validation checks policy,
+Point/Vertex/Primitive cardinality and bounds, then edge CSR, before payload
+copy and final geometry validation. Malformed maps produce `E_REMAP_TYPE`,
+`E_REMAP_COUNT` or `E_REMAP_INDEX`; invalid policy is `E_REMAP_POLICY`, edge
+ancestry is `E_REMAP_EDGES`, final geometry failure is `E_REMAP`. Cancellation
+propagates unchanged and no input buffers are mutated. Conservative facts read
+and write all payload and declare changed topology; both geometry handles,
+all map/CSR data, live captures and authored body take part in ordinary cache
+invalidation. Projection exposes both geometry inputs and all supplied typed
+keyword rows; map or record edits use the full checker.
+
+The opaque geometry-host transport retains native topology affinity with a
+private `$topology_token`, scoped to the issuing host lifetime. It is not a
+Lisp argument or an authored numeric value. Two independently serialized
+handles sharing native topology keep the same token even when P differs;
+identical connectivity under a different token does not grant affinity.
+
+The JavaScript geometry-host twin uses raw typed-array byte copies, including
+CSR segments. Its environment-owned `remapHost({check})` supplies cancellation;
+that callback is not authored data. Host fixtures compare every numeric storage
+bit and exact integer/text contents against native results. The current 2D
+exporter still refuses reached SOP geometry with `E_WEB_GRAPH`, and direct
+reached native host sources keep `E_WEB_SOURCE`; a host twin is not a browser
+fallback. Multi-source concatenation and its schema/detail/order policy are a
+separate prerequisite. Single-source remap does not qualify Merge, the full
+piece modes of Copy To Points, or any consuming whole production node.

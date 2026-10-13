@@ -298,3 +298,13 @@
  (name bench_merge_payload)
  (modules bench_merge_payload)
  (libraries rdk rdk_test_support rays_math unix))
+(copy_files ../lib/flow_sop/topology_kernel.ml)
+
+(executable
+ (name bench_mesh_planes)
+ (modules bench_mesh_planes topology_kernel)
+ (libraries flow rdk rdk_test_support rays_math unix))
+
+(rule
+ (aliases runtest mesh_plane_validation)
+ (action (run %{exe:bench_mesh_planes.exe})))

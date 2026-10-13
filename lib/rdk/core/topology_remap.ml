@@ -216,3 +216,53 @@ let split_point_edge_groups ?cancel ~grain ~source_index ~target_topology groups
                      Edge_group.Private.of_owned_bits ~topology:target_topology
                        ~edge_count ~name:(Edge_group.name group) bits) groups))
       end
+
+(* The existing Rewire Vertices edge consumer, with its CSR trust boundary
+   made explicit so other exact-ancestry callers can reuse it. *)
+let edge_groups_from_ancestry ?cancel ~grain ~source_index ~target_topology
+    ~target_index ~offsets ~ancestors groups =
+  Cancel.check_opt cancel;
+  let target_edges = Topology_index.edge_count target_index
+  and source_edges = Topology_index.edge_count source_index in
+  if grain <= 0 then Error "Topology_remap.edge_groups_from_ancestry: grain must be positive"
+  else if Topology.data_id target_topology <> Topology_index.topology_data_id target_index then
+    Error "Topology_remap.edge_groups_from_ancestry: target index affinity mismatch"
+  else if Array.length offsets <> target_edges + 1 || offsets.(0) <> 0
+      || offsets.(target_edges) <> Array.length ancestors then
+    Error "Topology_remap.edge_groups_from_ancestry: invalid offsets"
+  else begin
+    let invalid = ref false in
+    for edge = 0 to target_edges - 1 do
+      if edge land 4095 = 0 then Cancel.check_opt cancel;
+      if offsets.(edge) < 0 || offsets.(edge + 1) < offsets.(edge) then invalid := true
+    done;
+    for at = 0 to Array.length ancestors - 1 do
+      if at land 4095 = 0 then Cancel.check_opt cancel;
+      if ancestors.(at) < 0 || ancestors.(at) >= source_edges then invalid := true
+    done;
+    if !invalid then Error "Topology_remap.edge_groups_from_ancestry: invalid source ancestry"
+    else if List.exists (fun group -> Edge_group.topology_data_id group
+        <> Topology_index.topology_data_id source_index || Edge_group.length group <> source_edges) groups then
+      Error "Topology_remap.edge_groups_from_ancestry: source group affinity mismatch"
+    else Ok (List.map (fun group ->
+      let byte_count = (target_edges + 7) / 8 in
+      let bits = Bytes.make byte_count '\000' in
+      (* Keep the original Rewire byte-loop schedule and cancellation cadence. *)
+      Support.parallel_for ?cancel ~grain byte_count (fun byte ->
+        let packed = ref 0 in
+        for bit = 0 to 7 do
+          let edge = (byte lsl 3) + bit in
+          if edge < target_edges then begin
+            let member = ref false and at = ref offsets.(edge) in
+            while not !member && !at < offsets.(edge + 1) do
+              if !at land 4095 = 0 then Cancel.check_opt cancel;
+              member := Edge_group.mem ancestors.(!at) group;
+              incr at
+            done;
+            if !member then packed := !packed lor (1 lsl bit)
+          end
+        done;
+        Bytes.unsafe_set bits byte (Char.unsafe_chr !packed));
+      Edge_group.Private.of_owned_bits ~topology:target_topology
+        ~edge_count:target_edges ~name:(Edge_group.name group) bits) groups)
+  end
