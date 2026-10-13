@@ -744,47 +744,134 @@ whole fused native pass. Three shared fixes are in (`3bffaa15`, `8ba568d7`,
 source has no edge groups. Projection: 2× is not reachable for reindexing
 nodes without ancestry-aware host operators.
 
-| Node | Task | Gate | Speed @1 / @4 | Note |
-| --- | --- | --- | --- | --- |
-| `group_invert` | B.13 | pass | 24× / 65× | packed bits natively, int masks in Lisp |
-| `group_random` | B.13 | pass | 2.3× / 3.7× | |
-| `name_from_groups` | B.14 | pass | 4.9× / 3.0× | |
-| `point_jitter` | B.10 | pass | 5.7× / 31× | |
-| `rest_position` | B.10 | pass | 3.3× / 1.0× | default bench is a sub-millisecond no-op |
-| `distance_from_target` | B.15 | pass | 6.7× / 5.8× | |
-| `uv_transform` | B.15 | pass | 20× / 15× | |
-| `color_by_height` | B.15 | pass | 11× / 13× | |
-| `grid` | C.7 | pass | 164× / 114× | |
-| `circle` | C.7 | pass | 24× / 40× | `segments 2` case dropped: checker hard range, native clamps |
-| `reverse` | C.8 | pass | 119× / 148× | |
-| `compact_points` | C.8 | pass | 6.2× / 6.7× | |
-| `blast` | C.8 | pass | 15× / 16× | |
-| `blast_by_attribute` | C.8 | pass | 3.4× / 3.1× | delegates to `sop/blast` |
-| `mirror` | C.8 | pass | 32× / 79× | |
-| `ends` | C.9 | pass | 49× / 65× | |
-| `graph_color` | E.5 | pass | 8.0× / 8.8× | refusal cases to restore |
-| `distance_along_geometry` | E.4 | pass | 4.6× / 3.5× | |
+**Registered this session**
 
-Drafts that do not pass yet, and nodes without a draft:
+| Node | Task | Note |
+| --- | --- | --- |
+| `attribute_blur` | D.5 | |
+| `blast` | C.8 | error hint text not expressible |
+| `box` | C.7 | vec3 cases only with a local gate patch (PORT_VEC3) |
+| `circle` | C.7 | `segments 2` case dropped; native clamps |
+| `color_by_height` | B.15 | |
+| `compact_points` | C.8 | |
+| `distance_along_geometry` | E.4 | construction refusals not gated |
+| `distance_from_target` | B.15 | cache check cannot pass; vec3 cases in a separate test |
+| `edge_equalize` | D.5 | |
+| `edge_relax` | D.5 | |
+| `edge_transport_curves` | C.9 | shipped gate fails cache check; oracle cases pass |
+| `ends` | C.9 | needs a local eager-build gate patch |
+| `enumerate` | C.12 | |
+| `graph_color` | E.5 | 6 refusal cases dropped; validator relaxed to colour name |
+| `grid` | C.7 | needs a local eager-build gate patch |
+| `group_copy` | C.12 | |
+| `group_edge_depth` | D.8 | |
+| `group_invert` | B.13 | |
+| `group_random` | B.13 | |
+| `group_unshared` | D.8 | |
+| `match_axis` | B.10 | |
+| `material` | B.14 | vec3 cases unverified on the gate |
+| `mirror` | C.8 | passes only with a local gate patch |
+| `name_from_groups` | B.14 | |
+| `point_jitter` | B.10 | vec3 axis cases fail on the gate |
+| `point_velocity` | C.12 | non-finite and absent-snapshot scenarios dropped |
+| `reverse` | C.8 | |
+| `uv_transform` | B.15 | |
 
-| Node | Blocker |
-| --- | --- |
-| `group_combine` | fold with a record-of-arrays state does not pack (`E_KERNEL_FORM`) |
-| `group_bounds` | Edges/Partially contained: `E_PACKED_FORM` in the segment-box test |
-| `group_non_planar`, `group_backface` | per-polygon arg-max loops do not pack; needs a segmented arg-max |
-| `ordered_group`, `attribute_remap`, `attribute_fade` | text split and text-to-number (in progress) |
-| `groups_from_name` | group-name validity operators (in progress) |
-| `material` | defaults pass; vec3 cases to re-run on the fixed gate |
-| `attr_from_image` | no image-pixel read in a geometry body |
-| `attribute_composite`, `merge` | runtime-typed attributes / attribute inventory (in progress) |
-| `attribute_noise`, `attribute_noise_quaternion` | fractal noise parameters (in progress) |
-| `sort` | Random mode needs an in-place shuffle |
-| `copy_to_points` | `pack` mode returns instances; a Lisp body returns geometry only |
-| `duplicate`, `rewire_vertices` | not drafted |
-| `group_find_path` | min-hops-then-length search with blocked masks |
-| `poly_path` | point clusters that keep all points; traversed edge per chain step |
-| `edge_transport`, `edge_transport_parent` | tree scan over a parent array; multi-root forest tie-breaks |
-| `edge_flip` | polygon triangulation validity check |
+**Pending drafts**
+
+| Node | Task | Gate | Blocker or next step |
+| --- | --- | --- | --- |
+| `bend` | B.10 | fail | native E_NODE_FACTS on dynamic capture write |
+| `blast_by_attribute` | C.8 | pass | registration reverted: `blast_by_attribute` raises W_UNKNOWN_GROUP for its temporary group in every workspace; the other three call OCaml-bodied kinds unknown to the web primitive fixtures |
+| `connectivity` | D.4 | pass | not registered; latest commit records PASS-SLOW 3.38x |
+| `extract_centroid` | C.11 | no test | Convex hull needs per-piece geometry node calls |
+| `group_backface` | B.13 | fail | E_PACKED_FORM per-polygon loops; vec3 cases also unrenderable by the gate |
+| `group_boundary_components` | D.8 | pass | not registered; latest commit records PASS-SLOW 13228.9x |
+| `group_bounds` | B.13 | fail | gate cannot drive vec3-grouped fields; Edges+Partially contained does not pack |
+| `group_combine` | B.13 | fail | E_KERNEL_FORM, fold over matched groups with array-record state does not pack |
+| `group_non_planar` | B.13 | fail | E_PACKED_FORM, per-polygon argmax needs segmented arg reductions |
+| `group_normal` | D.8 | timed out | :validate cannot see the vec3 direction group; full gate still running |
+| `group_promote_boundary` | D.8 | pass | registration reverted: `blast_by_attribute` raises W_UNKNOWN_GROUP for its temporary group in every workspace; the other three call OCaml-bodied kinds unknown to the web primitive fixtures |
+| `group_range` | D.8 | pass | connectivity seam sources need sop/components :seams |
+| `groups_from_name` | B.14 | fail | needs group-name validity operators |
+| `ordered_group` | B.13 | fail | needs text tokenizing and text-to-int operators |
+| `resample` | C.9 | fail | draft incomplete (E_PACKED_FORM in attribute/edge-group stage); gate cache_identity cannot pass cross-field validators |
+| `rest_position` | B.10 | pass | registration reverted: `blast_by_attribute` raises W_UNKNOWN_GROUP for its temporary group in every workspace; the other three call OCaml-bodied kinds unknown to the web primitive fixtures |
+| `revolve` | C.9 | fail | attribute order: native lists the generated uv first, Lisp can only append |
+| `smooth` | D.5 | pass | registration reverted: `blast_by_attribute` raises W_UNKNOWN_GROUP for its temporary group in every workspace; the other three call OCaml-bodied kinds unknown to the web primitive fixtures |
+| `uv_sphere` | C.7 | no test | gate cannot judge lowering-time refusals; bench not run |
+
+**No draft yet**
+
+| Node | Task | Known blocker |
+| --- | --- | --- |
+| `attr_from_image` | B.15 | no image pixel read in a geometry body |
+| `attribute_composite` | B.15 | dynamic glob-selected attributes of runtime type, rest-layer inputs (not attempted) |
+| `attribute_copy` | D.7 | not attempted |
+| `attribute_fade` | B.15 | ramp text parameters cannot be decoded; frame dependency and optional inputs also unchecked |
+| `attribute_interpolate` | C.12 | not attempted |
+| `attribute_laplacian` | D.5 | cotangent modes need triangulation and a mixed-area surface metric |
+| `attribute_noise` | B.15 | size/speed, not attempted (shares kernel with attribute_noise_quaternion) |
+| `attribute_noise_quaternion` | B.15 | same kernel as attribute_noise (not attempted) |
+| `attribute_randomize` | B.16 | not attempted |
+| `attribute_remap` | B.15 | no text-to-number parse or split for the ramp parameter |
+| `blend_shapes` | C.12 | not attempted |
+| `bound` | C.7 | not attempted |
+| `carve` | E.5 | not attempted |
+| `circle_from_edges` | D.6 | not attempted |
+| `convert_line` | D.6 | not attempted |
+| `copy_to_points` | C.8 | pack mode emits instances (no Lisp output for them); kernel is ~450 lines |
+| `crease` | D.6 | not attempted |
+| `duplicate` | C.8 | size (kernel ~400 lines incl. Duplicate.ml 393) and attribute-list/group-name dynamics |
+| `edge_cusp` | D.6 | not attempted |
+| `edge_divide` | D.6 | not attempted |
+| `edge_flip` | E.5 | needs a polygon triangulation validity check |
+| `edge_straighten` | D.6 | not attempted |
+| `edge_transport` | E.4 | tree build is not graph/shortest_paths; needs the tree scan primitive too (not attempted) |
+| `edge_transport_parent` | E.4 | tree sweeps need a parent-tree scan primitive (not attempted) |
+| `extract_point_from_curve` | C.11 | not attempted |
+| `group_edges` | D.8 | Incident edges basis needs a ragged row expansion primitive |
+| `group_expand` | D.8 | 870-line constraint kernel, needs ragged neighbour traversal and normal/collision/shrink constraints |
+| `group_find_path` | E.4 | search is hop-count BFS, not graph/shortest_paths |
+| `group_from_attribute_boundary` | D.8 | array-valued attribute rows cannot be compared per edge |
+| `group_promotions` | D.8 | rule cells need text-to-number parsing and rewrite sets |
+| `group_ranges` | D.8 | rule cells need text-to-number parsing |
+| `iso_surface` | C.13 | not attempted |
+| `match_size` | B.10 | not attempted |
+| `measure` | C.15 | not attempted |
+| `measure_curvature` | D.5 | needs triangulation and the Surface_metric cotangent tables |
+| `merge` | C.8 | needs an owner-ordered attribute enumeration operator |
+| `mountain` | B.10 | not attempted |
+| `normals` | D.4 | body would far exceed the 552-line OCaml kernel; needs face-normal and cusp primitives |
+| `peak` | B.10 | not attempted |
+| `platonic` | C.7 | not attempted |
+| `point_generate` | C.11 | not attempted |
+| `point_replicate` | C.11 | not attempted |
+| `point_split` | D.6 | not attempted |
+| `poly_bridge` | E.5 | not attempted |
+| `poly_loft` | E.5 | not attempted |
+| `poly_path` | E.5 | connect_end_points needs point clusters that keep every point; payload ancestry too large |
+| `polyframe` | D.5 | six styles over four selection owners, body would exceed the 624-line kernel |
+| `polywire` | C.10 | not attempted |
+| `promote_attributes` | D.7 | not attempted |
+| `rewire_vertices` | C.8 | not completed; body would exceed the 281-line kernel (no hard missing primitive found) |
+| `scatter` | C.11 | not attempted |
+| `separate_pieces` | C.12 | not attempted |
+| `skin` | E.5 | not attempted |
+| `snap_to_grid` | B.10 | not attempted |
+| `sort` | C.8 | Random mode needs a sequential shuffle (no array update primitive) |
+| `spiral` | C.7 | not attempted |
+| `subdivide` | E.6 | not attempted |
+| `sweep` | C.9 | not attempted |
+| `sweep_circle` | C.10 | not attempted |
+| `torus` | C.7 | not attempted |
+| `transform` | B.10 | not attempted |
+| `tube` | C.7 | not attempted |
+| `uv_auto_seam` | D.7 | not attempted |
+| `uv_project` | C.14 | not attempted |
+| `uv_unitize` | D.7 | not attempted |
+
+Counts: registered 44 (16 completed ports plus 28 in the table above), pending 19, no draft 65; 44 + 19 + 65 = 128, the full Phase B to E inventory. No key is unaccounted for or duplicated.
 
 ### Speed regressions accepted with the ports
 
