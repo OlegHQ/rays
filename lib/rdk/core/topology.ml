@@ -15,10 +15,26 @@ type t = {
 type topology = t
 
 let validate ~point_count ~vertex_points ~primitive_offsets ~primitive_kinds =
-  let rec invalid_vertex index =
-    index < Array.length vertex_points &&
+  let rec invalid_vertex last index =
+    index < last &&
     (let point = vertex_points.(index) in
-     point < 0 || point >= point_count || invalid_vertex (index + 1)) in
+     point < 0 || point >= point_count || invalid_vertex last (index + 1)) in
+  let invalid_vertices () =
+    let count = Array.length vertex_points and block_size = 65536 in
+    if count <= block_size then invalid_vertex count 0
+    else if invalid_vertex 1 0 then true
+    else begin
+      (* ponytail: independent blocks finish after a later fault; use a shared
+         stop flag if malformed large meshes need lower rejection latency. *)
+      let blocks = ((count - 1) / block_size) + 1 in
+      let invalid = Array.make blocks false in
+      Rays_math.Parallel.for_ ~chunk_size:1 ~start:0 ~finish:(blocks - 1)
+        (fun block ->
+          let first = block * block_size in
+          let last = first + min block_size (count - first) in
+          invalid.(block) <- invalid_vertex last first);
+      Array.exists Fun.id invalid
+    end in
   if point_count < 0 then Error "Topology: point count is negative"
   else if Array.length primitive_offsets = 0 then
     Error "Topology: primitive offsets must contain the initial zero"
@@ -29,7 +45,7 @@ let validate ~point_count ~vertex_points ~primitive_offsets ~primitive_kinds =
     Error "Topology: final primitive offset must equal vertex count"
   else if Bytes.length primitive_kinds <> Array.length primitive_offsets - 1 then
     Error "Topology: primitive kind count must match primitive count"
-  else if invalid_vertex 0 then Error "Topology: vertex references an invalid point"
+  else if invalid_vertices () then Error "Topology: vertex references an invalid point"
   else begin
     let ordered = ref true in
     for index = 1 to Array.length primitive_offsets - 1 do

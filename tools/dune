@@ -91,7 +91,7 @@
 (executable
  (name bench_topology)
  (modules bench_topology)
- (libraries rdk unix))
+ (libraries rdk rays_math unix))
 
 (executable
  (name bench_uniforms)
@@ -183,6 +183,7 @@
   bench_predicates.exe
   bench_rays_editor.exe
   bench_rewire_payload.exe
+  bench_merge_payload.exe
   bench_scene3_packing.exe
   bench_sdl3.exe
   bench_shattered_renderer.exe
@@ -291,4 +292,9 @@
 (executable
  (name bench_rewire_payload)
  (modules bench_rewire_payload)
+ (libraries rdk rdk_test_support rays_math unix))
+
+(executable
+ (name bench_merge_payload)
+ (modules bench_merge_payload)
  (libraries rdk rdk_test_support rays_math unix))

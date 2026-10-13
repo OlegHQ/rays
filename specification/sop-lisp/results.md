@@ -4724,3 +4724,77 @@ Points design preserves the native hard maximum50; its fixed proposed timings
 label aggregate1M output as20,000 cold50-point cooks, separately from36 micro
 rows. Both retain every row and the unrounded2× gate; no single1M Points
 geometry, widened schema or substituted sibling implementation is claimed.
+
+## Shared topology validation and original Merge baseline (2026-10-13)
+
+Measured original public `Topology.create_owned` on the unchanged native
+implementation, then changed only its large pure vertex-reference scan to
+stable65536-row blocks using the existing Parallel pool. All cheap prefix
+guards still precede the scan; offsets/kinds follow the joined Boolean result.
+Single-block inputs remain sequential, and invalid first vertices retain an
+immediate refusal. Owned input planes, Flow's copies and trusted native
+generator constructors remain unchanged. Later malformed blocks may still
+scan concurrently; the code records that rejection-latency ceiling.
+
+Actual original and final medians,1M vertices, seven samples:
+
+| case | domains | before seconds | final seconds | before allocated bytes | final allocated bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| valid | 1 | 0.001051188 | 0.001350880 | 592 | 840 |
+| invalid first | 1 | 0.000000000 | 0.000000000 | 464 | 472 |
+| invalid at65536 | 1 | 0.000051975 | 0.000761986 | 464 | 712 |
+| invalid last | 1 | 0.000782013 | 0.000815868 | 464 | 712 |
+| valid | 4 | 0.000795841 | 0.000280857 | 592 | 5424 |
+| invalid first | 4 | 0.000000954 | 0.000000000 | 464 | 472 |
+| invalid at65536 | 4 | 0.000056028 | 0.000275135 | 464 | 5232 |
+| invalid last | 4 | 0.000793934 | 0.000298023 | 464 | 5240 |
+
+Before EXIT0 `/tmp/rays-topology-validation-before-20261013.log`; intermediate
+EXIT0 `/tmp/rays-topology-validation-after-20261013.log`; final first-guard
+correction EXIT0 `/tmp/rays-topology-validation-after-first-guard-20261013.log`.
+These measurements support four-domain valid-scan improvement, while retaining
+the observed one-domain valid and later-malformed cost increases. Zero printed
+time is timer resolution, not proof of zero work. Allocation is initial-domain
+only; promoted/major words were zero in these stage samples.
+
+Focused final check session22795 EXIT0:
+`@lib/rdk/test_core @lib/flow_sop/line_draft @test/dependency_gate` plus benchmark
+relink. `/tmp/rays-topology-validation-focused4.log`. Shared constructors retain
+exact1/4/8-domain topology planes, input identity/immutability, empty/cutoff/block/
+tail cases and every simultaneous-invalid guard/vertex/offset/kind precedence.
+The unchanged complete8-row Line table now passes seven rows but still fails
+default curve/domain4 at2.007166650. Session35225 EXIT2,
+`/tmp/rays-line-topology-after-cwd-20261013.log`; exact native/reference/domain
+preflights passed. All failures remain evidence; Line remains unaccepted.
+
+Original public Mesh_merge baseline captured before its payload factoring:
+session75750 EXIT0, `/tmp/rays-merge-payload-before-20261013.log`, full exclusive
+byte snapshots `/tmp/rays-merge-payload-before-bytes-20261013`.
+Native revision2054a1c42e814cb7b9b4813fb87c7990e6787918, Apple M1 Macmini9,1,
+16GiB, macOS27.0.1 arm64, OCaml5.3.0/Dune dev. Eight fixed cases×domains1/4,
+grain4096, seven samples, public Merge every sample. Full outputs and immutable
+sources matched; four exact schema/group/edge/Detail errors and two empty
+outputs were retained. Source preparation/pool startup/serialization/GC were
+outside timing. Every agent acknowledged each quiet window and was released
+after the terminal results; desktop/VM inactivity is not claimed.
+
+| case | d1 median seconds | d4 median seconds |
+| --- | ---: | ---: |
+| plain repeated | 0.004865170 | 0.002671957 |
+| raw matching | 0.021144867 | 0.020828009 |
+| reordered schema | 0.015522957 | 0.015444040 |
+| real empty | 0.010159016 | 0.010483027 |
+| padded union | 0.015304089 | 0.015285969 |
+| exact groups | 0.021564007 | 0.020860910 |
+| provenance generated | 0.015646935 | 0.015496016 |
+| provenance retained | 0.015644073 | 0.015632153 |
+
+The complete log retains all samples, initial-domain allocation/promoted/major
+bytes, process-lifetime heap high-water and full byte sizes. Plain control has
+699056 points/1048584 vertices/349528 primitives; full four-block raw cases have
+65552 points/98328 vertices/32776 primitives. Ordered-empty/all-owner groups,
+edge membership, exact arbitrary Text bytes, signed zero/subnormal/Inf/distinct
+NaNs, all storage/CSR/matrix rows and source-tag retention/generation are real
+fixtures. After concat factoring, relink the SAME harness and `--verify` the
+SAME directory with unchanged sizes/trials/grain. This qualifies no whole Merge
+port. Accepted counts remain14/128 ports and23/60 milestones.

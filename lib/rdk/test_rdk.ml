@@ -20,7 +20,72 @@ let check_identity_cache () =
   if keys 5 <> 0 || keys 7 <> 1 || keys 9 <> -1 || last "x" <> 2 || last "z" <> -1 then
     fail "Support.Key_map lookup"
 
+let check_topology_validation () =
+  let invalid = "Topology: vertex references an invalid point" in
+  List.iter (fun count ->
+    List.iter (fun polygon ->
+      let construct domains bad_indices = Parallel.run ~domains (fun () ->
+        let vertices = Array.init count Fun.id in
+        List.iter (fun index -> vertices.(index) <- count) bad_indices;
+        let offsets = if count = 0 then [|0|] else [|0; count|] in
+        let kinds = if count = 0 then [||] else [|Topology.Open_polyline|] in
+        let vertices_before = Array.copy vertices and offsets_before = Array.copy offsets in
+        let result = if polygon then
+            Topology.polygons_owned ~point_count:count ~vertex_points:vertices
+              ~primitive_offsets:offsets
+          else Topology.create_owned ~point_count:count ~vertex_points:vertices
+              ~primitive_offsets:offsets ~primitive_kinds:kinds in
+        check (vertices = vertices_before && offsets = offsets_before)
+          "topology validation must not mutate owned input planes";
+        Result.map (fun topology ->
+          let view = Topology.Private.view topology in
+          check (view.vertex_points == vertices && view.primitive_offsets == offsets)
+            "topology constructors retain ownership-transfer planes";
+          view.point_count, Array.copy view.vertex_points,
+          Array.copy view.primitive_offsets, Bytes.copy view.primitive_kinds) result) in
+      let expected = construct 1 [] in
+      check (Result.is_ok expected) "valid topology at scan cutoff/block/tail";
+      List.iter (fun domains ->
+        check (construct domains [] = expected)
+          "topology constructor payloads must be exact at one/four/eight domains";
+        if count > 0 then begin
+          let indices = List.sort_uniq Int.compare
+              [0; min 65535 (count - 1); min 65536 (count - 1); count - 1] in
+          List.iter (fun index -> check (construct domains [index] = Error invalid)
+            "invalid vertex at first/block boundary/tail") indices;
+          check (construct domains indices = Error invalid)
+            "simultaneous invalid blocks must preserve the public error"
+        end) [1; 4; 8]) [false; true])
+    [0; 3; 32767; 32768; 65535; 65536; 65537; 131073];
+  List.iter (fun domains -> Parallel.run ~domains (fun () ->
+    let count = 131073 in
+    let vertices = Array.init count Fun.id in
+    vertices.(0) <- -1;
+    vertices.(65536) <- count;
+    let expect message ~point_count ~offsets ~kinds =
+      check (Topology.create_owned ~point_count ~vertex_points:vertices
+          ~primitive_offsets:offsets ~primitive_kinds:kinds = Error message)
+        "topology simultaneous-invalid validation precedence" in
+    expect "Topology: point count is negative" ~point_count:(-1)
+      ~offsets:[||] ~kinds:[||];
+    expect "Topology: primitive offsets must contain the initial zero" ~point_count:count
+      ~offsets:[||] ~kinds:[||];
+    expect "Topology: first primitive offset must be zero" ~point_count:count
+      ~offsets:[|1; count - 1|] ~kinds:[||];
+    expect "Topology: final primitive offset must equal vertex count" ~point_count:count
+      ~offsets:[|0; count - 1|] ~kinds:[||];
+    expect "Topology: primitive kind count must match primitive count" ~point_count:count
+      ~offsets:[|0; count|] ~kinds:[||];
+    let offsets = [|0; count; count - 1; count|]
+    and kinds = Array.make 3 Topology.Polygon in
+    expect invalid ~point_count:count ~offsets ~kinds;
+    vertices.(0) <- 0; vertices.(65536) <- 65536;
+    expect "Topology: primitive offsets are not ordered" ~point_count:count ~offsets ~kinds;
+    expect "Topology: primitive has too few vertices for its kind" ~point_count:count
+      ~offsets:[|0; 1; count|] ~kinds:(Array.make 2 Topology.Polygon))) [1; 4; 8]
+
 let run () =
+  check_topology_validation ();
   check_identity_cache ();
   Test_rdk_sources.patterns ();
   Test_rdk_sources.lines ();

@@ -148,6 +148,34 @@ are respectively 4,000,004 and 3,000,003. Desktop/VM background processes were
 left running. The strict 2x gate still fails; no whole-port or C.7 tick follows.
 The shared scan is measured independently by `tools/bench_topology.exe`.
 
+Shared large-topology validation was subsequently split into65536-vertex blocks
+using the existing pool, with sequential single-block scans and the original
+first-vertex early refusal. Native/reference/domain/grain/card/cache/value-lane
+checks still passed (`/tmp/rays-topology-validation-focused4.log`, EXIT0).
+The unchanged eight-row cold-cook table was rerun after the parallel scan:
+
+| Mode | Domains | Native seconds | Lisp seconds | Ratio / gate |
+| --- | ---: | ---: | ---: | ---: |
+| Curve default direction | 1 | 0.005836010 | 0.005178928 | 0.887409102 PASS |
+| Curve default direction | 4 | 0.002362013 | 0.004740953 | **2.007166650 FAIL** |
+| Points default direction | 1 | 0.005215883 | 0.002696037 | 0.516889884 PASS |
+| Points default direction | 4 | 0.001904964 | 0.002830029 | 1.485607009 PASS |
+| Curve oblique | 1 | 0.005976915 | 0.005200148 | 0.870038693 PASS |
+| Curve oblique | 4 | 0.002397060 | 0.004698992 | 1.960314303 PASS |
+| Points oblique | 1 | 0.005017996 | 0.002752066 | 0.548439207 PASS |
+| Points oblique | 4 | 0.001912117 | 0.002744913 | 1.435536160 PASS |
+
+Session35225 EXIT2, `/tmp/rays-line-topology-after-cwd-20261013.log`; all rows
+were retained. An initial launch from the repository root failed before any
+measurement because this harness reads its draft relative to the build
+directory (`/tmp/rays-line-topology-after-20261013.log`). The table above used
+the correct working directory and the unchanged1M/grain4096/median3/native
+byte-exact preflight protocol. Main-domain allocations still match final
+planes/indices (32MB curves,24MB Points); this is not total worker allocation.
+The later first-vertex error-path correction was measured only in the native
+constructor benchmark, without rerunning Line to seek a passing near-threshold
+row. The full Line gate remains failed and no port is counted.
+
 ## Pending commands and integration
 
 Remaining acceptance work:
