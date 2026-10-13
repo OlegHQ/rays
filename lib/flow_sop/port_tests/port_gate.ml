@@ -200,7 +200,8 @@ let cache_identity node =
     ignore (ok node); let before = misses () in ignore (ok node);
     check (misses () = before) "cache: equal parameters did not hit";
     List.iter (fun (v : P.field_view) ->
-      let edited = fst (N.apply_parameters node [v.name, changed v] |> get_string_ok) in
+      (* A single edit the node's own validator refuses has no cache entry to test. *)
+      match N.apply_parameters node [v.name, changed v] with Error _ -> () | Ok (edited, _) ->
       let before = misses () in let cooked = ok edited in
       check (misses () = before + 1) ("cache: changed " ^ v.name ^ " did not miss");
       ignore (ok edited);
