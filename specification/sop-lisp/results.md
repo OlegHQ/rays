@@ -4413,3 +4413,20 @@ name shadowing and separately created snapshot identities. Logs focused1–5
 are retained. Corrected tests keep the original native and ownership assertions;
 the ordinary checker and numeric contract remain unchanged. Whole counts remain
 14/128 ports and21/60 milestones.
+
+## Lossless byte strings in workspace source
+
+2026-10-13: canonical Lisp printing now escapes the printer's three reserved
+span-marker bytes as exact three-digit decimal string escapes. The shared
+reader accepts byte escapes `\000`–`\255` and rejects malformed or out-of-range
+escapes; raw span-marker bytes remain refused in workspace source. Existing
+string printing and golden fixtures keep their established representation.
+
+The runnable checks preserve all 256 bytes through flat/pretty printing and
+reading, validate all 256 decimal escapes, reject six malformed escapes, and
+exercise an actual typed Text-array card edit, source save, reload and graph
+projection. `/tmp/rays-string-bytes-focused2.log` records EXIT 0 for the shared
+launcher with `@lib/flow/runtest @lib/flow_graph/runtest`. The first draft graph
+fixture used value context (which requires a Float result); it was corrected to
+the established host context before this passing run. No gate was loosened.
+This is a shared source correctness fix, with no new whole-node port or milestone.

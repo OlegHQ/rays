@@ -692,7 +692,8 @@ what those files leave to the reader, the printer and the checker's argument han
   in an ordinary numeric spelling (`1e999`) remains an `E_TYPE` error. Lowercase
   `nan` and `inf` remain names. Value cards edit these literals directly; ranged
   parameter fields reject them with `E_NONFINITE`.
-- String: `"…"` with the escapes `\"`, `\\`, `\n`, `\t`, `\r`; any other escape is
+- String: `"…"` with the escapes `\"`, `\\`, `\n`, `\t`, `\r`, and exactly three
+  decimal digits `\000`–`\255` for one byte; any other escape is
   `E_UNEXPECTED`.
 - Keyword: `:` followed by a name. Metadata: `^:` followed by a name, on the next form.
 - Quotes, for macro templates only: `` ` `` quasiquote, `~` unquote, `~@` splice, `'`.

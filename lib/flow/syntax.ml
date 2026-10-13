@@ -73,6 +73,11 @@ let tokenize source =
           (match source.[j + 1] with
            | '"' -> add '"' | '\\' -> add '\\' | 'n' -> add '\n'
            | 't' -> add '\t' | 'r' -> add '\r'
+           | '0'..'9' when j+3<n && source.[j+2]>='0' && source.[j+2]<='9'
+               && source.[j+3]>='0' && source.[j+3]<='9' ->
+               let byte=int_of_string(String.sub source (j+1) 3)in
+               if byte>255 then fail source j (j+4) "E_UNEXPECTED" "A decimal byte escape must be 000 to 255."
+               else (Buffer.add_char buf(Char.chr byte);go(j+4))
            | _ -> fail source j (j + 2) "E_UNEXPECTED" "Unknown string escape")
       | c -> Buffer.add_char buf c; go (j + 1) in
     go (start + 1) in

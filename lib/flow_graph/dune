@@ -14,3 +14,8 @@
  (name test_nonfinite)
  (modules test_nonfinite)
  (libraries flow_graph param))
+
+(test
+ (name test_string_bytes)
+ (modules test_string_bytes)
+ (libraries flow_graph))

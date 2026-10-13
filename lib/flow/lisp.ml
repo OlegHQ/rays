@@ -59,7 +59,9 @@ let string text =
   String.iter (function
     | '"' -> Buffer.add_string buf "\\\"" | '\\' -> Buffer.add_string buf "\\\\"
     | '\n' -> Buffer.add_string buf "\\n" | '\t' -> Buffer.add_string buf "\\t"
-    | '\r' -> Buffer.add_string buf "\\r" | c -> Buffer.add_char buf c) text;
+    | '\r' -> Buffer.add_string buf "\\r"
+    | '\001'..'\003' as c -> Buffer.add_string buf(Printf.sprintf "\\%03d"(Char.code c))
+    | c -> Buffer.add_char buf c) text;
   Buffer.add_char buf '"'; Buffer.contents buf
 
 let prefix = function Plain -> "'" | Quasi -> "`" | Unquote -> "~" | Splice -> "~@"

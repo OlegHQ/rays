@@ -6,6 +6,22 @@ let get = function Ok value -> value
 let print source = fst (Lisp.print (get (Syntax.parse source)))
 let read path = In_channel.with_open_bin path In_channel.input_all
 
+let () =
+  let text=String.init 256 Char.chr in
+  let form=Syntax.make(Syntax.Str text)in
+  List.iter(fun printed->
+    assert(not(String.exists(fun c->c>='\001' && c<='\003')printed));
+    match get(Syntax.parse printed)with
+    |[{Syntax.node=Str decoded;_}]->assert(decoded=text)
+    |_->assert false) [Lisp.flat form;fst(Lisp.print[form])];
+  List.iter(fun source->assert(Result.is_error(Syntax.parse source)))
+    ["\"\\256\"";"\"\\999\"";"\"\\01\"";"\"\\1ab\"";"\"\\12\"";"\"\\00\"" ];
+  for byte=0 to 255 do
+    match get(Syntax.parse(Printf.sprintf "\"\\%03d\"" byte))with
+    |[{Syntax.node=Str decoded;_}]->assert(decoded=String.make 1(Char.chr byte))
+    |_->assert false
+  done
+
 let first_difference expected actual =
   let lines s = String.split_on_char '\n' s in
   let rec go n = function
