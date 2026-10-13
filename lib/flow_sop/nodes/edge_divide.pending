@@ -1,0 +1,216 @@
+; Whole Edge Divide draft. The divided topology (inserted points, inserted corners, offsets) is planned
+; with prefix sums, built with sop/mesh and carried by sop/remap (representative rows, edge ancestry).
+; Native then interpolates point/vertex float attributes and keeps a group member only when both
+; interpolation sources are members; both are redone here over the remapped geometry.
+(defn divide_error :context value [(reason : text)]
+  (error "invalid_topology" "edge_divide could not produce valid geometry"
+    :cause (str "edge_divide [invalid_topology]: Rdk_mesh.Subdivide.edge_divide: " reason)))
+(defn divide_safe :context value [(index : int)] (if (int/ge index 0) index 0))
+(defn divide_owners :context value [(offsets : (array int)) (total : int)]
+  (let* [segments (int/sub (array/count offsets) 1)
+         starts (exact (map (fn [(p : int)] (array/nth offsets p)) (array/range segments :type int)))
+         prefix (array/scan_sum (array/scatter_add starts (array/int segments 1) (int/add total 1)))]
+    (exact (map (fn [(s : int)] (int/sub (array/nth prefix (int/add s 1)) 1)) (array/range total :type int)))))
+; interpolate_array: copy where both sources agree, else (1 - tt) * a + tt * b with the first product fused.
+(defn divide_mix :context value
+  [(plane : (array float)) (left : (array int)) (right : (array int)) (weight : (array float))]
+  (exact (map (fn [(l : int) (r : int) (tt : float)]
+    (if (int/eq l r) (array/nth plane l)
+      (fma (- 1.0 tt) (array/nth plane l) (* tt (array/nth plane r)))))
+    left right weight)))
+(defn divide_mix_vec2 :context value
+  [(rows3 : (array vec2)) (left : (array int)) (right : (array int)) (weight : (array float))]
+  (let* [x (divide_mix (exact (map (fn [(q : vec2)] q.x) rows3)) left right weight)
+         y (divide_mix (exact (map (fn [(q : vec2)] q.y) rows3)) left right weight)]
+    (exact (map (fn [(a : float) (b : float)] [a b]) x y))))
+(defn divide_mix_vec3 :context value
+  [(rows3 : (array vec3)) (left : (array int)) (right : (array int)) (weight : (array float))]
+  (let* [x (divide_mix (exact (map (fn [(q : vec3)] q.x) rows3)) left right weight)
+         y (divide_mix (exact (map (fn [(q : vec3)] q.y) rows3)) left right weight)
+         z (divide_mix (exact (map (fn [(q : vec3)] q.z) rows3)) left right weight)]
+    (exact (map (fn [(a : float) (b : float) (c : float)] [a b c]) x y z))))
+(defn divide_mix_vec4 :context value
+  [(rows3 : (array vec4)) (left : (array int)) (right : (array int)) (weight : (array float))]
+  (let* [x (divide_mix (exact (map (fn [(q : vec4)] q.x) rows3)) left right weight)
+         y (divide_mix (exact (map (fn [(q : vec4)] q.y) rows3)) left right weight)
+         z (divide_mix (exact (map (fn [(q : vec4)] q.z) rows3)) left right weight)
+         w (divide_mix (exact (map (fn [(q : vec4)] q.w) rows3)) left right weight)]
+    (exact (map (fn [(k : int)] [(array/nth x k) (array/nth y k) (array/nth z k) (array/nth w k)]) (array/range (array/count x) :type int)))))
+; Point positions: originals copy, inserted points use the unconditional mix.
+(defn divide_positions :context value
+  [(plane : (array float)) (base : int) (left : (array int)) (right : (array int)) (weight : (array float))]
+  (exact (map (fn [(tt : int)]
+    (if (int/lt tt base) (array/nth plane tt)
+      (let* [w (array/nth weight tt)]
+        (fma (- 1.0 w) (array/nth plane (array/nth left tt)) (* w (array/nth plane (array/nth right tt)))))))
+    (array/range (array/count left) :type int))))
+; Interpolate one attribute of the source into the accumulated geometry.
+(defn divide_attribute :context sop
+  [(acc : geometry) (source : geometry) (owner : text) (name : text) (kind : text)
+   (left : (array int)) (right : (array int)) (weight : (array float))]
+  (cond
+    (and (equal? owner "point") (equal? kind "float"))
+      (sop/with_attr acc name (divide_mix (sop/attr source name :owner "point" :type float) left right weight)
+        :owner "point" :type float)
+    (and (equal? owner "point") (equal? kind "vec2"))
+      (sop/with_attr acc name (divide_mix_vec2 (sop/attr source name :owner "point" :type vec2) left right weight)
+        :owner "point" :type vec2)
+    (and (equal? owner "point") (equal? kind "vec3"))
+      (sop/with_attr acc name (divide_mix_vec3 (sop/attr source name :owner "point" :type vec3) left right weight)
+        :owner "point" :type vec3)
+    (and (equal? owner "point") (equal? kind "vec4"))
+      (sop/with_attr acc name (divide_mix_vec4 (sop/attr source name :owner "point" :type vec4) left right weight)
+        :owner "point" :type vec4)
+    (and (equal? owner "vertex") (equal? kind "float"))
+      (sop/with_attr acc name (divide_mix (sop/attr source name :owner "vertex" :type float) left right weight)
+        :owner "vertex" :type float)
+    (and (equal? owner "vertex") (equal? kind "vec2"))
+      (sop/with_attr acc name (divide_mix_vec2 (sop/attr source name :owner "vertex" :type vec2) left right weight)
+        :owner "vertex" :type vec2)
+    (and (equal? owner "vertex") (equal? kind "vec3"))
+      (sop/with_attr acc name (divide_mix_vec3 (sop/attr source name :owner "vertex" :type vec3) left right weight)
+        :owner "vertex" :type vec3)
+    (and (equal? owner "vertex") (equal? kind "vec4"))
+      (sop/with_attr acc name (divide_mix_vec4 (sop/attr source name :owner "vertex" :type vec4) left right weight)
+        :owner "vertex" :type vec4)
+    :else acc))
+; Group over the divided elements: a member needs both sources to be members. An ordered group keeps
+; its source order for the original rows (weight 0 and left = right) and appends the rest by index.
+(defn divide_group :context sop
+  [(acc : geometry) (source : geometry) (owner : text) (name : text)
+   (left : (array int)) (right : (array int)) (weight : (array float))]
+  (let* [theirs (sop/group source :name name :owner owner)
+         order (sop/group_order source :name name :owner owner)
+         mask (exact (map (fn [(l : int) (r : int)]
+           (if (and (int/eq (array/nth theirs l) 1) (int/eq (array/nth theirs r) 1)) 1 0)) left right))]
+    (if order.ordered
+      (let* [total (array/count theirs)
+             ranks (array/scatter_add order.indices
+                     (exact (map (fn [(j : int)] (int/add j 1)) (array/range (array/count order.indices) :type int)))
+                     total)
+             members (array/compact mask)
+             keys (exact (map (fn [(tt : int)]
+               (let* [l (array/nth left tt)]
+                 (if (and (= (array/nth weight tt) 0.0)
+                          (and (int/eq l (array/nth right tt)) (int/gt (array/nth ranks l) 0)))
+                   (int/sub (array/nth ranks l) 1)
+                   (int/add total tt)))) members))
+             sorted (exact (map (fn [(j : int)] (array/nth members j)) (array/grade keys)))]
+        (sop/with_group acc (exact mask) :name name :owner owner :order {:ordered true :indices sorted}))
+      (sop/with_group acc (exact mask) :name name :owner owner))))
+
+(defnode sop/edge_divide :label "Edge Divide" :category ["Topology" "Edge"]
+  [(in0 : geometry)
+   (group : text "" :label "Edge group")
+   (divisions : int 2 :label "Divisions" :min 1 :max 64 :hard_min 1)
+   (share_points : bool true :label "Share points")]
+  (let* [group_name (text/trim group)
+         has_group (not (text/blank? group_name))
+         group_literal (text/glob_literal (if has_group group_name "x"))
+         edge_total (sop/count in0 :edges)
+         selected (if has_group (sop/group in0 :name group_name :owner "edge") (array/int edge_total 0))
+         selected_count (array/sum selected)]
+    (cond
+      (and has_group (int/eq (array/count (sop/group_names in0 group_literal :owner "edge")) 0))
+        (error "missing_group" (str "edge_divide could not find native edge group " (text/repr group_name)))
+      (or (int/eq divisions 1) (int/eq selected_count 0)) in0
+      :else
+      (let* [ins (int/sub divisions 1)
+             point_total (sop/count in0 :points)
+             vertex_total (sop/count in0 :vertices)
+             primitive_total (sop/count in0 :primitives)
+             adj (sop/adjacency in0)
+             topology (sop/topology in0)
+             eov adj.edge_of_vertex
+             vp topology.vertex_points
+             sel_vertex (exact (map (fn [(e : int)]
+               (if (and (int/ge e 0) (int/eq (array/nth selected (divide_safe e)) 1)) 1 0)) eov))
+             vertex_prefix (array/scan_sum sel_vertex)
+             edge_prefix (array/scan_sum selected)
+             selected_vertices (array/nth vertex_prefix vertex_total)
+             extra_points (int/mul ins (if share_points selected_count selected_vertices))
+             extra_vertices (int/mul ins selected_vertices)
+             point_out (int/add point_total extra_points)
+             vertex_out (int/add vertex_total extra_vertices)
+             selected_edges (array/compact selected)
+             selected_corners (array/compact sel_vertex)
+             d (float divisions)
+             ; per output point: the two source points and the weight (inserted points in edge or corner order)
+             point_range (array/range point_out :type int)
+             point_left (exact (map (fn [(tt : int)]
+               (if (int/lt tt point_total) tt
+                 (let* [rank (int/div (int/sub tt point_total) ins)]
+                   (if share_points (array/nth adj.edge_a (array/nth selected_edges (divide_safe rank)))
+                     (array/nth vp (array/nth selected_corners (divide_safe rank)))))))
+               point_range))
+             point_right (exact (map (fn [(tt : int)]
+               (if (int/lt tt point_total) tt
+                 (let* [rank (int/div (int/sub tt point_total) ins)]
+                   (if share_points (array/nth adj.edge_b (array/nth selected_edges (divide_safe rank)))
+                     (array/nth vp (divide_safe (array/nth adj.next_vertex (array/nth selected_corners (divide_safe rank)))))))))
+               point_range))
+             point_weight (exact (map (fn [(tt : int)]
+               (if (int/lt tt point_total) 0.0
+                 (/ (float (int/add (int/mod (int/sub tt point_total) ins) 1)) d)))
+               point_range))
+             corner_starts (exact (map (fn [(v : int)] (int/add v (int/mul ins (array/nth vertex_prefix v))))
+               (array/range (int/add vertex_total 1) :type int)))
+             corner_owner (divide_owners corner_starts vertex_out)
+             corner_range (array/range vertex_out :type int)
+             corner_local (exact (map (fn [(o : int) (v : int)] (int/sub o (array/nth corner_starts v))) corner_range corner_owner))
+             vertex_left corner_owner
+             vertex_right (exact (map (fn [(v : int) (local : int)]
+               (if (int/eq local 0) v (array/nth adj.next_vertex v))) corner_owner corner_local))
+             vertex_weight (exact (map (fn [(local : int)] (if (int/eq local 0) 0.0 (/ (float local) d))) corner_local))
+             vertex_points (exact (map (fn [(v : int) (local : int)]
+               (let* [es (divide_safe (array/nth eov v))
+                      forward (int/eq (array/nth vp v) (array/nth adj.edge_a es))
+                      base (int/add point_total (int/mul ins (if share_points (array/nth edge_prefix es)
+                                                              (array/nth vertex_prefix v))))
+                      canonical (if (and share_points (not forward)) (int/sub ins local) (int/sub local 1))]
+                 (if (int/eq local 0) (array/nth vp v) (int/add base canonical))))
+               corner_owner corner_local))
+             primitive_offsets (exact (map (fn [(p : int)]
+               (let* [first (array/nth topology.primitive_offsets p)]
+                 (int/add first (int/mul ins (array/nth vertex_prefix first)))))
+               (array/range (int/add primitive_total 1) :type int)))
+             positions (sop/attr in0 "P")
+             px (divide_positions (exact (map (fn [(q : vec3)] q.x) positions)) point_total point_left point_right point_weight)
+             py (divide_positions (exact (map (fn [(q : vec3)] q.y) positions)) point_total point_left point_right point_weight)
+             pz (divide_positions (exact (map (fn [(q : vec3)] q.z) positions)) point_total point_left point_right point_weight)
+             target (sop/with_attr
+                      (sop/mesh :points (array/vec3 point_out) :vertex_points vertex_points
+                        :primitive_offsets primitive_offsets :kinds topology.kinds)
+                      "P" (exact (map (fn [(a : float) (b : float) (c : float)] [a b c]) px py pz)))
+             point_rep (exact (map (fn [(l : int) (r : int) (w : float)] (if (< w 0.5) l r)) point_left point_right point_weight))
+             vertex_rep (exact (map (fn [(l : int) (r : int) (w : float)] (if (< w 0.5) l r)) vertex_left vertex_right vertex_weight))
+             ; target edge ancestry: the segment leaving a target corner lies on its source corner's edge
+             target_adjacency (sop/adjacency target)
+             target_edge_total (array/count target_adjacency.edge_a)
+             leaving (exact (map (fn [(te : int)] (if (int/lt te 0) target_edge_total te)) target_adjacency.edge_of_vertex))
+             ancestor (exact (map (fn [(v : int)] (int/add (array/nth eov v) 1)) vertex_left))
+             edge_count (array/scatter_add leaving (array/int vertex_out 1) (int/add target_edge_total 1))
+             edge_sum (array/scatter_add leaving ancestor (int/add target_edge_total 1))
+             edge_values (exact (map (fn [(e : int)]
+                 (int/sub (int/div (array/nth edge_sum e) (if (int/gt (array/nth edge_count e) 0) (array/nth edge_count e) 1)) 1))
+               (array/range target_edge_total :type int)))
+             remapped (sop/remap in0 target :points point_rep :vertices vertex_rep
+                        :primitives (array/range primitive_total :type int)
+                        :edges {:offsets (array/range (int/add target_edge_total 1) :type int) :values edge_values})
+             point_attrs (sop/attr_entries in0 :owner "point")
+             vertex_attrs (sop/attr_entries in0 :owner "vertex")
+             with_points (fold [acc remapped] [i (array/range (array/count point_attrs.name) :type int)]
+               (divide_attribute acc in0 "point" (array/nth point_attrs.name i) (array/nth point_attrs.type i)
+                 point_left point_right point_weight))
+             with_attributes (fold [acc with_points] [i (array/range (array/count vertex_attrs.name) :type int)]
+               (divide_attribute acc in0 "vertex" (array/nth vertex_attrs.name i) (array/nth vertex_attrs.type i)
+                 vertex_left vertex_right vertex_weight))
+             entries (sop/group_entries in0 "*" :owner "any")]
+        (fold [acc with_attributes] [i (array/range (array/count entries.names) :type int)]
+          (let* [owner (array/nth entries.owners i)]
+            (cond
+              (equal? owner "point") (divide_group acc in0 owner (array/nth entries.names i)
+                                       point_left point_right point_weight)
+              (equal? owner "vertex") (divide_group acc in0 owner (array/nth entries.names i)
+                                        vertex_left vertex_right vertex_weight)
+              :else acc)))))))
