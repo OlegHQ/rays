@@ -9,7 +9,7 @@
     Rays_editor.Workspace.main
       ~path:"a.rays"
       ~digest:"bf39269baa63b402c1947e8889fba03568ef9dcd44684eb783a5bb119075bf4d"
-      ~catalog:"13dad8a67676bb77145185fa12b9200ac40f816310f7dbae6484ce9d834a2b1d"
+      ~catalog:"24f5ed40fc7ccaf7ae6844b2a6364c3009081f4ddafbb35ba639763f1f3863c3"
       {lisp_bfjp|(workspace a
     ; kept verbatim
     (graph g :context sop (sop/box)))
