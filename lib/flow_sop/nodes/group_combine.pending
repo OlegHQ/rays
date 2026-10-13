@@ -1,0 +1,97 @@
+; Whole Group Combine draft. A group value is {:mask :ordered :indices}; the
+; order algebra follows Group.combine (union/xor: left preference then right;
+; intersection: the ordered operand; difference: the left order).
+(defn group_combine_error :context value [(reason : text)]
+  (error "invalid_group" "group_combine could not produce valid geometry"
+    :cause (str "group_combine [invalid_group]: " reason)))
+(defn group_combine_operation :context value [(raw : text)]
+  (let* [token (text/lower (text/trim raw))]
+    (case token "replace" "replace" "union" "union" "intersection" "intersection"
+      "subtract" "subtract" "xor" "xor"
+      :else (error "E_PARAM" (str "unknown group operation " (text/repr token))))))
+(defn group_combine_bool :context value [(raw : text)]
+  (let* [token (text/lower (text/trim raw))]
+    (case token "true" "true" "1" "true" "yes" "true" "false" "false" "0" "false" "no" "false"
+      :else (error "E_PARAM" (str "expected boolean, got " (text/repr token))))))
+(defn group_combine_normalize :context value [(raw : text)]
+  (text/table_encode (map (fn [(row : (list text))]
+    (if (= (count row) 3)
+      (list (group_combine_operation (nth row 0)) (nth row 1) (group_combine_bool (nth row 2)))
+      (error "E_PARAM" (str "Group Combine step needs operation, pattern, and invert; got " (count row) " columns"))))
+    (text/table_decode raw))))
+(defn group_combine_pattern_error :context value [(pattern : text)]
+  (if (text/blank? pattern) "Group operation: empty group pattern" (text/glob_error pattern)))
+(defn group_combine_keep :context value [(indices : (array int)) (keep : (array int))]
+  (let* [positions (array/compact (map (fn [(i : int)] (array/nth keep i)) indices))]
+    (exact (map (fn [(p : int)] (array/nth indices p)) positions))))
+(defn group_combine_preferred :context value
+  [(g : {:mask (array int) :ordered bool :indices (array int)})]
+  (if g.ordered g.indices (array/compact g.mask)))
+(defn group_combine_complement :context value
+  [(g : {:mask (array int) :ordered bool :indices (array int)})]
+  {:mask (exact (map (fn [(a : int)] (int/sub 1 a)) g.mask)) :ordered false :indices (array/int 0)})
+(defn group_combine_apply :context value
+  [(operation : text) (l : {:mask (array int) :ordered bool :indices (array int)})
+   (r : {:mask (array int) :ordered bool :indices (array int)})]
+  (if (equal? operation "replace") r
+    (let* [mask (exact (case operation
+                  "union" (map (fn [(a : int) (b : int)] (int/or a b)) l.mask r.mask)
+                  "intersection" (map (fn [(a : int) (b : int)] (int/and a b)) l.mask r.mask)
+                  "subtract" (map (fn [(a : int) (b : int)] (int/and a (int/sub 1 b))) l.mask r.mask)
+                  :else (map (fn [(a : int) (b : int)] (int/xor a b)) l.mask r.mask)))]
+      (cond
+        (equal? operation "subtract")
+          (if l.ordered {:mask mask :ordered true :indices (group_combine_keep l.indices mask)}
+            {:mask mask :ordered false :indices (array/int 0)})
+        (equal? operation "intersection")
+          (if (or l.ordered r.ordered)
+            {:mask mask :ordered true
+             :indices (group_combine_keep (group_combine_preferred (if l.ordered l r)) mask)}
+            {:mask mask :ordered false :indices (array/int 0)})
+        :else
+          (if (or l.ordered r.ordered)
+            {:mask mask :ordered true
+             :indices (array/concat (group_combine_keep (group_combine_preferred l) mask)
+               (group_combine_keep (group_combine_preferred r)
+                 (map (fn [(m : int) (lm : int)] (int/and m (int/sub 1 lm))) mask l.mask)))}
+            {:mask mask :ordered false :indices (array/int 0)})))))
+(defnode sop/group_combine :label "Group Combine" :category ["Group" "Edit"]
+  [(in0 : geometry)
+   (owner : text "Points" :label "Group type" :choices ["Points" "Vertices" "Primitives" "Edges"])
+   (name : text "combined" :label "Output group")
+   (base_pattern : text "*" :label "Base pattern")
+   (base_inverted : bool false :label "Invert base")
+   (steps : text "" :label "Steps (operation, pattern, invert)" :kind encoded :normalize group_combine_normalize)]
+  (let* [rows (text/table_decode steps)
+         first_error (fold [found (group_combine_pattern_error base_pattern)] [row rows]
+                       (if (equal? found "") (group_combine_pattern_error (nth row 1)) found))]
+    (cond
+      (text/blank? name) (group_combine_error "Group Combine: empty output name")
+      (not (equal? first_error "")) (group_combine_error first_error)
+      :else
+        (let* [selected (case owner "Vertices" "vertex" "Primitives" "primitive" "Edges" "edge" :else "point")
+               total (case owner "Vertices" (sop/count in0 :vertices) "Primitives" (sop/count in0 :primitives)
+                       "Edges" (sop/count in0 :edges) :else (sop/count in0 :points))
+               load (fn [(group : text)]
+                      (let* [order (sop/group_order in0 :name group :owner selected)]
+                        {:mask (sop/group in0 :name group :owner selected)
+                         :ordered order.ordered :indices order.indices}))
+               resolve (fn [(pattern : text)]
+                         (let* [names (sop/group_names in0 pattern :owner selected)
+                                found (array/count names)]
+                           (if (int/eq found 0)
+                             {:mask (array/int total 0) :ordered false :indices (array/int 0)}
+                             (fold [accumulated (load (array/nth names 0))]
+                               [index (array/range (int/sub found 1) :type int)]
+                               (group_combine_apply "union" accumulated
+                                 (load (array/nth names (int/add index 1))))))))
+               base (let* [value (resolve base_pattern)]
+                      (if base_inverted (group_combine_complement value) value))
+               result (fold [accumulated base] [row rows]
+                        (let* [operand (resolve (nth row 1))]
+                          (group_combine_apply (nth row 0) accumulated
+                            (if (equal? (nth row 2) "true") (group_combine_complement operand) operand))))]
+          (if (equal? selected "edge")
+            (sop/with_group in0 (exact result.mask) :name name :owner selected)
+            (sop/with_group in0 (exact result.mask) :name name :owner selected
+              :order {:ordered result.ordered :indices (exact result.indices)}))))))
