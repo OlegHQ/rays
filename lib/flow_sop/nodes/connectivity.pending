@@ -1,0 +1,160 @@
+; Whole Connectivity draft. Seam and UV modes build a derived graph (one two-point polyline
+; per joined pair) and label it with sop/components, whose union-find numbers classes by
+; first element exactly as Analysis.classify_connectivity does.
+(defn connectivity_error :context value [(code : text) (reason : text)]
+  (error code "connectivity could not produce valid geometry"
+    :cause (str "connectivity [" code "]: " reason)))
+; Interleaves edge endpoint arrays into polyline vertex_points.
+(defn connectivity_interleave :context value [(a : (array int)) (b : (array int))]
+  (exact (map (fn [(i : int)]
+    (if (int/eq (int/mod i 2) 0) (array/nth a (int/div i 2)) (array/nth b (int/div i 2))))
+    (array/range (int/mul 2 (array/count a)) :type int))))
+(defn connectivity_missing_group :context value [(label : text) (name : text)]
+  (connectivity_error "missing_group" (str "connectivity could not find " label " " (text/repr name))))
+(defn connectivity_same :context value [(a : vec3) (b : vec3)]
+  (and (= a.x b.x) (and (= a.y b.y) (= a.z b.z))))
+(defn connectivity_safe :context value [(index : int)] (if (int/ge index 0) index 0))
+(defnode sop/connectivity :label "Connectivity" :category ["Attribute" "Analysis"]
+  [(in0 : geometry)
+   (owner : text "Primitives" :label "Connectivity type" :choices ["Points" "Primitives"])
+   (primitive_group : text "" :label "Primitive group" :folder ["Selection"])
+   ; Native refuses a point group in primitive mode at construction. The port gate's cache
+   ; check edits every field of the default node, which that refusal would reject, so the
+   ; combination is a cook error here (see the commit body).
+   (point_group : text "" :label "Point group" :folder ["Selection"])
+   (seam_group : text "" :label "Seam edge group" :folder ["Seams"]
+     :validate (or (text/blank? seam_group) (text/blank? uv_attribute))
+     :code "E_PARAM" :message "sop/connectivity: edge seams and UV connectivity are mutually exclusive")
+   (uv_attribute : text "" :label "UV attribute" :folder ["Seams"]
+     :validate (and (or (equal? owner "Primitives") (text/blank? uv_attribute))
+                    (or (text/blank? seam_group) (text/blank? uv_attribute)))
+     :code "E_PARAM" :message "sop/connectivity: UV connectivity requires primitive mode and excludes edge seams")
+   (name : text "class" :label "Attribute" :folder ["Output"]
+     :validate (not (and (equal? owner "Points") (equal? name "P")))
+     :code "E_PARAM" :message "sop/connectivity: cannot replace canonical P")
+   (output : text "Integer" :label "Storage" :folder ["Output"] :choices ["Integer" "Text"])
+   (text_prefix : text "piece" :label "Text prefix" :folder ["Output"])]
+  (let* [pg (text/trim primitive_group) ptg (text/trim point_group)
+         sg (text/trim seam_group) uvn (text/trim uv_attribute)
+         pgl (text/glob_literal (if (text/blank? pg) "x" pg)) ptgl (text/glob_literal (if (text/blank? ptg) "x" ptg))
+         sgl (text/glob_literal (if (text/blank? sg) "x" sg))
+         use_uv (not (text/blank? uvn)) points_mode (equal? owner "Points")
+         point_count (sop/count in0 :points)
+         primitive_count (sop/count in0 :primitives)]
+    (cond
+      (and (not points_mode) (not (text/blank? ptg)))
+        (connectivity_error "E_PARAM" "sop/connectivity: point include group requires point mode")
+      (and (not (text/blank? pg)) (equal? (array/count (sop/group_names in0 pgl :owner "primitive")) 0))
+        (connectivity_missing_group "primitive group" pg)
+      (and (not (text/blank? ptg)) (equal? (array/count (sop/group_names in0 ptgl :owner "point")) 0))
+        (connectivity_missing_group "point group" ptg)
+      (and (not (text/blank? sg)) (equal? (array/count (sop/group_names in0 sgl :owner "edge")) 0))
+        (connectivity_missing_group "edge group" sg)
+      (and (not (text/blank? uvn)) (not (or (sop/has_attr in0 uvn :owner "vertex" :type vec2)
+                                           (sop/has_attr in0 uvn :owner "vertex" :type vec3))))
+        (connectivity_error "invalid_connectivity" (str "Connectivity: missing vertex UV attribute " (text/repr uvn)))
+      :else
+        (let* [pmask (if (text/blank? pg) (array/int primitive_count 1) (sop/group in0 :name pg :owner "primitive"))
+               ptmask (if (text/blank? ptg) (array/int point_count 1) (sop/group in0 :name ptg :owner "point"))
+               plain (and (text/blank? sg) (text/blank? uvn))
+               labelled
+                 (if points_mode
+                   (if (and plain (text/blank? pg))
+                     (sop/components in0 :over "edges" :mask ptmask)
+                     (let* [adj (sop/adjacency in0)
+                            edge_count (sop/count in0 :edges)
+                            seam (if (text/blank? sg) (array/int edge_count 0) (sop/group in0 :name sg :owner "edge"))
+                            used (array/scatter_add
+                                   (exact (map (fn [(e : int)] (if (int/lt e 0) edge_count e)) adj.edge_of_vertex))
+                                   (exact (map (fn [(e : int) (p : int)]
+                                     (if (and (int/ge e 0) (int/eq (array/nth pmask p) 1)) 1 0))
+                                     adj.edge_of_vertex adj.primitive_of_vertex))
+                                   (int/add edge_count 1))
+                            kept (array/compact (exact (map (fn [(e : int)]
+                                     (if (and (int/gt (array/nth used e) 0) (int/eq (array/nth seam e) 0)) 1 0))
+                                     (array/range edge_count :type int))))
+                            a (exact (map (fn [(e : int)] (array/nth adj.edge_a e)) kept))
+                            b (exact (map (fn [(e : int)] (array/nth adj.edge_b e)) kept))
+                            derived (sop/mesh :points (sop/attr in0 "P")
+                                    :vertex_points (connectivity_interleave a b)
+                                    :primitive_offsets (exact (map (fn [(i : int)] (int/mul i 2))
+                                      (array/range (int/add (array/count kept) 1) :type int)))
+                                    :kinds (array/int (array/count kept) 1))]
+                       (sop/components derived :over "edges" :mask ptmask)))
+                   (if plain
+                     (sop/components in0 :over "points" :mask pmask)
+                     (let* [adj (sop/adjacency in0)
+                            topo (sop/topology in0)
+                            vertex_count (sop/count in0 :vertices)
+                            edge_count (sop/count in0 :edges)
+                            seam (if (text/blank? sg) (array/int edge_count 0) (sop/group in0 :name sg :owner "edge"))
+                            uvs (cond
+                                  (not use_uv) (array/vec3 vertex_count)
+                                  (sop/has_attr in0 uvn :owner "vertex" :type vec3)
+                                    (sop/attr in0 uvn :owner "vertex" :type vec3)
+                                  :else (map (fn [(u : vec2)] [u.x u.y 0.0]) (sop/attr in0 uvn :owner "vertex" :type vec2)))
+                            ux (exact (map (fn [(p : vec3)] p.x) uvs))
+                            uy (exact (map (fn [(p : vec3)] p.y) uvs))
+                            uz (exact (map (fn [(p : vec3)] p.z) uvs))
+                            order (array/grade adj.edge_of_vertex)
+                            leader (array/scatter_add
+                                     (exact (map (fn [(j : int)]
+                                       (let* [e (array/nth adj.edge_of_vertex (array/nth order j))]
+                                         (if (int/lt e 0) edge_count e))) (array/range vertex_count :type int)))
+                                     (exact (map (fn [(j : int)]
+                                       (let* [v (array/nth order j) e (array/nth adj.edge_of_vertex v)
+                                              first (if (int/eq j 0) true
+                                                      (not (int/eq (array/nth adj.edge_of_vertex
+                                                        (array/nth order (connectivity_safe (int/sub j 1)))) e)))]
+                                         (if (and (int/ge e 0) first) v 0))) (array/range vertex_count :type int)))
+                                     (int/add edge_count 1))
+                            ; w: the first vertex of each vertex's edge (itself when it has none)
+                            w (exact (map (fn [(v : int)]
+                                (let* [e (array/nth adj.edge_of_vertex v)] (if (int/ge e 0) (array/nth leader e) v)))
+                                (array/range vertex_count :type int)))
+                            ; one next-vertex array safe to gather from (absent neighbours point at the vertex)
+                            nx (exact (map (fn [(v : int) (n : int)] (if (int/ge n 0) n v))
+                                (array/range vertex_count :type int) adj.next_vertex))
+                            ; equal UV at vertex pairs (a, b) where each is a gather index array
+                            uv_equal (fn [(ia : (array int)) (ib : (array int))]
+                              (exact (map (fn [(i : int) (j : int)]
+                                (if (and (= (array/nth ux i) (array/nth ux j))
+                                         (and (= (array/nth uy i) (array/nth uy j)) (= (array/nth uz i) (array/nth uz j)))) 1 0))
+                                ia ib)))
+                            nxw (exact (map (fn [(i : int)] (array/nth nx i)) w))
+                            pair_wv (uv_equal w (array/range vertex_count :type int))
+                            pair_nn (uv_equal nxw nx)
+                            pair_wn (uv_equal w nx)
+                            pair_nw (uv_equal nxw (array/range vertex_count :type int))
+                            ok_same (exact (map (fn [(a : int) (b : int)] (int/mul a b)) pair_wv pair_nn))
+                            ok_flip (exact (map (fn [(a : int) (b : int)] (int/mul a b)) pair_wn pair_nw))
+                            same_dir (exact (map (fn [(m : int) (v : int)]
+                                (if (int/eq (array/nth topo.vertex_points m) (array/nth topo.vertex_points v)) 1 0))
+                                w (array/range vertex_count :type int)))
+                            uv_ok (exact (map (fn [(s : int) (a : int) (b : int)]
+                                (if use_uv (if (int/eq s 1) a b) 1)) same_dir ok_same ok_flip))
+                            allowed_v (exact (map (fn [(p : int)] (array/nth pmask p)) adj.primitive_of_vertex))
+                            allowed_w (exact (map (fn [(m : int)] (array/nth pmask (array/nth adj.primitive_of_vertex m))) w))
+                            ok2 (exact (map (fn [(a : int) (b : int)] (int/mul a b)) uv_ok allowed_w))
+                            gate (exact (map (fn [(v : int) (m : int) (e : int)]
+                                (if (and (and (int/ge e 0) (int/lt m v))
+                                         (int/eq (array/nth seam (connectivity_safe e)) 0)) 1 0))
+                                (array/range vertex_count :type int) w adj.edge_of_vertex))
+                            joined (exact (map (fn [(g : int) (a : int) (b : int)] (int/mul g (int/mul a b))) gate allowed_v ok2))
+                            kept (array/compact joined)
+                            a (exact (map (fn [(v : int)] (array/nth adj.primitive_of_vertex v)) kept))
+                            b (exact (map (fn [(v : int)]
+                                (array/nth adj.primitive_of_vertex (array/nth leader (array/nth adj.edge_of_vertex v)))) kept))
+                            derived (sop/mesh :points (array/vec3 primitive_count)
+                                    :vertex_points (connectivity_interleave a b)
+                                    :primitive_offsets (exact (map (fn [(i : int)] (int/mul i 2))
+                                      (array/range (int/add (array/count kept) 1) :type int)))
+                                    :kinds (array/int (array/count kept) 1))]
+                       (sop/components derived :over "edges" :mask pmask))))
+               attribute (if (text/blank? name) "class" (text/trim name))
+               attribute_owner (if points_mode "point" "primitive")]
+          (if (equal? output "Text")
+            (sop/with_attr in0 attribute
+              (exact (map (fn [(c : int)] (if (int/ge c 0) (str text_prefix c) "")) labelled.id))
+              :owner attribute_owner :type text)
+            (sop/with_attr in0 attribute (exact labelled.id) :owner attribute_owner :type int))))))
