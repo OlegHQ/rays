@@ -1,0 +1,46 @@
+; Whole-node draft. Rotates the input so the From axis lands on the Into axis.
+; Vec3.dot and Vec3.length_sq fuse their second and third products on arm64.
+(defn fused_dot :context value [(a : vec3) (b : vec3)]
+  (fma a.z b.z (fma a.y b.y (* a.x b.x))))
+(defn fused_normalize :context value [(a : vec3)]
+  (let* [size (sqrt (fused_dot a a))]
+    (if (= size 0.0) [0.0 0.0 0.0] (* a (/ 1.0 size)))))
+; Mat4.rotation with the arm64 multiply-add fusion of each entry.
+(defn fused_rotation :context value [(direction : vec3) (angle : float)]
+  (let* [axis (fused_normalize direction) c (cos angle) s (sin angle) om (- 1.0 c)]
+    (if (= (fused_dot axis axis) 0.0) (mat4_identity)
+      {:r0 [(fma (* axis.x axis.x) om c)
+            (fma (* -1.0 axis.z) s (* (* axis.x axis.y) om))
+            (fma axis.y s (* (* axis.x axis.z) om)) 0.0]
+       :r1 [(fma axis.z s (* (* axis.y axis.x) om))
+            (fma (* axis.y axis.y) om c)
+            (fma (* -1.0 axis.x) s (* (* axis.y axis.z) om)) 0.0]
+       :r2 [(fma (* -1.0 axis.y) s (* (* axis.z axis.x) om))
+            (fma axis.x s (* (* axis.z axis.y) om))
+            (fma (* axis.z axis.z) om c) 0.0]
+       :r3 [0.0 0.0 0.0 1.0]})))
+(defnode sop/match_axis :label "Match Axis" :category ["Modify" "Align"]
+  [(in0 : geometry)
+   (from_x : float 0.0 :label "From X" :folder ["From"] :min -1 :max 1 :vec3 ["from" 0])
+   (from_y : float 1.0 :label "From Y" :folder ["From"] :min -1 :max 1 :vec3 ["from" 1])
+   (from_z : float 0.0 :label "From Z" :folder ["From"] :min -1 :max 1 :vec3 ["from" 2])
+   (into_x : float 0.0 :label "Into X" :folder ["Into"] :min -1 :max 1 :vec3 ["into" 0])
+   (into_y : float 1.0 :label "Into Y" :folder ["Into"] :min -1 :max 1 :vec3 ["into" 1])
+   (into_z : float 0.0 :label "Into Z" :folder ["Into"] :min -1 :max 1 :vec3 ["into" 2])]
+  (let* [from_raw [from_x from_y from_z]
+         into_raw [into_x into_y into_z]]
+    (if (or (<= (fused_dot from_raw from_raw) 1e-30) (<= (fused_dot into_raw into_raw) 1e-30))
+      (error "invalid_axis" "match_axis could not produce valid geometry"
+        :cause "match_axis [invalid_axis]: Rdk.Match_size.match_axis: vectors must be finite and non-zero")
+      (let* [from (fused_normalize from_raw)
+             into (fused_normalize into_raw)
+             dot (max -1.0 (min 1.0 (fused_dot from into)))
+             cross (vec3_cross from into)
+             cross_length (sqrt (fused_dot cross cross))
+             basis (if (and (<= (abs from.x) (abs from.y)) (<= (abs from.x) (abs from.z))) [1.0 0.0 0.0]
+                     (if (<= (abs from.y) (abs from.z)) [0.0 1.0 0.0] [0.0 0.0 1.0]))
+             matrix (if (> cross_length 1e-15)
+                      (fused_rotation (* cross (/ 1.0 cross_length)) (atan2 cross_length dot))
+                      (if (>= dot 0.0) (mat4_identity)
+                        (fused_rotation (fused_normalize (vec3_cross from basis)) pi)))]
+        (transform_geometry in0 matrix)))))

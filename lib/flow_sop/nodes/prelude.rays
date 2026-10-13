@@ -259,4 +259,38 @@
       (if (equal? owner "edge")
         (sop/with_group geo (exact result.mask) :name name :owner owner)
         (sop/with_group geo (exact result.mask) :name name :owner owner
-          :order {:ordered result.ordered :indices (exact result.indices)})))))
+          :order {:ordered result.ordered :indices (exact result.indices)}))))
+
+  ; Transform_ops.transform: positions through the matrix (w divide above 1e-12), then every
+  ; vec3 point and vertex N through the inverse transpose, renormalised; a singular matrix drops N.
+  (defn transform_normals :context sop
+    [(geo : geometry) (owner : text) (normal_matrix : {:r0 vec4 :r1 vec4 :r2 vec4 :r3 vec4})]
+    (if (sop/has_attr geo "N" :owner owner :type vec3)
+      (sop/with_attr geo "N"
+        (exact (map (fn [(n : vec3)]
+          (let* [o (mat4_transform_direction normal_matrix n)
+                 length (sqrt (vec3_dot o o))]
+            (if (> length 1e-20) (/ o length) [0.0 0.0 0.0])))
+          (sop/attr geo "N" :owner owner :type vec3)))
+        :owner owner :type vec3)
+      geo))
+  ; The native per-point loop m0*x + m1*y + m2*z + m3 fuses the second and third products.
+  (defn transform_row_fused :context value [(row : vec4) (p : vec3)]
+    (+ (fma row.z p.z (fma row.y p.y (* row.x p.x))) row.w))
+  (defn transform_point_fused :context value
+    [(matrix : {:r0 vec4 :r1 vec4 :r2 vec4 :r3 vec4}) (p : vec3)]
+    (let* [result [(transform_row_fused matrix.r0 p) (transform_row_fused matrix.r1 p)
+                   (transform_row_fused matrix.r2 p)]
+           w (transform_row_fused matrix.r3 p)
+           raw (<= (abs w) 1e-12)]
+      (if raw result (/ result (if raw 1.0 w)))))
+  (defn transform_geometry :context sop
+    [(geo : geometry) (matrix : {:r0 vec4 :r1 vec4 :r2 vec4 :r3 vec4})]
+    (let* [moved (sop/with_attr geo :P
+                   (exact (map (fn [(p : vec3)] (transform_point_fused matrix p)) (sop/attr geo :P))))
+           inverse (mat4_inverse matrix)]
+      (if (= (count inverse) 0)
+        (sop/delete_attr (sop/delete_attr moved "N" :owner "point") "N" :owner "vertex")
+        (transform_normals
+          (transform_normals moved "point" (mat4_transpose (nth inverse 0)))
+          "vertex" (mat4_transpose (nth inverse 0)))))))
