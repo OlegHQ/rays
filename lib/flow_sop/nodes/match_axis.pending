@@ -1,10 +1,4 @@
 ; Whole-node draft. Rotates the input so the From axis lands on the Into axis.
-; Vec3.dot and Vec3.length_sq fuse their second and third products on arm64.
-(defn fused_dot :context value [(a : vec3) (b : vec3)]
-  (fma a.z b.z (fma a.y b.y (* a.x b.x))))
-(defn fused_normalize :context value [(a : vec3)]
-  (let* [size (sqrt (fused_dot a a))]
-    (if (= size 0.0) [0.0 0.0 0.0] (* a (/ 1.0 size)))))
 ; Mat4.rotation with the arm64 multiply-add fusion of each entry.
 (defn fused_rotation :context value [(direction : vec3) (angle : float)]
   (let* [axis (fused_normalize direction) c (cos angle) s (sin angle) om (- 1.0 c)]

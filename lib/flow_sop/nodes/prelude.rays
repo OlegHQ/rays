@@ -293,4 +293,31 @@
         (sop/delete_attr (sop/delete_attr moved "N" :owner "point") "N" :owner "vertex")
         (transform_normals
           (transform_normals moved "point" (mat4_transpose (nth inverse 0)))
-          "vertex" (mat4_transpose (nth inverse 0)))))))
+          "vertex" (mat4_transpose (nth inverse 0))))))
+
+  ; Native Vec3.dot (a.x*b.x + a.y*b.y + a.z*b.z) fuses the second and third products on arm64.
+  (defn fused_dot :context value [(a : vec3) (b : vec3)]
+    (fma a.z b.z (fma a.y b.y (* a.x b.x))))
+  (defn fused_normalize :context value [(a : vec3)]
+    (let* [size (sqrt (fused_dot a a))]
+      (if (= size 0.0) [0.0 0.0 0.0] (* a (/ 1.0 size)))))
+  ; Deform.normalize3: rescale by the largest magnitude, then divide by the length.
+  ; A zero input gives the zero vector (native None).
+  (defn fused_normalize_scaled :context value [(a : vec3)]
+    (let* [scale (max (abs a.x) (max (abs a.y) (abs a.z)))
+           scaled (/ a (if (= scale 0.0) 1.0 scale))
+           size (sqrt (fused_dot scaled scaled))]
+      (if (= scale 0.0) [0.0 0.0 0.0] (/ scaled size))))
+  ; The point mask of a deformer's group parameter: every point when blank, else the group
+  ; promoted to points (any incident member). owner is lowercase point/vertex/primitive/edge.
+  (defn deform_mask :context sop [(geo : geometry) (owner : text) (name : text)]
+    (if (text/blank? name) (array/int (sop/count geo :points) 1)
+      (if (equal? owner "point") (sop/group geo :name name :owner "point")
+        (sop/group geo :name name :owner owner :as_owner "point"))))
+  (defn deform_group_missing :context sop [(geo : geometry) (owner : text) (name : text)]
+    (and (not (text/blank? name))
+         (not (fold [found false] [probe (sop/group_names geo "" :owner owner)]
+                (or found (equal? probe name))))))
+  (defn deform_error :context value [(op : text) (code : text) (reason : text)]
+    (error code (str op " could not produce valid geometry")
+      :cause (str op " [" code "]: " reason))))
