@@ -1,0 +1,186 @@
+; Whole Point Generate (input driven). Counts per point (total, per point with an optional scale
+; attribute, or a probability attribute), then ONE sop/remap: generated points take their source row
+; (-1 = a created point with default payload). Attributes: the unmatched ones keep default generated
+; rows, the pattern-matched ones are copied from the full-source remap; P always comes from the source.
+(defn pg_error :context value [(reason : text)]
+  (error "invalid_geometry" "point_generate could not produce valid geometry"
+    :cause (str "point_generate [invalid_geometry]: Rdk.Point_generate.point_generate: " reason)))
+(defn pg_pattern_ok :context value [(pattern : text)]
+  (or (text/blank? pattern) (equal? (text/glob_error pattern) "")))
+; One point attribute copied from src to dst (same rows) without naming its storage type.
+(defn pg_copy_attr :context sop [(dst : geometry) (src : geometry) (name : text)]
+  (let* [kind (sop/attr_type src name :owner "point")]
+    (cond
+      (or (equal? kind "float") (or (equal? kind "vec2") (or (equal? kind "vec3") (equal? kind "vec4"))))
+        (sop/with_planes dst name (sop/attr_planes src name :owner "point") :owner "point")
+      (equal? kind "int")
+        (sop/with_attr dst name (sop/attr src name :owner "point" :type int) :owner "point" :type int)
+      (equal? kind "text")
+        (sop/with_attr dst name (sop/attr src name :owner "point" :type text) :owner "point" :type text)
+      (equal? kind "int_array")
+        (sop/with_attr dst name (sop/attr src name :owner "point" :type int_array) :owner "point" :type int_array)
+      :else
+        (sop/with_attr dst name (sop/attr src name :owner "point" :type float_array) :owner "point" :type float_array))))
+(defn pg_float_attribute :context sop [(geo : geometry) (name : text)]
+  (cond
+    (not (sop/has_attr geo name :owner "point"))
+      (pg_error (str "point float attribute " (text/repr name) " does not exist"))
+    (not (sop/has_attr geo name :owner "point" :type float))
+      (pg_error (str "point attribute " (text/repr name) " must use float storage"))
+    :else (sop/attr geo name :owner "point" :type float)))
+(defn pg_remap :context sop
+  [(source : geometry) (target : geometry) (head : (array int)) (generated : (array int))
+   (vertices : int) (prims : int) (edges : int)]
+  (sop/remap source target
+    :points (array/concat head generated)
+    :vertices (array/range vertices :type int)
+    :primitives (array/range prims :type int)
+    :positions "mapped"
+    :edges {:offsets (array/range (int/add edges 1) :type int)
+            :values (array/range edges :type int)}))
+
+(defnode sop/point_generate :label "Point Generate" :operation "point_generate" :version 1
+  :category ["Create" "Points"]
+  :validate (and (and (and (int/le total (array/max_length :type int))
+                           (<= points_per_point 18014398509481984.0))
+                      (and (and (not (text/blank? source_point_attribute)) (not (equal? source_point_attribute "P")))
+                           (and (not (text/blank? source_index_attribute)) (not (equal? source_index_attribute "P")))))
+                 (and (and (not (equal? source_point_attribute source_index_attribute))
+                           (or (not (equal? mode "Probability attribute")) (not (text/blank? probability_attribute))))
+                      (and (pg_pattern_ok copy_point_attributes) (pg_pattern_ok copy_detail_attributes))))
+  :code "E_PARAM" :message "sop/point_generate: invalid parameters"
+  [(in0 : geometry)
+   (mode : text "Per point" :label "Generation mode" :choices ["Total count" "Per point" "Probability attribute"])
+   (group : text "" :label "Point group")
+   (keep_input : bool false :label "Keep input")
+   (total : int 100 :label "Total points" :folder ["Generation"] :min 0 :max 1000000 :hard_min 0)
+   (points_per_point : float 1.0 :label "Points per point" :folder ["Generation"] :min 0 :max 1000 :hard_min 0)
+   (scale_attribute : text "" :label "Count scale" :folder ["Generation"])
+   (probability_attribute : text "probability" :label "Probability attribute" :folder ["Generation"])
+   (context_seed : bool false :label "Use context seed" :folder ["Random"])
+   (seed : int 0 :label "Seed" :folder ["Random"] :min 0 :max 9999)
+   (generated_group : text "" :label "Generated group" :folder ["Output"])
+   (source_point_attribute : text "sourcepoint" :label "Source point" :folder ["Output"])
+   (source_index_attribute : text "sourceindex" :label "Source index" :folder ["Output"])
+   (copy_point_attributes : text "*" :label "Point attributes" :folder ["Transfer"])
+   (copy_detail_attributes : text "" :label "Detail attributes" :folder ["Transfer"])]
+  (let* [group_name (text/trim group)
+         scale_name (text/trim scale_attribute)
+         gen_name (text/trim generated_group)
+         point_pattern (text/trim copy_point_attributes)
+         detail_pattern (text/trim copy_detail_attributes)
+         group_literal (text/glob_literal (if (text/blank? group_name) "x" group_name))
+         gen_literal (text/glob_literal (if (text/blank? gen_name) "x" gen_name))
+         metadata_pattern (str (text/glob_literal source_point_attribute) " "
+                            (text/glob_literal source_index_attribute))
+         points (sop/count in0 :points)]
+    (if (and (not (text/blank? group_name))
+             (int/eq (array/count (sop/group_names in0 group_literal :owner "point")) 0))
+      (error "missing_group" (str "point_generate could not find point group " (text/repr group_name)))
+      (let* [effective_seed (if context_seed (sop/context_seed "point_generate") seed)
+             selected (if (text/blank? group_name) (array/int points 1) (sop/group in0 :name group_name :owner "point"))
+             per_point (equal? mode "Per point")
+             probabilistic (equal? mode "Probability attribute")
+             sampled (not (equal? mode "Total count"))
+             indices (array/range points :type int)
+             weights (if per_point
+                       (if (text/blank? scale_name) (array/float points 1.0) (pg_float_attribute in0 scale_name))
+                       (array/float points 0.0))
+             probabilities (if probabilistic (pg_float_attribute in0 probability_attribute) (array/float points 0.0))
+             bad_weights (if per_point
+                           (array/sum (exact (map (fn [(w : float) (s : int)]
+                             (if (and (int/eq s 1) (or (< w 0.0) (> (* points_per_point w) 18014398509481984.0))) 1 0))
+                             weights selected)))
+                           0)
+             bad_probability (if probabilistic
+                               (array/sum (exact (map (fn [(p : float) (s : int)]
+                                 (if (and (int/eq s 1) (or (< p 0.0) (> p 1.0))) 1 0)) probabilities selected)))
+                               0)
+             counts (cond
+                      (int/gt bad_weights 0)
+                        (pg_error "selected point has a non-finite, negative, or excessive generation scale")
+                      (int/gt bad_probability 0)
+                        (pg_error "selected point probability must be finite and in [0,1]")
+                      per_point
+                        (exact (map (fn [(w : float) (s : int) (i : int)]
+                          (let* [expected (* points_per_point (if (int/eq s 1) w 0.0))
+                                 integral (floor expected)
+                                 fraction (- expected (float integral))
+                                 chance (rand/at effective_seed (int/xor i 668265261))]
+                            (int/add integral (if (and (int/eq s 1) (and (> fraction 0.0) (< chance fraction))) 1 0))))
+                          weights selected indices))
+                      probabilistic
+                        (exact (map (fn [(p : float) (s : int) (i : int)]
+                          (if (and (int/eq s 1) (< (rand/at effective_seed (int/xor i 374761393)) p)) 1 0))
+                          probabilities selected indices))
+                      :else (array/int 0))
+             offsets (if sampled (array/scan_sum counts) (array/int 1 0))
+             generated (if sampled (array/nth offsets points) total)
+             owners (if sampled
+                      (let* [starts (exact (map (fn [(p : int)] (array/nth offsets p)) indices))
+                             prefix (array/scan_sum (array/scatter_add starts (array/int points 1) (int/add generated 1)))]
+                        (exact (map (fn [(s : int)] (int/sub (array/nth prefix (int/add s 1)) 1))
+                          (array/range generated :type int))))
+                      (array/int generated -1))
+             ranks (if sampled
+                     (exact (map (fn [(g : int) (o : int)] (int/sub g (array/nth offsets o)))
+                       (array/range generated :type int) owners))
+                     (array/range generated :type int))
+             existing_bad (or (and (sop/has_attr in0 source_point_attribute :owner "point")
+                                   (not (sop/has_attr in0 source_point_attribute :owner "point" :type int)))
+                              (and (sop/has_attr in0 source_index_attribute :owner "point")
+                                   (not (sop/has_attr in0 source_index_attribute :owner "point" :type int))))]
+        (if existing_bad
+          (pg_error "metadata attribute must use point integer storage")
+          (let* [old_source (if (and keep_input (sop/has_attr in0 source_point_attribute :owner "point" :type int))
+                              (sop/attr in0 source_point_attribute :owner "point" :type int) (array/int points -1))
+                 old_index (if (and keep_input (sop/has_attr in0 source_index_attribute :owner "point" :type int))
+                             (sop/attr in0 source_index_attribute :owner "point" :type int) (array/int points -1))
+                 base0 (sop/delete_attrs in0 :point metadata_pattern)
+                 copying (and sampled (not (text/blank? point_pattern)))
+                 source (if keep_input base0
+                          (sop/delete_attrs base0 :inverse true :point (if copying point_pattern "") :detail detail_pattern))
+                 copy_names (if copying (sop/attr_names source point_pattern :owner "point") (array/text 0 ""))
+                 prefix_count (if keep_input points 0)
+                 total_points (int/add prefix_count generated)
+                 topo (sop/topology in0)
+                 target (if keep_input
+                          (sop/mesh :points (array/vec3 total_points) :vertex_points topo.vertex_points
+                            :primitive_offsets topo.primitive_offsets :kinds topo.kinds)
+                          (sop/mesh :points (array/vec3 total_points) :vertex_points (array/int 0)
+                            :primitive_offsets (array/int 1 0) :kinds (array/int 0)))
+                 vertices (if keep_input (sop/count in0 :vertices) 0)
+                 prims (if keep_input (sop/count in0 :primitives) 0)
+                 edges (if keep_input (sop/count in0 :edges) 0)
+                 head (if keep_input indices (array/int 0))
+                 blank (pg_remap source target head (array/int generated -1) vertices prims edges)
+                 full (if sampled (pg_remap source target head owners vertices prims edges) blank)
+                 with_p (if sampled (sop/with_attr blank "P" (sop/attr full "P") :owner "point") blank)
+                 copied (fold [state with_p] [index (array/range (array/count copy_names) :type int)]
+                          (pg_copy_attr state full (array/nth copy_names index)))
+                 with_meta (sop/with_attr
+                             (sop/with_attr copied source_point_attribute
+                               (array/concat (if keep_input old_source (array/int 0)) owners) :owner "point" :type int)
+                             source_index_attribute
+                             (array/concat (if keep_input old_index (array/int 0)) ranks) :owner "point" :type int)
+                 cleared (if keep_input with_meta (sop/delete_group with_meta "*" :owner "any"))
+                 mask (array/concat (array/int prefix_count 0) (array/int generated 1))]
+            (cond
+              (text/blank? gen_name) cleared
+              (int/gt (array/count (sop/group_names cleared gen_literal :owner "point")) 0)
+                (group_publish cleared "point" gen_name "union" mask)
+              (not keep_input)
+                (sop/with_group cleared (array/int generated 1) :owner "point" :name gen_name)
+              :else
+                ; Native puts a new generated group before every ordinary group.
+                (let* [entries (sop/group_entries cleared "*" :owner "any")
+                       stripped (sop/delete_group (sop/delete_group (sop/delete_group cleared "*" :owner "point")
+                                  "*" :owner "vertex") "*" :owner "primitive")
+                       first_group (sop/with_group stripped mask :owner "point" :name gen_name)]
+                  (fold [state first_group] [index (array/range (array/count entries.names) :type int)]
+                    (let* [owner (array/nth entries.owners index)
+                           name (array/nth entries.names index)
+                           order (sop/group_order cleared :name name :owner owner)]
+                      (if (equal? owner "edge") state
+                        (sop/with_group state (exact (sop/group cleared :name name :owner owner)) :name name :owner owner
+                          :order {:ordered order.ordered :indices (exact order.indices)}))))))))))))
