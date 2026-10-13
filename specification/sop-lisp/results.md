@@ -4580,3 +4580,48 @@ selector now refuses before recursive expansion. The diagnostic run90992 exited0
 The corresponding broader gate and emitted region-argument worker proof still
 need to finish before capability/milestone acceptance. The geometry time-shape
 checker refusals and strict4ULP/2× whole-port gates remain unchanged.
+
+## Bulk-array runtime proof and separate API acceptance (2026-10-13)
+
+Accepted whole ports remain **14/128**, and accepted plan milestones **21/60**.
+C.4 and C.5 remain unticked pending the remaining integration review. No port
+performance gate, API tolerance, parser budget or collection bound is relaxed.
+
+`77be0b5c` separately accepts the intended closed Core variants:
+`Array_max_length`, `Array_scatter_add`, `Array_compact`, `Array_scan_sum`,
+`Array_grade`, `Array_index_of`. No other public module changes in the snapshot.
+The reviewed CLI fixture adds only the copied `runtime/region_bindings.js` file.
+
+Actual focused integration:
+
+```
+opam exec -- _build/default/tools/check.exe @check @lib/flow/runtest @lib/flow_ir/runtest @lib/flow_sop/runtest @lib/flow_graph/runtest @lib/flow_web/runtest @lib/flow_gpu/runtest @tools/lisp/runtest @test/dependency_gate @test/test_workspace_shell @tools/api_manifest/runtest
+```
+
+`/tmp/rays-region-binding-focused6.log` terminated EXIT 1 **only** on the two
+reviewed expected fixture updates, now promoted. Functional checks passed:
+native/reference/strict Core and domains; source ownership/count origins/state
+rollback; actual geometry compositions; cards/menu/source edits; actual emitted
+JavaScript frames with production runtime and null/one/eight worker pools.
+The new region-binding check executes changing counts 0/13/5001/32769 and tails,
+Int/Float/Text/Vec2/3/4, real computed Invoke inputs, nested producers, lazy
+tables/causes, signed63 and recursive nonfinite argument validation. Inputs and
+counts are never supplied from reference results. All-byte Text remains within
+the existing 2,048 AST budget. Fixed-input CLI export admission is unchanged.
+
+Native 5001-element geometry map/filter lowering and actual SOP collection
+proofs pass. Known cooked captures share one builder outside the loop; ordinary
+oversized value lists still refuse. The dynamic ordinary-list selector now
+refuses before recursively recreating an equally oversized index list. Live
+geometry rest arguments no longer become invalid parameter drives.
+
+Parallel read-only review identified remaining cases requiring runnable proof:
+nested Int PArray width validation; worker transport of capture statement
+locations; plain-Float Product preparation eagerly reading a later source after
+an empty first source and forcing captures for zero iterations. Typed Product
+already suppresses those reads. Native/reference semantics require suppression.
+Before changing the native Float hot path, the existing Product benchmark will
+record a genuine Float-bank before/after cost with unchanged fixtures/trials.
+
+The broad native shipping run is in progress in
+`/tmp/rays-bulk-array-native-ship1.log`; no terminal result is claimed here.
