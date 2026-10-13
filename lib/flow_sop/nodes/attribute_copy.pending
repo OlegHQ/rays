@@ -1,0 +1,197 @@
+; PARTIAL Attribute Copy draft (BLOCKED: see the commit message). Covers: cyclic and "to source element"
+; matching, exact (not patterned) source/target groups, rule rows with glob selection and rewrite, float /
+; vec2 / vec3 / vec4 / int / text attributes of the selection owner and of detail, existing-target merge
+; (same-kind destinations keep unmatched rows, others start at zero), duplicate-destination refusal.
+; Not covered: by-value matching, group patterns, cross-owner projection, ragged (array) attributes,
+; canonical P through a pattern, construction-time rule validation.
+(defn acopy_error :context value [(reason : text)]
+  (error "invalid_attribute" "attribute_copy could not produce valid geometry"
+    :cause (str "attribute_copy [invalid_attribute]: Attribute Copy: " reason)))
+(defn acopy_count :context sop [(geo : geometry) (owner : text)]
+  (case owner "vertex" (sop/count geo :vertices) "primitive" (sop/count geo :primitives)
+    "detail" 1 :else (sop/count geo :points)))
+(defn acopy_elements :context sop [(geo : geometry) (owner : text) (name : text)]
+  (if (text/blank? name) (array/range (acopy_count geo owner) :type int)
+    (let* [order (sop/group_order geo :name name :owner owner)] order.indices)))
+; mapping[target element] = source element or -1
+(defn acopy_cyclic :context value [(source_elements : (array int)) (target_elements : (array int)) (target_count : int)]
+  (let* [n (array/count source_elements)]
+    (if (int/eq n 0) (array/int target_count -1)
+      (exact (map (fn [(one : int)] (int/sub one 1))
+        (array/scatter_add target_elements
+          (exact (map (fn [(rank : int)] (int/add (array/nth source_elements (int/mod rank n)) 1))
+            (array/range (array/count target_elements) :type int)))
+          target_count))))))
+(defn acopy_to_element :context value
+  [(column : (array int)) (target_elements : (array int)) (target_count : int) (source_count : int)
+   (source_selected : (array int))]
+  (exact (map (fn [(one : int)] (int/sub one 1))
+    (array/scatter_add target_elements
+      (exact (map (fn [(destination : int)]
+        (let* [from (array/nth column destination)
+               safe (if (and (int/ge from 0) (int/lt from source_count)) from 0)]
+          (if (and (int/ge from 0) (and (int/lt from source_count) (int/eq (array/nth source_selected safe) 1)))
+            (int/add from 1) 0)))
+        target_elements))
+      target_count))))
+(defn acopy_selected_mask :context value [(elements : (array int)) (count : int)]
+  (array/scatter_add elements (array/int (array/count elements) 1) count))
+
+(defn acopy_planes :context value
+  [(width : int) (x : (array float)) (y : (array float)) (z : (array float)) (w : (array float))]
+  {:width width :x x :y y :z z :w w})
+(defn acopy_pick :context value
+  [(mapping : (array int)) (from : (array float)) (base : (array float)) (same : bool)]
+  (exact (map (fn [(m : int) (i : int)]
+    (if (int/ge m 0) (array/nth from m) (if same (array/nth base i) 0.0)))
+    mapping (array/range (array/count mapping) :type int))))
+; Row offsets of the overlaid ragged attribute: source rows where mapped, else the existing rows.
+(defn acopy_rows :context value
+  [(mapping : (array int)) (source_offsets : (array int)) (old_offsets : (array int))]
+  (let* [n (array/count mapping)
+         lengths (exact (map (fn [(m : int) (i : int)]
+           (if (int/ge m 0)
+             (int/sub (array/nth source_offsets (int/add m 1)) (array/nth source_offsets m))
+             (int/sub (array/nth old_offsets (int/add i 1)) (array/nth old_offsets i))))
+           mapping (array/range n :type int)))
+         offsets (array/scan_sum (array/concat lengths (array/int 1 0)))]
+    {:offsets offsets :total (array/nth offsets n)}))
+(defn acopy_owners :context value [(offsets : (array int)) (total : int)]
+  (let* [segments (int/sub (array/count offsets) 1)
+         starts (exact (map (fn [(p : int)] (array/nth offsets p)) (array/range segments :type int)))
+         prefix (array/scan_sum (array/scatter_add starts (array/int segments 1) (int/add total 1)))]
+    (exact (map (fn [(s : int)] (int/sub (array/nth prefix (int/add s 1)) 1)) (array/range total :type int)))))
+; One attribute: kind is the source type name; mapping is the owner-level source row per target row.
+(defn acopy_one :context sop
+  [(target : geometry) (source : geometry) (owner : text) (name : text) (dest : text) (kind : text)
+   (mapping : (array int))]
+  (let* [n (array/count mapping)]
+    (cond
+      (or (int/eq n 0) (int/eq (array/max (exact (map (fn [(m : int)] (if (int/ge m 0) 1 0)) mapping))) 0)) target
+      (or (equal? kind "float") (or (equal? kind "vec2") (or (equal? kind "vec3") (equal? kind "vec4"))))
+        (let* [src (sop/attr_planes source name :owner owner)
+               same (and (sop/has_attr target dest :owner owner) (equal? (sop/attr_type target dest :owner owner) kind))
+               old (if same (sop/attr_planes target dest :owner owner) src)]
+          (sop/with_planes target dest
+            (acopy_planes src.width (acopy_pick mapping src.x old.x same) (acopy_pick mapping src.y old.y same)
+              (acopy_pick mapping src.z old.z same) (acopy_pick mapping src.w old.w same))
+            :owner owner))
+      (equal? kind "int")
+        (let* [src (sop/attr source name :owner owner :type int)
+               same (sop/has_attr target dest :owner owner :type int)
+               old (if same (sop/attr target dest :owner owner :type int) src)]
+          (cond (equal? owner "point") (sop/with_attr target dest (exact (map (fn [(m : int) (i : int)]
+                     (if (int/ge m 0) (array/nth src m) (if same (array/nth old i) 0))) mapping (array/range n :type int)))
+                     :owner "point" :type int)
+                (equal? owner "vertex") (sop/with_attr target dest (exact (map (fn [(m : int) (i : int)]
+                     (if (int/ge m 0) (array/nth src m) (if same (array/nth old i) 0))) mapping (array/range n :type int)))
+                     :owner "vertex" :type int)
+                (equal? owner "primitive") (sop/with_attr target dest (exact (map (fn [(m : int) (i : int)]
+                     (if (int/ge m 0) (array/nth src m) (if same (array/nth old i) 0))) mapping (array/range n :type int)))
+                     :owner "primitive" :type int)
+                :else (sop/with_attr target dest (exact (map (fn [(m : int) (i : int)]
+                     (if (int/ge m 0) (array/nth src m) (if same (array/nth old i) 0))) mapping (array/range n :type int)))
+                     :owner "detail" :type int)))
+      (equal? kind "text")
+        (let* [src (sop/attr source name :owner owner :type text)
+               same (sop/has_attr target dest :owner owner :type text)
+               old (if same (sop/attr target dest :owner owner :type text) src)]
+          (cond (equal? owner "point") (sop/with_attr target dest (exact (map (fn [(m : int) (i : int)]
+                     (if (int/ge m 0) (array/nth src m) (if same (array/nth old i) ""))) mapping (array/range n :type int)))
+                     :owner "point" :type text)
+                (equal? owner "vertex") (sop/with_attr target dest (exact (map (fn [(m : int) (i : int)]
+                     (if (int/ge m 0) (array/nth src m) (if same (array/nth old i) ""))) mapping (array/range n :type int)))
+                     :owner "vertex" :type text)
+                (equal? owner "primitive") (sop/with_attr target dest (exact (map (fn [(m : int) (i : int)]
+                     (if (int/ge m 0) (array/nth src m) (if same (array/nth old i) ""))) mapping (array/range n :type int)))
+                     :owner "primitive" :type text)
+                :else (sop/with_attr target dest (exact (map (fn [(m : int) (i : int)]
+                     (if (int/ge m 0) (array/nth src m) (if same (array/nth old i) ""))) mapping (array/range n :type int)))
+                     :owner "detail" :type text)))
+      (equal? kind "int_array")
+        (let* [src (sop/attr source name :owner owner :type int_array)
+               same (sop/has_attr target dest :owner owner :type int_array)
+               old (if same (sop/attr target dest :owner owner :type int_array)
+                     {:offsets (array/int (int/add n 1) 0) :values (array/int 0 0)})
+               rows (acopy_rows mapping src.offsets old.offsets)
+               owners (acopy_owners rows.offsets rows.total)
+               data (exact (map (fn [(j : int) (r : int)]
+                 (let* [m (array/nth mapping r) local (int/sub j (array/nth rows.offsets r))]
+                   (if (int/ge m 0) (array/nth src.values (int/add (array/nth src.offsets m) local))
+                     (array/nth old.values (int/add (array/nth old.offsets r) local)))))
+                 (array/range rows.total :type int) owners))
+               result {:offsets rows.offsets :values data}]
+          (cond (equal? owner "point") (sop/with_attr target dest result :owner "point" :type int_array)
+                (equal? owner "vertex") (sop/with_attr target dest result :owner "vertex" :type int_array)
+                (equal? owner "primitive") (sop/with_attr target dest result :owner "primitive" :type int_array)
+                :else (sop/with_attr target dest result :owner "detail" :type int_array)))
+      :else
+        (let* [src (sop/attr source name :owner owner :type float_array)
+               same (sop/has_attr target dest :owner owner :type float_array)
+               old (if same (sop/attr target dest :owner owner :type float_array)
+                     {:offsets (array/int (int/add n 1) 0) :values (array/float 0 0.0)})
+               rows (acopy_rows mapping src.offsets old.offsets)
+               owners (acopy_owners rows.offsets rows.total)
+               data (exact (map (fn [(j : int) (r : int)]
+                 (let* [m (array/nth mapping r) local (int/sub j (array/nth rows.offsets r))]
+                   (if (int/ge m 0) (array/nth src.values (int/add (array/nth src.offsets m) local))
+                     (array/nth old.values (int/add (array/nth old.offsets r) local)))))
+                 (array/range rows.total :type int) owners))
+               result {:offsets rows.offsets :values data}]
+          (cond (equal? owner "point") (sop/with_attr target dest result :owner "point" :type float_array)
+                (equal? owner "vertex") (sop/with_attr target dest result :owner "vertex" :type float_array)
+                (equal? owner "primitive") (sop/with_attr target dest result :owner "primitive" :type float_array)
+                :else (sop/with_attr target dest result :owner "detail" :type float_array))))))
+
+(defnode sop/attribute_copy :label "Attribute Copy" :category ["Attribute" "Transfer"]
+  :validate (and (or (not (equal? match_ "By attribute values")) (not (equal? group_owner "Vertices")))
+              (and (or (not (equal? match_ "By attribute values"))
+                       (and (not (text/blank? source_match_attribute)) (not (text/blank? target_match_attribute))))
+                   (or (not (equal? match_ "To source element")) (not (text/blank? target_element_attribute)))))
+  :code "E_PARAM" :message "sop/attribute_copy: matching requires nonblank attributes; value matching supports point or primitive groups"
+  [(source : geometry)
+   (target : geometry)
+   (group_owner : text "Points" :label "Selection owner" :choices ["Points" "Vertices" "Primitives"])
+   (match_ : text "Cyclic" :label "Element matching" :choices ["Cyclic" "By attribute values" "To source element"])
+   (source_match_attribute : text "id" :label "Source match attribute" :folder ["Matching"])
+   (target_match_attribute : text "id" :label "Target match attribute" :folder ["Matching"])
+   (target_element_attribute : text "source" :label "Source element attribute" :folder ["Matching"])
+   (allow_position : bool false :label "Allow P")
+   (source_group : text "" :label "Source group" :folder ["Groups" "Source"])
+   (source_group_pattern : text "" :label "Source group pattern" :folder ["Groups" "Source"])
+   (target_group : text "" :label "Target group" :folder ["Groups" "Target"])
+   (target_group_pattern : text "" :label "Target group pattern" :folder ["Groups" "Target"])
+   (rules : text "point\t*\t" :label "Rules (owner, pattern, destination)" :folder ["Attributes"])]
+  (let* [owner (case group_owner "Vertices" "vertex" "Primitives" "primitive" :else "point")
+         source_name (text/trim source_group)
+         target_name (text/trim target_group)
+         rows (text/table_decode rules)
+         source_count (acopy_count source owner)
+         target_count (acopy_count target owner)
+         source_elements (acopy_elements source owner source_name)
+         target_elements (acopy_elements target owner target_name)
+         base (cond (equal? match_ "Cyclic") (acopy_cyclic source_elements target_elements target_count)
+                    (equal? match_ "To source element")
+                      (acopy_to_element (sop/attr target target_element_attribute :owner owner :type int)
+                        target_elements target_count source_count (acopy_selected_mask source_elements source_count))
+                    :else (array/int target_count -1))]
+    (get (fold [state {:geometry target :seen (array/text 0)}] [row rows]
+      (let* [attr_owner (text/lower (text/trim (nth row 0)))
+             o (case attr_owner "points" "point" "vertices" "vertex" "primitives" "primitive" :else attr_owner)
+             pattern (nth row 1)
+             into (text/trim (nth row 2))
+             names (sop/attr_names source pattern :owner o)
+             mapping (cond (equal? o owner) base
+                           (equal? o "detail") (array/int 1 (if (int/gt (array/max (exact (map (fn [(m : int) ] (if (int/ge m 0) 1 0)) base))) 0) 0 -1))
+                           :else (acopy_error "cross-owner projection is not ported"))]
+        (fold [inner state] [index (array/range (array/count names) :type int)]
+          (let* [name (array/nth names index)
+                 dest (if (equal? into "") name (text/glob_rewrite pattern into name))
+                 identity (str o ":" dest)
+                 seen (fold [found false] [prior inner.seen] (or found (equal? prior identity)))]
+            (cond
+              (text/blank? dest) (acopy_error "rewrite produced an empty name")
+              seen (acopy_error (str "duplicate destination attribute " (text/repr dest)))
+              :else {:geometry (acopy_one inner.geometry source o name dest (sop/attr_type source name :owner o) mapping)
+                     :seen (array/concat inner.seen (array/text 1 identity))})))))
+      :geometry)))
