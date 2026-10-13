@@ -110,6 +110,11 @@ let resolve ~geometry = function
         Result.map(fun value->E.Text value)(Attribute_metadata.glob_literal value) else
         Result.bind(text "pattern")(fun pattern->Result.bind(text "replacement")(fun replacement->
           Result.map(fun value->E.Text value)(Attribute_metadata.glob_rewrite ~pattern ~replacement value))))
+  |E.Source(("text/group_name_valid"|"text/group_name_forced" as operation),_,args)->
+      (match List.assoc_opt "text" args with
+       |Some(E.Text value)->Ok(if operation="text/group_name_valid" then E.Bool(Rdk.Group_ops.valid_group_name value)
+          else E.Text(Rdk.Group_ops.force_valid_group_name value))
+       |_->error "E_METADATA_TEXT" "Metadata names and patterns must be text.")
   |E.Source("sop/group_entries",_,args)->
       let text key default=match List.assoc_opt key args with None->Ok default|Some(E.Text text)->Ok text
         |_->error "E_GROUP_TYPE"("Group "^key^" must be text.") in
