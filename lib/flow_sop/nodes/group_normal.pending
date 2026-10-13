@@ -1,0 +1,204 @@
+; Whole Group by Normal draft: points, primitives and edges whose normal lies within the
+; spread angle of a direction, from an existing or a computed geometric normal.
+(defn group_normal_error :context value [(reason : text)]
+  (error "invalid_group" "group_normal could not produce valid geometry"
+    :cause (str "group_normal [invalid_group]: " reason)))
+(defn group_normal_div :context value [(v : vec3) (d : float)]
+  [(/ v.x d) (/ v.y d) (/ v.z d)])
+; Group_ops.direction_matches
+(defn group_normal_matches :context value
+  [(v : vec3) (d : vec3) (threshold : float) (opposite : bool)]
+  (let* [scale (max (abs v.x) (max (abs v.y) (abs v.z)))
+         w (group_normal_div v (if (= scale 0.0) 1.0 scale))
+         inverse (/ 1.0 (sqrt (+ (+ (* w.x w.x) (* w.y w.y)) (* w.z w.z))))
+         raw (* (+ (+ (* w.x d.x) (* w.y d.y)) (* w.z d.z)) inverse)
+         dot (if (< raw -1.0) -1.0 (if (> raw 1.0) 1.0 raw))
+         epsilon (* 64.0 2.220446049250313e-16)]
+    (and (and (= (- v.x v.x) 0.0) (and (= (- v.y v.y) 0.0) (= (- v.z v.z) 0.0)))
+         (and (not (= scale 0.0))
+              (if opposite
+                (or (<= threshold 0.0) (>= (abs dot) (- threshold epsilon)))
+                (>= dot (- threshold epsilon)))))))
+; The unit direction from a corner towards one of its neighbours, after the shared rescale of
+; Group_ops.corner_angle_at; zero when that arm is degenerate (the native angle is then 0).
+(defn group_normal_corner_scale :context value [(point : vec3) (previous : vec3) (next : vec3)]
+  (max (max (max (abs point.x) (max (abs point.y) (abs point.z)))
+            (max (abs previous.x) (max (abs previous.y) (abs previous.z))))
+       (max (abs next.x) (max (abs next.y) (abs next.z)))))
+(defn group_normal_corner_direction :context value [(point : vec3) (target : vec3) (scale : float)]
+  (let* [safe (if (= scale 0.0) 1.0 scale)
+         p (group_normal_div point safe)
+         arm (- (group_normal_div target safe) p)
+         ts (max (abs arm.x) (max (abs arm.y) (abs arm.z)))
+         a (group_normal_div arm (if (= ts 0.0) 1.0 ts))
+         ai (/ 1.0 (sqrt (+ (+ (* a.x a.x) (* a.y a.y)) (* a.z a.z))))]
+    (if (= ts 0.0) [0.0 0.0 0.0] (* a ai))))
+(defn group_normal_angle_between :context value [(ua : vec3) (vb : vec3)]
+  (let* [cx (- (* ua.y vb.z) (* ua.z vb.y))
+         cy (- (* ua.z vb.x) (* ua.x vb.z))
+         cz (- (* ua.x vb.y) (* ua.y vb.x))
+         dot (+ (+ (* ua.x vb.x) (* ua.y vb.y)) (* ua.z vb.z))
+         flat (or (and (= ua.x 0.0) (and (= ua.y 0.0) (= ua.z 0.0)))
+                  (and (= vb.x 0.0) (and (= vb.y 0.0) (= vb.z 0.0))))]
+    (if flat 0.0 (atan2 (sqrt (+ (+ (* cx cx) (* cy cy)) (* cz cz))) dot))))
+; Unit direction of a sum after the rescale by its largest component; zero when the sum is zero.
+(defn group_normal_unit :context value [(accum : vec3)]
+  (let* [m (max (abs accum.x) (max (abs accum.y) (abs accum.z)))
+         scaled (group_normal_div accum (if (= m 0.0) 1.0 m))
+         inverse (/ 1.0 (sqrt (+ (+ (* scaled.x scaled.x) (* scaled.y scaled.y)) (* scaled.z scaled.z))))]
+    (if (> m 0.0) (* scaled inverse) [0.0 0.0 0.0])))
+; Group_ops.edge_normal: the sum of two unit point normals, rescaled like the native edge test.
+(defn group_normal_edge_sum :context value [(a : vec3) (b : vec3)]
+  (let* [ascale (max (abs a.x) (max (abs a.y) (abs a.z)))
+         bscale (max (abs b.x) (max (abs b.y) (abs b.z)))
+         x (group_normal_div a (if (= ascale 0.0) 1.0 ascale))
+         y (group_normal_div b (if (= bscale 0.0) 1.0 bscale))
+         xi (/ 1.0 (sqrt (+ (+ (* x.x x.x) (* x.y x.y)) (* x.z x.z))))
+         yi (/ 1.0 (sqrt (+ (+ (* y.x y.x) (* y.y y.y)) (* y.z y.z))))]
+    (if (or (= ascale 0.0) (= bscale 0.0)) [0.0 0.0 0.0] (+ (* x xi) (* y yi)))))
+
+(defnode sop/group_normal :label "Group by Normal" :category ["Group" "Create"]
+  [(in0 : geometry)
+   (owner : text "Primitives" :label "Group type" :choices ["Points" "Primitives" "Edges"])
+   (name : text "normal" :label "Group name")
+   (direction_x : float 0.0 :label "Direction X" :folder "Direction" :min -1 :max 1 :vec3 ["direction" 0])
+   (direction_y : float 1.0 :label "Direction Y" :folder "Direction" :min -1 :max 1 :vec3 ["direction" 1])
+   (direction_z : float 0.0 :label "Direction Z" :folder "Direction" :min -1 :max 1 :vec3 ["direction" 2]
+     :validate (not (and (and (= direction_x 0.0) (= direction_y 0.0)) (= direction_z 0.0)))
+     :code "E_PARAM" :message "sop/group_normal: direction must be non-zero")
+   (spread_angle : float 0.7853981633974483 :label "Spread angle" :min 0 :max 3.141592653589793
+     :hard_min 0 :hard_max 3.141592653589793)
+   (normal_attribute : text "" :label "Normal attribute" :folder "Normals")
+   (use_existing_normal : bool true :label "Use existing normal" :folder "Normals")
+   (include_opposite : bool false :label "Include opposite" :folder "Normals")
+   (base : text "" :label "Base group" :folder "Combine")
+   (merge : text "Replace" :label "Operation" :folder "Combine"
+     :choices ["Replace" "Union" "Intersection" "Subtract" "Exclusive or"])]
+  ; Every float computation sits above the first cooked-boolean test: a cooked selection (the
+  ; cond and the group publication below) only compiles integer kernels, so the masks reach it
+  ; as scratch detail attributes read back as integers.
+  (let* [element_owner (case owner "Points" "point" "Primitives" "primitive" :else "edge")
+         attribute_owner (if (equal? owner "Primitives") "primitive" "point")
+         requested (text/trim normal_attribute)
+         source_name (if (equal? requested "") "N" requested)
+         trimmed_base (text/trim base)
+         positions (sop/attr in0 :P)
+         present (sop/has_attr in0 source_name :owner attribute_owner)
+         typed (sop/has_attr in0 source_name :owner attribute_owner :type vec3)
+         flagged (sop/with_attr in0 "__rdk_normal_nonfinite"
+                   (exact (map (fn [(p : vec3)]
+                     (if (and (= (- p.x p.x) 0.0) (and (= (- p.y p.y) 0.0) (= (- p.z p.z) 0.0))) 0 1)) positions))
+                   :owner "point" :type int)
+         nonfinite (array/sum (sop/attr flagged "__rdk_normal_nonfinite" :owner "point" :type int))
+         dscale (max (abs direction_x) (max (abs direction_y) (abs direction_z)))
+         dx (/ direction_x dscale)
+         dy (/ direction_y dscale)
+         dz (/ direction_z dscale)
+         dinverse (/ 1.0 (sqrt (+ (+ (* dx dx) (* dy dy)) (* dz dz))))
+         direction [(* dx dinverse) (* dy dinverse) (* dz dinverse)]
+         threshold (cos spread_angle)
+         topology (sop/topology in0)
+         adjacency (sop/adjacency in0)
+         vp topology.vertex_points
+         offsets topology.primitive_offsets
+         pov adjacency.primitive_of_vertex
+         vertices (sop/count in0 :vertices)
+         prims (sop/count in0 :primitives)
+         points (sop/count in0 :points)
+         edge_total (sop/count in0 :edges)
+         total (case owner "Points" points "Primitives" prims :else edge_total)
+         corners (array/range vertices :type int)
+         corner_scale (exact (map (fn [(p : int)]
+                        (let* [pt (array/nth positions p)] (max (abs pt.x) (max (abs pt.y) (abs pt.z))))) vp))
+         prim_scale (array/segment_max corner_scale offsets)
+         prim_anchor (exact (map (fn [(q : int) (s : float)]
+                       (group_normal_div (array/nth positions (array/nth vp (array/nth offsets q))) (if (= s 0.0) 1.0 s)))
+                       (array/range prims :type int) prim_scale))
+         ; fan triangle cross terms: corner v closes triangle (anchor, v, v+1) for first < v < last - 1
+         terms (exact (map (fn [(v : int) (q : int)]
+                 (let* [f (array/nth offsets q) l (array/nth offsets (int/add q 1))]
+                 (if (and (int/gt v f) (int/le v (int/sub l 2)))
+                   (let* [s (array/nth prim_scale q)
+                          safe (if (= s 0.0) 1.0 s)
+                          a (array/nth prim_anchor q)
+                          u (- (group_normal_div (array/nth positions (array/nth vp v)) safe) a)
+                          w (- (group_normal_div (array/nth positions (array/nth vp (int/add v 1))) safe) a)]
+                     [(- (* u.y w.z) (* u.z w.y)) (- (* u.z w.x) (* u.x w.z)) (- (* u.x w.y) (* u.y w.x))])
+                   [0.0 0.0 0.0]))) corners pov))
+         fan (array/segment_sum terms offsets)
+         polygon (exact (map (fn [(q : int)] (array/nth topology.kinds q)) (array/range prims :type int)))
+         ; primitive direction before normalisation (zero for non-polygons and empty scales)
+         prim_sums (exact (map (fn [(f : vec3) (k : int) (s : float)]
+                     (if (and (int/eq k 0) (> s 0.0)) f [0.0 0.0 0.0])) fan polygon prim_scale))
+         ; unit face normals for point accumulation
+         face_unit (exact (map (fn [(f : vec3)] (group_normal_unit f)) prim_sums))
+         ; corner angles in stages: a single kernel would exceed the 64-register limit
+         corner_before (exact (map (fn [(v : int) (q : int)]
+                         (if (int/eq v (array/nth offsets q)) (int/sub (array/nth offsets (int/add q 1)) 1) (int/sub v 1)))
+                         corners pov))
+         corner_after (exact (map (fn [(v : int) (q : int)]
+                        (if (int/eq (int/add v 1) (array/nth offsets (int/add q 1))) (array/nth offsets q) (int/add v 1)))
+                        corners pov))
+         corner_point (exact (map (fn [(v : int)] (array/nth positions (array/nth vp v))) corners))
+         corner_previous (exact (map (fn [(b : int)] (array/nth positions (array/nth vp b))) corner_before))
+         corner_next (exact (map (fn [(a : int)] (array/nth positions (array/nth vp a))) corner_after))
+         arm_scale (exact (map (fn [(p : vec3) (r : vec3) (n : vec3)] (group_normal_corner_scale p r n))
+                     corner_point corner_previous corner_next))
+         arm_previous (exact (map (fn [(p : vec3) (r : vec3) (s : float)] (group_normal_corner_direction p r s))
+                        corner_point corner_previous arm_scale))
+         arm_next (exact (map (fn [(p : vec3) (r : vec3) (s : float)] (group_normal_corner_direction p r s))
+                    corner_point corner_next arm_scale))
+         corner_angle (exact (map (fn [(a : vec3) (b : vec3)] (group_normal_angle_between a b)) arm_previous arm_next))
+         contributions (exact (map (fn [(angle : float) (q : int)]
+                         (let* [unit (array/nth face_unit q)
+                                live (or (not (= unit.x 0.0)) (or (not (= unit.y 0.0)) (not (= unit.z 0.0))))]
+                           (if live (* unit angle) [0.0 0.0 0.0]))) corner_angle pov))
+         point_sums (array/scatter_add vp contributions points)
+         point_units (exact (map (fn [(s : vec3)] (group_normal_unit s)) point_sums))
+         attribute_values (if typed (sop/attr in0 source_name :owner attribute_owner :type vec3)
+                            (array/vec3 (if (equal? attribute_owner "primitive") prims points)))
+         geometric_edge_sums (exact (map (fn [(a : int) (b : int)]
+                               (group_normal_edge_sum (array/nth point_units a) (array/nth point_units b)))
+                               adjacency.edge_a adjacency.edge_b))
+         attribute_edge_sums (exact (map (fn [(a : int) (b : int)]
+                               (group_normal_edge_sum (array/nth attribute_values a) (array/nth attribute_values b)))
+                               adjacency.edge_a adjacency.edge_b))
+         geometric_hits (case owner
+                          "Primitives" (exact (map (fn [(v : vec3)] (if (group_normal_matches v direction threshold include_opposite) 1 0))
+                                        prim_sums))
+                          "Points" (exact (map (fn [(v : vec3)] (if (group_normal_matches v direction threshold include_opposite) 1 0))
+                                     point_sums))
+                          :else (exact (map (fn [(v : vec3)] (if (group_normal_matches v direction threshold include_opposite) 1 0))
+                                  geometric_edge_sums)))
+         attribute_hits (case owner
+                          "Edges" (exact (map (fn [(v : vec3)] (if (group_normal_matches v direction threshold include_opposite) 1 0))
+                                    attribute_edge_sums))
+                          :else (exact (map (fn [(v : vec3)] (if (group_normal_matches v direction threshold include_opposite) 1 0))
+                                  attribute_values)))
+         geometric_scratch (sop/with_attr in0 "__rdk_normal_mask"
+                             {:offsets (array/concat (array/int 1 0) (array/int 1 total)) :values geometric_hits}
+                             :owner "detail" :type int_array)
+         attribute_scratch (sop/with_attr in0 "__rdk_normal_mask"
+                             {:offsets (array/concat (array/int 1 0) (array/int 1 total)) :values attribute_hits}
+                             :owner "detail" :type int_array)
+         wants_attribute (or (not (equal? requested ""))
+                             (and use_existing_normal (and (not (equal? owner "Primitives")) present)))]
+    (cond
+      (text/blank? name) (group_normal_error "Group Normal: empty output name")
+      (int/gt nonfinite 0) (group_normal_error "Group Normal: non-finite position")
+      (and (not (equal? requested "")) (not present))
+        (group_normal_error (str "Group Normal: missing " attribute_owner " float3 normal attribute " (text/repr requested)))
+      (and wants_attribute (not typed))
+        (group_normal_error (str "Group Normal: normal attribute " (text/repr source_name) " must have float3 storage"))
+      (and (not (equal? trimmed_base ""))
+           (not (fold [found false] [candidate (sop/group_names in0 "*" :owner element_owner)]
+                  (or found (equal? candidate trimmed_base)))))
+        (group_normal_error (str "Group Normal: missing " element_owner " base group " (text/repr trimmed_base)))
+      :else
+      (let* [mask (if wants_attribute
+                    (get (sop/attr attribute_scratch "__rdk_normal_mask" :owner "detail" :type int_array) :values)
+                    (get (sop/attr geometric_scratch "__rdk_normal_mask" :owner "detail" :type int_array) :values))
+             generated (if (equal? trimmed_base "") mask
+                         (exact (map (fn [(h : int) (b : int)] (int/and h b)) mask
+                           (sop/group in0 :name trimmed_base :owner element_owner))))]
+        (group_merge_publish in0 element_owner name generated merge)))))
