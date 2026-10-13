@@ -275,9 +275,41 @@ let rec plain = function
   | Record fs | Struct (_, _, fs) -> List.for_all (fun (_, v) -> plain v) fs
   | _ -> true
 
-let share_key node =
+(* Constants are shared by content, but marshalling a large array twice per optimization costs more than the
+   kernel that reads it. An array of at least [big_constant] elements is keyed by its physical identity within
+   one [share] call (arrays are immutable): equal content in two distinct arrays is simply not merged. *)
+let big_constant = 256
+let rec has_big = function
+  | E.Int_array a -> Array.length a >= big_constant
+  | Float_array a -> Array.length a >= big_constant
+  | Text_array a -> Array.length a >= big_constant
+  | Vec2_array a | Vec3_array a | Vec4_array a -> Array.length a >= big_constant
+  | List xs -> Array.exists has_big xs
+  | Record fs | Struct (_, _, fs) -> List.exists (fun (_, v) -> has_big v) fs
+  | _ -> false
+let constant_key ids v =
+  let piece s = string_of_int (String.length s) ^ ":" ^ s in
+  let rec key v =
+    if not (has_big v) then piece (Marshal.to_string v [Marshal.No_sharing]) else
+    let identity o = match List.find_opt (fun (p, _) -> p == o) !ids with
+      | Some (_, id) -> id
+      | None -> let id = List.length !ids in ids := (o, id) :: !ids; id in
+    match v with
+    | E.Int_array a -> "#I" ^ string_of_int (identity (Obj.repr a))
+    | Float_array a -> "#F" ^ string_of_int (identity (Obj.repr a))
+    | Text_array a -> "#T" ^ string_of_int (identity (Obj.repr a))
+    | Vec2_array a -> "#2" ^ string_of_int (identity (Obj.repr a))
+    | Vec3_array a -> "#3" ^ string_of_int (identity (Obj.repr a))
+    | Vec4_array a -> "#4" ^ string_of_int (identity (Obj.repr a))
+    | List xs -> "[" ^ String.concat "," (List.map key (Array.to_list xs)) ^ "]"
+    | Record fs -> "{" ^ String.concat "," (List.map (fun (n, v) -> piece n ^ key v) fs) ^ "}"
+    | Struct (n, ty, fs) -> "S" ^ piece (Marshal.to_string (n, ty) []) ^ key (Record fs)
+    | v -> piece (Marshal.to_string v [Marshal.No_sharing]) in
+  key v
+
+let share_key ids node =
   let kind = match node.kind with
-    | Source (Constant v) when plain v -> Some ("constant", Marshal.to_string v [Marshal.No_sharing])
+    | Source (Constant v) when plain v -> Some ("constant", constant_key ids v)
     | Source (Frame_field name) -> Some ("frame", name)
     | Kernel {body = Operation name; _} -> Some ("op", name)
     | Kernel {body = Vector; _} -> Some ("vector", "")
@@ -297,10 +329,10 @@ let share ir =
   validate ir;
   let n = Array.length ir.nodes in
   let remap = Array.make n 0 and kept = Array.copy ir.nodes and count = ref 0 in
-  let seen = Hashtbl.create n in
+  let seen = Hashtbl.create n and ids = ref [] in
   Array.iteri (fun i node ->
     let node = {node with args = List.map (fun e -> {e with node = remap.(e.node)}) node.args} in
-    let key = share_key node in
+    let key = share_key ids node in
     match Option.bind key (Hashtbl.find_opt seen) with
     | Some existing ->
         remap.(i) <- existing;

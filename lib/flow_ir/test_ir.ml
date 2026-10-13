@@ -138,6 +138,16 @@ let () =
     op ~precision:Approx "approx" [edge "a" 0];
     op ~rate:Frame "frame" [edge "a" 0]] [1; 2; 3]) in
   assert (Array.length phases.nodes = 4);
+  (* Large array constants are shared by physical identity, never by a key two different arrays could share. *)
+  let big_constant name a = node ~ty:(Flow.Ty.Array Flow.Ty.Float) ~count:(Count.Static (Array.length a)) name (Source (Constant (E.Float_array a))) in
+  let a = Array.init 1000 float_of_int in
+  let different = Array.copy a in
+  different.(999) <- -1.;
+  assert (Array.length (share (ir [big_constant "a" a; big_constant "same" a] [0; 1])).nodes = 1);
+  assert (Array.length (share (ir [big_constant "a" a; big_constant "different" different] [0; 1])).nodes = 2);
+  assert (Array.length (share (ir [big_constant "a" a; big_constant "copy" (Array.copy a)] [0; 1])).nodes = 2);
+  let small = [|1.; 2.|] in
+  assert (Array.length (share (ir [big_constant "a" small; big_constant "copy" (Array.copy small)] [0; 1])).nodes = 1);
   let opaque = node "catalog" (Opaque ("sop/box", None)) in
   assert (Array.length (share (ir [opaque; {opaque with id = ["other"], []}] [0; 1])).nodes = 2);
   let hoisted = hoist (ir [constant "a" 1.;
