@@ -1,0 +1,307 @@
+; Whole Torus draft. Points are row * columns + column. Every vertex is a packed (row, column) pair (row and
+; column may equal the counts, which wrap for points and normals and give UV 1), so one function per
+; connectivity names its point, normal and UV; the V end cap strip and the two U end caps follow the surface.
+(defn torus_error :context value [(reason : text)]
+  (error "invalid_parameter" "torus could not produce valid geometry"
+    :cause (str "torus [invalid_parameter]: Rdk.Parametric_generators.torus: " reason)))
+(defn torus_cmul :context value [(left : int) (right : int) (limit : int)]
+  (cond (or (int/lt left 0) (int/lt right 0)) -1
+        (int/eq left 0) 0
+        (int/le right (int/div limit left)) (int/mul left right)
+        :else -1))
+(defn torus_cadd :context value [(left : int) (right : int) (limit : int)]
+  (cond (or (int/lt left 0) (int/lt right 0)) -1
+        (int/le right (int/sub limit left)) (int/add left right)
+        :else -1))
+; The native construction check of output cardinality; true when every count fits.
+(defn torus_fits :context value
+  [(connectivity : text) (u_wrap : bool) (v_wrap : bool) (u_end_caps : bool) (v_end_cap : bool) (rows : int) (columns : int)]
+  (let* [limit (array/max_length :type int)
+         primitive_limit (int/sub limit 1)
+         points (torus_cmul rows columns limit)
+         u_cells (if u_wrap rows (int/sub rows 1))
+         v_cells (if v_wrap columns (int/sub columns 1))
+         cells (torus_cmul u_cells v_cells primitive_limit)
+         per_primitive (if (equal? connectivity "Quads") 1 2)
+         per_vertex (if (equal? connectivity "Quads") 4 6)
+         primitives (torus_cmul cells per_primitive primitive_limit)
+         vertices (torus_cmul cells per_vertex limit)
+         cap_primitives (if v_end_cap (torus_cmul u_cells per_primitive primitive_limit) 0)
+         cap_vertices (if v_end_cap (torus_cmul u_cells per_vertex limit) 0)
+         fixed_primitives (torus_cadd primitives cap_primitives primitive_limit)
+         fixed_vertices (torus_cadd vertices cap_vertices limit)]
+    (and (int/ge points 0)
+      (cond (equal? connectivity "Points") true
+            (equal? connectivity "Rows") (int/le columns primitive_limit)
+            (equal? connectivity "Columns") (int/le rows primitive_limit)
+            (equal? connectivity "Rows and columns")
+              (and (int/ge (torus_cmul 2 points limit) 0) (int/ge (torus_cadd rows columns primitive_limit) 0))
+            :else (and (int/ge cells 0) (and (int/ge primitives 0) (and (int/ge vertices 0)
+                    (and (int/ge fixed_primitives 0) (and (int/ge fixed_vertices 0)
+                    (and (int/ge (torus_cadd fixed_primitives (if u_end_caps 2 0) primitive_limit) 0)
+                         (int/ge (torus_cadd fixed_vertices (if u_end_caps (torus_cmul 2 columns limit) 0) limit) 0)))))))))))
+(defnode sop/torus :label "Torus" :category ["Create" "Primitive"]
+  :validate (let* [major (float/mul_checked major_radius uniform_scale) minor (float/mul_checked minor_radius uniform_scale)
+                   u_span (float/fma_checked u_end 1.0 (* -1.0 u_start)) v_span (float/fma_checked v_end 1.0 (* -1.0 v_start))]
+              (and (and (< (if u_wrap 2 1) rows) (< (if v_wrap 2 1) columns))
+                (and (and (> major_radius 0.0) (and (> minor_radius 0.0) (> uniform_scale 0.0)))
+                  (and (and major.valid (and minor.valid (and (> major.value 0.0) (> minor.value 0.0))))
+                    (and (and u_span.valid (not (= u_span.value 0.0))) (and v_span.valid (not (= v_span.value 0.0))))))))
+  :code "E_PARAM" :message "sop/torus: counts, radii, scale and angle spans must be valid"
+  [(connectivity : text "Triangles" :label "Connectivity"
+     :choices ["Triangles" "Alternating triangles" "Quads" "Rows" "Columns" "Rows and columns" "Points"])
+   (normals_mode : text "Explicit" :label "Normals mode" :choices ["Explicit" "Auto"])
+   (normals : text "Point" :label "Normals" :choices ["None" "Point" "Vertex"]
+     :validate (not (and (equal? connectivity "Points") (and (equal? normals_mode "Explicit") (equal? normals "Vertex"))))
+     :code "E_PARAM" :message "sop/torus: point output cannot carry vertex normals")
+   (orientation : text "Y axis" :label "Hole axis" :choices ["X axis" "Y axis" "Z axis" "Custom axis"]
+     :validate (not (and (equal? orientation "Custom axis") (and (= axis_x 0.0) (and (= axis_y 0.0) (= axis_z 0.0)))))
+     :code "E_PARAM" :message "sop/torus: custom axis must be nonzero")
+   (axis_x : float 0.0 :label "Axis X" :folder ["Transform" "Axis"] :min -1 :max 1 :vec3 ["axis" 0])
+   (axis_y : float 1.0 :label "Axis Y" :folder ["Transform" "Axis"] :min -1 :max 1 :vec3 ["axis" 1])
+   (axis_z : float 0.0 :label "Axis Z" :folder ["Transform" "Axis"] :min -1 :max 1 :vec3 ["axis" 2])
+   (rotation_order : text "XYZ" :label "Rotation order" :folder ["Transform" "Rotate"]
+     :choices ["XYZ" "XZY" "YXZ" "YZX" "ZXY" "ZYX"])
+   (major_radius : float 1.0 :label "Major radius" :folder ["Size"] :min 0.01 :max 10 :hard_min 0 :primary true)
+   (minor_radius : float 0.25 :label "Minor radius" :folder ["Size"] :min 0.01 :max 5 :hard_min 0 :primary true)
+   (uniform_scale : float 1.0 :label "Uniform scale" :folder ["Size"] :min 0.01 :max 10 :hard_min 0)
+   (center_x : float 0.0 :label "Center X" :folder ["Transform" "Center"] :min -10 :max 10 :vec3 ["center" 0])
+   (center_y : float 0.0 :label "Center Y" :folder ["Transform" "Center"] :min -10 :max 10 :vec3 ["center" 1])
+   (center_z : float 0.0 :label "Center Z" :folder ["Transform" "Center"] :min -10 :max 10 :vec3 ["center" 2])
+   (rotation_x : float 0.0 :label "Rotate X" :folder ["Transform" "Rotate"] :min -3.14159 :max 3.14159 :vec3 ["rotation" 0])
+   (rotation_y : float 0.0 :label "Rotate Y" :folder ["Transform" "Rotate"] :min -3.14159 :max 3.14159 :vec3 ["rotation" 1])
+   (rotation_z : float 0.0 :label "Rotate Z" :folder ["Transform" "Rotate"] :min -3.14159 :max 3.14159 :vec3 ["rotation" 2])
+   (u_start : float 0.0 :label "U start" :folder ["Arc" "U"] :min -6.283185 :max 6.283185)
+   (u_end : float 6.283185307179586 :label "U end" :folder ["Arc" "U"] :min -6.283185 :max 6.283185)
+   (v_start : float 0.0 :label "V start" :folder ["Arc" "V"] :min -6.283185 :max 6.283185)
+   (v_end : float 6.283185307179586 :label "V end" :folder ["Arc" "V"] :min -6.283185 :max 6.283185)
+   (u_wrap : bool true :label "Wrap U" :folder ["Arc" "U"])
+   (v_wrap : bool true :label "Wrap V" :folder ["Arc" "V"])
+   (u_end_caps : bool false :label "U end caps" :folder ["Caps"]
+     :validate (or (not u_end_caps)
+                 (and (not u_wrap) (and (>= columns 3)
+                   (not (or (equal? connectivity "Rows") (or (equal? connectivity "Columns")
+                     (or (equal? connectivity "Rows and columns") (equal? connectivity "Points"))))))))
+     :code "E_PARAM" :message "sop/torus: U end caps need polygon connectivity, an open U sweep and at least three columns")
+   (v_end_cap : bool false :label "V end cap" :folder ["Caps"]
+     :validate (or (not v_end_cap)
+                 (and (not v_wrap)
+                   (and (> (max (abs (- (cos v_end) (cos v_start))) (abs (- (sin v_end) (sin v_start)))) 1.4210854715202004e-14)
+                     (not (or (equal? connectivity "Rows") (or (equal? connectivity "Columns")
+                       (or (equal? connectivity "Rows and columns") (equal? connectivity "Points"))))))))
+     :code "E_PARAM" :message "sop/torus: V end cap needs polygon connectivity, an open V sweep and distinct endpoints")
+   (rows : int 48 :label "Rows" :folder ["Resolution"] :min 3 :max 256 :hard_min 2 :primary true
+     :validate (torus_fits connectivity u_wrap v_wrap u_end_caps v_end_cap rows columns)
+     :code "E_PARAM" :message "sop/torus: output cardinality exceeds OCaml array limits")
+   (columns : int 24 :label "Columns" :folder ["Resolution"] :min 3 :max 256 :hard_min 2 :primary true)
+   (uv_attribute : text "uv" :label "UV attribute" :folder ["Attributes"]
+     :validate (not (or (equal? (text/trim uv_attribute) "P") (equal? (text/trim uv_attribute) "N")))
+     :code "E_PARAM" :message "sop/torus: UV attribute cannot be P or N")]
+  (let* [pi_value 3.141592653589793
+         normal_mode (if (equal? normals_mode "Auto") "Point" normals)
+         uv_name (text/trim uv_attribute)
+         has_uv (not (text/blank? uv_name))
+         points_mode (equal? connectivity "Points")
+         rows_mode (equal? connectivity "Rows")
+         columns_mode (equal? connectivity "Columns")
+         both_mode (equal? connectivity "Rows and columns")
+         quads (equal? connectivity "Quads")
+         triangle_mode (not (or quads (or points_mode (or rows_mode (or columns_mode both_mode)))))
+         alternating (equal? connectivity "Alternating triangles")
+         major_scaled (* major_radius uniform_scale) minor_scaled (* minor_radius uniform_scale)
+         u_span (- u_end u_start) v_span (- v_end v_start)
+         reverse (if (< u_span 0.0) (not (< v_span 0.0)) (< v_span 0.0))
+         u_direction (if (< u_span 0.0) -1.0 1.0)
+         u_cells (if u_wrap rows (int/sub rows 1))
+         v_cells (if v_wrap columns (int/sub columns 1))
+         surface_cells (int/mul u_cells v_cells)
+         wide (int/add columns 1)
+         point_count (int/mul rows columns)
+         u_divisor (float (if u_wrap rows (int/sub rows 1)))
+         v_divisor (float (if v_wrap columns (int/sub columns 1)))
+         u_angle (fn [(i : int)]
+           (if (and (not u_wrap) (int/eq i (int/sub rows 1))) (+ u_start u_span)
+             (+ u_start (/ (* u_span (float i)) u_divisor))))
+         v_angle (fn [(i : int)]
+           (if (and (not v_wrap) (int/eq i (int/sub columns 1))) (+ v_start v_span)
+             (+ v_start (/ (* v_span (float i)) v_divisor))))
+         u_sine (exact (map (fn [(i : int)] (sin (u_angle i))) (array/range rows :type int)))
+         u_cosine (exact (map (fn [(i : int)] (cos (u_angle i))) (array/range rows :type int)))
+         v_sine (exact (map (fn [(i : int)] (sin (v_angle i))) (array/range columns :type int)))
+         v_cosine (exact (map (fn [(i : int)] (cos (v_angle i))) (array/range columns :type int)))
+         u_param (exact (map (fn [(i : int)] (/ (float i) u_divisor)) (array/range rows :type int)))
+         v_param (exact (map (fn [(i : int)] (/ (float i) v_divisor)) (array/range columns :type int)))
+         frame (gen_frame orientation [axis_x axis_y axis_z] [rotation_x rotation_y rotation_z] rotation_order)
+         comb (fn [(v : vec3)]
+           [(fma frame.t.x v.z (fma frame.p.x v.y (* frame.r.x v.x)))
+            (fma frame.t.y v.z (fma frame.p.y v.y (* frame.r.y v.x)))
+            (fma frame.t.z v.z (fma frame.p.z v.y (* frame.r.z v.x)))])
+         wrap_row (fn [(r : int)] (if (int/eq r rows) 0 r))
+         wrap_col (fn [(c : int)] (if (int/eq c columns) 0 c))
+         point_of (fn [(row : int) (col : int)] (int/add (int/mul (wrap_row row) columns) (wrap_col col)))
+         smooth (fn [(row : int) (col : int)]
+           (comb [(* (array/nth v_cosine col) (array/nth u_cosine row)) (array/nth v_sine col)
+                  (* (array/nth v_cosine col) (array/nth u_sine row))]))
+         ; ---- points ----
+         points (array/range point_count :type int)
+         point_row (exact (map (fn [(p : int)] (int/div p columns)) points))
+         point_col (exact (map (fn [(p : int)] (int/mod p columns)) points))
+         safe (and (< (max (abs center_x) (max (abs center_y) (abs center_z))) 1e307)
+                (and (< major_scaled 1e307) (< minor_scaled 1e307)))
+         invalid (if safe (array/int 0)
+           (array/compact (map (fn [(row : int) (col : int)]
+             (let* [ring (float/fma_checked minor_scaled (array/nth v_cosine col) major_scaled)
+                    lx (float/mul_checked ring.value (array/nth u_cosine row))
+                    ly (float/mul_checked minor_scaled (array/nth v_sine col))
+                    lz (float/mul_checked ring.value (array/nth u_sine row))
+                    x1 (float/fma_checked frame.r.x lx.value center_x) x2 (float/fma_checked frame.p.x ly.value x1.value)
+                    x3 (float/fma_checked frame.t.x lz.value x2.value)
+                    y1 (float/fma_checked frame.r.y lx.value center_y) y2 (float/fma_checked frame.p.y ly.value y1.value)
+                    y3 (float/fma_checked frame.t.y lz.value y2.value)
+                    z1 (float/fma_checked frame.r.z lx.value center_z) z2 (float/fma_checked frame.p.z ly.value z1.value)
+                    z3 (float/fma_checked frame.t.z lz.value z2.value)]
+               (if (and (and ring.valid (and lx.valid (and ly.valid lz.valid)))
+                     (and (and x1.valid (and x2.valid x3.valid)) (and (and y1.valid (and y2.valid y3.valid))
+                       (and z1.valid (and z2.valid z3.valid))))) 0 1))) point_row point_col)))]
+    (if (int/gt (array/count invalid) 0)
+      (torus_error (str "generated point " (array/nth invalid 0) " is not finite"))
+      (let* [positions (exact (map (fn [(row : int) (col : int)]
+               (let* [ring (fma minor_scaled (array/nth v_cosine col) major_scaled)
+                      lx (* ring (array/nth u_cosine row)) ly (* minor_scaled (array/nth v_sine col))
+                      lz (* ring (array/nth u_sine row))]
+                 [(fma frame.t.x lz (fma frame.p.x ly (fma frame.r.x lx center_x)))
+                  (fma frame.t.y lz (fma frame.p.y ly (fma frame.r.y lx center_y)))
+                  (fma frame.t.z lz (fma frame.p.z ly (fma frame.r.z lx center_z)))])) point_row point_col))
+             ; ---- vertex stream: surface, optional V cap strip, optional U caps ----
+             vertices_per_cell (if triangle_mode 6 4)
+             v_cap_cells (if (and v_end_cap (or triangle_mode quads)) u_cells 0)
+             surface_vertices (int/mul surface_cells vertices_per_cell)
+             v_cap_vertices (int/mul v_cap_cells vertices_per_cell)
+             fixed_vertices (int/add surface_vertices v_cap_vertices)
+             per_cell_primitives (if triangle_mode 2 1)
+             fixed_primitives (int/mul (int/add surface_cells v_cap_cells) per_cell_primitives)
+             u_cap_vertices (if u_end_caps (int/mul 2 columns) 0)
+             polygon (or triangle_mode quads)
+             vertex_count (cond points_mode 0
+                                rows_mode point_count
+                                columns_mode point_count
+                                both_mode (int/mul 2 point_count)
+                                :else (int/add fixed_vertices u_cap_vertices))
+             vertices (array/range vertex_count :type int)
+             ; masks of (row offset, column offset) per slot for the surface cell
+             row_mask (cond quads (if reverse 6 12)
+                            alternating (if reverse 50 52)
+                            :else (if reverse 50 52))
+             col_mask (cond quads (if reverse 12 6)
+                            alternating (if reverse 44 26)
+                            :else (if reverse 38 22))
+             cap_row_mask (cond quads 6 alternating 26 :else 22)
+             cap_side_mask (if quads 12 52)
+             rows_vertices point_count
+             packed (exact (map (fn [(v : int)]
+               (cond
+                 rows_mode (int/add (int/mul (int/mod v rows) wide) (int/div v rows))
+                 columns_mode (int/add (int/mul (int/div v columns) wide) (int/mod v columns))
+                 both_mode
+                   (if (int/lt v rows_vertices)
+                     (int/add (int/mul (int/mod v rows) wide) (int/div v rows))
+                     (let* [w (int/sub v rows_vertices)]
+                       (int/add (int/mul (int/div w columns) wide) (int/mod w columns))))
+                 (int/lt v surface_vertices)
+                   (let* [cell (int/div v vertices_per_cell) slot (int/mod v vertices_per_cell)
+                          row (int/div cell v_cells) col (int/mod cell v_cells)
+                          odd (int/eq (int/and (int/add row col) 1) 1)
+                          rmask (if (and alternating (not odd)) (if reverse 50 52) row_mask)
+                          cmask (if (and alternating (not odd)) (if reverse 38 22) col_mask)]
+                     (int/add (int/mul (int/add row (int/and (int/shr rmask slot) 1)) wide)
+                              (int/add col (int/and (int/shr cmask slot) 1))))
+                 (int/lt v fixed_vertices)
+                   (let* [w (int/sub v surface_vertices)
+                          row (int/div w vertices_per_cell) slot (int/mod w vertices_per_cell)
+                          odd (int/eq (int/and row 1) 1)
+                          rmask (if (and alternating (not odd)) 22 cap_row_mask)
+                          smask (if (and alternating (not odd)) 52 cap_side_mask)]
+                     (int/add (int/mul (int/add row (int/and (int/shr rmask slot) 1)) wide)
+                              (if (int/eq (int/and (int/shr smask slot) 1) 1) (int/sub columns 1) 0)))
+                 :else 0)) vertices))
+             vertex_row (exact (map (fn [(k : int)] (int/div k wide)) packed))
+             vertex_col (exact (map (fn [(k : int)] (int/mod k wide)) packed))
+             ; U cap vertices overwrite the placeholder pack: point of (row, column) from the cap order.
+             cap_start (fn [(local : int)] (int/lt local columns))
+             cap_column (fn [(local : int)]
+               (if (cap_start local)
+                 (if reverse local (int/sub (int/sub columns 1) local))
+                 (let* [index (int/sub local columns)] (if reverse (int/sub (int/sub columns 1) index) index))))
+             vertex_points (exact (map (fn [(v : int) (row : int) (col : int)]
+               (if (and u_end_caps (and (int/ge v fixed_vertices) polygon))
+                 (let* [local (int/sub v fixed_vertices)]
+                   (point_of (if (cap_start local) 0 (int/sub rows 1)) (cap_column local)))
+                 (point_of row col))) vertices vertex_row vertex_col))
+             primitive_count (cond points_mode 0
+                                   rows_mode columns
+                                   columns_mode rows
+                                   both_mode (int/add rows columns)
+                                   :else (int/add fixed_primitives (if u_end_caps 2 0)))
+             row_primitives (cond rows_mode columns both_mode columns :else 0)
+             vertices_per_primitive (if triangle_mode 3 4)
+             offsets (exact (map (fn [(i : int)]
+               (cond (or rows_mode (or columns_mode both_mode))
+                       (if (int/le i row_primitives) (int/mul i rows)
+                         (int/add (int/mul row_primitives rows) (int/mul (int/sub i row_primitives) columns)))
+                     (int/le i fixed_primitives) (int/mul i vertices_per_primitive)
+                     :else (int/add fixed_vertices (int/mul (int/sub i fixed_primitives) columns))))
+               (array/range (int/add primitive_count 1) :type int)))
+             kinds (exact (map (fn [(i : int)]
+               (cond (or rows_mode (or columns_mode both_mode))
+                       (if (int/lt i row_primitives) (if u_wrap 2 1) (if v_wrap 2 1))
+                     :else 0)) (array/range primitive_count :type int)))
+             base (if points_mode
+               (sop/mesh :points positions :vertex_points (array/int 0) :primitive_offsets (array/int 1) :kinds (array/int 0))
+               (sop/mesh :points positions :vertex_points vertex_points :primitive_offsets offsets :kinds kinds))
+             ; V cap side normal and U cap normals
+             chord_x (- (cos v_end) (cos v_start)) chord_y (- (sin v_end) (sin v_start))
+             v_cap_normal (fn [(row : int)]
+               (let* [r (wrap_row row)
+                      x (* (* u_direction (* -1.0 chord_y)) (array/nth u_cosine r))
+                      y (* u_direction chord_x)
+                      z (* (* u_direction (* -1.0 chord_y)) (array/nth u_sine r))
+                      scale (max (abs x) (max (abs y) (abs z)))
+                      nx (/ x scale) ny (/ y scale) nz (/ z scale)
+                      length (sqrt (fma nz nz (fma ny ny (* nx nx))))]
+                 (comb [(/ nx length) (/ ny length) (/ nz length)])))
+             u_cap_normal (fn [(local : int)]
+               (let* [start (cap_start local)
+                      r (if start 0 (int/sub rows 1))
+                      sign (* u_direction (if start -1.0 1.0))]
+                 (comb [(* sign (* -1.0 (array/nth u_sine r))) 0.0 (* sign (array/nth u_cosine r))])))
+             with_point_normals (if (equal? normal_mode "Point")
+               (sop/with_attr base "N" (exact (map (fn [(row : int) (col : int)] (smooth row col)) point_row point_col))
+                 :owner "point" :type vec3)
+               base)
+             with_vertex_normals (if (equal? normal_mode "Vertex")
+               (sop/with_attr with_point_normals "N"
+                 (exact (map (fn [(v : int) (row : int) (col : int)]
+                   (cond (and (int/ge v surface_vertices) (and (int/lt v fixed_vertices) polygon)) (v_cap_normal row)
+                         (and (int/ge v fixed_vertices) polygon) (u_cap_normal (int/sub v fixed_vertices))
+                         :else (smooth (wrap_row row) (wrap_col col)))) vertices vertex_row vertex_col))
+                 :owner "vertex" :type vec3)
+               with_point_normals)
+             with_uv (cond
+               (not has_uv) with_vertex_normals
+               points_mode
+                 (sop/with_attr with_vertex_normals uv_name
+                   (exact (map (fn [(row : int) (col : int)] [(array/nth u_param row) (array/nth v_param col)]) point_row point_col))
+                   :owner "point" :type vec2)
+               :else
+                 (sop/with_attr with_vertex_normals uv_name
+                   (exact (map (fn [(v : int) (row : int) (col : int)]
+                     (cond (and (int/ge v surface_vertices) (and (int/lt v fixed_vertices) polygon))
+                             [(if (int/eq row rows) 1.0 (array/nth u_param row))
+                              (if (int/eq col 0) 0.0 1.0)]
+                           (and (int/ge v fixed_vertices) polygon)
+                             (let* [column (cap_column (int/sub v fixed_vertices))]
+                               [(fma 0.5 (array/nth v_cosine column) 0.5) (fma 0.5 (array/nth v_sine column) 0.5)])
+                           :else [(if (int/eq row rows) 1.0 (array/nth u_param row))
+                                  (if (int/eq col columns) 1.0 (array/nth v_param col))])) vertices vertex_row vertex_col))
+                   :owner "vertex" :type vec2))]
+        with_uv))))
