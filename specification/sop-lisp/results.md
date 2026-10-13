@@ -4962,3 +4962,44 @@ real extra expansion but keeps all reached entries warm.
 Request12304 EXIT0: /tmp/rays-declaration-cone-dispatch-focused-20261013.log,
 @check, FlowSOP/IR, dependency and API gates. No signature/snapshot changed.
 Evidence extends declaration-cache-validation.md; counts remain14/128 and24/60.
+
+## Line whole port accepted —15/128
+
+Complete Line now resolves through nodes/line.rays; its native catalog
+registration is removed in the same whole-port commit. Native RDK and
+Sop.Nodes.Line.factory remain independent test oracles. All9 physical fields,
+both output kinds, defaults/ranges/labels/folders, operation/version and
+normalized cache keys match native. Explicit verified FMA reproduces native
+arithmetic bit-exactly; ordinary multiplication/addition remain unfused.
+
+Native/reference/strict/domain/grain tests cover1/2/6/4225/32769/100001 points,
+extreme/subnormal directions, signed zeros, finite endpoint cancellation,
+unused one-point endpoints, every field's direct/graph edit, static/relabel
+hits, one public miss and warm hit, source save/reparse, live/state drives,
+wrong input/choice/nonfinite rollback and native cook causes. Production review
+added the post-endpoint scalar-capacity guard preserving the actual native
+uncaught Array.make envelope; safely rejected huge counts and mixed failure/
+cancellation precedence pass without allocating giant buffers.
+
+Final whole1M table64751 EXIT0, all8 original rows PASS. Maximum ratio is
+1.712323912 (oblique Curve,d4); byte-exact native/reference/domain preflights
+pass. Log /tmp/rays-line-production-final-benchmark-20261013.log. All previous
+failed tables remain in line-port-audit.md; no threshold, row, mode or callback
+changed to obtain acceptance. Apple M1/macOS27.0.1/OCaml5.3/Dune dev/grain4096,
+median3 cold samples,d1/4; all agents ACK-paused, background desktop/VM retained.
+
+Native83712 EXIT0: /tmp/rays-line-production-native-20261013.log,
+@runtest-native. Ship99108 EXIT0: /tmp/rays-line-production-ship-20261013.log,
+@all/@runtest/@smoke/diffcheck;43 standard+1 custom+13 fixtures, four times and
+domains1/8, cooked payload/render command parity. Actual production Core_add
+menu11675 EXIT0: /tmp/rays-line-real-menu-focused-20261013.log; real /a/search/
+Enter insertion/card/default descriptor, inserted-node native bytes at1/4/8
+domains×1/97/4096 grains, line_port/catalog/API/dependency/type checks.
+
+Reviewed/promoted textual snapshots: lib/sop_catalog/flow_manifest.sexp (only
+Line's unchanged declaration moved, body lisp/calls and digest) and
+tools/lisp/test/ml.t (catalog digest only). No PNG/render/public API golden changed.
+The new whole-port function is in lib/sop/test_lisp_ports.ml and rich Line checks
+run under normal FlowSOP runtest. Counts:15/128 ports (11.7%),113 remaining;
+24/60 milestones (40%). C.7 stays unchecked with only1/11 generators accepted.
+Points' full recipe/performance is qualified but its production port is pending.

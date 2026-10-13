@@ -764,6 +764,36 @@ let set_color () =
     [["owner",P.Choice_value"Detail";"group",P.Text_value"selected"];
      ["owner",P.Choice_value"Edge"]]
 
+let line () =
+  check(not(List.exists(fun factory->Sop.Edit_graph.factory_key factory="line")
+    Sop_catalog.Editor.factories)) "Line still registered as an OCaml body";
+  let sources=Flow_sop.Catalog.sources() |>flow_ok in
+  let factories=Sop_catalog.Editor.factories in
+  let catalog=Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version factories |>flow_ok in
+  List.iter(fun(kind,count)->
+    let forms=Flow.Syntax.parse(Printf.sprintf
+      "(workspace line_port (graph g :context sop (sop/line :kind %S :points %d :origin [-2.5 1.25 -0.75] :direction [0.25 -0.5 0.75] :length 3.75)))"
+      kind count) |>flow_ok in
+    let workspace=match Flow_sop.Catalog.check_workspace ~sources ~ops:Flow_sop.Operators.all catalog forms with
+      |Some workspace,ds when not(List.exists(fun(d:Flow.Diagnostic.t)->d.severity=Error)ds)->workspace
+      |_,ds->fail(String.concat "\n"(List.map Flow.Diagnostic.to_string ds)) in
+    let native=Sop.Edit_graph.instantiate Sop.Nodes.Line.factory [] |>get_string_ok in
+    let native=fst(N.apply_parameters native ["kind",P.Choice_value kind;"points",P.Int_value count;
+      "origin_x",P.Float_value(-2.5);"origin_y",P.Float_value 1.25;"origin_z",P.Float_value(-0.75);
+      "direction_x",P.Float_value 0.25;"direction_y",P.Float_value(-0.5);"direction_z",P.Float_value 0.75;
+      "length",P.Float_value 3.75] |>get_string_ok) in
+    List.iter(fun reference->
+      let lowered=Flow_sop.Lower.of_checked ~reference ~factories workspace |>flow_ok in
+      let graph=List.hd lowered.graphs in
+      let actual=Sop.Edit_graph.compile_node graph.network.geometry ~node_id:(Option.get graph.root) |>get_string_ok in
+      check(N.parameter_fields actual=N.parameter_fields native && N.parameter_key actual=N.parameter_key native)
+        "Production Line schema/cache key";
+      let s=session() in Fun.protect ~finally:(fun()->Sop.Session.close s)(fun()->
+        List.iter(fun domains->let c=context domains 97 in
+          check(geometry_bytes(cooked s c actual)=geometry_bytes(cooked s c native))
+            "Production Line native/reference/domain bytes") [1;4;8])) [false;true])
+    ["Polygon curve",4225;"Points",1;"Points",32769]
+
 let ()=if Array.exists ((=) "--bench") Sys.argv then benchmark ()
   else if Array.exists ((=) "--rename-attributes") Sys.argv then rename_attributes ()
-  else (noise_displace ();set_float ();set_int ();set_vector ();set_orient ();set_transform ();delete_edge_group ();rename_edge_group ();delete_attributes ();rename_attributes ();group_delete ();group_rename ();swap_attributes ();set_color ())
+  else (noise_displace ();set_float ();set_int ();set_vector ();set_orient ();set_transform ();delete_edge_group ();rename_edge_group ();delete_attributes ();rename_attributes ();group_delete ();group_rename ();swap_attributes ();set_color ();line ())

@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "15828e467da54640d73dc4d51dae5337")
+  (digest "a89cc03f7f3ee2e0dc5130510617b400")
   (kinds
     (kind "sop/box"
       (key "box")
@@ -113,25 +113,6 @@
         (field "input" "Source" (folder) (int (soft 0 9999) (hard 0 nil)) (int 0) (primary false) (vec3) (description "Input branch displayed and cooked by this Switch SOP")))
       (outputs (output "geo" geometry))
       (facts (cook-mode passthrough 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/line"
-      (key "line")
-      (aliases)
-      (operation "line")
-      (label "Line")
-      (category "Create" "Curve")
-      (slots)
-      (fields
-        (field "kind" "Primitive type" (folder) (choice "Polygon curve" "Points") (choice "Polygon curve") (primary false) (vec3))
-        (field "points" "Points" (folder) (int (soft 2 128) (hard 1 nil)) (int 2) (primary false) (vec3))
-        (field "origin_x" "Origin X" (folder "Origin") (float (soft -10 10) (hard nil nil)) (float 0) (primary false) (vec3 "origin" 0))
-        (field "origin_y" "Origin Y" (folder "Origin") (float (soft -10 10) (hard nil nil)) (float 0) (primary false) (vec3 "origin" 1))
-        (field "origin_z" "Origin Z" (folder "Origin") (float (soft -10 10) (hard nil nil)) (float 0) (primary false) (vec3 "origin" 2))
-        (field "direction_x" "Direction X" (folder "Direction") (float (soft -1 1) (hard nil nil)) (float 0) (primary false) (vec3 "direction" 0))
-        (field "direction_y" "Direction Y" (folder "Direction") (float (soft -1 1) (hard nil nil)) (float 1) (primary false) (vec3 "direction" 1))
-        (field "direction_z" "Direction Z" (folder "Direction") (float (soft -1 1) (hard nil nil)) (float 0) (primary false) (vec3 "direction" 2))
-        (field "length" "Length" (folder) (float (soft 0 10) (hard 0 nil)) (float 1) (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode generator) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/circle"
       (key "circle")
       (aliases)
@@ -3356,6 +3337,26 @@
       (slots (slot "in0" required))
       (fields
         (field "rules" "Rules (owner, pattern, replacement, conflict)" (folder) (text) (text "") (primary false) (vec3)))
+      (outputs (output "geo" geometry))
+      (body lisp)
+      (calls))
+    (kind "sop/line"
+      (key "line")
+      (aliases)
+      (operation "line")
+      (label "Line")
+      (category "Create" "Curve")
+      (slots)
+      (fields
+        (field "kind" "Primitive type" (folder) (choice "Polygon curve" "Points") (choice "Polygon curve") (primary false) (vec3))
+        (field "points" "Points" (folder) (int (soft 2 128) (hard 1 nil)) (int 2) (primary false) (vec3))
+        (field "origin_x" "Origin X" (folder "Origin") (float (soft -10 10) (hard nil nil)) (float 0) (primary false) (vec3 "origin" 0))
+        (field "origin_y" "Origin Y" (folder "Origin") (float (soft -10 10) (hard nil nil)) (float 0) (primary false) (vec3 "origin" 1))
+        (field "origin_z" "Origin Z" (folder "Origin") (float (soft -10 10) (hard nil nil)) (float 0) (primary false) (vec3 "origin" 2))
+        (field "direction_x" "Direction X" (folder "Direction") (float (soft -1 1) (hard nil nil)) (float 0) (primary false) (vec3 "direction" 0))
+        (field "direction_y" "Direction Y" (folder "Direction") (float (soft -1 1) (hard nil nil)) (float 1) (primary false) (vec3 "direction" 1))
+        (field "direction_z" "Direction Z" (folder "Direction") (float (soft -1 1) (hard nil nil)) (float 0) (primary false) (vec3 "direction" 2))
+        (field "length" "Length" (folder) (float (soft 0 10) (hard 0 nil)) (float 1) (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (body lisp)
       (calls))

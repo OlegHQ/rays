@@ -1,4 +1,4 @@
-; Whole Line draft. Native factory stays registered until the complete recipe gate.
+; Native-compatible line and isolated-point generator over owned scalar planes.
 (defnode sop/line :label "Line" :category ["Create" "Curve"]
   [(kind : text "Polygon curve" :label "Primitive type" :choices ["Polygon curve" "Points"])
    (points : int 2 :label "Points" :min 2 :max 128 :hard_min 1)
@@ -29,7 +29,10 @@
           (if (not (and end_x.valid (and end_y.valid end_z.valid)))
             (error "invalid_parameter" "line could not produce valid geometry"
               :cause "line [invalid_parameter]: Rdk.Line_geometry.line: endpoint is not finite")
-            (let* [last (int/sub points 1)
+            (if (int/gt points (array/max_length :type float))
+              (error "uncaught_node_exception" "a procedural node raised an exception while cooking"
+                :cause "Invalid_argument(\"Array.make\")")
+              (let* [last (int/sub points 1)
                    indices (array/range points :type int)
                    plane_x (exact (map (fn [(index : int)]
                      (cond (int/eq index 0) origin_x
@@ -51,4 +54,4 @@
                   :primitive_offsets (array/int 1) :kinds (array/int 0))
                 (sop/mesh_planes :points {:x plane_x :y plane_y :z plane_z} :vertex_points indices
                   :primitive_offsets (array/concat (array/int 1) (array/int 1 points))
-                  :kinds (array/int 1 1))))))))))
+                  :kinds (array/int 1 1)))))))))))

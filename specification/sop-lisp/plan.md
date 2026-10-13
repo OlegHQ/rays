@@ -650,7 +650,7 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 - [x] C.4 — ordered compact indices, exclusive Int offsets and scatter-add pass native/reference/Core/domain, ownership/error/state, geometry composition, graph/editor, actual JavaScript runtime/worker and final shipping gates; evidence in the three bulk-array validation notes and `results.md`.
 - [x] C.5 — stable Int/Float/byte-Text grade and exact first-match Int/Text lookup pass native/reference/Core/domain, ownership/error/state, consumer, graph/editor, actual JavaScript runtime/worker and final shipping gates; evidence in `grade-index-validation.md` and `results.md`.
 - [ ] C.6
-- [ ] C.7
+- [ ] C.7 — Line is complete (1/11 generators); its full recipe, production menu, native and shipping evidence is in `line-port-audit.md` and `results.md`. The other ten remain unaccepted.
 - [ ] C.8
 - [ ] C.9
 - [ ] C.10

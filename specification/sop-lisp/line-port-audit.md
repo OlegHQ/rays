@@ -1,7 +1,9 @@
-# Full Line port audit and pending recipe gate
+# Complete Line port and recipe audit
 
-This is an applied pending candidate for C.7, not a completed port. The native
-`Sop.Nodes.Line.factory` remains registered and is the oracle. The draft uses
+Line is accepted as a complete C.7 port after its semantic, performance,
+production-menu, native and shipping gates. `Sop.Nodes.Line.factory` remains
+the oracle; its catalog registration is removed alongside the production Lisp
+source. The recipe uses
 only the ordinary checked Lisp body and typed `sop/mesh_planes`; no Line callback or
 generic host operation invokes `Line_geometry.line`.
 
@@ -176,9 +178,9 @@ The later first-vertex error-path correction was measured only in the native
 constructor benchmark, without rerunning Line to seek a passing near-threshold
 row. The full Line gate remains failed and no port is counted.
 
-## Pending commands and integration
+## Original draft integration checklist
 
-Remaining acceptance work:
+At the original draft stage, remaining acceptance work was:
 
 ```sh
 opam exec -- _build/default/tools/check.exe @check @lib/flow_sop/line_draft @lib/flow_sop/runtest @lib/sop/runtest @test/dependency_gate
@@ -193,3 +195,80 @@ included. Root must first resolve actual compile/semantic/performance failures,
 review the separate typed plane constructor and actual eight-row cost, and then perform the atomic production
 rename/native-unregister and production catalog/source/menu/native shipping
 gates. C.7 contains additional generators and cannot be ticked for Line alone.
+
+## Final production recipe and integration evidence
+
+After shared mesh-plane validation gained about30% at four domains, the unchanged
+full eight-row table passed in request94760 EXIT0,
+`/tmp/rays-line-mesh-plane-after-20261013.log`. All previous failures remain
+above; the later rerun followed a measured implementation change.
+
+Production review found an uncovered native allocation refusal. Native Line
+validates direction and endpoint before Array.make; counts above native array
+capacity raise Invalid_argument("Array.make"), wrapped by Session as
+uncaught_node_exception / "a procedural node raised an exception while cooking".
+The authored body now guards the Float capacity after endpoint validation and
+before collectors, preserving that exact cause. Safe over-capacity/max_int,
+zero-direction/endpoint precedence and pre-cancelled cases compare native and
+strict/reference code/message/cause at domains1/4/8 and grains1/97/4096 without
+allocating giant buffers. Request69170 EXIT0:
+`/tmp/rays-line-capacity-focused-20261013.log`.
+
+The candidate was renamed to nodes/line.rays and native catalog registration
+removed together in the worktree. The dedicated recipe loads actual embedded
+sources and runs under normal runtest/line_port. test_lisp_ports has its own
+production zero-input Line oracle function. Scoped catalog fixtures explicitly
+retain their native oracle rather than duplicate embedded declarations; the raw
+checker boundary supplies its explicit native source factory. The shared
+unrelated-helper cache issue was fixed separately with transitive declaration
+keys and actual miss/hit regressions; no counter assertion was relaxed.
+
+The promoted manifest moves only Line's declaration, retains all nine fields,
+slots/outputs/operation/label/category, replaces native facts with body lisp and
+empty calls, and updates its digest. tools/lisp/test/ml.t changes only catalog
+digest; authored source digest/delimiter remain unchanged. No public API changed.
+
+Final production timing request64751 EXIT0,
+`/tmp/rays-line-production-final-benchmark-20261013.log`, after the shared
+concrete Executor optimization and the capacity/production changes:
+
+| Mode | Domains | Native seconds | Lisp seconds | Ratio / gate |
+| --- | ---: | ---: | ---: | ---: |
+| curve_default_direction | 1 | 0.005894899 | 0.005195141 | 0.881294237 PASS |
+| curve_default_direction | 4 | 0.002596140 | 0.004115105 | 1.585085866 PASS |
+| points_default_direction | 1 | 0.005117178 | 0.002747059 | 0.536830825 PASS |
+| points_default_direction | 4 | 0.001899958 | 0.002122164 | 1.116953194 PASS |
+| curve_oblique | 1 | 0.005975008 | 0.005739927 | 0.960655999 PASS |
+| curve_oblique | 4 | 0.002691031 | 0.004607916 | 1.712323912 PASS |
+| points_oblique | 1 | 0.005207062 | 0.002810001 | 0.539652015 PASS |
+| points_oblique | 4 | 0.001848936 | 0.002315998 | 1.252611219 PASS |
+
+All rows have the original1M-point/grain4096/median3 fresh-cold-session protocol
+and byte-exact native/reference/domain preflights. Apple M1 Macmini9,1,16GiB,
+arm64,macOS27.0.1 build26A434,OCaml5.3.0,Dune dev; all three agents paused and
+acknowledged before measurement. Desktop/VM processes remained running. Main
+allocation is about32MB curves/24MB Points; promoted words0 and major words
+4,000,004/3,000,003. Initial-domain counters exclude worker allocation.
+
+Focused production/compiler/CLI/catalog/API/dependency request83851 EXIT0:
+`/tmp/rays-concrete-executor-focused3-20261013.log`. Native integration83712
+EXIT0, `/tmp/rays-line-production-native-20261013.log`, covers @runtest-native;
+no render golden changed. Shipping request99108 EXIT0,
+`/tmp/rays-line-production-ship-20261013.log`, passes @all, @runtest, @smoke and
+git diff --check, including the43 standard workspaces,1 custom-catalog executable
+and13 fixtures at four times/domains1/8 with equal cooked payloads/render commands.
+
+Source review found that existing PXUI menu-search tests cover native factories
+only. The additional actual Core_add Line case presses /a, enters line and
+confirms the produced source/card/embedded descriptor/default fields/key. It
+compiles the real inserted node from the editor document and compares its full
+default position/topology bytes and empty metadata/instances to native at1/4/8
+domains, grains1/97/4096. Request11675 EXIT0,
+`/tmp/rays-line-real-menu-focused-20261013.log`, covers that real shell gesture,
+line_port, @check, catalog, API and dependency gates after the shipping sweep.
+
+Accepted whole ports are15/128 (11.7%),113 remaining; milestones remain24/60.
+Line is one of C.7's11 generators, so C.7 stays unchecked. The paired port
+commit contains only Line's body/registration/oracle/menu/integration changes
+and its two textual catalog/CLI snapshots; no other node or render golden is
+refreshed or counted.

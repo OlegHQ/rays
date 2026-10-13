@@ -4,8 +4,7 @@ module N = Sop.Node
 module P = Param
 module S = Flow.Syntax
 let checked = function Ok value->value|Error d->fail(Flow.Diagnostic.to_string d)
-let sources = (Flow_sop.Catalog.sources() |>checked) @
-  (In_channel.with_open_bin "nodes/line.pending" In_channel.input_all |>S.parse |>checked)
+let sources = Flow_sop.Catalog.sources() |>checked
 let factories=List.filter(fun f->Sop.Edit_graph.factory_key f<>"line")Sop_catalog.Editor.factories
 let catalog fs=Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version fs |>checked
 let checker forms=Flow_sop.Catalog.check_workspace ~sources ~ops:Flow_sop.Operators.all (catalog factories) forms
@@ -82,10 +81,20 @@ let verify ()=
 let errors ()=
   let zero=xyz "direction"(0.,-0.,0.) in
   let overflowing=xyz "origin"(Float.max_float,0.,0.)@xyz "direction"(1.,0.,0.)@[f "length"Float.max_float] in
+  (* Every oversized native array rejects before allocating, including the
+     curve's integer vertex array if OCaml evaluates that binding first. *)
+  let over_capacity=max Sys.max_floatarray_length Sys.max_array_length+1 in
   let cases=["curve_minimum",[i 1];"curve_minimum_before_zero",i 1::zero;
     "zero_direction",zero;"zero_direction_points_one",kind "Points"::i 1::zero;
     "endpoint",overflowing;"unused_endpoint_points_one",kind "Points"::i 1::overflowing;
-    "zero_before_endpoint",zero@xyz "origin"(Float.max_float,0.,0.)@[f "length"Float.max_float]] in
+    "zero_before_endpoint",zero@xyz "origin"(Float.max_float,0.,0.)@[f "length"Float.max_float]]
+    @List.concat_map(fun mode->List.map(fun(label,changes)->mode^"_"^label,kind mode::changes)
+      ["over_capacity",[i over_capacity];"max_int",[i max_int];
+       "zero_before_capacity",i over_capacity::zero;
+       "endpoint_before_capacity",i over_capacity::overflowing;
+       "zero_before_endpoint_and_capacity",i over_capacity::zero@
+         xyz "origin"(Float.max_float,0.,0.)@[f "length"Float.max_float]])
+      ["Polygon curve";"Points"] in
   List.iter(fun(label,changes)->session(fun s->let expected=match result s 1 97(native changes)with
     |Error error->error|Ok _->fail("Line expected native error "^label)in
     List.iter(fun reference->let actual=node ~reference(keywords changes)in
@@ -93,14 +102,16 @@ let errors ()=
         |Error error->check(error.code=expected.code && error.message=expected.message && error.cause=expected.cause)
             ("Line exact cook diagnostic "^label)
         |Ok _->fail("Line cook error lost "^label))[1;97;4096])[1;4;8])[false;true]))cases;
-  List.iter(fun reference->session(fun s->
+  List.iter(fun changes->List.iter(fun reference->session(fun s->
     let cancel=Sop.Context.Cancel.create()in Sop.Context.Cancel.cancel cancel;
-    let expected=result ~cancel s 1 97(native[i 32769])and actual=result ~cancel s 1 97(node ~reference ":points 32769")in
+    let expected=result ~cancel s 1 97(native changes)
+    and actual=result ~cancel s 1 97(node ~reference(keywords changes))in
     match actual,expected with
     |Error actual,Error expected->check(actual.code=expected.code && actual.message=expected.message && actual.cause=expected.cause)
         "Line cancellation native diagnostic"
-    |_->fail "Line cancelled cook succeeded"))[false;true];
-  print_endline "Line minimum/direction/endpoint precedence and cancellation preserve native code/message/cause at cook"
+    |_->fail "Line cancelled cook succeeded"))[false;true])
+    [[i 32769];[i over_capacity];[kind "Points";i over_capacity]];
+  print_endline "Line minimum/direction/endpoint/capacity precedence and cancellation preserve native code/message/cause at cook"
 let edits ()=
   let initial=node "" and oracle=native []in
   List.iter(fun(field:P.field_view)->let value=match field.current with
