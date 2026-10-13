@@ -482,4 +482,48 @@
                 (+ (fma matrix.r1.x v.x (* matrix.r1.y v.y)) (* matrix.r1.z v.z))
                 (+ (fma matrix.r2.x v.x (* matrix.r2.y v.y)) (* matrix.r2.z v.z))]))]
       {:r (direction frame0.r) :p (direction frame0.p) :t (direction frame0.t)}))
+
+  ; Rdk.Deform.resolve_directions without a named attribute: the point N, else the vertex N
+  ; averaged onto its points, else the summed polygon area vectors (fan triangles from each
+  ; polygon's first vertex, added to every point of the polygon in vertex order).
+  (defn deform_area_directions :context sop [(geo : geometry)]
+    (let* [topo (sop/topology geo)
+           adjacency (sop/adjacency geo)
+           positions (sop/attr geo :P)
+           vertices (sop/count geo :vertices)
+           prims (sop/count geo :primitives)
+           points (sop/count geo :points)
+           starts (array/slice topo.primitive_offsets 0 prims)
+           ends (array/slice topo.primitive_offsets 1 prims)
+           contributions (map (fn [(vertex : int) (prim : int)]
+             (let* [first (array/nth starts prim)
+                    last (array/nth ends prim)
+                    a (array/nth positions (array/nth topo.vertex_points first))
+                    b (array/nth positions (array/nth topo.vertex_points vertex))
+                    c (array/nth positions (array/nth topo.vertex_points
+                        (if (int/lt (int/add vertex 1) vertices) (int/add vertex 1) vertex)))
+                    u (- b a)
+                    v (- c a)]
+               (if (and (int/eq (array/nth topo.kinds prim) 0)
+                        (and (int/ge vertex (int/add first 1)) (int/le vertex (int/sub last 2))))
+                 [(fma (* -1.0 u.z) v.y (* u.y v.z))
+                  (fma (* -1.0 u.x) v.z (* u.z v.x))
+                  (fma (* -1.0 u.y) v.x (* u.x v.y))]
+                 [0.0 0.0 0.0])))
+             (array/range vertices :type int) adjacency.primitive_of_vertex)
+           faces (array/segment_sum contributions topo.primitive_offsets)
+           per_vertex (map (fn [(prim : int)] (array/nth faces prim)) adjacency.primitive_of_vertex)]
+      (array/scatter_add topo.vertex_points per_vertex points)))
+  (defn deform_default_directions :context sop [(geo : geometry)]
+    (cond (sop/has_attr geo "N") (sop/attr geo "N" :type vec3)
+          (sop/has_attr geo "N" :owner "vertex")
+            (let* [topo (sop/topology geo)
+                   count (sop/count geo :points)
+                   totals (array/scatter_add topo.vertex_points
+                            (sop/attr geo "N" :owner "vertex" :type vec3) count)
+                   incidence (array/scatter_add topo.vertex_points
+                               (array/int (sop/count geo :vertices) 1) count)]
+              (map (fn [(total : vec3) (n : int)]
+                (if (int/gt n 1) (* total (/ 1.0 (float n))) total)) totals incidence))
+          :else (deform_area_directions geo)))
 )

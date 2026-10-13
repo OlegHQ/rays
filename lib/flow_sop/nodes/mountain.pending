@@ -1,0 +1,111 @@
+; Whole-node draft. Fractal noise displacement of the selected points along a direction, with an
+; optional height attribute. Arithmetic keeps the native order and its arm64 multiply-add fusion;
+; finite inputs only (non-finite results are not detected here).
+(defn mountain_valid :context value
+  [(height : float) (frequency : vec3) (offset : vec3) (octaves : int) (lacunarity : float)
+   (roughness : float) (height_attribute : text)]
+  (let* [finite (fn [(x : float)] (= (- x x) 0.0))]
+    (cond
+      (not (and (finite height) (and (finite frequency.x) (and (finite frequency.y) (finite frequency.z))))) false
+      (not (and (finite offset.x) (and (finite offset.y) (and (finite offset.z) (and (finite lacunarity) (finite roughness)))))) false
+      (not (and (>= height 0.0) (and (>= frequency.x 0.0) (and (>= frequency.y 0.0) (>= frequency.z 0.0))))) false
+      (not (and (int/ge octaves 1) (int/le octaves 64))) false
+      (not (> lacunarity 0.0)) false
+      (not (and (>= roughness 0.0) (<= roughness 1.0))) false
+      :else (not (equal? (text/trim height_attribute) "P")))))
+(defnode sop/mountain :label "Mountain" :category "Deform"
+  :facts {:elementwise points :reads ["P" "N"] :writes ["P" "N"] :topology preserved :exact false}
+  :validate (mountain_valid height [frequency_x frequency_y frequency_z] [offset_x offset_y offset_z]
+              octaves lacunarity roughness height_attribute)
+  :code "E_PARAM" :message "sop/mountain: invalid numeric controls"
+  [(in0 : geometry)
+   (group : text "" :label "Group")
+   (direction_attribute : text "" :label "Direction attribute")
+   (mask_attribute : text "" :label "Mask attribute")
+   (height_attribute : text "" :label "Height attribute")
+   (seed_mode : text "Explicit" :label "Seed mode" :choices ["Explicit" "Auto"])
+   (normalize_direction : bool true :label "Normalize direction")
+   (offset_x : float 0.0 :label "Offset X" :folder ["Offset"] :min -10 :max 10 :vec3 ["offset" 0])
+   (offset_y : float 0.0 :label "Offset Y" :folder ["Offset"] :min -10 :max 10 :vec3 ["offset" 1])
+   (offset_z : float 0.0 :label "Offset Z" :folder ["Offset"] :min -10 :max 10 :vec3 ["offset" 2])
+   (seed : int 0 :label "Seed" :min 0 :max 9999)
+   (height : float 1.0 :label "Height" :min 0 :max 2 :hard_min 0)
+   (frequency_x : float 1.0 :label "Frequency X" :folder ["Frequency"] :min 0.01 :max 4 :hard_min 0 :vec3 ["frequency" 0])
+   (frequency_y : float 1.0 :label "Frequency Y" :folder ["Frequency"] :min 0.01 :max 4 :hard_min 0 :vec3 ["frequency" 1])
+   (frequency_z : float 1.0 :label "Frequency Z" :folder ["Frequency"] :min 0.01 :max 4 :hard_min 0 :vec3 ["frequency" 2])
+   (octaves : int 4 :label "Octaves" :folder ["Fractal"] :min 1 :max 8 :hard_min 1)
+   (lacunarity : float 2.0 :label "Lacunarity" :folder ["Fractal"] :min 1 :max 4 :hard_min 0)
+   (roughness : float 0.5 :label "Roughness" :folder ["Fractal"] :min 0 :max 1 :hard_min 0)
+   (recompute_normals : bool false :label "Recompute normals")]
+  (let* [group_name (text/trim group)
+         direction_name (text/trim direction_attribute)
+         mask_name (text/trim mask_attribute)
+         height_name (text/trim height_attribute)
+         named (not (text/blank? direction_name))
+         storing (not (text/blank? height_name))
+         count (sop/count in0 :points)
+         point_normal (sop/has_attr in0 "N")
+         vertex_normal (sop/has_attr in0 "N" :owner "vertex")]
+    (cond
+      (deform_group_missing in0 "point" group_name)
+        (error "missing_group" (str "mountain could not find point group " (text/repr group_name)))
+      (and named (and (not (equal? direction_name "P")) (not (sop/has_attr in0 direction_name))))
+        (deform_error "mountain" "invalid_deformation" (str "Rdk.Deform: missing point float3 attribute " direction_name))
+      (and named (and (not (equal? direction_name "P")) (not (sop/has_attr in0 direction_name :type vec3))))
+        (deform_error "mountain" "invalid_deformation"
+          (str "Rdk.Deform: point attribute " direction_name " must have float3 storage"))
+      (and (not named) (and point_normal (not (sop/has_attr in0 "N" :type vec3))))
+        (deform_error "mountain" "invalid_deformation" "Rdk.Deform: point N must have float3 storage")
+      (and (not named) (and (not point_normal)
+             (and vertex_normal (not (sop/has_attr in0 "N" :owner "vertex" :type vec3)))))
+        (deform_error "mountain" "invalid_deformation" "Rdk.Deform: vertex N must have float3 storage")
+      (and (not (text/blank? mask_name))
+           (or (equal? mask_name "P") (not (sop/has_attr in0 mask_name))))
+        (deform_error "mountain" "invalid_deformation" (str "Rdk.Deform: missing point float attribute " mask_name))
+      (and (not (text/blank? mask_name)) (not (sop/has_attr in0 mask_name :type float)))
+        (deform_error "mountain" "invalid_deformation"
+          (str "Rdk.Deform: point attribute " mask_name " must have float storage"))
+      (and storing (and (sop/has_attr in0 height_name) (not (sop/has_attr in0 height_name :type float))))
+        (deform_error "mountain" "invalid_deformation"
+          (str "Rdk_mesh.Deform.mountain: height attribute " height_name " must have float storage"))
+      :else
+        (let* [effective_seed (if (equal? seed_mode "Auto") (sop/context_seed "mountain") seed)
+               positions (sop/attr in0 :P)
+               directions (if named (sop/attr in0 direction_name :type vec3) (deform_default_directions in0))
+               selection (deform_mask in0 "point" group_name)
+               masks (if (text/blank? mask_name) (array/float count 1.0)
+                       (sop/attr in0 mask_name :type float))
+               weights (map (fn [(selected : int) (mask : float)] [(float selected) mask]) selection masks)
+               states (exact (map (fn [(p : vec3) (v : vec3) (weight : vec2)]
+                 (if (= weight.x 0.0) [p.x p.y p.z 0.0]
+                   (let* [sample (noise3 [(* (+ p.x offset_x) frequency_x)
+                                          (* (+ p.y offset_y) frequency_y)
+                                          (* (+ p.z offset_z) frequency_z)]
+                                   :seed effective_seed :octaves octaves :lacunarity lacunarity :gain roughness)
+                          displacement (* (* height (- (* sample 2.0) 1.0)) weight.y)
+                          scale (if normalize_direction (max (abs v.x) (max (abs v.y) (abs v.z))) 1.0)
+                          scaled (if (and normalize_direction (> scale 0.0)) (/ v scale) v)
+                          multiplier (if normalize_direction
+                                       (if (= scale 0.0) 0.0 (/ displacement (sqrt (fused_dot scaled scaled))))
+                                       displacement)]
+                     [(fma scaled.x multiplier p.x) (fma scaled.y multiplier p.y) (fma scaled.z multiplier p.z)
+                      displacement])))
+                 positions directions weights))
+               moved (exact (map (fn [(state : vec4)] [state.x state.y state.z]) states))
+               changed (exact (if (int/eq count 0) 0
+                 (array/max (map (fn [(before : vec3) (after : vec3)]
+                   (if (and (= before.x after.x) (and (= before.y after.y) (= before.z after.z))) 0 1))
+                   positions moved))))
+               placed (if (int/eq changed 0)
+                        (if recompute_normals (sop/normals in0 :owner "Point" :weighting "Face area") in0)
+                        (let* [written (sop/with_attr in0 :P moved)]
+                          (if recompute_normals (sop/normals written :owner "Point" :weighting "Face area")
+                            (sop/delete_attr (sop/delete_attr written "N" :owner "point") "N" :owner "vertex"))))
+               existing (if (and storing (sop/has_attr in0 height_name))
+                          (sop/attr in0 height_name :type float) (array/float count 0.0))]
+          (if storing
+            (sop/with_attr placed height_name
+              (exact (map (fn [(state : vec4) (selected : int) (old : float)]
+                            (if (int/eq selected 0) old state.w)) states selection existing))
+              :owner "point" :type float)
+            placed)))))

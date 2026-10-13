@@ -1,0 +1,70 @@
+; Whole-node draft. Moves selected points along a direction attribute (or the point normal, the
+; averaged vertex normal, or the summed polygon area vector) by distance times the mask.
+; Arithmetic keeps the native order and its arm64 multiply-add fusion; finite inputs only.
+(defn peak_error :context value [(reason : text)]
+  (deform_error "peak" "invalid_deformation" reason))
+(defnode sop/peak :label "Peak" :category "Deform"
+  :facts {:elementwise points :reads ["P" "N"] :writes ["P" "N"] :topology preserved :exact false}
+  :validate (= (- distance distance) 0.0)
+  :code "E_PARAM" :message "sop/peak: distance must be finite"
+  [(in0 : geometry)
+   (group_owner : text "Point" :label "Group type" :folder ["Selection"] :choices ["Point" "Vertex" "Primitive" "Edge"])
+   (group : text "" :label "Group" :folder ["Selection"])
+   (direction_attribute : text "N" :label "Direction attribute" :folder ["Direction"])
+   (normalize_direction : bool true :label "Normalize direction" :folder ["Direction"])
+   (mask_attribute : text "" :label "Mask attribute")
+   (distance : float 0.1 :label "Distance" :min -10 :max 10 :primary true)
+   (recompute_normals : bool false :label "Recompute normals")]
+  (let* [owner (text/lower group_owner)
+         group_name (text/trim group)
+         direction_name (text/trim direction_attribute)
+         mask_name (text/trim mask_attribute)
+         named (not (text/blank? direction_name))
+         count (sop/count in0 :points)
+         point_normal (sop/has_attr in0 "N")
+         vertex_normal (sop/has_attr in0 "N" :owner "vertex")]
+    (cond
+      (deform_group_missing in0 owner group_name)
+        (error "missing_group" (str "peak could not find " owner " group " (text/repr group_name)))
+      (and named (and (not (equal? direction_name "P")) (not (sop/has_attr in0 direction_name))))
+        (peak_error (str "Rdk.Deform: missing point float3 attribute " direction_name))
+      (and named (and (not (equal? direction_name "P")) (not (sop/has_attr in0 direction_name :type vec3))))
+        (peak_error (str "Rdk.Deform: point attribute " direction_name " must have float3 storage"))
+      (and (not named) (and point_normal (not (sop/has_attr in0 "N" :type vec3))))
+        (peak_error "Rdk.Deform: point N must have float3 storage")
+      (and (not named) (and (not point_normal)
+             (and vertex_normal (not (sop/has_attr in0 "N" :owner "vertex" :type vec3)))))
+        (peak_error "Rdk.Deform: vertex N must have float3 storage")
+      (and (not (text/blank? mask_name))
+           (or (equal? mask_name "P") (not (sop/has_attr in0 mask_name))))
+        (peak_error (str "Rdk.Deform: missing point float attribute " mask_name))
+      (and (not (text/blank? mask_name)) (not (sop/has_attr in0 mask_name :type float)))
+        (peak_error (str "Rdk.Deform: point attribute " mask_name " must have float storage"))
+      (= distance 0.0)
+        (if recompute_normals (sop/normals in0 :owner "Point" :weighting "Face area") in0)
+      :else
+        (let* [positions (sop/attr in0 :P)
+               directions (if named (sop/attr in0 direction_name :type vec3) (deform_default_directions in0))
+               selection (deform_mask in0 owner group_name)
+               masks (if (text/blank? mask_name) (array/float count 1.0)
+                       (sop/attr in0 mask_name :type float))
+               weights (map (fn [(selected : int) (mask : float)] [(float selected) mask]) selection masks)
+               moved (exact (map (fn [(p : vec3) (v : vec3) (weight : vec2)]
+                 (if (= weight.x 0.0) p
+                   (let* [scale (if normalize_direction (max (abs v.x) (max (abs v.y) (abs v.z))) 1.0)
+                          scaled (if (and normalize_direction (> scale 0.0)) (/ v scale) v)
+                          multiplier (if normalize_direction
+                                       (if (= scale 0.0) 0.0 (/ (* distance weight.y) (sqrt (fused_dot scaled scaled))))
+                                       (* distance weight.y))]
+                     (if (= multiplier 0.0) p
+                       [(fma scaled.x multiplier p.x) (fma scaled.y multiplier p.y) (fma scaled.z multiplier p.z)]))))
+                 positions directions weights))
+               changed (if (int/eq count 0) 0
+                 (array/max (map (fn [(before : vec3) (after : vec3)]
+                   (if (and (= before.x after.x) (and (= before.y after.y) (= before.z after.z))) 0 1))
+                   positions moved)))]
+          (if (int/eq changed 0) in0
+            (let* [placed (sop/with_attr in0 :P moved)]
+              (if recompute_normals (sop/normals placed :owner "Point" :weighting "Face area")
+                (sop/delete_attr (sop/delete_attr placed "N" :owner "point") "N" :owner "vertex")))))))
+  )

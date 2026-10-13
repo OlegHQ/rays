@@ -1,0 +1,134 @@
+; Whole-node draft. Rounds the selected points onto a grid (optionally only within a distance),
+; records the moved points in a group, and optionally fuses coincident points through the Fuse
+; node. Arithmetic keeps the native order and its arm64 multiply-add fusion; finite inputs only.
+(defn snap_finite :context value [(x : float)] (= (- x x) 0.0))
+; Float floor/ceil in pure float arithmetic (the 2^52 trick rounds to an integer exactly below 2^51;
+; larger magnitudes are already integral), so the kernel needs no float-to-int conversion.
+(defn snap_rint :context value [(x : float)]
+  (if (>= x 0.0) (- (+ x 4503599627370496.0) 4503599627370496.0)
+    (+ (- x 4503599627370496.0) 4503599627370496.0)))
+(defn snap_floor :context value [(x : float)]
+  (if (>= (abs x) 2251799813685248.0) x
+    (let* [r (snap_rint x)] (if (> r x) (- r 1.0) r))))
+(defn snap_ceil :context value [(x : float)]
+  (if (>= (abs x) 2251799813685248.0) x
+    (let* [r (snap_rint x)] (if (< r x) (+ r 1.0) r))))
+(defn snap_round :context value [(mode : int) (q : float)]
+  (if (int/eq mode 0) (snap_floor (+ q 0.5)) (if (int/eq mode 1) (snap_floor q) (snap_ceil q))))
+(defn snap_attribute_method :context value [(method : text)]
+  (case method
+    "average" true "least" true "greatest" true "maximum" true "minimum" true "mode" true "median" true
+    "sum" true "sum_squares" true "root_mean_square" true "concatenate" true "weighted_average" true
+    "weighted_sum" true "minimum_weight" true "maximum_weight" true "concatenate_weight_order" true
+    :else false))
+(defn snap_weighted_method :context value [(method : text)]
+  (case method
+    "weighted_average" true "weighted_sum" true "minimum_weight" true "maximum_weight" true
+    "concatenate_weight_order" true :else false))
+(defn snap_group_method :context value [(method : text)]
+  (case method "least" true "greatest" true "union" true "intersection" true "most_common" true :else false))
+(defn snap_attribute_rule_ok :context value [(row : (list text))]
+  (and (= (count row) 3)
+    (and (equal? (text/glob_error (nth row 0)) "")
+      (and (snap_attribute_method (nth row 1))
+           (or (not (snap_weighted_method (nth row 1))) (not (text/blank? (nth row 2))))))))
+(defn snap_group_rule_ok :context value [(row : (list text))]
+  (and (= (count row) 2) (and (equal? (text/glob_error (nth row 0)) "") (snap_group_method (nth row 1)))))
+(defn snap_valid :context value
+  [(spacing : vec3) (offset : vec3) (max_distance : float) (attribute_rules : text) (group_rules : text)]
+  (and (and (snap_finite spacing.x) (and (snap_finite spacing.y) (snap_finite spacing.z)))
+    (and (and (> spacing.x 0.0) (and (> spacing.y 0.0) (> spacing.z 0.0)))
+      (and (and (snap_finite offset.x) (and (snap_finite offset.y) (snap_finite offset.z)))
+        (and (and (and (>= offset.x 0.0) (<= offset.x 1.0))
+                  (and (and (>= offset.y 0.0) (<= offset.y 1.0)) (and (>= offset.z 0.0) (<= offset.z 1.0))))
+          (and (and (snap_finite max_distance) (>= max_distance 0.0))
+            (and (reduce (fn [ok row] (and ok (snap_attribute_rule_ok row))) true (text/table_decode attribute_rules))
+                 (reduce (fn [ok row] (and ok (snap_group_rule_ok row))) true (text/table_decode group_rules)))))))))
+(defnode sop/snap_to_grid :label "Snap to Grid" :category "Point"
+  :validate (snap_valid [spacing_x spacing_y spacing_z] [offset_x offset_y offset_z] max_distance
+              attribute_rules group_rules)
+  :code "E_PARAM" :message "sop/snap_to_grid: invalid grid, distance or fuse rules"
+  [(in0 : geometry)
+   (group : text "" :label "Point group")
+   (spacing_x : float 1.0 :label "Spacing X" :folder ["Grid" "Spacing"] :min 0.001 :max 10 :hard_min 0 :vec3 ["spacing" 0])
+   (spacing_y : float 1.0 :label "Spacing Y" :folder ["Grid" "Spacing"] :min 0.001 :max 10 :hard_min 0 :vec3 ["spacing" 1])
+   (spacing_z : float 1.0 :label "Spacing Z" :folder ["Grid" "Spacing"] :min 0.001 :max 10 :hard_min 0 :vec3 ["spacing" 2])
+   (offset_x : float 0.0 :label "Offset X" :folder ["Grid" "Offset"] :min -10 :max 10 :vec3 ["offset" 0])
+   (offset_y : float 0.0 :label "Offset Y" :folder ["Grid" "Offset"] :min -10 :max 10 :vec3 ["offset" 1])
+   (offset_z : float 0.0 :label "Offset Z" :folder ["Grid" "Offset"] :min -10 :max 10 :vec3 ["offset" 2])
+   (rounding : text "Nearest" :label "Rounding" :choices ["Nearest" "Down" "Up"])
+   (limit_distance : bool false :label "Limit snapping distance")
+   (max_distance : float 1.0 :label "Maximum distance" :min 0 :max 10 :hard_min 0)
+   (fuse_points : bool false :label "Fuse points" :folder ["Fuse"])
+   (position : text "Average" :label "Position" :folder ["Fuse"]
+     :choices ["First" "Least point" "Greatest point" "Average" "Minimum" "Maximum" "Mode" "Median" "Sum"
+               "Sum squares" "Root mean square" "Weighted average" "Weighted sum" "Minimum weight" "Maximum weight"])
+   (weight_attribute : text "" :label "Weight attribute" :folder ["Fuse"])
+   (attributes : text "Keep first" :label "Attributes" :folder ["Fuse"] :choices ["Keep first" "Average numeric"])
+   (snapped_group : text "" :label "Snapped group" :folder ["Output"])
+   (attribute_rules : text "" :label "Attribute rules" :folder ["Fuse"]
+     :description "Escaped tab-separated rows: pattern, reduction method, weight attribute. Weighted methods require a weight name.")
+   (group_rules : text "" :label "Group rules" :folder ["Fuse"]
+     :description "Escaped tab-separated rows: group pattern, reduction method.")]
+  (let* [group_name (text/trim group)
+         snapped_name (text/trim snapped_group)
+         weight_name (text/trim weight_attribute)]
+    (if (deform_group_missing in0 "point" group_name)
+      (error "missing_group" (str "snap_to_grid could not find point group " (text/repr group_name)))
+      (let* [count (sop/count in0 :points)
+             spacing [spacing_x spacing_y spacing_z]
+             origin [(* spacing_x offset_x) (* spacing_y offset_y) (* spacing_z offset_z)]
+             selection (deform_mask in0 "point" group_name)
+             positions (sop/attr in0 :P)
+             mode (case rounding "Nearest" 0 "Down" 1 :else 2)
+             quotients (exact (map (fn [(s : vec3)]
+               [(/ (- s.x origin.x) spacing_x) (/ (- s.y origin.y) spacing_y) (/ (- s.z origin.z) spacing_z)])
+               positions))
+             rounded (exact (map (fn [(q : vec3)]
+               [(snap_round mode q.x) (snap_round mode q.y) (snap_round mode q.z)]) quotients))
+             states (exact (map (fn [(s : vec3) (r : vec3) (selected : int)]
+               (if (int/eq selected 0) [s.x s.y s.z 0.0]
+                 (let* [n [(fma spacing_x r.x origin.x) (fma spacing_y r.y origin.y) (fma spacing_z r.z origin.z)]
+                        d (- n s)
+                        within (or (not limit_distance) (<= (hypot d.x (hypot d.y d.z)) max_distance))]
+                   (if (and within (not (and (= n.x s.x) (and (= n.y s.y) (= n.z s.z)))))
+                     [n.x n.y n.z 1.0]
+                     [s.x s.y s.z 0.0]))))
+               positions rounded selection))
+             flags (exact (map (fn [(state : vec4)] (if (= state.w 1.0) 1 0)) states))
+             moved_count (if (int/eq count 0) 0 (array/sum flags))
+             wants_group (not (text/blank? snapped_name))]
+        (if (and (int/eq moved_count 0) (and (not wants_group) (not fuse_points))) in0
+          (let* [placed (if (int/eq moved_count 0) in0
+                          (sop/delete_attr
+                            (sop/delete_attr
+                              (sop/with_attr in0 :P (exact (map (fn [(state : vec4)] [state.x state.y state.z]) states)))
+                              "N" :owner "point")
+                            "N" :owner "vertex"))
+                 grouped (if wants_group (sop/with_group placed flags :name snapped_name :owner "point") placed)
+                 reselect (and wants_group (and (not (text/blank? group_name)) (equal? snapped_name group_name)))
+                 guarded (if reselect (sop/with_group grouped selection :name "__snap_to_grid_selection" :owner "point") grouped)
+                 fuse_group (if reselect "__snap_to_grid_selection" group_name)]
+            (cond
+              (not fuse_points) grouped
+              ; Weighted position without a weight attribute: Fuse refuses it at construction, but
+              ; native snap_to_grid only fails when some points actually coincide. A fuse with a
+              ; plain position tells whether any cluster exists (it then drops points).
+              (and (text/blank? weight_name)
+                   (or (equal? position "Weighted average") (or (equal? position "Weighted sum")
+                     (or (equal? position "Minimum weight") (equal? position "Maximum weight")))))
+                (if (int/lt (sop/count (sop/fuse guarded :group fuse_group :tolerance 0.0 :position "First"
+                                         :remove_degenerate_primitives false
+                                         :remove_unused_points_from_degenerate_primitives false) :points)
+                            (sop/count guarded :points))
+                  (error "invalid_geometry" "fuse could not produce valid geometry"
+                    :cause "fuse [invalid_geometry]: Rdk.Fuse_reduce.fuse: weighted position reduction requires a weight attribute")
+                  grouped)
+              :else
+                ; Native selects with the input's group even when the snapped group replaced its name.
+                (let* [fused (sop/fuse guarded :group fuse_group :tolerance 0.0 :position position
+                               :weight_attribute weight_name :attributes attributes
+                               :attribute_rules attribute_rules :group_rules group_rules
+                               :remove_degenerate_primitives false
+                               :remove_unused_points_from_degenerate_primitives false)]
+                  (if reselect (sop/delete_group fused "__snap_to_grid_selection" :owner "point") fused)))))))))
