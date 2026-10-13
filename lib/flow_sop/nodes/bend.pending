@@ -1,0 +1,156 @@
+; Whole-node draft. Arithmetic keeps the native order and its arm64 multiply-add fusion.
+; Non-finite intermediate results are not detected (the evaluator refuses them with its own error).
+(defn bend_valid :context value
+  [(length : float) (direction : vec3) (up : vec3) (capture : text)]
+  (let* [unit_direction (fused_normalize (/ direction
+            (let* [s (max (abs direction.x) (max (abs direction.y) (abs direction.z)))] (if (= s 0.0) 1.0 s))))
+         unit_up (fused_normalize (/ up
+            (let* [s (max (abs up.x) (max (abs up.y) (abs up.z)))] (if (= s 0.0) 1.0 s))))
+         projection (fused_dot unit_up unit_direction)
+         zero_direction (and (= direction.x 0.0) (and (= direction.y 0.0) (= direction.z 0.0)))
+         zero_up (and (= up.x 0.0) (and (= up.y 0.0) (= up.z 0.0)))
+         parallel (and (= (fma (* -1.0 projection) unit_direction.x unit_up.x) 0.0)
+                    (and (= (fma (* -1.0 projection) unit_direction.y unit_up.y) 0.0)
+                         (= (fma (* -1.0 projection) unit_direction.z unit_up.z) 0.0)))]
+    (and (> length 0.0)
+      (and (not zero_direction)
+        (and (not zero_up)
+          (and (not parallel) (not (equal? (text/trim capture) "P"))))))))
+(defn bend_zero :context value [(v : vec3)]
+  (and (= v.x 0.0) (and (= v.y 0.0) (= v.z 0.0))))
+(defn bend_sinc :context value [(value : float)]
+  (if (< (abs value) 1e-4)
+    (let* [square (* value value)]
+      (+ (- 1.0 (/ square 6.0)) (/ (* square square) 120.0)))
+    (/ (sin value) value)))
+(defn bend_cosc :context value [(value : float)]
+  (if (< (abs value) 1e-4)
+    (let* [square (* value value)]
+      (+ (- (* value 0.5) (/ (* value square) 24.0)) (/ (* (* value square) square) 720.0)))
+    (let* [half_sine (sin (* value 0.5))]
+      (/ (* (* 2.0 half_sine) half_sine) value))))
+; A kernel holds at most 64 registers, so the per-point work runs as three exact stages.
+; Stage 1: [local_x local_y local_z strength], strength -1 when the point is not deformed.
+(defn bend_local :context value
+  [(p : vec3) (selected : int) (mask : float) (origin : vec3) (frame_x : vec3) (frame_y : vec3)
+   (frame_z : vec3) (length : float) (limit : bool) (both : bool)]
+  (let* [d (- p origin)
+         local_z (fma d.z frame_z.z (fma d.y frame_z.y (* d.x frame_z.x)))
+         inside (if both (<= (abs local_z) length) (and (>= local_z 0.0) (<= local_z length)))
+         active (and (int/eq selected 1)
+                  (if both (or (not limit) inside)
+                    (and (>= local_z 0.0) (or (not limit) (<= local_z length)))))]
+    [(fma d.z frame_x.z (fma d.y frame_x.y (* d.x frame_x.x)))
+     (fma d.z frame_y.z (fma d.y frame_y.y (* d.x frame_y.x)))
+     local_z (if active (max 0.0 (min 1.0 mask)) -1.0)]))
+; Stage 2: [twisted_x twisted_y bend local_z], zeros for a point that stays.
+(defn bend_twist :context value
+  [(local : vec4) (length : float) (bend_angle : float) (twist_angle : float) (both : bool) (continuous : bool)]
+  (if (<= local.w 0.0) [0.0 0.0 0.0 0.0]
+    (let* [parameter (/ local.z length)
+           twist_parameter (if (and both (not continuous)) (abs parameter) parameter)
+           twist (* (* twist_angle twist_parameter) local.w)
+           bend (* (* bend_angle parameter) local.w)
+           twist_cos (cos twist) twist_sin (sin twist)]
+      [(fma (* -1.0 twist_sin) local.y (* twist_cos local.x))
+       (fma twist_cos local.y (* twist_sin local.x))
+       bend local.z])))
+; Stage 3: [bent_y bent_z twisted_x strength]. Native fuses the twisted_y product of bent_y (the sinc and cosc calls are inlined).
+(defn bend_bent :context value [(local : vec4) (twisted : vec4)]
+  (let* [bend twisted.z]
+    [(fma twisted.y (cos bend) (* twisted.w (bend_cosc bend)))
+     (fma (* -1.0 twisted.y) (sin bend) (* twisted.w (bend_sinc bend)))
+     twisted.x local.w]))
+; Stage 4: [x y z capture].
+(defn bend_move :context value
+  [(p : vec3) (bent : vec4) (origin : vec3) (frame_x : vec3) (frame_y : vec3) (frame_z : vec3)
+   (deforming : bool)]
+  (if (or (not deforming) (<= bent.w 0.0))
+    [p.x p.y p.z (if (and deforming (>= bent.w 0.0)) bent.w 0.0)]
+    [(fma bent.y frame_z.x (fma bent.x frame_y.x (fma bent.z frame_x.x origin.x)))
+     (fma bent.y frame_z.y (fma bent.x frame_y.y (fma bent.z frame_x.y origin.y)))
+     (fma bent.y frame_z.z (fma bent.x frame_y.z (fma bent.z frame_x.z origin.z)))
+     bent.w]))
+(defnode sop/bend :label "Bend" :category "Deform"
+  :validate (bend_valid length [direction_x direction_y direction_z] [up_x up_y up_z] capture_attribute)
+  :code "E_PARAM" :message "sop/bend: invalid capture frame, length or attribute"
+  [(in0 : geometry)
+   (group_owner : text "Point" :label "Group type" :folder ["Selection"] :choices ["Point" "Vertex" "Primitive" "Edge"])
+   (group : text "" :label "Group" :folder ["Selection"])
+   (mask_attribute : text "" :label "Mask attribute")
+   (origin_x : float 0.0 :label "Origin X" :folder ["Capture" "Origin"] :min -10 :max 10 :vec3 ["origin" 0])
+   (origin_y : float 0.0 :label "Origin Y" :folder ["Capture" "Origin"] :min -10 :max 10 :vec3 ["origin" 1])
+   (origin_z : float 0.0 :label "Origin Z" :folder ["Capture" "Origin"] :min -10 :max 10 :vec3 ["origin" 2])
+   (direction_x : float 0.0 :label "Direction X" :folder ["Capture" "Direction"] :min -1 :max 1 :vec3 ["direction" 0])
+   (direction_y : float 1.0 :label "Direction Y" :folder ["Capture" "Direction"] :min -1 :max 1 :vec3 ["direction" 1])
+   (direction_z : float 0.0 :label "Direction Z" :folder ["Capture" "Direction"] :min -1 :max 1 :vec3 ["direction" 2])
+   (up_x : float 0.0 :label "Up X" :folder ["Capture" "Up"] :min -1 :max 1 :vec3 ["up" 0])
+   (up_y : float 0.0 :label "Up Y" :folder ["Capture" "Up"] :min -1 :max 1 :vec3 ["up" 1])
+   (up_z : float 1.0 :label "Up Z" :folder ["Capture" "Up"] :min -1 :max 1 :vec3 ["up" 2])
+   (length : float 1.0 :label "Length" :folder ["Capture"] :min 0.01 :max 10 :hard_min 0 :primary true)
+   (bend_angle : float 0.0 :label "Bend angle" :folder ["Deformation"] :min -6.283185 :max 6.283185 :primary true)
+   (twist_angle : float 0.0 :label "Twist angle" :folder ["Deformation"] :min -6.283185 :max 6.283185 :primary true)
+   (limit : bool true :label "Limit deformation")
+   (both_directions : bool false :label "Capture both directions")
+   (continuous_twist : bool false :label "Continuous twist")
+   (capture_attribute : text "" :label "Capture attribute" :folder ["Attributes"])
+   (recompute_normals : bool false :label "Recompute normals")]
+  (let* [owner (text/lower group_owner)
+         group_name (text/trim group)
+         mask_name (text/trim mask_attribute)
+         capture_name (text/trim capture_attribute)
+         origin [origin_x origin_y origin_z]
+         frame_z (fused_normalize_scaled [direction_x direction_y direction_z])
+         up_unit (fused_normalize_scaled [up_x up_y up_z])
+         projection (fused_dot up_unit frame_z)
+         y_raw [(fma (* -1.0 projection) frame_z.x up_unit.x)
+                (fma (* -1.0 projection) frame_z.y up_unit.y)
+                (fma (* -1.0 projection) frame_z.z up_unit.z)]
+         frame_y (fused_normalize_scaled y_raw)
+         frame_x (fused_normalize_scaled (vec3_cross frame_y frame_z))]
+    (cond
+      (deform_group_missing in0 owner group_name)
+        (error "missing_group" (str "bend could not find " owner " group " (text/repr group_name)))
+      (bend_zero frame_z)
+        (deform_error "bend" "invalid_deformation" "Rdk_mesh.Deform.bend: capture direction must be non-zero")
+      (bend_zero up_unit)
+        (deform_error "bend" "invalid_deformation" "Rdk_mesh.Deform.bend: up vector must be non-zero")
+      (bend_zero frame_y)
+        (deform_error "bend" "invalid_deformation"
+          "Rdk_mesh.Deform.bend: up vector must not be parallel to capture direction")
+      (bend_zero frame_x)
+        (deform_error "bend" "invalid_deformation" "Rdk_mesh.Deform.bend: could not construct capture frame")
+      (and (not (text/blank? mask_name))
+           (or (equal? mask_name "P") (not (sop/has_attr in0 mask_name))))
+        (deform_error "bend" "invalid_deformation"
+          (str "Rdk_mesh.Deform.bend: missing point float attribute " mask_name))
+      (and (not (text/blank? mask_name)) (not (sop/has_attr in0 mask_name :type float)))
+        (deform_error "bend" "invalid_deformation"
+          (str "Rdk_mesh.Deform.bend: point attribute " mask_name " must have float storage"))
+      :else
+        (let* [count (sop/count in0 :points)
+               positions (sop/attr in0 :P)
+               selection (deform_mask in0 owner group_name)
+               masks (if (text/blank? mask_name) (array/float count 1.0)
+                       (sop/attr in0 mask_name :type float))
+               deforming (or (not (= bend_angle 0.0)) (not (= twist_angle 0.0)))
+               locals (exact (map (fn [(p : vec3) (selected : int) (mask : float)]
+                 (bend_local p selected mask origin frame_x frame_y frame_z length limit both_directions))
+                 positions selection masks))
+               twisted (exact (map (fn [(local : vec4)]
+                 (bend_twist local length bend_angle twist_angle both_directions continuous_twist)) locals))
+               bends (exact (map (fn [(local : vec4) (turn : vec4)] (bend_bent local turn)) locals twisted))
+               states (exact (map (fn [(p : vec3) (bent : vec4)]
+                 (bend_move p bent origin frame_x frame_y frame_z deforming)) positions bends))
+               bent (exact (map (fn [(state : vec4)] [state.x state.y state.z]) states))
+               changed (exact (if (int/eq count 0) 0
+                 (array/max (map (fn [(before : vec3) (after : vec3)]
+                   (if (and (= before.x after.x) (and (= before.y after.y) (= before.z after.z))) 0 1))
+                   positions bent))))
+               moved (if (int/eq changed 0) in0 (sop/with_attr in0 :P bent))
+               cleared (if (or (int/eq changed 0) recompute_normals) moved
+                         (sop/delete_attr (sop/delete_attr moved "N" :owner "point") "N" :owner "vertex"))
+               shaded (if recompute_normals (sop/normals cleared :owner "Point" :weighting "Face area") cleared)]
+          (if (text/blank? capture_name) shaded
+            (sop/with_attr shaded capture_name
+              (exact (map (fn [(state : vec4)] state.w) states)) :owner "point" :type float))))))

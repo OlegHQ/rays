@@ -313,4 +313,65 @@
   (defn edge_usage :context sop [(adjacency : {:edge_of_vertex (array int)}) (edge_count : int)]
     (let* [used (array/compact (exact (map (fn [(e : int)] (if (int/ge e 0) 1 0)) adjacency.edge_of_vertex)))
            edges (exact (map (fn [(v : int)] (array/nth adjacency.edge_of_vertex v)) used))]
-      (array/scatter_add edges (array/int (array/count edges) 1) edge_count))))
+      (array/scatter_add edges (array/int (array/count edges) 1) edge_count)))
+
+  ; Transform_ops.transform: positions through the matrix (w divide above 1e-12), then every
+  ; vec3 point and vertex N through the inverse transpose, renormalised; a singular matrix drops N.
+  (defn transform_normals :context sop
+    [(geo : geometry) (owner : text) (normal_matrix : {:r0 vec4 :r1 vec4 :r2 vec4 :r3 vec4})]
+    (if (sop/has_attr geo "N" :owner owner :type vec3)
+      (sop/with_attr geo "N"
+        (exact (map (fn [(n : vec3)]
+          (let* [o (mat4_transform_direction normal_matrix n)
+                 length (sqrt (vec3_dot o o))]
+            (if (> length 1e-20) (/ o length) [0.0 0.0 0.0])))
+          (sop/attr geo "N" :owner owner :type vec3)))
+        :owner owner :type vec3)
+      geo))
+  ; The native per-point loop m0*x + m1*y + m2*z + m3 fuses the second and third products.
+  (defn transform_row_fused :context value [(row : vec4) (p : vec3)]
+    (+ (fma row.z p.z (fma row.y p.y (* row.x p.x))) row.w))
+  (defn transform_point_fused :context value
+    [(matrix : {:r0 vec4 :r1 vec4 :r2 vec4 :r3 vec4}) (p : vec3)]
+    (let* [result [(transform_row_fused matrix.r0 p) (transform_row_fused matrix.r1 p)
+                   (transform_row_fused matrix.r2 p)]
+           w (transform_row_fused matrix.r3 p)
+           raw (<= (abs w) 1e-12)]
+      (if raw result (/ result (if raw 1.0 w)))))
+  (defn transform_geometry :context sop
+    [(geo : geometry) (matrix : {:r0 vec4 :r1 vec4 :r2 vec4 :r3 vec4})]
+    (let* [moved (sop/with_attr geo :P
+                   (exact (map (fn [(p : vec3)] (transform_point_fused matrix p)) (sop/attr geo :P))))
+           inverse (mat4_inverse matrix)]
+      (if (= (count inverse) 0)
+        (sop/delete_attr (sop/delete_attr moved "N" :owner "point") "N" :owner "vertex")
+        (transform_normals
+          (transform_normals moved "point" (mat4_transpose (nth inverse 0)))
+          "vertex" (mat4_transpose (nth inverse 0))))))
+
+  ; Native Vec3.dot (a.x*b.x + a.y*b.y + a.z*b.z) fuses the second and third products on arm64.
+  (defn fused_dot :context value [(a : vec3) (b : vec3)]
+    (fma a.z b.z (fma a.y b.y (* a.x b.x))))
+  (defn fused_normalize :context value [(a : vec3)]
+    (let* [size (sqrt (fused_dot a a))]
+      (if (= size 0.0) [0.0 0.0 0.0] (* a (/ 1.0 size)))))
+  ; Deform.normalize3: rescale by the largest magnitude, then divide by the length.
+  ; A zero input gives the zero vector (native None).
+  (defn fused_normalize_scaled :context value [(a : vec3)]
+    (let* [scale (max (abs a.x) (max (abs a.y) (abs a.z)))
+           scaled (/ a (if (= scale 0.0) 1.0 scale))
+           size (sqrt (fused_dot scaled scaled))]
+      (if (= scale 0.0) [0.0 0.0 0.0] (/ scaled size))))
+  ; The point mask of a deformer's group parameter: every point when blank, else the group
+  ; promoted to points (any incident member). owner is lowercase point/vertex/primitive/edge.
+  (defn deform_mask :context sop [(geo : geometry) (owner : text) (name : text)]
+    (if (text/blank? name) (array/int (sop/count geo :points) 1)
+      (if (equal? owner "point") (sop/group geo :name name :owner "point")
+        (sop/group geo :name name :owner owner :as_owner "point"))))
+  (defn deform_group_missing :context sop [(geo : geometry) (owner : text) (name : text)]
+    (and (not (text/blank? name))
+         (not (fold [found false] [probe (sop/group_names geo "" :owner owner)]
+                (or found (equal? probe name))))))
+  (defn deform_error :context value [(op : text) (code : text) (reason : text)]
+    (error code (str op " could not produce valid geometry")
+      :cause (str op " [" code "]: " reason))))
