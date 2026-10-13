@@ -18,6 +18,10 @@ let cases = [
   "float/fma_checked","(float/fma_checked t 1.7976931348623157e308 -1.7976931348623157e308)";
   "array/vec4","(array/nth (array/vec4 4 [t 1 2 3]) 2)";
   "text/table_decode","(text/table_decode (if (> t 0.) \"a\\t猫\\n\" \"\"))";
+  "text/split","(array/nth (text/split (str \"a,é,\" t) \",\") 1)";
+  "text/tokens","(array/nth (text/tokens (str \"a, é\\t\" t \"\\n\")) 1)";
+  "text/to_float","(text/to_float (str \" -1.5e1\" (int t)))";
+  "text/to_int","(text/to_int (str \" 4\" (int t)))";
   "text/table_encode","(text/table_encode (list (list (if (> t 0.) \"猫\\n\" \"a\\t\") \"\\\\\")))";
   "text/blank?","(text/blank? (if (> t 0.) \" \\t\\r\\n\" \" \"))";
   "array/grade","(array/nth (array/grade (array/float 13 t) :descending true) 0)";

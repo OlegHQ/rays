@@ -1,12 +1,14 @@
-; Whole Group Ordered draft. NEEDS two text operators the language lacks: text/tokens (split on
-; space, comma, tab and newline, dropping empty tokens) and text/to_int (OCaml int_of_string on a
-; trimmed token, an error "expected integer, got ..." otherwise).
+; Whole Group Ordered draft. Uses text/tokens (split on space, comma, tab and newline, dropping
+; empty tokens) and text/to_int, a total reader returning {:value :valid} for a trimmed decimal token.
 (defn ordered_group_error :context value [(reason : text)]
   (error "invalid_group" "ordered_group could not produce valid geometry"
     :cause (str "ordered_group [invalid_group]: " reason)))
+(defn ordered_group_index :context value [(token : text)]
+  (let* [parsed (text/to_int token)]
+    (if parsed.valid parsed.value (error "E_PARAM" (str "expected integer, got " (text/repr token))))))
 (defn ordered_group_normalize :context value [(raw : text)]
   (str-join " " (map (fn [(token : text)]
-    (let* [element (text/to_int token)]
+    (let* [element (ordered_group_index token)]
       (if (int/lt element 0) (error "E_PARAM" (str "expected a non-negative element index, got " element))
         (str element)))) (text/tokens raw))))
 (defnode sop/ordered_group :label "Group Ordered" :category ["Group" "Create"]
@@ -17,7 +19,7 @@
   (let* [selected (case owner "Vertices" "vertex" "Primitives" "primitive" :else "point")
          length (case owner "Vertices" (sop/count in0 :vertices) "Primitives" (sop/count in0 :primitives)
                   :else (sop/count in0 :points))
-         indices (map (fn [(token : text)] (text/to_int token)) (text/tokens elements))
+         indices (map (fn [(token : text)] (ordered_group_index token)) (text/tokens elements))
          counts (array/scatter_add indices (array/int (array/count indices) 1) length)]
     (cond
       (text/blank? name) (ordered_group_error "Group: empty name")

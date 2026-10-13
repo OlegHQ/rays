@@ -36,6 +36,7 @@ let inventory = [
   Integer_compare P.Ilt; Integer_compare P.Ile; Integer_compare P.Igt;
   Integer_compare P.Ige; Integer_compare P.Ieq;
   Equal; Show; Text_concat; Text_blank; Text_trim; Text_lower; Text_repr; Text_table_decode; Text_table_encode;
+  Text_split; Text_tokens; Text_to_float; Text_to_int;
   Sequence_length; Sequence_get; Sequence_build; Sequence_slice; Sequence_concat;
   Array_reduce Minimum; Array_reduce Maximum; Array_segment Sum; Array_segment Minimum; Array_segment Maximum;
   Array_grade; Array_index_of; Array_compact; Array_scan_sum; Array_scatter_add; Array_max_length; Array_range; Array_int; Array_text; Array_float; Array_vec3; Array_vec4; Array_nth; Array_count; Array_slice; Array_concat;
@@ -105,6 +106,8 @@ let arg_name prim i = match prim, i with
   | Array_count, _ -> "array"
   | Text_blank, _ | Text_trim, _ | Text_lower, _ | Text_repr, _ -> "text"
   | Text_table_decode, _ -> "text" | Text_table_encode, _ -> "rows"
+  | Text_split, 0 -> "text" | Text_split, _ -> "separator"
+  | Text_tokens, _ | Text_to_float, _ | Text_to_int, _ -> "text"
   | Array_reduce _, _ -> "array"
   | Rand_at, 0 -> "seed" | Rand_at, _ -> "index"
   | Fma, _ | Checked_fma, _ | Checked_mul, _ -> [|"a";"b";"c"|].(i)
@@ -255,6 +258,19 @@ let () =
      digits[digits[txt "é日本😀";txt "\t\n\\"];digits[txt ""]];digits[digits[];digits[]];
      int 0;digits[int 0];digits[digits[int 0]]];
   add C.Text_table_decode[int 0];
+  List.iter(fun(text,separator)->add C.Text_split[txt text;txt separator])
+    ["","," ;"a,b,,c",",";",a,",",";"a::b::","::";"a:::b","::";"é,日本,😀",",";"abc","abc";"a\tb","\t"];
+  List.iter(fun value->add C.Text_split[value;txt ","];add C.Text_split[txt "a";value])[int 0;E.Bool false;E.No_geo];
+  add C.Text_split[txt "a";txt ""];
+  List.iter(fun text->add C.Text_tokens[txt text])
+    ["";" ";"0 1,2\t3\n4";"  1,,2 \n\n";"a\rb";"é,日本\t😀";"1\r\n2"];
+  List.iter(fun primitive->List.iter(fun text->add primitive[txt text])
+    ["";" ";"0";"-0";"+5";" 12 ";"1.5";"-2.25e3";"1e5";"1E-2";".5";"5.";"1.e2";".";"e5";"1e";"1e+";"+";"-";"1_0";
+     "0x10";"0b1";"nan";"inf";"-infinity";"1e999";"1e-999";"4611686018427387903";"4611686018427387904";
+     "-4611686018427387904";"-4611686018427387905";"99999999999999999999";"１２";"1 2";"1,2";"\t7\n";"\0111"];
+    List.iter(fun value->add primitive[value])[int 0;E.Bool false;E.No_geo])
+    [C.Text_to_float;C.Text_to_int];
+  add C.Text_tokens[int 0];
   List.iter(fun primitive->List.iter(fun array->add primitive[array])
     [E.Int_array[||];E.Int_array[|0|];E.Int_array[|1|];E.Int_array[|0;1;0;1|];
      E.Int_array[|1;1;1|];E.Int_array[|1;2;0|];E.Int_array[|-1;1|];
@@ -1371,7 +1387,7 @@ let fields=["points",E.Int_array[|0;1;2|];"vertices",E.Int_array[|0;1;2|];
 remap_case source changed_p fields;
 remap_case source unrelated fields;
   (* write *)
-  assert (List.length inventory = 96);
+  assert (List.length inventory = 100);
   if not (Sys.file_exists outdir) then Sys.mkdir outdir 0o755;
   List.iter (fun name ->
     let body = String.concat ",\n" (List.rev !(Hashtbl.find cases name)) in

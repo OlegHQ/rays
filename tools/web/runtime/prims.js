@@ -287,6 +287,29 @@ export function text_table_decode(text) {
   if (escaped) err('E_TABLE', 'trailing table escape');
   row.push(cell); rows.push(row); return rows;
 }
+export function text_split(text, separator) {
+  if (typeof text !== 'string' || typeof separator !== 'string') err('E_TYPE', 'Expected text.');
+  if (separator === '') err('E_TEXT_SEPARATOR', 'text/split needs a nonempty separator.');
+  return new TextArray(text.split(separator));
+}
+export function text_tokens(text) {
+  if (typeof text !== 'string') err('E_TYPE', 'Expected text.');
+  return new TextArray(text.split(/[ ,\t\n]/).filter(token => token !== ''));
+}
+const tokenTrim = text => text.replace(/^[ \t\n\r\f]+|[ \t\n\r\f]+$/g, '');
+export function text_to_float(text) {
+  if (typeof text !== 'string') err('E_TYPE', 'Expected text.');
+  const s = tokenTrim(text), valid = /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/.test(s)
+    && Number.isFinite(Number(s));
+  return new Map([['value', valid ? Number(s) : 0], ['valid', valid]]);
+}
+export function text_to_int(text) {
+  if (typeof text !== 'string') err('E_TYPE', 'Expected text.');
+  const s = tokenTrim(text);
+  const value = /^[+-]?\d+$/.test(s) ? BigInt(s) : null;
+  const valid = value !== null && value === BigInt.asIntN(63, value);
+  return new Map([['value', valid ? value : 0n], ['valid', valid]]);
+}
 export function text_table_encode(rows) {
   if (!Array.isArray(rows)) err('E_TYPE', 'Expected a table of text cells.');
   return rows.map(row => {

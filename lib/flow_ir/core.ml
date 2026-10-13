@@ -16,6 +16,7 @@ type primitive =
   | Remainder | Exp | Floor | Ceil | Round | Int_convert | Float_convert
   | Integer of integer | Integer_compare of Flow.Packed_ops.comparison | Equal | Show | Text_concat | Text_blank
   | Text_trim | Text_lower | Text_repr | Text_table_decode | Text_table_encode
+  | Text_split | Text_tokens | Text_to_float | Text_to_int
   | Sequence_length | Sequence_get | Sequence_build | Sequence_slice | Sequence_concat
   | Array_max_length | Array_range | Array_int | Array_text | Array_float | Array_vec3 | Array_vec4 | Array_nth | Array_count | Array_slice | Array_concat
   | Array_reduce of Flow.Op.Private.reduction | Array_segment of Flow.Op.Private.reduction
@@ -161,6 +162,8 @@ let primitive_name = function
   | Text_blank -> "text/blank?"
   | Text_trim -> "text/trim" | Text_lower -> "text/lower" | Text_repr -> "text/repr"
   | Text_table_decode -> "text/table_decode" | Text_table_encode -> "text/table_encode"
+  | Text_split -> "text/split" | Text_tokens -> "text/tokens"
+  | Text_to_float -> "text/to_float" | Text_to_int -> "text/to_int"
   | Array_reduce operation | Array_segment operation as primitive ->
       let suffix=match operation with Flow.Op.Private.Sum -> "sum" | Minimum -> "min" | Maximum -> "max" in
       "array/" ^ (match primitive with Array_segment _ -> "segment_" | _ -> "") ^ suffix

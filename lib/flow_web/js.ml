@@ -291,6 +291,7 @@ let signature : C.primitive -> string list option = function
   | Show | Truthy | Coerce _ -> Some ["value"]
   | Text_blank | Text_trim | Text_lower | Text_repr -> Some ["text"]
   | Text_table_decode -> Some ["text"] | Text_table_encode -> Some ["rows"]
+  | Text_tokens | Text_to_float | Text_to_int -> Some ["text"] | Text_split -> Some ["text"; "separator"]
   | Array_grade -> Some ["keys";"descending"] | Array_index_of -> Some ["keys";"queries"]
   | Array_compact -> Some ["mask"] | Array_scan_sum -> Some ["array"]
   | Array_scatter_add -> Some ["indices";"values";"size"]
