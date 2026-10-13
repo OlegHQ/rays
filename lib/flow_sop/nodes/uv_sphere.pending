@@ -1,0 +1,367 @@
+; Whole UV Sphere draft. Vertices are generated from a packed key: ring + (rings + 1) * u_twice,
+; where u_twice is twice the (unwrapped) segment index plus one for the pole-triangle apex.
+(defn uvs_error :context value [(reason : text)]
+  (error "invalid_parameter" "uv_sphere could not produce valid geometry"
+    :cause (str "uv_sphere [invalid_parameter]: Rdk.Uv_sphere.uv_sphere: " reason)))
+(defn uvs_cmul :context value [(left : int) (right : int) (limit : int)]
+  (cond (or (int/lt left 0) (int/lt right 0)) -1
+        (int/eq left 0) 0
+        (int/le right (int/div limit left)) (int/mul left right)
+        :else -1))
+(defn uvs_cadd :context value [(left : int) (right : int) (limit : int)]
+  (cond (or (int/lt left 0) (int/lt right 0)) -1
+        (int/le right (int/sub limit left)) (int/add left right)
+        :else -1))
+; Scaled radius: the explicit radius, or the base radius when its mode is Auto, times the scale.
+(defn uvs_scaled :context value [(mode : text) (explicit : float) (base : float) (scale : float)]
+  (float/mul_checked (if (equal? mode "Auto") base explicit) scale))
+; Native cardinality validation of the construction step; true when every count fits.
+(defn uvs_cardinality_ok :context value
+  [(connectivity : text) (unique : bool) (triangular : bool) (segments : int) (rings : int)]
+  (let* [limit (array/max_length :type int)
+         primitive_limit (int/sub limit 1)
+         interior (uvs_cmul (int/sub rings 1) segments limit)
+         poles (cond (equal? connectivity "Rows") 0 unique segments :else 1)
+         total (uvs_cadd interior (uvs_cmul 2 poles limit) limit)
+         middle (uvs_cmul (int/sub rings 2) segments limit)
+         columns (uvs_cmul segments (int/add rings 1) limit)
+         primitives (uvs_cmul segments rings primitive_limit)]
+    (and (int/ge total 0) (and (int/ge interior 0) (and (int/ge middle 0)
+      (cond (equal? connectivity "Points") true
+            (equal? connectivity "Rows") (int/le (int/sub rings 1) primitive_limit)
+            (equal? connectivity "Columns") (and (int/ge columns 0) (int/le segments primitive_limit))
+            (equal? connectivity "Rows and columns")
+              (and (int/ge columns 0) (and (int/ge (uvs_cadd interior columns limit) 0)
+                (int/ge (uvs_cadd segments (int/sub rings 1) primitive_limit) 0)))
+            (equal? connectivity "Quads")
+              (and (int/ge primitives 0)
+                (if triangular
+                  (int/ge (uvs_cadd (uvs_cmul 4 middle limit) (uvs_cmul 6 segments limit) limit) 0)
+                  (int/ge (uvs_cmul 4 primitives limit) 0)))
+            :else (int/ge (uvs_cmul 3 (uvs_cmul 2 interior primitive_limit) limit) 0)))))))
+; Vec3.normalize of Plane_generators.normalize_plane_axis: rescale by the largest magnitude first.
+(defn uvs_normalize :context value [(value : vec3)]
+  (let* [scale (max (abs value.x) (max (abs value.y) (abs value.z)))
+         x (/ value.x scale) y (/ value.y scale) z (/ value.z scale)
+         length (sqrt (fma z z (fma y y (* x x))))]
+    [(/ x length) (/ y length) (/ z length)]))
+(defn uvs_custom_frame :context value [(axis : vec3)]
+  (let* [pole (uvs_normalize axis)
+         ax (abs pole.x) ay (abs pole.y) az (abs pole.z)
+         reference (cond (and (<= ax ay) (<= ax az)) [1.0 0.0 0.0] (<= ay az) [0.0 1.0 0.0] :else [0.0 0.0 1.0])
+         projection (fma reference.z pole.z (fma reference.y pole.y (* reference.x pole.x)))
+         radial (uvs_normalize [(fma (* -1.0 projection) pole.x reference.x)
+                                (fma (* -1.0 projection) pole.y reference.y)
+                                (fma (* -1.0 projection) pole.z reference.z)])
+         tangent (uvs_normalize (vec3_cross radial pole))]
+    {:r radial :p pole :t tangent}))
+(defnode sop/uv_sphere :label "UV Sphere" :category ["Create" "Primitive"]
+  :validate (not (and (equal? connectivity "Points") (and (equal? normals_mode "Explicit") (equal? normals "Vertex"))))
+  :code "E_PARAM" :message "sop/uv_sphere: point output cannot carry vertex normals"
+  [(connectivity : text "Triangles" :label "Connectivity"
+     :choices ["Triangles" "Alternating triangles" "Quads" "Rows" "Columns" "Rows and columns" "Points"])
+   (normals_mode : text "Explicit" :label "Normals mode" :choices ["Explicit" "Auto"])
+   (normals : text "Point" :label "Normals" :choices ["None" "Point" "Vertex"])
+   (orientation : text "Y axis" :label "Pole axis" :choices ["X axis" "Y axis" "Z axis" "Custom axis"]
+     :validate (not (and (equal? orientation "Custom axis") (and (= axis_x 0.0) (and (= axis_y 0.0) (= axis_z 0.0)))))
+     :code "E_PARAM" :message "sop/uv_sphere: custom axis must be nonzero")
+   (axis_x : float 0.0 :label "Axis X" :folder ["Transform" "Axis"] :min -1 :max 1 :vec3 ["axis" 0])
+   (axis_y : float 1.0 :label "Axis Y" :folder ["Transform" "Axis"] :min -1 :max 1 :vec3 ["axis" 1])
+   (axis_z : float 0.0 :label "Axis Z" :folder ["Transform" "Axis"] :min -1 :max 1 :vec3 ["axis" 2])
+   (rotation_order : text "XYZ" :label "Rotation order" :folder ["Transform" "Rotate"]
+     :choices ["XYZ" "XZY" "YXZ" "YZX" "ZXY" "ZYX"])
+   (base_radius : float 1.0 :label "Base radius" :folder ["Size"] :min 0.01 :max 10 :hard_min 0
+     :validate (and (> base_radius 0.0) (and (> radius_x 0.0) (and (> radius_y 0.0) (and (> radius_z 0.0) (> uniform_scale 0.0)))))
+     :code "E_PARAM" :message "sop/uv_sphere: radii and scale must be positive")
+   (radius_x_mode : text "Explicit" :label "Radius X mode" :folder ["Size"] :choices ["Explicit" "Auto"])
+   (radius_y_mode : text "Explicit" :label "Radius Y mode" :folder ["Size"] :choices ["Explicit" "Auto"])
+   (radius_z_mode : text "Explicit" :label "Radius Z mode" :folder ["Size"] :choices ["Explicit" "Auto"]
+     :validate (let* [x (uvs_scaled radius_x_mode radius_x base_radius uniform_scale)
+                      y (uvs_scaled radius_y_mode radius_y base_radius uniform_scale)
+                      z (uvs_scaled radius_z_mode radius_z base_radius uniform_scale)]
+                 (and (and x.valid (and y.valid z.valid)) (and (> x.value 0.0) (and (> y.value 0.0) (> z.value 0.0)))))
+     :code "E_PARAM" :message "sop/uv_sphere: scaled radii must be finite and positive")
+   (unique_points_per_pole : bool false :label "Unique pole points" :folder ["Topology"])
+   (triangular_poles : bool true :label "Triangular poles" :folder ["Topology"])
+   (radius_x : float 1.0 :label "Radius X" :folder ["Size"] :min 0.01 :max 10 :hard_min 0 :primary true :vec3 ["radius" 0])
+   (radius_y : float 1.0 :label "Radius Y" :folder ["Size"] :min 0.01 :max 10 :hard_min 0 :primary true :vec3 ["radius" 1])
+   (radius_z : float 1.0 :label "Radius Z" :folder ["Size"] :min 0.01 :max 10 :hard_min 0 :primary true :vec3 ["radius" 2])
+   (uniform_scale : float 1.0 :label "Uniform scale" :folder ["Size"] :min 0.01 :max 10 :hard_min 0)
+   (center_x : float 0.0 :label "Center X" :folder ["Transform" "Center"] :min -10 :max 10 :vec3 ["center" 0])
+   (center_y : float 0.0 :label "Center Y" :folder ["Transform" "Center"] :min -10 :max 10 :vec3 ["center" 1])
+   (center_z : float 0.0 :label "Center Z" :folder ["Transform" "Center"] :min -10 :max 10 :vec3 ["center" 2])
+   (rotation_x : float 0.0 :label "Rotate X" :folder ["Transform" "Rotate"] :min -3.14159 :max 3.14159 :vec3 ["rotation" 0])
+   (rotation_y : float 0.0 :label "Rotate Y" :folder ["Transform" "Rotate"] :min -3.14159 :max 3.14159 :vec3 ["rotation" 1])
+   (rotation_z : float 0.0 :label "Rotate Z" :folder ["Transform" "Rotate"] :min -3.14159 :max 3.14159 :vec3 ["rotation" 2])
+   (segments : int 48 :label "Segments" :folder ["Resolution"] :min 3 :max 256 :hard_min 3 :primary true
+     :validate (not (or (int/eq segments 4611686018427387903) (int/eq rings 4611686018427387903)))
+     :code "E_PARAM" :message "sop/uv_sphere: output cardinality overflows")
+   (rings : int 24 :label "Rings" :folder ["Resolution"] :min 2 :max 128 :hard_min 2 :primary true
+     :validate (or (or (int/eq segments 4611686018427387903) (int/eq rings 4611686018427387903))
+                   (uvs_cardinality_ok connectivity unique_points_per_pole triangular_poles segments rings))
+     :code "E_PARAM" :message "sop/uv_sphere: output cardinality exceeds OCaml array limits")
+   (uv_attribute : text "uv" :label "UV attribute" :folder ["Attributes"]
+     :validate (not (or (equal? (text/trim uv_attribute) "P") (equal? (text/trim uv_attribute) "N")))
+     :code "E_PARAM" :message "sop/uv_sphere: UV attribute cannot be P or N")]
+  (let* [pi_value 3.141592653589793
+         fmax 1.7976931348623157e308
+         normal_mode (if (equal? normals_mode "Auto") "Point" normals)
+         uv_name (text/trim uv_attribute)
+         has_uv (not (equal? uv_name ""))
+         point_mode (equal? connectivity "Points")
+         rows (equal? connectivity "Rows")
+         columns (equal? connectivity "Columns")
+         rows_columns (equal? connectivity "Rows and columns")
+         quads (equal? connectivity "Quads")
+         alternating (equal? connectivity "Alternating triangles")
+         triangle_mode (not (or quads (or rows (or columns (or rows_columns point_mode)))))
+         radius base_radius
+         rx_checked (uvs_scaled radius_x_mode radius_x base_radius uniform_scale)
+         ry_checked (uvs_scaled radius_y_mode radius_y base_radius uniform_scale)
+         rz_checked (uvs_scaled radius_z_mode radius_z base_radius uniform_scale)
+         rx rx_checked.value ry ry_checked.value rz rz_checked.value
+         identity_frame (and (equal? orientation "Y axis")
+           (and (= rotation_x 0.0) (and (= rotation_y 0.0) (and (= rotation_z 0.0)
+           (and (= center_x 0.0) (and (= center_y 0.0) (= center_z 0.0)))))))
+         compatible_normals (and identity_frame (and (equal? connectivity "Triangles")
+           (and (not unique_points_per_pole) (and triangular_poles (and (equal? normal_mode "Point")
+           (and (not has_uv) (and (= uniform_scale 1.0)
+           (and (= rx radius) (and (= ry radius) (= rz radius))))))))))
+         rotation_zero (and (= rotation_x 0.0) (and (= rotation_y 0.0) (= rotation_z 0.0)))
+         frame0 (cond (equal? orientation "X axis") {:r [0.0 1.0 0.0] :p [1.0 0.0 0.0] :t [0.0 0.0 -1.0]}
+                      (equal? orientation "Y axis") {:r [1.0 0.0 0.0] :p [0.0 1.0 0.0] :t [0.0 0.0 1.0]}
+                      (equal? orientation "Z axis") {:r [1.0 0.0 0.0] :p [0.0 0.0 1.0] :t [0.0 -1.0 0.0]}
+                      :else (uvs_custom_frame [axis_x axis_y axis_z]))
+         matrix (if rotation_zero (mat4_identity)
+           (let* [mx (mat4_rotation_x rotation_x) my (mat4_rotation_y rotation_y) mz (mat4_rotation_z rotation_z)]
+             (case rotation_order
+               "XYZ" (mat4_mul mz (mat4_mul my mx))
+               "XZY" (mat4_mul my (mat4_mul mz mx))
+               "YXZ" (mat4_mul mz (mat4_mul mx my))
+               "YZX" (mat4_mul mx (mat4_mul mz my))
+               "ZXY" (mat4_mul my (mat4_mul mx mz))
+               :else (mat4_mul mx (mat4_mul my mz)))))
+         direction (fn [(v : vec3)]
+           (if rotation_zero v
+             [(fma matrix.r0.z v.z (fma matrix.r0.y v.y (* matrix.r0.x v.x)))
+              (fma matrix.r1.z v.z (fma matrix.r1.y v.y (* matrix.r1.x v.x)))
+              (fma matrix.r2.z v.z (fma matrix.r2.y v.y (* matrix.r2.x v.x)))]))
+         ra (direction frame0.r) pa (direction frame0.p) ta (direction frame0.t)
+         include_poles (not rows)
+         pole_count (cond (not include_poles) 0 unique_points_per_pole segments :else 1)
+         interior_count (int/mul (int/sub rings 1) segments)
+         point_count (int/add interior_count (int/mul 2 pole_count))
+         interior_base pole_count
+         bottom_base (int/add interior_base interior_count)
+         middle_cells (int/mul (int/sub rings 2) segments)
+         row_count (if (or rows rows_columns) (int/sub rings 1) 0)
+         row_vertex_count (int/mul row_count segments)
+         column_vertex_count (int/mul segments (int/add rings 1))
+         primitive_count (cond point_mode 0
+                               rows (int/sub rings 1)
+                               columns segments
+                               rows_columns (int/add segments (int/sub rings 1))
+                               quads (int/mul segments rings)
+                               :else (int/mul 2 (int/mul (int/sub rings 1) segments)))
+         vertex_count (cond point_mode 0
+                            rows row_vertex_count
+                            columns column_vertex_count
+                            rows_columns (int/add row_vertex_count column_vertex_count)
+                            triangle_mode (int/mul 3 primitive_count)
+                            triangular_poles (int/add (int/mul 4 middle_cells) (int/mul 6 segments))
+                            :else (int/mul 4 primitive_count))
+         bottom_first (if triangle_mode (int/sub primitive_count segments) (int/add segments middle_cells))
+         theta_sine (exact (map (fn [(r : int)] (sin (/ (* pi_value (float r)) (float rings)))) (array/range (int/add rings 1) :type int)))
+         theta_cosine (exact (map (fn [(r : int)] (cos (/ (* pi_value (float r)) (float rings)))) (array/range (int/add rings 1) :type int)))
+         phi_sine (exact (map (fn [(s : int)] (sin (/ (* (* pi_value 2.0) (float s)) (float segments)))) (array/range segments :type int)))
+         phi_cosine (exact (map (fn [(s : int)] (cos (/ (* (* pi_value 2.0) (float s)) (float segments)))) (array/range segments :type int)))
+         minimum_radius (min rx (min ry rz))
+         iwx (/ minimum_radius rx) iwy (/ minimum_radius ry) iwz (/ minimum_radius rz)
+         ; Point number of a (ring, wrapped segment).
+         point_of (fn [(ring : int) (raw : int)]
+           (let* [segment (if (int/eq raw segments) 0 raw)]
+             (cond (int/eq ring 0) (if unique_points_per_pole segment 0)
+                   (int/eq ring rings) (int/add bottom_base (if unique_points_per_pole segment 0))
+                   :else (int/add interior_base (int/add (int/mul (int/sub ring 1) segments) segment)))))
+         local_position (fn [(ring : int) (segment : int)]
+           (cond (int/eq ring 0) [0.0 ry 0.0]
+                 (int/eq ring rings) [0.0 (* -1.0 ry) 0.0]
+                 :else (let* [radial (array/nth theta_sine ring)]
+                   [(* (* rx radial) (array/nth phi_cosine segment))
+                    (* ry (array/nth theta_cosine ring))
+                    (* (* rz radial) (array/nth phi_sine segment))])))
+         position (fn [(ring : int) (segment : int)]
+           (let* [l (local_position ring segment)]
+             (if identity_frame l
+               [(fma ta.x l.z (fma pa.x l.y (fma ra.x l.x center_x)))
+                (fma ta.y l.z (fma pa.y l.y (fma ra.y l.x center_y)))
+                (fma ta.z l.z (fma pa.z l.y (fma ra.z l.x center_z)))])))
+         normal (fn [(ring : int) (segment : int)]
+           (let* [sine_theta (array/nth theta_sine ring) cosine_theta (array/nth theta_cosine ring)
+                  sine_phi (array/nth phi_sine segment) cosine_phi (array/nth phi_cosine segment)
+                  tx (* sine_theta cosine_phi) ty cosine_theta tz (* sine_theta sine_phi)
+                  gx (* tx iwx) gy (* ty iwy) gz (* tz iwz)
+                  length (sqrt (fma gz gz (fma gy gy (* gx gx))))
+                  ; Degenerate weights: scale in log space (native uses neg_infinity for exact zeros).
+                  sx (if (= tx 0.0) -1e300 (- (log (abs tx)) (log rx)))
+                  sy (if (= ty 0.0) -1e300 (- (log (abs ty)) (log ry)))
+                  sz (if (= tz 0.0) -1e300 (- (log (abs tz)) (log rz)))
+                  maximum (max sx (max sy sz))
+                  ex (if (= tx 0.0) 0.0 (if (< tx 0.0) (* -1.0 (exp (- sx maximum))) (exp (- sx maximum))))
+                  ey (if (= ty 0.0) 0.0 (if (< ty 0.0) (* -1.0 (exp (- sy maximum))) (exp (- sy maximum))))
+                  ez (if (= tz 0.0) 0.0 (if (< tz 0.0) (* -1.0 (exp (- sz maximum))) (exp (- sz maximum))))
+                  elength (sqrt (fma ez ez (fma ey ey (* ex ex))))
+                  n (if (> length 0.0) [(/ gx length) (/ gy length) (/ gz length)]
+                        [(/ ex elength) (/ ey elength) (/ ez elength)])]
+             (if identity_frame n
+               [(fma ta.x n.z (fma pa.x n.y (* ra.x n.x)))
+                (fma ta.y n.z (fma pa.y n.y (* ra.y n.x)))
+                (fma ta.z n.z (fma pa.z n.y (* ra.z n.x)))])))
+         pts (array/range point_count :type int)
+         ; (ring, segment) of every point, packed as ring + (rings + 1) * segment.
+         point_key (fn [(p : int)]
+           (cond (not include_poles)
+                   (int/add (int/add 1 (int/div p segments)) (int/mul (int/add rings 1) (int/mod p segments)))
+                 (int/lt p pole_count) (int/mul (int/add rings 1) (if unique_points_per_pole p 0))
+                 (int/lt p bottom_base)
+                   (let* [local (int/sub p interior_base)]
+                     (int/add (int/add 1 (int/div local segments)) (int/mul (int/add rings 1) (int/mod local segments))))
+                 :else (int/add rings (int/mul (int/add rings 1) (if unique_points_per_pole (int/sub p bottom_base) 0)))))
+         key_ring (fn [(k : int)] (int/mod k (int/add rings 1)))
+         key_segment (fn [(k : int)] (int/div k (int/add rings 1)))
+         ; |coordinate| <= |center| + the frame-weighted radii; quarter-scaled bound far below the maximum.
+         safe (< (+ (+ (* 0.25 (abs center_x)) (+ (* 0.25 (abs center_y)) (* 0.25 (abs center_z))))
+                    (+ (* 0.25 rx) (+ (* 0.25 ry) (* 0.25 rz)))) 4e307)
+         invalid (if (or safe identity_frame) (array/int 0)
+           (array/compact (map (fn [(p : int)]
+             (let* [k (point_key p) ring (key_ring k) segment (key_segment k)
+                    l (local_position ring segment)
+                    ax (float/fma_checked ra.x l.x center_x)
+                    ay (float/fma_checked ra.y l.x center_y)
+                    az (float/fma_checked ra.z l.x center_z)
+                    bx (float/fma_checked pa.x l.y ax.value) by (float/fma_checked pa.y l.y ay.value)
+                    bz (float/fma_checked pa.z l.y az.value)
+                    cx (float/fma_checked ta.x l.z bx.value) cy (float/fma_checked ta.y l.z by.value)
+                    cz (float/fma_checked ta.z l.z bz.value)]
+               (if (and (and ax.valid (and ay.valid az.valid)) (and (and bx.valid (and by.valid bz.valid))
+                        (and cx.valid (and cy.valid cz.valid)))) 0 1))) pts)))]
+    (cond
+      (not (and rx_checked.valid (and ry_checked.valid rz_checked.valid)))
+        (uvs_error "radii and uniform scale must be finite and positive")
+      (int/gt (array/count invalid) 0)
+        (uvs_error (str "generated point " (array/nth invalid 0) " is not finite"))
+      :else
+        (let* [positions (exact (map (fn [(p : int)]
+                 (let* [k (point_key p)] (position (key_ring k) (key_segment k)))) pts))
+               vertices (array/range vertex_count :type int)
+               ; Packed (ring, u_twice) of every vertex; the wrap-around segment keeps its unwrapped index.
+               vertex_key (fn [(v : int)]
+                 (let* [rows_part (int/lt v row_vertex_count)
+                        w (int/sub v row_vertex_count)
+                        packed (fn [(ring : int) (twice : int)] (int/add ring (int/mul (int/add rings 1) twice)))]
+                   (if (or rows (or columns rows_columns))
+                     (if rows_part
+                       (packed (int/add 1 (int/div v segments)) (int/mul 2 (int/mod v segments)))
+                       (packed (int/mod w (int/add rings 1)) (int/mul 2 (int/div w (int/add rings 1)))))
+                     (let* [tri_poles (or triangle_mode triangular_poles)
+                            in_top (if triangle_mode (int/lt v (int/mul 3 segments))
+                                     (if triangular_poles (int/lt v (int/mul 3 segments)) (int/lt v (int/mul 4 segments))))
+                            p (cond triangle_mode (int/div v 3)
+                                    (not triangular_poles) (int/div v 4)
+                                    (int/lt v (int/mul 3 segments)) (int/div v 3)
+                                    (int/lt v (int/add (int/mul 3 segments) (int/mul 4 middle_cells)))
+                                      (int/add segments (int/div (int/sub v (int/mul 3 segments)) 4))
+                                    :else (int/add bottom_first
+                                            (int/div (int/sub v (int/add (int/mul 3 segments) (int/mul 4 middle_cells))) 3)))
+                            slot (cond triangle_mode (int/mod v 3)
+                                       (not triangular_poles) (int/mod v 4)
+                                       (int/lt v (int/mul 3 segments)) (int/mod v 3)
+                                       (int/lt v (int/add (int/mul 3 segments) (int/mul 4 middle_cells)))
+                                         (int/mod (int/sub v (int/mul 3 segments)) 4)
+                                       :else (int/mod (int/sub v (int/add (int/mul 3 segments) (int/mul 4 middle_cells))) 3))]
+                       (cond
+                         (int/lt p segments)
+                           (let* [s p n (int/add p 1)]
+                             (if tri_poles
+                               (cond (int/eq slot 0) (packed 0 (int/add (int/mul 2 s) 1))
+                                     (int/eq slot 1) (packed 1 (int/mul 2 n))
+                                     :else (packed 1 (int/mul 2 s)))
+                               (cond (int/eq slot 0) (packed 0 (int/mul 2 s))
+                                     (int/eq slot 1) (packed 0 (int/mul 2 n))
+                                     (int/eq slot 2) (packed 1 (int/mul 2 n))
+                                     :else (packed 1 (int/mul 2 s)))))
+                         (int/ge p bottom_first)
+                           (let* [s (int/sub p bottom_first) n (int/add s 1)]
+                             (if tri_poles
+                               (cond (int/eq slot 0) (packed rings (int/add (int/mul 2 s) 1))
+                                     (int/eq slot 1) (packed (int/sub rings 1) (int/mul 2 s))
+                                     :else (packed (int/sub rings 1) (int/mul 2 n)))
+                               (cond (int/eq slot 0) (packed (int/sub rings 1) (int/mul 2 s))
+                                     (int/eq slot 1) (packed (int/sub rings 1) (int/mul 2 n))
+                                     (int/eq slot 2) (packed rings (int/mul 2 n))
+                                     :else (packed rings (int/mul 2 s)))))
+                         :else
+                           (let* [local (if triangle_mode (int/div (int/sub p segments) 2) (int/sub p segments))
+                                  half (if triangle_mode (int/and (int/sub p segments) 1) 0)
+                                  ring (int/add 1 (int/div local segments))
+                                  s (int/mod local segments) n (int/add s 1)
+                                  alternate (and alternating (int/eq (int/and (int/add (int/sub ring 1) s) 1) 1))
+                                  ; corner a=(ring,s) b=(ring,n) c=(ring+1,n) d=(ring+1,s)
+                                  corner (cond (not triangle_mode) slot
+                                               (and (not alternate) (int/eq half 0)) (cond (int/eq slot 0) 0 (int/eq slot 1) 2 :else 3)
+                                               (not alternate) slot
+                                               (int/eq half 0) (cond (int/eq slot 0) 0 (int/eq slot 1) 1 :else 3)
+                                               :else (cond (int/eq slot 0) 1 (int/eq slot 1) 2 :else 3))
+                                  corner_ring (int/add ring (if (int/ge corner 2) 1 0))
+                                  corner_segment (int/add s (if (or (int/eq corner 1) (int/eq corner 2)) 1 0))]
+                             (packed corner_ring (int/mul 2 corner_segment))))))))
+               vertex_keys (if point_mode (array/int 0) (exact (map (fn [(v : int)] (vertex_key v)) vertices)))
+               key_u (fn [(k : int)] (int/div k (int/add rings 1)))
+               vertex_points (exact (map (fn [(k : int)]
+                 (point_of (key_ring k) (int/div (key_u k) 2))) vertex_keys))
+               offsets (cond
+                 point_mode (array/int 1)
+                 (or rows (or columns rows_columns))
+                   (exact (map (fn [(i : int)]
+                     (if (int/le i row_count) (int/mul i segments)
+                       (int/add row_vertex_count (int/mul (int/sub i row_count) (int/add rings 1)))))
+                     (array/range (int/add primitive_count 1) :type int)))
+                 triangle_mode (exact (map (fn [(i : int)] (int/mul i 3)) (array/range (int/add primitive_count 1) :type int)))
+                 (not triangular_poles) (exact (map (fn [(i : int)] (int/mul i 4)) (array/range (int/add primitive_count 1) :type int)))
+                 :else (exact (map (fn [(i : int)]
+                   (cond (int/le i segments) (int/mul i 3)
+                         (int/le i bottom_first) (int/add (int/mul segments 3) (int/mul (int/sub i segments) 4))
+                         :else (int/add (int/add (int/mul segments 3) (int/mul middle_cells 4))
+                                 (int/mul (int/sub i bottom_first) 3))))
+                     (array/range (int/add primitive_count 1) :type int))))
+               base (if point_mode
+                 (sop/mesh :points positions :vertex_points (array/int 0)
+                   :primitive_offsets (array/int 1) :kinds (array/int 0))
+                 (sop/mesh :points positions :vertex_points vertex_points :primitive_offsets offsets
+                   :kinds (array/int primitive_count (if (or rows (or columns rows_columns)) 1 0))))
+               with_point_normals (if (equal? normal_mode "Point")
+                 (sop/with_attr base "N"
+                   (exact (map (fn [(p : int)]
+                     (if compatible_normals
+                       (let* [q (array/nth positions p)] [(/ q.x radius) (/ q.y radius) (/ q.z radius)])
+                       (let* [k (point_key p)] (normal (key_ring k) (key_segment k))))) pts))
+                   :owner "point" :type vec3)
+                 base)
+               with_vertex_normals (if (and (not point_mode) (equal? normal_mode "Vertex"))
+                 (sop/with_attr with_point_normals "N"
+                   (exact (map (fn [(k : int)] (normal (key_ring k) (int/mod (int/div (key_u k) 2) segments))) vertex_keys))
+                   :owner "vertex" :type vec3)
+                 with_point_normals)]
+          (cond
+            (not has_uv) with_vertex_normals
+            point_mode
+              (sop/with_attr with_vertex_normals uv_name
+                (exact (map (fn [(p : int)]
+                  (let* [k (point_key p)]
+                    [(/ (float (key_segment k)) (float segments)) (/ (float (key_ring k)) (float rings))])) pts))
+                :owner "point" :type vec2)
+            :else
+              (sop/with_attr with_vertex_normals uv_name
+                (exact (map (fn [(k : int)]
+                  [(/ (float (key_u k)) (float (int/mul 2 segments))) (/ (float (key_ring k)) (float rings))]) vertex_keys))
+                :owner "vertex" :type vec2))))))
