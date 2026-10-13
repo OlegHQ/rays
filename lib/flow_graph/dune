@@ -24,3 +24,8 @@
  (name test_array_composition_graph)
  (modules test_array_composition_graph)
  (libraries flow_graph))
+
+(test
+ (name test_iterate_graph)
+ (modules test_iterate_graph)
+ (libraries flow_graph))

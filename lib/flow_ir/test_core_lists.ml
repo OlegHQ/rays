@@ -126,3 +126,28 @@ let () =
   let ordinary=captured "int" "(filter (fn [(x : int)] (< t 0.5)) parts)"(E.List(Array.make 5001(E.Int 1)))in
   assert(match I.Core_lower.lower ~strict:true ordinary with Error _->true|Ok _->false);
   print_endline "Known 5001 geometry map/filter captures: bounded loop shape, ordered native/reference handles and unchanged ordinary list guard"
+
+(* iterate over a packed array: the map is one region lowered once and invoked by one counted
+   loop, so 5000 passes do not re-lower anything; the count is a live int, past the 4,096 bound *)
+let () =
+  let module C=I.Core in
+  let source="(workspace w (graph g :context value (let* [tested (iterate (int (+ 5000. (* t 0.))) (array/float 8 1.0)
+    (fn [p] (exact (map (fn [(i : int)] (* 0.999 (+ (array/nth p i) (* t 0.)))) (array/range 8 :type int)))))] 0.)))" in
+  let ws=match Flow.Workspace.check {Flow.Check.version=1;kinds=[]} (ok (Flow.Syntax.parse source)) with
+    | Some ws,[] -> ws | _,ds -> failwith (String.concat "; " (List.map Flow.Diagnostic.to_string ds)) in
+  let r=match snd (List.hd (List.assoc ["g";"tested"] (ok (E.static ~record:true ws)).records)) with
+    | E.Residual r -> r | _ -> failwith "iterate: expected residual" in
+  let core=match I.Core_lower.lower ~strict:true r with Ok p -> p | Error n -> failwith ("iterate refused: " ^ n) in
+  let rec counted statements = List.fold_left (fun n (s:C.statement) -> n + match s.node with
+    | Counted {init;body;_} -> 1 + counted init + counted body
+    | If {yes;no;_} -> counted yes + counted no | _ -> 0) 0 statements in
+  assert (Array.length core.regions=1);
+  assert (counted core.body=1);
+  let live=Frame_input.at_time 0. in
+  let want=E.Private.force_reference (E.Residual r) ~live in
+  (match I.Core_exec.run core ~live,want with
+   | Ok (E.Float_array a),Ok (E.Float_array b) ->
+       assert (Array.length a=8 && Array.for_all2 (fun x y -> Int64.bits_of_float x=Int64.bits_of_float y) a b)
+   | Ok a,Ok b -> failwith (E.show a ^ " <> " ^ E.show b)
+   | _ -> failwith "iterate packed: a side failed");
+  print_endline "Core iterate: one region, one counted loop for 5000 passes, byte-identical to the walker"

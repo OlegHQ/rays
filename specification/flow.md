@@ -781,6 +781,19 @@ Array iteration retains its native storage bounds and has no 4,096-list limit.
 Public graph array loops and collecting `for`, `scan` and `map` forms still
 cannot construct graph nodes. Numeric operations nested in the cooked fold
 retain strict packed qualification.
+`(iterate n init (fn [x] body))` applies the function `n` times from `init` and returns the
+final value; `n <= 0` returns `init`. It is the pass loop that `fold` over `(range n)` cannot be:
+`n` is an ordinary Int expression (a node parameter), not a literal, and the 4,096 iteration
+bound does not apply. The function is inlined once and runs as one counted Core loop, so inside a
+`defnode` it cooks as one node, and a packed `map` in its body (including gathers through
+captured int arrays) is lowered once and invoked per pass. Its result type is the wider of the
+seed's and the body's (`E_TYPE` when the body does not fit it), like a `fold` accumulator. An
+optional `:until (fn [prev next] bool)` is checked after each pass; the first pass for which
+it returns true is the last. The remaining passes are skipped. Annotate array parameters of
+`:until` (`(prev : (array float))`) when its body reduces them, and wrap packed results it reads
+in `(exact …)`. In the graph it is a call card like `reduce` (rows `count`, `start`, `f`, and an
+optional `until`, the functions drawn as nested `fn` zones) edited by the ordinary `Set_arg`,
+`Connect` and `Disconnect` gestures.
 Optional `:operation "stable_operation"` retains an existing cook operation
 identity while the catalog kind keeps its authored name and human label. It
 defaults to the unqualified kind name. The default runtime node label remains

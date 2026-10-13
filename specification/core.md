@@ -507,6 +507,7 @@ consumed at compile time need not survive in the core.
 | `concat` | Sum input counts, retain input/element order, join element types and coerce, then enforce the source 4,096 cap. No repeated append of an ever-growing prefix. |
 | `take` / `drop` / `rest` | `take` retains the first min(max(0,n),length) elements; `drop` removes that many; `rest` removes one if present. A live n or live source length implies dynamic length. |
 | `for` / `scan` | Product iteration count, minus skipped tuples, controls the collected length. Later clauses may depend on earlier items. List loops count attempted iterations for the 4,096 bound, including skips. |
+| `iterate` | Applies one function `n` times from a seed; `n <= 0` returns the seed. `n` is any Int expression, not a literal, and is not bounded by 4,096. With `:until (fn [prev next] bool)` the first pass whose `next` satisfies it is the last. Ordered coercion/widening as in `reduce`. |
 | `fold` / `sum` / `reduce` | No collected output list except the accumulator's own data. Empty fold/reduce returns the seed; empty sum returns Int 0. Ordered accumulation and coercion/widening are preserved. |
 | Frame events / state-held list fields | Bounded dynamic length when represented in core; the source frame/event and state identity rules still apply. Length is not made static merely by flattening a record. |
 
@@ -1025,6 +1026,7 @@ operation. A user function/macro row is not a new runtime primitive.
 | `finish` | compiler rule | Inline checked definition: ordered field updates, `array/concat`, `array/vec3`, list access/build, `coerce`, branches. |
 | `floor` | primitive | `floor` |
 | `fn` | compiler rule | Specialize and inline the checked body at each call site; retain capture and call identity. |
+| `iterate` | compiler rule | One `Counted` loop over `max(0, n)` passes with a held accumulator: the function is inlined once per site (a packed `map` inside it is one region, lowered once and invoked per pass), results widen like `reduce`, and `:until` holds a finished flag so later passes only skip a branch. No 4,096 bound. |
 | `fold` | region | Numeric packed seeded accumulator; otherwise bounded sequential frame loop with `coerce` and accumulator widening. |
 | `for` | region | Numeric packed product/collect; otherwise bounded frame product loop with sequence build and access. |
 | `frame/dt` | intrinsic | Snapshot Float `dt`. |

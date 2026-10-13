@@ -77,12 +77,12 @@
 (test
  (name test_setters)
  (modules test_setters)
- (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop unix))
+ (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop))
 
 (executable
  (name test_rest_position)
  (modules test_rest_position)
- (libraries flow flow_ir flow_sop sop_catalog rdk rdk_test_support lisp_sop unix))
+ (libraries flow flow_ir flow_sop sop_catalog rdk rdk_test_support lisp_sop))
 
 (rule
  (alias rest_position_draft)
@@ -92,7 +92,7 @@
 (executable
  (name test_metadata_ports)
  (modules test_metadata_ports)
- (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop unix))
+ (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop))
 
 (rule
  (alias runtest)
@@ -125,7 +125,7 @@
 (executable
  (name test_set_color)
  (modules test_set_color)
- (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop unix))
+ (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop))
 
 (rule
  (alias set_color_draft)
@@ -197,7 +197,7 @@
 (executable
  (name test_group_invert)
  (modules test_group_invert)
- (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop unix))
+ (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop))
 
 (rule
  (alias group_invert_draft)
@@ -207,7 +207,7 @@
 (executable
  (name test_point_jitter)
  (modules test_point_jitter)
- (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop unix))
+ (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop))
 
 (rule
  (alias point_jitter_draft)
@@ -217,7 +217,7 @@
 (executable
  (name test_name_from_groups)
  (modules test_name_from_groups)
- (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop unix))
+ (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop))
 
 (rule
  (alias name_from_groups_draft)
@@ -237,7 +237,7 @@
 (executable
  (name test_line_port)
  (modules test_line_port)
- (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop unix))
+ (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop))
 
 (rule
  (aliases runtest line_port)
@@ -252,7 +252,7 @@
 (executable
  (name test_points_port)
  (modules test_points_port)
- (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop unix))
+ (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop))
 
 (rule
  (aliases runtest points_port)
@@ -263,3 +263,8 @@
  (name bench_planar_attribute)
  (modules bench_planar_attribute)
  (libraries flow flow_sop rdk rdk_test_support rays_math unix))
+
+(test
+ (name test_iterate)
+ (modules test_iterate)
+ (libraries flow flow_ir flow_graph flow_sop sop sop_catalog rdk rdk_test_support lisp_sop))

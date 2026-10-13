@@ -72,7 +72,7 @@ and node =
   | Fn of { params : (pattern * Ty.t option) list; body : term; zone : path; capture : term option }
       (** A function port specializes [body] while [capture] retains its
           original callable's lexical environment and call identity. *)
-  | Hof of [ `Map | `Filter | `Reduce | `Sort_by ] * term list
+  | Hof of [ `Map | `Filter | `Reduce | `Sort_by | `Iterate ] * term list
   | List_lit of term list
   | Record of (string * term) list
   | Get of term * string

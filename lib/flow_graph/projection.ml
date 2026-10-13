@@ -139,6 +139,7 @@ let chip c (e : S.t option) = match e with
             | Some "sum" -> inline "Σ"
             | Some ("fold" | "scan") -> inline "⟲"
             | Some "fn" -> inline "λ"
+            | Some "iterate" -> inline "⟲"
             | Some ("if" | "cond" | "case") -> inline "?"
             | Some h when List.mem_assoc h c.macros -> inline "◆"
             | _ -> inline "ƒ"))
@@ -293,6 +294,12 @@ let call_rows c (e : S.t) h args =
           [ posrow ?ty:(input_ty i (if i = 0 then Some (Ty.Fn None) else if String.starts_with ~prefix:"list" l then list_ty else None)) l i ]
         else []) labels)
       @ (if h = "map" && npos < 4 then [ add c "+ list" (E.Pos npos) list_ty ] else [])
+  | "iterate" ->
+      let start = match Hashtbl.find_opt c.forms e.id with
+        | Some {W.node = Hof (`Iterate, _ :: (init : W.term) :: _); _} -> Some init.ty
+        | _ -> None in
+      [ posrow ~ty:Ty.Int "count" 0; posrow ?ty:start "start" 1; posrow ~ty:(Ty.Fn None) "f" 2;
+        kwrow ~ty:(Ty.Fn None) "until" ]
   | "get" -> [ posrow "record" 0; posrow ~socket:false "field" 1 ]
   | "assoc" -> posrow "record" 0 :: List.map (fun (k, _) -> kwrow k) kws
   | "values" -> List.map (fun (k, _) -> kwrow k) kws @ [ add c "+ output" (E.Kw "") ~socket:false None ]
@@ -417,6 +424,10 @@ let rail_of c (kind : zone_kind) (e : S.t) (t : W.term option) ~visible =
                             | [] -> None in
                           Option.bind parent (fun parent ->
                             match Hashtbl.find_opt c.terms parent with
+                            | Some {W.node = Hof (`Iterate, f :: init :: _ :: until); _}
+                              when f.form.id = fn.form.id
+                                || List.exists (fun (u : W.term) -> u.form.id = fn.form.id) until ->
+                                Some init.ty
                             | Some {W.node = Hof (`Reduce, f :: init :: source :: _); _} when f.form.id = fn.form.id ->
                                 if k = 0 then Some init.ty else Ty.elem source.ty
                             | Some {W.node = Hof (_, f :: sources); _} when f.form.id = fn.form.id ->

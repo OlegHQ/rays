@@ -27,6 +27,7 @@ let forms = [
   "Branch", "case", "(case 0 0 1.0 :else 0.0)", "choice";
   "Loop", "for", "(for [i (range 4)] i)", "each";
   "Loop", "fold", "(fold [total 0.0] [i (range 4)] (+ total i))", "folded";
+  "Loop", "iterate", "(iterate 3 0.0 (fn [x] (+ x 1.0)))", "iterated";
   "Loop", "scan", "(scan [total 0.0] [i (range 4)] (+ total i))", "steps";
   "Loop", "sum", "(sum [i (range 4)] i)", "total";
   "Function", "fn", "(fn [x] x)", "function";

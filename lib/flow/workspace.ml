@@ -34,7 +34,7 @@ and node =
   | Cond of (term * term) list * term
   | Case of term * (S.t * term) list * term
   | Fn of { params : (pattern * Ty.t option) list; body : term; zone : path; capture : term option }
-  | Hof of [ `Map | `Filter | `Reduce | `Sort_by ] * term list
+  | Hof of [ `Map | `Filter | `Reduce | `Sort_by | `Iterate ] * term list
   | List_lit of term list
   | Record of (string * term) list
   | Get of term * string
@@ -110,7 +110,7 @@ let max_call_depth = 64
 
 let special = [ "workspace"; "graph"; "defn"; "defnode"; "defmacro"; "let*"; "ref"; "for"; "fold";
   "scan"; "sum"; "state"; "if"; "with_error"; "error_rows"; "values"; "fn"; "cond"; "case"; "list"; "concat"; "str"; "get";
-  "assoc"; "map"; "filter"; "reduce"; "sort-by"; "quote"; "quasiquote"; "unquote";
+  "assoc"; "map"; "filter"; "reduce"; "sort-by"; "iterate"; "quote"; "quasiquote"; "unquote";
   "unquote-splicing" ]
 let special_forms = special
 let reserved s = List.mem s special || List.mem s [ "t"; "pi"; "true"; "false"; "nil" ]
@@ -925,7 +925,7 @@ let check ?(ops = []) ?(library = false) catalog forms =
   and input cx key (x : S.t) : term * v =
     match S.head x with
     | Some h when String.contains h '/' || Hashtbl.mem macro_tbl h
-        || List.mem h ["fn"; "map"; "filter"; "reduce"; "sort-by"; "if"; "cond"; "case"; "with_error"; "error_rows"; "exact"] ->
+        || List.mem h ["fn"; "map"; "filter"; "reduce"; "sort-by"; "iterate"; "if"; "cond"; "case"; "with_error"; "error_rows"; "exact"] ->
         let memo = cx.path, key, x.id in
         let id = match Hashtbl.find_opt input_paths memo with
           | Some id -> id
@@ -941,7 +941,7 @@ let check ?(ops = []) ?(library = false) catalog forms =
                 | leaf :: scope -> List.rev scope @ [Printf.sprintf "%s~%d" leaf n]
                 | [] -> assert false in
               Hashtbl.add input_paths memo id; id in
-        if List.mem h ["fn"; "map"; "filter"; "reduce"; "sort-by"; "if"; "cond"; "case"; "with_error"; "error_rows"; "exact"] then binding cx x id
+        if List.mem h ["fn"; "map"; "filter"; "reduce"; "sort-by"; "iterate"; "if"; "cond"; "case"; "with_error"; "error_rows"; "exact"] then binding cx x id
         else let t, v = infer {cx with path = id} x in mark id v;
           (* Canvas previews need the inline result recorded at its card path.
              Scene and SOP lowering retain their operation's original site. *)
@@ -1302,6 +1302,54 @@ let check ?(ops = []) ?(library = false) catalog forms =
           && List.for_all (fun (_, _, (v : v)) -> packed_array v.ty) lists && eligible })
     end
 
+  and iterate cx (x : S.t) (args : S.t list) =
+    let parsed = match args with
+      | [ n; init; f ] -> Some (n, init, f, None)
+      | [ n; init; f; { S.node = S.Kw "until"; _ }; g ] -> Some (n, init, f, Some g)
+      | _ -> None in
+    match parsed with
+    | None -> bad x "E_ARITY" "iterate is (iterate n init (fn [x] body)) with an optional :until (fn [prev next] bool)."
+    | Some (n_form, init_form, f_form, until_form) ->
+        let (nt, nv) = input cx "0" n_form in
+        if not (Ty.fits nv.ty Ty.Int) && nv.ty <> Ty.Any then
+          err n_form "E_TYPE" (Printf.sprintf "iterate's count is an int; got %s." (show nv.ty));
+        let (it, iv) = input cx "1" init_form in
+        no_fn x iv.ty "The iterate value";
+        let fn_term key (form : S.t) = match S.head form with
+          | Some "fn" -> input cx key form
+          | _ -> fn_value cx form "iterate" in
+        let (ft, fv) = fn_term "2" f_form in
+        let arg v = value_arg x { v with live_len = false; len = None; fn = None } in
+        let (result, rv) = call_value cx x fv [ arg iv ] in
+        no_fn x rv.ty "The iterate result";
+        if not (Ty.fits rv.ty iv.ty) then
+          err x "E_TYPE" (Printf.sprintf "iterate's function must return the value type %s; it returns %s." (show iv.ty) (show rv.ty));
+        let ty = Option.value ~default:iv.ty (Ty.join iv.ty rv.ty) in
+        if shape_ty ty then err x "E_ARRAY_TYPE" "iterate carries data; it cannot create graph nodes.";
+        let instantiate key form t v params result_ty =
+          match v.fn with
+          | Some (Op_fn _ | Kind_fn _) -> t
+          | _ -> (instantiate_fn ~coerce_params:false cx { key = None; aform = form; aterm = t; av = v }
+                    { Ty.params; result = result_ty }).aterm |> fun t -> ignore key; t in
+        let ft = instantiate "2" f_form ft fv [ iv.ty ] rv.ty in
+        let until = Option.map (fun g ->
+          let (gt, gv) = fn_term ":until" g in
+          let (_, uv) = call_value cx x gv [ arg iv; arg rv ] in
+          if not (Ty.fits uv.ty Ty.Bool) then
+            err g "E_TYPE" (Printf.sprintf "iterate's :until returns bool; it returns %s." (show uv.ty));
+          (instantiate ":until" g gt gv [ iv.ty; rv.ty ] Ty.Bool, gv, uv)) until_form in
+        let specialized = match result.node with Call_fn { body = Some body; _ } -> body | _ -> result in
+        let extra = match until with Some (_, gv, uv) -> [ gv; uv ] | None -> [] in
+        let v = derive ty (fv :: rv :: iv :: nv :: extra) in
+        root cx.path x [ refusal x "E_GPU_FORM" "GPU kernels require collecting maps." ];
+        link_body cx.path specialized;
+        (match fv.fn with
+         | Some (Closure c) -> link c.cid (Paths.singleton cx.path)
+         | Some (Def_fn name) -> link [ "def:" ^ name ] (Paths.singleton cx.path)
+         | _ -> ());
+        let terms = ft :: it :: nt :: (match until with Some (t, _, _) -> [ t ] | None -> []) in
+        (tm x ty (Hof (`Iterate, terms)), { v with live_len = false; packed_producers = Paths.singleton cx.path })
+
   and ref_ cx (x : S.t) (args : S.t list) =
     match args with
     | ({ S.node = S.Sym g; _ } as gf) :: rest ->
@@ -1372,6 +1420,7 @@ let check ?(ops = []) ?(library = false) catalog forms =
     | "get" -> get cx x args
     | "assoc" -> assoc cx x args
     | "map" | "filter" | "reduce" | "sort-by" -> hof cx x name args
+    | "iterate" -> iterate cx x args
     | "quote" | "quasiquote" | "unquote" | "unquote-splicing" ->
         bad x "E_QUOTE" (Printf.sprintf "%s belongs in a defmacro template (`…)." name)
     | "workspace" | "graph" | "defn" | "defnode" | "defmacro" ->

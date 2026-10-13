@@ -41,7 +41,7 @@ let values =
       "pattern-error"; "bypass"; "untaken-error"] Core_fixtures.control)
   @ List.map (fun (n, b) -> "lists_" ^ n, wrapped n b) (pick ["literal"; "range"; "range-two"; "take"; "reverse"; "concat"; "nth";
       "map"; "filter"; "reduce"; "sort"; "for-product"; "for-dependent"; "sum-dynamic"; "scan"; "fold-record"; "count";
-      "map-tags"; "nested-skip"; "captured-list-nth"] Core_fixtures.lists)
+      "map-tags"; "nested-skip"; "captured-list-nth"; "iterate"; "iterate-large"; "iterate-until"; "iterate-record"; "iterate-widen"] Core_fixtures.lists)
   @ List.map (fun (n, b) -> "primitives_" ^ n, wrapped n b) (pick ["range"; "float"; "vec3"; "count"; "nth"; "slice"; "concat";
       "noise3"; "packed-map-int"; "packed-filter"] Core_fixtures.primitives)
   @ List.map (fun (n, b) -> "regions_" ^ n, tested n (Core_fixtures.workspace b)) (pick ["map"; "sum"; "fold"] Core_fixtures.regions)
