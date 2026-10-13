@@ -80,9 +80,4 @@
               " contains a non-finite value at element " invalid_index))
             (if (equal? output "Create group")
               (sop/with_group in0 selection :name output_group :owner kind)
-              (sop/delete_group
-                (sop/blast (sop/with_group in0 selection :name "__blast_by_attribute_selection" :owner kind)
-                  :owner (if (equal? owner "Points") "Points" "Primitives")
-                  :group "__blast_by_attribute_selection" :selected true
-                  :compact_points remove_unused_points :policy "Destroy touched primitives")
-                "__blast_by_attribute_selection" :owner kind)))))))
+              (blast_apply in0 owner kind selection true remove_unused_points "Destroy touched primitives")))))))
