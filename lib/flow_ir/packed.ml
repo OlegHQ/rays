@@ -266,6 +266,7 @@ exception Failed of Flow.Diagnostic.t
 exception Nonfinite
 let get = function Ok x -> x | Error d -> raise (Failed d)
 
+
 let borrowed_count width columns =
   if Array.length columns<>width then V.fail "E_ARRAY_TYPE" "Borrowed columns changed the packed element width.";
   let length c=if c.stride<=0 || c.offset<0 || c.offset>Array.length c.data then
@@ -288,11 +289,12 @@ let rec integer_range residual (term : W.term) = match term.node with
        | _ -> None)
   | _ -> None
 
+
 let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~seed t ~live =
   let gather=Array.exists(fun instruction->match unguarded instruction with
     | Array_prepare _|Gather _|Int_gather _->true
     | body->Core.Region.text_register body)t.code in
-  let cache_guards=t.result=Collect && not gather
+  let cache_guards=t.result=Collect
     && Array.exists(function Guarded _->true|_->false)t.code in
   let borrowed=Array.make (Array.length t.sources) None in
   let ranges=Array.make (Array.length t.sources) None in
@@ -443,7 +445,7 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
         done; !length in
       let source j i=let index=if contiguous then start+j else indices.(j) in
         if t.iteration=Zip then index else index/strides.(i) mod lengths.(i) in
-      let guard_spans=if cache_guards then Some(Hashtbl.create 16) else None in
+      let guard_spans=ref(if cache_guards then Some(Hashtbl.create 16) else None) in
       let rec execute slot instruction first last =
         let at=slot*block_size in
         match instruction with
@@ -476,14 +478,14 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
         | Guarded(guards,body)->
           (* Publish spans after their first execution: scanning ahead of a
              failing body would change lazy predicate evaluation. *)
-          let cached=match guard_spans with None->None
+          let cached=match !guard_spans with None->None
             |Some cache->Hashtbl.find_opt cache (guards,first,last) in
           (match cached with
           |Some spans->for i=0 to Array.length spans/2-1 do
               execute slot body spans.(2*i) spans.(2*i+1)
             done
           |None->
-            let saved=match guard_spans with
+            let saved=match !guard_spans with
               |Some cache when Hashtbl.length cache<Array.length t.code->Some(ref[||],ref 0)
               |_->None in
             let next=ref first in
@@ -502,7 +504,7 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
                   (!spans).(!used)<-first;(!spans).(!used+1)<- !next;used:= !used+2
               end
             done;
-            match guard_spans,saved with
+            match !guard_spans,saved with
             |Some cache,Some(spans,used) when Hashtbl.length cache<Array.length t.code->
                 Hashtbl.replace cache (guards,first,last) (Array.sub !spans 0 !used)
             |_->())
@@ -639,6 +641,15 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
           if t.dependent.(slot)=dependent then execute slot t.code.(slot) first last
         done in
       if gather && t.result=Collect then begin
+        (* Speculate: run the block instruction-major. Without an error the values equal
+           the lane-major ones, because lanes are independent and instructions pure; on
+           any exception the block is redone lane-major below, so the first error in lane
+           order is the one reported. Spans cached from a failed speculation may hold
+           garbage guards, so the cache is dropped for the redo. *)
+        let speculated=(try for slot=0 to Array.length t.code-1 do execute slot t.code.(slot) 0 length done; true
+          with _->false) in
+        if not speculated then begin
+        guard_spans:=None;
         for slot=0 to total_prefix-1 do execute slot t.code.(slot) 0 length done;
         let cached i ty=match Atomic.get prepared.(i) with
           |Some value when V.ty_of value=ty->Some value|_->None in
@@ -677,6 +688,7 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
         for j=0 to length-1 do
           for slot= !prefix to Array.length t.code-1 do execute slot t.code.(slot) j (j+1) done
         done
+        end
       end
       else if not gather then execute_all false 0 length;
       (* Instructions validate selected float results before collection. *)
