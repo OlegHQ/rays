@@ -1,0 +1,93 @@
+; Whole Distance Along Geometry draft: edge lengths, graph/shortest_paths, then the soft falloff per point.
+(defn distance_along_error :context value [(reason : text)]
+  (error "invalid_distance" "distance_along_geometry could not produce valid geometry"
+    :cause (str "distance_along_geometry [invalid_distance]: Rdk.Transform_ops.distance_along_geometry: " reason)))
+(defnode sop/distance_along_geometry :label "Distance Along Geometry" :category ["Attribute" "Distance"]
+  :validate (and (and (and (not (< radius 0.0)) (not (and (equal? radius_mode "Fixed") (= radius 0.0))))
+                      (not (and (text/blank? distance_attribute) (text/blank? mask_attribute))))
+                 (and (and (not (equal? (text/trim distance_attribute) "P")) (not (equal? (text/trim mask_attribute) "P")))
+                      (not (and (not (text/blank? distance_attribute))
+                                (equal? (text/trim distance_attribute) (text/trim mask_attribute))))))
+  :code "E_PARAM" :message "sop/distance_along_geometry: invalid radius or output names"
+  [(in0 : geometry)
+   (start_owner : text "Point" :label "Start group type" :choices ["Point" "Vertex" "Primitive" "Edge"])
+   (start_group : text "start" :label "Start group")
+   (affected_owner : text "Point" :label "Affected group type" :folder "Affected"
+     :choices ["Point" "Vertex" "Primitive" "Edge"])
+   (affected_group : text "" :label "Affected group" :folder "Affected")
+   (falloff : text "Linear" :label "Falloff" :choices ["Linear" "Quadratic" "Cubic"])
+   (radius_mode : text "Maximum distance" :label "Radius" :choices ["Fixed" "Maximum distance"])
+   (radius : float 1.0 :label "Fixed radius" :min 0.0001 :max 1000 :hard_min 0)
+   (distance_attribute : text "distance" :label "Distance attribute" :folder "Output")
+   (mask_attribute : text "" :label "Mask attribute" :folder "Output")]
+  (let* [start_source (text/lower start_owner)
+         affected_source (text/lower affected_owner)
+         start_name (if (text/blank? start_group) "start" (text/trim start_group))
+         start_kind (if (text/blank? start_group) "point" start_source)
+         affected_name (text/trim affected_group)
+         dname (text/trim distance_attribute)
+         mname (text/trim mask_attribute)
+         points (sop/count in0 :points)]
+    (cond
+      (not (fold [found false] [name (sop/group_names in0 "" :owner start_kind)] (or found (equal? name start_name))))
+        (error "missing_group" (str "distance_along_geometry start could not find " start_kind " group " (text/repr start_name)))
+      (and (not (text/blank? affected_name))
+           (not (fold [found false] [name (sop/group_names in0 "" :owner affected_source)] (or found (equal? name affected_name)))))
+        (error "missing_group" (str "distance_along_geometry affected could not find " affected_source " group " (text/repr affected_name)))
+      :else
+        (let* [position_data (sop/attr_checked in0 "P")
+               first_invalid (if (int/eq points 0) points
+                 (array/min (map (fn [(valid : int) (index : int)] (if (int/eq valid 1) points index))
+                   position_data.valid (array/range points :type int))))]
+          (cond
+            (int/lt first_invalid points)
+              (distance_along_error (str "point " first_invalid " has a non-finite position"))
+            (and (not (text/blank? dname)) (and (sop/has_attr in0 dname :owner "point")
+                                                 (not (sop/has_attr in0 dname :owner "point" :type float))))
+              (distance_along_error (str "point attribute " (text/repr dname) " must be float"))
+            (and (not (text/blank? mname)) (and (sop/has_attr in0 mname :owner "point")
+                                                 (not (sop/has_attr in0 mname :owner "point" :type float))))
+              (distance_along_error (str "point attribute " (text/repr mname) " must be float"))
+            :else
+              (let* [positions position_data.values
+                     adjacency (sop/adjacency in0)
+                     start (exact (sop/group in0 :name start_name :owner start_kind :as_owner "point"))
+                     affected (if (text/blank? affected_name) (array/int points 1)
+                                (exact (sop/group in0 :name affected_name :owner affected_source :as_owner "point")))
+                     lengths (map (fn [(a : int) (b : int)]
+                               (let* [p (array/nth positions a)
+                                      q (array/nth positions b)
+                                      dx (- q.x p.x) dy (- q.y p.y) dz (- q.z p.z)]
+                                 (sqrt (fma dz dz (fma dx dx (* dy dy))))))
+                               adjacency.edge_a adjacency.edge_b)
+                     fixed (equal? radius_mode "Fixed")
+                     mode (case falloff "Linear" 0 "Quadratic" 1 :else 2)
+                     traversal (if (and fixed (text/blank? dname)) radius 1.7976931348623157e308)
+                     tree (graph/shortest_paths adjacency (exact lengths) (array/compact start) :radius traversal)
+                     distances tree.distance
+                     maximum (if fixed radius
+                               (if (int/eq points 0) 0.0
+                                 (array/max (map (fn [(d : float) (flag : int)]
+                                   (if (and (int/eq flag 1) (>= d 0.0)) d 0.0)) distances affected))))
+                     weights (map (fn [(d : float)]
+                               (if (< d 0.0) 0.0
+                                 (if (= maximum 0.0) (if (= d 0.0) 1.0 0.0)
+                                   (if (> d maximum) 0.0
+                                     (let* [frac (max 0.0 (min 1.0 (/ d maximum)))]
+                                       (if (int/eq mode 0) (- 1.0 frac)
+                                         (if (int/eq mode 1) (fma (* -1.0 frac) frac 1.0)
+                                         (let* [t2 (* frac frac)] (- 1.0 (fma 3.0 t2 (* -1.0 (* (* 2.0 t2) frac))))))))))))
+                               distances)
+                     with_distance (if (text/blank? dname) in0
+                       (sop/with_attr in0 dname
+                         (exact (map (fn [(old : float) (d : float) (flag : int)]
+                                   (if (int/eq flag 1) (if (>= d 0.0) d -1.0) old))
+                                   (if (sop/has_attr in0 dname :owner "point") (sop/attr in0 dname :type float) (array/float points -1.0))
+                                   distances affected))
+                         :owner "point" :type float))]
+                (if (text/blank? mname) with_distance
+                  (sop/with_attr with_distance mname
+                    (exact (map (fn [(old : float) (w : float) (flag : int)] (if (int/eq flag 1) w old))
+                             (if (sop/has_attr in0 mname :owner "point") (sop/attr in0 mname :type float) (array/float points 0.0))
+                             weights affected))
+                    :owner "point" :type float))))))))

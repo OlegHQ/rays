@@ -1,0 +1,152 @@
+; Whole Graph Color draft: neighbour rows are built from sop/adjacency, colouring is graph/color.
+(defn csr_expand :context value [(counts : (array int))]
+  (let* [n (array/count counts)
+         offsets (array/scan_sum counts)
+         total (array/nth offsets n)
+         marks (array/scatter_add (array/slice offsets 0 n) (array/int n 1) (int/add total 1))
+         running (array/scan_sum marks)
+         owner (map (fn [(after : int)] (int/sub after 1)) (array/slice running 1 total))
+         rank (map (fn [(o : int) (k : int)] (int/sub k (array/nth offsets o)))
+                owner (array/range total :type int))]
+    {:offsets (exact offsets) :owner (exact owner) :rank (exact rank)}))
+(defn graph_color_error :context value [(reason : text)]
+  (error "invalid_graph" "graph_color could not produce valid geometry"
+    :cause (str "graph_color [invalid_graph]: " reason)))
+(defnode sop/graph_color :label "Graph Color" :category "Attribute"
+  :validate (and (not (or (text/blank? color_attribute) (equal? color_attribute "P")))
+                 (or (not output_worksets)
+                     (and (not (or (text/blank? workset_begin_attribute) (equal? workset_begin_attribute "P")))
+                          (and (not (or (text/blank? workset_length_attribute) (equal? workset_length_attribute "P")))
+                               (and (not (equal? workset_begin_attribute workset_length_attribute)) sort_output)))))
+  :code "E_PARAM" :message "sop/graph_color: invalid attribute names or worksets without sorted output"
+  [(in0 : geometry)
+   (group_owner : text "Primitive" :label "Group type" :choices ["Point" "Vertex" "Primitive" "Edge"])
+   (group : text "" :label "Group")
+   (connectivity : text "Primitives by point" :label "Connectivity"
+     :choices ["Primitives by point" "Points by primitive" "Primitives by edge"])
+   (color_attribute : text "color" :label "Color attribute")
+   (sort_output : bool false :label "Sort output")
+   (output_worksets : bool false :label "Output worksets")
+   (workset_begin_attribute : text "workset_begin" :label "Begin attribute" :folder "Worksets")
+   (workset_length_attribute : text "workset_length" :label "Length attribute" :folder "Worksets")]
+  (let* [source_owner (text/lower group_owner)
+         gname (text/trim group)
+         by_point (equal? connectivity "Points by primitive")
+         owner (if by_point "point" "primitive")]
+    (if (and (not (text/blank? gname))
+             (not (fold [found false] [name (sop/group_names in0 "" :owner source_owner)] (or found (equal? name gname)))))
+      (error "missing_group" (str "graph_color could not find " source_owner " group " (text/repr gname)))
+      (if (and (sop/has_attr in0 color_attribute :owner owner)
+               (not (sop/has_attr in0 color_attribute :owner owner :type int)))
+        (graph_color_error "Graph Color output attribute already has non-integer storage")
+        (let* [topo (sop/topology in0)
+               a (sop/adjacency in0)
+               vp topo.vertex_points
+               po topo.primitive_offsets
+               kinds topo.kinds
+               pov a.primitive_of_vertex
+               pvo a.point_vertex_offsets
+               pv a.point_vertices
+               eov a.edge_of_vertex
+               edges (array/count a.edge_a)
+               points (sop/count in0 :points)
+               primitives (sop/count in0 :primitives)
+               count (if by_point points primitives)
+               ; Selection promoted to the coloured owner (Element_selection.promote).
+               selection
+                 (if (text/blank? gname) (array/int count 1)
+                   (if (and by_point (equal? source_owner "point")) (sop/group in0 :name gname :owner "point")
+                   (if (and (not by_point) (equal? source_owner "primitive")) (sop/group in0 :name gname :owner "primitive")
+                   (if by_point (sop/group in0 :name gname :owner source_owner :as_owner "point")
+                     (let* [raw (sop/group in0 :name gname :owner source_owner)
+                            padded (array/concat raw (array/int 1 0))
+                            flags (exact (case source_owner
+                                    "point" (map (fn [(p : int)] (array/nth raw p)) vp)
+                                    "vertex" raw
+                                    :else (map (fn [(e : int)] (array/nth padded (if (int/lt e 0) edges e))) eov)))
+                            sums (array/segment_sum flags po)]
+                       (exact (map (fn [(s : int)] (if (int/gt s 0) 1 0)) sums)))))))
+               order (array/compact selection)
+               ; Neighbour rows as CSR.
+               rows
+                 (case connectivity
+                   "Primitives by point"
+                     (let* [degree (map (fn [(p : int)] (int/sub (array/nth pvo (int/add p 1)) (array/nth pvo p))) vp)
+                            ex (csr_expand degree)]
+                       {:offsets (exact (map (fn [(c : int)] (array/nth ex.offsets c)) po))
+                        :values (exact (map (fn [(c : int) (r : int)]
+                                  (array/nth pov (array/nth pv (int/add (array/nth pvo (array/nth vp c)) r))))
+                                  ex.owner ex.rank))})
+                   "Points by primitive"
+                     (let* [span (map (fn [(w : int)] (let* [p (array/nth pov w)]
+                                  (int/sub (array/nth po (int/add p 1)) (array/nth po p)))) pv)
+                            ex (csr_expand span)]
+                       {:offsets (exact (map (fn [(j : int)] (array/nth ex.offsets j)) pvo))
+                        :values (exact (map (fn [(j : int) (r : int)]
+                                  (array/nth vp (int/add (array/nth po (array/nth pov (array/nth pv j))) r)))
+                                  ex.owner ex.rank))})
+                   :else
+                     (let* [corners (array/count vp)
+                            valid (map (fn [(e : int)] (if (int/lt e 0) 0 1)) eov)
+                            present (array/compact valid)
+                            grouped (array/grade eov)
+                            edge_vertices (array/slice grouped (int/sub corners (array/count present)) (array/count present))
+                            edge_counts (array/concat
+                              (array/scatter_add (map (fn [(i : int)] (array/nth eov i)) present)
+                                (array/int (array/count present) 1) edges) (array/int 1 0))
+                            edge_starts (array/scan_sum edge_counts)
+                            degree (map (fn [(e : int) (p : int)]
+                                     (array/nth edge_counts (if (int/eq (array/nth kinds p) 0) (if (int/lt e 0) edges e) edges)))
+                                     eov pov)
+                            ex (csr_expand degree)
+                            raw (map (fn [(c : int) (r : int)]
+                                  (array/nth pov (array/nth edge_vertices
+                                    (int/add (array/nth edge_starts (array/nth eov c)) r))))
+                                  ex.owner ex.rank)
+                            keep (map (fn [(p : int)] (if (int/eq (array/nth kinds p) 0) 1 0)) raw)
+                            kept (array/scan_sum keep)]
+                       {:offsets (exact (map (fn [(c : int)] (array/nth kept (array/nth ex.offsets c))) po))
+                        :values (exact (map (fn [(i : int)] (array/nth raw i)) (array/compact keep)))}))
+               colored (graph/color rows order)
+               colors colored.color
+               painted (sop/with_attr in0 color_attribute (exact colors) :owner owner :type int)
+               selected (array/count order)
+               sorted
+                 (if (not sort_output) painted
+                   (let* [perm (array/grade colors)
+                          ident (array/range count :type int)]
+                     (if by_point
+                       (let* [inverse (array/scatter_add perm ident count)
+                              target (sop/mesh :points (sop/attr in0 "P") :vertex_points (exact (map (fn [(p : int)] (array/nth inverse p)) vp))
+                                       :primitive_offsets po :kinds kinds)]
+                         (sop/remap painted target :points perm :vertices (array/range (array/count vp) :type int)
+                           :primitives (array/range primitives :type int) :positions "mapped"
+                           :edges {:offsets (array/range (int/add edges 1) :type int) :values (array/range edges :type int)}))
+                       (let* [lengths (map (fn [(p : int)] (int/sub (array/nth po (int/add p 1)) (array/nth po p))) perm)
+                              ex (csr_expand lengths)
+                              source_vertex (exact (map (fn [(i : int) (r : int)] (int/add (array/nth po (array/nth perm i)) r))
+                                              ex.owner ex.rank))
+                              target (sop/mesh :points (sop/attr in0 "P")
+                                       :vertex_points (exact (map (fn [(v : int)] (array/nth vp v)) source_vertex))
+                                       :primitive_offsets ex.offsets
+                                       :kinds (exact (map (fn [(p : int)] (array/nth kinds p)) perm)))
+                              ta (sop/adjacency target)
+                              target_corners (exact (array/compact (map (fn [(e : int)] (if (int/lt e 0) 0 1)) ta.edge_of_vertex)))
+                              target_edge (map (fn [(c : int)] (array/nth ta.edge_of_vertex c)) target_corners)
+                              ancestor (map (fn [(c : int)] (array/nth eov (array/nth source_vertex c))) target_corners)
+                              total (array/scatter_add target_edge ancestor (array/count ta.edge_a))
+                              share (array/scatter_add target_edge (array/int (array/count target_corners) 1) (array/count ta.edge_a))]
+                         (sop/remap painted target :points (array/range points :type int) :vertices source_vertex
+                           :primitives perm
+                           :edges {:offsets (array/range (int/add (array/count ta.edge_a) 1) :type int)
+                                   :values (exact (map (fn [(s : int) (n : int)] (int/div s n)) total share))})))))]
+          (if (not output_worksets) sorted
+            (let* [lengths (array/scatter_add (map (fn [(i : int)] (array/nth colors i)) order)
+                             (array/int selected 1) colored.count)
+                   starts (map (fn [(s : int)] (int/add s (int/sub count selected)))
+                            (array/slice (array/scan_sum lengths) 0 colored.count))
+                   offsets (array/concat (array/int 1 0) (array/int 1 colored.count))]
+              (sop/with_attr (sop/with_attr sorted workset_begin_attribute
+                               {:offsets (exact offsets) :values (exact starts)} :owner "detail" :type int_array)
+                workset_length_attribute {:offsets (exact offsets) :values (exact lengths)}
+                :owner "detail" :type int_array))))))))
