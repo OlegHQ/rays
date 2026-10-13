@@ -1,0 +1,144 @@
+; Whole Attribute Remap draft. Each component plane is normalised against the automatic (selected min/max)
+; or explicit input range, shaped by the outside-range policy and the optional ramp, then mapped onto the
+; output range. Unselected rows keep the destination's values (a new destination starts at zero).
+(defn remap_fail :context value [(reason : text)]
+  (error "invalid_remap" "attribute_remap could not produce valid geometry"
+    :cause (str "attribute_remap [invalid_remap]: Rdk.Attribute_ops.remap: " reason)))
+(defn remap_dimension :context value [(kind : text)]
+  (case kind "Scalar" 1 "Vector 2" 2 "Vector 3" 3 :else 4))
+(defn remap_validate :context value
+  [(owner : text) (name : text) (into : text) (group : text) (kind : text) (input_range : text)
+   (min_x : float) (min_y : float) (min_z : float) (min_w : float)
+   (max_x : float) (max_y : float) (max_z : float) (max_w : float) (ramp : text)]
+  (let* [dest (if (text/blank? into) name (text/trim into))
+         dim (remap_dimension kind)]
+    (cond
+      (text/blank? name) false
+      (and (equal? owner "Detail") (not (text/blank? group))) false
+      (and (equal? owner "Point") (and (equal? dest "P") (or (not (equal? name "P")) (not (equal? kind "Vector 3"))))) false
+      (and (equal? input_range "Explicit")
+           (or (<= max_x min_x)
+               (or (and (int/gt dim 1) (<= max_y min_y))
+                   (or (and (int/gt dim 2) (<= max_z min_z)) (and (int/gt dim 3) (<= max_w min_w)))))) false
+      (not (ramp_ok ramp)) false
+      :else true)))
+; Automatic input extent of one plane over the selected rows.
+(defn remap_extent :context value [(src : (array float)) (sel : (array int)) (high : bool)]
+  (if (int/eq (array/count src) 0) 0.0
+    (if high
+      (array/max (exact (map (fn [(v : float) (s : int)] (if (int/eq s 1) v -1.7976931348623157e308)) src sel)))
+      (array/min (exact (map (fn [(v : float) (s : int)] (if (int/eq s 1) v 1.7976931348623157e308)) src sel))))))
+; One component: policy 0 clamp, 1 cycle, 2 extrapolate.
+(defn remap_unit :context value [(src : (array float)) (lo : float) (hi : float) (policy : int)]
+  (exact (map (fn [(v : float)]
+    (let* [normalized (if (= hi lo) 0.0 (/ (- v lo) (- hi lo)))
+           clamped (max 0.0 (min 1.0 normalized))
+           cycled (if (and (>= normalized 0.0) (<= normalized 1.0)) normalized
+                    (- normalized (float_floor normalized)))]
+      (if (int/eq policy 2) normalized (if (int/eq policy 0) clamped cycled)))) src)))
+(defn remap_plane :context value
+  [(src : (array float)) (sel : (array int)) (base : (array float)) (lo : float) (hi : float)
+   (omin : float) (omax : float) (policy : int) (rp : (array float)) (rv : (array float)) (ramped : bool)]
+  (let* [unit (remap_unit src lo hi policy)
+         shaped (if (and ramped (not (int/eq policy 2))) (ramp_apply unit rp rv) unit)]
+    (exact (map (fn [(u : float) (s : int) (old : float)]
+      (if (int/eq s 1) (fma u (- omax omin) omin) old)) shaped sel base))))
+(defn remap_bad :context value [(plane : (array float)) (sel : (array int))]
+  (array/sum (exact (map (fn [(v : float) (s : int)] (if (and (int/eq s 1) (not (= (- v v) 0.0))) 1 0)) plane sel))))
+(defn remap_differs :context value [(a : (array float)) (b : (array float))]
+  (array/sum (exact (map (fn [(x : float) (y : float)] (if (= x y) 0 1)) a b))))
+
+(defnode sop/attribute_remap :label "Attribute Remap" :category ["Attribute" "Modify"]
+  :validate (remap_validate owner name (text/trim into) group kind input_range input_min_x input_min_y input_min_z
+              input_min_w input_max_x input_max_y input_max_z input_max_w ramp)
+  :code "E_PARAM" :message "sop/attribute_remap: invalid parameters"
+  [(in0 : geometry)
+   (owner : text "Point" :label "Owner" :choices ["Point" "Vertex" "Primitive" "Detail"])
+   (name : text "value" :label "Source attribute")
+   (into : text "" :label "Destination attribute")
+   (group : text "" :label "Group")
+   (kind : text "Scalar" :label "Value type" :choices ["Scalar" "Vector 2" "Vector 3" "Vector 4"])
+   (input_range : text "Automatic" :label "Input range" :choices ["Automatic" "Explicit"])
+   (input_min_x : float 0.0 :label "Minimum X" :folder ["Input" "Minimum"] :min -10 :max 10 :vec3 ["input_min" 0])
+   (input_min_y : float 0.0 :label "Minimum Y" :folder ["Input" "Minimum"] :min -10 :max 10 :vec3 ["input_min" 1])
+   (input_min_z : float 0.0 :label "Minimum Z" :folder ["Input" "Minimum"] :min -10 :max 10 :vec3 ["input_min" 2])
+   (input_min_w : float 0.0 :label "Minimum W" :folder ["Input" "Minimum"] :min -10 :max 10)
+   (input_max_x : float 1.0 :label "Maximum X" :folder ["Input" "Maximum"] :min -10 :max 10 :vec3 ["input_max" 0])
+   (input_max_y : float 1.0 :label "Maximum Y" :folder ["Input" "Maximum"] :min -10 :max 10 :vec3 ["input_max" 1])
+   (input_max_z : float 1.0 :label "Maximum Z" :folder ["Input" "Maximum"] :min -10 :max 10 :vec3 ["input_max" 2])
+   (input_max_w : float 1.0 :label "Maximum W" :folder ["Input" "Maximum"] :min -10 :max 10)
+   (output_min_x : float 0.0 :label "Minimum X" :folder ["Output" "Minimum"] :min -10 :max 10 :vec3 ["output_min" 0])
+   (output_min_y : float 0.0 :label "Minimum Y" :folder ["Output" "Minimum"] :min -10 :max 10 :vec3 ["output_min" 1])
+   (output_min_z : float 0.0 :label "Minimum Z" :folder ["Output" "Minimum"] :min -10 :max 10 :vec3 ["output_min" 2])
+   (output_min_w : float 0.0 :label "Minimum W" :folder ["Output" "Minimum"] :min -10 :max 10)
+   (output_max_x : float 1.0 :label "Maximum X" :folder ["Output" "Maximum"] :min -10 :max 10 :vec3 ["output_max" 0])
+   (output_max_y : float 1.0 :label "Maximum Y" :folder ["Output" "Maximum"] :min -10 :max 10 :vec3 ["output_max" 1])
+   (output_max_z : float 1.0 :label "Maximum Z" :folder ["Output" "Maximum"] :min -10 :max 10 :vec3 ["output_max" 2])
+   (output_max_w : float 1.0 :label "Maximum W" :folder ["Output" "Maximum"] :min -10 :max 10)
+   (policy : text "Clamp" :label "Outside range" :choices ["Clamp" "Cycle" "Extrapolate"])
+   (ramp : text "" :label "Ramp"
+     :description "Comma-separated position:value knots, from 0 to 1 in strictly increasing order; blank is linear.")]
+  (let* [selected (text/lower owner)
+         count (case owner "Point" (sop/count in0 :points) "Vertex" (sop/count in0 :vertices)
+                 "Primitive" (sop/count in0 :primitives) :else 1)
+         group_name (text/trim group)
+         has_group (not (text/blank? group_name))
+         group_found (if has_group
+           (fold [found false] [probe (sop/group_names in0 "" :owner selected)] (or found (equal? probe group_name)))
+           true)
+         dest (if (text/blank? (text/trim into)) name (text/trim into))
+         same_source (equal? name dest)
+         source_position (and (equal? owner "Point") (equal? name "P"))
+         dest_position (and (equal? owner "Point") (equal? dest "P"))
+         source_exists (if source_position true (sop/has_attr in0 name :owner selected))
+         source_type (if source_position "vec3" (if source_exists (sop/attr_type in0 name :owner selected) ""))
+         source_width (case source_type "float" 1 "vec2" 2 "vec3" 3 "vec4" 4 :else 0)
+         dim (remap_dimension kind)
+         dest_exists (if dest_position true (sop/has_attr in0 dest :owner selected))
+         dest_type (if dest_position "vec3" (if dest_exists (sop/attr_type in0 dest :owner selected) ""))
+         dest_width (case dest_type "float" 1 "vec2" 2 "vec3" 3 "vec4" 4 :else 0)]
+    (cond
+      (not group_found)
+        (error "missing_group" (str "attribute_remap could not find " selected " group " (text/repr group_name)))
+      (not source_exists) (remap_fail (str "missing source attribute " name))
+      (int/eq source_width 0) (remap_fail "attribute must have floating scalar or tuple storage")
+      (not (int/eq dim source_width)) (remap_fail "output range dimension does not match source")
+      (and dest_exists (int/eq dest_width 0)) (remap_fail "destination attribute is not floating point")
+      (and dest_exists (not (int/eq dest_width source_width))) (remap_fail "destination dimension does not match source")
+      :else
+        (let* [src (sop/attr_planes in0 name :owner selected)
+               old (if dest_exists (sop/attr_planes in0 dest :owner selected)
+                     {:width source_width :x (array/float count 0.0) :y (array/float count 0.0)
+                      :z (array/float count 0.0) :w (array/float count 0.0)})
+               selection (if has_group (sop/group in0 :name group_name :owner selected) (array/int count 1))
+               explicit (equal? input_range "Explicit")
+               ramped (not (text/blank? (text/trim ramp)))
+               rp (if ramped (ramp_positions ramp) (array/concat (array/float 1 0.0) (array/float 1 1.0)))
+               rv (if ramped (ramp_values ramp) (array/concat (array/float 1 0.0) (array/float 1 1.0)))
+               code (case policy "Clamp" 0 "Cycle" 1 :else 2)
+               lo_x (if explicit input_min_x (remap_extent src.x selection false))
+               hi_x (if explicit input_max_x (remap_extent src.x selection true))
+               lo_y (if (int/lt dim 2) 0.0 (if explicit input_min_y (remap_extent src.y selection false)))
+               hi_y (if (int/lt dim 2) 0.0 (if explicit input_max_y (remap_extent src.y selection true)))
+               lo_z (if (int/lt dim 3) 0.0 (if explicit input_min_z (remap_extent src.z selection false)))
+               hi_z (if (int/lt dim 3) 0.0 (if explicit input_max_z (remap_extent src.z selection true)))
+               lo_w (if (int/lt dim 4) 0.0 (if explicit input_min_w (remap_extent src.w selection false)))
+               hi_w (if (int/lt dim 4) 0.0 (if explicit input_max_w (remap_extent src.w selection true)))
+               out_x (remap_plane src.x selection old.x lo_x hi_x output_min_x output_max_x code rp rv ramped)
+               out_y (if (int/gt dim 1) (remap_plane src.y selection old.y lo_y hi_y output_min_y output_max_y code rp rv ramped) old.y)
+               out_z (if (int/gt dim 2) (remap_plane src.z selection old.z lo_z hi_z output_min_z output_max_z code rp rv ramped) old.z)
+               out_w (if (int/gt dim 3) (remap_plane src.w selection old.w lo_w hi_w output_min_w output_max_w code rp rv ramped) old.w)
+               bad (int/add (int/add (remap_bad out_x selection) (if (int/gt dim 1) (remap_bad out_y selection) 0))
+                     (int/add (if (int/gt dim 2) (remap_bad out_z selection) 0) (if (int/gt dim 3) (remap_bad out_w selection) 0)))
+               changed (and same_source
+                            (int/gt (int/add (int/add (remap_differs src.x out_x) (remap_differs src.y out_y))
+                                      (int/add (remap_differs src.z out_z) (remap_differs src.w out_w))) 0))]
+          (cond
+            (int/gt bad 0) (remap_fail "output is non-finite")
+            (and same_source (not changed)) in0
+            :else
+              (let* [written (sop/with_planes in0 dest {:width source_width :x out_x :y out_y :z out_z :w out_w}
+                               :owner selected)]
+                (if dest_position
+                  (sop/delete_attr (sop/delete_attr written "N" :owner "point") "N" :owner "vertex")
+                  written)))))))
