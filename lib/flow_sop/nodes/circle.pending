@@ -33,26 +33,26 @@
     ; A single ordered validator preserves constructor precedence and messages.
     (if (not (and (and (> auto_radius 0.0) (> explicit_x 0.0))
                   (and (> explicit_y 0.0) (> scale 0.0))))
-      (error "E_PARAM" "sop/circle: radii and scale must be positive")
+      false
       (let* [scaled_x (float/mul_checked (if (equal? x_mode "Auto") auto_radius explicit_x) scale)
              scaled_y (float/mul_checked (if (equal? y_mode "Auto") auto_radius explicit_y) scale)]
         (cond
           (not (and (and scaled_x.valid scaled_y.valid)
                     (and (> scaled_x.value 0.0) (> scaled_y.value 0.0))))
-            (error "E_PARAM" "sop/circle: scaled radii must be finite and positive")
+            false
           (int/lt count 3)
-            (error "E_PARAM" "sop/circle: segments must be at least three")
+            false
           (int/gt count (int/sub (array/max_length :type int)
                 (if (equal? mode "Closed") 0 (if (equal? mode "Sliced") 2 1))))
-            (error "E_PARAM" "sop/circle: output cardinality exceeds array limits")
+            false
           :else
             (let* [sweep (float/fma_checked -1.0 first_angle last_angle)]
               (cond
                 (and (not (equal? mode "Closed"))
                      (or (not sweep.valid) (= sweep.value 0.0)))
-                  (error "E_PARAM" "sop/circle: arc must have finite nonzero sweep")
+                  false
                 (and (equal? plane "Custom axes") (not (circle_custom_valid h v)))
-                  (error "E_PARAM" "sop/circle: custom axes must be nonzero and independent")
+                  false
                 :else true))))))
 
   (defn circle_frame :context value [(h : vec3) (v : vec3) (angle : float)]
@@ -89,6 +89,7 @@
     :validate (circle_validate radius radius_x radius_y uniform_scale radius_x_mode radius_y_mode
                   segments arc start_angle end_angle orientation
                   [horizontal_x horizontal_y horizontal_z] [vertical_x vertical_y vertical_z])
+    :code "E_PARAM" :message "sop/circle: invalid parameters"
     [(arc : text "Closed" :label "Arc" :choices ["Closed" "Open arc" "Chord closed" "Sliced"])
      (start_angle : float 0.0 :label "Start angle" :folder "Arc" :min -6.283185 :max 6.283185)
      (end_angle : float 6.283185307179586 :label "End angle" :folder "Arc" :min -6.283185 :max 6.283185)

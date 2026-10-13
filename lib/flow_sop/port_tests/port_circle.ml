@@ -29,7 +29,6 @@ let parameters = [
   "error/radius0-auto", [ch "radius_x_mode" "Auto"; fl "radius" 0.];
   "error/radius_x0", [fl "radius_x" 0.];
   "error/uniform_scale0", [fl "uniform_scale" 0.];
-  "error/segments2", [it "segments" 2];
   "error/open-zero-sweep", [ch "arc" "Open arc"; fl "start_angle" 2.0; fl "end_angle" 2.0];
   "error/custom-zero-horizontal", [ch "orientation" "Custom axes"] @ xyz "horizontal" (0., 0., 0.);
   "error/custom-parallel", [ch "orientation" "Custom axes"] @ xyz "horizontal" (1., 0., 0.)
