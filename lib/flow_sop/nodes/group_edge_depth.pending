@@ -1,0 +1,38 @@
+; Whole Group Edge Depth draft: points within `depth` edge hops of the seed point group.
+(defn group_edge_depth_error :context value [(reason : text)]
+  (error "invalid_group" "group_edge_depth could not produce valid geometry"
+    :cause (str "group_edge_depth [invalid_group]: " reason)))
+(defnode sop/group_edge_depth :label "Group Edge Depth" :category ["Group" "Expand"]
+  [(in0 : geometry)
+   (point_group : text "seed" :label "Seed point group")
+   (name : text "depth" :label "Output group")
+   (depth : int 1 :label "Depth" :min 0 :max 100 :hard_min 0)
+   (merge : text "Replace" :label "Operation"
+     :choices ["Replace" "Union" "Intersection" "Subtract" "Exclusive or"])]
+  (cond
+    (text/blank? point_group) (group_edge_depth_error "Group Edge Depth: empty seed point group name")
+    (text/blank? name) (group_edge_depth_error "Group Edge Depth: empty output group name")
+    (not (fold [found false] [candidate (sop/group_names in0 "*" :owner "point")]
+           (or found (equal? candidate point_group))))
+      (group_edge_depth_error (str "Group Edge Depth: missing seed point group " (text/repr point_group)))
+    :else
+    (let* [seed (sop/group in0 :name point_group :owner "point")
+           seed_order (sop/group_order in0 :name point_group :owner "point")
+           adjacency (sop/adjacency in0)
+           points (sop/count in0 :points)
+           cardinality (array/sum seed)
+           grown (iterate depth seed
+             (fn [(mask : (array int))]
+               (let* [touched (array/compact (exact (map (fn [(a : int) (b : int)]
+                                 (int/or (array/nth mask a) (array/nth mask b)))
+                                 adjacency.edge_a adjacency.edge_b)))
+                      ends (array/concat
+                             (exact (map (fn [(e : int)] (array/nth adjacency.edge_a e)) touched))
+                             (exact (map (fn [(e : int)] (array/nth adjacency.edge_b e)) touched)))
+                      hits (array/scatter_add ends (array/int (array/count ends) 1) points)]
+                 (exact (map (fn [(m : int) (h : int)] (if (or (int/eq m 1) (int/gt h 0)) 1 0)) mask hits))))
+             :until (fn [(previous : (array int)) (next : (array int))]
+               (int/eq (array/sum previous) (array/sum next))))
+           kept (and seed_order.ordered
+                  (or (int/eq depth 0) (or (int/eq cardinality 0) (int/eq cardinality points))))]
+      (group_merge_publish_ordered in0 "point" name grown merge kept seed_order.indices))))

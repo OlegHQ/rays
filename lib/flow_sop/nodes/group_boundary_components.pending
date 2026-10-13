@@ -1,0 +1,77 @@
+; Whole Group Boundary Components draft: one point group per connected set of unshared polygon edges.
+; Components are labelled by minimum-label propagation over the point-edge rows (the label of a
+; component is its smallest point), then numbered in ascending-label order like the union-find scan.
+(defn group_boundary_components_error :context value [(reason : text)]
+  (error "invalid_group" "group_boundary_components could not produce valid geometry"
+    :cause (str "group_boundary_components [invalid_group]: " reason)))
+(defnode sop/group_boundary_components :label "Group Boundary Components" :category ["Group" "Create"]
+  [(in0 : geometry)
+   (prefix : text "boundary" :label "Group prefix")
+   (conflict : text "Replace" :label "Conflict" :choices ["Replace" "Union"])
+   (max_groups : int 4096 :label "Maximum groups" :folder "Limits" :min 1 :max 16384 :hard_min 1)
+   (max_payload_bytes : int 268435456 :label "Maximum payload bytes" :folder "Limits"
+     :min 1048576 :max 1073741824 :hard_min 1)]
+  (if (text/blank? prefix)
+    (group_boundary_components_error "Group Boundary Components: empty output prefix")
+    (let* [adjacency (sop/adjacency in0)
+           topology (sop/topology in0)
+           points (sop/count in0 :points)
+           edge_count (sop/count in0 :edges)
+           usage (edge_usage adjacency edge_count)
+           ; Corners of polygons that own an edge; a boundary edge has exactly one such corner.
+           surface (array/compact (exact (map (fn [(e : int) (p : int)]
+                       (if (and (int/ge e 0) (int/eq (array/nth topology.kinds p) 0)) 1 0))
+                       adjacency.edge_of_vertex adjacency.primitive_of_vertex)))
+           surface_edges (exact (map (fn [(v : int)] (array/nth adjacency.edge_of_vertex v)) surface))
+           surface_usage (array/scatter_add surface_edges (array/int (array/count surface_edges) 1) edge_count)
+           boundary (exact (map (fn [(u : int) (s : int)] (if (and (int/eq u 1) (int/eq s 1)) 1 0))
+                      usage surface_usage))
+           boundary_edges (array/compact boundary)
+           ends (array/concat (exact (map (fn [(e : int)] (array/nth adjacency.edge_a e)) boundary_edges))
+                              (exact (map (fn [(e : int)] (array/nth adjacency.edge_b e)) boundary_edges)))
+           active (exact (map (fn [(h : int)] (if (int/gt h 0) 1 0))
+                    (array/scatter_add ends (array/int (array/count ends) 1) points)))
+           offsets adjacency.point_edge_offsets
+           has_edges (exact (map (fn [(p : int)]
+                       (if (int/gt (array/nth offsets (int/add p 1)) (array/nth offsets p)) 1 0))
+                       (array/range points :type int)))
+           rows (array/compact has_edges)
+           row_offsets (array/concat (exact (map (fn [(p : int)] (array/nth offsets p)) rows))
+                                     (array/int 1 (array/nth offsets points)))
+           labels (iterate points (exact (array/range points :type int))
+             (fn [(label : (array int))]
+               (let* [edge_label (exact (map (fn [(a : int) (b : int) (flag : int)]
+                                   (if (int/eq flag 1)
+                                     (if (int/lt (array/nth label a) (array/nth label b)) (array/nth label a) (array/nth label b))
+                                     points))
+                                   adjacency.edge_a adjacency.edge_b boundary))
+                      incident (exact (map (fn [(e : int)] (array/nth edge_label e)) adjacency.point_edges))
+                      row_min (array/scatter_add rows (array/segment_min incident row_offsets) points)]
+                 (exact (map (fn [(own : int) (best : int) (has : int)]
+                         (if (and (int/eq has 1) (int/lt best own)) best own))
+                         label row_min has_edges))))
+             :until (fn [(previous : (array int)) (next : (array int))]
+               (int/eq (array/sum previous) (array/sum next))))
+           root (exact (map (fn [(a : int) (label : int) (p : int)]
+                  (if (and (int/eq a 1) (int/eq label p)) 1 0)) active labels (array/range points :type int)))
+           numbering (array/scan_sum root)
+           component (exact (map (fn [(a : int) (label : int)]
+                       (if (int/eq a 1) (array/nth numbering label) -1)) active labels))
+           groups (array/nth numbering points)
+           bytes_per_group (int/shr (int/add points 7) 3)]
+      (cond
+        (int/gt groups max_groups)
+          (group_boundary_components_error (str "Group Boundary Components: outputs exceed max_groups=" max_groups))
+        (int/gt (int/mul groups bytes_per_group) max_payload_bytes)
+          (group_boundary_components_error (str "Group Boundary Components: projected packed payload "
+            (int/mul groups bytes_per_group) " bytes exceeds max_payload_bytes=" max_payload_bytes))
+        :else
+          (fold [geometry in0] [index (array/range groups :type int)]
+            (let* [name (str prefix "__" index)
+                   mask (exact (map (fn [(c : int)] (if (int/eq c index) 1 0)) component))
+                   exists (fold [found false] [candidate (sop/group_names geometry "*" :owner "point")]
+                            (or found (equal? candidate name)))]
+              (if (and exists (equal? conflict "Union"))
+                (sop/with_group geometry (exact (map (fn [(o : int) (m : int)] (int/or o m))
+                  (sop/group geometry :name name :owner "point") mask)) :name name :owner "point")
+                (sop/with_group geometry mask :name name :owner "point"))))))))

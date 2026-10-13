@@ -1,0 +1,32 @@
+; Whole Group Unshared draft: edges used by exactly one corner, promoted to points or primitives.
+(defnode sop/group_unshared :label "Group Unshared" :category ["Group" "Create"]
+  [(in0 : geometry)
+   (owner : text "Edges" :label "Group type" :choices ["Points" "Vertices" "Primitives" "Edges"])
+   (name : text "unshared" :label "Group name")
+   (merge : text "Replace" :label "Operation"
+     :choices ["Replace" "Union" "Intersection" "Subtract" "Exclusive or"])]
+  (cond
+    (text/blank? name) (error "invalid_group" "group_unshared could not produce valid geometry"
+                         :cause "group_unshared [invalid_group]: Group Unshared: empty output name")
+    (equal? owner "Vertices") (error "invalid_group" "group_unshared could not produce valid geometry"
+                         :cause "group_unshared [invalid_group]: Group Unshared: vertex output is not supported")
+    :else
+    (let* [adjacency (sop/adjacency in0)
+           edge_count (sop/count in0 :edges)
+           usage (edge_usage adjacency edge_count)
+           edge_mask (exact (map (fn [(u : int)] (if (int/eq u 1) 1 0)) usage))
+           selected (array/compact edge_mask)
+           generated (case owner
+             "Edges" edge_mask
+             "Points" (let* [ends (array/concat (exact (map (fn [(e : int)] (array/nth adjacency.edge_a e)) selected))
+                                                (exact (map (fn [(e : int)] (array/nth adjacency.edge_b e)) selected)))
+                              hits (array/scatter_add ends (array/int (array/count ends) 1) (sop/count in0 :points))]
+                        (exact (map (fn [(h : int)] (if (int/gt h 0) 1 0)) hits)))
+             :else (let* [padded (array/concat edge_mask (array/int 1 0))
+                          corner (exact (map (fn [(e : int)]
+                                    (array/nth padded (if (int/ge e 0) e edge_count))) adjacency.edge_of_vertex))
+                          topology (sop/topology in0)
+                          hits (array/segment_sum corner topology.primitive_offsets)]
+                     (exact (map (fn [(h : int)] (if (int/gt h 0) 1 0)) hits))))]
+      (group_merge_publish in0 (case owner "Points" "point" "Primitives" "primitive" :else "edge")
+        name generated merge))))

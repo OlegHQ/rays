@@ -259,4 +259,58 @@
       (if (equal? owner "edge")
         (sop/with_group geo (exact result.mask) :name name :owner owner)
         (sop/with_group geo (exact result.mask) :name name :owner owner
-          :order {:ordered result.ordered :indices (exact result.indices)})))))
+          :order {:ordered result.ordered :indices (exact result.indices)}))))
+
+  ; Group.boolean publication used by the group nodes (Group_ops.publish_merged_selection).
+  ; Ordered existing groups keep Group.combine's order rules; an absent group takes the
+  ; generated mask for Replace/Union/Exclusive or and the empty group otherwise.
+  (defn group_order_filter :context sop [(sequence : (array int)) (mask : (array int))]
+    (let* [keep (exact (map (fn [(i : int)] (array/nth mask i)) sequence))]
+      (exact (map (fn [(k : int)] (array/nth sequence k)) (array/compact keep)))))
+  (defn group_merge_publish_ordered :context sop
+    [(geo : geometry) (owner : text) (name : text) (generated : (array int)) (merge : text)
+     (generated_ordered : bool) (generated_order : (array int))]
+    (let* [exists (fold [found false] [candidate (sop/group_names geo "*" :owner owner)]
+                    (or found (equal? candidate name)))]
+      (if (not exists)
+        (if (or (equal? merge "Intersection") (equal? merge "Subtract"))
+          (sop/with_group geo (exact (map (fn [(g : int)] (int/mul g 0)) generated)) :name name :owner owner)
+          (if generated_ordered
+            (sop/with_group geo generated :name name :owner owner :order generated_order)
+            (sop/with_group geo generated :name name :owner owner)))
+        (let* [old (sop/group geo :name name :owner owner)
+               combined (exact (case merge
+                 "Union" (map (fn [(o : int) (g : int)] (int/or o g)) old generated)
+                 "Intersection" (map (fn [(o : int) (g : int)] (int/and o g)) old generated)
+                 "Subtract" (map (fn [(o : int) (g : int)] (int/and o (int/sub 1 g))) old generated)
+                 "Exclusive or" (map (fn [(o : int) (g : int)] (int/xor o g)) old generated)
+                 :else generated))
+               ordering (sop/group_order geo :name name :owner owner)
+               lseq (if ordering.ordered ordering.indices (array/compact old))
+               rseq (if generated_ordered generated_order (array/compact generated))
+               fresh (exact (map (fn [(r : int) (o : int)] (int/and r (int/sub 1 o))) combined old))]
+          (cond
+            (equal? merge "Replace")
+              (if generated_ordered
+                (sop/with_group geo combined :name name :owner owner :order generated_order)
+                (sop/with_group geo combined :name name :owner owner))
+            (or (equal? owner "edge") (not (or ordering.ordered generated_ordered)))
+              (sop/with_group geo combined :name name :owner owner)
+            (or (equal? merge "Union") (equal? merge "Exclusive or"))
+              (sop/with_group geo combined :name name :owner owner
+                :order (array/concat (group_order_filter lseq combined) (group_order_filter rseq fresh)))
+            (equal? merge "Intersection")
+              (sop/with_group geo combined :name name :owner owner
+                :order (group_order_filter (if ordering.ordered lseq rseq) combined))
+            ordering.ordered
+              (sop/with_group geo combined :name name :owner owner :order (group_order_filter lseq combined))
+            :else (sop/with_group geo combined :name name :owner owner))))))
+  (defn group_merge_publish :context sop
+    [(geo : geometry) (owner : text) (name : text) (generated : (array int)) (merge : text)]
+    (group_merge_publish_ordered geo owner name generated merge false (array/int 0 0)))
+
+  ; Edge multiplicity: how many corners use each unique edge (Topology_index.edge_offsets).
+  (defn edge_usage :context sop [(adjacency : {:edge_of_vertex (array int)}) (edge_count : int)]
+    (let* [used (array/compact (exact (map (fn [(e : int)] (if (int/ge e 0) 1 0)) adjacency.edge_of_vertex)))
+           edges (exact (map (fn [(v : int)] (array/nth adjacency.edge_of_vertex v)) used))]
+      (array/scatter_add edges (array/int (array/count edges) 1) edge_count))))
