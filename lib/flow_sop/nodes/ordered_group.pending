@@ -1,0 +1,28 @@
+; Whole Group Ordered draft. NEEDS two text operators the language lacks: text/tokens (split on
+; space, comma, tab and newline, dropping empty tokens) and text/to_int (OCaml int_of_string on a
+; trimmed token, an error "expected integer, got ..." otherwise).
+(defn ordered_group_error :context value [(reason : text)]
+  (error "invalid_group" "ordered_group could not produce valid geometry"
+    :cause (str "ordered_group [invalid_group]: " reason)))
+(defn ordered_group_normalize :context value [(raw : text)]
+  (str-join " " (map (fn [(token : text)]
+    (let* [element (text/to_int token)]
+      (if (int/lt element 0) (error "E_PARAM" (str "expected a non-negative element index, got " element))
+        (str element)))) (text/tokens raw))))
+(defnode sop/ordered_group :label "Group Ordered" :category ["Group" "Create"]
+  [(in0 : geometry)
+   (owner : text "Points" :label "Group type" :choices ["Points" "Vertices" "Primitives"])
+   (name : text "ordered" :label "Output group")
+   (elements : text "0" :label "Elements in order" :kind encoded :normalize ordered_group_normalize)]
+  (let* [selected (case owner "Vertices" "vertex" "Primitives" "primitive" :else "point")
+         length (case owner "Vertices" (sop/count in0 :vertices) "Primitives" (sop/count in0 :primitives)
+                  :else (sop/count in0 :points))
+         indices (map (fn [(token : text)] (text/to_int token)) (text/tokens elements))
+         counts (array/scatter_add indices (array/int (array/count indices) 1) length)]
+    (cond
+      (text/blank? name) (ordered_group_error "Group: empty name")
+      (int/gt (array/max (array/concat (array/int 1 0) indices)) (int/sub length 1))
+        (ordered_group_error "Group.ordered: element index out of bounds")
+      (int/gt (array/max (array/concat (array/int 1 0) counts)) 1)
+        (ordered_group_error "Group.ordered: duplicate element index")
+      :else (sop/with_group in0 (exact counts) :name name :owner selected :order (exact indices)))))
