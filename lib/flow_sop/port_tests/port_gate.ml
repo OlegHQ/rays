@@ -134,13 +134,34 @@ let context ~dir node geometries =
     catalog = Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version factories |> checked;
     head = String.concat " " (List.mapi (fun i _ -> Printf.sprintf "(sop/port_in%d)" i) natives) }
 
+(* A fixture with fewer geometries than the factory has slots leaves the trailing
+   (optional) slots absent on both sides. *)
+let native_initial ctx =
+  let missing = Sop.Edit_graph.factory_arity ctx.node.native - List.length ctx.native_inputs in
+  if missing <= 0 then Sop.Edit_graph.instantiate ctx.node.native ctx.native_inputs
+  else Sop.Edit_graph.instantiate_optional ctx.node.native
+    (List.map Option.some ctx.native_inputs @ List.init missing (fun _ -> None))
 let native ctx changes =
-  Result.bind (Sop.Edit_graph.instantiate ctx.node.native ctx.native_inputs) (fun n ->
-    Result.map fst (N.apply_parameters n changes))
+  Result.bind (native_initial ctx) (fun n -> Result.map fst (N.apply_parameters n changes))
+
+(* Changes name physical fields (center_x); Lisp takes a vec3 group as :center [x y z],
+   its untouched components at their defaults. *)
+let keywords ctx changes =
+  let fields = match native_initial ctx with Ok n -> N.parameter_fields n | Error m -> fail m in
+  let value (f : P.field_view) = Option.value (List.assoc_opt f.name changes) ~default:f.current in
+  let groups = List.filter_map (fun (k, _) ->
+    Option.bind (List.find_opt (fun (f : P.field_view) -> f.name = k) fields) (fun f -> Option.map fst f.vec3)) changes
+    |> List.sort_uniq String.compare in
+  List.filter_map (fun (k, v) ->
+    match List.find_opt (fun (f : P.field_view) -> f.name = k) fields with
+    | Some { vec3 = Some _; _ } -> None
+    | _ -> Some (":" ^ k ^ " " ^ render v)) changes
+  @ List.map (fun group -> Printf.sprintf ":%s [%s]" group (String.concat " " (List.map (fun i ->
+      render (value (List.find (fun (f : P.field_view) -> f.vec3 = Some (group, i)) fields))) [0; 1; 2]))) groups
 
 (* Ok (fun ~reference -> node, lowered factories) or the checker/lowering refusal. *)
 let lisp ctx changes =
-  let words = String.concat " " (List.map (fun (k, v) -> ":" ^ k ^ " " ^ render v) changes) in
+  let words = String.concat " " (keywords ctx changes) in
   let text = Printf.sprintf "(workspace port (graph g :context sop (sop/%s %s %s)))" ctx.node.key ctx.head words in
   match Flow.Syntax.parse text with
   | Error d -> Error (Flow.Diagnostic.to_string d)
