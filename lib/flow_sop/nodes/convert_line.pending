@@ -1,0 +1,155 @@
+; Whole Convert Line draft. Selected non-degenerate edges become sorted two-point polylines (mesh +
+; remap keep point payload and edge groups; vertex and primitive payload is dropped). Connect path then
+; hands that line set to the PolyPath node kind, whose graph is the same selected-edge graph, and
+; point compaction is the Compact Points node kind.
+(defn convert_line_error :context value [(reason : text)]
+  (error "invalid_geometry" "convert_line could not produce valid geometry"
+    :cause (str "convert_line [invalid_geometry]: " reason)))
+(defn convert_line_finite :context value [(x : float)] (= (- x x) 0.0))
+; Curve_ops.segment_length
+(defn convert_line_length :context value [(ax : float) (ay : float) (az : float) (bx : float) (by : float) (bz : float)]
+  (let* [dx (- bx ax) dy (- by ay) dz (- bz az)
+         scale (max (abs dx) (max (abs dy) (abs dz)))]
+    (if (= scale 0.0) 0.0
+      (let* [x (/ dx scale) y (/ dy scale) z (/ dz scale)]
+        (* scale (sqrt (fma z z (fma y y (* x x)))))))))
+
+; Native lists the length attribute first. Rebuild the attribute order: drop the point and detail
+; attributes, add the length, then add the others back in their original order.
+(defmacro convert_line_copy_as [acc src owner name type]
+  `(sop/with_attr ~acc ~name (sop/attr ~src ~name :owner ~owner :type ~type) :owner ~owner :type ~type))
+(defn convert_line_copy :context sop
+  [(acc : geometry) (src : geometry) (owner : text) (name : text) (kind : text)]
+  (cond
+    (equal? kind "float") (convert_line_copy_as acc src owner name float)
+    (equal? kind "int") (convert_line_copy_as acc src owner name int)
+    (equal? kind "text") (convert_line_copy_as acc src owner name text)
+    (equal? kind "vec2") (convert_line_copy_as acc src owner name vec2)
+    (equal? kind "vec3") (convert_line_copy_as acc src owner name vec3)
+    (equal? kind "vec4") (convert_line_copy_as acc src owner name vec4)
+    (equal? kind "float_array") (convert_line_copy_as acc src owner name float_array)
+    (equal? kind "int_array") (convert_line_copy_as acc src owner name int_array)
+    :else acc))
+; Curve_ops.with_length_attribute: Kahan-compensated path length per primitive, closing segment for closed kinds.
+(defn convert_line_path_lengths :context sop [(geo : geometry)]
+  (let* [topology (sop/topology geo)
+         primitives (sop/count geo :primitives)
+         positions (sop/attr geo "P")
+         px (exact (map (fn [(q : vec3)] q.x) positions)) py (exact (map (fn [(q : vec3)] q.y) positions))
+         pz (exact (map (fn [(q : vec3)] q.z) positions))
+         rows (array/range primitives :type int)
+         sizes (exact (map (fn [(p : int)] (int/sub (array/nth topology.primitive_offsets (int/add p 1))
+                                                    (array/nth topology.primitive_offsets p))) rows))
+         segments (exact (map (fn [(p : int)]
+           (let* [size (array/nth sizes p)]
+             (if (int/gt size 0)
+               (int/add (int/sub size 1) (if (and (not (int/eq (array/nth topology.kinds p) 1)) (int/gt size 1)) 1 0))
+               0))) rows))
+         most (if (int/eq primitives 0) 0 (array/max segments))
+         final (iterate most {:sum (array/float primitives) :corr (array/float primitives) :k 0}
+           (fn [(c : {:sum (array float) :corr (array float) :k int})]
+             (let* [lens (exact (map (fn [(p : int)]
+                     (if (int/lt c.k (array/nth segments p))
+                       (let* [first (array/nth topology.primitive_offsets p)
+                              size (array/nth sizes p)
+                              inside (int/lt c.k (int/sub size 1))
+                              from (array/nth topology.vertex_points
+                                     (if inside (int/add first c.k) (int/sub (int/add first size) 1)))
+                              to (array/nth topology.vertex_points (if inside (int/add (int/add first c.k) 1) first))]
+                         (convert_line_length (array/nth px from) (array/nth py from) (array/nth pz from)
+                           (array/nth px to) (array/nth py to) (array/nth pz to)))
+                       0.0)) rows))
+                    live (exact (map (fn [(p : int)] (if (int/lt c.k (array/nth segments p)) 1 0)) rows))
+                    next (exact (map (fn [(p : int)]
+                      (if (int/eq (array/nth live p) 1)
+                        (+ (array/nth c.sum p) (- (array/nth lens p) (array/nth c.corr p)))
+                        (array/nth c.sum p))) rows))
+                    carry (exact (map (fn [(p : int)]
+                      (if (int/eq (array/nth live p) 1)
+                        (- (- (array/nth next p) (array/nth c.sum p)) (- (array/nth lens p) (array/nth c.corr p)))
+                        (array/nth c.corr p))) rows))]
+               {:sum next :corr carry :k (int/add c.k 1)})))
+         finite (int/eq (array/sum (exact (map (fn [(x : float)] (if (convert_line_finite x) 0 1)) final.sum))) 0)]
+    {:bad (not finite) :lengths final.sum}))
+
+(defnode sop/convert_line :label "Convert Line" :category ["Topology" "Curve"]
+  [(in0 : geometry)
+   (group : text "" :label "Edge group")
+   (connect_path : bool false :label "Connect path")
+   (maximum_distance : float 0.001 :label "Maximum distance" :min 0 :max 10 :hard_min 0)
+   (connect_only_to_other_end_points : bool false :label "Only other endpoints")
+   (make_isolated_loops_closed : bool false :label "Close isolated loops")
+   (remove_unused_points : bool false :label "Remove unused points")
+   (length_attribute : text "" :label "Length attribute")]
+  (let* [group_name (text/trim group) length_name (text/trim length_attribute)
+         has_group (not (text/blank? group_name))
+         has_length (not (text/blank? length_name))
+         group_literal (text/glob_literal (if has_group group_name "x"))]
+    (if (and has_group (int/eq (array/count (sop/group_names in0 group_literal :owner "edge")) 0))
+      (error "missing_group" (str "convert_line could not find edge group " (text/repr group_name)))
+      (let* [edge_total (sop/count in0 :edges)
+             adj (sop/adjacency in0)
+             chosen_mask (exact (map (fn [(a : int) (b : int) (s : int)] (if (and (int/eq s 1) (not (int/eq a b))) 1 0))
+               adj.edge_a adj.edge_b (if has_group (sop/group in0 :name group_name :owner "edge") (array/int edge_total 1))))
+             chosen (array/compact chosen_mask)
+             by_b (array/grade (exact (map (fn [(e : int)] (array/nth adj.edge_b e)) chosen)))
+             after_b (exact (map (fn [(j : int)] (array/nth chosen j)) by_b))
+             by_a (array/grade (exact (map (fn [(e : int)] (array/nth adj.edge_a e)) after_b)))
+             sorted (exact (map (fn [(j : int)] (array/nth after_b j)) by_a))
+             lined (if connect_path chosen sorted)
+             line_total (array/count lined)
+             a_points (exact (map (fn [(e : int)] (array/nth adj.edge_a e)) lined))
+             b_points (exact (map (fn [(e : int)] (array/nth adj.edge_b e)) lined))
+             positions (sop/attr in0 "P")
+             px (exact (map (fn [(q : vec3)] q.x) positions)) py (exact (map (fn [(q : vec3)] q.y) positions))
+             pz (exact (map (fn [(q : vec3)] q.z) positions))
+             lengths_bad (and has_length (int/gt (array/sum (exact (map (fn [(a : int) (b : int)]
+                 (let* [dx (- (array/nth px b) (array/nth px a)) dy (- (array/nth py b) (array/nth py a))
+                        dz (- (array/nth pz b) (array/nth pz a))]
+                   (if (and (convert_line_finite (array/nth px a)) (and (convert_line_finite (array/nth py a))
+                         (and (convert_line_finite (array/nth pz a)) (and (convert_line_finite (array/nth px b))
+                           (and (convert_line_finite (array/nth py b)) (convert_line_finite (array/nth pz b)))))))
+                     0 1)))
+               a_points b_points))) 0))]
+        (if (and (not connect_path) lengths_bad)
+          (convert_line_error "curve length requires finite representable positions")
+          (let* [target (sop/mesh :points positions
+                          :vertex_points (exact (map (fn [(i : int)]
+                            (if (int/eq (int/mod i 2) 0) (array/nth a_points (int/div i 2)) (array/nth b_points (int/div i 2))))
+                            (array/range (int/mul 2 line_total) :type int)))
+                          :primitive_offsets (exact (map (fn [(i : int)] (int/mul i 2)) (array/range (int/add line_total 1) :type int)))
+                          :kinds (array/int line_total 1))
+                 target_adjacency (sop/adjacency target)
+                 target_edge_total (array/count target_adjacency.edge_a)
+                 leaving (exact (map (fn [(te : int)] (if (int/lt te 0) target_edge_total te)) target_adjacency.edge_of_vertex))
+                 ancestor (exact (map (fn [(i : int)] (int/add (array/nth lined (int/div i 2)) 1)) (array/range (int/mul 2 line_total) :type int)))
+                 edge_count (array/scatter_add leaving (array/int (int/mul 2 line_total) 1) (int/add target_edge_total 1))
+                 edge_sum (array/scatter_add leaving ancestor (int/add target_edge_total 1))
+                 edge_values (exact (map (fn [(e : int)]
+                     (int/sub (int/div (array/nth edge_sum e) (if (int/gt (array/nth edge_count e) 0) (array/nth edge_count e) 1)) 1))
+                   (array/range target_edge_total :type int)))
+                 carried (sop/remap in0 target :points (array/range (sop/count in0 :points) :type int)
+                           :vertices (array/int (int/mul 2 line_total) 0) :primitives (array/int line_total 0)
+                           :edges {:offsets (array/range (int/add target_edge_total 1) :type int) :values edge_values})
+                 stripped (sop/delete_group (sop/delete_group
+                   (sop/delete_attr (sop/delete_attr carried "*" :owner "vertex") "*" :owner "primitive")
+                   "*" :owner "vertex") "*" :owner "primitive")
+                 connected (if connect_path
+                   (sop/poly_path stripped :connect_end_points true :maximum_distance maximum_distance
+                     :connect_only_to_other_end_points connect_only_to_other_end_points
+                     :make_isolated_loops_closed make_isolated_loops_closed)
+                   stripped)
+                 compacted (if remove_unused_points (sop/compact_points connected) connected)]
+            (if (not has_length) compacted
+              (let* [path (if connect_path (convert_line_path_lengths compacted)
+                            {:bad false :lengths (exact (map (fn [(a : int) (b : int)]
+                              (convert_line_length (array/nth px a) (array/nth py a) (array/nth pz a)
+                                (array/nth px b) (array/nth py b) (array/nth pz b))) a_points b_points))})]
+                (if path.bad (convert_line_error "curve length requires finite representable positions")
+                  ; Native lists the length attribute first: rebuild the point and detail attribute order.
+                  (let* [entries (sop/attr_entries compacted :owner "any")
+                         bare (sop/delete_attr (sop/delete_attr compacted "*" :owner "point") "*" :owner "detail")
+                         with_length (sop/with_attr bare length_name path.lengths :owner "primitive" :type float)]
+                    (fold [acc with_length] [i (array/range (array/count entries.name) :type int)]
+                      (convert_line_copy acc compacted (array/nth entries.owner i) (array/nth entries.name i)
+                        (array/nth entries.type i)))))))))))))
