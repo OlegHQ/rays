@@ -660,18 +660,18 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 - [ ] C.14
 - [ ] C.15
 - [ ] C.R
-- [ ] D.1
-- [ ] D.2
-- [ ] D.3
+- [x] D.1 — `sop/adjacency` equals `Topology_index.Private.view` on five fixtures, reference/compiled, 1 and 8 domains (`lib/flow_sop/test_adjacency.ml`, commit `6fc00ced`). Built ahead of C.R in parallel with the ports.
+- [x] D.2 — `sop/components` ids equal `Analysis.classify_connectivity`; `:over "edges"` labels points, `:over "points"` labels primitives, optional 0/1 `:mask` (commit `7c28cf3b`).
+- [x] D.3 — `iterate` with `:until`: one cook node, body region prepared once, graph card and gestures, reference/kernel and 1/8-domain bytes (`test_iterate.ml`, `test_iterate_graph.ml`, commit `b85f76da`). No wrap gesture yet; about 1.8 ms per pass at 10,000 points, unoptimized.
 - [ ] D.4
 - [ ] D.5
 - [ ] D.6
 - [ ] D.7
 - [ ] D.8
 - [ ] D.R
-- [ ] E.1
-- [ ] E.2
-- [ ] E.3
+- [x] E.1 — `graph/shortest_paths` over the shared `Rdk.Shortest_paths` heap search, JavaScript twin fixture-checked (commit `89cd7040`). Unreached points are distance -1, parent -1.
+- [x] E.2 — `graph/chains` equals `Poly_path` traversal on five fixtures, JavaScript twin (commit `89cd7040`).
+- [x] E.3 — `graph/color` equals `Graph_color.run` in all three connectivity modes, JavaScript twin (commit `89cd7040`). Record fields of the `graph/` and `sop/components` sources resolve separately, so each algorithm runs once per field read.
 - [ ] E.4
 - [ ] E.5
 - [ ] E.6
