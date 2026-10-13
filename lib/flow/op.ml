@@ -281,11 +281,13 @@ module Private = struct
       if operation=Sum then first else first+1 in
     match values with
     | Int_array values ->
-      let apply = match operation with Sum -> ( + ) | Minimum -> min | Maximum -> max in
       let reduce first finish =
         let start=extrema_start first finish in
         let result=ref (if operation=Sum then 0 else values.(first)) in
-        for i=start to finish-1 do result:=apply !result values.(i) done;
+        (match operation with
+         | Sum -> for i=start to finish-1 do result:= !result+values.(i) done
+         | Minimum -> for i=start to finish-1 do let v=values.(i) in if v< !result then result:=v done
+         | Maximum -> for i=start to finish-1 do let v=values.(i) in if v> !result then result:=v done);
         !result in
       (match offsets with
        | None -> Int (reduce 0 count)
@@ -300,13 +302,26 @@ module Private = struct
       let reduce first finish component =
         let start=extrema_start first finish in
         let result=ref (if operation=Sum then 0. else fin name data.(first*width+component)) in
-        for i=start to finish-1 do
-          let value=data.(i*width+component) in
-          if not(Float.is_finite value) then ignore(fin name value);
-          result:=(match operation with Sum -> !result+.value
-            | Minimum -> Float.min !result value | Maximum -> Float.max !result value);
-          if not(Float.is_finite !result) then ignore(fin name !result)
-        done;
+        (* One loop per operation: an extremum of finite values is finite, so only a sum
+           can leave the finite range. *)
+        (match operation with
+         | Sum -> for i=start to finish-1 do
+             let value=data.(i*width+component) in
+             if not(Float.is_finite value) then ignore(fin name value);
+             result:= !result+.value;
+             if not(Float.is_finite !result) then ignore(fin name !result)
+           done
+         | Minimum -> for i=start to finish-1 do
+             let value=data.(i*width+component) in
+             if not(Float.is_finite value) then ignore(fin name value);
+             (* Ties are the only inputs where Float.min's signed-zero rule matters; the values are finite. *)
+             result:=(if value< !result then value else if !result<value then !result else Float.min !result value)
+           done
+         | Maximum -> for i=start to finish-1 do
+             let value=data.(i*width+component) in
+             if not(Float.is_finite value) then ignore(fin name value);
+             result:=(if value> !result then value else if !result>value then !result else Float.max !result value)
+           done);
         !result in
       (match offsets with
        | None -> (match width with

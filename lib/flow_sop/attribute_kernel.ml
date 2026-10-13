@@ -180,9 +180,16 @@ let read ?component ~owner ~kind name geometry =
       if count>Sys.max_floatarray_length/width then error "E_ATTR_COUNT" "Attribute buffer exceeds array limits." else
       let values = Array.make (count * width) 0. in
       ranges ~grain:16_384 count (fun ~first ~last ->
-        for i = first to last - 1 do
-          for component=0 to width-1 do values.(i*width+component)<-planes.(component).(i) done
-        done);
+        (* Interleave the planes with one loop per width: no inner component loop. *)
+        match planes with
+        | [|x;y;z|] -> for i = first to last - 1 do
+            values.(3*i)<-x.(i); values.(3*i+1)<-y.(i); values.(3*i+2)<-z.(i) done
+        | [|x;y|] -> for i = first to last - 1 do values.(2*i)<-x.(i); values.(2*i+1)<-y.(i) done
+        | [|x;y;z;w|] -> for i = first to last - 1 do
+            values.(4*i)<-x.(i); values.(4*i+1)<-y.(i); values.(4*i+2)<-z.(i); values.(4*i+3)<-w.(i) done
+        | _ -> for i = first to last - 1 do
+            for component=0 to width-1 do values.(i*width+component)<-planes.(component).(i) done
+          done);
       Ok (match width with 1->E.Float_array values|2->E.Vec2_array values|3->E.Vec3_array values|_->E.Vec4_array values))
 
 let read_checked ~component ~owner ~kind name geometry =
