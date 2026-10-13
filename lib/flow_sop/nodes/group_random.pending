@@ -1,0 +1,70 @@
+; Whole Group Random draft. Element identity: the seed attribute (points, primitives), the
+; vertex's point, or a mixed pair of edge endpoints; membership is rand/at below probability.
+(defn group_random_error :context value [(reason : text)]
+  (error "invalid_group" "group_random could not produce valid geometry"
+    :cause (str "group_random [invalid_group]: " reason)))
+(defn group_random_pair :context value [(a : int) (b : int)]
+  (let* [left (if (int/le a b) a b)
+         right (if (int/le a b) b a)
+         mixed_left (int/mul (int/xor left (int/shr left 29)) 2177342782468422677)
+         mixed_right (int/xor right (int/shr right 27))]
+    (int/and (int/xor mixed_left (int/mul mixed_right 1499779743744070123)) 4611686018427387903)))
+(defn group_random_missing :context sop [(geo : geometry) (owner : text) (name : text)]
+  (let* [found (group_exists geo owner (if (equal? name "") "x" name))]
+    (and (not (equal? name "")) (not found))))
+(defn group_random_finish :context sop
+  [(geo : geometry) (owner : text) (name : text) (operation : text) (base_name : text) (fixed : (array int))]
+  (if (group_random_missing geo owner base_name)
+    (group_random_error (str "Group Random: missing " owner " base group " (text/repr base_name)))
+    (if (equal? base_name "")
+      (group_publish geo owner name operation fixed)
+      (group_publish geo owner name operation
+        (exact (map (fn [(a : int) (b : int)] (int/and a b)) fixed
+                 (sop/group geo :name base_name :owner owner)))))))
+(defnode sop/group_random :label "Group Random" :category ["Group" "Create"]
+  [(in0 : geometry)
+   (owner : text "Points" :label "Group type" :choices ["Points" "Vertices" "Primitives" "Edges"])
+   (name : text "random" :label "Group name")
+   (probability : float 0.5 :label "Probability" :min 0 :max 1 :hard_min 0 :hard_max 1)
+   (context_seed : bool false :label "Use context seed" :folder ["Random"])
+   (seed : int 0 :label "Seed" :folder ["Random"] :min 0 :max 9999)
+   (seed_attribute : text "" :label "Seed attribute" :folder ["Random"])
+   (base : text "" :label "Base group" :folder ["Combine"])
+   (merge : text "Replace" :label "Operation" :folder ["Combine"]
+     :choices ["Replace" "Union" "Intersection" "Subtract" "Exclusive or"])]
+  (let* [selected (case owner "Vertices" "vertex" "Primitives" "primitive" "Edges" "edge" :else "point")
+         base_name (text/trim base)
+         seed_name (text/trim seed_attribute)
+         seed_owner (if (equal? selected "primitive") "primitive" "point")
+         operation (case merge "Union" "union" "Intersection" "intersection" "Subtract" "subtract"
+                     "Exclusive or" "xor" :else "replace")
+         has_seed_attribute (if (equal? seed_name "") true (sop/has_attr in0 seed_name :owner seed_owner))
+         seed_is_int (if (equal? seed_name "") true (sop/has_attr in0 seed_name :owner seed_owner :type int))]
+    (cond
+      (text/blank? name) (group_random_error "Group Random: empty output name")
+      (group_random_missing in0 selected base_name)
+        (group_random_error (str "Group Random: missing " selected " base group " (text/repr base_name)))
+      (not has_seed_attribute)
+        (group_random_error (str "Group Random: missing " seed_owner " integer seed attribute " (text/repr seed_name)))
+      (not seed_is_int)
+        (group_random_error (str "Group Random: seed attribute " (text/repr seed_name) " must have integer storage"))
+      :else
+        (let* [effective_seed (if context_seed (sop/context_seed "group_random") seed)
+               points (sop/count in0 :points)
+               primitives (sop/count in0 :primitives)
+               base_count (if (equal? selected "primitive") primitives points)
+               identities (if (equal? seed_name "") (array/range base_count :type int)
+                            (sop/attr in0 seed_name :owner seed_owner :type int))
+               topology (sop/topology in0)
+               edges (sop/edges in0)
+               point_ids (if (equal? selected "primitive") (array/range points :type int) identities)
+               vertex_ids (map (fn [(p : int)] (array/nth point_ids p)) topology.vertex_points)
+               edge_ids (map (fn [(a : int) (b : int)]
+                          (group_random_pair (array/nth point_ids a) (array/nth point_ids b)))
+                          edges.a edges.b)
+               ids (case selected "vertex" vertex_ids "edge" edge_ids :else identities)
+               raw (map (fn [(id : int)]
+                     (if (or (= probability 1.0)
+                           (and (> probability 0.0) (< (rand/at effective_seed id) probability))) 1 0)) ids)
+               fixed (exact raw)]
+          (group_random_finish in0 selected name operation base_name fixed)))))
