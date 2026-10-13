@@ -118,7 +118,9 @@ let specialize ~context ~label graph = map (fun t -> match t.W.node with
   | W.Op {op="sop/context_seed";_} -> invalid_arg "E_SEED_NAMESPACE: Context seed requires a literal namespace."
   | _ -> t) graph
 
-let declaration_source (checked:W.t) (root:W.node_definition) =
+(* Forms reachable from [start]: [leading], then other reached node bodies, helpers, graphs and
+   macros, then dispatched macro expansions. [skip] names a node whose body is already in [leading]. *)
+let scoped_forms (checked:W.t) ~leading ~skip ~start =
   let nodes=Hashtbl.create 8 and defs=Hashtbl.create 8
   and graphs=Hashtbl.create 4 and macros=Hashtbl.create 4 in
   let expanded=ref [] in
@@ -127,8 +129,8 @@ let declaration_source (checked:W.t) (root:W.node_definition) =
     if not(Hashtbl.mem nodes name) then begin
       Hashtbl.add nodes name ();
       graph definition.body;
-      List.iter(fun(t,_,_)->term t)definition.validations;
-      List.iter(fun(_,t)->term t)definition.normalizers
+      List.iter(fun(t,_,_)->term definition t)definition.validations;
+      List.iter(fun(_,t)->term definition t)definition.normalizers
     end
   and definition table (g:W.graph) =
     if not(Hashtbl.mem table g.name) then begin
@@ -167,14 +169,25 @@ let declaration_source (checked:W.t) (root:W.node_definition) =
          expanded:=e.body.form::!expanded
      | _ -> ());t
   and graph (g:W.graph) = ignore(map transform g)
-  and term t = graph {root.body with body=t;inputs=[]} in
-  node root;
-  let forms=root.body.form::List.filter_map(fun(d:W.node_definition)->
-      if d.kind.qualified<>root.kind.qualified && Hashtbl.mem nodes d.kind.qualified
+  and term (definition:W.node_definition) t = graph {definition.body with body=t;inputs=[]} in
+  start ~node ~graph;
+  let forms=leading@List.filter_map(fun(d:W.node_definition)->
+      if d.kind.qualified<>skip && Hashtbl.mem nodes d.kind.qualified
       then Some d.body.form else None)checked.nodes
     @ List.filter_map(fun(g:W.graph)->if Hashtbl.mem defs g.name then Some g.form else None)checked.defs
     @ List.filter_map(fun(g:W.graph)->if Hashtbl.mem graphs g.name then Some g.form else None)checked.graphs
     @ List.filter(fun form->match Flow.Syntax.children form with
       | _::{node=Flow.Syntax.Sym name;_}::_ -> Hashtbl.mem macros name
       | _ -> false)checked.macros in
-  Digest.string(fst(Flow.Lisp.print (forms @ List.rev !expanded)))
+  forms @ List.rev !expanded
+
+let declaration_source (checked:W.t) (root:W.node_definition) =
+  Digest.string(fst(Flow.Lisp.print
+    (scoped_forms checked ~leading:[root.body.form] ~skip:root.kind.qualified
+       ~start:(fun ~node ~graph:_ -> node root))))
+
+(* The kernel cache key: the authored source plus what the graphs being lowered reach, not the whole library. *)
+let kernel_source (checked:W.t) =
+  Digest.string(fst(Flow.Lisp.print (checked.source @
+    scoped_forms checked ~leading:(List.map (fun (g:W.graph)->g.form) checked.graphs) ~skip:""
+      ~start:(fun ~node:_ ~graph -> List.iter graph checked.graphs))))

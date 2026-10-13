@@ -138,7 +138,9 @@ let qualify_workspace ?record ?inputs ?observe (workspace : W.t) =
     Option.iter (fun callback -> callback producer (Result.value adapted ~default:residual)) observe in
   let (let*) = Result.bind in
   let* evaluated = E.Private.static_with_kernels ?record ?inputs ~observe:observed ~bulk:static_map workspace in
-  let reasons path = match List.assoc_opt path workspace.packed with
+  let packed_by_path = Hashtbl.create 64 in
+  List.iter (fun (path, form) -> if not (Hashtbl.mem packed_by_path path) then Hashtbl.add packed_by_path path form) workspace.packed;
+  let reasons path = match Hashtbl.find_opt packed_by_path path with
     | Some (W.Refused reasons) -> reasons
     | _ -> Option.value ~default:(pending path) (Hashtbl.find_opt outcomes path) in
   let approx, approx_reasons = List.fold_left (fun (accepted, rejected) (path, form) ->

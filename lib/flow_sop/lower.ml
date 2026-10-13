@@ -140,12 +140,10 @@ let objects lowered = List.filter_map (fun (graph : graph) ->
    lists is memoised on their physical identity (one entry, atomically swapped, so domain-safe). *)
 let kernel_digest_cache : (Obj.t list * string) Atomic.t = Atomic.make ([], "")
 let kernel_digest (checked : Workspace.t) =
-  let key = [Obj.repr checked.source; Obj.repr checked.macros; Obj.repr checked.defs; Obj.repr checked.nodes] in
+  let key = [Obj.repr checked.source; Obj.repr checked.macros; Obj.repr checked.defs; Obj.repr checked.nodes; Obj.repr checked.graphs] in
   let (k, d) = Atomic.get kernel_digest_cache in
   if k <> [] && List.for_all2 (==) k key then d else begin
-    let d = Digest.string (fst (Lisp.print (checked.source @ checked.macros @
-      List.map (fun (g : Workspace.graph) -> g.form) checked.defs @
-      List.map (fun (d : Workspace.node_definition) -> d.body.form) checked.nodes))) in
+    let d = Context_kernel.kernel_source checked in
     Atomic.set kernel_digest_cache (key, d); d end
 
 let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(defer_body_errors = false) ?(kernel_bindings = []) ?(compiled_ids = Instance_path.Map.empty)
