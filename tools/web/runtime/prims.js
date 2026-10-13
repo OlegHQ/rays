@@ -995,6 +995,18 @@ export function text_glob_literal(text) {
   if (text === '') err('E_METADATA_PATTERN', 'A literal glob must not be empty.');
   return text.replace(/[\*?\[\]\\^ \t\n\r\f]/g, character => '\\' + character);
 }
+// Bytewise: every non-ASCII UTF-8 byte is one underscore, as in the native byte loop.
+export function text_group_name_valid(text) {
+  if (typeof text !== 'string') err('E_METADATA_TEXT', 'Metadata names and patterns must be text.');
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(text);
+}
+export function text_group_name_forced(text) {
+  if (typeof text !== 'string') err('E_METADATA_TEXT', 'Metadata names and patterns must be text.');
+  const bytes = textBytes(text);
+  let out = bytes.length > 0 && bytes[0] >= 48 && bytes[0] <= 57 ? '_' : '';
+  for (const byte of bytes) out += /[A-Za-z0-9_]/.test(String.fromCharCode(byte)) ? String.fromCharCode(byte) : '_';
+  return out;
+}
 function metadataPolicy(value, groups = false) {
   const policy = text_lower(metadataTrim(value));
   if (!['skip', 'error', 'overwrite', ...(groups ? ['union'] : [])].includes(policy)) err('E_METADATA_CONFLICT',
