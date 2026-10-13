@@ -172,7 +172,9 @@ let lisp ctx changes =
           | Ok lowered -> let g = List.hd lowered.graphs in
               Result.map (fun n -> n, lowered.factories)
                 (Sop.Edit_graph.compile_node g.network.geometry ~node_id:(Option.get g.root)) in
-        Ok build
+        (* Lowering runs :validate: build once now so a construction refusal is seen. *)
+        (match (try build false with Invalid_argument m | Failure m -> Error m) with
+         | Error m -> Error m | Ok _ -> Ok build)
     | _, ds -> Error (String.concat "\n" (List.map Flow.Diagnostic.to_string (match errors ds with [] -> ds | e -> e)))
 
 let with_session f =
