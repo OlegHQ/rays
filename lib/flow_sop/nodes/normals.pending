@@ -1,0 +1,296 @@
+; Whole Normal draft (Rdk.Normal_ops). Raw polygon area vectors (the fan of cross products from the
+; first vertex, summed per primitive with array/segment_sum) feed three weightings; point normals are
+; scatter-added, cusped vertex normals sum over the pairs (vertex, vertex of the same point) built
+; from the point-vertex incidence. The authored selection is converted to the target owner and merged
+; with the existing attribute exactly like Normal_ops: unselected elements keep the existing value
+; (or the unreversed smooth normal for a vertex write that had no attribute), selected zero sums keep
+; the existing value only with "keep original zero". Finite inputs only; non-finite sums are errors.
+(defn normals_error :context value [(reason : text)]
+  (error "invalid_topology" "normals could not produce valid geometry"
+    :cause (str "normals [invalid_topology]: Rdk.Normal_ops.normals: " reason)))
+(defn normals_max :context value [(v : vec3)] (max (abs v.x) (max (abs v.y) (abs v.z))))
+
+; Fan of cross products from the first vertex, summed per primitive; polygons only.
+(defn normals_faces :context sop [(geo : geometry)]
+  (let* [topo (sop/topology geo)
+         adjacency (sop/adjacency geo)
+         positions (sop/attr geo :P)
+         vertices (sop/count geo :vertices)
+         prims (sop/count geo :primitives)
+         starts (array/slice topo.primitive_offsets 0 prims)
+         ends (array/slice topo.primitive_offsets 1 prims)
+         contributions (map (fn [(vertex : int) (prim : int)]
+           (let* [first (array/nth starts prim)
+                  last (array/nth ends prim)
+                  a (array/nth positions (array/nth topo.vertex_points first))
+                  b (array/nth positions (array/nth topo.vertex_points vertex))
+                  c (array/nth positions (array/nth topo.vertex_points
+                      (if (int/lt (int/add vertex 1) vertices) (int/add vertex 1) vertex)))
+                  u (- b a)
+                  v (- c a)]
+             (if (and (int/eq (array/nth topo.kinds prim) 0)
+                      (and (int/ge vertex (int/add first 1)) (int/le vertex (int/sub last 2))))
+               [(fma (* -1.0 u.z) v.y (* u.y v.z))
+                (fma (* -1.0 u.x) v.z (* u.z v.x))
+                (fma (* -1.0 u.y) v.x (* u.x v.y))]
+               [0.0 0.0 0.0])))
+           (array/range vertices :type int) adjacency.primitive_of_vertex)]
+    (array/segment_sum contributions topo.primitive_offsets)))
+
+; 1 / |n| of every face vector (0 for a zero face), through the rescaled length.
+(defn normals_inverse :context value [(faces : (array vec3))]
+  (map (fn [(n : vec3)]
+    (let* [scale (normals_max n)
+           s (/ n (if (= scale 0.0) 1.0 scale))]
+      (if (> scale 0.0) (/ (/ 1.0 scale) (sqrt (fused_dot s s))) 0.0)))
+    faces))
+
+; The interior angle at every vertex of a polygon (0 elsewhere).
+(defn normals_angles :context sop [(geo : geometry)]
+  (let* [topo (sop/topology geo)
+         adjacency (sop/adjacency geo)
+         positions (sop/attr geo :P)
+         vertices (sop/count geo :vertices)
+         prims (sop/count geo :primitives)
+         starts (array/slice topo.primitive_offsets 0 prims)
+         ends (array/slice topo.primitive_offsets 1 prims)]
+    (let* [all (array/range vertices :type int)
+           previous (exact (map (fn [(vertex : int) (prim : int)]
+             (if (int/eq vertex (array/nth starts prim)) (int/sub (array/nth ends prim) 1) (int/sub vertex 1)))
+             all adjacency.primitive_of_vertex))
+           next (exact (map (fn [(vertex : int) (prim : int)]
+             (if (int/eq (int/add vertex 1) (array/nth ends prim)) (array/nth starts prim) (int/add vertex 1)))
+             all adjacency.primitive_of_vertex))
+           polygon (exact (map (fn [(prim : int)] (array/nth topo.kinds prim)) adjacency.primitive_of_vertex))
+           backward (exact (map (fn [(vertex : int) (other : int)]
+             (- (array/nth positions (array/nth topo.vertex_points other))
+                (array/nth positions (array/nth topo.vertex_points vertex))))
+             all previous))
+           forward (exact (map (fn [(vertex : int) (other : int)]
+             (- (array/nth positions (array/nth topo.vertex_points other))
+                (array/nth positions (array/nth topo.vertex_points vertex))))
+             all next))]
+      (map (fn [(u : vec3) (v : vec3) (kind : int)]
+        (let* [us (normals_max u)
+               vs (normals_max v)
+               a (/ u (if (= us 0.0) 1.0 us))
+               b (/ v (if (= vs 0.0) 1.0 vs))
+               c (vec3_cross a b)]
+          (if (and (int/eq kind 0) (and (not (= us 0.0)) (not (= vs 0.0))))
+            (atan2 (sqrt (fused_dot c c)) (fused_dot a b))
+            0.0)))
+        backward forward polygon))))
+
+; Per segment, acc = fma(raw, weight, acc) over its slots in order, from +0 (the native
+; accumulation loop fuses the multiply-add).
+(defn normals_fused :context value
+  [(raw : (array vec3)) (weight : (array float)) (offsets : (array int)) (slots : int) (n : int)]
+  (get (iterate slots {:v (array/vec3 n [0.0 0.0 0.0]) :k 0}
+    (fn [(s : {:v (array vec3) :k int})]
+      {:v (exact (map (fn [(p : int) (acc : vec3)]
+          (let* [slot (int/add (array/nth offsets p) s.k)]
+            (if (int/lt slot (array/nth offsets (int/add p 1)))
+              (let* [r (array/nth raw slot) w (array/nth weight slot)]
+                [(fma r.x w acc.x) (fma r.y w acc.y) (fma r.z w acc.z)])
+              acc)))
+          (array/range n :type int) s.v))
+       :k (int/add s.k 1)})) :v))
+
+; mode 0 face area, 1 each vertex, 2 vertex angle
+(defn normals_point_sums :context sop
+  [(geo : geometry) (faces : (array vec3)) (inverse : (array float)) (angles : (array float)) (mode : int)]
+  (let* [topo (sop/topology geo)
+         adjacency (sop/adjacency geo)
+         contributions (map (fn [(prim : int) (angle : float)]
+           (let* [raw (array/nth faces prim)
+                  inv (array/nth inverse prim)]
+             (cond (int/eq mode 0) raw
+                   (int/eq mode 1) (if (= inv 0.0) [0.0 0.0 0.0] (* raw inv))
+                   :else (if (= inv 0.0) [0.0 0.0 0.0] (* raw (* inv angle))))))
+           adjacency.primitive_of_vertex angles)]
+    ; native point accumulation stores into an array element: separate multiply and add
+    (array/scatter_add topo.vertex_points contributions (sop/count geo :points))))
+
+; Segment index of every position, from the segment start offsets.
+(defn normals_owners :context value [(offsets : (array int)) (total : int)]
+  (let* [segments (int/sub (array/count offsets) 1)
+         starts (exact (map (fn [(p : int)] (array/nth offsets p)) (array/range segments :type int)))
+         prefix (array/scan_sum (array/scatter_add starts (array/int segments 1) (int/add total 1)))]
+    (exact (map (fn [(s : int)] (int/sub (array/nth prefix (int/add s 1)) 1)) (array/range total :type int)))))
+
+; Per-vertex sums over the faces around the vertex's point whose normal is within the cusp angle.
+(defn normals_cusp_sums :context sop
+  [(geo : geometry) (faces : (array vec3)) (inverse : (array float)) (angles : (array float))
+   (mode : int) (cusp : float)]
+  (let* [topo (sop/topology geo)
+         adjacency (sop/adjacency geo)
+         vertices (sop/count geo :vertices)
+         vp topo.vertex_points
+         pov adjacency.primitive_of_vertex
+         pvo adjacency.point_vertex_offsets
+         counts (exact (map (fn [(vertex : int)]
+           (let* [pt (array/nth vp vertex)]
+             (int/sub (array/nth pvo (int/add pt 1)) (array/nth pvo pt))))
+           (array/range vertices :type int)))
+         offsets (array/scan_sum (array/concat counts (array/int 1 0)))
+         total (array/nth offsets vertices)
+         owners (normals_owners offsets total)
+         sources (exact (map (fn [(pair : int) (owner : int)]
+           (array/nth adjacency.point_vertices
+             (int/add (array/nth pvo (array/nth vp owner)) (int/sub pair (array/nth offsets owner)))))
+           (array/range total :type int) owners))
+         cosine (cos cusp)
+         raw (exact (map (fn [(source : int)] (array/nth faces (array/nth pov source))) sources))
+         weight (exact (map (fn [(owner : int) (source : int)]
+           (let* [current (array/nth pov owner)
+                  cinv (array/nth inverse current)
+                  sprim (array/nth pov source)
+                  sinv (array/nth inverse sprim)
+                  dot (fused_dot (* (array/nth faces current) cinv) (* (array/nth faces sprim) sinv))
+                  w (cond (int/eq mode 1) sinv
+                          (int/eq mode 0) 1.0
+                          :else (* sinv (array/nth angles source)))]
+             (if (and (not (= cinv 0.0)) (and (not (= sinv 0.0)) (>= (+ dot 1e-12) cosine))) w 0.0)))
+           owners sources))
+         slots (if (int/eq vertices 0) 0 (array/max counts))]
+    (normals_fused raw weight offsets slots vertices)))
+
+; Count of selected sums that are not finite.
+(defn normals_bad :context value [(sums : (array vec3)) (sel : (array int))]
+  (let* [flags (exact (map (fn [(s : vec3) (m : int)]
+      (if (and (int/eq m 1)
+               (not (and (= (- s.x s.x) 0.0) (and (= (- s.y s.y) 0.0) (= (- s.z s.z) 0.0)))))
+        1 0))
+      sums sel))]
+    (if (int/eq (array/count flags) 0) 0 (array/sum flags))))
+
+; Selected elements take the normalized sum (zero sums keep the base only when keep is true);
+; unselected elements keep the base.
+(defn normals_resolve :context value
+  [(sums : (array vec3)) (sel : (array int)) (base : (array vec3)) (reverse : bool) (keep : bool)]
+  (exact (map (fn [(s : vec3) (m : int) (b : vec3)]
+    (let* [scale (normals_max s)
+           sc (/ s (if (= scale 0.0) 1.0 scale))
+           inverse (/ (if reverse -1.0 1.0) (sqrt (fused_dot sc sc)))
+           unit (* sc inverse)]
+      (cond (int/eq m 0) b
+            (> scale 0.0) unit
+            keep b
+            :else [0.0 0.0 0.0])))
+    sums sel base)))
+
+(defn normals_any :context value [(counts : (array int))]
+  (exact (map (fn [(n : int)] (if (int/gt n 0) 1 0)) counts)))
+
+; The authored group (of owner go) as a 0/1 mask on the target owner (point/vertex/primitive).
+(defn normals_selection :context sop [(geo : geometry) (go : text) (name : text) (target : text)]
+  (let* [topo (sop/topology geo)
+         adjacency (sop/adjacency geo)
+         points (sop/count geo :points)
+         edges (sop/count geo :edges)
+         mask (sop/group geo :name name :owner go)
+         padded (array/concat (if (equal? go "edge") mask (array/int edges 0)) (array/int 1 0))
+         outgoing (exact (map (fn [(e : int)] (array/nth padded (if (int/lt e 0) edges e)))
+                    adjacency.edge_of_vertex))
+         incoming (exact (map (fn [(pv : int)]
+                    (let* [e (array/nth adjacency.edge_of_vertex (if (int/lt pv 0) 0 pv))]
+                      (if (int/lt pv 0) 0 (array/nth padded (if (int/lt e 0) edges e)))))
+                    adjacency.previous_vertex))
+         per_vertex (cond (equal? go "point") (int_gather mask topo.vertex_points)
+                          (equal? go "vertex") mask
+                          (equal? go "primitive") (int_gather mask adjacency.primitive_of_vertex)
+                          (equal? target "vertex") (exact (map (fn [(a : int) (b : int)] (int/or a b)) outgoing incoming))
+                          :else outgoing)]
+    (cond
+      (equal? target "vertex") per_vertex
+      (equal? target "point")
+        (cond (equal? go "point") mask
+              (equal? go "edge")
+                (normals_any (array/segment_sum (int_gather mask adjacency.point_edges) adjacency.point_edge_offsets))
+              :else (normals_any (array/scatter_add topo.vertex_points per_vertex points)))
+      :else
+        (if (equal? go "primitive") mask
+          (normals_any (array/segment_sum per_vertex topo.primitive_offsets))))))
+
+(defn normals_install :context sop [(geo : geometry) (name : text) (target : text) (result : (array vec3))]
+  (let* [clean (sop/delete_attr (sop/delete_attr (sop/delete_attr (sop/delete_attr geo name :owner "point")
+                 name :owner "vertex") name :owner "primitive") name :owner "detail")]
+    (cond (equal? target "point") (sop/with_attr clean name result :owner "point" :type vec3)
+          (equal? target "vertex") (sop/with_attr clean name result :owner "vertex" :type vec3)
+          (equal? target "primitive") (sop/with_attr clean name result :owner "primitive" :type vec3)
+          :else (sop/with_attr clean name result :owner "detail" :type vec3))))
+
+(defnode sop/normals :label "Normal" :category "Attribute"
+  :facts {:elementwise none :reads ["P" "N"] :writes ["N"] :topology preserved :exact false}
+  :validate (and (not (text/blank? attribute)) (and (>= cusp_angle 0.0) (<= cusp_angle 3.141592653589793)))
+  :code "E_PARAM" :message "sop/normals: attribute must be named and cusp angle finite within [0,pi]"
+  [(in0 : geometry)
+   (group_owner : text "Point" :label "Group type" :folder ["Selection"] :choices ["Point" "Vertex" "Primitive" "Edge"])
+   (group : text "" :label "Group" :folder ["Selection"])
+   (owner : text "Vertex" :label "Add normals to" :choices ["Point" "Vertex" "Primitive" "Detail"])
+   (weighting : text "Vertex angle" :label "Weighting" :choices ["Vertex angle" "Each vertex" "Face area"])
+   (cusp_angle : float 3.141592653589793 :label "Cusp angle" :min 0 :max 3.141592653589793 :hard_min 0 :hard_max 3.141592653589793)
+   (keep_original_zero : bool false :label "Keep original zero normals")
+   (reverse : bool false :label "Reverse normals")
+   (attribute : text "N" :label "Attribute" :folder ["Attributes"])]
+  (let* [group_name (text/trim group)
+         has_group (not (text/blank? group_name))
+         go (text/lower group_owner)
+         target (text/lower owner)
+         mode (cond (equal? weighting "Face area") 0 (equal? weighting "Each vertex") 1 :else 2)]
+    (cond
+      (deform_group_missing in0 go group_name)
+        (error "missing_group" (str "normals could not find " go " group " (text/repr group_name)))
+      (text/blank? attribute) (normals_error "attribute name must not be empty")
+      (and (sop/has_attr in0 attribute :owner target) (not (sop/has_attr in0 attribute :owner target :type vec3)))
+        (normals_error (str target " " attribute " must have float3 storage"))
+      :else
+      (let* [existing (sop/has_attr in0 attribute :owner target)
+             faces (normals_faces in0)
+             prims (sop/count in0 :primitives)
+             face_bad (normals_bad faces (array/int prims 1))]
+        (if (int/gt face_bad 0) (normals_error "non-finite geometric normal")
+          (let* [inverse (normals_inverse faces)
+                 angles (if (int/eq mode 2) (exact (normals_angles in0)) (array/float (sop/count in0 :vertices) 0.0))
+                 keep (and keep_original_zero existing)
+                 selected (and has_group existing)]
+            (cond
+              (equal? target "point")
+                (let* [points (sop/count in0 :points)
+                       sums (normals_point_sums in0 faces inverse angles mode)
+                       sel (if selected (normals_selection in0 go group_name "point") (array/int points 1))
+                       old (if existing (sop/attr in0 attribute :owner "point" :type vec3) (array/vec3 points [0.0 0.0 0.0]))
+                       base (if (and existing (or selected keep_original_zero)) old (array/vec3 points [0.0 0.0 0.0]))]
+                  (if (int/gt (normals_bad sums sel) 0) (normals_error "non-finite point normal")
+                    (normals_install in0 attribute target (normals_resolve sums sel base reverse keep))))
+              (equal? target "vertex")
+                (let* [vertices (sop/count in0 :vertices)
+                       topo (sop/topology in0)
+                       point_sums (normals_point_sums in0 faces inverse angles mode)
+                       smooth (>= cusp_angle (- 3.141592653589793 1e-12))
+                       sums (if smooth (map (fn [(pt : int)] (array/nth point_sums pt)) topo.vertex_points)
+                              (normals_cusp_sums in0 faces inverse angles mode cusp_angle))
+                       zero (array/vec3 vertices [0.0 0.0 0.0])
+                       all (array/int vertices 1)
+                       sel (if has_group (normals_selection in0 go group_name "vertex") all)
+                       old (if existing (sop/attr in0 attribute :owner "vertex" :type vec3) zero)
+                       smooth_sums (map (fn [(pt : int)] (array/nth point_sums pt)) topo.vertex_points)
+                       first_pass (normals_resolve smooth_sums all zero false false)
+                       base (if (or existing (not has_group)) old first_pass)
+                       pre_bad (if (and has_group (not existing)) (normals_bad smooth_sums all) 0)]
+                  (if (int/gt (int/add pre_bad (normals_bad sums sel)) 0) (normals_error "non-finite vertex normal")
+                    (normals_install in0 attribute target (normals_resolve sums sel base reverse keep))))
+              (equal? target "primitive")
+                (let* [sel (if selected (normals_selection in0 go group_name "primitive") (array/int prims 1))
+                       zero (array/vec3 prims [0.0 0.0 0.0])
+                       old (if existing (sop/attr in0 attribute :owner "primitive" :type vec3) zero)
+                       base (if (and existing (or selected keep_original_zero)) old zero)]
+                  (normals_install in0 attribute target (normals_resolve faces sel base reverse keep)))
+              :else
+                (let* [offsets (array/concat (array/int 1 0) (array/int 1 prims))
+                       total (array/segment_sum faces offsets)
+                       zero (array/vec3 1 [0.0 0.0 0.0])
+                       old (if existing (sop/attr in0 attribute :owner "detail" :type vec3) zero)
+                       base (if keep_original_zero old zero)]
+                  (if (int/gt (normals_bad total (array/int 1 1)) 0) (normals_error "non-finite detail normal")
+                    (normals_install in0 attribute target (normals_resolve total (array/int 1 1) base reverse keep)))))))))))
