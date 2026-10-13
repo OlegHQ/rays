@@ -76,6 +76,12 @@ let lists = [
   "fold","(fold [a 0] [i (range 1000)] (+ a t))";
   "fold-record","(fold [a {:x 0. :y 1.}] [i (range 4)] (assoc a :x (+ a.x t) :y a.x))";
   "fold-record-packed","(fold [a {:n 0.}] [i (array/range 4096)] (assoc a :n (+ a.n t)))";
+  "iterate","(iterate (int (+ 3. t)) 0. (fn [a] (+ a t)))";
+  "iterate-large","(iterate (+ 4500 (int t)) 0. (fn [a] (+ a 1.)))";
+  "iterate-until","(iterate 8 0. (fn [a] (+ a t)) :until (fn [p n] (> n 2.)))";
+  "iterate-record","(iterate 3 {:n 0.} (fn [a] (assoc a :n (+ a.n t))))";
+  "iterate-list","(iterate 3 (list t) (fn [a] (list (+ (nth a 0) 1.))))";
+  "iterate-widen","(iterate 3 0 (fn [a] (+ a t)))";
   "scan","(scan [a 0] [i (range 4)] (+ a t))";
   "scan-record","(scan [a {:n 0}] [i (range 3)] (assoc a :n (+ a.n t)))";
   "nested-skip","(for [i (range 3)] (for [j (range 2)] :skip [[1 0] [2 1]] (+ (+ (* 10 i) j) t)))";

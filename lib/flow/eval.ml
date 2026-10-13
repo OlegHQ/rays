@@ -860,6 +860,22 @@ and hof c env term kind f rest =
         acc := widen_like c !acc (if packed then concrete c value else value)
       done;
       !acc
+  | `Iterate, init :: n :: until ->
+      let init = ev (sub c "init") env init in
+      let passes = Value.int_of (concrete c (ev (sub c "n") env n)) in
+      let stop = match until with
+        | [] -> None
+        | g :: _ -> (match concrete c (ev (sub c "until") env g) with
+            | Fn f -> Some f | _ -> fail "E_TYPE" "Expected a function.") in
+      let acc = ref init and pass = ref 0 and finished = ref false in
+      while !pass < passes && not !finished do
+        let next = widen_like c !acc (call fv [!acc]) in
+        (match stop with
+         | Some g -> finished := truthy (concrete c (call g [!acc; next]))
+         | None -> ());
+        acc := next; incr pass
+      done;
+      !acc
   | _ -> fail "E_ARITY" "A higher-order form got the wrong number of arguments." in
   if packed then Fun.protect ~finally:(fun () -> c.st.steps <- saved_steps) work else work ()
 

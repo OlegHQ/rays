@@ -752,6 +752,31 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
           let value=widen_like body cache source accumulator value in
           update body cache source accumulator value);
         accumulator
+    | `Iterate,init::count::until ->
+        (* One counted loop: the body (and any packed region in it) is lowered once and run per pass.
+           [:until] holds a finished flag; the remaining passes are only a skipped branch. *)
+        let accumulator=hold ~ty statements cache source (compile init) in
+        let count=compile count in
+        let stop=List.map (fun g -> as_callable source (compile g)) until in
+        let finished=match stop with
+          | [] -> None | _ -> Some (hold statements cache source (Known (V.Bool false))) in
+        counted ~limit:max_int statements cache source (Known (V.Int 0)) count (fun body cache _ ->
+          let pass body cache =
+            let value=call body cache source ty None fn [accumulator] in
+            let value=widen_like body cache source accumulator value in
+            (match stop,finished with
+             | g::_,Some finished ->
+                 let next=hold ~ty body cache source value in
+                 let reached=call body cache source Flow.Ty.Bool None g [accumulator;next] in
+                 update body cache source finished reached;
+                 update body cache source accumulator next
+             | _ -> update body cache source accumulator value);
+            Known (V.Int 0) in
+          match finished with
+          | None -> ignore (pass body cache)
+          | Some finished -> ignore (branch body cache source Flow.Ty.Int finished
+              (fun _ _ -> Known (V.Int 0)) pass));
+        accumulator
     | `Sort_by,[items] -> sort_by statements cache source ty fn (compile items)
     | (`Map|`Filter),items ->
         (* A packed result is packed storage built element by element. *)
