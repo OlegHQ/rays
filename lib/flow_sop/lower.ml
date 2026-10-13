@@ -136,6 +136,18 @@ let objects lowered = List.filter_map (fun (graph : graph) ->
   Option.map (fun root -> graph.instance, graph.network, root) graph.root)
   lowered.graphs
 
+(* One host call lowers a synthetic workspace that shares the caller's source lists; the digest of those
+   lists is memoised on their physical identity (one entry, atomically swapped, so domain-safe). *)
+let kernel_digest_cache : (Obj.t list * string) Atomic.t = Atomic.make ([], "")
+let kernel_digest (checked : Workspace.t) =
+  let key = [Obj.repr checked.source; Obj.repr checked.macros; Obj.repr checked.defs; Obj.repr checked.nodes] in
+  let (k, d) = Atomic.get kernel_digest_cache in
+  if k <> [] && List.for_all2 (==) k key then d else begin
+    let d = Digest.string (fst (Lisp.print (checked.source @ checked.macros @
+      List.map (fun (g : Workspace.graph) -> g.form) checked.defs @
+      List.map (fun (d : Workspace.node_definition) -> d.body.form) checked.nodes))) in
+    Atomic.set kernel_digest_cache (key, d); d end
+
 let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(defer_body_errors = false) ?(kernel_bindings = []) ?(compiled_ids = Instance_path.Map.empty)
     ?(sites = []) ?inputs checked =
   Phase_timer.measure Lower (fun () ->
@@ -158,9 +170,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
        lazy so ordinary catalog edits retain their existing pipeline counts.
        ponytail: the whole source invalidates kernels; narrow to body/defn cones
        if unrelated structural edits measurably recook them. *)
-    let kernel_source = lazy (Digest.string (fst (Lisp.print (checked.source @ checked.macros @
-      List.map (fun (g : Workspace.graph) -> g.form) checked.defs @
-      List.map (fun (d : Workspace.node_definition) -> d.body.form) checked.nodes)))) in
+    let kernel_source = lazy (kernel_digest checked) in
     let attribute_options args =
       let text key default code=match List.assoc_opt key args with
         |None->default|Some(E.Text text)->text|_->fail code ("Attribute "^key^" must be static text") in
