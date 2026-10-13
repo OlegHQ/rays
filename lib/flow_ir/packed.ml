@@ -812,10 +812,64 @@ let ordered_add t =
       !matched
   | _ -> false
 
+(* Within one outermost run, a lazily forced capture is evaluated again by every region and capture that
+   reads it (a map feeding a minimum, a maximum and the map that scales by both ran three times). A residual
+   term is a function of its captured values, the frame, the host handles behind [resolve] and the frame
+   state, so the results of one outermost run are shared between its nested evaluations when all four are
+   physically the same and the term reads no state, and dropped when that run ends. *)
+module Scope = struct
+  type t = { resolve : (E.value -> (E.value, Flow.Diagnostic.t) Stdlib.result) option; live : Frame_input.t;
+    state : E.state; strict : bool; mutable depth : int;
+    mutable entries : (E.residual * W.term * E.value) list; mutable count : int }
+  let capacity = 32
+  let current : t option ref Domain.DLS.key = Domain.DLS.new_key (fun () -> ref None)
+  let same_resolve a b = match a, b with None, None -> true | Some a, Some b -> a == b | _ -> false
+  let enter ~resolve ~live ~state ~strict =
+    let current = Domain.DLS.get current in
+    match !current with
+    | Some scope when same_resolve scope.resolve resolve && scope.live == live && scope.state == state
+                      && scope.strict = strict -> scope.depth <- scope.depth + 1; Some scope
+    | Some _ -> None
+    | None -> let scope = { resolve; live; state; strict; depth = 1; entries = []; count = 0 } in
+        current := Some scope; Some scope
+  let leave = function
+    | None -> ()
+    | Some scope -> scope.depth <- scope.depth - 1;
+        if scope.depth = 0 then (Domain.DLS.get current) := None
+  (* The same residual can be met as distinct records, so identity is its id with the same term, bindings
+     (physically) and site; an equal id from another workspace differs in at least one of them. *)
+  let same_residual a b =
+    a == b || E.Private.residual_id a = E.Private.residual_id b &&
+      (let x = E.Private.residual_view a and y = E.Private.residual_view b in
+       x.term == y.term && x.previous = y.previous && x.instance = y.instance && x.iter = y.iter
+       && x.prefix = y.prefix && x.owner = y.owner && x.host = y.host && x.geometry = y.geometry
+       && List.equal (fun (n, v) (m, w) -> String.equal n m && v == w) x.bindings y.bindings)
+  let find scope residual term = List.find_map (fun (r, t, v) ->
+    if t == term && same_residual r residual then Some v else None) scope.entries
+  let add scope residual term value =
+    if scope.count < capacity then begin
+      scope.entries <- (residual, term, value) :: scope.entries; scope.count <- scope.count + 1 end
+end
+
 let rec run_all ?column_source ?plane_outputs ?expected_count ?state ?elems ?resolve ?measure ?(strict = false) t ~live =
   let state = match state with Some state -> state | None -> E.create_state () in
+  let scope = if elems <> None then None else Scope.enter ~resolve ~live ~state ~strict in
+  Fun.protect ~finally:(fun () -> Scope.leave scope) @@ fun () ->
   let work () =
     let rec evaluate residual (term : W.term) =
+      match scope with
+      | None -> evaluate_once residual term
+      | Some scope ->
+          (match Scope.find scope residual term with
+           | Some value -> Ok value
+           | None ->
+               let result = evaluate_once residual term in
+               (match result with
+                | Ok value when not (E.state_dependent (E.Residual (E.Private.with_bindings residual ~term []))) ->
+                    Scope.add scope residual term value
+                | _ -> ());
+               result)
+    and evaluate_once residual (term : W.term) =
       let nested = match term.node with
         | W.Ref_binding (name, []) ->
             (match List.assoc_opt name (E.Private.residual_view residual).bindings with

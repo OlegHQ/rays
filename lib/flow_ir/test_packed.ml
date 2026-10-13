@@ -819,3 +819,17 @@ let () =
         ~outputs:[|[|Some[||]|]|] producer ~live:(Frame_input.at_time 0.25) with
      |Error d->assert(d.code="E_ARRAY_TYPE")|_->assert false);
     print_endline "Float Product: empty first input suppresses later producers, borrowed sources and captures; reached errors and Zip forcing remain exact")
+
+let () =
+  (* A map read by a minimum, a maximum and the map that scales by both runs once per outermost run. *)
+  let live = Frame_input.at_time 0.25 in
+  let body = "(let* [h (map (fn [x] (* x (+ t 2.0))) (array/range 4096))
+                      lo (array/min h) hi (array/max h)]
+                 (map (fn [y] (/ (- y lo) (- hi lo))) h))" in
+  let program = Test_program.compile body in
+  let runs = ref 0 in
+  let measure = (fun () -> 1.), (fun _ ~seconds:_ ~reference:_ -> incr runs) in
+  let value = ok (I.Packed.force ~strict:true ~measure program ~live) in
+  assert (!runs = 2);
+  assert (same (Ok value) (E.Private.force_reference (recorded body) ~live));
+  print_endline "Packed scope: a map read by three captures of one run is evaluated once, bytes equal to the walker"
