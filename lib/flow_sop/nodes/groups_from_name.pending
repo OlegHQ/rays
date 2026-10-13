@@ -1,0 +1,56 @@
+; Whole Groups from Name draft. NEEDS two text operators the language lacks:
+;   (text/group_name_valid? text)  ASCII letter/digit/underscore, not starting with a digit, nonempty
+;   (text/group_name_forced text)  every other byte becomes "_", a leading digit gets a "_" prefix
+(defn groups_from_name_error :context value [(reason : text)]
+  (error "invalid_group" "groups_from_name could not produce valid geometry"
+    :cause (str "groups_from_name [invalid_group]: " reason)))
+(defnode sop/groups_from_name :label "Groups from Name" :category ["Group" "Convert"]
+  [(in0 : geometry)
+   (owner : text "Primitive" :label "Attribute owner" :choices ["Point" "Vertex" "Primitive"])
+   (attribute : text "name" :label "Name attribute")
+   (prefix : text "" :label "Group prefix")
+   (conflict : text "Replace" :label "Conflict" :choices ["Replace" "Union"])
+   (invalid_names : text "Ignore invalid" :label "Invalid names" :choices ["Ignore invalid" "Force valid"])
+   (max_groups : int 4096 :label "Maximum groups" :folder ["Limits"] :min 1 :max 16384 :hard_min 1)
+   (max_payload_bytes : int 268435456 :label "Maximum payload bytes" :folder ["Limits"]
+     :min 1048576 :max 1073741824 :hard_min 1)]
+  (let* [selected (text/lower owner)
+         count (case owner "Point" (sop/count in0 :points) "Vertex" (sop/count in0 :vertices)
+                 :else (sop/count in0 :primitives))
+         present (sop/has_attr in0 attribute :owner selected)]
+    (cond
+      (equal? owner "Vertex") (groups_from_name_error "Groups from Name: owner must be point or primitive")
+      (text/blank? attribute) (groups_from_name_error "Groups from Name: attribute name must not be empty")
+      (not present) (groups_from_name_error (str "Groups from Name: missing " selected " text attribute " (text/repr attribute)))
+      (not (sop/has_attr in0 attribute :owner selected :type text))
+        (groups_from_name_error (str "Groups from Name: " selected " attribute " (text/repr attribute)
+                                  " must have text storage"))
+      :else
+        (let* [raw (sop/attr in0 attribute :owner selected :type text)
+               names (map (fn [(value : text)]
+                       (if (equal? value "") ""
+                         (let* [candidate (str prefix value)]
+                           (if (equal? invalid_names "Force valid") (text/group_name_forced candidate)
+                             (if (text/group_name_valid? candidate) candidate "")))))
+                       raw)
+               first_index (array/index_of names names)
+               leaders (map (fn [(name : text) (first : int) (index : int)]
+                         (if (and (not (equal? name "")) (int/eq first index)) 1 0))
+                         names first_index (array/range count :type int))
+               distinct (array/count (array/compact leaders))
+               payload (int/mul distinct (int/div (int/add count 7) 8))]
+          (cond
+            (int/gt distinct max_groups)
+              (groups_from_name_error (str "Groups from Name: distinct output groups exceed max_groups=" max_groups))
+            (int/gt payload max_payload_bytes)
+              (groups_from_name_error (str "Groups from Name: projected packed payload " payload
+                                        " bytes exceeds max_payload_bytes=" max_payload_bytes))
+            :else
+              (fold [geometry in0]
+                [position (array/compact leaders)]
+                (let* [name (array/nth names position)
+                       mine (map (fn [(other : text)] (if (equal? other name) 1 0)) names)
+                       merged (if (equal? conflict "Union")
+                                (group_publish geometry selected name "union" (exact mine))
+                                (group_publish geometry selected name "replace" (exact mine)))]
+                  merged)))))))

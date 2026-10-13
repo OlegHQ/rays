@@ -203,3 +203,60 @@
            present (exact (map (fn [(edge : int)] (if (int/ge edge 0) 1 0)) found))]
       {:offsets (array/scan_sum present)
        :values (int_gather found (array/compact present))})))
+
+  ; Group values are {:mask :ordered :indices}; combining follows Group.combine's order algebra
+  ; (union/xor: left preference then right; intersection: the ordered operand; subtract: the left).
+  (defn group_value_keep :context value [(indices : (array int)) (keep : (array int))]
+    (let* [positions (array/compact (map (fn [(i : int)] (array/nth keep i)) indices))]
+      (exact (map (fn [(p : int)] (array/nth indices p)) positions))))
+  (defn group_value_preferred :context value
+    [(g : {:mask (array int) :ordered bool :indices (array int)})]
+    (if g.ordered g.indices (array/compact g.mask)))
+  (defn group_value_apply :context value
+    [(operation : text) (l : {:mask (array int) :ordered bool :indices (array int)})
+     (r : {:mask (array int) :ordered bool :indices (array int)})]
+    (if (equal? operation "replace") r
+      (let* [mask (exact (case operation
+                    "union" (map (fn [(a : int) (b : int)] (int/or a b)) l.mask r.mask)
+                    "intersection" (map (fn [(a : int) (b : int)] (int/and a b)) l.mask r.mask)
+                    "subtract" (map (fn [(a : int) (b : int)] (int/and a (int/sub 1 b))) l.mask r.mask)
+                    :else (map (fn [(a : int) (b : int)] (int/xor a b)) l.mask r.mask)))]
+        (cond
+          (equal? operation "subtract")
+            (if l.ordered {:mask mask :ordered true :indices (group_value_keep l.indices mask)}
+              {:mask mask :ordered false :indices (array/int 0)})
+          (equal? operation "intersection")
+            (if (or l.ordered r.ordered)
+              {:mask mask :ordered true
+               :indices (group_value_keep (group_value_preferred (if l.ordered l r)) mask)}
+              {:mask mask :ordered false :indices (array/int 0)})
+          :else
+            (if (or l.ordered r.ordered)
+              {:mask mask :ordered true
+               :indices (array/concat (group_value_keep (group_value_preferred l) mask)
+                 (group_value_keep (group_value_preferred r)
+                   (map (fn [(m : int) (lm : int)] (int/and m (int/sub 1 lm))) mask l.mask)))}
+              {:mask mask :ordered false :indices (array/int 0)})))))
+  ; Publish a generated mask under a name, merging with an existing group of that
+  ; owner and name (publish_merged_selection). A missing group takes the mask, or an
+  ; empty one for intersection and subtract.
+  (defn group_exists :context sop [(geo : geometry) (owner : text) (name : text)]
+    (fold [found false] [probe (array/text 1 name)]
+      (int/gt (array/count (sop/group_names geo (text/glob_literal probe) :owner owner)) 0)))
+  (defn group_publish :context sop
+    [(geo : geometry) (owner : text) (name : text) (merge : text) (generated : (array int))]
+    (let* [mine {:mask generated :ordered false :indices (array/int 0)}
+           existing (group_exists geo owner name)
+           current (if existing
+                     (let* [order (sop/group_order geo :name name :owner owner)]
+                       {:mask (sop/group geo :name name :owner owner)
+                        :ordered order.ordered :indices order.indices})
+                     mine)
+           result (if existing (group_value_apply merge current mine)
+                    (if (or (equal? merge "intersection") (equal? merge "subtract"))
+                      {:mask (exact (map (fn [(a : int)] 0) generated)) :ordered false :indices (array/int 0)}
+                      mine))]
+      (if (equal? owner "edge")
+        (sop/with_group geo (exact result.mask) :name name :owner owner)
+        (sop/with_group geo (exact result.mask) :name name :owner owner
+          :order {:ordered result.ordered :indices (exact result.indices)})))))
