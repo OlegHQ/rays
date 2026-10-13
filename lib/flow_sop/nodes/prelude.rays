@@ -443,4 +443,43 @@
             (if healed
               (sop/delete_attr (sop/delete_attr remapped "N" :owner "point") "N" :owner "vertex")
               remapped)))))
+
+  ; Axis frame of the pole-oriented generators (platonic, tube, torus): radial, pole and tangent,
+  ; rotated by the rotation order (Plane_generators.normalize_plane_axis rescales before the length).
+  (defn gen_normalize :context value [(value : vec3)]
+    (let* [scale (max (abs value.x) (max (abs value.y) (abs value.z)))
+           x (/ value.x scale) y (/ value.y scale) z (/ value.z scale)
+           length (sqrt (fma z z (fma y y (* x x))))]
+      [(/ x length) (/ y length) (/ z length)]))
+  (defn gen_custom_frame :context value [(axis : vec3)]
+    (let* [pole (gen_normalize axis)
+           ax (abs pole.x) ay (abs pole.y) az (abs pole.z)
+           reference (cond (and (<= ax ay) (<= ax az)) [1.0 0.0 0.0] (<= ay az) [0.0 1.0 0.0] :else [0.0 0.0 1.0])
+           projection (fma reference.z pole.z (fma reference.x pole.x (* reference.y pole.y)))
+           radial (gen_normalize [(fma (* -1.0 projection) pole.x reference.x)
+                                  (fma (* -1.0 projection) pole.y reference.y)
+                                  (fma (* -1.0 projection) pole.z reference.z)])]
+      {:r radial :p pole
+       :t (gen_normalize (vec3_cross radial pole))}))
+  (defn gen_frame :context value [(orientation : text) (axis : vec3) (rotation : vec3) (order : text)]
+    (let* [
+           frame0 (cond (equal? orientation "X axis") {:r [0.0 1.0 0.0] :p [1.0 0.0 0.0] :t [0.0 0.0 -1.0]}
+                        (equal? orientation "Y axis") {:r [1.0 0.0 0.0] :p [0.0 1.0 0.0] :t [0.0 0.0 1.0]}
+                        (equal? orientation "Z axis") {:r [1.0 0.0 0.0] :p [0.0 0.0 1.0] :t [0.0 -1.0 0.0]}
+                        :else (gen_custom_frame axis))
+           rotation_zero (and (= rotation.x 0.0) (and (= rotation.y 0.0) (= rotation.z 0.0)))
+           mx (mat4_rotation_x rotation.x) my (mat4_rotation_y rotation.y) mz (mat4_rotation_z rotation.z)
+           matrix (case order
+             "XYZ" (mat4_mul mz (mat4_mul my mx))
+             "XZY" (mat4_mul my (mat4_mul mz mx))
+             "YXZ" (mat4_mul mz (mat4_mul mx my))
+             "YZX" (mat4_mul mx (mat4_mul mz my))
+             "ZXY" (mat4_mul my (mat4_mul mx mz))
+             :else (mat4_mul mx (mat4_mul my mz)))
+           direction (fn [(v : vec3)]
+             (if rotation_zero v
+               [(+ (fma matrix.r0.x v.x (* matrix.r0.y v.y)) (* matrix.r0.z v.z))
+                (+ (fma matrix.r1.x v.x (* matrix.r1.y v.y)) (* matrix.r1.z v.z))
+                (+ (fma matrix.r2.x v.x (* matrix.r2.y v.y)) (* matrix.r2.z v.z))]))]
+      {:r (direction frame0.r) :p (direction frame0.p) :t (direction frame0.t)}))
 )

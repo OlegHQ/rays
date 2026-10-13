@@ -1,0 +1,307 @@
+; Whole Tube draft. Ring points are numbered row by row (a tip row has one point), optional cap-copy points
+; follow. Every vertex is a packed (row, wrapped column) pair, so one function per connectivity names the
+; point, the normal and the UV of each vertex; end caps are separate polygons after the side primitives.
+(defn tube_error :context value [(reason : text)]
+  (error "invalid_parameter" "tube could not produce valid geometry"
+    :cause (str "tube [invalid_parameter]: Rdk.Parametric_generators.tube: " reason)))
+(defn tube_cmul :context value [(left : int) (right : int) (limit : int)]
+  (cond (or (int/lt left 0) (int/lt right 0)) -1
+        (int/eq left 0) 0
+        (int/le right (int/div limit left)) (int/mul left right)
+        :else -1))
+(defn tube_cadd :context value [(left : int) (right : int) (limit : int)]
+  (cond (or (int/lt left 0) (int/lt right 0)) -1
+        (int/le right (int/sub limit left)) (int/add left right)
+        :else -1))
+; The native construction check of output cardinality; true when every count fits.
+(defn tube_fits :context value
+  [(connectivity : text) (end_caps : bool) (consolidate : bool) (tips : int) (rows : int) (columns : int)]
+  (let* [limit (array/max_length :type int)
+         primitive_limit (int/sub limit 1)
+         lattice (tube_cmul rows columns limit)
+         caps (if end_caps (int/sub 2 tips) 0)
+         ring_points (int/sub lattice (int/mul tips (int/sub columns 1)))
+         cap_points (tube_cmul caps columns limit)
+         points_ok (int/ge (tube_cadd ring_points (if consolidate 0 cap_points) limit) 0)
+         ring_curves (int/sub rows tips)
+         cells (tube_cmul (int/sub (int/sub rows 1) tips) columns primitive_limit)
+         per_primitive (if (equal? connectivity "Quads") 1 2)
+         per_vertex (if (equal? connectivity "Quads") 4 6)
+         tip_primitives (tube_cmul tips columns primitive_limit)
+         primitives (tube_cadd (tube_cmul cells per_primitive primitive_limit) tip_primitives primitive_limit)
+         vertices (tube_cadd (tube_cmul cells per_vertex limit)
+                    (tube_cmul (tube_cmul tips columns limit) 3 limit) limit)]
+    (and (int/ge lattice 0) (and points_ok
+      (cond (equal? connectivity "Points") true
+            (equal? connectivity "Rows") (int/le columns primitive_limit)
+            (equal? connectivity "Columns")
+              (and (int/ge (tube_cmul ring_curves columns limit) 0) (int/le ring_curves primitive_limit))
+            (equal? connectivity "Rows and columns")
+              (and (int/ge (tube_cadd lattice (tube_cmul ring_curves columns limit) limit) 0)
+                   (int/ge (tube_cadd columns ring_curves primitive_limit) 0))
+            :else (and (int/ge cells 0) (and (int/ge primitives 0) (and (int/ge vertices 0)
+                    (and (int/ge (tube_cadd primitives caps primitive_limit) 0)
+                         (int/ge (tube_cadd vertices cap_points limit) 0))))))))))
+(defn tube_group :context sop [(geo : geometry) (first : int) (name : text)]
+  (sop/with_group geo
+    (exact (map (fn [(i : int)] (if (int/ge i first) 1 0)) (array/range (sop/count geo :primitives) :type int)))
+    :owner "primitive" :name name))
+(defnode sop/tube :label "Tube" :category ["Create" "Primitive"]
+  :validate (let* [top (float/mul_checked top_radius radius_scale) bottom (float/mul_checked bottom_radius radius_scale)]
+              (and (and top.valid bottom.valid)
+                (and (and (>= top_radius 0.0) (>= bottom_radius 0.0))
+                  (and (> radius_scale 0.0) (and (or (> top.value 0.0) (> bottom.value 0.0)) (> height 0.0))))))
+  :code "E_PARAM" :message "sop/tube: radii must be nonnegative with at least one positive scaled radius and height positive"
+  [(connectivity : text "Triangles" :label "Connectivity"
+     :choices ["Triangles" "Alternating triangles" "Quads" "Rows" "Columns" "Rows and columns" "Points"])
+   (normals_mode : text "Explicit" :label "Normals mode" :choices ["Explicit" "Auto"])
+   (normals : text "Point" :label "Normals" :choices ["None" "Point" "Vertex"]
+     :validate (not (and (equal? connectivity "Points") (and (equal? normals_mode "Explicit") (equal? normals "Vertex"))))
+     :code "E_PARAM" :message "sop/tube: point output cannot carry vertex normals")
+   (orientation : text "Y axis" :label "Primary axis" :choices ["X axis" "Y axis" "Z axis" "Custom axis"]
+     :validate (not (and (equal? orientation "Custom axis") (and (= axis_x 0.0) (and (= axis_y 0.0) (= axis_z 0.0)))))
+     :code "E_PARAM" :message "sop/tube: custom axis must be nonzero")
+   (axis_x : float 0.0 :label "Axis X" :folder ["Transform" "Axis"] :min -1 :max 1 :vec3 ["axis" 0])
+   (axis_y : float 1.0 :label "Axis Y" :folder ["Transform" "Axis"] :min -1 :max 1 :vec3 ["axis" 1])
+   (axis_z : float 0.0 :label "Axis Z" :folder ["Transform" "Axis"] :min -1 :max 1 :vec3 ["axis" 2])
+   (rotation_order : text "XYZ" :label "Rotation order" :folder ["Transform" "Rotate"]
+     :choices ["XYZ" "XZY" "YXZ" "YZX" "ZXY" "ZYX"])
+   (top_radius : float 1.0 :label "Top radius" :folder ["Size"] :min 0 :max 10 :hard_min 0 :primary true)
+   (bottom_radius : float 1.0 :label "Bottom radius" :folder ["Size"] :min 0 :max 10 :hard_min 0 :primary true)
+   (height : float 2.0 :label "Height" :folder ["Size"] :min 0.01 :max 10 :hard_min 0 :primary true)
+   (radius_scale : float 1.0 :label "Radius scale" :folder ["Size"] :min 0.01 :max 10 :hard_min 0)
+   (end_caps : bool true :label "End caps" :folder ["Caps"]
+     :validate (or (not end_caps) (not (or (equal? connectivity "Rows") (or (equal? connectivity "Columns")
+                 (or (equal? connectivity "Rows and columns") (equal? connectivity "Points"))))))
+     :code "E_PARAM" :message "sop/tube: caps require polygon connectivity")
+   (consolidate_cap_points : bool false :label "Consolidate cap points" :folder ["Caps"])
+   (center_x : float 0.0 :label "Center X" :folder ["Transform" "Center"] :min -10 :max 10 :vec3 ["center" 0])
+   (center_y : float 0.0 :label "Center Y" :folder ["Transform" "Center"] :min -10 :max 10 :vec3 ["center" 1])
+   (center_z : float 0.0 :label "Center Z" :folder ["Transform" "Center"] :min -10 :max 10 :vec3 ["center" 2])
+   (rotation_x : float 0.0 :label "Rotate X" :folder ["Transform" "Rotate"] :min -3.14159 :max 3.14159 :vec3 ["rotation" 0])
+   (rotation_y : float 0.0 :label "Rotate Y" :folder ["Transform" "Rotate"] :min -3.14159 :max 3.14159 :vec3 ["rotation" 1])
+   (rotation_z : float 0.0 :label "Rotate Z" :folder ["Transform" "Rotate"] :min -3.14159 :max 3.14159 :vec3 ["rotation" 2])
+   (rows : int 2 :label "Rows" :folder ["Resolution"] :min 2 :max 128 :hard_min 2)
+   (columns : int 32 :label "Columns" :folder ["Resolution"] :min 3 :max 256 :hard_min 3
+     :validate (let* [top (float/mul_checked top_radius radius_scale) bottom (float/mul_checked bottom_radius radius_scale)
+                      tips (int/add (if (= top.value 0.0) 1 0) (if (= bottom.value 0.0) 1 0))]
+                 (or (not (and top.valid bottom.valid))
+                     (tube_fits connectivity end_caps consolidate_cap_points tips rows columns)))
+     :code "E_PARAM" :message "sop/tube: output cardinality exceeds OCaml array limits")
+   (uv_attribute : text "uv" :label "UV attribute" :folder ["Attributes"]
+     :validate (not (or (equal? (text/trim uv_attribute) "P") (equal? (text/trim uv_attribute) "N")))
+     :code "E_PARAM" :message "sop/tube: UV attribute cannot be P or N")
+   (cap_group : text "caps" :label "Cap group" :folder ["Attributes"]
+     :validate (or end_caps (text/blank? cap_group))
+     :code "E_PARAM" :message "sop/tube: cap group requires end caps")]
+  (let* [pi_value 3.141592653589793
+         fmax 1.7976931348623157e308
+         normal_mode (if (equal? normals_mode "Auto") "Point" normals)
+         uv_name (text/trim uv_attribute)
+         has_uv (not (text/blank? uv_name))
+         group_name (text/trim cap_group)
+         points_mode (equal? connectivity "Points")
+         rows_mode (equal? connectivity "Rows")
+         columns_mode (equal? connectivity "Columns")
+         both_mode (equal? connectivity "Rows and columns")
+         quads (equal? connectivity "Quads")
+         triangle_mode (not (or quads (or points_mode (or rows_mode (or columns_mode both_mode)))))
+         polygon (or triangle_mode quads)
+         alternating (equal? connectivity "Alternating triangles")
+         top_scaled (* top_radius radius_scale) bottom_scaled (* bottom_radius radius_scale)
+         bottom_tip (= bottom_scaled 0.0) top_tip (= top_scaled 0.0)
+         tips (int/add (if bottom_tip 1 0) (if top_tip 1 0))
+         cap_count (if end_caps (int/add (if bottom_tip 0 1) (if top_tip 0 1)) 0)
+         bands (int/sub rows 1)
+         ring_points (int/sub (int/mul rows columns) (int/mul tips (int/sub columns 1)))
+         duplicates (and end_caps (not consolidate_cap_points))
+         point_count (int/add ring_points (if duplicates (int/mul cap_count columns) 0))
+         bottom_cap_base (if (and duplicates (not bottom_tip)) ring_points -1)
+         top_cap_base (if (and duplicates (not top_tip)) (int/add ring_points (if (int/ge bottom_cap_base 0) columns 0)) -1)
+         first_ring (if bottom_tip 1 columns)
+         ring_offset (fn [(r : int)] (if (int/eq r 0) 0 (int/add first_ring (int/mul (int/sub r 1) columns))))
+         is_tip (fn [(r : int)] (or (and (int/eq r 0) bottom_tip) (and (int/eq r bands) top_tip)))
+         point_of (fn [(row : int) (col : int)]
+           (int/add (ring_offset row) (if (is_tip row) 0 (if (int/eq col columns) 0 col))))
+         wide (int/add columns 1)
+         sines (exact (map (fn [(c : int)] (sin (/ (* (* 2.0 pi_value) (float c)) (float columns)))) (array/range columns :type int)))
+         cosines (exact (map (fn [(c : int)] (cos (/ (* (* 2.0 pi_value) (float c)) (float columns)))) (array/range columns :type int)))
+         v_param (exact (map (fn [(r : int)] (/ (float r) (float bands))) (array/range rows :type int)))
+         row_radius (exact (map (fn [(r : int) (frac : float)]
+           (cond (int/eq r 0) bottom_scaled (int/eq r bands) top_scaled
+                 :else (fma bottom_scaled (- 1.0 frac) (* top_scaled frac)))) (array/range rows :type int) v_param))
+         row_height (exact (map (fn [(frac : float)] (* height (- frac 0.5))) v_param))
+         normal_scale (max height (abs (- bottom_scaled top_scaled)))
+         scaled_radial (/ height normal_scale) scaled_axial (/ (- bottom_scaled top_scaled) normal_scale)
+         normal_length (sqrt (fma scaled_radial scaled_radial (* scaled_axial scaled_axial)))
+         side_radial (/ scaled_radial normal_length) side_axial (/ scaled_axial normal_length)
+         frame (gen_frame orientation [axis_x axis_y axis_z] [rotation_x rotation_y rotation_z] rotation_order)
+         comb (fn [(v : vec3)]
+           [(fma frame.t.x v.z (fma frame.p.x v.y (* frame.r.x v.x)))
+            (fma frame.t.y v.z (fma frame.p.y v.y (* frame.r.y v.x)))
+            (fma frame.t.z v.z (fma frame.p.z v.y (* frame.r.z v.x)))])
+         ; Point -> (row, column) and cap sign (0 ring point, -1 bottom cap copy, 1 top cap copy).
+         points (array/range point_count :type int)
+         point_row (exact (map (fn [(p : int)]
+           (cond (int/lt p ring_points)
+                   (if (int/lt p first_ring) 0 (int/add 1 (int/div (int/sub p first_ring) columns)))
+                 (and (int/ge bottom_cap_base 0) (int/lt p (int/add ring_points columns))) 0
+                 :else bands)) points))
+         point_col (exact (map (fn [(p : int)]
+           (cond (int/lt p ring_points)
+                   (if (int/lt p first_ring) p (int/mod (int/sub p first_ring) columns))
+                 :else (int/mod (int/sub p ring_points) columns))) points))
+         point_sign (exact (map (fn [(p : int)]
+           (cond (int/lt p ring_points) 0
+                 (and (int/ge bottom_cap_base 0) (int/lt p (int/add ring_points columns))) -1
+                 :else 1)) points))
+         local (fn [(row : int) (col : int)]
+           [(* (array/nth row_radius row) (array/nth cosines col)) (array/nth row_height row)
+            (* (array/nth row_radius row) (array/nth sines col))])
+         ; A coordinate sum can only overflow near the largest representable magnitudes.
+         safe (< (+ (* 0.25 (max (abs center_x) (max (abs center_y) (abs center_z))))
+                    (+ (* 0.5 (max top_scaled bottom_scaled)) (* 0.25 height))) 1e307)
+         invalid (if safe (array/int 0)
+           (array/compact (map (fn [(row : int) (col : int)]
+             (let* [l (local row col)
+                    x1 (float/fma_checked frame.r.x l.x center_x) x2 (float/fma_checked frame.p.x l.y x1.value)
+                    x3 (float/fma_checked frame.t.x l.z x2.value)
+                    y1 (float/fma_checked frame.r.y l.x center_y) y2 (float/fma_checked frame.p.y l.y y1.value)
+                    y3 (float/fma_checked frame.t.y l.z y2.value)
+                    z1 (float/fma_checked frame.r.z l.x center_z) z2 (float/fma_checked frame.p.z l.y z1.value)
+                    z3 (float/fma_checked frame.t.z l.z z2.value)]
+               (if (and (and x1.valid (and x2.valid x3.valid)) (and (and y1.valid (and y2.valid y3.valid))
+                     (and z1.valid (and z2.valid z3.valid)))) 0 1))) point_row point_col)))]
+    (if (int/gt (array/count invalid) 0)
+      (tube_error (str "generated point " (array/nth invalid 0) " is not finite"))
+      (let* [positions (exact (map (fn [(row : int) (col : int)]
+               (let* [l (local row col)]
+                 [(fma frame.t.x l.z (fma frame.p.x l.y (fma frame.r.x l.x center_x)))
+                  (fma frame.t.y l.z (fma frame.p.y l.y (fma frame.r.y l.x center_y)))
+                  (fma frame.t.z l.z (fma frame.p.z l.y (fma frame.r.z l.x center_z)))])) point_row point_col))
+             ; ---- side vertices: one packed (row, wrapped column) per vertex ----
+             ordinary_size (if triangle_mode (int/mul 6 columns) (int/mul 4 columns))
+             tip_size (int/mul 3 columns)
+             lead (if bottom_tip tip_size 0)
+             ordinary_bands (int/sub bands tips)
+             ordinary_total (int/mul ordinary_bands ordinary_size)
+             polygon_vertices (int/add ordinary_total (int/mul tips tip_size))
+             side_vertex_count (cond points_mode 0
+                                     rows_mode (int/mul columns rows)
+                                     columns_mode (int/mul (int/sub rows tips) columns)
+                                     both_mode (int/add (int/mul columns rows) (int/mul (int/sub rows tips) columns))
+                                     :else polygon_vertices)
+             side_vertices (array/range side_vertex_count :type int)
+             lead_bit (if bottom_tip 1 0)
+             packed (exact (map (fn [(v : int)]
+               (cond
+                 rows_mode (int/add (int/mul (int/mod v rows) wide) (int/div v rows))
+                 columns_mode (int/add (int/mul (int/add (int/div v columns) lead_bit) wide) (int/mod v columns))
+                 both_mode
+                   (if (int/lt v (int/mul columns rows))
+                     (int/add (int/mul (int/mod v rows) wide) (int/div v rows))
+                     (let* [w (int/sub v (int/mul columns rows))]
+                       (int/add (int/mul (int/add (int/div w columns) lead_bit) wide) (int/mod w columns))))
+                 :else
+                   (let* [in_lead (int/lt v lead)
+                          w (int/sub v lead)
+                          in_top (and (not in_lead) (int/ge w ordinary_total))
+                          band (cond in_lead 0 in_top (int/sub bands 1) :else (int/add lead_bit (int/div w ordinary_size)))
+                          offset (cond in_lead v in_top (int/sub w ordinary_total) :else (int/mod w ordinary_size))
+                          tip_band (or in_lead in_top)
+                          cell (cond tip_band (int/div offset 3) triangle_mode (int/div offset 6) :else (int/div offset 4))
+                          slot (cond tip_band (int/mod offset 3) triangle_mode (int/mod offset 6) :else (int/mod offset 4))
+                          flip (and alternating (int/eq (int/and (int/add band cell) 1) 1))
+                          row_mask (cond in_lead 6 in_top 2 triangle_mode (if flip 26 22) :else 6)
+                          col_mask (cond tip_band 4 triangle_mode 52 :else 12)]
+                     (int/add (int/mul (int/add band (int/and (int/shr row_mask slot) 1)) wide)
+                              (int/add cell (int/and (int/shr col_mask slot) 1))))))
+               side_vertices))
+             vertex_row (exact (map (fn [(k : int)] (int/div k wide)) packed))
+             vertex_col (exact (map (fn [(k : int)] (int/mod k wide)) packed))
+             side_points (exact (map (fn [(row : int) (col : int)] (point_of row col)) vertex_row vertex_col))
+             ; ---- caps ----
+             cap_vertex_count (int/mul cap_count columns)
+             cap_vertices (array/range cap_vertex_count :type int)
+             cap_bottom (fn [(local_index : int)] (and (not bottom_tip) (int/eq (int/div local_index columns) 0)))
+             cap_column (fn [(local_index : int)]
+               (let* [index (int/mod local_index columns)]
+                 (if (cap_bottom local_index) index (int/sub (int/sub columns 1) index))))
+             cap_points (exact (map (fn [(local_index : int)]
+               (let* [column (cap_column local_index)]
+                 (if (cap_bottom local_index)
+                   (int/add (if (int/ge bottom_cap_base 0) bottom_cap_base (ring_offset 0)) column)
+                   (int/add (if (int/ge top_cap_base 0) top_cap_base (ring_offset bands)) column)))) cap_vertices))
+             vertex_points (array/concat side_points cap_points)
+             side_primitives (cond points_mode 0
+                                   rows_mode columns
+                                   columns_mode (int/sub rows tips)
+                                   both_mode (int/add columns (int/sub rows tips))
+                                   triangle_mode (int/add (int/mul (int/mul ordinary_bands columns) 2) (int/mul tips columns))
+                                   :else (int/mul bands columns))
+             primitive_count (int/add side_primitives cap_count)
+             polygon_offset (fn [(i : int)]
+               (cond triangle_mode (int/mul 3 i)
+                     bottom_tip (if (int/lt i columns) (int/mul 3 i) (int/add (int/mul 3 columns) (int/mul 4 (int/sub i columns))))
+                     :else (let* [full (int/mul ordinary_bands columns)]
+                       (if (int/le i full) (int/mul 4 i) (int/add (int/mul 4 full) (int/mul 3 (int/sub i full)))))))
+             offsets (exact (map (fn [(i : int)]
+               (cond (int/gt i side_primitives)
+                       (int/add side_vertex_count (int/mul (int/sub i side_primitives) columns))
+                     rows_mode (int/mul i rows)
+                     columns_mode (int/mul i columns)
+                     both_mode (if (int/le i columns) (int/mul i rows) (int/add (int/mul columns rows) (int/mul (int/sub i columns) columns)))
+                     :else (polygon_offset i)))
+               (array/range (int/add primitive_count 1) :type int)))
+             kinds (exact (map (fn [(i : int)]
+               (cond (int/ge i side_primitives) 0
+                     rows_mode 1 columns_mode 2
+                     both_mode (if (int/lt i columns) 1 2)
+                     :else 0)) (array/range primitive_count :type int)))
+             base (if points_mode
+               (sop/mesh :points positions :vertex_points (array/int 0) :primitive_offsets (array/int 1) :kinds (array/int 0))
+               (sop/mesh :points positions :vertex_points vertex_points :primitive_offsets offsets :kinds kinds))
+             ; ---- attributes ----
+             with_point_normals (if (equal? normal_mode "Point")
+               (sop/with_attr base "N"
+                 (exact (map (fn [(row : int) (col : int) (sign : int)]
+                   (cond (not (int/eq sign 0)) (let* [s (float sign)] [(* s frame.p.x) (* s frame.p.y) (* s frame.p.z)])
+                         (and (int/eq row 0) bottom_tip) [(* -1.0 frame.p.x) (* -1.0 frame.p.y) (* -1.0 frame.p.z)]
+                         (and (int/eq row bands) top_tip) [frame.p.x frame.p.y frame.p.z]
+                         :else (comb [(* side_radial (array/nth cosines col)) side_axial (* side_radial (array/nth sines col))])))
+                   point_row point_col point_sign))
+                 :owner "point" :type vec3)
+               base)
+             with_vertex_normals (if (equal? normal_mode "Vertex")
+               (sop/with_attr with_point_normals "N"
+                 (array/concat
+                   (exact (map (fn [(col : int)]
+                     (let* [wrapped (if (int/eq col columns) 0 col)]
+                       (comb [(* side_radial (array/nth cosines wrapped)) side_axial (* side_radial (array/nth sines wrapped))])))
+                     vertex_col))
+                   (exact (map (fn [(local_index : int)]
+                     (let* [s (if (cap_bottom local_index) -1.0 1.0)] [(* s frame.p.x) (* s frame.p.y) (* s frame.p.z)]))
+                     cap_vertices)))
+                 :owner "vertex" :type vec3)
+               with_point_normals)
+             with_uv (cond
+               (not has_uv) with_vertex_normals
+               points_mode
+                 (sop/with_attr with_vertex_normals uv_name
+                   (exact (map (fn [(row : int) (col : int)]
+                     [(if (is_tip row) 0.5 (/ (float col) (float columns))) (array/nth v_param row)])
+                     point_row point_col))
+                   :owner "point" :type vec2)
+               :else
+                 (sop/with_attr with_vertex_normals uv_name
+                   (array/concat
+                     (exact (map (fn [(row : int) (col : int)]
+                       [(if (int/eq col columns) 1.0 (/ (float col) (float columns))) (array/nth v_param row)])
+                       vertex_row vertex_col))
+                     (exact (map (fn [(local_index : int)]
+                       (let* [column (cap_column local_index)]
+                         [(fma 0.5 (array/nth cosines column) 0.5) (fma 0.5 (array/nth sines column) 0.5)]))
+                       cap_vertices)))
+                   :owner "vertex" :type vec2))]
+        (if (text/blank? group_name) with_uv
+          (tube_group with_uv side_primitives group_name))))))

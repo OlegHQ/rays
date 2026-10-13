@@ -1,0 +1,227 @@
+; Whole Bound draft. The selected points give a bounding box; the shape is a divided box (six grids
+; of triangles built here) or a UV sphere (sop/uv_sphere) scaled and moved by sop/transform.
+(defn bound_error :context value [(reason : text)]
+  (error "invalid_geometry" "bound could not produce valid geometry"
+    :cause (str "bound [invalid_geometry]: Rdk.Bound.bound: " reason)))
+(defn bound_finite :context value [(value : vec3)]
+  (and (<= (abs value.x) 1.7976931348623157e308)
+    (and (<= (abs value.y) 1.7976931348623157e308) (<= (abs value.z) 1.7976931348623157e308))))
+; Checked product: -1 is the native "too large" option.
+(defn bound_cmul :context value [(left : int) (right : int) (limit : int)]
+  (cond (or (int/lt left 0) (int/lt right 0)) -1
+        (int/eq left 0) 0
+        (int/le right (int/div limit left)) (int/mul left right)
+        :else -1))
+; Checked sum: the value is 0 and ok false when the native sum would overflow.
+(defn bound_sum :context value [(a : float) (b : float)]
+  (let* [r (float/fma_checked a 1.0 b)] {:value (if r.valid r.value 0.0) :ok r.valid}))
+; Points selected through a group of the given owner, or all points when no group is named.
+(defn bound_selection :context sop [(geo : geometry) (kind : text) (name : text)]
+  (let* [points (sop/count geo :points)]
+    (cond
+      (text/blank? name) (array/int points 1)
+      (equal? kind "point") (sop/group geo :name name :owner "point")
+      (equal? kind "vertex")
+        (let* [topology (sop/topology geo)
+               counts (array/scatter_add topology.vertex_points
+                        (sop/group geo :name name :owner "vertex") points)]
+          (exact (map (fn [(c : int)] (if (int/gt c 0) 1 0)) counts)))
+      (equal? kind "primitive")
+        (let* [adjacency (sop/adjacency geo)
+               primitives (sop/group geo :name name :owner "primitive")
+               topology (sop/topology geo)
+               vertices (exact (map (fn [(p : int)] (array/nth primitives p)) adjacency.primitive_of_vertex))
+               counts (array/scatter_add topology.vertex_points vertices points)]
+          (exact (map (fn [(c : int)] (if (int/gt c 0) 1 0)) counts)))
+      :else
+        (let* [edges (sop/edges geo)
+               marks (sop/group geo :name name :owner "edge")
+               low (array/scatter_add edges.a marks points)
+               high (array/scatter_add edges.b marks points)]
+          (exact (map (fn [(a : int) (b : int)] (if (int/gt (int/add a b) 0) 1 0)) low high))))))
+; One face of the divided box: (u + 1) * (v + 1) points, u major, fused like the native loops.
+(defn bound_face_planes :context value [(ud : int) (vd : int) (o : vec3) (us : vec3) (vs : vec3)]
+  (let* [width (int/add vd 1)]
+    (exact (map (fn [(k : int)]
+      (let* [fu (/ (float (int/div k width)) (float ud))
+             fv (/ (float (int/mod k width)) (float vd))]
+        [(fma fv vs.x (fma fu us.x o.x)) (fma fv vs.y (fma fu us.y o.y)) (fma fv vs.z (fma fu us.z o.z))]))
+      (array/range (int/mul (int/add ud 1) width) :type int)))))
+; Two triangles per cell: a b c, a c d.
+(defn bound_face_vertices :context value [(ud : int) (vd : int) (base : int)]
+  (let* [width (int/add vd 1)]
+    (exact (map (fn [(v : int)]
+      (let* [cell (int/div v 6) slot (int/mod v 6)
+             a (int/add base (int/add (int/mul (int/div cell vd) width) (int/mod cell vd)))]
+        (cond (or (int/eq slot 0) (int/eq slot 3)) a
+              (int/eq slot 1) (int/add a width)
+              (or (int/eq slot 2) (int/eq slot 4)) (int/add a (int/add width 1))
+              :else (int/add a 1))))
+      (array/range (int/mul 6 (int/mul ud vd)) :type int)))))
+; Divided box: faces +x, -x, +y, -y, +z, -z; face f has (u, v) divisions, an origin and two spans.
+(defn bound_box :context sop
+  [(lo : vec3) (hi : vec3) (dx : int) (dy : int) (dz : int)]
+  (let* [limit (array/max_length :type int)
+         plimit (int/div (int/sub limit 1) 3)
+         size [(- hi.x lo.x) (- hi.y lo.y) (- hi.z lo.z)]
+         udiv (fn [(f : int)] (cond (int/lt f 1) dy (int/lt f 2) dz (int/lt f 3) dz (int/lt f 4) dx (int/lt f 5) dx :else dy))
+         vdiv (fn [(f : int)] (cond (int/lt f 1) dz (int/lt f 2) dy (int/lt f 3) dx (int/lt f 4) dz (int/lt f 5) dy :else dx))
+         fpoints (fn [(f : int)]
+           (let* [u (udiv f) v (vdiv f)]
+             (if (or (int/ge u limit) (or (int/ge v limit) (int/gt (int/add u 1) (int/div limit (int/add v 1)))))
+               -1 (int/mul (int/add u 1) (int/add v 1)))))
+         fcells (fn [(f : int)]
+           (let* [u (udiv f) v (vdiv f)]
+             (if (or (int/gt u (int/div plimit 2)) (int/gt v (int/div plimit (int/mul 2 u)))) -1
+               (int/mul u v))))
+         p0 (fpoints 0) p1 (fpoints 1) p2 (fpoints 2) p3 (fpoints 3) p4 (fpoints 4) p5 (fpoints 5)
+         c0 (fcells 0) c1 (fcells 1) c2 (fcells 2) c3 (fcells 3) c4 (fcells 4) c5 (fcells 5)
+         ; Native accumulates left to right and stops being valid at the first overflow.
+         po1 p0 po2 (int/add p0 p1) po3 (int/add po2 p2) po4 (int/add po3 p3) po5 (int/add po4 p4)
+         point_count (int/add po5 p5)
+         co1 c0 co2 (int/add c0 c1) co3 (int/add co2 c2) co4 (int/add co3 c3) co5 (int/add co4 c4)
+         cell_count (int/add co5 c5)
+         ok (and (and (and (int/ge p0 0) (and (int/ge p1 0) (and (int/ge p2 0) (and (int/ge p3 0) (and (int/ge p4 0) (int/ge p5 0))))))
+               (and (int/ge c0 0) (and (int/ge c1 0) (and (int/ge c2 0) (and (int/ge c3 0) (and (int/ge c4 0) (int/ge c5 0)))))))
+              (and (and (and (and (and (int/le p0 limit) (int/le p1 (int/sub limit p0))) (int/le p2 (int/sub limit po2)))
+                    (and (int/le p3 (int/sub limit po3)) (int/le p4 (int/sub limit po4))))
+                  (int/le p5 (int/sub limit po5)))
+                (and (and (and (int/le (int/mul 2 c0) plimit) (int/le (int/mul 2 c1) (int/sub plimit (int/mul 2 co1))))
+                    (and (int/le (int/mul 2 c2) (int/sub plimit (int/mul 2 co2))) (int/le (int/mul 2 c3) (int/sub plimit (int/mul 2 co3)))))
+                  (and (int/le (int/mul 2 c4) (int/sub plimit (int/mul 2 co4))) (int/le (int/mul 2 c5) (int/sub plimit (int/mul 2 co5)))))))]
+    (if (not ok) (bound_error "divided box output is too large")
+      (let* [positions
+               (array/concat (array/concat (array/concat (array/concat (array/concat
+                 (bound_face_planes dy dz [hi.x lo.y lo.z] [0.0 size.y 0.0] [0.0 0.0 size.z])
+                 (bound_face_planes dz dy lo [0.0 0.0 size.z] [0.0 size.y 0.0]))
+                 (bound_face_planes dz dx [lo.x hi.y lo.z] [0.0 0.0 size.z] [size.x 0.0 0.0]))
+                 (bound_face_planes dx dz lo [size.x 0.0 0.0] [0.0 0.0 size.z]))
+                 (bound_face_planes dx dy [lo.x lo.y hi.z] [size.x 0.0 0.0] [0.0 size.y 0.0]))
+                 (bound_face_planes dy dx lo [0.0 size.y 0.0] [size.x 0.0 0.0]))
+             normals
+               (array/concat (array/concat (array/concat (array/concat (array/concat
+                 (array/vec3 p0 [1.0 0.0 0.0]) (array/vec3 p1 [-1.0 0.0 0.0]))
+                 (array/vec3 p2 [0.0 1.0 0.0])) (array/vec3 p3 [0.0 -1.0 0.0]))
+                 (array/vec3 p4 [0.0 0.0 1.0])) (array/vec3 p5 [0.0 0.0 -1.0]))
+             vertex_points
+               (array/concat (array/concat (array/concat (array/concat (array/concat
+                 (bound_face_vertices dy dz 0) (bound_face_vertices dz dy po1))
+                 (bound_face_vertices dz dx po2)) (bound_face_vertices dx dz po3))
+                 (bound_face_vertices dx dy po4)) (bound_face_vertices dy dx po5))
+             primitive_count (int/mul 2 cell_count)
+             mesh (sop/mesh :points positions :vertex_points vertex_points
+                    :primitive_offsets (exact (map (fn [(i : int)] (int/mul i 3)) (array/range (int/add primitive_count 1) :type int)))
+                    :kinds (array/int primitive_count 0))]
+        (sop/with_attr mesh "N" normals :owner "point" :type vec3)))))
+(defnode sop/bound :label "Bound" :category ["Create" "Primitive"]
+  :validate (and (and (and (and (>= lower_x 0.0) (<= lower_x 1.7976931348623157e308)) (and (>= lower_y 0.0) (<= lower_y 1.7976931348623157e308)))
+                    (and (and (>= lower_z 0.0) (<= lower_z 1.7976931348623157e308)) (and (>= upper_x 0.0) (<= upper_x 1.7976931348623157e308))))
+                (and (and (and (>= upper_y 0.0) (<= upper_y 1.7976931348623157e308)) (and (>= upper_z 0.0) (<= upper_z 1.7976931348623157e308)))
+                  (and (>= minimum_radius 0.0) (<= minimum_radius 1.7976931348623157e308))))
+  :code "E_PARAM" :message "sop/bound: padding and minimum radius must be finite and non-negative"
+  [(in0 : geometry)
+   (group_owner : text "Point" :label "Group type" :choices ["Point" "Vertex" "Primitive" "Edge"])
+   (group : text "" :label "Group")
+   (shape : text "Box" :label "Shape" :choices ["Box" "Sphere"])
+   (divisions_x : int 1 :label "X divisions" :folder ["Box"] :min 1 :max 64 :hard_min 1)
+   (divisions_y : int 1 :label "Y divisions" :folder ["Box"] :min 1 :max 64 :hard_min 1)
+   (divisions_z : int 1 :label "Z divisions" :folder ["Box"] :min 1 :max 64 :hard_min 1)
+   (segments : int 32 :label "Segments" :folder ["Sphere"] :min 3 :max 256 :hard_min 3)
+   (rings : int 16 :label "Rings" :folder ["Sphere"] :min 2 :max 256 :hard_min 2)
+   (minimum_radius : float 0.0 :label "Minimum radius" :folder ["Sphere"] :min 0 :max 10 :hard_min 0)
+   (lower_x : float 0.0 :label "Lower X" :folder ["Padding" "Lower"] :min -10 :max 10 :vec3 ["lower" 0])
+   (lower_y : float 0.0 :label "Lower Y" :folder ["Padding" "Lower"] :min -10 :max 10 :vec3 ["lower" 1])
+   (lower_z : float 0.0 :label "Lower Z" :folder ["Padding" "Lower"] :min -10 :max 10 :vec3 ["lower" 2])
+   (upper_x : float 0.0 :label "Upper X" :folder ["Padding" "Upper"] :min -10 :max 10 :vec3 ["upper" 0])
+   (upper_y : float 0.0 :label "Upper Y" :folder ["Padding" "Upper"] :min -10 :max 10 :vec3 ["upper" 1])
+   (upper_z : float 0.0 :label "Upper Z" :folder ["Padding" "Upper"] :min -10 :max 10 :vec3 ["upper" 2])
+   (bounds_group : text "" :label "Bounds group" :folder ["Output"])
+   (center_attribute : text "" :label "Center attribute" :folder ["Output"]
+     :validate (not (equal? (text/trim center_attribute) "P"))
+     :code "E_PARAM" :message "sop/bound: output attributes cannot be P")
+   (radii_attribute : text "" :label "Radii attribute" :folder ["Output"]
+     :validate (and (not (equal? (text/trim radii_attribute) "P"))
+                 (not (and (not (text/blank? radii_attribute))
+                        (equal? (text/trim radii_attribute) (text/trim center_attribute)))))
+     :code "E_PARAM" :message "sop/bound: output attributes cannot be P and must be distinct")]
+  (let* [kind (case group_owner "Vertex" "vertex" "Primitive" "primitive" "Edge" "edge" :else "point")
+         group_name (text/trim group)
+         fmax 1.7976931348623157e308]
+    (cond
+      (if (text/blank? group_name) false (not (group_exists in0 kind group_name)))
+        (error "missing_group" (str "bound could not find " kind " group " (text/repr group_name)))
+      :else
+        (let* [positions (sop/attr in0 :P)
+               selected (bound_selection in0 kind group_name)
+               bad (array/compact (map (fn [(p : vec3) (s : int)]
+                       (if (and (int/eq s 1)
+                             (not (and (<= (abs p.x) fmax) (and (<= (abs p.y) fmax) (<= (abs p.z) fmax))))) 1 0))
+                     positions selected))
+               count (array/count (array/compact selected))]
+          (cond
+            (int/gt (array/count bad) 0)
+              (bound_error (str "selected point " (array/nth bad 0) " has a non-finite position"))
+            (int/eq count 0) (bound_error "selection contains no points")
+            :else
+              (let* [lows (exact (map (fn [(p : vec3) (s : int)] (if (int/eq s 1) p [fmax fmax fmax])) positions selected))
+                     highs (exact (map (fn [(p : vec3) (s : int)] (if (int/eq s 1) p [(- 0.0 fmax) (- 0.0 fmax) (- 0.0 fmax)])) positions selected))
+                     lo (fold [m [fmax fmax fmax]] [p lows] [(min m.x p.x) (min m.y p.y) (min m.z p.z)])
+                     hi (fold [m [(- 0.0 fmax) (- 0.0 fmax) (- 0.0 fmax)]] [p highs] [(max m.x p.x) (max m.y p.y) (max m.z p.z)])
+                     sxc (bound_sum hi.x (* -1.0 lo.x)) syc (bound_sum hi.y (* -1.0 lo.y)) szc (bound_sum hi.z (* -1.0 lo.z))
+                     sx sxc.value sy syc.value sz szc.value
+                     cx (+ lo.x (* sx 0.5)) cy (+ lo.y (* sy 0.5)) cz (+ lo.z (* sz 0.5))]
+                (if (not (and sxc.ok (and syc.ok szc.ok)))
+                  (bound_error "selected bounds overflow")
+                  (let* [lower [lower_x lower_y lower_z] upper [upper_x upper_y upper_z]
+                         blx (bound_sum lo.x (* -1.0 lower_x)) bly (bound_sum lo.y (* -1.0 lower_y)) blz (bound_sum lo.z (* -1.0 lower_z))
+                         bhx (bound_sum hi.x upper_x) bhy (bound_sum hi.y upper_y) bhz (bound_sum hi.z upper_z)
+                         box_lo [blx.value bly.value blz.value] box_hi [bhx.value bhy.value bhz.value]
+                         bsx (bound_sum box_hi.x (* -1.0 box_lo.x)) bsy (bound_sum box_hi.y (* -1.0 box_lo.y))
+                         bsz (bound_sum box_hi.z (* -1.0 box_lo.z))
+                         box_size [bsx.value bsy.value bsz.value]
+                         box_center [(+ box_lo.x (* box_size.x 0.5)) (+ box_lo.y (* box_size.y 0.5)) (+ box_lo.z (* box_size.z 0.5))]
+                         box_radii [(* box_size.x 0.5) (* box_size.y 0.5) (* box_size.z 0.5)]
+                         box_ok (and (and (and blx.ok (and bly.ok blz.ok)) (and bhx.ok (and bhy.ok bhz.ok)))
+                                  (and (and bsx.ok (and bsy.ok bsz.ok))
+                                    (and (> box_size.x 0.0) (and (> box_size.y 0.0) (> box_size.z 0.0)))))
+                         hx (* sx 0.5) hy (* sy 0.5) hz (* sz 0.5)
+                         m (max hx (max hy hz))
+                         unit (if (= m 0.0) 1.0 m)
+                         scaled (float/mul_checked m (sqrt (+ (+ (* (/ hx unit) (/ hx unit)) (* (/ hy unit) (/ hy unit))) (* (/ hz unit) (/ hz unit)))))
+                         small (< m 1e150)
+                         base_ok (or small scaled.valid)
+                         base_radius (if small (hypot hx (hypot hy hz)) (if scaled.valid scaled.value 0.0))
+                         dcx (bound_sum cx (* (- upper_x lower_x) 0.5)) dcy (bound_sum cy (* (- upper_y lower_y) 0.5))
+                         dcz (bound_sum cz (* (- upper_z lower_z) 0.5))
+                         sphere_center [dcx.value dcy.value dcz.value]
+                         lux (bound_sum lower_x upper_x) luy (bound_sum lower_y upper_y) luz (bound_sum lower_z upper_z)
+                         rx (bound_sum base_radius (* lux.value 0.5)) ry (bound_sum base_radius (* luy.value 0.5))
+                         rz (bound_sum base_radius (* luz.value 0.5))
+                         sphere_radii [(max minimum_radius rx.value) (max minimum_radius ry.value) (max minimum_radius rz.value)]
+                         sphere_ok (and base_ok (and (and dcx.ok (and dcy.ok dcz.ok)) (and (and lux.ok (and luy.ok luz.ok))
+                                     (and (and rx.ok (and ry.ok rz.ok))
+                                       (and (> sphere_radii.x 0.0) (and (> sphere_radii.y 0.0) (> sphere_radii.z 0.0)))))))
+                         sphere (equal? shape "Sphere")
+                         center (if sphere sphere_center box_center)
+                         radii (if sphere sphere_radii box_radii)
+                         created
+                           (cond
+                             sphere
+                               (if (not sphere_ok)
+                                 (bound_error "sphere output radii must be finite and positive")
+                                 (sop/transform (sop/uv_sphere :segments segments :rings rings :uv_attribute "") :mode "Matrix"
+                                   :m00 sphere_radii.x :m11 sphere_radii.y :m22 sphere_radii.z
+                                   :m03 sphere_center.x :m13 sphere_center.y :m23 sphere_center.z))
+                             (not box_ok)
+                               (bound_error "box output must have finite positive extent on every axis")
+                             :else (bound_box box_lo box_hi divisions_x divisions_y divisions_z))
+                         center_name (text/trim center_attribute)
+                         radii_name (text/trim radii_attribute)
+                         with_center (if (text/blank? center_name) created
+                           (sop/with_attr created center_name (array/vec3 1 center) :owner "detail" :type vec3))
+                         with_radii (if (text/blank? radii_name) with_center
+                           (sop/with_attr with_center radii_name (array/vec3 1 radii) :owner "detail" :type vec3))
+                         group_out (text/trim bounds_group)]
+                    (if (text/blank? group_out) with_radii
+                      (sop/with_group with_radii (array/int (sop/count with_radii :primitives) 1)
+                        :owner "primitive" :name group_out))))))))))
