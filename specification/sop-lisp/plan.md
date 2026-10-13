@@ -13,9 +13,9 @@ approved plan. This records that existing authorization, not a new owner answer.
 | 1, float gate | Accept 4 ulp by default for floats and exact integer data; Lisp's unfused arithmetic defines the result. |
 | 2, golden refresh | Allow only per-node changes after its verification gate passes; list every changed golden in that node's commit. |
 | 3, delegation | Allow calls to other node kinds, including OCaml-bodied kinds; record direct calls in the manifest. |
-| 4, OCaml-backed built-ins | Allow the fixed geometry/graph primitives, with JavaScript twins required by their language gates. |
+| 4, OCaml-backed built-ins | Allow the fixed geometry/graph primitives. Owner correction, 2026-10-13: they need no JavaScript twin; `lib/rdk` will be compiled with js_of_ocaml for the web target later, and the same OCaml code serves both. Twins already written stay until that build exists and are not required for new built-ins. |
 | 5, kernels after port | Keep the OCaml kernels as test oracles throughout this round. |
-| 6, speed gate | Record both timings at 1,000,000 elements; a Lisp body above 2x the OCaml time blocks its port. |
+| 6, speed gate | Superseded by the owner on 2026-10-13: speed no longer blocks a port. Every node that passes the Verification gate is registered; both timings at 1,000,000 elements are recorded, and a ratio above 2x is listed as a known regression with its cause in "Speed regressions accepted with the ports". |
 
 Evidence, metadata census, incomplete gates and measurements are tracked in
 [`results.md`](results.md). A task remains unchecked until its stated gate passes.
@@ -100,7 +100,7 @@ The ports need 28 additions to the language, grouped by the phase that introduce
 Every addition follows the repo's existing rules:
 
 - **Graph projection.** New syntax ships with its graph projection, its `Flow_edit` gestures and a test (`AGENTS.md`).
-- **Core contract.** A new operator gets a row in `specification/core.md`, cases in `tools/core_fixtures.ml`, an implementation in `tools/web/runtime/prims.js`, and passes `tools/lisp/test/web_prims.t` and `core_census.t`. This keeps the web target able to run the bodies later.
+- **Core contract.** A new operator gets a row in `specification/core.md` and cases in `tools/core_fixtures.ml`. A pure Core operator (array, math, text) also gets an implementation in `tools/web/runtime/prims.js`; a built-in that wraps `lib/rdk` (`sop/*` host sources, `graph/*`) does not, because `lib/rdk` will be compiled with js_of_ocaml (decision 4). Both pass `tools/lisp/test/web_prims.t` and `core_census.t`. This keeps the web target able to run the bodies later.
 - **Kernel instructions.** A new kernel instruction is added to `lib/flow_ir/core.ml`, the CPU executor, the reference walker, and the JS printer in `lib/flow_web`. The Metal and WGSL emitters may refuse it with `E_GPU_FORM`.
 - **Determinism.** Results are byte-identical at 1 and 8 domains.
 
@@ -158,7 +158,7 @@ collapsed-quad shortcut that `Analysis.measure` does not use.
 
 ### Phase E: sequential graph algorithms
 
-Three built-ins, each backed by the existing OCaml code and each needing a JavaScript twin before web export. They cover algorithms that have no array formulation with the same output: a heap-ordered search, a greedy walk, a greedy colouring.
+Three built-ins, each backed by the existing OCaml code. They need no JavaScript twin: the web target will run the same `lib/rdk` code through js_of_ocaml (decision 4). They cover algorithms that have no array formulation with the same output: a heap-ordered search, a greedy walk, a greedy colouring.
 
 | # | Addition | Proposed form | Unlocks |
 | --- | --- | --- | --- |
@@ -335,7 +335,7 @@ Task kinds: **L** adds language, **P** ports nodes with the recipe below, **R** 
 5. Add its function to `lib/sop/test_lisp_ports.ml` covering every row of the Verification gate.
 6. Run the test with both bodies registered. When it passes, remove the OCaml registration from `lib/sop_catalog/sop_catalog.ml`, promote the manifest, and run `dune build @lib/sop/runtest @lib/flow_sop/runtest @lib/sop_catalog/runtest @test/dependency_gate`.
 7. Run `dune build @runtest-native`. Refresh only the goldens this node changed and list them in the commit message.
-8. Record wall time at 1,000,000 elements for the Lisp body and the OCaml kernel in `specification/sop-lisp/results.md`.
+8. Record wall time at 1,000,000 elements for the Lisp body and the OCaml kernel in `specification/sop-lisp/results.md`. The ratio does not block the port (decision 6); a ratio above 2x is added to "Speed regressions accepted with the ports" in this file with its cause.
 9. One commit per node. Tick the node in the ledger.
 
 ### Phase A: a node can be declared in Lisp
@@ -422,9 +422,9 @@ delegated to the old `noise_displace` body or dropped.
 
 | Task | Kind | Depends | What | Gate |
 | --- | --- | --- | --- | --- |
-| E.1 | L | D.R | `graph/shortest_paths` (E1) with its JavaScript twin in `prims.js`. | Distances and parents equal the OCaml search on five fixtures, including ties |
-| E.2 | L | D.R | `graph/chains` (E2) with its JavaScript twin. | Chains equal `poly_path` on five fixtures |
-| E.3 | L | D.R | `graph/color` (E3) with its JavaScript twin. | Colours equal `graph_color` |
+| E.1 | L | D.R | `graph/shortest_paths` (E1). | Distances and parents equal the OCaml search on five fixtures, including ties |
+| E.2 | L | D.R | `graph/chains` (E2). | Chains equal `poly_path` on five fixtures |
+| E.3 | L | D.R | `graph/color` (E3). | Colours equal `graph_color` |
 | E.4 | P | E.1 | `distance_along_geometry`, `edge_transport`, `edge_transport_parent`, `group_find_path`. | Recipe |
 | E.5 | P | E.2 E.3 | `graph_color`, `poly_path`, `carve`, `poly_bridge`, `poly_loft`, `skin`, `edge_flip`. | Recipe |
 | E.6 | P | E.5 | `subdivide`. Split the partial-group crack path into its own OCaml kind first, then port the whole-mesh path. | Recipe |
@@ -561,9 +561,9 @@ The owner approved this plan on 2026-10-12. Questions 1 and 4 were decided expli
 | 1 | **Float gate.** Ports cannot match OCaml floats bit for bit because the OCaml compiler fuses multiply-add on arm64. Accept a last-bits tolerance (4 ulp default) with exact integer data? | Decided yes by the owner on 2026-10-12. Lisp's unfused arithmetic becomes the definition, as `specification/flow.md:1229-1232` already states. Explicit FMA is feasible on web: an isolated exact BigInt prototype matches native `Float.fma` bits in 10,011 cases. | Reproduce each compiler-selected fused site by hand from disassembly. Automatic Mul/Add contraction would change the rounding contract and remains undecided; explicit FMA feasibility does not authorize it. |
 | 2 | **Golden refresh.** Ports will change render-parity PNG bytes and path tracer digests. Allow a per-node refresh under recipe step 7? | Yes, one commit per node with the changed files listed. | No port can land that feeds a rendered golden. |
 | 3 | **Delegation.** May a Lisp body call an OCaml-bodied kind for one of its modes (`snap_to_grid` calling `fuse`)? | Yes. The manifest records `(calls ...)` so export readiness stays visible. | At least 5 more nodes stay OCaml: snap\_to\_grid, peak, mountain, rest\_position, extract\_centroid. |
-| 4 | **Built-ins backed by OCaml.** `sop/adjacency`, `sop/components`, `sop/remap` and the three `graph/` operators wrap existing OCaml code. Accept them as built-ins that will each need a JavaScript twin? | Decided yes by the owner on 2026-10-12. They are 6 fixed primitives against 43 nodes unlocked. | Phases D and E have no array formulation with identical output; 43 nodes stay OCaml. |
+| 4 | **Built-ins backed by OCaml.** `sop/adjacency`, `sop/components`, `sop/remap` and the three `graph/` operators wrap existing OCaml code. Accept them as built-ins? (Originally: each would need a JavaScript twin. Corrected 2026-10-13: no twin; `lib/rdk` is compiled with js_of_ocaml later.) | Decided yes by the owner on 2026-10-12. They are 6 fixed primitives against 43 nodes unlocked. | Phases D and E have no array formulation with identical output; 43 nodes stay OCaml. |
 | 5 | **The OCaml kernels after a port.** Keep `lib/rdk` kernels as test oracles, or delete them with the registration? | Keep them through the round. E.R lists which are reachable only from tests; deleting them is a separate decision. | Oracles would have to be frozen as checked-in data. |
-| 6 | **Speed gate.** How much slower than the OCaml kernel may a Lisp body be at 1,000,000 elements? | Record every number; block a port only above 2x. Fusion (B.F) is expected to win back chains. | Pick the bound before B.10 starts. |
+| 6 | **Speed gate.** How much slower than the OCaml kernel may a Lisp body be at 1,000,000 elements? | Decided by the owner on 2026-10-13: no bound. Record every number and register the port; ratios above 2x are tracked as regressions to optimize later. | n/a |
 
 ### Risks
 
@@ -591,7 +591,7 @@ foundation alone does not change the production manifest.
 
 - Web export of `sop` and `scene` graphs.
 - GPU placement of kernels that use reductions, gather, compaction or integer work.
-- The 31 tier 5 nodes. The plan for them is to compile `lib/rdk` to WebAssembly, or bake at export time, not to rewrite them.
+- The 31 tier 5 nodes. The plan for them is to compile `lib/rdk` with js_of_ocaml for the web target, not to rewrite them. The same build serves the OCaml-backed built-ins.
 - A nearest-point built-in, which would move six tier 5 nodes into reach.
 - Deleting OCaml kernels.
 
@@ -731,8 +731,9 @@ Process change: every port is verified by the table-driven gate in
 `main.exe <key>` and `main.exe <key> --bench`). A draft is `nodes/<key>.pending`
 and is not registered. "Gate" below is the full Verification gate against the
 OCaml oracle; "speed" is Lisp/native at 1,000,000 elements, 1 and 4 domains.
-A draft that passes the gate but exceeds the 2× speed gate stays unregistered
-and unticked pending the owner's decision on question 6.
+On 2026-10-13 the owner removed the 2× speed gate (decision 6): every draft
+that passes the gate is registered, and its slowdown is recorded below as a
+regression to optimize later.
 
 Profile (reverse, compact_points, empty cook): the cost is runtime, not the
 tree walker. Each `sop/mesh`/`sop/remap` host call lowers a synthetic
@@ -784,3 +785,81 @@ Drafts that do not pass yet, and nodes without a draft:
 | `poly_path` | point clusters that keep all points; traversed edge per chain step |
 | `edge_transport`, `edge_transport_parent` | tree scan over a parent array; multi-root forest tie-breaks |
 | `edge_flip` | polygon triangulation validity check |
+
+### Speed regressions accepted with the ports
+
+Owner decision 6 (2026-10-13): these nodes are registered with Lisp bodies
+although they are slower than the OCaml kernels they replace. Ratios are
+Lisp/native wall time at about 1,000,000 elements, one cold cook, median of
+three, 1 and 4 domains, from `port_tests/main.exe <key> --bench` on an Apple
+M1. Most were measured while other agents loaded the machine (load average
+20-60), so treat them as order-of-magnitude and re-measure on a quiet machine
+before optimizing. The OCaml kernels remain in `lib/rdk` as oracles.
+
+| Node | @1 | @4 | Cause class |
+| --- | ---: | ---: | --- |
+| `box` | 1.7× | 1.6× | within the old gate on a clean run |
+| `group_random` | 2.3× | 3.7× | B |
+| `distance_along_geometry` | 4.6× | 3.5× | D |
+| `name_from_groups` | 4.9× | 3.0× | B, T |
+| `point_jitter` | 5.7× | 31× | K, P |
+| `compact_points` | 6.2× | 6.7× | H, K |
+| `group_copy` | 6.5× | 5.5× | B, H |
+| `distance_from_target` | 6.7× | 5.8× | K |
+| `graph_color` | 8.0× | 8.8× | D, K |
+| `color_by_height` | 11× | 13× | K |
+| `match_axis` | 14× | 4.4× | K |
+| `blast` | 15× | 16× | H, K |
+| `uv_transform` | 20× | 15× | K |
+| `enumerate` | 24× | 18× | K, T |
+| `circle` | 24× | 40× | K, H |
+| `group_invert` | 24× | 65× | B |
+| `mirror` | 32× | 79× | H, K |
+| `group_unshared` | 39× | 121× | B, A |
+| `ends` | 49× | 65× | H, A |
+| `edge_relax` | 53× | 97× | I, K |
+| `attribute_blur` | 68× | 81× | I, K |
+| `edge_transport_curves` | 69× | 55× | K, H |
+| `edge_equalize` | 74× | 104× | I, K |
+| `group_edge_depth` | 77× | 106× | I, B |
+| `point_velocity` | 80× | 112× | K, H |
+| `reverse` | 119× | 148× | H, K |
+| `grid` | 164× | 114× | K, H; not profiled |
+| `material` | n/a | n/a | not benched |
+
+Cause classes, from the profile of `reverse`, `compact_points` and an empty
+cook, and from the agents' per-node notes. Only H and K were measured; the
+others are attributions to confirm.
+
+- **K, kernel tier.** A packed `map` runs one loop per instruction over
+  1,024-element blocks through scratch registers, scalarizes vectors, computes
+  both sides of `if`, and each `map` materializes a full array (about 40-55 ns
+  per element per map against about 5 ns for a whole fused native pass).
+  Fixes: fuse adjacent maps (B.F), emit OCaml from `flow_ir` at build time for
+  node kernels, GPU placement (G.1/G.2) for gather-free kernels.
+- **H, host calls.** `sop/mesh`, `sop/remap`, `sop/delete_attr` lower a
+  synthetic one-node workspace per call and marshal their array arguments
+  twice for cache keys; reindexing bodies recompute edge ancestry through
+  `array/index_of`. Three fixes are in (`3bffaa15`, `8ba568d7`, `d445b404`).
+  Remaining: build the host node directly from evaluated arguments, an
+  identity flag instead of identity index arrays, ancestry-aware reindex
+  operators so edge ancestry is not recomputed.
+- **B, bit-packed groups.** Native works on packed membership words; Lisp
+  unpacks to one int per element, maps and repacks. Fix: word-level group
+  operators, or a group-combine host operator.
+- **A, adjacency.** `sop/adjacency` and `sop/edges` build a `Topology_index`
+  with hash-based dedupe (about 170-200 ns per edge) and copy every array.
+  Fix: sort-based dedupe, borrowed arrays.
+- **I, iteration.** `iterate` runs the body region once per pass with fresh
+  arrays each pass (about 1.8 ms per pass at 10,000 points). Fix: reuse
+  buffers across passes, fuse the pass body.
+- **D, record sources.** `graph/*` and `sop/components` results resolve once
+  per field read, so the algorithm runs two or three times. Fix: share one
+  evaluation across fields.
+- **T, text.** Text arrays run on the structured Core loop, not a numeric
+  kernel.
+- **P, parallel scaling.** Lisp gains less from 4 domains than native, so the
+  4-domain ratio is worse (16 blocks per chunk; small maps land in one chunk).
+
+A fixed cost of roughly 15-20 ms per cook (workspace print and digest per host
+call) was removed by `3bffaa15`; re-measure empty-input cooks.
