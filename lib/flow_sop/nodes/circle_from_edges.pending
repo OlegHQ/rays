@@ -1,0 +1,413 @@
+; Whole Circle from Edges draft. Components of the selected-edge graph come from sop/components over a
+; derived two-point polyline per selected edge; members are sorted by component so each sum is a
+; segment sum or a sequential accumulation in point order. The plane normal is the closed-form smallest
+; eigenvector of the covariance; the circle is the algebraic least-squares fit in that plane. Native
+; arm64 fuses a*b + c*d as written below (checked against the compiled code), so fma is explicit.
+(defn circle_error :context value [(reason : text)]
+  (error "invalid_circle" "circle_from_edges could not produce valid geometry"
+    :cause (str "circle_from_edges [invalid_circle]: Circle from Edges " reason)))
+(defn circle_finite :context value [(x : float)] (= (- x x) 0.0))
+(defn circle_safe :context value [(index : int)] (if (int/ge index 0) index 0))
+(defn circle_following :context value [(j : int) (total : int)] (if (int/lt (int/add j 1) total) (int/add j 1) j))
+(defn circle_owners :context value [(offsets : (array int)) (total : int)]
+  (let* [segments (int/sub (array/count offsets) 1)
+         starts (exact (map (fn [(p : int)] (array/nth offsets p)) (array/range segments :type int)))
+         prefix (array/scan_sum (array/scatter_add starts (array/int segments 1) (int/add total 1)))]
+    (exact (map (fn [(s : int)] (int/sub (array/nth prefix (int/add s 1)) 1)) (array/range total :type int)))))
+(defn circle_interleave :context value [(a : (array int)) (b : (array int))]
+  (exact (map (fn [(i : int)]
+    (if (int/eq (int/mod i 2) 0) (array/nth a (int/div i 2)) (array/nth b (int/div i 2))))
+    (array/range (int/mul 2 (array/count a)) :type int))))
+; x*x + y*y + z*z as the compiled native code evaluates it
+(defn circle_norm :context value [(x : float) (y : float) (z : float)] (fma z z (fma y y (* x x))))
+; write_unit: [x y z ok]
+(defn circle_unit :context value [(x : float) (y : float) (z : float) (canonical : bool)]
+  (let* [scale (max (abs x) (max (abs y) (abs z)))]
+    (if (or (= scale 0.0) (not (circle_finite scale))) [0.0 0.0 0.0 0.0]
+      (let* [sx (/ x scale) sy (/ y scale) sz (/ z scale)
+             length (sqrt (circle_norm sx sy sz))]
+        (if (or (= length 0.0) (not (circle_finite length))) [0.0 0.0 0.0 0.0]
+          (let* [ux (/ sx length) uy (/ sy length) uz (/ sz length)
+                 ax (abs ux) ay (abs uy) az (abs uz)
+                 negative (if canonical
+                   (if (and (>= ax ay) (>= ax az)) (< ux 0.0) (if (>= ay az) (< uy 0.0) (< uz 0.0)))
+                   false)]
+            (if negative [(* -1.0 ux) (* -1.0 uy) (* -1.0 uz) 1.0] [ux uy uz 1.0])))))))
+; write_smallest_normal in stages, each small enough for one packed kernel (64 registers).
+; Stage 1: [off q p 0].
+(defn circle_stage_p :context value
+  [(xx : float) (xy : float) (xz : float) (yy : float) (yz : float) (zz : float)]
+  (let* [off (circle_norm xy xz yz)
+         q (/ (+ (+ xx yy) zz) 3.0)
+         ax (- xx q) ay (- yy q) az (- zz q)
+         p2 (fma 2.0 off (fma az az (fma ay ay (* ax ax))))]
+    [off q (sqrt (/ p2 6.0)) 0.0]))
+; Stage 2: the determinant of (A - qI) / p.
+(defn circle_stage_det :context value
+  [(xx : float) (xy : float) (xz : float) (yy : float) (yz : float) (zz : float) (q : float) (p : float)]
+  (let* [safe (if (or (= p 0.0) (not (circle_finite p))) 1.0 p)
+         bxx (/ (- xx q) safe) bxy (/ xy safe) bxz (/ xz safe) byy (/ (- yy q) safe) byz (/ yz safe) bzz (/ (- zz q) safe)
+         ca (fma (* -1.0 byz) byz (* byy bzz))
+         cb (fma (* -1.0 byz) bxz (* bxy bzz))
+         cc (fma (* -1.0 byy) bxz (* bxy byz))]
+    (fma bxz cc (fma (* -1.0 bxy) cb (* bxx ca)))))
+; Stage 3: eigenvalues [minimum middle maximum 0] of the diagonal case and of the general case.
+(defn circle_values_diagonal :context value [(xx : float) (yy : float) (zz : float)]
+  (let* [minimum (min xx (min yy zz)) maximum (max xx (max yy zz))]
+    [minimum (- (- (+ (+ xx yy) zz) minimum) maximum) maximum 0.0]))
+(defn circle_values_general :context value [(q : float) (p : float) (determinant : float)]
+  (let* [r (max -1.0 (min 1.0 (/ determinant 2.0)))
+         phi (/ (acos r) 3.0)
+         maximum (+ q (* (* 2.0 p) (cos phi)))
+         minimum (+ q (* (* 2.0 p) (cos (+ phi (/ (* 2.0 3.141592653589793) 3.0)))))]
+    [minimum (- (fma 3.0 q (* -1.0 minimum)) maximum) maximum 0.0]))
+; Stage 4: the three cross-product candidates [x y z squared-length].
+(defn circle_cross_01 :context value
+  [(xy : float) (xz : float) (yz : float) (a : float) (d : float)]
+  (let* [x (fma (* -1.0 xz) d (* xy yz)) y (fma (* -1.0 a) yz (* xz xy)) z (fma (* -1.0 xy) xy (* a d))]
+    [x y z (circle_norm x y z)]))
+(defn circle_cross_02 :context value
+  [(xy : float) (xz : float) (yz : float) (a : float) (f : float)]
+  (let* [x (fma (* -1.0 xz) yz (* xy f)) y (fma (* -1.0 a) f (* xz xz)) z (fma (* -1.0 xy) xz (* a yz))]
+    [x y z (circle_norm x y z)]))
+(defn circle_cross_12 :context value
+  [(xy : float) (xz : float) (yz : float) (d : float) (f : float)]
+  (let* [x (fma (* -1.0 yz) yz (* d f)) y (fma (* -1.0 xy) f (* yz xz)) z (fma (* -1.0 d) xz (* xy yz))]
+    [x y z (circle_norm x y z)]))
+; Stage 5: which vector: 0 failed, 1/2/3 the x/y/z axis, 4/5/6 the 01/02/12 cross product.
+(defn circle_choice :context value
+  [(xx : float) (yy : float) (zz : float) (off : float) (middle : float) (maximum : float)
+   (n01 : float) (n02 : float) (n12 : float)]
+  (if (or (or (not (and (circle_finite middle) (circle_finite maximum))) (<= maximum 0.0))
+          (<= middle (* (* 512.0 2.220446049250313e-16) maximum)))
+    0.0
+    (if (= off 0.0)
+      (if (and (<= xx yy) (<= xx zz)) 1.0 (if (<= yy zz) 2.0 3.0))
+      (if (and (>= n01 n02) (>= n01 n12)) 4.0 (if (>= n02 n12) 5.0 6.0)))))
+(defn circle_pick_component :context value [(choice : float) (axis : float) (a : float) (b : float) (c : float)]
+  (cond (< choice 0.5) 0.0
+        (< choice 3.5) axis
+        (< choice 4.5) a
+        (< choice 5.5) b
+        :else c))
+; write_unit over arrays, in kernels of a few operations each. canon 1.0 flips to a canonical sign.
+; Components of failed rows are 0 and ok is 0.
+(defn circle_normalize :context value
+  [(xs : (array float)) (ys : (array float)) (zs : (array float)) (canon : float)]
+  (let* [rows (array/range (array/count xs) :type int)
+         scale (exact (map (fn [(s : int)] (max (abs (array/nth xs s)) (max (abs (array/nth ys s)) (abs (array/nth zs s))))) rows))
+         usable (exact (map (fn [(s : int)]
+           (if (and (not (= (array/nth scale s) 0.0)) (circle_finite (array/nth scale s))) 1.0 0.0)) rows))
+         safe (exact (map (fn [(s : int)] (if (> (array/nth usable s) 0.5) (array/nth scale s) 1.0)) rows))
+         length (exact (map (fn [(s : int)]
+           (sqrt (circle_norm (/ (array/nth xs s) (array/nth safe s)) (/ (array/nth ys s) (array/nth safe s))
+                   (/ (array/nth zs s) (array/nth safe s))))) rows))
+         ok (exact (map (fn [(s : int)]
+           (if (and (> (array/nth usable s) 0.5) (and (not (= (array/nth length s) 0.0)) (circle_finite (array/nth length s)))) 1.0 0.0)) rows))
+         divisor (exact (map (fn [(s : int)] (if (> (array/nth ok s) 0.5) (array/nth length s) 1.0)) rows))
+         ux (exact (map (fn [(s : int)] (/ (/ (array/nth xs s) (array/nth safe s)) (array/nth divisor s))) rows))
+         uy (exact (map (fn [(s : int)] (/ (/ (array/nth ys s) (array/nth safe s)) (array/nth divisor s))) rows))
+         uz (exact (map (fn [(s : int)] (/ (/ (array/nth zs s) (array/nth safe s)) (array/nth divisor s))) rows))
+         sign (exact (map (fn [(s : int)]
+           (let* [ax (abs (array/nth ux s)) ay (abs (array/nth uy s)) az (abs (array/nth uz s))
+                  top (and (>= ax ay) (>= ax az))
+                  mid (and (not top) (>= ay az))
+                  negative (and (> canon 0.5)
+                             (or (and top (< (array/nth ux s) 0.0))
+                                 (or (and mid (< (array/nth uy s) 0.0))
+                                     (and (and (not top) (not mid)) (< (array/nth uz s) 0.0)))))]
+             (if negative -1.0 1.0))) rows))]
+    {:x (exact (map (fn [(s : int)] (if (> (array/nth ok s) 0.5) (* (array/nth sign s) (array/nth ux s)) 0.0)) rows))
+     :y (exact (map (fn [(s : int)] (if (> (array/nth ok s) 0.5) (* (array/nth sign s) (array/nth uy s)) 0.0)) rows))
+     :z (exact (map (fn [(s : int)] (if (> (array/nth ok s) 0.5) (* (array/nth sign s) (array/nth uz s)) 0.0)) rows))
+     :ok ok}))
+; Plane axis seed from the normal (one component per call): write_plane_basis before normalising.
+(defn circle_axis_raw :context value [(nx : float) (ny : float) (nz : float) (which : float)]
+  (let* [ax (abs nx) ay (abs ny) az (abs nz)
+         low_x (and (<= ax ay) (<= ax az))]
+    (cond (< which 0.5) (if low_x 0.0 (if (<= ay az) (* -1.0 nz) ny))
+          (< which 1.5) (if low_x nz (if (<= ay az) 0.0 (* -1.0 nx)))
+          :else (if low_x (* -1.0 ny) (if (<= ay az) nx 0.0)))))
+; Sequential fused accumulation of left*right per segment, in member order.
+(defn circle_accumulate :context value
+  [(left : (array float)) (right : (array float)) (offsets : (array int)) (sizes : (array int)) (most : int)]
+  (let* [segments (array/count sizes) rows (array/range segments :type int)]
+    (get (iterate most {:acc (array/float segments) :k 0}
+      (fn [(c : {:acc (array float) :k int})]
+        {:acc (exact (map (fn [(s : int)]
+             (if (int/lt c.k (array/nth sizes s))
+               (let* [at (int/add (array/nth offsets s) c.k)]
+                 (fma (array/nth left at) (array/nth right at) (array/nth c.acc s)))
+               (array/nth c.acc s))) rows))
+         :k (int/add c.k 1)})) :acc)))
+; Kahan-compensated sum of the member distances, in member order.
+(defn circle_kahan :context value
+  [(terms : (array float)) (offsets : (array int)) (sizes : (array int)) (most : int)]
+  (let* [segments (array/count sizes) rows (array/range segments :type int)
+         final (iterate most {:sum (array/float segments) :corr (array/float segments) :k 0}
+           (fn [(c : {:sum (array float) :corr (array float) :k int})]
+             (let* [live (exact (map (fn [(s : int)] (if (int/lt c.k (array/nth sizes s)) 1 0)) rows))
+                    adjusted (exact (map (fn [(s : int)]
+                      (if (int/eq (array/nth live s) 1)
+                        (- (array/nth terms (int/add (array/nth offsets s) (circle_safe c.k))) (array/nth c.corr s))
+                        0.0)) rows))
+                    next (exact (map (fn [(s : int)]
+                      (if (int/eq (array/nth live s) 1) (+ (array/nth c.sum s) (array/nth adjusted s)) (array/nth c.sum s))) rows))
+                    carry (exact (map (fn [(s : int)]
+                      (if (int/eq (array/nth live s) 1)
+                        (- (- (array/nth next s) (array/nth c.sum s)) (array/nth adjusted s))
+                        (array/nth c.corr s))) rows))]
+               {:sum next :corr carry :k (int/add c.k 1)})))]
+    final.sum))
+
+(defnode sop/circle_from_edges :label "Circle from Edges" :category ["Topology" "Edge"]
+  [(in0 : geometry)
+   (group : text "" :label "Edge group")
+   (use_radius : bool false :label "Override radius")
+   (radius : float 1.0 :label "Radius" :min 0.01 :max 10 :hard_min 0
+     :validate (or (not use_radius) (> radius 0.0))
+     :code "E_PARAM" :message "sop/circle_from_edges: radius must be finite and positive")
+   (scale_x : float 1.0 :label "Scale X" :folder ["Scale"] :min -4 :max 4 :vec3 ["scale" 0])
+   (scale_y : float 1.0 :label "Scale Y" :folder ["Scale"] :min -4 :max 4 :vec3 ["scale" 1])
+   (scale_z : float 1.0 :label "Scale Z" :folder ["Scale"] :min -4 :max 4 :vec3 ["scale" 2])
+   (output_group : text "" :label "Output group")]
+  (let* [group_name (text/trim group) output_name (text/trim output_group)
+         group_literal (text/glob_literal (if (text/blank? group_name) "x" group_name))
+         has_group (not (text/blank? group_name)) has_output (not (text/blank? output_name))
+         edge_total (sop/count in0 :edges)
+         point_total (sop/count in0 :points)
+         vertex_total (sop/count in0 :vertices)
+         adj (sop/adjacency in0)
+         corner_keys (exact (map (fn [(e : int)] (if (int/lt e 0) edge_total e)) adj.edge_of_vertex))
+         incidence (array/scatter_add corner_keys (array/int vertex_total 1) (int/add edge_total 1))
+         missing (and has_group (int/eq (array/count (sop/group_names in0 group_literal :owner "edge")) 0))
+         selected (if (and has_group (not missing)) (sop/group in0 :name group_name :owner "edge")
+                    (exact (map (fn [(e : int)] (if (int/eq (array/nth incidence e) 1) 1 0)) (array/range edge_total :type int))))
+         selected_count (array/sum selected)
+         unchanged (if has_output (sop/with_group in0 (exact selected) :name output_name :owner "edge") in0)]
+    (cond
+      missing
+        (error "missing_group" (str "circle_from_edges could not find native edge group " (text/repr group_name)))
+      (int/eq selected_count 0) unchanged
+      :else
+      (let* [chosen (array/compact selected)
+             a (exact (map (fn [(e : int)] (array/nth adj.edge_a e)) chosen))
+             b (exact (map (fn [(e : int)] (array/nth adj.edge_b e)) chosen))
+             positions (sop/attr in0 "P")
+             px (exact (map (fn [(q : vec3)] q.x) positions)) py (exact (map (fn [(q : vec3)] q.y) positions))
+             pz (exact (map (fn [(q : vec3)] q.z) positions))
+             ends (array/concat a b)
+             degree (array/scatter_add ends (array/int (array/count ends) 1) point_total)
+             touched (exact (map (fn [(d : int)] (if (int/gt d 0) 1 0)) degree))
+             members (array/compact touched)
+             total (array/count members)
+             bad_edge (int/gt (array/sum (exact (map (fn [(p : int)]
+                 (if (and (circle_finite (array/nth px p)) (and (circle_finite (array/nth py p)) (circle_finite (array/nth pz p)))) 0 1))
+               members))) 0)
+             loop_edge (int/gt (array/sum (exact (map (fn [(x : int) (y : int)] (if (int/eq x y) 1 0)) a b))) 0)
+             bad_degree (int/gt (array/sum (exact (map (fn [(d : int)] (if (or (int/eq d 0) (or (int/eq d 1) (int/eq d 2))) 0 1)) degree))) 0)]
+        (cond
+          (or bad_edge loop_edge) (circle_error "selected edge has an invalid endpoint")
+          bad_degree (circle_error "selected component branches")
+          :else
+          (let* [derived (sop/mesh :points (array/vec3 point_total) :vertex_points (circle_interleave a b)
+                           :primitive_offsets (exact (map (fn [(i : int)] (int/mul i 2)) (array/range (int/add (array/count a) 1) :type int)))
+                           :kinds (array/int (array/count a) 1))
+                 parts (sop/components derived :over "edges")
+                 keys (exact (map (fn [(p : int)] (array/nth parts.id p)) members))
+                 order (array/grade keys)
+                 range_total (array/range total :type int)
+                 sorted_points (exact (map (fn [(j : int)] (array/nth members (array/nth order j))) range_total))
+                 sorted_ids (exact (map (fn [(j : int)] (array/nth keys (array/nth order j))) range_total))
+                 boundary (exact (map (fn [(j : int)]
+                   (if (or (int/eq j 0) (not (int/eq (array/nth sorted_ids j) (array/nth sorted_ids (circle_safe (int/sub j 1)))))) 1 0))
+                   range_total))
+                 starts (array/compact boundary)
+                 segments (array/count starts)
+                 offsets (array/concat starts (array/int 1 total))
+                 rows (array/range segments :type int)
+                 owner (circle_owners offsets total)
+                 sizes (exact (map (fn [(s : int)] (int/sub (array/nth offsets (int/add s 1)) (array/nth offsets s))) rows))
+                 end_points (array/segment_sum (exact (map (fn [(p : int)] (if (int/eq (array/nth degree p) 1) 1 0)) sorted_points)) offsets)
+                 small (int/gt (array/sum (exact (map (fn [(n : int)] (if (int/lt n 3) 1 0)) sizes))) 0)
+                 not_simple (int/gt (array/sum (exact (map (fn [(e : int)] (if (or (int/eq e 0) (int/eq e 2)) 0 1)) end_points))) 0)]
+            (cond
+              small (circle_error "component has fewer than three points")
+              not_simple (circle_error "component is not a simple path or loop")
+              :else
+              (let* [most (array/max sizes)
+                     mx_ (exact (map (fn [(p : int)] (array/nth px p)) sorted_points))
+                     my_ (exact (map (fn [(p : int)] (array/nth py p)) sorted_points))
+                     mz_ (exact (map (fn [(p : int)] (array/nth pz p)) sorted_points))
+                     abs_max (fn [(v : (array float))] (array/segment_max (exact (map (fn [(x : float)] (abs x)) v)) offsets))
+                     largest (exact (map (fn [(x : float) (y : float) (z : float)] (max (max x y) z)) (abs_max mx_) (abs_max my_) (abs_max mz_)))
+                     coordinate (exact (map (fn [(m : float)] (if (= m 0.0) 1.0 m)) largest))
+                     member_scale (exact (map (fn [(s : int)] (array/nth coordinate s)) owner))
+                     sx (array/segment_sum (exact (map (fn [(v : float) (k : float)] (/ v k)) mx_ member_scale)) offsets)
+                     sy (array/segment_sum (exact (map (fn [(v : float) (k : float)] (/ v k)) my_ member_scale)) offsets)
+                     sz (array/segment_sum (exact (map (fn [(v : float) (k : float)] (/ v k)) mz_ member_scale)) offsets)
+                     inverse (exact (map (fn [(n : int)] (/ 1.0 (float n))) sizes))
+                     mean_x (exact (map (fn [(s : float) (i : float)] (* s i)) sx inverse))
+                     mean_y (exact (map (fn [(s : float) (i : float)] (* s i)) sy inverse))
+                     mean_z (exact (map (fn [(s : float) (i : float)] (* s i)) sz inverse))
+                     dx (exact (map (fn [(v : float) (k : float) (s : int)] (- (/ v k) (array/nth mean_x s))) mx_ member_scale owner))
+                     dy (exact (map (fn [(v : float) (k : float) (s : int)] (- (/ v k) (array/nth mean_y s))) my_ member_scale owner))
+                     dz (exact (map (fn [(v : float) (k : float) (s : int)] (- (/ v k) (array/nth mean_z s))) mz_ member_scale owner))
+                     cxx (circle_accumulate dx dx offsets sizes most) cxy (circle_accumulate dx dy offsets sizes most)
+                     cxz (circle_accumulate dx dz offsets sizes most) cyy (circle_accumulate dy dy offsets sizes most)
+                     cyz (circle_accumulate dy dz offsets sizes most) czz (circle_accumulate dz dz offsets sizes most)
+                     ; the normal in small kernels over scalar arrays
+                     stage_p (exact (map (fn [(s : int)]
+                       (circle_stage_p (array/nth cxx s) (array/nth cxy s) (array/nth cxz s)
+                         (array/nth cyy s) (array/nth cyz s) (array/nth czz s))) rows))
+                     p_off (exact (map (fn [(s : int)] (let* [v (array/nth stage_p s)] v.x)) rows))
+                     p_q (exact (map (fn [(s : int)] (let* [v (array/nth stage_p s)] v.y)) rows))
+                     p_p (exact (map (fn [(s : int)] (let* [v (array/nth stage_p s)] v.z)) rows))
+                     stage_det (exact (map (fn [(s : int)]
+                       (circle_stage_det (array/nth cxx s) (array/nth cxy s) (array/nth cxz s)
+                         (array/nth cyy s) (array/nth cyz s) (array/nth czz s) (array/nth p_q s) (array/nth p_p s))) rows))
+                     diag_values (exact (map (fn [(s : int)]
+                       (circle_values_diagonal (array/nth cxx s) (array/nth cyy s) (array/nth czz s))) rows))
+                     gen_values (exact (map (fn [(s : int)]
+                       (circle_values_general (array/nth p_q s) (array/nth p_p s) (array/nth stage_det s))) rows))
+                     degenerate_p (exact (map (fn [(s : int)]
+                       (if (or (= (array/nth p_p s) 0.0) (not (circle_finite (array/nth p_p s)))) 1 0)) rows))
+                     v_min (exact (map (fn [(s : int)]
+                       (let* [d (array/nth diag_values s) g (array/nth gen_values s)]
+                         (if (= (array/nth p_off s) 0.0) d.x (if (int/eq (array/nth degenerate_p s) 1) (array/nth p_q s) g.x)))) rows))
+                     v_mid (exact (map (fn [(s : int)]
+                       (let* [d (array/nth diag_values s) g (array/nth gen_values s)]
+                         (if (= (array/nth p_off s) 0.0) d.y (if (int/eq (array/nth degenerate_p s) 1) (array/nth p_q s) g.y)))) rows))
+                     v_max (exact (map (fn [(s : int)]
+                       (let* [d (array/nth diag_values s) g (array/nth gen_values s)]
+                         (if (= (array/nth p_off s) 0.0) d.z (if (int/eq (array/nth degenerate_p s) 1) (array/nth p_q s) g.z)))) rows))
+                     cross_01 (exact (map (fn [(s : int)]
+                       (circle_cross_01 (array/nth cxy s) (array/nth cxz s) (array/nth cyz s)
+                         (- (array/nth cxx s) (array/nth v_min s)) (- (array/nth cyy s) (array/nth v_min s)))) rows))
+                     cross_02 (exact (map (fn [(s : int)]
+                       (circle_cross_02 (array/nth cxy s) (array/nth cxz s) (array/nth cyz s)
+                         (- (array/nth cxx s) (array/nth v_min s)) (- (array/nth czz s) (array/nth v_min s)))) rows))
+                     cross_12 (exact (map (fn [(s : int)]
+                       (circle_cross_12 (array/nth cxy s) (array/nth cxz s) (array/nth cyz s)
+                         (- (array/nth cyy s) (array/nth v_min s)) (- (array/nth czz s) (array/nth v_min s)))) rows))
+                     x01 (exact (map (fn [(s : int)] (let* [v (array/nth cross_01 s)] v.x)) rows)) y01 (exact (map (fn [(s : int)] (let* [v (array/nth cross_01 s)] v.y)) rows))
+                     z01 (exact (map (fn [(s : int)] (let* [v (array/nth cross_01 s)] v.z)) rows)) n01 (exact (map (fn [(s : int)] (let* [v (array/nth cross_01 s)] v.w)) rows))
+                     x02 (exact (map (fn [(s : int)] (let* [v (array/nth cross_02 s)] v.x)) rows)) y02 (exact (map (fn [(s : int)] (let* [v (array/nth cross_02 s)] v.y)) rows))
+                     z02 (exact (map (fn [(s : int)] (let* [v (array/nth cross_02 s)] v.z)) rows)) n02 (exact (map (fn [(s : int)] (let* [v (array/nth cross_02 s)] v.w)) rows))
+                     x12 (exact (map (fn [(s : int)] (let* [v (array/nth cross_12 s)] v.x)) rows)) y12 (exact (map (fn [(s : int)] (let* [v (array/nth cross_12 s)] v.y)) rows))
+                     z12 (exact (map (fn [(s : int)] (let* [v (array/nth cross_12 s)] v.z)) rows)) n12 (exact (map (fn [(s : int)] (let* [v (array/nth cross_12 s)] v.w)) rows))
+                     choice (exact (map (fn [(s : int)]
+                       (circle_choice (array/nth cxx s) (array/nth cyy s) (array/nth czz s) (array/nth p_off s)
+                         (array/nth v_mid s) (array/nth v_max s) (array/nth n01 s) (array/nth n02 s) (array/nth n12 s))) rows))
+                     pick_x (exact (map (fn [(s : int)]
+                       (circle_pick_component (array/nth choice s) (if (< (abs (- (array/nth choice s) 1.0)) 0.5) 1.0 0.0)
+                         (array/nth x01 s) (array/nth x02 s) (array/nth x12 s))) rows))
+                     pick_y (exact (map (fn [(s : int)]
+                       (circle_pick_component (array/nth choice s) (if (< (abs (- (array/nth choice s) 2.0)) 0.5) 1.0 0.0)
+                         (array/nth y01 s) (array/nth y02 s) (array/nth y12 s))) rows))
+                     pick_z (exact (map (fn [(s : int)]
+                       (circle_pick_component (array/nth choice s) (if (< (abs (- (array/nth choice s) 3.0)) 0.5) 1.0 0.0)
+                         (array/nth z01 s) (array/nth z02 s) (array/nth z12 s))) rows))
+                     unit_n (circle_normalize pick_x pick_y pick_z 1.0)
+                     nx unit_n.x ny unit_n.y nz unit_n.z
+                     raw_x (exact (map (fn [(s : int)] (circle_axis_raw (array/nth nx s) (array/nth ny s) (array/nth nz s) 0.0)) rows))
+                     raw_y (exact (map (fn [(s : int)] (circle_axis_raw (array/nth nx s) (array/nth ny s) (array/nth nz s) 1.0)) rows))
+                     raw_z (exact (map (fn [(s : int)] (circle_axis_raw (array/nth nx s) (array/nth ny s) (array/nth nz s) 2.0)) rows))
+                     unit_u (circle_normalize raw_x raw_y raw_z 0.0)
+                     ux unit_u.x uy unit_u.y uz unit_u.z
+                     stable (int/eq (array/sum (exact (map (fn [(s : int)]
+                       (if (and (> (array/nth unit_n.ok s) 0.5) (> (array/nth unit_u.ok s) 0.5)) 0 1)) rows))) 0)]
+                (if (not stable) (circle_error "component is collinear or has no stable fit")
+                  (let* [vx (exact (map (fn [(s : int)] (fma (* -1.0 (array/nth nz s)) (array/nth uy s) (* (array/nth ny s) (array/nth uz s)))) rows))
+                         vy (exact (map (fn [(s : int)] (fma (* -1.0 (array/nth nx s)) (array/nth uz s) (* (array/nth nz s) (array/nth ux s)))) rows))
+                         vz (exact (map (fn [(s : int)] (fma (* -1.0 (array/nth ny s)) (array/nth ux s) (* (array/nth nx s) (array/nth uy s)))) rows))
+                         ; in-plane coordinates of every member about the mean
+                         mu (exact (map (fn [(j : int)]
+                           (let* [s (array/nth owner j)]
+                             (fma (array/nth dz j) (array/nth uz s) (fma (array/nth dy j) (array/nth uy s) (* (array/nth dx j) (array/nth ux s))))))
+                           range_total))
+                         mv (exact (map (fn [(j : int)]
+                           (let* [s (array/nth owner j)]
+                             (fma (array/nth dz j) (array/nth vz s) (fma (array/nth dy j) (array/nth vy s) (* (array/nth dx j) (array/nth vx s))))))
+                           range_total))
+                         mr2 (exact (map (fn [(u : float) (v : float)] (fma v v (* u u))) mu mv))
+                         uu (circle_accumulate mu mu offsets sizes most) uv (circle_accumulate mu mv offsets sizes most)
+                         vv (circle_accumulate mv mv offsets sizes most) ur2 (circle_accumulate mu mr2 offsets sizes most)
+                         vr2 (circle_accumulate mv mr2 offsets sizes most)
+                         determinant (exact (map (fn [(s : int)]
+                           (fma (* -1.0 (array/nth uv s)) (array/nth uv s) (* (array/nth uu s) (array/nth vv s)))) rows))
+                         degenerate (int/gt (array/sum (exact (map (fn [(s : int)]
+                           (if (or (<= (array/nth determinant s) 0.0)
+                                   (<= (array/nth determinant s) (* (* 512.0 2.220446049250313e-16) (abs (* (array/nth uu s) (array/nth vv s)))))) 1 0))
+                           rows))) 0)]
+                    (if degenerate (circle_error "component is collinear or has no stable fit")
+                      (let* [cu (exact (map (fn [(s : int)]
+                               (let* [rhs_u (* -1.0 (array/nth ur2 s)) rhs_v (* -1.0 (array/nth vr2 s))
+                                      d (/ (fma (* -1.0 (array/nth uv s)) rhs_v (* rhs_u (array/nth vv s))) (array/nth determinant s))]
+                                 (* (* -1.0 d) 0.5))) rows))
+                             cv (exact (map (fn [(s : int)]
+                               (let* [rhs_u (* -1.0 (array/nth ur2 s)) rhs_v (* -1.0 (array/nth vr2 s))
+                                      e (/ (fma (* -1.0 (array/nth uv s)) rhs_u (* (array/nth uu s) rhs_v)) (array/nth determinant s))]
+                                 (* (* -1.0 e) 0.5))) rows))
+                             cx (exact (map (fn [(s : int)] (fma (array/nth cv s) (array/nth vx s) (fma (array/nth cu s) (array/nth ux s) (array/nth mean_x s)))) rows))
+                             cy (exact (map (fn [(s : int)] (fma (array/nth cv s) (array/nth vy s) (fma (array/nth cu s) (array/nth uy s) (array/nth mean_y s)))) rows))
+                             cz (exact (map (fn [(s : int)] (fma (array/nth cv s) (array/nth vz s) (fma (array/nth cu s) (array/nth uz s) (array/nth mean_z s)))) rows))
+                             ; distances from the fitted centre, summed with Kahan compensation
+                             ex (exact (map (fn [(j : int)] (- (/ (array/nth mx_ j) (array/nth member_scale j)) (array/nth cx (array/nth owner j)))) range_total))
+                             ey (exact (map (fn [(j : int)] (- (/ (array/nth my_ j) (array/nth member_scale j)) (array/nth cy (array/nth owner j)))) range_total))
+                             ez (exact (map (fn [(j : int)] (- (/ (array/nth mz_ j) (array/nth member_scale j)) (array/nth cz (array/nth owner j)))) range_total))
+                             distance (exact (map (fn [(j : int)]
+                               (let* [s (array/nth owner j)
+                                      u (fma (array/nth ez j) (array/nth uz s) (fma (array/nth ey j) (array/nth uy s) (* (array/nth ex j) (array/nth ux s))))
+                                      v (fma (array/nth ez j) (array/nth vz s) (fma (array/nth ey j) (array/nth vy s) (* (array/nth ex j) (array/nth vx s))))]
+                                 (sqrt (fma v v (* u u)))))
+                               range_total))
+                             total_distance (circle_kahan distance offsets sizes most)
+                             fitted (exact (map (fn [(s : int)]
+                               (if use_radius (/ radius (array/nth coordinate s)) (* (array/nth total_distance s) (array/nth inverse s)))) rows))
+                             unrepresentable (int/gt (array/sum (exact (map (fn [(s : int)]
+                               (if (or (not (and (circle_finite (array/nth cx s)) (and (circle_finite (array/nth cy s)) (circle_finite (array/nth cz s)))))
+                                       (or (not (circle_finite (array/nth fitted s))) (<= (array/nth fitted s) 0.0))) 1 0)) rows))) 0)]
+                        (if unrepresentable (circle_error "component has an unrepresentable radius or center")
+                          (let* [du_all (exact (map (fn [(j : int)]
+                                   (let* [s (array/nth owner j)
+                                          dxj (- (/ (array/nth mx_ j) (array/nth member_scale j)) (array/nth cx s))
+                                          dyj (- (/ (array/nth my_ j) (array/nth member_scale j)) (array/nth cy s))
+                                          dzj (- (/ (array/nth mz_ j) (array/nth member_scale j)) (array/nth cz s))]
+                                     (+ (fma dxj (array/nth ux s) (* dyj (array/nth uy s))) (* dzj (array/nth uz s))))) range_total))
+                                 dv_all (exact (map (fn [(j : int)]
+                                   (let* [s (array/nth owner j)
+                                          dxj (- (/ (array/nth mx_ j) (array/nth member_scale j)) (array/nth cx s))
+                                          dyj (- (/ (array/nth my_ j) (array/nth member_scale j)) (array/nth cy s))
+                                          dzj (- (/ (array/nth mz_ j) (array/nth member_scale j)) (array/nth cz s))]
+                                     (+ (fma dxj (array/nth vx s) (* dyj (array/nth vy s))) (* dzj (array/nth vz s))))) range_total))
+                                 radial (exact (map (fn [(du : float) (dv : float)] (sqrt (fma dv dv (* du du)))) du_all dv_all))
+                                 bad_radial (int/gt (array/sum (exact (map (fn [(r : float)]
+                                   (if (or (= r 0.0) (not (circle_finite r))) 1 0)) radial))) 0)]
+                            (if bad_radial (circle_error "produced an invalid position")
+                              (let* [amount (exact (map (fn [(j : int)] (/ (array/nth fitted (array/nth owner j)) (array/nth radial j))) range_total))
+                                     qx (exact (map (fn [(j : int)] (let* [s (array/nth owner j)]
+                                       (* (fma (array/nth du_all j) (array/nth ux s) (* (array/nth dv_all j) (array/nth vx s))) (array/nth amount j)))) range_total))
+                                     qy (exact (map (fn [(j : int)] (let* [s (array/nth owner j)]
+                                       (* (fma (array/nth du_all j) (array/nth uy s) (* (array/nth dv_all j) (array/nth vy s))) (array/nth amount j)))) range_total))
+                                     qz (exact (map (fn [(j : int)] (let* [s (array/nth owner j)]
+                                       (* (fma (array/nth du_all j) (array/nth uz s) (* (array/nth dv_all j) (array/nth vz s))) (array/nth amount j)))) range_total))
+                                     new_x (exact (map (fn [(j : int)] (let* [s (array/nth owner j)]
+                                       (* (array/nth member_scale j) (fma scale_x (array/nth qx j) (array/nth cx s))))) range_total))
+                                     new_y (exact (map (fn [(j : int)] (let* [s (array/nth owner j)]
+                                       (* (array/nth member_scale j) (fma scale_y (array/nth qy j) (array/nth cy s))))) range_total))
+                                     new_z (exact (map (fn [(j : int)] (let* [s (array/nth owner j)]
+                                       (* (array/nth member_scale j) (fma scale_z (array/nth qz j) (array/nth cz s))))) range_total))
+                                     bad_position (int/gt (array/sum (exact (map (fn [(j : int)]
+                                       (if (and (circle_finite (array/nth new_x j)) (and (circle_finite (array/nth new_y j)) (circle_finite (array/nth new_z j)))) 0 1))
+                                       range_total))) 0)]
+                                (if bad_position (circle_error "produced an invalid position")
+                                  (let* [slot (array/scatter_add sorted_points (exact (map (fn [(j : int)] (int/add j 1)) range_total)) point_total)
+                                         where (exact (map (fn [(k : int)] (int/sub k 1)) slot))
+                                         xs (exact (map (fn [(w : int) (v : float)] (if (int/ge w 0) (array/nth new_x (circle_safe w)) v)) where px))
+                                         ys (exact (map (fn [(w : int) (v : float)] (if (int/ge w 0) (array/nth new_y (circle_safe w)) v)) where py))
+                                         zs (exact (map (fn [(w : int) (v : float)] (if (int/ge w 0) (array/nth new_z (circle_safe w)) v)) where pz))
+                                         moved (sop/delete_attr (sop/delete_attr
+                                           (sop/with_attr in0 "P" (exact (map (fn [(x : float) (y : float) (z : float)] [x y z]) xs ys zs)))
+                                           "N" :owner "point") "N" :owner "vertex")]
+                                    (if has_output (sop/with_group moved (exact selected) :name output_name :owner "edge") moved)))))))))))))))))))
