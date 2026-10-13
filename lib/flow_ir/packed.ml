@@ -266,7 +266,6 @@ exception Failed of Flow.Diagnostic.t
 exception Nonfinite
 let get = function Ok x -> x | Error d -> raise (Failed d)
 
-
 let borrowed_count width columns =
   if Array.length columns<>width then V.fail "E_ARRAY_TYPE" "Borrowed columns changed the packed element width.";
   let length c=if c.stride<=0 || c.offset<0 || c.offset>Array.length c.data then
@@ -776,14 +775,23 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
       (fun i->output.(i)<-input.(i)*factor)
   |Some(_,factor,output)->Rays_math.Parallel.for_ ~chunk_size:4096 ~start:0 ~finish:(count-1)
       (fun i->output.(i)<-i*factor)
-  |None->if t.result=Collect && Array.for_all concrete t.uniforms && count>=4096 then
+  |None->
+      (* Lazy captures cannot be forced from a worker domain. The first chunk runs
+         here, in reference order, and forces whichever captures its lanes select;
+         when every capture is then a value the remaining chunks run in parallel. *)
+      let settled () = Array.for_all (fun lazy_value->Lazy.is_val lazy_value) uniforms
+        && (try Array.iteri (fun i lazy_value->if Lazy.is_val lazy_value then ignore (Lazy.force uniform_components.(i))) uniforms; true
+            with _->false)
+        && Array.for_all (fun lazy_value->Lazy.is_val lazy_value) uniform_components in
+      let first_chunk = if chunks=0 || Array.for_all concrete t.uniforms then 0 else (chunk 0; 1) in
+      if t.result=Collect && count>=4096 && (first_chunk=0 || settled ()) then
       if gather then begin
         let errors=Array.make chunks None in
-        Rays_math.Parallel.for_ ~chunk_size:1 ~start:0 ~finish:(chunks-1)
+        Rays_math.Parallel.for_ ~chunk_size:1 ~start:first_chunk ~finish:(chunks-1)
           (fun i->try chunk i with exn->errors.(i)<-Some exn);
         Array.iter(function None->()|Some exn->raise exn)errors
-      end else Rays_math.Parallel.for_ ~chunk_size:1 ~start:0 ~finish:(chunks-1) chunk
-    else for i=0 to chunks-1 do chunk i done));
+      end else Rays_math.Parallel.for_ ~chunk_size:1 ~start:first_chunk ~finish:(chunks-1) chunk
+    else for i=first_chunk to chunks-1 do chunk i done));
   if plane_outputs<>None then [] else if collecting then Array.to_list outputs else
     [if kept=0 then match t.result,seed with Accumulate _,Some seed->seed|Sum false,_->E.Int 0|_-> !accumulator else !accumulator]
 
