@@ -202,7 +202,7 @@
                target_a target_b)))
            present (exact (map (fn [(edge : int)] (if (int/ge edge 0) 1 0)) found))]
       {:offsets (array/scan_sum present)
-       :values (int_gather found (array/compact present))})))
+       :values (int_gather found (array/compact present))}))
 
   ; Group values are {:mask :ordered :indices}; combining follows Group.combine's order algebra
   ; (union/xor: left preference then right; intersection: the ordered operand; subtract: the left).
