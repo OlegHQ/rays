@@ -1,0 +1,79 @@
+; Whole Group Non-Planar draft. Each polygon is tested in its own scaled frame: the farthest corner
+; from the first fixes one axis, the largest cross product (first wins ties) gives the plane normal.
+(defn group_non_planar_error :context value [(reason : text)]
+  (error "invalid_group" "group_non_planar could not produce valid geometry"
+    :cause (str "group_non_planar [invalid_group]: " reason)))
+(defn group_non_planar_scale :context value [(v : vec3)]
+  (max (abs v.x) (max (abs v.y) (abs v.z))))
+(defn group_non_planar_dot :context value [(a : vec3) (b : vec3)]
+  (fma a.z b.z (fma a.y b.y (* a.x b.x))))
+(defn group_non_planar_primitive :context value
+  [(first : int) (last : int) (kind : int) (positions : (array vec3)) (corners : (array int)) (tolerance : float)]
+  (let* [count (int/sub last first)]
+    (if (or (not (int/eq kind 0)) (int/le count 3)) false
+      (let* [scale (fold [best 0.0] [i (array/range count :type int)]
+                     (max best (group_non_planar_scale (array/nth positions (array/nth corners (int/add first i))))))]
+        (if (= scale 0.0) false
+          (let* [anchor (/ (array/nth positions (array/nth corners first)) scale)
+                 far (fold [state {:distance 0.0 :point anchor}] [i (array/range count :type int)]
+                       (let* [q (- (/ (array/nth positions (array/nth corners (int/add first i))) scale) anchor)
+                              d (group_non_planar_dot q q)]
+                         (if (and (int/gt i 0) (> d state.distance)) {:distance d :point (+ q anchor)} state)))]
+            (if (= far.distance 0.0) false
+              (let* [u (- far.point anchor)
+                     best (fold [state {:magnitude 0.0 :normal [0.0 0.0 0.0]}] [i (array/range count :type int)]
+                            (let* [v (- (/ (array/nth positions (array/nth corners (int/add first i))) scale) anchor)
+                                   c [(fma (* -1.0 u.z) v.y (* u.y v.z))
+                                      (fma (* -1.0 u.x) v.z (* u.z v.x))
+                                      (fma (* -1.0 u.y) v.x (* u.x v.y))]
+                                   m (group_non_planar_dot c c)]
+                              (if (and (int/gt i 0) (> m state.magnitude)) {:magnitude m :normal c} state)))]
+                (if (= best.magnitude 0.0) false
+                  (let* [inverse (/ 1.0 (sqrt best.magnitude))
+                         normal (* best.normal inverse)
+                         limit (/ tolerance scale)]
+                    (fold [found false] [i (array/range count :type int)]
+                      (let* [q (- (/ (array/nth positions (array/nth corners (int/add first i))) scale) anchor)]
+                        (or found (> (abs (group_non_planar_dot normal q)) limit))))))))))))))
+(defn group_non_planar_missing :context sop [(geo : geometry) (name : text)]
+  (let* [found (group_exists geo "primitive" (if (equal? name "") "x" name))]
+    (and (not (equal? name "")) (not found))))
+(defn group_non_planar_finish :context sop
+  [(geo : geometry) (name : text) (operation : text) (base_name : text) (fixed : (array int))]
+  (if (group_non_planar_missing geo base_name)
+    (group_non_planar_error (str "Group Non-Planar: missing primitive base group " (text/repr base_name)))
+    (if (equal? base_name "")
+      (group_publish geo "primitive" name operation fixed)
+      (group_publish geo "primitive" name operation
+        (exact (map (fn [(a : int) (b : int)] (int/and a b)) fixed
+                 (sop/group geo :name base_name :owner "primitive")))))))
+(defnode sop/group_non_planar :label "Group Non-Planar" :category ["Group" "Create"]
+  [(in0 : geometry)
+   (name : text "nonplanar" :label "Group name")
+   (tolerance : float 0.000001 :label "Tolerance" :min 0 :max 0.1 :hard_min 0)
+   (base : text "" :label "Base group" :folder ["Combine"])
+   (merge : text "Replace" :label "Operation" :folder ["Combine"]
+     :choices ["Replace" "Union" "Intersection" "Subtract" "Exclusive or"])]
+  (let* [base_name (text/trim base)
+         operation (case merge "Union" "union" "Intersection" "intersection" "Subtract" "subtract"
+                     "Exclusive or" "xor" :else "replace")
+         positions (sop/attr in0 :P)
+         points (sop/count in0 :points)
+         bad (if (int/eq points 0) points
+               (array/min (map (fn [(p : vec3) (i : int)]
+                 (if (<= (group_non_planar_scale p) 1.7976931348623157e308) points i))
+                 positions (array/range points :type int))))]
+    (cond
+      (text/blank? name) (group_non_planar_error "Group Non-Planar: empty output name")
+      (group_non_planar_missing in0 base_name)
+        (group_non_planar_error (str "Group Non-Planar: missing primitive base group " (text/repr base_name)))
+      (int/lt bad points) (group_non_planar_error (str "Group Non-Planar: non-finite position at point " bad))
+      :else
+        (let* [topology (sop/topology in0)
+               primitives (sop/count in0 :primitives)
+               raw (map (fn [(first : int) (last : int) (kind : int)]
+                     (if (group_non_planar_primitive first last kind positions topology.vertex_points tolerance) 1 0))
+                     (array/slice topology.primitive_offsets 0 primitives)
+                     (array/slice topology.primitive_offsets 1 primitives)
+                     topology.kinds)]
+          (group_non_planar_finish in0 name operation base_name (exact raw))))))
