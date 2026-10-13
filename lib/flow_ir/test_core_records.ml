@@ -27,6 +27,24 @@ let () =
     exit 0
   end
 let bits x y = Int64.bits_of_float x=Int64.bits_of_float y
+let () =
+  let value=E.Record ["values",E.Int_array [|1;0;1|];
+    "nested",E.List [|E.Float(-0.);E.Text "raw\000é"|]] in
+  List.iter(fun reference->
+    let ticks=ref 0 in
+    let profile=I.Profile.create ~clock:(fun()->incr ticks;float !ticks) in
+    let program=ok(I.Executor.compile ~strict:true ~profile value) in
+    let state=E.create_state() in let stamp=E.state_stamp state in
+    let resolutions=ref 0 in
+    let resolve _=incr resolutions;Error(Flow.Diagnostic.error ~code:"E_UNUSED" "unused resolver") in
+    let result=I.Executor.force ~strict:true ~reference ~state ~resolve program
+      ~live:(Frame_input.at_time nan) |>ok in
+    assert(result==value && E.state_stamp state=stamp && !resolutions=0 && !ticks=2);
+    match I.Profile.executions profile with
+    |[execution]->let graph=I.Executor.graph program in
+      let root=graph.nodes.(graph.roots.(0)) in
+      assert(execution.seconds=1. && execution.tier=(if reference then I.Interp else root.tier))
+    |_->failwith "Concrete execution lost its profile entry") [false;true]
 let rec same (a : E.value) (b : E.value) = match a,b with
   | Float a,Float b -> bits a b
   | Vec2 (a,b),Vec2 (x,y) -> bits a x && bits b y

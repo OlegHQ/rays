@@ -213,3 +213,13 @@
  (name test_remap)
  (modules test_remap)
  (libraries flow_sop flow flow_ir flow_graph sop rdk rdk_test_support lisp_sop))
+
+(executable
+ (name test_points_port)
+ (modules test_points_port)
+ (libraries flow flow_ir flow_graph flow_sop sop_catalog rdk rdk_test_support lisp_sop unix))
+
+(rule
+ (alias points_draft)
+ (deps nodes/points.pending)
+ (action (run %{exe:test_points_port.exe})))

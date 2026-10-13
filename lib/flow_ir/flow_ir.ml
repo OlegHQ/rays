@@ -754,6 +754,11 @@ module Executor = struct
       let _, path, iter = Packed.site packed in
       Profile.record profile {owner = path, iter; sites; seconds; tier = if reference then Interp else Cpu_kernel})) profile
   let force ?state ?elems ?resolve ?(reference = false) ?(strict = false) program ~live =
+    let result, packed_ran, fell_back, started =
+      if not (E.is_live program.value) then
+        let started = Option.map (fun profile -> profile.Profile.clock ()) program.profile in
+        Ok program.value, false, reference, started
+      else begin
     let packed_ran = ref false in
     let measure = measure ~ran:(fun () -> packed_ran := true) program.profile in
     let state = match state with Some state -> state | None -> E.create_state () in
@@ -812,9 +817,11 @@ module Executor = struct
     let run () = if reference then fallback () else force_with_packed program.value ~live in
     let started = Option.map (fun profile -> profile.Profile.clock ()) program.profile in
     let result = run () in
-    Option.iter (fun profile -> if not !packed_ran then begin
+    result, !packed_ran, !fell_back, started
+      end in
+    Option.iter (fun profile -> if not packed_ran then begin
       let root = program.ir.nodes.(program.ir.roots.(0)) in
-      let tier = if !fell_back then Interp else root.tier in
+      let tier = if fell_back then Interp else root.tier in
       let instance = match fst root.id with
         | namespace :: _ when String.starts_with ~prefix:"@instance:" namespace ->
             int_of_string (String.sub namespace 10 (String.length namespace - 10))

@@ -4913,3 +4913,35 @@ cleaning or forcing Dune. No public API snapshot changed.
 Evidence: `declaration-cache-validation.md`. Accepted whole ports remain14/128;
 milestones24/60. Line's registration and final native integration are still under
 review, and this foundation does not count that candidate as a completed port.
+
+## Concrete executor correction and complete Points recipe tables
+
+Points first passed12/12 aggregate rows but failed2/36 small-count rows:
+one-point named groups at1domain, ratios2.0369485705755022 and2.0012942191544436.
+All rows/failures are retained; no threshold, native50-point hard cap or
+predetermined table changed. The aggregate protocol is20,00050-point cold
+cooks,1M total, complemented by1/7/50-point1000-session tables.
+
+Shared Executor.force now returns already-concrete values through Eval's
+existing !is_live boundary before allocating unused dynamic execution machinery.
+Profile tiers/sites/two samples, exact object identity, unused resolver,
+supplied-state nonmutation and the concrete invalid-frame behavior have a
+runnable check. Dynamic Source/residual execution and strict compile remain.
+Request83851 EXIT0 covers Flow/IR/SOP/graph/web/GPU, CLI/worker, API/dependencies.
+Native integration83712 EXIT0; no render golden changed.
+
+Changed-code timings: aggregate80848 EXIT0 all12PASS, micro91572 EXIT0 all36PASS.
+Maximum ratios1.8258339810115973 /1.9819395082323927. Allocation falls1536bytes
+per empty/blank-group cook and2048bytes per named-group cook; wall gains are
+modest. Logs /tmp/rays-points-{aggregate,micro}-concrete-after-20261013.log,
+complete before/after tables and protocol in concrete-executor-validation.md.
+Root fully reviewed all96 before/after rows; independent source review also
+checked all48 final configurations. No unchanged-code retry or row was dropped.
+
+Points source/test draft is applied and passes all50 native/reference counts,
+raw metadata/group-name policy, source/edit refusals, hard clamping, full card/
+inspector and actual parameter gestures, live/state drives and cache checks.
+Root corrected the manual test loader to unwrap its library workspace exactly
+as the production embedding does. Points remains natively registered and
+unaccepted until its separate paired production/native menu/oracle gates.
+Accepted counts remain14/128 whole ports and24/60 milestones here.

@@ -1,0 +1,32 @@
+; Whole bounded origin generator; the input-dependent point_generate is separate.
+(workspace points_node
+  (defn points_origin_validate :context value
+    [(count : int) (source_name : text) (index_name : text)]
+    (cond
+      (or (int/lt count 1) (int/gt count 50))
+        (error "E_PARAM" "sop/point_generate_origin: points must be between 1 and 50")
+      (or (or (text/blank? source_name) (equal? source_name "P"))
+          (or (text/blank? index_name) (equal? index_name "P")))
+        (error "E_PARAM" "sop/point_generate_origin: metadata names must be nonblank and cannot be P")
+      (equal? source_name index_name)
+        (error "E_PARAM" "sop/point_generate_origin: metadata names must be distinct")
+      :else true))
+  (defnode sop/points :label "Point Generate" :operation "point_generate" :version 1
+    :category ["Create" "Point"]
+    :validate (points_origin_validate points source_point_attribute source_index_attribute)
+    [(points : int 50 :label "Points" :min 1 :max 50 :hard_min 1 :hard_max 50)
+     (generated_group : text "" :label "Generated group")
+     (source_point_attribute : text "sourcepoint" :label "Source point attribute")
+     (source_index_attribute : text "sourceindex" :label "Source index attribute")]
+    (let* [zero_plane (array/float points)
+           origin_geometry (sop/mesh_planes
+             :points {:x zero_plane :y zero_plane :z zero_plane}
+             :vertex_points (array/int 0) :primitive_offsets (array/int 1) :kinds (array/int 0))
+           source_metadata (sop/with_attr origin_geometry source_point_attribute
+             (array/int points -1) :owner "point" :type int)
+           index_metadata (sop/with_attr source_metadata source_index_attribute
+             (exact (array/range points :type int)) :owner "point" :type int)
+           ; Only the group name is trimmed; metadata names stay byte-for-byte raw.
+           group_name (text/trim generated_group)]
+      (if (text/blank? group_name) index_metadata
+        (sop/with_group index_metadata (array/int points 1) :owner "point" :name group_name)))))
