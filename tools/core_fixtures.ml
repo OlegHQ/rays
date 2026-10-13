@@ -36,6 +36,7 @@ let inventory = [
   Integer_compare P.Ilt; Integer_compare P.Ile; Integer_compare P.Igt;
   Integer_compare P.Ige; Integer_compare P.Ieq;
   Equal; Show; Text_concat; Text_blank; Text_trim; Text_lower; Text_repr; Text_table_decode; Text_table_encode;
+  Text_split; Text_tokens; Text_to_float; Text_to_int;
   Sequence_length; Sequence_get; Sequence_build; Sequence_slice; Sequence_concat;
   Array_reduce Minimum; Array_reduce Maximum; Array_segment Sum; Array_segment Minimum; Array_segment Maximum;
   Array_grade; Array_index_of; Array_compact; Array_scan_sum; Array_scatter_add; Array_max_length; Array_range; Array_int; Array_text; Array_float; Array_vec3; Array_vec4; Array_nth; Array_count; Array_slice; Array_concat;
@@ -105,6 +106,8 @@ let arg_name prim i = match prim, i with
   | Array_count, _ -> "array"
   | Text_blank, _ | Text_trim, _ | Text_lower, _ | Text_repr, _ -> "text"
   | Text_table_decode, _ -> "text" | Text_table_encode, _ -> "rows"
+  | Text_split, 0 -> "text" | Text_split, _ -> "separator"
+  | Text_tokens, _ | Text_to_float, _ | Text_to_int, _ -> "text"
   | Array_reduce _, _ -> "array"
   | Rand_at, 0 -> "seed" | Rand_at, _ -> "index"
   | Fma, _ | Checked_fma, _ | Checked_mul, _ -> [|"a";"b";"c"|].(i)
@@ -118,7 +121,7 @@ let arg_name prim i = match prim, i with
   | Array_slice, _ -> [|"array"; "first"; "count"|].(i)
   | Array_concat, _ -> if i = 0 then "first" else "second"
   | Sequence_slice, _ -> [|"list"; "first"; "count"|].(i)
-  | Noise3, _ -> [|"position"; "seed"; "octaves"|].(i)
+  | Noise3, _ -> [|"position"; "seed"; "octaves"; "lacunarity"; "gain"|].(i)
   | _ -> Printf.sprintf "x%d" i
 let source : C.source = { site = []; owner = []; instance = 0; prefix = []; iter = []; span = None }
 let run prim args =
@@ -255,6 +258,19 @@ let () =
      digits[digits[txt "é日本😀";txt "\t\n\\"];digits[txt ""]];digits[digits[];digits[]];
      int 0;digits[int 0];digits[digits[int 0]]];
   add C.Text_table_decode[int 0];
+  List.iter(fun(text,separator)->add C.Text_split[txt text;txt separator])
+    ["","," ;"a,b,,c",",";",a,",",";"a::b::","::";"a:::b","::";"é,日本,😀",",";"abc","abc";"a\tb","\t"];
+  List.iter(fun value->add C.Text_split[value;txt ","];add C.Text_split[txt "a";value])[int 0;E.Bool false;E.No_geo];
+  add C.Text_split[txt "a";txt ""];
+  List.iter(fun text->add C.Text_tokens[txt text])
+    ["";" ";"0 1,2\t3\n4";"  1,,2 \n\n";"a\rb";"é,日本\t😀";"1\r\n2"];
+  List.iter(fun primitive->List.iter(fun text->add primitive[txt text])
+    ["";" ";"0";"-0";"+5";" 12 ";"1.5";"-2.25e3";"1e5";"1E-2";".5";"5.";"1.e2";".";"e5";"1e";"1e+";"+";"-";"1_0";
+     "0x10";"0b1";"nan";"inf";"-infinity";"1e999";"1e-999";"4611686018427387903";"4611686018427387904";
+     "-4611686018427387904";"-4611686018427387905";"99999999999999999999";"１２";"1 2";"1,2";"\t7\n";"\0111"];
+    List.iter(fun value->add primitive[value])[int 0;E.Bool false;E.No_geo])
+    [C.Text_to_float;C.Text_to_int];
+  add C.Text_tokens[int 0];
   List.iter(fun primitive->List.iter(fun array->add primitive[array])
     [E.Int_array[||];E.Int_array[|0|];E.Int_array[|1|];E.Int_array[|0;1;0;1|];
      E.Int_array[|1;1;1|];E.Int_array[|1;2;0|];E.Int_array[|-1;1|];
@@ -443,11 +459,16 @@ arr1[0.;-0.;0.];arr1[1e16;1.;-1e16];
     (1e15 +. 0.5, 3., 7.); (1e19, -1e19, 5e18); (1e300, 0., 0.); (-1e300, 1., 2.); (1e308, 1e308, 1e308)] in
   List.iter (fun (x, y, z) -> let p = v3 x y z in
     add C.Noise3 [p]; add C.Noise3 [p; int 7]; add C.Noise3 [p; int (-1); int 3];
-    add C.Noise3 [p; int 0; int 2]; add C.Noise3 [p; int max_int; int 32]) positions;
+    add C.Noise3 [p; int 0; int 2]; add C.Noise3 [p; int max_int; int 32];
+    add C.Noise3 [p; int 5; int 4; flt_ 1.7; flt_ 0.62]; add C.Noise3 [p; int 5; int 6; flt_ 3.; flt_ 0.]) positions;
   List.iter (add C.Noise3) [[v3 0.3 0.6 0.9; int min_int; int 1]; [v3 0.3 0.6 0.9; int 42; int 4];
     [v3 0.3 0.6 0.9; flt_ 2.5; flt_ 2.4]; [v3 0.3 0.6 0.9; int 0; int 0]; [v3 0.3 0.6 0.9; int 0; int 33];
     [v3 0.3 0.6 0.9; int 0; int (-1)]; [v3 nan 0. 0.]; [v3 0. infinity 0.]; [v2 0. 0.]; [flt_ 1.];
-    [v3 0.3 0.6 0.9; txt "x"]; [v3 0.3 0.6 0.9; int 0; E.Bool true]; [v3 0.3 0.6 0.9; E.Bool true]];
+    [v3 0.3 0.6 0.9; txt "x"]; [v3 0.3 0.6 0.9; int 0; E.Bool true]; [v3 0.3 0.6 0.9; E.Bool true];
+    [v3 0.3 0.6 0.9; int 1; int 3; flt_ 0.]; [v3 0.3 0.6 0.9; int 1; int 3; flt_ (-1.)]; [v3 0.3 0.6 0.9; int 1; int 3; flt_ infinity];
+    [v3 0.3 0.6 0.9; int 1; int 3; flt_ nan]; [v3 0.3 0.6 0.9; int 1; int 3; flt_ 2.; flt_ 1.]; [v3 0.3 0.6 0.9; int 1; int 3; flt_ 2.; flt_ 1.01];
+    [v3 0.3 0.6 0.9; int 1; int 3; flt_ 2.; flt_ (-0.1)]; [v3 0.3 0.6 0.9; int 1; int 3; flt_ 2.; flt_ nan]; [v3 0.3 0.6 0.9; int 1; int 1; flt_ 9.; flt_ 0.3];
+    [v3 0.3 0.6 0.9; int 1; int 3; int 3; int 0]; [v3 0.3 0.6 0.9; int 1; int 3; txt "x"]];
   List.iter (fun s -> add C.Color_parse [txt s])
     ["#fff"; "fff"; "#ffff"; "#ff0000"; "#FF000080"; "ff000080"; "#abcdef"; "#AbCdEf12"; "f_0000"; "#f_f_f_";
      "#_f0000"; "#+f0000"; "#-f0000"; "#ff"; ""; "#"; "#12345"; "#1234567"; "#ggg"; "#zzzzzz"; "#0x0000";
@@ -576,6 +597,11 @@ arr1[0.;-0.;0.];arr1[1e16;1.;-1e16];
     (["";"ordinary";"-";"[a-z]";"\\";"\\\\";"^*?[]";"é猫😀";"\011"]
      @List.init 128(fun byte->"p"^String.make 1(Char.chr byte)^"q"));
   List.iter(text_operation "text/glob_literal" ["text"]) [[E.Int 0];[E.Bool false]];
+  List.iter(fun name->
+    List.iter(fun text->text_operation name ["text"] [E.Text text])
+      ["";"ok";"_x1";"A_9";"1a";"9";"a b";"a-b";"é猫😀";"a\000b";"\n";"_";"Zz09_"];
+    List.iter(text_operation name ["text"]) [[E.Int 0];[E.Bool false]])
+    ["text/group_name_valid";"text/group_name_forced"];
   List.iter(fun(pattern,replacement,text)->text_operation "text/glob_rewrite"
     ["pattern";"replacement";"text"] [E.Text pattern;E.Text replacement;E.Text text])
     ["*_???","old_???_*","tag_abc";"[a-c]*","*[a-c]","aé猫";
@@ -1125,6 +1151,13 @@ arr1[0.;-0.;0.];arr1[1e16;1.;-1e16];
         (op "sop/attr_names").check args;
         Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->Some metadata_geometry)(E.Source("sop/attr_names",T.Array T.Text,args)))))
       ["";"*";"mask_* ^mask_A";"??";"[";"\\"];
+    add_host "sop/attr_entries" [geometry_value metadata_geometry;E.Text owner]
+      (host_result(fun()->let args=["geometry",E.Deferred(T.geometry,0);"owner",E.Text owner] in
+        (op "sop/attr_entries").check args;
+        let resolve=Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->Some metadata_geometry) in
+        let column component=resolve(E.Source("sop/attr_entries",T.Array T.Text,args@["component",E.Text component])) in
+        Result.bind(column "name")(fun name->Result.bind(column "type")(fun ty->
+          Result.map(fun owners->E.Record["name",name;"type",ty;"owner",owners])(column "owner")))));
     List.iter(fun(pattern,replacement)->List.iter(fun(conflict,policy)->
       add_host "sop/rename_attr" [geometry_value metadata_geometry;E.Text pattern;E.Text replacement;E.Text owner;E.Text conflict]
         (metadata_result "sop/rename_attr" ["pattern",E.Text pattern;"replacement",E.Text replacement;"owner",E.Text owner;"conflict",E.Text conflict]
@@ -1371,7 +1404,7 @@ let fields=["points",E.Int_array[|0;1;2|];"vertices",E.Int_array[|0;1;2|];
 remap_case source changed_p fields;
 remap_case source unrelated fields;
   (* write *)
-  assert (List.length inventory = 96);
+  assert (List.length inventory = 100);
   if not (Sys.file_exists outdir) then Sys.mkdir outdir 0o755;
   List.iter (fun name ->
     let body = String.concat ",\n" (List.rev !(Hashtbl.find cases name)) in
@@ -1379,6 +1412,6 @@ remap_case source unrelated fields;
       Printf.fprintf oc "{\"primitive\":%s,\"export\":%s,\"cases\":[\n%s\n]}\n" (str name) (str (export name)) body))
     (List.map C.primitive_name inventory @ ["array/sum";"sop/context_seed";"sop/delete_attr";"sop/attr";"sop/attr_checked";"sop/with_attr";"sop/has_attr";"sop/count";"sop/edges";"sop/topology";"sop/adjacency";"sop/components";"graph/shortest_paths";"graph/chains";"graph/color";"sop/mesh";"sop/mesh_planes";"sop/remap";
       "sop/group";"sop/group_names";"sop/group_order";"sop/with_group";
-      "sop/attr_type";"sop/attr_names";"sop/rename_attr";"sop/swap_attr";"sop/delete_attrs";
+      "sop/attr_type";"sop/attr_names";"sop/attr_entries";"sop/rename_attr";"sop/swap_attr";"sop/delete_attrs";
       "sop/rename_group";"sop/delete_group";"sop/rename_edge";"sop/delete_edge";"text/glob_error";"text/glob_rewrite_error";
-      "text/glob_literal";"text/glob_rewrite";"sop/group_entries";"$host/diagnostic_rows"])
+      "text/glob_literal";"text/glob_rewrite";"text/group_name_valid";"text/group_name_forced";"sop/group_entries";"$host/diagnostic_rows"])

@@ -8,13 +8,18 @@ let noise_table seed =
 let noise_settings args =
   let integer key default = Option.fold ~none:default ~some:(function
     | Flow.Value.Int n -> n | value -> Flow.Value.int_of value) (List.assoc_opt key args) in
+  let number key default = Option.fold ~none:default ~some:Flow.Value.num (List.assoc_opt key args) in
   let seed=integer "seed" 0 and octaves=integer "octaves" 1 in
+  let lacunarity=number "lacunarity" 2. and gain=number "gain" 0.5 in
   if octaves<1 || octaves>32 then Flow.Value.fail "E_NOISE_RANGE" "Noise octaves are 1 to 32.";
-  seed,octaves
+  if not (Float.is_finite lacunarity && lacunarity>0.) then
+    Flow.Value.fail "E_NOISE_RANGE" "Noise lacunarity must be finite and positive.";
+  if not (gain>=0. && gain<=1.) then Flow.Value.fail "E_NOISE_RANGE" "Noise gain is 0 to 1.";
+  seed,octaves,lacunarity,gain
 let noise3 : Flow.Op.t = {
   name = "noise3"; ctx = Flow.Context.value;
   signature = {pos = ["position", Flow.Ty.Vec3]; opt = []; rest = None;
-    kw = ["seed",Flow.Ty.Int;"octaves",Flow.Ty.Int]};
+    kw = ["seed",Flow.Ty.Int;"octaves",Flow.Ty.Int;"lacunarity",Flow.Ty.Float;"gain",Flow.Ty.Float]};
   out = (fun _ -> Flow.Ty.Float); out_args = None; any_num = false; choices = [];
   shape = Flow.Op.Scalar; live = false; category = "Noise"; arithmetic = None;
   packed_extension = Some Flow.Packed_ops.Noise3;
@@ -26,10 +31,12 @@ let noise3 : Flow.Op.t = {
         ignore (Flow.Value.fin "noise3 position" x);
         ignore (Flow.Value.fin "noise3 position" y);
         ignore (Flow.Value.fin "noise3 position" z);
-        let seed,octaves=noise_settings args in
+        let seed,octaves,lacunarity,gain=noise_settings args in
         Flow.Value.Float (Flow.Value.fin "noise3"
           (if octaves=1 then Rays_math.Noise.sample3 (noise_table seed) ~x ~y ~z
-           else Rays_math.Noise.fbm3 ~octaves (noise_table seed) ~x ~y ~z))
+           else if lacunarity=2. && gain=0.5 then Rays_math.Noise.fbm3 ~octaves (noise_table seed) ~x ~y ~z
+           else Rays_math.Noise.Private.fbm3_with_scratch (Rays_math.Noise.Private.create_fbm3_scratch ())
+             (noise_table seed) ~octaves ~lacunarity ~gain ~x ~y ~z))
     | _ -> Flow.Value.fail "E_TYPE" "noise3 takes a vec3 position.");
 }
 let drawing_color = function

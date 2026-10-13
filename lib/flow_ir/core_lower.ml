@@ -234,6 +234,8 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
     | "float/fma_checked" -> Some Checked_fma
     | "text/table_decode" -> Some Text_table_decode
     | "text/table_encode" -> Some Text_table_encode
+    | "text/split" -> Some Text_split | "text/tokens" -> Some Text_tokens
+    | "text/to_float" -> Some Text_to_float | "text/to_int" -> Some Text_to_int
     | "array/grade" -> Some Array_grade | "array/index_of" -> Some Array_index_of
     | "array/compact" -> Some Array_compact | "array/scan_sum" -> Some Array_scan_sum
     | "array/scatter_add" -> Some Array_scatter_add

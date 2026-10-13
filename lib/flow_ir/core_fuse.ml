@@ -60,7 +60,7 @@ let builder () =
         | Int_compare (op,a,b) -> Int_compare(op,at a,at b)
         | Unary (op, a) -> Unary (op, at a)
         | Int_abs a -> Int_abs(at a) | Convert (op,a) -> Convert(op,at a)
-        | Noise3 (a, b, c, seed, octaves) -> Noise3 (at a, at b, at c, seed, octaves)
+        | Noise3 (a, b, c, seed, octaves, lacunarity, gain) -> Noise3 (at a, at b, at c, seed, octaves, lacunarity, gain)
         | Rand_at(seed,index) -> Rand_at(at seed,at index)
         | Fma(a,b,c) -> Fma(at a,at b,at c)
         | Checked_mul(p,a,b) -> Checked_mul(p,at a,at b)

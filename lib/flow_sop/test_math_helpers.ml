@@ -12,7 +12,7 @@ let sources =
   Flow.Syntax.children workspace |> List.filter (fun form -> Flow.Syntax.head form = Some "defn")
 let evaluate body =
   let source = parse ("(workspace math_helpers (graph result :context host " ^ body ^ "))") in
-  let workspace = match Flow_sop.Catalog.check_workspace ~library:false ~sources
+  let workspace = match Flow_sop.Catalog.check_workspace ~ops:Flow_sop.Operators.all ~library:false ~sources
       Flow.Check.{version=1;kinds=[]} source with
     | Some workspace, [] -> workspace
     | _, ds -> failwith (String.concat "\n" (List.map Flow.Diagnostic.to_string ds)) in

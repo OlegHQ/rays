@@ -162,6 +162,10 @@ val promotions :
   ?cancel:Rdk_core.Cancel.t -> ?grain:int -> ?max_outputs:int ->
   ?max_payload_bytes:int -> rules:promotion_rule list ->
   Rdk_core.Geometry.t -> (Rdk_core.Geometry.t, Rdk_core.Error.t) result
+(* Groups-from-name spelling: nonempty ASCII letters, digits and underscore, no leading digit. *)
+val valid_group_name : string -> bool
+(* Every other byte becomes "_" and a leading digit gets a "_" prefix. *)
+val force_valid_group_name : string -> string
 (* Typed boundary with the former Ops error and cancellation behavior. *)
 val groups_from_name :
   ?cancel:Rdk_core.Cancel.t ->

@@ -244,7 +244,7 @@ let renumber first x =
   let x = go x in (x, !next)
 (* Data selectors are positional text, including their keyword spelling. *)
 let attribute_args head args =
-  let attribute=List.mem head ["sop/attr";"sop/attr_checked";"sop/with_attr";"sop/has_attr";"sop/attr_type";"sop/attr_names";"attr";"attr_checked";"with_attr";"has_attr"] in
+  let attribute=List.mem head ["sop/attr";"sop/attr_checked";"sop/with_attr";"sop/has_attr";"sop/attr_type";"sop/attr_names";"sop/attr_entries";"attr";"attr_checked";"with_attr";"has_attr"] in
   let group=List.mem head ["sop/group";"sop/group_names";"sop/group_order";"sop/with_group"] in
   let attribute_metadata=List.mem head ["sop/rename_attr";"sop/swap_attr"] in
   let group_metadata=List.mem head ["sop/rename_group";"sop/delete_group"] in

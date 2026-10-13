@@ -8,7 +8,7 @@ type projection = Core.Region.projection = Value | Valid
 type instruction = Core.Region.instruction = Const of float | Input of int * int * int
   | Uniform of int * int | Frame of string | Accumulator of int
   | Binary of binary * int * int | Unary of unary * int
-  | Noise3 of int * int * int * int * int | Fma of int * int * int | Rand_at of int * int
+  | Noise3 of int * int * int * int * int * float * float | Fma of int * int * int | Rand_at of int * int
   | Select of int * int * int
   | Checked_mul of projection * int * int | Checked_fma of projection * int * int * int
   | Array_prepare of int * Flow.Ty.t

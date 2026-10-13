@@ -176,11 +176,11 @@ let () =
   let points = Array.init count (fun i -> if i<Array.length special then special.(i)
     else float i *. 0.137 -. 256.2,sin (float i *. 0.37),float (i mod 19) *. (-0.31)) in
   let native_samples=ref 0 and native_bit_differences=ref 0 and native_max_ulps=ref 0. in
-  let check points seed octaves =
+  let check ?(lacunarity=2.) ?(gain=0.5) points seed octaves =
     let input = E.Vec3_array (Array.init (Array.length points*3) (fun i ->
       let x,y,z=points.(i/3) in match i mod 3 with 0->x|1->y|_->z)) in
     let mapped,program = map Flow.Ty.Vec3 input
-      (Printf.sprintf "(noise3 (+ i [t 0.0 0.0]) :seed %d :octaves %d)" seed octaves) in
+      (Printf.sprintf "(noise3 (+ i [t 0.0 0.0]) :seed %d :octaves %d :lacunarity %.17g :gain %.17g)" seed octaves lacunarity gain) in
     let live=Frame_input.at_time 0. in
     let expected=match ok (E.Private.force_reference mapped ~live) with
       | E.Float_array values->values | _->assert false in
@@ -188,7 +188,8 @@ let () =
       same expected (ok (P.force ~strict:true program ~live)))) [1;8];
     let noise=Rays_math.Noise.create seed in
     Array.iteri (fun i (x,y,z) ->
-      let native=Rays_math.Noise.fbm3 ~octaves noise ~x ~y ~z in
+      let native=if lacunarity=2. && gain=0.5 then Rays_math.Noise.fbm3 ~octaves noise ~x ~y ~z
+        else Rays_math.Noise.Private.fbm3_with_scratch (Rays_math.Noise.Private.create_fbm3_scratch ()) noise ~octaves ~lacunarity ~gain ~x ~y ~z in
       incr native_samples;
       if Int64.bits_of_float native <> Int64.bits_of_float expected.(i) then incr native_bit_differences;
       let _,exponent=Float.frexp (max (abs_float native) (abs_float expected.(i))) in
@@ -198,6 +199,13 @@ let () =
         seed octaves i native expected.(i) ulps)) points in
   List.iter (check points 42) [1;4;32];
   List.iter (fun seed -> List.iter (check special seed) [1;4;32]) [0;1;42];
+  List.iter (fun (lacunarity,gain) -> List.iter (check ~lacunarity ~gain points 7) [2;5;32])
+    [1.7,0.62; 3.,0.; 0.5,1.; 2.,1.; 2.31,0.25];
+  List.iter (fun source -> match value source with
+    | exception Failure message when String.starts_with ~prefix:"E_NOISE_RANGE" message -> ()
+    | _ -> failwith ("out-of-range noise shape accepted: " ^ source))
+    ["(noise3 [0.1 -0.2 0.3] :octaves 3 :lacunarity 0.0)"; "(noise3 [0.1 -0.2 0.3] :octaves 3 :gain 1.5)";
+     "(noise3 [0.1 -0.2 0.3] :octaves 3 :gain -0.5)"];
   List.iter (fun octaves ->
     match value (Printf.sprintf "(noise3 [0.1 -0.2 0.3] :octaves %d)" octaves) with
     | exception Failure message when String.starts_with ~prefix:"E_NOISE_RANGE" message -> ()

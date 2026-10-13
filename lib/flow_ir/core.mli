@@ -16,6 +16,7 @@ type primitive =
   | Remainder | Exp | Floor | Ceil | Round | Int_convert | Float_convert
   | Integer of integer | Integer_compare of Flow.Packed_ops.comparison | Equal | Show | Text_concat | Text_blank
   | Text_trim | Text_lower | Text_repr | Text_table_decode | Text_table_encode
+  | Text_split | Text_tokens | Text_to_float | Text_to_int
   | Sequence_length | Sequence_get | Sequence_build | Sequence_slice | Sequence_concat
   | Array_max_length | Array_range | Array_int | Array_text | Array_float | Array_vec3 | Array_vec4 | Array_nth | Array_count | Array_slice | Array_concat
   | Array_reduce of Flow.Op.Private.reduction | Array_segment of Flow.Op.Private.reduction
@@ -106,7 +107,7 @@ module Region : sig
     | Const of float | Input of int * int * int  (** source, width, component *)
     | Uniform of int * int | Frame of string | Accumulator of int
     | Binary of Flow.Packed_ops.binary * int * int | Unary of Flow.Packed_ops.unary * int
-    | Noise3 of int * int * int * int * int | Fma of int * int * int | Rand_at of int * int | Select of int * int * int
+    | Noise3 of int * int * int * int * int * float * float | Fma of int * int * int | Rand_at of int * int | Select of int * int * int
     | Checked_mul of projection * int * int | Checked_fma of projection * int * int * int
     | Array_prepare of int * Flow.Ty.t
       (** Execution-local immutable table capture, resolved before its index.

@@ -1,4 +1,38 @@
 open Value
+
+(* text/split and the token readers: the grammars are fixed here and in prims.js. *)
+let split_text text separator =
+  let n=String.length text and m=String.length separator in
+  let rec go start i acc =
+    if i+m>n then List.rev(String.sub text start (n-start)::acc)
+    else if String.sub text i m=separator then go (i+m) (i+m) (String.sub text start (i-start)::acc)
+    else go start (i+1) acc in
+  go 0 0 []
+let digits_from s i =
+  let n=String.length s in let j=ref i in
+  while !j<n && s.[!j]>='0' && s.[!j]<='9' do incr j done; !j
+(* Optional sign, digits with an optional fraction or a bare fraction, optional exponent; finite;
+   after String.trim. *)
+let parse_float_token text =
+  let s=String.trim text in let n=String.length s in
+  let i=if n>0 && (s.[0]='+'||s.[0]='-') then 1 else 0 in
+  let a=digits_from s i in
+  let b=if a<n && s.[a]='.' then digits_from s (a+1) else a in
+  let mantissa=a>i || b>a+1 in
+  let e=if mantissa && b<n && (s.[b]='e'||s.[b]='E') then
+      let k=if b+1<n && (s.[b+1]='+'||s.[b+1]='-') then b+2 else b+1 in
+      let z=digits_from s k in if z>k then z else -1
+    else b in
+  if mantissa && e=n then
+    (match float_of_string_opt s with Some v when Float.is_finite v->Some v|_->None)
+  else None
+(* [+-]?d+ within the 63-bit native integer range, after String.trim. *)
+let parse_int_token text =
+  let s=String.trim text in let n=String.length s in
+  let i=if n>0 && (s.[0]='+'||s.[0]='-') then 1 else 0 in
+  if n>i && digits_from s i=n then
+    int_of_string_opt(if s.[0]='+' then String.sub s 1 (n-1) else s)
+  else None
 type signature = {
   pos : (string * Ty.t) list; opt : (string * Ty.t) list;
   rest : (string * Ty.t) option; kw : (string * Ty.t) list;
@@ -703,7 +737,28 @@ let all = frame @ arrays @ reductions @ draw @ host @ integers @ images @ [
   mk ~category:"Text" "text/repr" ["text",Ty.Text] (fun _ -> Ty.Text)
     {run=fun ~name:_ ~node:_ args -> match List.assoc "text" args with
       | Text text -> Text(Printf.sprintf "%S" text) | _ -> fail "E_TYPE" "Expected text."};
-  mk ~category:"Value" ~kw:["cause",Ty.Text] "error" ["code",Ty.Text;"message",Ty.Text] (fun _ -> Ty.Any)
+  mk ~category:"Text" "text/split" ["text",Ty.Text;"separator",Ty.Text] (fun _ -> Ty.Array Ty.Text)
+    {run=fun ~name:_ ~node:_ args -> match List.assoc "text" args,List.assoc "separator" args with
+      | Text text,Text separator ->
+          if separator="" then fail "E_TEXT_SEPARATOR" "text/split needs a nonempty separator.";
+          Text_array(Array.of_list(split_text text separator))
+      | _ -> fail "E_TYPE" "Expected text."};
+  mk ~category:"Text" "text/tokens" ["text",Ty.Text] (fun _ -> Ty.Array Ty.Text)
+    {run=fun ~name:_ ~node:_ args -> match List.assoc "text" args with
+      | Text text -> Text_array(Array.of_list(List.filter(fun token->token<>"")
+          (String.split_on_char ' ' (String.map(function ','|'\t'|'\n'->' '|c->c) text))))
+      | _ -> fail "E_TYPE" "Expected text."};
+  mk ~category:"Text" "text/to_float" ["text",Ty.Text] (fun _ -> Ty.Record ["value",Ty.Float;"valid",Ty.Bool])
+    {run=fun ~name:_ ~node:_ args -> match List.assoc "text" args with
+      | Text text -> let value=parse_float_token text in
+          Record ["value",Float(Option.value value ~default:0.);"valid",Bool(Option.is_some value)]
+      | _ -> fail "E_TYPE" "Expected text."};
+  mk ~category:"Text" "text/to_int" ["text",Ty.Text] (fun _ -> Ty.Record ["value",Ty.Int;"valid",Ty.Bool])
+    {run=fun ~name:_ ~node:_ args -> match List.assoc "text" args with
+      | Text text -> let value=parse_int_token text in
+          Record ["value",Int(Option.value value ~default:0);"valid",Bool(Option.is_some value)]
+      | _ -> fail "E_TYPE" "Expected text."};
+  mk ~category:"Value" ~kw:["cause",Ty.Text] "error"["code",Ty.Text;"message",Ty.Text] (fun _ -> Ty.Any)
     {run=fun ~name:_ ~node:_ args -> match List.assoc "code" args,List.assoc "message" args with
       | Text code,Text message ->
           let cause=match List.assoc_opt "cause" args with None->None|Some(Text text)->Some text
@@ -963,7 +1018,7 @@ let valid_extension op = match op.packed_extension with
       && not op.live && not op.any_num && op.arithmetic = None && op.out_args = None
       && op.signature.pos = ["position", Ty.Vec3]
       && op.signature.opt = [] && op.signature.rest = None
-      && List.sort Stdlib.compare op.signature.kw = ["octaves", Ty.Int; "seed", Ty.Int]
+      && List.sort Stdlib.compare op.signature.kw = ["gain", Ty.Float; "lacunarity", Ty.Float; "octaves", Ty.Int; "seed", Ty.Int]
       && (try op.out [Ty.Vec3] = Ty.Float
           with Value.Fail _ | Invalid_argument _ -> false)
 
@@ -1006,5 +1061,5 @@ let validate extra =
     else if not (valid_extension op) then
       Some (Diagnostic.error ~code:"E_OP_DECLARATION"
         ("Invalid packed capability for " ^ op.name ^
-         ": noise3 requires a scalar value declaration with position:vec3, seed:int/octaves:int keywords and float result."))
+         ": noise3 requires a scalar value declaration with position:vec3, seed:int/octaves:int/lacunarity:float/gain:float keywords and float result."))
     else (Hashtbl.add seen op.name (); None)) extra

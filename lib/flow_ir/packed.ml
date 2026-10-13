@@ -9,7 +9,7 @@ type conversion = Core.Region.conversion = To_float | Truncate | Floor | Ceil | 
 type projection = Core.Region.projection = Value | Valid
 type instruction = Core.Region.instruction = Const of float | Input of int * int * int
   | Uniform of int * int | Frame of string | Accumulator of int
-  | Binary of binary * int * int | Unary of unary * int | Noise3 of int * int * int * int * int
+  | Binary of binary * int * int | Unary of unary * int | Noise3 of int * int * int * int * int * float * float
   | Fma of int * int * int
   | Rand_at of int * int
   | Select of int * int * int
@@ -40,7 +40,7 @@ let rec operands = function
   | Binary (_,a,b) | Int_binary (_,a,b) | Int_compare (_,a,b) | Rand_at (a,b) | Checked_mul(_,a,b)
   | Gather(a,b,_,_) | Int_gather(a,b) | Text_gather(a,b) -> [a;b]
   | Unary (_,a) | Int_abs a | Convert (_,a) -> [a]
-  | Noise3 (a,b,c,_,_) | Fma (a,b,c) | Select (a,b,c) | Int_select (a,b,c) | Text_select(a,b,c) | Checked_fma(_,a,b,c) -> [a;b;c]
+  | Noise3 (a,b,c,_,_,_,_) | Fma (a,b,c) | Select (a,b,c) | Int_select (a,b,c) | Text_select(a,b,c) | Checked_fma(_,a,b,c) -> [a;b;c]
   | Guarded (guards,body) -> List.map fst guards @ operands body
   | _ -> []
 
@@ -232,11 +232,12 @@ let gpu_refusals t =
   let used = output_reachable t in
   let bad_noise = ref false and bad_constant = ref false in
   Array.iteri (fun i instruction -> if used.(i) then match unguarded instruction with
-    | Noise3 (_, _, _, _, octaves) ->
+    | Noise3 (_, _, _, _, octaves, lacunarity, gain) ->
+        if octaves > 1 && (lacunarity <> 2. || gain <> 0.5) then bad_noise := true else
         if not (Flow.Packed_ops.supported_noise_octaves octaves) then bad_noise := true
     | Const value -> if not (Flow.Packed_ops.finite_float32 value) then bad_constant := true
     | _ -> ()) t.code;
-  if !bad_noise then refuse "GPU noise supports 1 to 32 octaves.";
+  if !bad_noise then refuse "GPU noise supports 1 to 32 octaves with lacunarity 2 and gain 0.5.";
   if !bad_constant then
     refuse "Nonfinite float32 shader constants require reference evaluation.";
   List.rev !reasons
@@ -630,9 +631,9 @@ let run_typed ?column_source ?plane_outputs ?expected_count ~evaluate ~uniform ~
             for j=first to last-1 do floats.(at+j)<-Flow.Packed_ops.rand_at
               integer.(seed+j) integer.(index+j) done
         | Unary(op,a)->for j=first to last-1 do floats.(at+j)<-finite(unary_apply op (numeric a j)) done
-        | Noise3(x,y,z,seed,octaves)->for j=first to last-1 do
+        | Noise3(x,y,z,seed,octaves,lacunarity,gain)->for j=first to last-1 do
             floats.(at+j)<-finite(Rays_math.Noise.Private.fbm3_with_scratch scratch (noise seed)
-              ~octaves ~lacunarity:2. ~gain:0.5 ~x:(numeric x j)~y:(numeric y j)~z:(numeric z j)) done in
+              ~octaves ~lacunarity ~gain ~x:(numeric x j)~y:(numeric y j)~z:(numeric z j)) done in
       let execute_all dependent first last=
         for slot=0 to Array.length t.code-1 do
           if t.dependent.(slot)=dependent then execute slot t.code.(slot) first last
@@ -929,7 +930,7 @@ let rec run_all ?column_source ?plane_outputs ?expected_count ?state ?elems ?res
           if constant b then Some (a,b) else if constant a then Some (b,a) else None
       |_->None in
     let noise_scale=Array.mapi (fun slot instruction -> match unguarded instruction with
-      |Noise3 (x,y,z,_,_)->(match scale guards.(slot) x,scale guards.(slot) y,scale guards.(slot) z with
+      |Noise3 (x,y,z,_,_,_,_)->(match scale guards.(slot) x,scale guards.(slot) y,scale guards.(slot) z with
         |Some (a,f),Some (b,g),Some (c,h) when f=g && g=h ->
             omitted.(x)<-true;omitted.(y)<-true;omitted.(z)<-true;
             Some (a,b,c,f)
@@ -971,7 +972,7 @@ let rec run_all ?column_source ?plane_outputs ?expected_count ?state ?elems ?res
         |_->raise Not_streaming in
       allowed.(scale)<-true;allowed.(noise)<-true;
       let x,y,z,frequency=match t.code.(noise) with
-        |Noise3 (x,y,z,_,1)->(match noise_scale.(noise) with
+        |Noise3 (x,y,z,_,1,_,_)->(match noise_scale.(noise) with
           |Some (a,b,c,f)->allowed.(x)<-true;allowed.(y)<-true;allowed.(z)<-true;
               input a,input b,input c,Some (scalar f)
           |None->input x,input y,input z,None)
@@ -1012,7 +1013,7 @@ let rec run_all ?column_source ?plane_outputs ?expected_count ?state ?elems ?res
         |_->raise Not_streaming in
       allowed.(root)<-true;allowed.(transform)<-true;allowed.(gain)<-true;allowed.(noise)<-true;
       let x,y,z,f=match t.code.(noise) with
-        |Noise3 (x,y,z,_,1)->
+        |Noise3 (x,y,z,_,1,_,_)->
           let x,f=scaled x and y,h=scaled y in
           if f<>h then raise Not_streaming;
           let z=match t.code.(z) with Const z when z=0.->None
@@ -1061,7 +1062,7 @@ let rec run_all ?column_source ?plane_outputs ?expected_count ?state ?elems ?res
       let scratch = Array.make ((if Option.is_some streaming then (if plane_outputs=None then 1 else 2)
         else if Option.is_some scalar_streaming then 2 else Array.length t.code) * block_size) 0. in
       let noise_scratch=Rays_math.Noise.Private.create_fbm3_scratch () in
-      let tables=Array.map(fun instruction -> match unguarded instruction with Noise3(_,_,_,seed,_)->Some(Operators.noise_table seed)
+      let tables=Array.map(fun instruction -> match unguarded instruction with Noise3(_,_,_,seed,_,_,_)->Some(Operators.noise_table seed)
         |_->None)t.code in
       let contiguous = t.iteration=Zip && skip=[||] in
       let indices = if contiguous then [||] else Array.make block_size 0 in
@@ -1123,7 +1124,7 @@ let rec run_all ?column_source ?plane_outputs ?expected_count ?state ?elems ?res
             for j = first to last - 1 do
               scratch.(at+j) <- scratch.((if scratch.(condition+j) <> 0. then yes else no) + j)
             done
-        | Noise3 (x, y, z, _, octaves) ->
+        | Noise3 (x, y, z, _, octaves, lacunarity, gain) ->
             let noise=Option.get tables.(slot)in
             let x,y,z,frequency=match noise_scale.(slot) with
               |Some (x,y,z,f)->x,y,z,scratch.(f*block_size+first)
@@ -1134,7 +1135,7 @@ let rec run_all ?column_source ?plane_outputs ?expected_count ?state ?elems ?res
               ~z:scratch ~z_offset:(z * block_size) ~output:scratch ~output_offset:at ()
             else for j=first to last-1 do
               scratch.(at+j)<-Rays_math.Noise.Private.fbm3_with_scratch noise_scratch noise
-                ~octaves ~lacunarity:2. ~gain:0.5
+                ~octaves ~lacunarity ~gain
                 ~x:(scratch.(x*block_size+j)*.frequency) ~y:(scratch.(y*block_size+j)*.frequency)
                 ~z:(scratch.(z*block_size+j)*.frequency)
             done;

@@ -377,6 +377,16 @@ let attr_names : Flow.Op.t = {
     |Error message->Flow.Value.fail "E_ATTR_PATTERN" message);
   body=(fun ~live:_ ~node:_ args->Flow.Value.Source("sop/attr_names",Flow.Ty.Array Text,args));
 }
+let attr_entries_type=Flow.Ty.Record["name",Array Text;"type",Array Text;"owner",Array Text]
+let attr_entries : Flow.Op.t = {
+  attr_type with name="sop/attr_entries";
+  signature={attr_type.signature with pos=["geometry",Flow.Ty.geometry]};
+  out=(fun _->attr_entries_type);
+  check=(fun args->metadata_owner Attribute_metadata.attribute_owner args);
+  body=(fun ~live:_ ~node:_ args->Flow.Value.Record(List.map(fun component->component,
+    Flow.Value.Source("sop/attr_entries",Flow.Ty.Array Text,args@["component",Flow.Value.Text component]))
+    ["name";"type";"owner"]));
+}
 
 let glob_error : Flow.Op.t = {
   attr_type with name="text/glob_error";ctx=Flow.Context.value;category="Text";
@@ -394,9 +404,10 @@ let glob_rewrite_error : Flow.Op.t = {
 
 (* Symbolic prototype arguments retain the ordinary typed Source boundary,
    so these pure text operations also run inside structured cooked loops. *)
-let text_source name args run =
+let pure_source ty wrap name args run =
   if List.exists(fun(_,value)->match value with Flow.Value.Source _|Residual _->true|_->false)args
-  then Flow.Value.Source(name,Flow.Ty.Text,args) else Flow.Value.Text(run())
+  then Flow.Value.Source(name,ty,args) else wrap(run())
+let text_source name args run = pure_source Flow.Ty.Text (fun s->Flow.Value.Text s) name args run
 let glob_rewrite : Flow.Op.t = {
   glob_error with name="text/glob_rewrite";
   signature={glob_error.signature with pos=["pattern",Text;"replacement",Text;"text",Text]};
@@ -410,6 +421,19 @@ let glob_literal : Flow.Op.t = {
   signature={glob_error.signature with pos=["text",Text]};
   body=(fun ~live:_ ~node:_ args->text_source "text/glob_literal" args(fun()->
     checked(Attribute_metadata.glob_literal(metadata_text args "text"))));
+}
+let group_name_valid : Flow.Op.t = {
+  glob_error with name="text/group_name_valid";
+  signature={glob_error.signature with pos=["text",Text]};
+  out=(fun _->Flow.Ty.Bool);
+  body=(fun ~live:_ ~node:_ args->pure_source Flow.Ty.Bool (fun b->Flow.Value.Bool b)
+    "text/group_name_valid" args(fun()->Rdk.Group_ops.valid_group_name(metadata_text args "text")));
+}
+let group_name_forced : Flow.Op.t = {
+  glob_error with name="text/group_name_forced";
+  signature={glob_error.signature with pos=["text",Text]};
+  body=(fun ~live:_ ~node:_ args->text_source "text/group_name_forced" args(fun()->
+    Rdk.Group_ops.force_valid_group_name(metadata_text args "text")));
 }
 
 let remap : Flow.Op.t = {
@@ -426,5 +450,5 @@ let remap : Flow.Op.t = {
 
 let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; adjacency; components; shortest_paths; color; chains; mesh; mesh_planes; remap;
   group; group_order; group_names; group_entries; with_group; context_seed;
-  rename_attr;swap_attr;delete_attrs;rename_group;delete_group;rename_edge;delete_edge;attr_type;attr_names;
-  glob_error;glob_rewrite_error;glob_rewrite;glob_literal]
+  rename_attr;swap_attr;delete_attrs;rename_group;delete_group;rename_edge;delete_edge;attr_type;attr_names;attr_entries;
+  glob_error;glob_rewrite_error;glob_rewrite;glob_literal;group_name_valid;group_name_forced]

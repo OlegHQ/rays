@@ -200,6 +200,7 @@ let rec packed_body ~ops (term : term) =
        | Some Noise3 -> List.for_all (fun (key, t) -> match key, t.node with
            | "position", _ -> body t | "seed", Lit (Param.Int_value _) -> true
            | "octaves", Lit (Param.Int_value n) -> Packed_ops.supported_noise_octaves n
+           | ("lacunarity" | "gain"), Lit (Param.Float_value _) -> true
            | _ -> false) args
        | Some (Length | Normalize) -> (match args with [_, vector] -> vector.ty = Ty.Vec3 && body vector | _ -> false)
        | Some (Dot | Cross) -> List.length args = 2

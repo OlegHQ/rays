@@ -152,6 +152,18 @@ let () =
   print_endline "Metadata copy/move/swap preserve owner payloads and canonical P"
 
 let () =
+  let input=fixture () in
+  let texts owner component=match Flow_sop.Attribute_metadata.entries ~owner ~component input with
+    |Ok(Flow.Eval.Text_array values)->Array.to_list values|_->fail "attr_entries column is not text" in
+  check(texts None "name"=["source";"target";"source"]) "attr_entries names must keep native attribute order";
+  check(texts None "owner"=["point";"point";"detail"]) "attr_entries owners must follow the names";
+  check(texts None "type"=["float";"float";"float"]) "attr_entries types must follow the names";
+  check(texts (Some Attribute.Point) "name"=["source";"target"]) "attr_entries owner filter lost an attribute";
+  check(texts (Some Attribute.Primitive) "name"=[]) "attr_entries must be empty for an absent owner";
+  check(Result.is_error(Flow_sop.Attribute_metadata.entries ~owner:None ~component:"bogus" input)) "attr_entries accepted a bad column";
+  print_endline "attr_entries: parallel name/type/owner columns keep native order and owner filter"
+
+let () =
   let flow_ok=function Ok value->value|Error d->fail(Flow.Diagnostic.to_string d) in
   let catalog=Flow_sop.Catalog.of_factories ~version:1 Sop_catalog.Editor.factories |>flow_ok in
   let checker=Flow_sop.Catalog.check_workspace ~ops:Flow_sop.Operators.all in
@@ -159,6 +171,7 @@ let () =
     (let* [geo (sop/line) renamed (sop/rename_attr geo "N" "normal" :owner point :conflict skip)
       swapped (sop/swap_attr renamed "normal" "backup" :owner vertex :method copy)
       names (sop/attr_names geo "*" :owner primitive) kind (sop/attr_type geo :P)
+      entries (sop/attr_entries geo :owner primitive)
       grouped (sop/rename_group swapped "old*" "new*" :owner edge :conflict union)] grouped)))|} |>flow_ok in
   let checked=match checker catalog forms with Some checked,[]->checked
     |_,diagnostics->fail(String.concat "; "(List.map Flow.Diagnostic.to_string diagnostics)) in
@@ -166,7 +179,7 @@ let () =
   List.iter(fun(binding,ty)->let node=Flow_graph.Projection.find pane["g";binding] |>Option.get in
     check(node.ty=ty) "Metadata graph output type differs";
     check(List.exists(fun(row:Flow_graph.Projection.row)->row.label="owner")node.rows) "Metadata owner row missing")
-    ["renamed",Flow.Ty.geometry;"swapped",Flow.Ty.geometry;"names",Flow.Ty.Array Text;"kind",Flow.Ty.Text;"grouped",Flow.Ty.geometry];
+    ["renamed",Flow.Ty.geometry;"swapped",Flow.Ty.geometry;"names",Flow.Ty.Array Text;"entries",Flow.Ty.Record["name",Array Text;"type",Array Text;"owner",Array Text];"kind",Flow.Ty.Text;"grouped",Flow.Ty.geometry];
   List.iter(fun(binding,key,value)->
     let _,checked=Flow_graph.Flow_edit.apply_checked ~checker catalog forms
       (Set_arg{node=["g";binding];key=Kw key;sub=[];value=Flow.Syntax.make(Sym value)}) |>flow_ok in

@@ -287,6 +287,29 @@ export function text_table_decode(text) {
   if (escaped) err('E_TABLE', 'trailing table escape');
   row.push(cell); rows.push(row); return rows;
 }
+export function text_split(text, separator) {
+  if (typeof text !== 'string' || typeof separator !== 'string') err('E_TYPE', 'Expected text.');
+  if (separator === '') err('E_TEXT_SEPARATOR', 'text/split needs a nonempty separator.');
+  return new TextArray(text.split(separator));
+}
+export function text_tokens(text) {
+  if (typeof text !== 'string') err('E_TYPE', 'Expected text.');
+  return new TextArray(text.split(/[ ,\t\n]/).filter(token => token !== ''));
+}
+const tokenTrim = text => text.replace(/^[ \t\n\r\f]+|[ \t\n\r\f]+$/g, '');
+export function text_to_float(text) {
+  if (typeof text !== 'string') err('E_TYPE', 'Expected text.');
+  const s = tokenTrim(text), valid = /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/.test(s)
+    && Number.isFinite(Number(s));
+  return new Map([['value', valid ? Number(s) : 0], ['valid', valid]]);
+}
+export function text_to_int(text) {
+  if (typeof text !== 'string') err('E_TYPE', 'Expected text.');
+  const s = tokenTrim(text);
+  const value = /^[+-]?\d+$/.test(s) ? BigInt(s) : null;
+  const valid = value !== null && value === BigInt.asIntN(63, value);
+  return new Map([['value', valid ? value : 0n], ['valid', valid]]);
+}
 export function text_table_encode(rows) {
   if (!Array.isArray(rows)) err('E_TYPE', 'Expected a table of text cells.');
   return rows.map(row => {
@@ -675,19 +698,22 @@ function raw3(p, x, y, z) {
   return lerp(lerp(x00, x10, v), lerp(x01, x11, v), w);
 }
 const clamp01 = v => v <= 0 ? 0 : v >= 1 ? 1 : v;
-export function noise3(position, seed, octaves) {
+export function noise3(position, seed, octaves, lacunarity, gain) {
   if (!(isVec(position) && position.length === 3)) err('E_TYPE', 'noise3 takes a vec3 position.');
   for (const c of position) fin('noise3 position', c);
   const configuration = v => typeof v === 'bigint' ? v : intOf(v);
   const s = seed === undefined ? 0n : configuration(seed), n = octaves === undefined ? 1n : configuration(octaves);
   if (n < 1n || n > 32n) err('E_NOISE_RANGE', 'Noise octaves are 1 to 32.');
+  const lac = lacunarity === undefined ? 2 : num(lacunarity), g = gain === undefined ? 0.5 : num(gain);
+  if (!(Number.isFinite(lac) && lac > 0)) err('E_NOISE_RANGE', 'Noise lacunarity must be finite and positive.');
+  if (!(g >= 0 && g <= 1)) err('E_NOISE_RANGE', 'Noise gain is 0 to 1.');
   const p = permutation(s), [x, y, z] = position;
   const sample = f => clamp01((raw3(p, x * f, y * f, z * f) + 1) / 2);
   if (n === 1n) return fin('noise3', sample(1));
   let sum = 0, weights = 0, frequency = 1, amplitude = 1;
   for (let i = 0; i < Number(n); i++) {
     sum += sample(frequency) * amplitude; weights += amplitude;
-    frequency *= 2; amplitude *= 0.5;
+    frequency *= lac; amplitude *= g;
   }
   return fin('noise3', weights === 0 ? 0 : sum / weights);
 }
@@ -867,6 +893,13 @@ export function sop_attr_names(geometry, pattern, owner = 'point') {
   return new TextArray(geometry.get('attributes').filter(attribute =>
     attribute.get('owner') === owner && matches(attribute.get('name'))).map(attribute => attribute.get('name')));
 }
+export function sop_attr_entries(geometry, owner = 'point') {
+  owner = metadataOwner(owner);
+  metadataGeometry(geometry);
+  const kept = geometry.get('attributes').filter(attribute => owner === 'any' || attribute.get('owner') === owner);
+  const column = key => new TextArray(kept.map(attribute => attribute.get(key)));
+  return new Map([['name', column('name')], ['type', column('type')], ['owner', column('owner')]]);
+}
 export function sop_delete_attrs(geometry, reference = null, inverse = false, point = '', vertex = '', primitive = '', detail = '') {
   const owners = ['point', 'vertex', 'primitive', 'detail'];
   const patterns = [point, vertex, primitive, detail].map(pattern => {
@@ -971,6 +1004,18 @@ export function text_glob_literal(text) {
   if (typeof text !== 'string') err('E_METADATA_TEXT', 'Metadata names and patterns must be text.');
   if (text === '') err('E_METADATA_PATTERN', 'A literal glob must not be empty.');
   return text.replace(/[\*?\[\]\\^ \t\n\r\f]/g, character => '\\' + character);
+}
+// Bytewise: every non-ASCII UTF-8 byte is one underscore, as in the native byte loop.
+export function text_group_name_valid(text) {
+  if (typeof text !== 'string') err('E_METADATA_TEXT', 'Metadata names and patterns must be text.');
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(text);
+}
+export function text_group_name_forced(text) {
+  if (typeof text !== 'string') err('E_METADATA_TEXT', 'Metadata names and patterns must be text.');
+  const bytes = textBytes(text);
+  let out = bytes.length > 0 && bytes[0] >= 48 && bytes[0] <= 57 ? '_' : '';
+  for (const byte of bytes) out += /[A-Za-z0-9_]/.test(String.fromCharCode(byte)) ? String.fromCharCode(byte) : '_';
+  return out;
 }
 function metadataPolicy(value, groups = false) {
   const policy = text_lower(metadataTrim(value));

@@ -3,7 +3,7 @@
 val noise3 : Flow.Op.t
 val noise_table : int -> Rays_math.Noise.t
 
-val noise_settings : (string * ('f, 'r) Flow.Value.t) list -> int * int
+val noise_settings : (string * ('f, 'r) Flow.Value.t) list -> int * int * float * float
 (** Exact native-int seed and checked octave configuration, shared by scalar
     evaluation and packed lowering. *)
 

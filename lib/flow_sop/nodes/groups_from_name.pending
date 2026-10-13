@@ -1,5 +1,5 @@
 ; Whole Groups from Name draft. NEEDS two text operators the language lacks:
-;   (text/group_name_valid? text)  ASCII letter/digit/underscore, not starting with a digit, nonempty
+;   (text/group_name_valid text)  ASCII letter/digit/underscore, not starting with a digit, nonempty
 ;   (text/group_name_forced text)  every other byte becomes "_", a leading digit gets a "_" prefix
 (defn groups_from_name_error :context value [(reason : text)]
   (error "invalid_group" "groups_from_name could not produce valid geometry"
@@ -31,7 +31,7 @@
                        (if (equal? value "") ""
                          (let* [candidate (str prefix value)]
                            (if (equal? invalid_names "Force valid") (text/group_name_forced candidate)
-                             (if (text/group_name_valid? candidate) candidate "")))))
+                             (if (text/group_name_valid candidate) candidate "")))))
                        raw)
                first_index (array/index_of names names)
                leaders (map (fn [(name : text) (first : int) (index : int)]
