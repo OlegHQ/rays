@@ -1,4 +1,4 @@
-; Table-driven port gate. Every port_<key>.ml registers itself at start-up; the
+; Table-driven port gate (about 30 minutes for all nodes: alias `ports`, not `runtest`). Every port_<key>.ml registers itself at start-up; the
 ; library is linked with -linkall so a new file needs no edit anywhere.
 (library
  (name port_registry)
@@ -13,6 +13,6 @@
  (libraries port_registry))
 
 (rule
- (aliases runtest ports)
+ (alias ports)
  (deps (glob_files ../nodes/*.rays) (glob_files ../nodes/*.pending))
  (action (run %{exe:main.exe})))
