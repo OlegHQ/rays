@@ -650,7 +650,7 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 - [x] C.4 — ordered compact indices, exclusive Int offsets and scatter-add pass native/reference/Core/domain, ownership/error/state, geometry composition, graph/editor, actual JavaScript runtime/worker and final shipping gates; evidence in the three bulk-array validation notes and `results.md`.
 - [x] C.5 — stable Int/Float/byte-Text grade and exact first-match Int/Text lookup pass native/reference/Core/domain, ownership/error/state, consumer, graph/editor, actual JavaScript runtime/worker and final shipping gates; evidence in `grade-index-validation.md` and `results.md`.
 - [x] C.6 — six physical array types compose through standalone Core and invariant packed gathers, including scoped lazy count/captures, exact domains, graph defaults/edits and actual JavaScript workers. Final native/shipping gates pass; evidence in `array-composition-validation.md` and `results.md`.
-- [ ] C.7 — Line and Points are complete (2/11 generators); full recipes, performance, production menu, native and shipping evidence is in `line-port-audit.md`, `points-port-audit.md` and `results.md`. The other nine remain unaccepted.
+- [x] C.7 — all eleven generators registered (2026-10-13/14): `line`, `points`, `grid`, `circle`, `box`, `uv_sphere`, `tube`, `torus`, `platonic`, `spiral`, `bound`; each passed the port gate against its OCaml oracle. `bound`, `grid` and `circle` are in the speed regressions table.
 - [ ] C.8
 - [ ] C.9
 - [ ] C.10
