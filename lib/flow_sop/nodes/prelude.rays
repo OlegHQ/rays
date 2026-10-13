@@ -185,6 +185,11 @@
   ; Reindexing helpers (C.8). Exact integer gather: source[index[i]].
   (defn int_gather :context value [(source : (array int)) (index : (array int))]
     (exact (map (fn [(at : int)] (array/nth source at)) index)))
+  ; Owning primitive of every vertex, from the primitive start offsets (without the terminal).
+  (defn prim_of_vertex :context value [(starts : (array int)) (vertices : int)]
+    (exact (map (fn [(seen : int)] (int/sub seen 1))
+      (array/slice (array/scan_sum (array/scatter_add starts (array/int (array/count starts) 1)
+                                    (int/add vertices 1))) 1 vertices))))
   ; Edge ancestry CSR for sop/remap. Unique edges are given by endpoints in one point
   ; space (target endpoints already translated to source points, -1 when a point is gone);
   ; a target edge's row holds the source edge with the same endpoints, or is empty.
