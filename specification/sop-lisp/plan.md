@@ -950,3 +950,54 @@ others are attributions to confirm.
 
 A fixed cost of roughly 15-20 ms per cook (workspace print and digest per host
 call) was removed by `3bffaa15`; re-measure empty-input cooks.
+
+### Remaining work after the first registration batch — 2026-10-13
+
+Owner direction: the interpreter (block executor, host calls, checker) is made
+solid and fast first. Compiled kernels are a later step through a trimmed LLVM
+(ahead of time for shipped nodes; a runtime tier is undecided); no OCaml
+emitter and no JIT in this round.
+
+Executor pass, measured (Lisp seconds at 1,000,000 elements, 1 / 4 domains,
+before → after `b401ec2b`, `6f026ad9`, `e233e907`): `grid` 3.36 / 1.19 →
+1.85 / 0.87; `attribute_blur` 8.24 / 3.46 → 4.8 / 2.7; `color_by_height`
+0.091 / 0.073 → 0.092 / 0.049; `distance_from_target` 0.279 / 0.133 →
+0.275 / 0.087; `point_jitter` 0.534 / 0.224 → 0.525 / 0.182; `uv_transform`
+0.106 / 0.037 → 0.098 / 0.033; `match_axis` and `circle` unchanged. The
+executor costs about 2.5 ns per instruction per element, near a tight OCaml
+loop, so cause class K is instruction count and repeated work, not dispatch.
+Map-to-map materialization is about 10%. Reverted for no gain: per-domain
+scratch reuse, 256-element blocks, constant prefill, specialized integer loops.
+
+1. Interpreter speed, by expected payoff:
+   1. One evaluation state across the regions of a node body, so attribute
+      reads and reductions run once per cook (needs globally unique residual ids).
+   2. Host calls built directly from evaluated arguments; no marshalled array
+      cache keys; an identity flag instead of identity index arrays.
+   3. Adjacency: faster `Topology_index` build, borrowed arrays, one evaluation
+      for record sources (`graph/*`, `sop/components`).
+   4. `iterate`: reuse buffers across passes.
+   5. Word-level group operators.
+   6. Scaling: parallel array built-ins and attribute reads; a GC policy
+      (`o=200` took `circle` from 0.44 s to 0.34 s in one test).
+   7. A checked-library cache: `check_workspace` costs 0.115 s on a trivial
+      workspace against 0.011 s before the ports. Lowering is fixed (`044d3cb6`).
+2. Interpreter correctness:
+   - Register the four verified drafts held back: `blast_by_attribute`
+     (`W_UNKNOWN_GROUP` for its temporary group in every workspace),
+     `group_promote_boundary`, `rest_position`, `smooth` (they call OCaml-bodied
+     kinds the web primitive fixtures do not know).
+   - `connectivity` is approximate for UV on edges with three or more uses.
+   - Non-finite attribute data reports `E_NONFINITE` where native reports its
+     own code; refusal cases dropped from registrations before the gate lowered
+     eagerly are restored.
+   - Untested: the hand-edited `noise.js` golden; Metal/WGSL refusal of
+     non-default `noise3` lacunarity and gain.
+3. Language gaps that block ports: type-agnostic attribute operators
+   (concatenate, float planes, weighted carry); segmented arg-max and folds
+   with array-record state; attribute prepend; parameter-dependent `:facts`;
+   canonical triangulation data (C.15); image sampling in a geometry body; a
+   tree scan over a parent array.
+4. Ports: 19 pending drafts and 65 nodes without a draft (tables above).
+5. Closure: B.F, the review tasks B.R/C.R/D.R/E.R with `check.exe --ship`, and
+   the final `results.md` write-up. New ports wait for 1.1 and 1.2.
