@@ -1,0 +1,26 @@
+; Whole-node draft of Compact Points: drops points no vertex uses, keeping order.
+; Unique edges keep their first-occurrence order (the point map is monotone), so the
+; edge ancestry is the identity.
+(defnode sop/compact_points :label "Compact Points" :category ["Topology" "Cleanup"]
+  [(in0 : geometry)]
+  (let* [points (sop/count in0 :points)
+         vertices (sop/count in0 :vertices)
+         prims (sop/count in0 :primitives)
+         topo (sop/topology in0)
+         used (exact (map (fn [(uses : int)] (if (int/gt uses 0) 1 0))
+                (array/scatter_add topo.vertex_points (array/int vertices 1) points)))
+         new_to_old (array/compact used)
+         retained (array/count new_to_old)]
+    (if (int/eq retained points) in0
+      (let* [old_to_new (array/scan_sum used)
+             vertex_points (exact (map (fn [(point : int)] (array/nth old_to_new point)) topo.vertex_points))
+             target (sop/mesh :points (array/vec3 retained) :vertex_points vertex_points
+                      :primitive_offsets topo.primitive_offsets :kinds topo.kinds)
+             edges (sop/count in0 :edges)]
+        (sop/remap in0 target
+          :points new_to_old
+          :vertices (array/range vertices :type int)
+          :primitives (array/range prims :type int)
+          :positions "mapped"
+          :edges {:offsets (array/range (int/add edges 1) :type int)
+                  :values (array/range edges :type int)})))))
