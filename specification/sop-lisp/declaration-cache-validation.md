@@ -34,3 +34,14 @@ Request98103 EXIT1 retains the initial linker failure; its actual cache regressi
 already passed. No cache assertion, tolerance or speed gate was weakened. The API
 gate passes without a stable snapshot change: Context_kernel is a private module.
 This shared correction accepts no additional whole port or plan milestone.
+
+Follow-up source review found a parameterized macro head that the original
+template-head walk cannot name: `(dispatch callee argument)` expands through
+the passed macro, erasing its identity. Reached checked expanded forms now also
+join the digest. Hygienic names use counters local to each Macro.expand call,
+so unrelated source IDs and expansions do not affect those forms.
+Request12304 EXIT0, `/tmp/rays-declaration-cone-dispatch-focused-20261013.log`,
+proves actual one/eight-domain invalidation when only the dispatched macro
+changes, plus warm hits after inserting an unrelated hygienic macro/helper.
+Fresh-session bytes, exact miss/hit counts and all previous cases remain intact.
+No interface or public API changed in this follow-up.

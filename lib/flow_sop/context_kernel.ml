@@ -121,6 +121,7 @@ let specialize ~context ~label graph = map (fun t -> match t.W.node with
 let declaration_source (checked:W.t) (root:W.node_definition) =
   let nodes=Hashtbl.create 8 and defs=Hashtbl.create 8
   and graphs=Hashtbl.create 4 and macros=Hashtbl.create 4 in
+  let expanded=ref [] in
   let rec node (definition:W.node_definition) =
     let name=definition.kind.qualified in
     if not(Hashtbl.mem nodes name) then begin
@@ -159,7 +160,11 @@ let declaration_source (checked:W.t) (root:W.node_definition) =
          Option.iter (definition graphs)
            (List.find_opt(fun(d:W.graph)->d.name=g.graph)checked.graphs);
          named g.graph
-     | Expanded e -> macro e.macro
+     | Expanded e ->
+         macro e.macro;
+         (* Parameterized macro heads disappear during recursive expansion.
+            Hygiene counters restart per Macro.expand, not per Syntax.id. *)
+         expanded:=e.body.form::!expanded
      | _ -> ());t
   and graph (g:W.graph) = ignore(map transform g)
   and term t = graph {root.body with body=t;inputs=[]} in
@@ -172,4 +177,4 @@ let declaration_source (checked:W.t) (root:W.node_definition) =
     @ List.filter(fun form->match Flow.Syntax.children form with
       | _::{node=Flow.Syntax.Sym name;_}::_ -> Hashtbl.mem macros name
       | _ -> false)checked.macros in
-  Digest.string(fst(Flow.Lisp.print forms))
+  Digest.string(fst(Flow.Lisp.print (forms @ List.rev !expanded)))

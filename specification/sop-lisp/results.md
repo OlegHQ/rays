@@ -4945,3 +4945,20 @@ Root corrected the manual test loader to unwrap its library workspace exactly
 as the production embedding does. Points remains natively registered and
 unaccepted until its separate paired production/native menu/oracle gates.
 Accepted counts remain14/128 whole ports and24/60 milestones here.
+
+## Parameterized macro cache closure follow-up
+
+Source review found a valid parameterized macro head whose callee is erased by
+recursive expansion. Original template-head closure alone could miss a change
+in the dispatched macro. The declaration digest now includes reached checked
+expanded forms as well as its original declaration/helper/macro closure.
+Hygiene counters are local to each Macro.expand call, independent of Syntax.id.
+
+Actual1/8-domain cache regressions preserve the same exact miss/hit assertions,
+fresh-session geometry bytes and subsequent warm hits. Changing only the
+dispatched macro invalidates both consumers and Merge while Line remains warm;
+inserting an unrelated hygienic macro/helper changes parser IDs and performs a
+real extra expansion but keeps all reached entries warm.
+Request12304 EXIT0: /tmp/rays-declaration-cone-dispatch-focused-20261013.log,
+@check, FlowSOP/IR, dependency and API gates. No signature/snapshot changed.
+Evidence extends declaration-cache-validation.md; counts remain14/128 and24/60.
