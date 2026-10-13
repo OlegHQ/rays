@@ -1,0 +1,28 @@
+; Whole-node draft.
+(defnode sop/color_by_height :label "Color by Height" :category ["Attribute" "Color"]
+  :facts {:elementwise points :reads ["P"] :writes ["Cd"] :topology preserved :exact false}
+  [(in0 : geometry)
+   (low_red : int 32 :label "Red" :folder ["Low color"] :min 0 :max 255 :hard_min 0 :hard_max 255)
+   (low_green : int 64 :label "Green" :folder ["Low color"] :min 0 :max 255 :hard_min 0 :hard_max 255)
+   (low_blue : int 192 :label "Blue" :folder ["Low color"] :min 0 :max 255 :hard_min 0 :hard_max 255)
+   (low_alpha : int 255 :label "Alpha" :folder ["Low color"] :min 0 :max 255 :hard_min 0 :hard_max 255)
+   (high_red : int 255 :label "Red" :folder ["High color"] :min 0 :max 255 :hard_min 0 :hard_max 255)
+   (high_green : int 160 :label "Green" :folder ["High color"] :min 0 :max 255 :hard_min 0 :hard_max 255)
+   (high_blue : int 32 :label "Blue" :folder ["High color"] :min 0 :max 255 :hard_min 0 :hard_max 255)
+   (high_alpha : int 255 :label "Alpha" :folder ["High color"] :min 0 :max 255 :hard_min 0 :hard_max 255)]
+  (let* [count (sop/count in0 :points)
+         positions (sop/attr in0 :P)
+         heights (map (fn [(p : vec3)] p.y) positions)
+         minimum (if (int/eq count 0) 0.0 (array/min heights))
+         maximum (if (int/eq count 0) 0.0 (array/max heights))
+         extent (- maximum minimum)
+         low [(/ (float low_red) 255.0) (/ (float low_green) 255.0)
+              (/ (float low_blue) 255.0) (/ (float low_alpha) 255.0)]
+         high [(/ (float high_red) 255.0) (/ (float high_green) 255.0)
+               (/ (float high_blue) 255.0) (/ (float high_alpha) 255.0)]
+         span [(- high.x low.x) (- high.y low.y) (- high.z low.z) (- high.w low.w)]
+         colors (map (fn [(y : float)]
+           (let* [ratio (if (<= extent 1e-15) 0.0 (/ (- y minimum) extent))]
+             [(fma span.x ratio low.x) (fma span.y ratio low.y)
+              (fma span.z ratio low.z) (fma span.w ratio low.w)])) heights)]
+    (sop/with_attr in0 "Cd" (exact colors) :owner "point" :type vec4)))
