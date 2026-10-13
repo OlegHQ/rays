@@ -1,0 +1,78 @@
+; Whole-node draft of Blast: deletes the elements of a group (or everything else) and
+; carries the survivors through sop/remap. Uses edge_ancestry and int_gather from the prelude.
+(defnode sop/blast :label "Blast" :category ["Topology" "Delete"]
+  [(in0 : geometry)
+   (owner : text "Primitives" :label "Group type" :choices ["Points" "Vertices" "Primitives"])
+   (group : text "group" :label "Group")
+   (selected : bool true :label "Delete selected")
+   (compact_points : bool false :label "Remove unused points")
+   (policy : text "Destroy touched primitives" :label "Point deletion policy"
+     :choices ["Destroy touched primitives" "Heal primitives"])]
+  (let* [kind (case owner "Points" "point" "Vertices" "vertex" :else "primitive")
+         found (fold [found false] [name (sop/group_names in0 "" :owner kind)]
+                 (or found (equal? name group)))]
+    (if (not found)
+      (error "missing_group" (str "blast could not find " kind " group " (text/repr group)))
+      (let* [points (sop/count in0 :points)
+             vertices (sop/count in0 :vertices)
+             prims (sop/count in0 :primitives)
+             topo (sop/topology in0)
+             mask (sop/group in0 :name group :owner kind)
+             ; 1 where the element is deleted
+             gone_owner (exact (map (fn [(member : int)] (if selected member (int/sub 1 member))) mask))
+             by_point (equal? owner "Points")
+             by_vertex (equal? owner "Vertices")
+             by_primitive (equal? owner "Primitives")
+             gone_vertex (cond by_point (int_gather gone_owner topo.vertex_points)
+                                by_vertex gone_owner
+                                :else (array/int vertices 0))
+             gone_sum (array/segment_sum gone_vertex topo.primitive_offsets)
+             starts (array/slice topo.primitive_offsets 0 prims)
+             ends (array/slice topo.primitive_offsets 1 prims)
+             full (exact (map (fn [(first : int) (last : int)] (int/sub last first)) starts ends))
+             ; a deleted primitive counts as touched and is always destroyed
+             touched_count (if by_primitive gone_owner gone_sum)
+             destroy (or by_primitive (equal? policy "Destroy touched primitives"))
+             retained_count (exact (map (fn [(size : int) (touched : int) (type : int)]
+               (if destroy (if (int/gt touched 0) 0 size)
+                 (let* [kept (int/sub size touched)]
+                   (if (int/lt kept (if (int/eq type 1) 2 3)) 0 kept))))
+               full touched_count topo.kinds))
+             prim_map (array/compact (exact (map (fn [(count : int)] (if (int/gt count 0) 1 0)) retained_count)))
+             healed (int/gt (array/sum (exact (map (fn [(count : int) (first : int) (last : int)]
+                      (if (and (int/gt count 0) (not (int/eq count (int/sub last first)))) 1 0))
+                      retained_count starts ends))) 0)
+             prim_of_vertex (exact (map (fn [(seen : int)] (int/sub seen 1))
+               (array/slice (array/scan_sum (array/scatter_add starts (array/int prims 1) (int/add vertices 1))) 1 vertices)))
+             kept_vertex (exact (map (fn [(prim : int) (gone : int)]
+               (if (and (int/gt (array/nth retained_count prim) 0) (int/eq gone 0)) 1 0))
+               prim_of_vertex gone_vertex))
+             vertex_map (array/compact kept_vertex)
+             source_points (int_gather topo.vertex_points vertex_map)
+             used (exact (map (fn [(uses : int)] (if (int/gt uses 0) 1 0))
+                    (array/scatter_add source_points (array/int (array/count source_points) 1) points)))
+             gone_point (if by_point gone_owner (array/int points 0))
+             keep_point (exact (map (fn [(gone : int) (use : int)]
+               (if (and (int/eq gone 0) (or (not compact_points) (int/eq use 1))) 1 0))
+               gone_point used))
+             point_map (array/compact keep_point)
+             retained_points (array/count point_map)]
+        (if (and (int/eq retained_points points)
+                 (and (int/eq (array/count vertex_map) vertices) (int/eq (array/count prim_map) prims)))
+          in0
+          (let* [old_to_new (array/scan_sum keep_point)
+                 vertex_points (int_gather old_to_new source_points)
+                 target (sop/mesh :points (array/vec3 retained_points) :vertex_points vertex_points
+                          :primitive_offsets (array/scan_sum (int_gather retained_count prim_map))
+                          :kinds (int_gather topo.kinds prim_map))
+                 source_edges (sop/edges in0)
+                 target_edges (sop/edges target)
+                 remapped (sop/remap in0 target
+                   :points point_map :vertices vertex_map :primitives prim_map
+                   :positions "mapped"
+                   :edges (edge_ancestry source_edges.a source_edges.b
+                            (int_gather point_map target_edges.a) (int_gather point_map target_edges.b)
+                            points))]
+            (if healed
+              (sop/delete_attr (sop/delete_attr remapped "N" :owner "point") "N" :owner "vertex")
+              remapped)))))))
