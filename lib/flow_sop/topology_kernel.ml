@@ -187,6 +187,7 @@ let remap ?cancel ~grain ~source ~target args =
           (match fields with
            | ["offsets", E.Int_array offsets; "values", E.Int_array ancestors]
            | ["values", E.Int_array ancestors; "offsets", E.Int_array offsets] ->
+               if G.edge_groups source = [] then [] else
                let source_index = Rdk.Topology_index.create ?cancel source_topology
                and target_index = Rdk.Topology_index.create ?cancel target_topology in
                result "E_REMAP_EDGES" (R.edge_groups_from_ancestry ?cancel ~grain ~source_index
