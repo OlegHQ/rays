@@ -1,7 +1,6 @@
 (* sop/box: zero-input generator, every connectivity, normals mode, consolidation, transform, UV and face groups.
    Port_gate renders a change as `:field value`, but a vec3 group (size, center, rotation) is called as
-   `:center [x y z]`, so the gate cannot vary those components. Their cases run only with PORT_VEC3=1 and a
-   gate that renders vec3 groups (all 76 cases passed that way when the draft was written). *)
+   `:center [x y z]`, so the gate cannot vary those components. The gate renders vec3 groups from their physical field names, so the cases always run. *)
 open Port_gate
 module P = Param
 let ch name v = name, P.Choice_value v
@@ -9,7 +8,7 @@ let fl name v = name, P.Float_value v
 let it name v = name, P.Int_value v
 let tx name v = name, P.Text_value v
 let bl name v = name, P.Bool_value v
-let vec3 = Sys.getenv_opt "PORT_VEC3" <> None
+let vec3 = true
 let v3 l = if vec3 then l else []
 let divs = [it "x_divisions" 2; it "y_divisions" 3; it "z_divisions" 4]
 let rot = [fl "rotation_x" 0.3; fl "rotation_y" (-0.7); fl "rotation_z" 1.1]

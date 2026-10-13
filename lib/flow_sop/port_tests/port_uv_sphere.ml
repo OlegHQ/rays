@@ -1,6 +1,6 @@
 (* sop/uv_sphere: zero-input generator over every connectivity, pole option, normals mode, UV and frame.
    Port_gate renders `:field value`, but vec3 groups (axis, radius, center, rotation) are called
-   `:center [x y z]`; their cases run only with PORT_VEC3=1 and a gate that renders vec3 groups. *)
+   `:center [x y z]`; the gate renders them from the physical field names. *)
 open Port_gate
 module P = Param
 let ch name v = name, P.Choice_value v
@@ -8,13 +8,13 @@ let fl name v = name, P.Float_value v
 let it name v = name, P.Int_value v
 let tx name v = name, P.Text_value v
 let bl name v = name, P.Bool_value v
-let vec3 = Sys.getenv_opt "PORT_VEC3" <> None
+let vec3 = true
 let v3 l = if vec3 then l else []
 let small = [it "segments" 5; it "rings" 4]
 let rot = [fl "rotation_x" 0.3; fl "rotation_y" (-0.7); fl "rotation_z" 1.1]
 (* Native refuses these when the node is constructed; the Lisp node refuses them in `:validate`, which only
    runs at lowering, but Port_gate compares native construction errors with the checker alone. *)
-let lowering = Sys.getenv_opt "PORT_LOWERING" <> None
+let lowering = true
 let l c = if lowering then c else []
 let cases =
   List.concat_map (fun c -> List.concat_map (fun n -> List.concat_map (fun unique ->

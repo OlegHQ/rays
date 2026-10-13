@@ -1,7 +1,6 @@
 module Platonic = Sop.Nodes.Platonic [@@sop.register]
 module Spiral = Sop.Nodes.Spiral [@@sop.register]
 module Switch = Sop.Nodes.Switch [@@sop.register]
-module Uv_sphere = Sop.Nodes.Uv_sphere [@@sop.register]
 module Attr_from_image = Sop.Nodes.Attr_from_image [@@sop.register]
 module Iso_surface = Sop.Nodes.Iso_surface [@@sop.register]
 module Torus = Sop.Nodes.Torus [@@sop.register]
