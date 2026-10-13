@@ -41,6 +41,36 @@ let definitions_of_sources forms =
 
 let node_definitions () = Result.bind (sources ()) definitions_of_sources
 
+(* Names a form mentions, as a set; a definition is keyed by the name it binds. *)
+let rec mentions into (form : Flow.Syntax.t) =
+  (match form.node with Flow.Syntax.Sym name -> Hashtbl.replace into name () | _ -> ());
+  List.iter (mentions into) (Flow.Syntax.children form)
+
+let definition_name (form : Flow.Syntax.t) = match form.node with
+  | Flow.Syntax.List ({node = Sym ("defnode" | "defn" | "defmacro"); _} :: {node = Sym name; _} :: _) -> Some name
+  | _ -> None
+
+(* The library definitions reachable from [forms] through the names they mention, in library order.
+   Syntactic and conservative: a name anywhere in a form counts, so shadowing and duplicate-name errors
+   are still reported. *)
+let reachable sources forms =
+  let sources = Array.of_list sources in
+  let by_name = Hashtbl.create 256 in
+  Array.iteri (fun index form -> Option.iter (fun name -> Hashtbl.add by_name name index)
+    (definition_name form)) sources;
+  let seen = Hashtbl.create 64 and queue = Queue.create () in
+  let visit name = if not (Hashtbl.mem seen name) then begin
+    Hashtbl.add seen name (); Queue.add name queue end in
+  let scan form = let names = Hashtbl.create 16 in
+    mentions names form; Hashtbl.iter (fun name () -> visit name) names in
+  List.iter scan forms;
+  let keep = Array.make (Array.length sources) false in
+  while not (Queue.is_empty queue) do
+    List.iter (fun index -> if not keep.(index) then begin
+      keep.(index) <- true; scan sources.(index) end) (Hashtbl.find_all by_name (Queue.pop queue))
+  done;
+  List.filteri (fun index form -> definition_name form = None || keep.(index)) (Array.to_list sources)
+
 let check_workspace_raw ?ops ?library ?sources:override catalog forms =
   let sources = match override with Some sources -> Ok sources | None -> sources () in
   match Result.bind sources (fun sources ->
@@ -58,6 +88,13 @@ let check_workspace_raw ?ops ?library ?sources:override catalog forms =
               | List ({node=Sym "defnode";_} :: {node=Sym name;_} :: _) ->
                   List.exists (fun (node : Flow.Defnode.t) -> node.kind.qualified=name) nodes
               | _ -> true) sources in
+            (* A library definition nothing reachable from the authored forms names is neither
+               checked nor spliced; its kind stays in the catalog, so names still collide. *)
+            let sources = reachable sources forms in
+            let nodes = List.filter (fun (node : Flow.Defnode.t) -> List.exists (fun form ->
+              match form.Flow.Syntax.node with
+              | List ({node=Sym "defnode";_} :: {node=Sym name;_} :: _) -> name=node.kind.qualified
+              | _ -> false) sources) nodes in
             sources, nodes in
       if sources=[] then Flow.Workspace.check ?ops ?library catalog forms else
       let authored = forms in
