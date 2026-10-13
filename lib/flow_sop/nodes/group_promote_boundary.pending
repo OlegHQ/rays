@@ -1,0 +1,136 @@
+; Whole Group Promote Boundary draft. The converted group is intersected with the elements
+; touching a boundary edge. The boundary edge group (attribute seams, unshared edges, and the
+; membership change of the source group itself) comes from sop/group_from_attribute_boundary:
+; the source membership is written as a scratch integer attribute and compared like any other
+; attribute, which is exactly the native "__membership" plane.
+(defn group_promote_boundary_error :context value [(reason : text)]
+  (error "invalid_group" "group_promote_boundary could not produce valid geometry"
+    :cause (str "group_promote_boundary [invalid_group]: " reason)))
+(defn group_promote_boundary_owner :context value [(raw : text)]
+  (let* [token (text/lower (text/trim raw))]
+    (case token
+      "point" "point" "points" "point" "vertex" "vertex" "vertices" "vertex"
+      "primitive" "primitive" "primitives" "primitive" "detail" "detail"
+      :else (error "E_PARAM" (str "unknown attribute owner " (text/repr token))))))
+(defn group_promote_boundary_normalize :context value [(raw : text)]
+  (text/table_encode (map (fn [(row : (list text))]
+    (if (= (count row) 2) (list (group_promote_boundary_owner (nth row 0)) (nth row 1))
+      (error "E_PARAM" (str "boundary attribute needs owner and pattern, got " (count row) " columns"))))
+    (text/table_decode raw))))
+(defn group_positive :context sop [(hits : (array int))]
+  (exact (map (fn [(h : int)] (if (int/gt h 0) 1 0)) hits)))
+; Include_any promotion of a 0/1 mask between element owners (Group_ops.promote_predicate).
+(defn group_promote_any :context sop
+  [(geo : geometry) (source : text) (dest : text) (mask : (array int))]
+  (let* [adjacency (sop/adjacency geo)
+         topology (sop/topology geo)
+         points (sop/count geo :points)
+         vertices (sop/count geo :vertices)
+         edges (sop/count geo :edges)
+         vp topology.vertex_points
+         eov adjacency.edge_of_vertex
+         padded (array/concat mask (array/int 1 0))
+         ; value of the source mask at each corner, by owner (corner-owned values)
+         corner (case source
+                  "point" (exact (map (fn [(p : int)] (array/nth mask p)) vp))
+                  "vertex" mask
+                  "primitive" (exact (map (fn [(q : int)] (array/nth mask q)) adjacency.primitive_of_vertex))
+                  :else (exact (map (fn [(e : int)] (array/nth padded (if (int/ge e 0) e edges)))
+                          eov)))]
+    (cond
+      (equal? source dest) mask
+      (equal? dest "vertex")
+        (if (equal? source "edge")
+          (exact (map (fn [(own : int) (before : int)] (if (or (int/eq own 1) (int/eq before 1)) 1 0))
+            corner
+            (exact (map (fn [(p : int)]
+              (if (int/ge p 0) (array/nth corner (if (int/ge p 0) p 0)) 0)) adjacency.previous_vertex))))
+          corner)
+      (equal? dest "point")
+        (if (equal? source "edge")
+          (group_positive (array/scatter_add (array/concat adjacency.edge_a adjacency.edge_b)
+                      (array/concat mask mask) points))
+          (group_positive (array/scatter_add vp corner points)))
+      (equal? dest "primitive")
+        (group_positive (array/segment_sum corner topology.primitive_offsets))
+      :else
+        ; edge destination: each corner contributes to its outgoing edge
+        (if (equal? source "point")
+          (exact (map (fn [(a : int) (b : int)] (if (or (int/eq (array/nth mask a) 1) (int/eq (array/nth mask b) 1)) 1 0))
+            adjacency.edge_a adjacency.edge_b))
+          (let* [contribution (if (equal? source "vertex")
+                                (exact (map (fn [(own : int) (follow : int)]
+                                  (if (or (int/eq own 1) (and (int/ge follow 0) (int/eq (array/nth mask (if (int/ge follow 0) follow 0)) 1))) 1 0))
+                                  mask adjacency.next_vertex))
+                                corner)
+                 owned (array/compact (exact (map (fn [(e : int)] (if (int/ge e 0) 1 0)) eov)))]
+            (group_positive (array/scatter_add (exact (map (fn [(v : int)] (array/nth eov v)) owned))
+                        (exact (map (fn [(v : int)] (array/nth contribution v)) owned)) edges)))))))
+
+(defnode sop/group_promote_boundary :label "Group Promote Boundary" :category ["Group" "Convert"]
+  [(in0 : geometry)
+   (source : text "Primitives" :label "Source owner" :choices ["Points" "Vertices" "Primitives" "Edges"])
+   (destination : text "Edges" :label "Destination owner" :choices ["Points" "Vertices" "Primitives" "Edges"])
+   (group : text "group" :label "Source group")
+   (name : text "" :label "New group name")
+   (keep_original : bool false :label "Keep original group")
+   (output_attribute : text "" :label "Output mask attribute" :folder "Output")
+   (attributes : text "" :label "Boundary attributes (owner, pattern)" :kind encoded
+     :normalize group_promote_boundary_normalize)
+   (tolerance : float 0.00001 :label "Tolerance" :min 0 :max 1 :hard_min 0)
+   (include_unshared_edges : bool false :label "Include unshared edges")
+   (include_all_unshared_curve_edges : bool false :label "Include all unshared curve edges")
+   (include_all_primitives_sharing_boundary_points : bool false :label "Include primitives sharing boundary points")]
+  (let* [from (case source "Points" "point" "Vertices" "vertex" "Primitives" "primitive" :else "edge")
+         to (case destination "Points" "point" "Vertices" "vertex" "Primitives" "primitive" :else "edge")
+         output_name (if (text/blank? name) group (text/trim name))
+         attribute_name (text/trim output_attribute)
+         source_count (case source "Points" (sop/count in0 :points) "Vertices" (sop/count in0 :vertices)
+                        "Primitives" (sop/count in0 :primitives) :else (sop/count in0 :edges))
+         rows (text/table_decode attributes)]
+    (cond
+      (text/blank? group) (group_promote_boundary_error "Group Promote Boundary: empty source group name")
+      (text/blank? output_name) (group_promote_boundary_error "Group Promote Boundary: empty output group name")
+      (and (not (equal? attribute_name "")) (equal? destination "Edges"))
+        (group_promote_boundary_error "Group Promote Boundary: native edges do not own attributes")
+      (and include_all_unshared_curve_edges (not include_unshared_edges))
+        (group_promote_boundary_error "Group Promote Boundary: all curve edges require unshared edges")
+      (and include_all_primitives_sharing_boundary_points (not (equal? destination "Primitives")))
+        (group_promote_boundary_error "Group Promote Boundary: point-sharing expansion requires primitive output")
+      (not (fold [found false] [candidate (sop/group_names in0 "*" :owner from)]
+             (or found (equal? candidate group))))
+        (group_promote_boundary_error (str "Group Promote Boundary: missing " from " group " (text/repr group)))
+      :else
+      (let* [selected (sop/group in0 :name group :owner from)
+             converted (group_promote_any in0 from to selected)
+             ; The membership scratch attribute makes the source group one more compared plane.
+             marked (if (equal? from "edge") in0 (sop/with_attr in0 "__rdk_membership" (exact selected) :owner (if (equal? from "edge") "point" from) :type int))
+             configured (sop/group_from_attribute_boundary marked :owner "Edges"
+                          :name "__rdk_promote_boundary_edges"
+                          :attributes (text/table_encode (concat rows (list (list (if (equal? from "edge") "point" from) "__rdk_membership"))))
+                          :tolerance tolerance :include_unshared_edges include_unshared_edges
+                          :include_all_unshared_curve_edges include_all_unshared_curve_edges)
+             plain (sop/group_from_attribute_boundary in0 :owner "Edges"
+                     :name "__rdk_promote_boundary_edges" :attributes attributes
+                     :tolerance tolerance :include_unshared_edges include_unshared_edges
+                     :include_all_unshared_curve_edges include_all_unshared_curve_edges)
+             boundary (cond
+                        (not (equal? source "Edges"))
+                          (sop/group configured :name "__rdk_promote_boundary_edges" :owner "edge")
+                        (and (equal? attributes "") (not include_unshared_edges)) selected
+                        :else (exact (map (fn [(a : int) (b : int)] (int/or a b)) selected
+                                (sop/group plain :name "__rdk_promote_boundary_edges" :owner "edge"))))
+             boundary_converted (if include_all_primitives_sharing_boundary_points
+                                  (group_promote_any in0 "point" "primitive"
+                                    (group_promote_any in0 "edge" "point" boundary))
+                                  (group_promote_any in0 "edge" to boundary))
+             result (exact (map (fn [(a : int) (b : int)] (int/and a b)) converted boundary_converted))
+             ordering (sop/group_order in0 :name group :owner from)
+             base (if keep_original in0 (sop/delete_group in0 group :owner from))]
+        (if (equal? attribute_name "")
+          ; A group promoted onto its own owner keeps its explicit order (Group.intersection).
+          (if (and (equal? from to) ordering.ordered)
+            (sop/with_group base result :name output_name :owner to
+              :order (group_order_filter ordering.indices result))
+            (sop/with_group base result :name output_name :owner to))
+          (sop/with_attr base attribute_name result :owner (if (equal? to "edge") "point" to) :type int))))))
