@@ -1,0 +1,90 @@
+; Whole Smooth draft. Smooth is the blur kernel with a computed point update selection (primitive
+; group, constrained points, border pinning) and an optional point-normal recompute. The blur and the
+; normals are other node kinds; the selection is a temporary point group on the way into the blur.
+(defn smooth_error :context value [(code : text) (reason : text)]
+  (error code "smooth could not produce valid geometry"
+    :cause (str "smooth [" code "]: " reason)))
+(defnode sop/smooth :label "Smooth" :category ["Deform"]
+  :validate (equal? (text/glob_error attributes) "")
+  :code "E_PARAM" :message "sop/smooth: invalid attribute pattern"
+  [(in0 : geometry)
+   (group : text "" :label "Point group")
+   (constrained_points : text "" :label "Constrained points")
+   (boundary : text "Free" :label "Boundary" :choices ["Free" "Pin unshared" "Pin group boundary"])
+   (iterations : int 10 :label "Iterations" :min 1 :max 200 :hard_min 1)
+   (method_ : text "Uniform" :label "Method" :choices ["Uniform" "Edge length"])
+   (mode : text "Laplacian" :label "Mode" :choices ["Laplacian" "Custom steps"])
+   (step : float 0.5 :label "Step" :folder ["Smoothing"] :min 0 :max 1)
+   (odd_step : float 0.5 :label "Odd step" :folder ["Custom steps"] :min -1 :max 1)
+   (even_step : float -0.53 :label "Even step" :folder ["Custom steps"] :min -1 :max 1)
+   (weight_attribute : text "" :label "Weight attribute" :folder ["Attributes"])
+   (alpha_attribute : text "" :label "Alpha attribute" :folder ["Attributes"])
+   (attributes : text "P" :label "Attributes" :folder ["Attributes"])
+   (original_blend : float 0.0 :label "Original blend" :folder ["Blend"] :min 0 :max 1)
+   (smoothed_blend : float 1.0 :label "Smoothed blend" :folder ["Blend"] :min 0 :max 1)
+   (recompute_normals : bool false :label "Recompute normals")]
+  (let* [group_name (text/trim group) constrained_name (text/trim constrained_points)
+         group_literal (text/glob_literal (if (text/blank? group_name) "x" group_name))
+         constrained_literal (text/glob_literal (if (text/blank? constrained_name) "x" constrained_name))
+         temporary_literal (text/glob_literal "__smooth_update")
+         has_primitives (not (text/blank? group_name))
+         has_constrained (not (text/blank? constrained_name))
+         point_count (sop/count in0 :points)
+         primitive_count (sop/count in0 :primitives)]
+    (cond
+      (and has_primitives (equal? (array/count (sop/group_names in0 group_literal :owner "primitive")) 0))
+        (smooth_error "missing_group" (str "smooth could not find primitive group " (text/repr group_name)))
+      (and has_constrained (equal? (array/count (sop/group_names in0 constrained_literal :owner "point")) 0))
+        (smooth_error "missing_constrained_points"
+          (str "smooth could not find constrained point group " (text/repr constrained_name)))
+      :else
+        (let* [restricted (or has_primitives (or has_constrained (not (equal? boundary "Free"))))
+               adj (sop/adjacency in0)
+               edge_count (sop/count in0 :edges)
+               vertex_count (sop/count in0 :vertices)
+               pmask (if has_primitives (sop/group in0 :name group_name :owner "primitive") (array/int primitive_count 1))
+               cmask (if has_constrained (sop/group in0 :name constrained_name :owner "point") (array/int point_count 0))
+               vertex_selected (exact (map (fn [(p : int)] (array/nth pmask p)) adj.primitive_of_vertex))
+               incident_selected (array/segment_sum
+                 (exact (map (fn [(v : int)] (array/nth vertex_selected v)) adj.point_vertices)) adj.point_vertex_offsets)
+               selected (exact (map (fn [(c : int)] (if (or (not has_primitives) (int/gt c 0)) 1 0)) incident_selected))
+               valid_edge (exact (map (fn [(e : int)] (if (int/lt e 0) edge_count e)) adj.edge_of_vertex))
+               uses (array/scatter_add valid_edge (array/int vertex_count 1) (int/add edge_count 1))
+               chosen (array/scatter_add valid_edge vertex_selected (int/add edge_count 1))
+               unshared_slot (exact (map (fn [(e : int)] (if (int/eq (array/nth uses e) 1) 1 0)) adj.point_edges))
+               unshared (array/segment_sum unshared_slot adj.point_edge_offsets)
+               group_slot (exact (map (fn [(e : int)]
+                 (let* [total (array/nth uses e) chosen_count (array/nth chosen e)]
+                   (if (and (int/gt chosen_count 0) (or (int/gt (int/sub total chosen_count) 0) (int/eq total 1))) 1 0)))
+                 adj.point_edges))
+               group_boundary (array/segment_sum group_slot adj.point_edge_offsets)
+               update (exact (map (fn [(s : int) (c : int) (i : int)]
+                 (if (and (int/eq s 1) (int/eq c 0))
+                   (cond
+                     (equal? boundary "Free") 1
+                     (equal? boundary "Pin unshared") (if (int/gt (array/nth unshared i) 0) 0 1)
+                     :else (if has_primitives
+                             (if (int/gt (array/nth group_boundary i) 0) 0 1)
+                             (if (int/gt (array/nth unshared i) 0) 0 1)))
+                   0)) selected cmask (array/range point_count :type int)))
+               temporary "__smooth_update"
+               source (if restricted (sop/with_group in0 (exact update) :name temporary :owner "point") in0)
+               blurred (sop/attribute_blur source :attributes attributes :group (if restricted temporary "")
+                         :iterations iterations :method_ method_ :mode mode :laplacian_step step
+                         :odd_step odd_step :even_step even_step :weight_attribute weight_attribute
+                         :alpha_attribute alpha_attribute :pin_borders false
+                         :original_blend original_blend :blurred_blend smoothed_blend)
+               smoothed (if restricted (sop/delete_group blurred temporary_literal :owner "point") blurred)
+               had_point_normals (sop/has_attr in0 "N" :owner "point")
+               had_vertex_normals (sop/has_attr in0 "N" :owner "vertex")
+               matches_normals (fold [found false] [name (sop/attr_names in0 attributes :owner "point")]
+                 (or found (equal? name "N")))
+               before (sop/attr in0 "P")
+               after (sop/attr smoothed "P")
+               positions_changed (exact (int/gt (array/sum (exact (map (fn [(a : vec3) (b : vec3)]
+                 (if (and (= a.x b.x) (and (= a.y b.y) (= a.z b.z))) 0 1)) before after))) 0))]
+          (if (and recompute_normals
+                   (and (or had_point_normals had_vertex_normals)
+                        (and positions_changed (not (and had_point_normals matches_normals)))))
+            (sop/normals smoothed :owner "Point" :weighting "Face area")
+            smoothed)))))
