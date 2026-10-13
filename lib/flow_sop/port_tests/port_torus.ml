@@ -1,6 +1,5 @@
 (* sop/torus: zero-input generator (pending draft). Every connectivity x normals, open and wrapped sweeps,
-   reversed spans, U and V caps, UVs, orientations, rotation orders, overflow and refusal paths.
-   ulps = 16: a rotated custom-axis component is a sum of three products that cancels (see port_tube.ml). *)
+   reversed spans, U and V caps, UVs, orientations, rotation orders, overflow and refusal paths. *)
 open Port_gate
 module P = Param
 let ch name v = name, P.Choice_value v
@@ -70,4 +69,4 @@ let cases =
      "invalid_v_cap_coincident", [bl "v_end_cap" true; bl "v_wrap" false; fl "v_start" 0.; fl "v_end" 6.283185307179586];
      "invalid_custom_axis_zero", [ch "orientation" "Custom axis"; fl "axis_x" 0.; fl "axis_y" 0.; fl "axis_z" 0.]]
 let bench () = [], [it "rows" 1000; it "columns" 1000; ch "connectivity" "Quads"; ch "normals" "Vertex"; tx "uv_attribute" "uv"]
-let () = register { key = "torus"; native = Sop.Nodes.Torus.factory; inputs = no_input; cases; ulps = 16; bench = Some bench }
+let () = register { key = "torus"; native = Sop.Nodes.Torus.factory; inputs = no_input; cases; ulps = 4; bench = Some bench }
