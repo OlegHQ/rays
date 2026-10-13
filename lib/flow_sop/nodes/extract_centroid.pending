@@ -1,0 +1,11 @@
+; BLOCKED STUB, not a defnode and never gate-tested.
+; Plan: flatten each piece to (offsets, pts): Detail = all points; Primitives = vertex_points with
+; primitive_offsets; Point pieces = first-appearance ids via array/index_of + array/grade, points
+; ascending; Primitive pieces = unique (point,piece) keys via array/grade. Point mass =
+; segment_max of per-element max|coord|, segment_sum of coord/scale in element order, times
+; scale/count (0 when scale is 0). Bounding box = vec3 segment_min/segment_max, min*0.5+max*0.5.
+; Output = sop/mesh of piece_count points, no primitives, plus detail attributes, the optional
+; primitive-index attribute and the piece-id attribute.
+; Missing: Convex hull method needs one convex hull per piece, a data-dependent count of geometry
+; node calls, which a loop cannot create (E_ARRAY_TYPE "Packed-array loops ... cannot create graph
+; nodes"); it needs a segmented hull-centre operator.
