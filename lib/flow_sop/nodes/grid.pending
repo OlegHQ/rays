@@ -67,15 +67,15 @@
            extra (if point_counts 0 1) limit (array/max_length :type int)]
       (cond
         (not (and (> size 0.0) (and (> width 0.0) (> height 0.0))))
-          (error "E_PARAM" "sop/grid: dimensions must be positive")
+          false
         (or (int/lt columns min_u) (int/lt rows min_v))
-          (error "E_PARAM" "sop/grid: insufficient columns/rows for connectivity")
+          false
         (or (int/gt columns (int/sub limit extra)) (int/gt rows (int/sub limit extra)))
-          (error "E_PARAM" "sop/grid: output cardinality exceeds array limits")
+          false
         :else
           (let* [u (int/add columns extra) v_count (int/add rows extra)]
             (if (int/gt u (int/div limit v_count))
-              (error "E_PARAM" "sop/grid: output cardinality exceeds array limits")
+              false
               (let* [points (int/mul u v_count)
                      cells (int/mul (int/sub u 1) (int/sub v_count 1))
                      ; Sys.max_string_length >= L-1 on the supported 64-bit runtime.
@@ -93,11 +93,11 @@
                                     (int/le cells (int/div primitive_limit 2))))
                      uv (text/trim uv_name)]
                 (cond (not topology_ok)
-                        (error "E_PARAM" "sop/grid: topology cardinality exceeds array limits")
+                        false
                   (or (equal? uv "P") (equal? uv "N"))
-                        (error "E_PARAM" "sop/grid: UV name cannot be P or N")
+                        false
                   (and (equal? orientation "Custom axes") (not (grid_custom_valid h v)))
-                        (error "E_PARAM" "sop/grid: custom axes must be nonzero and independent")
+                        false
                   :else true)))))))
 
   (defn grid_polygon_vertex :context value
@@ -118,6 +118,7 @@
   (defnode sop/grid :label "Grid" :version 2 :category ["Create" "Primitive"]
     :validate (grid_validate counts connectivity orientation columns rows size width height
                   uv_attribute [horizontal_x horizontal_y horizontal_z] [vertical_x vertical_y vertical_z])
+    :code "E_PARAM" :message "sop/grid: invalid parameters"
     [(counts : text "Divisions" :label "Counts" :choices ["Divisions" "Point counts"])
      (connectivity : text "Triangles" :label "Connectivity"
        :choices ["Points" "Rows" "Columns" "Rows and columns" "Quads" "Triangles" "Alternating triangles" "Reverse triangles"])
