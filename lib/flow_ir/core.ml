@@ -91,7 +91,7 @@ module Region = struct
     | Const of float | Input of int * int * int
     | Uniform of int * int | Frame of string | Accumulator of int
     | Binary of Flow.Packed_ops.binary * int * int | Unary of Flow.Packed_ops.unary * int
-    | Noise3 of int * int * int * int * int | Fma of int * int * int | Rand_at of int * int | Select of int * int * int
+    | Noise3 of int * int * int * int * int * float * float | Fma of int * int * int | Rand_at of int * int | Select of int * int * int
     | Checked_mul of projection * int * int | Checked_fma of projection * int * int * int
     | Array_prepare of int * Flow.Ty.t
     | Gather of int * int * int * int | Int_gather of int * int
@@ -118,7 +118,7 @@ module Region = struct
     | Binary (_,a,b) | Int_binary (_,a,b) | Int_compare (_,a,b) | Rand_at(a,b) | Checked_mul(_,a,b)
     | Gather(a,b,_,_) | Int_gather(a,b) | Text_gather(a,b) -> [a;b]
     | Unary (_,a) | Int_abs a | Convert (_,a) -> [a]
-    | Noise3 (a,b,c,_,_) | Fma(a,b,c) | Select (a,b,c) | Int_select (a,b,c) | Text_select(a,b,c) | Checked_fma(_,a,b,c) -> [a;b;c]
+    | Noise3 (a,b,c,_,_,_,_) | Fma(a,b,c) | Select (a,b,c) | Int_select (a,b,c) | Text_select(a,b,c) | Checked_fma(_,a,b,c) -> [a;b;c]
     | Guarded (guards,instruction) -> List.map fst guards @ operands instruction
     | _ -> []
   type iteration = Zip | Product
@@ -324,7 +324,7 @@ let pp fmt p =
        | Accumulator c -> out "accumulator.%d" c
        | Binary (op, a, b) -> out "%s(r%d r%d)" (primitive_name (Numeric op)) a b
        | Unary (op, a) -> out "%s(r%d)" (primitive_name (Math op)) a
-       | Noise3 (x, y, z, seed, octaves) -> out "noise3(r%d r%d r%d seed=%d octaves=%d)" x y z seed octaves
+       | Noise3 (x, y, z, seed, octaves, lacunarity, gain) -> out "noise3(r%d r%d r%d seed=%d octaves=%d%s)" x y z seed octaves (if lacunarity = 2. && gain = 0.5 then "" else Printf.sprintf " lacunarity=%h gain=%h" lacunarity gain)
        | Rand_at(seed,index) -> out "rand_at(r%d r%d)" seed index
        | Fma(a,b,c) -> out "fma(r%d r%d r%d)" a b c
        | Checked_mul(p,a,b) -> out "mul_checked.%s(r%d r%d)" (match p with Value->"value"|Valid->"valid") a b

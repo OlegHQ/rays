@@ -74,7 +74,7 @@ let kernel program = try
   let finite_checks = P.Private.finite_checks program in
   let table_seeds = Array.to_list(Array.mapi(fun index instruction->index,snd(guarded [] instruction))view.code)
     |> List.filter_map (function
-      | index,P.Noise3 (_,_,_,seed,_) when used.(index) ->
+      | index,P.Noise3 (_,_,_,seed,_,_,_) when used.(index) ->
           Some seed | _ -> None) |> List.sort_uniq Int.compare |> Array.of_list in
   let table seed = match Array.find_index ((=) seed) table_seeds with Some index -> index*512 | None -> assert false in
   let body = Buffer.create 4096 in
@@ -94,7 +94,7 @@ let kernel program = try
       | Array_prepare _ | Gather _ | Int_gather _ -> fail "Indexed array reads stay on the CPU."
       | Text_const _ | Text_input _ | Text_uniform _ | Text_gather _ | Text_select _ -> fail "Text kernels stay on the CPU."
       | Select (condition,yes,no) -> Printf.sprintf "(%s!=0.0f?%s:%s)" (register condition) (register yes) (register no)
-      | Noise3 (x,y,z,seed,octaves) -> Printf.sprintf "fbm(float3(%s,%s,%s),%d,table+%d)"
+      | Noise3 (x,y,z,seed,octaves,_,_) -> Printf.sprintf "fbm(float3(%s,%s,%s),%d,table+%d)"
           (register x) (register y) (register z) octaves (table seed)
       | _ -> fail "Integer instructions and conversions are not supported by the Metal kernel target." in
     let indentation=if guards=[] then "  " else "    " in

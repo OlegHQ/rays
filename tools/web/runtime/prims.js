@@ -698,19 +698,22 @@ function raw3(p, x, y, z) {
   return lerp(lerp(x00, x10, v), lerp(x01, x11, v), w);
 }
 const clamp01 = v => v <= 0 ? 0 : v >= 1 ? 1 : v;
-export function noise3(position, seed, octaves) {
+export function noise3(position, seed, octaves, lacunarity, gain) {
   if (!(isVec(position) && position.length === 3)) err('E_TYPE', 'noise3 takes a vec3 position.');
   for (const c of position) fin('noise3 position', c);
   const configuration = v => typeof v === 'bigint' ? v : intOf(v);
   const s = seed === undefined ? 0n : configuration(seed), n = octaves === undefined ? 1n : configuration(octaves);
   if (n < 1n || n > 32n) err('E_NOISE_RANGE', 'Noise octaves are 1 to 32.');
+  const lac = lacunarity === undefined ? 2 : num(lacunarity), g = gain === undefined ? 0.5 : num(gain);
+  if (!(Number.isFinite(lac) && lac > 0)) err('E_NOISE_RANGE', 'Noise lacunarity must be finite and positive.');
+  if (!(g >= 0 && g <= 1)) err('E_NOISE_RANGE', 'Noise gain is 0 to 1.');
   const p = permutation(s), [x, y, z] = position;
   const sample = f => clamp01((raw3(p, x * f, y * f, z * f) + 1) / 2);
   if (n === 1n) return fin('noise3', sample(1));
   let sum = 0, weights = 0, frequency = 1, amplitude = 1;
   for (let i = 0; i < Number(n); i++) {
     sum += sample(frequency) * amplitude; weights += amplitude;
-    frequency *= 2; amplitude *= 0.5;
+    frequency *= lac; amplitude *= g;
   }
   return fin('noise3', weights === 0 ? 0 : sum / weights);
 }

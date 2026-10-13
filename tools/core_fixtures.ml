@@ -121,7 +121,7 @@ let arg_name prim i = match prim, i with
   | Array_slice, _ -> [|"array"; "first"; "count"|].(i)
   | Array_concat, _ -> if i = 0 then "first" else "second"
   | Sequence_slice, _ -> [|"list"; "first"; "count"|].(i)
-  | Noise3, _ -> [|"position"; "seed"; "octaves"|].(i)
+  | Noise3, _ -> [|"position"; "seed"; "octaves"; "lacunarity"; "gain"|].(i)
   | _ -> Printf.sprintf "x%d" i
 let source : C.source = { site = []; owner = []; instance = 0; prefix = []; iter = []; span = None }
 let run prim args =
@@ -459,11 +459,16 @@ arr1[0.;-0.;0.];arr1[1e16;1.;-1e16];
     (1e15 +. 0.5, 3., 7.); (1e19, -1e19, 5e18); (1e300, 0., 0.); (-1e300, 1., 2.); (1e308, 1e308, 1e308)] in
   List.iter (fun (x, y, z) -> let p = v3 x y z in
     add C.Noise3 [p]; add C.Noise3 [p; int 7]; add C.Noise3 [p; int (-1); int 3];
-    add C.Noise3 [p; int 0; int 2]; add C.Noise3 [p; int max_int; int 32]) positions;
+    add C.Noise3 [p; int 0; int 2]; add C.Noise3 [p; int max_int; int 32];
+    add C.Noise3 [p; int 5; int 4; flt_ 1.7; flt_ 0.62]; add C.Noise3 [p; int 5; int 6; flt_ 3.; flt_ 0.]) positions;
   List.iter (add C.Noise3) [[v3 0.3 0.6 0.9; int min_int; int 1]; [v3 0.3 0.6 0.9; int 42; int 4];
     [v3 0.3 0.6 0.9; flt_ 2.5; flt_ 2.4]; [v3 0.3 0.6 0.9; int 0; int 0]; [v3 0.3 0.6 0.9; int 0; int 33];
     [v3 0.3 0.6 0.9; int 0; int (-1)]; [v3 nan 0. 0.]; [v3 0. infinity 0.]; [v2 0. 0.]; [flt_ 1.];
-    [v3 0.3 0.6 0.9; txt "x"]; [v3 0.3 0.6 0.9; int 0; E.Bool true]; [v3 0.3 0.6 0.9; E.Bool true]];
+    [v3 0.3 0.6 0.9; txt "x"]; [v3 0.3 0.6 0.9; int 0; E.Bool true]; [v3 0.3 0.6 0.9; E.Bool true];
+    [v3 0.3 0.6 0.9; int 1; int 3; flt_ 0.]; [v3 0.3 0.6 0.9; int 1; int 3; flt_ (-1.)]; [v3 0.3 0.6 0.9; int 1; int 3; flt_ infinity];
+    [v3 0.3 0.6 0.9; int 1; int 3; flt_ nan]; [v3 0.3 0.6 0.9; int 1; int 3; flt_ 2.; flt_ 1.]; [v3 0.3 0.6 0.9; int 1; int 3; flt_ 2.; flt_ 1.01];
+    [v3 0.3 0.6 0.9; int 1; int 3; flt_ 2.; flt_ (-0.1)]; [v3 0.3 0.6 0.9; int 1; int 3; flt_ 2.; flt_ nan]; [v3 0.3 0.6 0.9; int 1; int 1; flt_ 9.; flt_ 0.3];
+    [v3 0.3 0.6 0.9; int 1; int 3; int 3; int 0]; [v3 0.3 0.6 0.9; int 1; int 3; txt "x"]];
   List.iter (fun s -> add C.Color_parse [txt s])
     ["#fff"; "fff"; "#ffff"; "#ff0000"; "#FF000080"; "ff000080"; "#abcdef"; "#AbCdEf12"; "f_0000"; "#f_f_f_";
      "#_f0000"; "#+f0000"; "#-f0000"; "#ff"; ""; "#"; "#12345"; "#1234567"; "#ggg"; "#zzzzzz"; "#0x0000";
@@ -592,6 +597,11 @@ arr1[0.;-0.;0.];arr1[1e16;1.;-1e16];
     (["";"ordinary";"-";"[a-z]";"\\";"\\\\";"^*?[]";"é猫😀";"\011"]
      @List.init 128(fun byte->"p"^String.make 1(Char.chr byte)^"q"));
   List.iter(text_operation "text/glob_literal" ["text"]) [[E.Int 0];[E.Bool false]];
+  List.iter(fun name->
+    List.iter(fun text->text_operation name ["text"] [E.Text text])
+      ["";"ok";"_x1";"A_9";"1a";"9";"a b";"a-b";"é猫😀";"a\000b";"\n";"_";"Zz09_"];
+    List.iter(text_operation name ["text"]) [[E.Int 0];[E.Bool false]])
+    ["text/group_name_valid";"text/group_name_forced"];
   List.iter(fun(pattern,replacement,text)->text_operation "text/glob_rewrite"
     ["pattern";"replacement";"text"] [E.Text pattern;E.Text replacement;E.Text text])
     ["*_???","old_???_*","tag_abc";"[a-c]*","*[a-c]","aé猫";
@@ -1397,4 +1407,4 @@ remap_case source unrelated fields;
       "sop/group";"sop/group_names";"sop/group_order";"sop/with_group";
       "sop/attr_type";"sop/attr_names";"sop/rename_attr";"sop/swap_attr";"sop/delete_attrs";
       "sop/rename_group";"sop/delete_group";"sop/rename_edge";"sop/delete_edge";"text/glob_error";"text/glob_rewrite_error";
-      "text/glob_literal";"text/glob_rewrite";"sop/group_entries";"$host/diagnostic_rows"])
+      "text/glob_literal";"text/glob_rewrite";"text/group_name_valid";"text/group_name_forced";"sop/group_entries";"$host/diagnostic_rows"])

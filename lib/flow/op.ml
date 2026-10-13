@@ -1018,7 +1018,7 @@ let valid_extension op = match op.packed_extension with
       && not op.live && not op.any_num && op.arithmetic = None && op.out_args = None
       && op.signature.pos = ["position", Ty.Vec3]
       && op.signature.opt = [] && op.signature.rest = None
-      && List.sort Stdlib.compare op.signature.kw = ["octaves", Ty.Int; "seed", Ty.Int]
+      && List.sort Stdlib.compare op.signature.kw = ["gain", Ty.Float; "lacunarity", Ty.Float; "octaves", Ty.Int; "seed", Ty.Int]
       && (try op.out [Ty.Vec3] = Ty.Float
           with Value.Fail _ | Invalid_argument _ -> false)
 
@@ -1061,5 +1061,5 @@ let validate extra =
     else if not (valid_extension op) then
       Some (Diagnostic.error ~code:"E_OP_DECLARATION"
         ("Invalid packed capability for " ^ op.name ^
-         ": noise3 requires a scalar value declaration with position:vec3, seed:int/octaves:int keywords and float result."))
+         ": noise3 requires a scalar value declaration with position:vec3, seed:int/octaves:int/lacunarity:float/gain:float keywords and float result."))
     else (Hashtbl.add seen op.name (); None)) extra

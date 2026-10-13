@@ -25,7 +25,7 @@ let () =
   let document = Editor_document.Workspace_doc.of_text catalog text |> Result.get_ok in
   let checked = document.checked in
   let card = P.find (P.of_graph catalog checked "g") ["g"; "field"] |> Option.get in
-  check (card.ty = Flow.Ty.Float && List.length card.rows = 3) "noise3 position, seed and octaves must be editable rows";
+  check (card.ty = Flow.Ty.Float && List.length card.rows = 5) "noise3 position, seed, octaves, lacunarity and gain must be editable rows";
   let expr = S.parse "[0.3 0.7 -0.2]" |> Result.get_ok |> List.hd in
   let edited = Editor_document.Workspace_doc.edit catalog document
     (E.Set_arg {node = ["g"; "field"]; key = E.Pos 0; sub = []; value = expr}) |> Result.get_ok in

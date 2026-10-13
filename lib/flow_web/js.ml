@@ -23,7 +23,7 @@ let perlin = {|  const fade = (t) => t * t * t * (t * (t * 6 - 15) + 10);
     const x11 = lerp(grad(h011, x, y - 1, z - 1), grad(h111, x - 1, y - 1, z - 1), u);
     return lerp(lerp(x00, x10, v), lerp(x01, x11, v), w);
   };
-  const fbm = (p, x, y, z, octaves) => {
+  const fbm = (p, x, y, z, octaves, lacunarity, gain) => {
     let frequency = 1, amplitude = 1, sum = 0, weights = 0;
     for (let octave = 0; octave < octaves; octave++) {
       const sx = x * frequency, sy = y * frequency, sz = z * frequency;
@@ -32,8 +32,8 @@ let perlin = {|  const fade = (t) => t * t * t * (t * (t * 6 - 15) + 10);
         const raw = (raw3(p, sx, sy, sz) + 1) * 0.5;
         sum = sum + (raw <= 0 ? 0 : raw >= 1 ? 1 : raw) * amplitude;
         weights = weights + amplitude;
-        frequency = frequency * 2;
-        amplitude = amplitude * 0.5;
+        frequency = frequency * lacunarity;
+        amplitude = amplitude * gain;
       } else sum = NaN;
     }
     if (Number.isFinite(sum) && Number.isFinite(weights)) return weights === 0 ? 0 : sum / weights;
@@ -98,7 +98,7 @@ let region program =
   let gathered=Array.exists(fun instruction->match unguarded instruction with
     | P.Array_prepare _->true|_->false)view.code in
   let nonfinite = if gathered then "fail('E_NONFINITE', 'packed produced a nonfinite value.');" else "return 1;" in
-  let seeds = Array.to_list view.code |> List.filter_map (fun instruction -> match unguarded instruction with P.Noise3 (_,_,_,seed,_) -> Some seed | _ -> None)
+  let seeds = Array.to_list view.code |> List.filter_map (fun instruction -> match unguarded instruction with P.Noise3 (_,_,_,seed,_,_,_) -> Some seed | _ -> None)
     |> List.sort_uniq Int.compare in
   let collecting = match region.result with R.Collect | R.Accumulate (_, true) -> true | _ -> false in
   let accumulating = region.result <> R.Collect in
@@ -171,8 +171,8 @@ let region program =
       | Binary (op, a, b) -> binary op (numeric a) (numeric b)
       | Unary (op, a) -> unary op (numeric a)
       | Select (c, yes, no) -> Printf.sprintf "%s !== 0 ? %s : %s" (numeric c) (numeric yes) (numeric no)
-      | Noise3 (x, y, z, seed, octaves) -> Printf.sprintf "fbm(table%d, %s, %s, %s, %d)" seed
-          (numeric x) (numeric y) (numeric z) octaves
+      | Noise3 (x, y, z, seed, octaves, lacunarity, gain) -> Printf.sprintf "fbm(table%d, %s, %s, %s, %d, %s, %s)" seed
+          (numeric x) (numeric y) (numeric z) octaves (number lacunarity) (number gain)
       | Fma (a,b,c) -> Printf.sprintf "fused(%s, %s, %s)" (numeric a) (numeric b) (numeric c)
       | Checked_mul(p,a,b) -> Printf.sprintf "checked(%b, %s * %s)" (p=P.Valid) (numeric a) (numeric b)
       | Checked_fma(p,a,b,c) -> Printf.sprintf "checked(%b, fused(%s, %s, %s))" (p=P.Valid) (numeric a) (numeric b) (numeric c)
@@ -303,7 +303,7 @@ let signature : C.primitive -> string list option = function
   | Array_range -> Some ["count";"type"] | Array_int | Array_text | Array_float | Array_vec3 | Array_vec4 -> Some ["count"; "value"]
   | Array_count -> Some ["array"] | Array_nth -> Some ["array"; "index"]
   | Array_slice -> Some ["array"; "first"; "count"] | Array_concat -> Some ["first"; "second"]
-  | Noise3 -> Some ["position"; "seed"; "octaves"]
+  | Noise3 -> Some ["position"; "seed"; "octaves"; "lacunarity"; "gain"]
   | Rand_at -> Some ["seed";"index"]
   | Error -> Some ["code";"message";"cause"]
   | Fma | Checked_fma -> Some ["a";"b";"c"]
