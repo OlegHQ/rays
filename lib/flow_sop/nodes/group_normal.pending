@@ -1,3 +1,4 @@
+; BLOCKED 2026-10-13: gate passes every fixture up to "nonfinite", which fails: non-finite attribute data gives E_NONFINITE where native reports invalid_group (the open E_NONFINITE contract decision, PP.md section 2). The full gate takes about 21 minutes.
 ; Whole Group by Normal draft: points, primitives and edges whose normal lies within the
 ; spread angle of a direction, from an existing or a computed geometric normal.
 (defn group_normal_error :context value [(reason : text)]
