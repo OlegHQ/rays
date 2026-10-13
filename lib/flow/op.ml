@@ -366,7 +366,21 @@ let scan_sum = function
 let integer_array_type = function
   |[Ty.Array Ty.Int]|[Ty.Any]->Ty.Array Ty.Int
   |_->fail "E_ARRAY_TYPE" "This operation needs an integer array."
-module Int_keys = Hashtbl.Make(struct type t=int let equal=Int.equal let hash=Hashtbl.hash end)
+(* Open addressing over key positions: slots hold the first index of each distinct key (-1 empty). *)
+let int_index keys queries=
+  let n=Array.length keys in
+  let size=ref 16 in while !size<2*n do size:= !size*2 done;
+  let mask= !size-1 in
+  let slots=Array.make !size(-1) in
+  let slot key=((key*0x9E3779B97F4A7C1) lxor((key*0x9E3779B97F4A7C1)lsr 29))land mask in
+  Array.iteri(fun i key->
+    let s=ref(slot key)in
+    while slots.(!s)>=0 && keys.(slots.(!s))<>key do s:=(!s+1)land mask done;
+    if slots.(!s)<0 then slots.(!s)<-i)keys;
+  Array.map(fun key->
+    let s=ref(slot key)in
+    while slots.(!s)>=0 && keys.(slots.(!s))<>key do s:=(!s+1)land mask done;
+    slots.(!s))queries
 module Text_keys = Hashtbl.Make(struct type t=string let equal=String.equal let hash=Hashtbl.hash end)
 (* Own only result/scratch, never the key arrays. Equal keys retain input order.
    ponytail: stdlib sorting/hash construction have no internal host cancellation
@@ -384,9 +398,7 @@ let grade keys descending =
   Int_array order
 let index_of keys queries=match keys,queries with
   |Int_array keys,Int_array queries->
-      let table=Int_keys.create(min(Array.length keys)65_536)in
-      Array.iteri(fun i key->if not(Int_keys.mem table key)then Int_keys.add table key i)keys;
-      Int_array(Array.map(fun key->Option.value ~default:(-1)(Int_keys.find_opt table key))queries)
+      Int_array(int_index keys queries)
   |Text_array keys,Text_array queries->
       let table=Text_keys.create(min(Array.length keys)65_536)in
       Array.iteri(fun i key->if not(Text_keys.mem table key)then Text_keys.add table key i)keys;
