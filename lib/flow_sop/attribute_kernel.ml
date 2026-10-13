@@ -55,7 +55,7 @@ let reads value =
            | Some (E.Text name), Some (E.Deferred (ty, id)) when Flow.Ty.is_geometry ty ->
                names := name :: !names; safe := id :: !safe
            | _ -> opaque := true)
-      | Op {op=("sop/count"|"sop/edges"|"sop/group"|"sop/group_names"|"sop/group_order"|"sop/group_entries");args;_} ->
+      | Op {op=("sop/count"|"sop/edges"|"sop/topology"|"sop/group"|"sop/group_names"|"sop/group_order"|"sop/group_entries");args;_} ->
           (match Option.bind (List.assoc_opt "geometry" args) (lookup bindings) with
            | Some (E.Deferred (ty,id)) when Flow.Ty.is_geometry ty -> safe:=id::!safe
            | _ -> opaque:=true)
@@ -84,7 +84,7 @@ let reads value =
     scan term;
     List.filter (fun id -> not (List.mem id !unsafe)) !safe in
   let rec visit safe = function
-    | E.Source (("sop/count"|"sop/edges"|"sop/group"|"sop/group_names"|"sop/group_order"|"sop/group_entries"),_,args) ->
+    | E.Source (("sop/count"|"sop/edges"|"sop/topology"|"sop/group"|"sop/group_names"|"sop/group_order"|"sop/group_entries"),_,args) ->
         (match List.assoc_opt "geometry" args with
          | Some (E.Deferred (ty,_)) when Flow.Ty.is_geometry ty -> ()
          | _ -> opaque:=true)
@@ -255,7 +255,7 @@ let resolve ~geometry value = match constant_source value with
                 Ok(E.Bool(match storage ~owner ~name geometry with
                   |None->false|Some storage->Option.fold ~none:true ~some:((=)(storage_kind storage))requested))))
        | _->error "E_ATTR_TYPE" "sop/has_attr needs geometry and an attribute name.")
-  | E.Source (("sop/count"|"sop/edges"),_,_) as source -> Topology_kernel.resolve ~geometry source
+  | E.Source (("sop/count"|"sop/edges"|"sop/topology"),_,_) as source -> Topology_kernel.resolve ~geometry source
   | E.Source (("sop/attr_type"|"sop/attr_names"),_,_) as source -> Attribute_metadata.resolve ~geometry source
   | source -> Group_kernel.resolve ~geometry source
 
@@ -529,6 +529,27 @@ let prepare ?profile ?strict ?approx ?sink ~sources inputs values =
   Result.bind (source_origins ~sources inputs) (fun by_source ->
   let count_source residual (term : Flow.Workspace.term) =
     let bindings = (E.Private.residual_view residual).bindings in
+    let topology_component = match term.node with
+      | Get ({node=Op {op="sop/topology";args;_};_},component) ->
+          Some (component,List.filter_map(fun(name,term)->Option.map(fun value->name,value)
+            (captured bindings term))args)
+      | _ -> (match captured bindings term with
+          | Some(E.Source("sop/topology",_,args)) ->
+              (match List.assoc_opt "component" args with Some(E.Text component)->Some(component,args)|_->None)
+          | _ -> None) in
+    match topology_component with
+    | Some(component,args) ->
+        Option.bind(List.assoc_opt "geometry" args)(function
+          |E.Deferred(ty,id) when Flow.Ty.is_geometry ty->
+              Option.bind(List.assoc_opt id by_source)(fun origin->
+                let origin=string_of_int origin in
+                match component with
+                |"vertex_points"->Some(["@sop-owner";"vertex";origin],[])
+                |"kinds"->Some(["@sop-owner";"primitive";origin],[])
+                |"primitive_offsets"->Some(["@sop-csr-offsets";"primitive";origin],[])
+                |_->None)
+          |_->None)
+    | None ->
     let promoted args=match List.assoc_opt "as_owner" args with
       |None->args
       |Some target->("owner",target)::List.remove_assoc "owner" args in

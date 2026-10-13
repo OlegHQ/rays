@@ -387,7 +387,7 @@ delegated to the old `noise_displace` body or dropped.
 
 | Task | Kind | Depends | What | Gate |
 | --- | --- | --- | --- | --- |
-| C.1 | L | B.R | `sop/mesh` and `sop/topology` (C1). | Build each of five fixtures from its own arrays; bytes equal |
+| C.1 | L | B.1 B.2 B.4 | `sop/mesh` and `sop/topology` (C1). Advanced to the completed typed attribute/integer/topology foundations for the full Peak normal fallback and Match Size metric/topology mapping; the former B.R dependency created a B.10 → C.1 → B.R → B.10 cycle. Indexed consuming recipes additionally use C.2. | Build each of five plain fixtures from its own arrays; topology + P geometry bytes equal; no implicit preservation of absent constructor payloads |
 | C.2 | L | B.1 B.2 B.3 | Gather instruction in the kernel tier (C2), advanced before B.R for B.13/B.14's indexed recipes. Numeric gathers and the required Text leaf extension have separate proofs; see `gather-design.md`. | Fixtures; out-of-range index is `E_ARRAY_RANGE`; 1 and 8 domains; lazy/error-order, ownership, actual JavaScript and GPU refusal checks |
 | C.3 | L | C.1 | `sop/remap` (C3). | Identity maps reproduce the input; a permutation carries every attribute and group |
 | C.4 | L | C.2 | `array/compact`, `array/scan_sum` (C4), `array/scatter_add` (C6). | Reference equality; 1 and 8 domains |
@@ -644,7 +644,7 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 - [ ] B.16
 - [ ] B.F
 - [ ] B.R
-- [ ] C.1
+- [x] C.1 — owned topology queries and required-array mesh construction match five native fixtures and authored packed reconstruction across domains/grains; cache, lazy errors/state, cards/menu, JavaScript host and production 2D refusal gates pass. Evidence in `geometry-arrays-validation.md` and `results.md`.
 - [x] C.2 — numeric and immutable Text gathers pass typed bounds, lazy/error-order, ownership, strict/reference/domain, actual JavaScript/export/worker and GPU refusal checks; separate Text cost evidence remains above 2× and qualifies no whole port.
 - [ ] C.3
 - [ ] C.4

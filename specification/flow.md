@@ -1516,6 +1516,29 @@ are owned copies; counts and edge reads depend on topology and do not read
 position coordinates or attributes. Their cards expose the geometry and count
 selector inputs, and ordinary argument gestures edit them.
 
+`(sop/topology geometry)` returns `{:vertex_points (array int)
+:primitive_offsets (array int) :kinds (array int)}`. The arrays are owned copies
+of native topology storage. Kind codes are `0` for a polygon, `1` for an open
+polyline and `2` for a closed polyline. The vertex-point plane uses vertex-owner
+count, kinds use primitive-owner count, and offsets contain primitive count plus
+one entries. These distinct count origins survive direct field access and
+captured records. The query reads topology, without reading positions or attributes.
+
+`(sop/mesh :points p :vertex_points vp :primitive_offsets po :kinds k)` builds
+geometry from four required typed keyword rows. Points are a vec3 array; the
+other rows are exact integer arrays. An empty mesh uses empty points, vertex
+points and kinds, with offsets `[0]`. Ordinary Flow layout and finite-value
+checks apply to point data. Kind codes are checked before native topology
+validation; invalid kinds report `E_TOPOLOGY_KIND`, and native topology errors
+retain their messages under `E_TOPOLOGY`. Arrays are copied into owned native
+storage. Only the supplied topology and points are constructed: carrying
+attributes and groups requires a separate remap operation. Live values, retained
+state, cooked sources and zone elements use the existing array/cook boundary.
+Untaken branches remain lazy, and reached errors retain their causes and state
+rollback. Both forms project as ordinary cards; topology exposes its three
+outputs, and mesh keyword rows accept normal checked argument/connection
+gestures. Integer-array socket defaults use `(array/int 0)`.
+
 `(sop/group geometry :name "top" :owner point)` returns an owned `(array int)`
 mask containing zero or one per owner element. Group owners are `point`,
 `vertex`, `primitive` and `edge`; the default is `point`.

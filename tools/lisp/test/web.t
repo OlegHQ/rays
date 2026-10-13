@@ -48,6 +48,26 @@ A draw graph that reaches a sop graph is refused, with the span of the reference
   $ test -e refused && echo written || echo nothing written
   nothing written
 
+C1 topology and mesh operators retain the production 2D export boundary.
+
+  $ cat > mesh.rays <<'X'
+  > (workspace mesh
+  >   (graph geometry :context sop
+  >     (let* [source (sop/mesh :points (array/vec3 0)
+  >                            :vertex_points (array/int 0)
+  >                            :primitive_offsets (array/int 1) :kinds (array/int 0))
+  >            topology (sop/topology source)]
+  >       (sop/mesh :points (sop/attr source :P)
+  >                 :vertex_points topology.vertex_points
+  >                 :primitive_offsets topology.primitive_offsets :kinds topology.kinds)))
+  >   (graph picture :context draw
+  >     (let* [g (ref geometry)] (draw/background "#080a10"))))
+  > X
+  $ rays-lisp web mesh.rays -o mesh_out 2>&1 | sed -n '/^Error/p'
+  Error [E_WEB_GRAPH]: The web export draws 2D canvas graphs only; this reaches the sop geometry.
+  $ test -e mesh_out && echo written || echo nothing written
+  nothing written
+
 The built-in noise image exports with native seeded scalar arguments.
 
   $ rays-lisp web ../../../sketches/flow_image/sketch.rays -o image

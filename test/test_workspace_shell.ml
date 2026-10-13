@@ -317,6 +317,14 @@ let run_values () =
   let e = add "str" in
   check (has (source e) "(str \"text\")") ("a str binding: " ^ source e);
   E3.close e;
+  let e = add "sop/mesh" in
+  check (E3.undo_label e = Some "Add node" && has (source e) "(sop/mesh"
+    && has (source e) ":points (array/vec3 0)"
+    && has (source e) ":vertex_points (array/int 0)"
+    && has (source e) ":primitive_offsets (array/int 1)"
+    && has (source e) ":kinds (array/int 0)")
+    ("required mesh keyword arrays were absent from production menu insertion: " ^ source e);
+  E3.close e;
   let e = add "attr_from_image" in
   check (E3.undo_label e = Some "Add node" && has (source e) "sop/attr_from_image"
          && has (source e) ":image (image/noise :width 1 :height 1)")

@@ -103,6 +103,36 @@ for (const [type, width] of [['float', 1], ['vec2', 2], ['vec3', 3], ['vec4', 4]
     throw new Error('sop_group: promoted mask aliases native storage');
 }
 
+// C.1 uses ordinary immutable geometry host values. Construction and queries
+// own their arrays; exact signed zero and exact integer kinds survive both.
+{
+  const points = new PArray(3, Float64Array.from([0, -0, 2, 1, 0.25, 2, 2, -0, 2]));
+  const vertices = new PArray(1, BigInt64Array.from([0n, 1n, 2n]));
+  const offsets = new PArray(1, BigInt64Array.from([0n, 3n]));
+  const kinds = new PArray(1, BigInt64Array.from([0n]));
+  const geometry = prims.sop_mesh(points, vertices, offsets, kinds);
+  if (!Object.is(geometry.get('positions').data[1], -0)) throw new Error('sop_mesh: signed zero changed');
+  const topology = prims.sop_topology(geometry);
+  if (topology.get('kinds').data[0] !== 0n || topology.get('primitive_offsets').data[1] !== 3n)
+    throw new Error('sop_topology: native kind/count mismatch');
+  points.data.fill(99); vertices.data.fill(99n); offsets.data.fill(99n); kinds.data.fill(99n);
+  for (const value of topology.values()) value.data.fill(99n);
+  const again = prims.sop_topology(geometry);
+  if (!Object.is(geometry.get('positions').data[1], -0) || again.get('vertex_points').data[0] !== 0n
+      || again.get('primitive_offsets').data[1] !== 3n || again.get('kinds').data[0] !== 0n)
+    throw new Error('sop_mesh/sop_topology: caller mutation changed immutable geometry');
+  const int = values => new PArray(1, BigInt64Array.from(values));
+  const expect = (code, fn) => {
+    try { fn(); } catch (error) { if (error instanceof Fail && error.code === code) return; throw error; }
+    throw new Error(`C1: expected ${code}`);
+  };
+  expect('E_TOPOLOGY_TYPE', () => prims.sop_mesh(new PArray(1, new Float64Array()), int([]), int([0n]), int([])));
+  expect('E_ARRAY_TYPE', () => prims.sop_mesh(new PArray(3, Float64Array.of(1)), int([]), int([0n]), int([])));
+  for (const bad of [NaN, Infinity, -Infinity])
+    expect('E_NONFINITE', () => prims.sop_mesh(new PArray(3, Float64Array.of(bad, 0, 0)), int([]), int([0n]), int([])));
+  expect('E_DATA_SOURCE', () => prims.sop_topology(null));
+}
+
 // ---- decoding the JSON encoding of core_fixtures.ml ----
 const decodeFloat = v => {
   if (typeof v === 'number') return v;

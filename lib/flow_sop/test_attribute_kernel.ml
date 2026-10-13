@@ -1339,7 +1339,10 @@ let () =
       | Array _ -> E.Vec3_array [||]
       | _ when name="values" && op.name="sop/with_attr" -> E.Vec3_array [||]
       | _ -> E.Deferred (Flow.Ty.geometry,0)) op.signature.pos in
-    let args=if List.mem_assoc "name" op.signature.kw then ("name",E.Text "selected")::args else args in
+    let args=if op.name="sop/mesh" then
+        ["points",E.Vec3_array[||];"vertex_points",E.Int_array[||];
+         "primitive_offsets",E.Int_array[|0|];"kinds",E.Int_array[||]]
+      else if List.mem_assoc "name" op.signature.kw then ("name",E.Text "selected")::args else args in
     op.check args;
     let result = op.body ~live:(Frame_input.at_time 0.)
       ~node:(fun _ _ -> E.Deferred (Flow.Ty.geometry,1)) args in

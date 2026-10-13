@@ -119,6 +119,31 @@ let edges : Flow.Op.t = {
       args@["component",Flow.Value.Text component]))["a";"b"]));
 }
 
+let topology_type = Flow.Ty.Record ["vertex_points",Array Int;
+  "primitive_offsets",Array Int;"kinds",Array Int]
+let topology : Flow.Op.t = {
+  edges with name="sop/topology";out=(fun _->topology_type);
+  body=(fun ~live:_ ~node:_ args->Flow.Value.Record(List.map(fun component->
+    component,Flow.Value.Source("sop/topology",Flow.Ty.Array Flow.Ty.Int,
+      args@["component",Flow.Value.Text component]))["vertex_points";"primitive_offsets";"kinds"]));
+}
+let mesh_fields = ["points",Flow.Ty.Array Flow.Ty.Vec3;
+  "vertex_points",Flow.Ty.Array Flow.Ty.Int;
+  "primitive_offsets",Flow.Ty.Array Flow.Ty.Int;"kinds",Flow.Ty.Array Flow.Ty.Int]
+let mesh : Flow.Op.t = {
+  count with name="sop/mesh";
+  signature={pos=[];opt=[];rest=None;kw=mesh_fields};
+  out=(fun _->Flow.Ty.geometry);
+  out_args=Some(fun args->
+    List.iter(fun(name,_)->if not(List.exists(fun(key,_,_)->key=name)args)then
+      Flow.Value.fail "E_ARGS" ("sop/mesh needs :"^name^"."))mesh_fields;
+    Flow.Ty.geometry);
+  shape=Flow.Op.Scalar;choices=[];
+  check=(fun args->List.iter(fun(name,_)->if not(List.mem_assoc name args)then
+    Flow.Value.fail "E_ARGS" ("sop/mesh needs :"^name^"."))mesh_fields);
+  body=(fun ~live:_ ~node args->node "sop/mesh" args);
+}
+
 let group_check args =
   (match List.assoc_opt "name" args with
    | Some(Flow.Value.Text name) when String.trim name<>"" -> ()
@@ -313,7 +338,7 @@ let glob_literal : Flow.Op.t = {
     checked(Attribute_metadata.glob_literal(metadata_text args "text"))));
 }
 
-let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges;
+let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; mesh;
   group; group_order; group_names; group_entries; with_group; context_seed;
   rename_attr;swap_attr;delete_attrs;rename_group;delete_group;rename_edge;delete_edge;attr_type;attr_names;
   glob_error;glob_rewrite_error;glob_rewrite;glob_literal]

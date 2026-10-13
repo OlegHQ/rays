@@ -4276,3 +4276,51 @@ use native video. C.1's earlier focused request57033 is separately EXIT0.
 The strengthened packed fixture now uses actual `Float.next_after 0. 1.`
 subnormals; the earlier `Float.min_float` spelling represented the smallest
 positive normal, so its earlier success alone did not prove subnormal coverage.
+
+## C.1 owned topology queries and mesh construction
+
+2026-10-13. The complete C.1 focused gate passes. Full details and retained
+failure history are in [geometry-arrays-validation.md](geometry-arrays-validation.md).
+`Topology_kernel` wraps existing native owned topology/geometry construction;
+the ordinary typed operators, retained Lower arrays, graph edits, editor menu
+and JavaScript geometry host protocol carry the capability. No new Core
+instruction, topology algorithm, dependency or SOP-specific callback is added.
+
+The final focused launcher request covers Flow SOP/graph/IR/web, CLI cram,
+dependency/API gates and the actual editor menu. Process57033 EXIT0;
+`/tmp/rays-c1-focused11.log`. Five native plain-topology/P fixtures match complete
+geometry bytes at domains1/4/8, grains1/97/4096, direct arrays and authored
+reconstruction, strict compiled and reference execution. A32769-point authored
+packed map preserves signed zero/small-normal bytes; the strengthened actual
+subnormal fixture also passes in request25298 (its unrelated live cache assertion
+failed separately). Input/query ownership, captured/direct
+distinct counts, warm caches, fresh unread components, topology/attribute-layout
+invalidation, native validator order/messages,
+exact Int values above2^53, kinds, cancellation, lazy causes, live/state/zone
+captures and failed-state rollback pass. Mesh/topology cards, typed Int defaults,
+checked keyword/connection edits and production menu insertion pass. Actual
+native→JavaScript fixtures cover both host heads and malformed inputs.
+
+An explicit host source is refused by the JS frame printer E_WEB_SOURCE;
+the production 2D CLI rejects a reached SOP graph containing both operators
+E_WEB_GRAPH before writing output. Earlier packed-printer assertions were
+incorrect because that printer expects region source bindings separately.
+No numeric/error/cache oracle was relaxed. The public existing reads helper
+needed by mesh facts was accepted separately in ed8eb646.
+
+C.1 moves to B.1/B.2/B.4 prerequisites to remove the B.10→C.1→B.R→B.10 cycle;
+indexed consumers additionally need C.2. C.1 constructs only explicit topology
+and finite Flow points. Attribute/group/instance remap, raw NaN/Inf point
+transport and maximum-count AoS/SoA parity remain separate work. There is no
+whole-port or 2× performance qualification in this capability gate.
+Accepted ports remain14/128; accepted milestones advance20/60→21/60.
+
+Final native-video shipping request54530 completes EXIT0 with
+`OCAMLRUNPARAM=b opam exec -- _build/default/tools/check.exe --ship`;
+log `/tmp/rays-c1-native-ship.log`. All14 whole-node tests, strengthened cache
+tests and the complete workspace IR sweep pass:43 standard files,1 custom
+catalog executable,13 fixtures, cooked payload comparisons at domains1/8.
+The launcher completes @all/@runtest/native smoke/git diff --check. Earlier
+dummy-video shipping request91290 failed native smoke and exposed the shared
+Lisp cache issue; focused cache request50009 and this final shipping check
+pass after the reviewed source-key fix and stronger fresh-oracle assertions.

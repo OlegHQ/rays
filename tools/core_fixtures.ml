@@ -655,6 +655,32 @@ let () =
     topology_fixture 4 [|3;2;1;0|] [|0;4|] [|Rdk.Topology.Closed_polyline|];
     topology_fixture 6 [|0;1;2;0;1;3;1;0;4;0;1;5|] [|0;3;6;9;12|]
       [|Rdk.Topology.Polygon;Open_polyline;Closed_polyline;Polygon|]] in
+  let mesh_fields geometry =
+    let topology=Rdk.Topology.Private.view(Rdk.Geometry.topology geometry)
+    and positions=Rdk.Packed.Float3.Private.view(Rdk.Geometry.positions geometry) in
+    ["points",E.Vec3_array(Array.init(Array.length positions.x*3)(fun i->
+        match i mod 3 with 0->positions.x.(i/3)|1->positions.y.(i/3)|_->positions.z.(i/3)));
+      "vertex_points",E.Int_array topology.vertex_points;
+      "primitive_offsets",E.Int_array topology.primitive_offsets;
+      "kinds",E.Int_array(Array.init(Bytes.length topology.primitive_kinds)
+        (fun i->Char.code(Bytes.get topology.primitive_kinds i)))] in
+  let mesh fields =
+    Result.bind(Flow.Syntax.parse {|(workspace mesh (graph g :context sop
+      [(points : (array vec3) (array/vec3 0)) (vertex_points : (array int) (array/int 0))
+       (primitive_offsets : (array int) (array/int 1)) (kinds : (array int) (array/int 0))]
+      (sop/mesh :points points :vertex_points vertex_points
+        :primitive_offsets primitive_offsets :kinds kinds)))|})(fun forms->
+      Result.bind(Flow_sop.Lower.workspace ~factories:[] ~inputs:["g",fields] forms)(fun lowered->
+        let graph=List.hd lowered.graphs in
+        match Sop.Edit_graph.compile_node graph.network.geometry ~node_id:(Option.get graph.root) with
+        |Error message->Error(Flow.Diagnostic.error ~code:"E_DATA_SOURCE" message)
+        |Ok node->
+            let session=Sop.Session.create ~max_entries:8 ~max_payload_bytes:1_000_000 |>Result.get_ok in
+            Fun.protect ~finally:(fun()->Sop.Session.close session)(fun()->
+              match Sop.Session.cook session ~context:(Sop.Context.create() |>Result.get_ok)node with
+              |Error d->Error(Flow.Diagnostic.error ?cause:d.cause ~code:d.code d.message)
+              |Ok output->Ok(geometry_value(Result.get_ok(Sop.Payload.geometry output.payload)))))) in
+  let mesh_case fields=add_host "sop/mesh" (List.map snd fields)(host_result(fun()->mesh fields)) in
   List.iter(fun geometry->
     let resolve=Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->Some geometry) in
     let handle=E.Deferred(T.geometry,0) in
@@ -666,13 +692,34 @@ let () =
     let edge component=resolve(E.Source("sop/edges",T.Array T.Int,
       ["geometry",handle;"component",E.Text component])) in
     add_host "sop/edges" [geometry_value geometry]
-      (host_result(fun()->Result.bind(edge "a")(fun a->Result.map(fun b->E.Record["a",a;"b",b])(edge "b")))))
+      (host_result(fun()->Result.bind(edge "a")(fun a->Result.map(fun b->E.Record["a",a;"b",b])(edge "b"))));
+    let component name=resolve(E.Source("sop/topology",T.Array T.Int,
+      ["geometry",handle;"component",E.Text name])) in
+    add_host "sop/topology" [geometry_value geometry]
+      (host_result(fun()->Result.bind(component "vertex_points")(fun vertices->
+        Result.bind(component "primitive_offsets")(fun offsets->
+          Result.map(fun kinds->E.Record["vertex_points",vertices;
+            "primitive_offsets",offsets;"kinds",kinds])(component "kinds")))));
+    mesh_case(mesh_fields geometry))
     topology_fixtures;
+  let base=mesh_fields(List.nth topology_fixtures 1) in
+  List.iter(fun(key,value)->mesh_case(List.map(fun(name,old)->
+    name,if name=key then value else old)base))
+    ["primitive_offsets",E.Int_array[||];"primitive_offsets",E.Int_array[|1;3;6|];
+      "primitive_offsets",E.Int_array[|0;3;5|];"kinds",E.Int_array[|0|];
+      "vertex_points",E.Int_array[|0;1;2;2;1;9007199254740993|];
+      "primitive_offsets",E.Int_array[|0;7;6|];"primitive_offsets",E.Int_array[|0;2;6|];
+      "kinds",E.Int_array[|-1;0|];"kinds",E.Int_array[|3;0|];
+      "kinds",E.Int_array[|9007199254740993;0|];
+      "points",E.Vec3_array[|1.|];
+      "points",E.Vec3_array[|nan;0.;0.|];
+      "points",E.Vec3_array[|infinity;0.;0.|];
+      "points",E.Vec3_array[|neg_infinity;0.;0.|]];
   List.iter(fun name->let args=["geometry",E.No_geo] @
       (if name="sop/count" then ["element",E.Text"points"] else ["component",E.Text"a"]) in
     add_host name (E.No_geo::(if name="sop/count" then [E.Text"points"] else []))
       (host_result(fun()->Flow_sop.Attribute_kernel.resolve ~geometry:(fun _->None)
-        (E.Source(name,(if name="sop/count" then T.Int else T.Array T.Int),args))))) ["sop/count";"sop/edges"];
+        (E.Source(name,(if name="sop/count" then T.Int else T.Array T.Int),args))))) ["sop/count";"sop/edges";"sop/topology"];
   (* Group host fixtures execute the production lowering for mask writes. *)
   let group_write geometry owner name mask order =
     let base=op "sop/with_group" in
@@ -882,7 +929,7 @@ let () =
     let body = String.concat ",\n" (List.rev !(Hashtbl.find cases name)) in
     Out_channel.with_open_bin (Filename.concat outdir (export name ^ ".json")) (fun oc ->
       Printf.fprintf oc "{\"primitive\":%s,\"export\":%s,\"cases\":[\n%s\n]}\n" (str name) (str (export name)) body))
-    (List.map C.primitive_name inventory @ ["array/sum";"sop/context_seed";"sop/delete_attr";"sop/attr";"sop/attr_checked";"sop/with_attr";"sop/has_attr";"sop/count";"sop/edges";
+    (List.map C.primitive_name inventory @ ["array/sum";"sop/context_seed";"sop/delete_attr";"sop/attr";"sop/attr_checked";"sop/with_attr";"sop/has_attr";"sop/count";"sop/edges";"sop/topology";"sop/mesh";
       "sop/group";"sop/group_names";"sop/group_order";"sop/with_group";
       "sop/attr_type";"sop/attr_names";"sop/rename_attr";"sop/swap_attr";"sop/delete_attrs";
       "sop/rename_group";"sop/delete_group";"sop/rename_edge";"sop/delete_edge";"text/glob_error";"text/glob_rewrite_error";

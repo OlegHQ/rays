@@ -1176,6 +1176,48 @@ export function sop_count(geometry, element) {
     : sop_edges(geometry).get('a').data.length);
 }
 
+export function sop_topology(geometry) {
+  topologyGeometry(geometry);
+  return new Map([
+    ['vertex_points', new PArray(1, BigInt64Array.from(geometry.get('vertex_points')))],
+    ['primitive_offsets', new PArray(1, BigInt64Array.from(geometry.get('primitive_offsets')))],
+    ['kinds', new PArray(1, BigInt64Array.from(geometry.get('primitive_kinds'), c => BigInt(c.charCodeAt(0))))]
+  ]);
+}
+export function sop_mesh(points, vertex_points, primitive_offsets, kinds) {
+  const integer = value => value instanceof PArray && value.width === 1 && value.data instanceof BigInt64Array;
+  if (!(points instanceof PArray) || points.width !== 3 || !(points.data instanceof Float64Array)
+      || !integer(vertex_points) || !integer(primitive_offsets) || !integer(kinds))
+    err('E_TOPOLOGY_TYPE', 'Mesh requires vec3 points and integer vertex_points, primitive_offsets and kinds arrays.');
+  if (points.data.length % 3 !== 0)
+    err('E_ARRAY_TYPE', 'Packed vec3 storage has three coordinates per element.');
+  for (const value of points.data) if (!Number.isFinite(value))
+    err('E_NONFINITE', 'array input produced a nonfinite value.');
+  for (const kind of kinds.data) if (kind < 0n || kind > 2n)
+    err('E_TOPOLOGY_KIND', 'Primitive kinds are 0 (polygon), 1 (open polyline) or 2 (closed polyline).');
+  const offsets = primitive_offsets.data, vertices = vertex_points.data, pointCount = BigInt(points.data.length / 3);
+  const topologyError = message => err('E_TOPOLOGY', message);
+  if (offsets.length === 0) topologyError('Topology: primitive offsets must contain the initial zero');
+  if (offsets[0] !== 0n) topologyError('Topology: first primitive offset must be zero');
+  if (offsets[offsets.length - 1] !== BigInt(vertices.length))
+    topologyError('Topology: final primitive offset must equal vertex count');
+  if (kinds.data.length !== offsets.length - 1)
+    topologyError('Topology: primitive kind count must match primitive count');
+  for (const point of vertices) if (point < 0n || point >= pointCount)
+    topologyError('Topology: vertex references an invalid point');
+  for (let i = 1; i < offsets.length; i++) if (offsets[i] < offsets[i-1])
+    topologyError('Topology: primitive offsets are not ordered');
+  for (let i = 0; i < kinds.data.length; i++)
+    if (offsets[i+1] - offsets[i] < (kinds.data[i] === 1n ? 2n : 3n))
+      topologyError('Topology: primitive has too few vertices for its kind');
+  return new Map([
+    ['positions', new PArray(3, new Float64Array(points.data))],
+    ['vertex_points', Array.from(vertices)], ['primitive_offsets', Array.from(offsets)],
+    ['primitive_kinds', Array.from(kinds.data, kind => String.fromCharCode(Number(kind))).join('')],
+    ['attributes', []], ['groups', []], ['edge_groups', []]
+  ]);
+}
+
 function groupOwner(owner) {
   if (typeof owner !== 'string') err('E_GROUP_TYPE', 'Group owner must be text.');
   if (!['point', 'vertex', 'primitive', 'edge'].includes(owner))
