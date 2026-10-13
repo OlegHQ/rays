@@ -1,0 +1,197 @@
+; Whole UV Auto Seam draft. Selected polygons get unit normals (a fan of fused cross-product steps in an
+; iterate); the edge table comes from sorting the corners by their outgoing edge, so an edge's two
+; faces are consecutive corners. A boundary / non-manifold / different-selection edge is a seam when its
+; switch is on; an interior edge between two selected faces is a seam when it joins a face to itself, the
+; partition values differ, the existing uv jumps across it, or the normals diverge past the angle. The
+; seams are written as a vertex group (corner leaves a seam edge) and an edge group, and optional
+; island ids are the sop/components of the faces joined across non-seam edges.
+(defn seam_error :context value [(reason : text)]
+  (error "invalid_topology" "uv_auto_seam could not produce valid geometry"
+    :cause (str "uv_auto_seam [invalid_topology]: " reason)))
+(defn seam_safe :context value [(index : int)] (if (int/ge index 0) index 0))
+(defn seam_finite :context value [(plane : (array float))]
+  (int/eq (array/sum (exact (map (fn [(x : float)] (if (= (- x x) 0.0) 0 1)) plane))) 0))
+
+; Unit normals of the selected polygons (zero elsewhere) and the count of degenerate ones.
+(defn seam_normals :context sop [(geo : geometry) (selected : (array int))]
+  (let* [topo (sop/topology geo)
+         positions (sop/attr geo :P)
+         prims (sop/count geo :primitives)
+         starts (array/slice topo.primitive_offsets 0 prims)
+         ends (array/slice topo.primitive_offsets 1 prims)
+         sizes (exact (map (fn [(first : int) (last : int)] (int/sub last first)) starts ends))
+         steps (if (int/eq prims 0) 0 (let* [widest (array/max sizes)] (if (int/gt widest 2) (int/sub widest 2) 0)))
+         sums (get (iterate steps {:v (array/vec3 prims [0.0 0.0 0.0]) :k 0}
+           (fn [(s : {:v (array vec3) :k int})]
+             {:v (exact (map (fn [(prim : int) (acc : vec3)]
+                 (let* [first (array/nth starts prim)
+                        last (array/nth ends prim)
+                        vertex (int/add (int/add first 1) s.k)
+                        active (and (int/eq (array/nth selected prim) 1) (int/le vertex (int/sub last 2)))
+                        b_at (array/nth topo.vertex_points (if active vertex first))
+                        c_at (array/nth topo.vertex_points (if active (int/add vertex 1) first))
+                        a (array/nth positions (array/nth topo.vertex_points first))
+                        u (- (array/nth positions b_at) a)
+                        v (- (array/nth positions c_at) a)]
+                   (if active
+                     [(fma (* -1.0 u.z) v.y (fma u.y v.z acc.x))
+                      (fma (* -1.0 u.x) v.z (fma u.z v.x acc.y))
+                      (fma (* -1.0 u.y) v.x (fma u.x v.y acc.z))]
+                     acc)))
+                 (array/range prims :type int) s.v))
+              :k (int/add s.k 1)})) :v)
+         unit (exact (map (fn [(n : vec3) (m : int)]
+           (let* [scale (max (abs n.x) (max (abs n.y) (abs n.z)))
+                  safe (if (= scale 0.0) 1.0 scale)
+                  x (/ n.x safe) y (/ n.y safe) z (/ n.z safe)
+                  inverse (/ 1.0 (sqrt (+ (fma x x (* y y)) (* z z))))]
+             (if (int/eq m 1) [(* x inverse) (* y inverse) (* z inverse)] [0.0 0.0 0.0])))
+           sums selected))
+         bad (exact (map (fn [(n : vec3) (m : int)]
+           (let* [scale (max (abs n.x) (max (abs n.y) (abs n.z)))
+                  total (+ (+ (abs n.x) (abs n.y)) (abs n.z))]
+             (if (and (int/eq m 1) (or (= scale 0.0) (not (= (- total total) 0.0)))) 1 0)))
+           sums selected))]
+    {:unit unit :bad (if (int/eq prims 0) 0 (array/sum bad))}))
+
+(defnode sop/uv_auto_seam :label "UV Auto Seam" :category ["UV" "Seams"]
+  :validate (and (not (text/blank? name))
+              (and (and (>= angle 0.0) (<= angle 3.141592653589793))
+                   (and (>= uv_tolerance 0.0) (< uv_tolerance 1e308))))
+  :code "E_PARAM" :message "sop/uv_auto_seam: name nonempty, angle within [0,pi], UV tolerance finite and non-negative"
+  [(in0 : geometry)
+   (name : text "uv_seams" :label "Seam group")
+   (group : text "" :label "Primitive group")
+   (angle : float 1.0471975511965976 :label "Angle threshold" :min 0 :max 3.141592653589793 :hard_min 0 :hard_max 3.141592653589793)
+   (include_boundaries : bool true :label "Include boundaries")
+   (include_non_manifold : bool true :label "Include non-manifold")
+   (partition_attribute : text "" :label "Partition attribute" :folder ["Cuts"])
+   (existing_uv : text "" :label "Existing UV" :folder ["Cuts"])
+   (uv_tolerance : float 0.000000001 :label "UV tolerance" :folder ["Cuts"] :min 0 :max 0.01 :hard_min 0)
+   (island_attribute : text "" :label "Island attribute" :folder ["Output"])]
+  (let* [group_name (text/trim group)
+         has_group (not (text/blank? group_name))
+         partition_name (text/trim partition_attribute)
+         has_partition (not (text/blank? partition_name))
+         uv_name (text/trim existing_uv)
+         has_uv (not (text/blank? uv_name))
+         island_name (text/trim island_attribute)
+         has_island (not (text/blank? island_name))
+         prims (sop/count in0 :primitives)
+         topology (sop/topology in0)
+         selected (if has_group (sop/group in0 :name group_name :owner "primitive") (array/int prims 1))
+         non_polygon (int/gt (array/sum (exact (map (fn [(s : int) (k : int)]
+                         (if (and (int/eq s 1) (not (int/eq k 0))) 1 0)) selected topology.kinds))) 0)]
+    (cond
+      (deform_group_missing in0 "primitive" group_name)
+        (error "missing_group" "uv_auto_seam could not find primitive group"
+          :cause (str "uv_auto_seam [missing_group]: uv_auto_seam could not find primitive group " (text/repr group_name)))
+      non_polygon (seam_error "UV Auto Seam supports selected polygon primitives only")
+      :else
+      (let* [faces (seam_normals in0 selected)]
+        (cond
+          (int/gt faces.bad 0) (seam_error "UV Auto Seam: selected primitives must be finite non-degenerate polygons")
+          (and has_partition (not (sop/has_attr in0 partition_name :owner "primitive")))
+            (seam_error (str "UV Auto Seam could not find primitive integer attribute " (text/repr partition_name)))
+          (and has_partition (not (sop/has_attr in0 partition_name :owner "primitive" :type int)))
+            (seam_error (str "UV Auto Seam primitive attribute " (text/repr partition_name) " must be integer"))
+          (and has_uv (not (sop/has_attr in0 uv_name :owner "vertex")))
+            (seam_error (str "UV Auto Seam requires vertex float2 attribute " (text/repr uv_name)))
+          (and has_uv (not (sop/has_attr in0 uv_name :owner "vertex" :type vec2)))
+            (seam_error (str "UV Auto Seam vertex attribute " (text/repr uv_name) " must be float2"))
+          (and has_island (and (sop/has_attr in0 island_name :owner "primitive")
+                               (not (sop/has_attr in0 island_name :owner "primitive" :type int))))
+            (seam_error (str "UV Auto Seam output attribute " (text/repr island_name) " must be integer"))
+          :else
+          (let* [vertex_count (sop/count in0 :vertices)
+                 edge_total (sop/count in0 :edges)
+                 adj (sop/adjacency in0)
+                 pov adj.primitive_of_vertex
+                 vp topology.vertex_points
+                 eov adj.edge_of_vertex
+                 ux (if has_uv (exact (map (fn [(q : vec2)] q.x) (sop/attr in0 uv_name :owner "vertex" :type vec2)))
+                      (array/float vertex_count 0.0))
+                 uy (if has_uv (exact (map (fn [(q : vec2)] q.y) (sop/attr in0 uv_name :owner "vertex" :type vec2)))
+                      (array/float vertex_count 0.0))]
+            (if (and has_uv (not (and (seam_finite ux) (seam_finite uy))))
+              (seam_error "UV Auto Seam requires finite existing UVs")
+              (let* [partition (if has_partition (sop/attr in0 partition_name :owner "primitive" :type int) (array/int prims 0))
+                     keys (exact (map (fn [(e : int)] (if (int/lt e 0) edge_total e)) eov))
+                     order (array/grade keys)
+                     counts (array/scatter_add keys (array/int vertex_count 1) (int/add edge_total 1))
+                     base (array/scan_sum counts)
+                     edges_range (array/range edge_total :type int)
+                     corner_selected (exact (map (fn [(p : int)] (array/nth selected p)) pov))
+                     touched (array/scatter_add keys corner_selected (int/add edge_total 1))
+                     left (exact (map (fn [(e : int)] (array/nth order (seam_safe
+                            (if (int/gt (array/nth counts e) 0) (array/nth base e) 0)))) edges_range))
+                     right (exact (map (fn [(e : int)] (array/nth order (seam_safe
+                            (if (int/gt (array/nth counts e) 1) (int/add (array/nth base e) 1) 0)))) edges_range))
+                     uv_cut (exact (map (fn [(e : int)]
+                       (let* [l (array/nth left e) r (array/nth right e)
+                              lnext (array/nth adj.next_vertex l) rnext (array/nth adj.next_vertex r)
+                              lns (seam_safe lnext) rns (seam_safe rnext)
+                              endpoint (array/nth adj.edge_a e)
+                              l_first (int/eq (array/nth vp l) endpoint)
+                              r_first (int/eq (array/nth vp r) endpoint)
+                              la (if l_first l lns) lb (if l_first lns l)
+                              ra (if r_first r rns) rb (if r_first rns r)
+                              m1 (abs (- (array/nth ux la) (array/nth ux ra)))
+                              m2 (abs (- (array/nth uy la) (array/nth uy ra)))
+                              m3 (abs (- (array/nth ux lb) (array/nth ux rb)))
+                              m4 (abs (- (array/nth uy lb) (array/nth uy rb)))]
+                         (if (and has_uv (or (or (int/lt lnext 0) (int/lt rnext 0))
+                                             (> (max (max (max m1 m2) m3) m4) uv_tolerance))) 1 0)))
+                       edges_range))
+                     cosine (cos angle)
+                     face_cut (exact (map (fn [(e : int)]
+                       (let* [lp (array/nth pov (array/nth left e)) rp (array/nth pov (array/nth right e))
+                              a (array/nth faces.unit lp) b (array/nth faces.unit rp)
+                              dot (+ (fma a.x b.x (* a.y b.y)) (* a.z b.z))]
+                         (if (or (or (int/eq lp rp) (not (int/eq (array/nth partition lp) (array/nth partition rp))))
+                                 (< dot cosine)) 1 0)))
+                       edges_range))
+                     seam (exact (map (fn [(e : int)]
+                       (let* [c (array/nth counts e)
+                              ls (array/nth selected (array/nth pov (array/nth left e)))
+                              rs (array/nth selected (array/nth pov (array/nth right e)))]
+                         (cond (int/eq c 1) (if (and (int/eq ls 1) include_boundaries) 1 0)
+                               (int/eq c 2) (if (not (int/eq ls rs)) (if include_boundaries 1 0)
+                                              (if (int/eq ls 1)
+                                                (if (or (int/eq (array/nth face_cut e) 1) (int/eq (array/nth uv_cut e) 1)) 1 0)
+                                                0))
+                               :else (if (and (int/gt (array/nth touched e) 0) include_non_manifold) 1 0))))
+                       edges_range))
+                     corner_seams (exact (map (fn [(e : int)] (if (int/ge e 0) (array/nth seam e) 0)) eov))
+                     with_vertices (sop/with_group in0 corner_seams :name name :owner "vertex")
+                     with_edges (sop/with_group with_vertices seam :name name :owner "edge")]
+                (if (not has_island) with_edges
+                  (let* [joined (exact (map (fn [(e : int)]
+                          (let* [lp (array/nth pov (array/nth left e)) rp (array/nth pov (array/nth right e))]
+                            (if (and (int/eq (array/nth counts e) 2)
+                                     (and (int/eq (array/nth seam e) 0)
+                                          (and (not (int/eq lp rp))
+                                               (and (int/eq (array/nth selected lp) 1) (int/eq (array/nth selected rp) 1))))) 1 0)))
+                          edges_range))
+                         kept (array/compact joined)
+                         pair_a (exact (map (fn [(e : int)] (array/nth pov (array/nth left e))) kept))
+                         pair_b (exact (map (fn [(e : int)] (array/nth pov (array/nth right e))) kept))
+                         derived (sop/mesh :points (array/vec3 prims)
+                                   :vertex_points (exact (map (fn [(i : int)]
+                                     (if (int/eq (int/mod i 2) 0) (array/nth pair_a (int/div i 2)) (array/nth pair_b (int/div i 2))))
+                                     (array/range (int/mul 2 (array/count pair_a)) :type int)))
+                                   :primitive_offsets (exact (map (fn [(i : int)] (int/mul i 2))
+                                     (array/range (int/add (array/count pair_a) 1) :type int)))
+                                   :kinds (array/int (array/count pair_a) 1))
+                         parts (sop/components derived :over "edges")
+                         comp_has_selected (array/scatter_add parts.id selected parts.count)
+                         comp_rank (array/scan_sum (exact (map (fn [(n : int)] (if (int/gt n 0) 1 0)) comp_has_selected)))
+                         island (exact (map (fn [(p : int) (id : int)]
+                           (if (int/eq (array/nth selected p) 1) (array/nth comp_rank id) -1))
+                           (array/range prims :type int) parts.id))
+                         existing (sop/has_attr in0 island_name :owner "primitive")
+                         old (if existing (sop/attr in0 island_name :owner "primitive" :type int) (array/int prims 0))
+                         merged (exact (map (fn [(p : int) (value : int) (previous : int)]
+                           (if (int/eq (array/nth selected p) 1) value (if existing previous value)))
+                           (array/range prims :type int) island old))]
+                    (sop/with_attr with_edges island_name merged :owner "primitive" :type int)))))))))))
