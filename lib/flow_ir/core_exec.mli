@@ -1,8 +1,9 @@
 (** Initial-domain execution of the structured frame core, using native primitive
     bodies. State statements need [root], the residual whose state plane they use.
-    A region runs through [force] (default [Packed.force]). With [root], any failure
-    restores the evaluation state and returns the tree walker's result for that
-    residual, so its diagnostic and span are the walker's. *)
+    A region runs through [force] (default [Packed.force]). With [root], failures
+    restore evaluation state. [~strict:true] or a custom [resolve] returns the
+    compiled diagnostic; otherwise the tree walker reruns that residual to
+    supply its own diagnostic and span. *)
 type prepared
 (** A program with its statements, constants and operators resolved once. *)
 
@@ -13,11 +14,11 @@ val has_regions : prepared -> bool  (* the program invokes a region, so [execute
 val fast : prepared -> (Frame_input.t -> (Flow.Eval.value, Flow.Diagnostic.t) result) option
 (* Stateless attempt for the evaluator's owner-checked shortcut. Errors must reenter the
     normal evaluator to restore the walker's diagnostics. *)
-val execute : ?root:Flow.Eval.residual ->
+val execute : ?root:Flow.Eval.residual -> ?strict:bool ->
   ?force:(Packed.t -> (Flow.Eval.value, Flow.Diagnostic.t) result) ->
   ?resolve:(Flow.Eval.value -> (Flow.Eval.value, Flow.Diagnostic.t) result) -> prepared -> live:Frame_input.t ->
   (Flow.Eval.value, Flow.Diagnostic.t) result
-val run : ?root:Flow.Eval.residual ->
+val run : ?root:Flow.Eval.residual -> ?strict:bool ->
   ?force:(Packed.t -> (Flow.Eval.value, Flow.Diagnostic.t) result) ->
   ?resolve:(Flow.Eval.value -> (Flow.Eval.value, Flow.Diagnostic.t) result) -> Core.program -> live:Frame_input.t ->
   (Flow.Eval.value, Flow.Diagnostic.t) result

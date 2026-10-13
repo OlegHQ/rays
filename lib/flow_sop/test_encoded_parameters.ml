@@ -10,13 +10,14 @@ let check forms=match checker catalog forms with
 let normalizer={|(fn [(raw : text)]
   (case (text/lower (text/trim raw)) "points" "point" "point" "point" "detail" "detail"
     :else (error "E_RULES" (str "Unknown owner: " raw))))|}
-let declaration ?(hook=normalizer) ?(default=" POINTS ") ?(operation="test_encoded") ()=
+let declaration ?(hook=normalizer) ?(default=" POINTS ") ?(operation="test_encoded") ?version ()=
   "(defnode sop/test_encoded :label \"Encoded card\" :operation "^Flow.Lisp.flat(S.make(Str operation))^
+  (Option.fold ~none:"" ~some:(fun version->" :version "^string_of_int version)version)^
   " [(geo : geometry) (rules : text "^Flow.Lisp.flat(S.make(Str default))^
   " :kind encoded :normalize "^hook^")]\n"^
   "(sop/with_attr geo :tag (array/text (sop/count geo :points) rules) :type text))"
-let source ?hook ?default ?operation ?(argument="") ()=
-  "(workspace encoded "^declaration ?hook ?default ?operation ()^
+let source ?hook ?default ?operation ?version ?(argument="") ()=
+  "(workspace encoded "^declaration ?hook ?default ?operation ?version ()^
   " (graph g :context sop (let* [card (sop/test_encoded (sop/line :points 3) "^argument^")] card)))"
 let lower forms=flow_ok(Flow_sop.Lower.workspace ~factories:Sop_catalog.Editor.factories forms)
 let root lowered=
@@ -163,3 +164,38 @@ let ()=
     let node,_=ok(Sop.Node.apply_parameters node["rules",Param.Text_value raw]) in
     assert((field node).current=Param.Text_value expected)) [5001;100001];
   print_endline "Encoded parameters: native table codec parity beyond 4096 rows without a new input-size ceiling"
+
+let () =
+  let forms=parse(source ~version:2 ()) in
+  let checked=check forms in
+  let version (checked:W.t)=(List.find(fun(n:W.node_definition)->
+    n.kind.qualified="sop/test_encoded")checked.nodes).version in
+  let definition=List.find(fun(n:W.node_definition)->n.kind.qualified="sop/test_encoded")checked.nodes in
+  assert(definition.version=2);
+  let node=root(lower forms) and default=root(lower(parse(source()))) in
+  assert(Sop.Node.version node=2 && Sop.Node.version default=1);
+  assert(Sop.Node.parameter_fields node=Sop.Node.parameter_fields default);
+  assert(Sop.Node.parameter_key node=Sop.Node.parameter_key default);
+  let changed,_=ok(Sop.Node.apply_parameters node ["rules",Param.Text_value "detail"]) in
+  assert(Sop.Node.version changed=2 && Sop.Node.id changed=Sop.Node.id node);
+  assert(Sop.Node.version(Sop.Node.relabel "Visible label" changed)=2);
+  let pane=Flow_graph.Projection.of_graph catalog checked "g" in
+  let card=Option.get(Flow_graph.Projection.find pane["g";"card"]) in
+  let saved,rechecked=flow_ok(Flow_graph.Flow_edit.apply_checked ~checker catalog forms
+    (Set_arg{node=card.path;key=Kw "rules";sub=[];value=S.make(Str " DETAIL ")})) in
+  assert(version rechecked=2);
+  let restored=check(parse(Flow.Lisp.flat(List.hd saved))) in
+  assert(version restored=2);
+  let edited=root(flow_ok(Flow_sop.Lower.of_checked ~factories:Sop_catalog.Editor.factories restored)) in
+  assert(Sop.Node.version edited=2 && (field edited).current=Param.Text_value "detail");
+  let header version=flow_ok(Flow.Defnode.parse(List.hd(parse(declaration ~version ())))) in
+  let manifest version=fst(flow_ok(Flow_sop.Manifest.generate ~nodes:[header version] Sop_catalog.Editor.factories)) in
+  assert(manifest 1=manifest 2); (* Runtime version is intentionally not a manifest row. *)
+  let session=ok(Sop.Session.create ~max_entries:32 ~max_payload_bytes:1_000_000) in
+  Fun.protect ~finally:(fun()->Sop.Session.close session)(fun()->
+    let geometry=cook session 1 node in
+    let before=Sop.Session.stats session in
+    assert(cook session 8 node==geometry && (Sop.Session.stats session).misses=before.misses);
+    assert(tag(cook session 1 default)=tag geometry);
+    assert(tag(cook session 8 changed)=[|"detail";"detail";"detail"|]));
+  print_endline "Defnode version: runtime/rebuild/cook identity, unchanged schema/manifest, actual card gesture and saved source"

@@ -99,6 +99,7 @@ type node_definition = {
   category : string list;
   description : string option;
   operation : string;
+  version : int;  (** Nonnegative runtime version from the declaration. *)
   body : graph;
   validations : (term * string * string) list;
   normalizers : (string * term) list;

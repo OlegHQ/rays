@@ -141,3 +141,18 @@ let () =
   bad "E_HARD_RANGE" (source (node "[(geo : geometry) (x : float 0 :hard_min -1 :hard_max 1)]") "(sop/test_node nil :x 2)");
   bad "E_UNKNOWN_PARAM" (source (node "[(geo : geometry)]") "(sop/test_node nil :bad 1)");
   Printf.printf "Defnode: typed slots, metadata, validations, identity and malformed declarations pass\n"
+
+let () =
+  let declaration metadata = "(defnode sop/versioned " ^ metadata ^ " [(geo : geometry)] geo)" in
+  List.iter (fun (metadata,expected) ->
+    let form=List.hd(parse(declaration metadata)) in
+    let parsed=Result.get_ok(Defnode.parse form) in
+    let checked=good(source(declaration metadata)"(sop/versioned nil)") in
+    assert(parsed.version=expected && (List.hd checked.nodes).version=expected);
+    let restored=good(Lisp.flat(List.hd checked.source)) in
+    assert((List.hd restored.nodes).version=expected))
+    ["",1;":version 0",0;":version 2",2;":version " ^ string_of_int max_int,max_int];
+  List.iter(fun metadata->bad "E_SHAPE"(source(declaration metadata)"(sop/versioned nil)"))
+    [":version -1";":version 2.5";":version 2.0";":version true";":version \"2\"";
+     ":version 9223372036854775808";":version 2 :version 3"];
+  print_endline "Defnode version: exact nonnegative integer metadata, default, source and malformed declarations"

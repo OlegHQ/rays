@@ -800,11 +800,10 @@ module Executor = struct
           match prepared with
           | None -> None
           | Some p when not (Core_exec.has_regions p) ->
-              let root = if strict then None else Some r in
-              let run live = Core_exec.execute ?root ?resolve p ~live in
+              let run live = Core_exec.execute ~root:r ~strict ?resolve p ~live in
               E.Private.set_core r ~owner:program.owner ?fast:(Core_exec.fast p) run;
               Some (run live)
-          | Some p -> Some (Core_exec.execute ?root:(if strict then None else Some r) ?resolve ~force:(fun packed ->
+          | Some p -> Some (Core_exec.execute ~root:r ~strict ?resolve ~force:(fun packed ->
               Packed.force ~strict ~state ?elems ?resolve ?measure packed ~live) p ~live)
           with _ -> None in
         match core with Some _ -> core | None -> execute_packed r live in

@@ -1989,3 +1989,9 @@ host's cook grain. An all-zero mask returns `nil`, and a selected failure always
 throws the mapper's diagnostic. A boundary in an unused `let*` binding still
 executes before the enclosing expression publishes its result. Nested row
 producers and policy edits use the ordinary checked graph gestures.
+
+A `defnode` may declare `:version INTEGER`, an exact nonnegative integer literal;
+its default is 1. This is the node's runtime version and participates in the
+existing SOP cook identity. It survives parameter rebuilds, source save/reload
+and graph gestures without adding a parameter row. It does not add a runtime
+version row to the Flow catalog manifest, whose native entries omit that row.

@@ -7,6 +7,7 @@ type t = {
   fields : Param.field_view list;
   label : string;
   operation : string;
+  version : int;  (** Nonnegative runtime version, default 1. *)
   category : string list;
   description : string option;
   inputs : (string * Ty.t * Syntax.t option) list;

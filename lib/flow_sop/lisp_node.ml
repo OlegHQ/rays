@@ -62,12 +62,12 @@ let arguments fields values =
       @ List.filter_map (fun (f : Param.field_view) ->
           if f.vec3=None then None else Some (f.name, scalar f.current)) fields
 
-let node ?(unbound_function = false) ~operation ~label ~fields ~normalizers ~source ~build inputs =
+let node ?(unbound_function = false) ~operation ~version ~label ~fields ~normalizers ~source ~build inputs =
   let schema = schema "parameters" fields normalizers in
   Sop.Custom.node ~label ~operation ~schema ~values:(Param.default schema) inputs
     (fun ~label ~inputs ~parameters ->
       if unbound_function then
-        N.Private.make ~label ~operation ~version:1 ~parameters:source
+        N.Private.make ~label ~operation ~version ~parameters:source
           ~cook_mode:N.Generic ~dependencies:Sop.Context.Dependencies.static
           ~inputs:(Array.of_list inputs) (fun ~node_id:_ _ _ ->
             Error (Sop.Diagnostic.error ~code:"disconnected_input"
@@ -78,7 +78,7 @@ let node ?(unbound_function = false) ~operation ~label ~fields ~normalizers ~sou
       let body, dependencies, facts = build ~label ~context inputs arguments in
       let prepared = Atomic.make (Sop.Context.seed context, body) in
       let context_seeded = Sop.Context.Dependencies.mem Seed dependencies in
-      N.Private.make ~label ~operation ~version:1 ~parameters:source
+      N.Private.make ~label ~operation ~version ~parameters:source
         ~cook_mode:facts.N.cook_mode ~dependencies ~inputs:(Array.of_list inputs)
         (fun ~node_id:_ context payloads ->
           let seed, previous_body = Atomic.get prepared in

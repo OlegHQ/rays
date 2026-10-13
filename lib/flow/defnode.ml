@@ -3,7 +3,7 @@ module S = Syntax
 type validation = { predicate : S.t; code : string; message : string }
 type t = {
   kind : Check.kind; slots : Check.slot list; keyword_inputs : string list;
-  fields : Param.field_view list; label : string; operation : string;
+  fields : Param.field_view list; label : string; operation : string; version : int;
   category : string list; description : string option;
   inputs : (string * Ty.t * S.t option) list; body : S.t;
   validations : validation list; normalizers : (string * S.t) list; form : S.t;
@@ -24,6 +24,11 @@ let number x = match x.S.node with
 let integer x = let n = number x in
   if n < float_of_int min_int || n >= -. float_of_int min_int || Float.floor n <> n then bad x "Expected an integer.";
   int_of_float n
+let version x = match x.S.node with
+  | S.Num s -> (match int_of_string_opt s with
+      | Some n when n >= 0 -> n
+      | _ -> bad x "Node version must be a nonnegative integer literal.")
+  | _ -> bad x "Node version must be a nonnegative integer literal."
 let strings x = match x.S.node with
   | S.Str s -> [s]
   | S.Vec xs -> List.map text xs
@@ -75,7 +80,7 @@ let parse form = try
     | [{S.node=S.Vec ps;_}; body] -> List.rev acc, ps, body
     | _ -> bad form "A defnode needs metadata, a parameter vector and exactly one body." in
   let hs, ps, body = header [] rest in
-  let hs = options form ["label";"operation";"category";"description";"facts";"validate";"code";"message"] hs in
+  let hs = options form ["label";"operation";"version";"category";"description";"facts";"validate";"code";"message"] hs in
   let operation=get hs "operation" text (Check.short name) in
   if not(Symbol.valid_name operation) then bad form ":operation is a nonempty stable operation name.";
   let used = Hashtbl.create 8 and fields = ref [] and slots = ref [] in
@@ -190,7 +195,7 @@ let parse form = try
     slots=List.filter (fun (s:Check.slot)->not(List.mem s.name keyword_inputs)) !slots;
     parameters=Check.parameters_of_fields !fields @ !keywords;
     outputs=["geo",Port_type.Geometry];facts=opt hs "facts" facts} in
-  Ok {kind;slots= !slots;keyword_inputs;fields= !fields;label=get hs "label" text (title (Check.short name));operation;
+  Ok {kind;slots= !slots;keyword_inputs;fields= !fields;label=get hs "label" text (title (Check.short name));operation;version=get hs "version" version 1;
     category=get hs "category" strings [];description=opt hs "description" text;inputs;body;validations= !validations;
     normalizers= !normalizers;form}
 with Invalid d -> Error d

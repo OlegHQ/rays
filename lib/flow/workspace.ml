@@ -50,7 +50,7 @@ type graph = { name : string; context : context;
 type node_definition = {
   kind : Check.kind; slots : Check.slot list; keyword_inputs : string list;
   fields : Param.field_view list; label : string;
-  category : string list; description : string option; operation : string; body : graph;
+  category : string list; description : string option; operation : string; version : int; body : graph;
   validations : (term * string * string) list;
   normalizers : (string * term) list;
 }
@@ -2017,7 +2017,7 @@ let check ?(ops = []) ?(library = false) catalog forms =
           if value.ty<>Ty.Fn(Some{params=[Ty.Text];result=Ty.Text}) then
             err form "E_TYPE" "An encoded normalizer takes one text and returns text.";
           pure_boundary ncx ~mapper:true "E_PARAM_NORMALIZE" "An encoded normalizer is pure: no frame, state, context or cooked values." term;name,term) d.normalizers in
-        node_terms := {kind=d.kind;slots=d.slots;keyword_inputs=d.keyword_inputs;fields=d.fields;label=d.label;category=d.category;description=d.description;operation=d.operation;
+        node_terms := {kind=d.kind;slots=d.slots;keyword_inputs=d.keyword_inputs;fields=d.fields;label=d.label;category=d.category;description=d.description;operation=d.operation;version=d.version;
           body={name=n;context=Context.sop;inputs;body=bt;form=d.form};validations;normalizers} :: !node_terms)
         (Hashtbl.find_opt node_sources n)) items;
     let visited=Hashtbl.create (List.length !node_terms) in

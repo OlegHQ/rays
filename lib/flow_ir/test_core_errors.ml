@@ -33,6 +33,8 @@ let () =
       (match I.Core_exec.execute prepared ~live with
        | Error d -> if not (same_result (Error d) expected) then incr differing
        | Ok _ -> failwith (name ^ ": the core should fail"));
+      assert (same_result (I.Core_exec.execute ~root:r ~strict:true prepared ~live)
+        (I.Core_exec.execute prepared ~live));
       let hooked=ref false in
       let execute r live = hooked:=true; Some (I.Core_exec.execute ~root:r prepared ~live) in
       let actual=E.Private.force_with_executor ~execute value ~live in
@@ -57,6 +59,18 @@ let () =
     assert (E.state_stamp core=E.state_stamp reference)
   done;
   assert (!failures>0);
+  let reference=E.create_state () and strict=E.create_state () in
+  let compiled=ok(I.Executor.compile ~strict:true value) in
+  for frame=0 to 7 do
+    let live={(Frame_input.at_time (float_of_int frame *. 0.25)) with frame} in
+    let expected=E.Private.force_reference ~state:reference value ~live in
+    (match I.Executor.force ~strict:true ~state:strict compiled ~live,expected with
+     |Error actual,Error expected->assert(actual.code=expected.code && actual.message=expected.message && actual.cause=expected.cause)
+     |actual,expected->assert(same_result actual expected));
+    assert(E.state_stamp strict=E.state_stamp reference);
+    assert(same_result (Ok(E.List(Array.of_list(E.Private.state_values strict))))
+      (Ok(E.List(Array.of_list(E.Private.state_values reference)))))
+  done;
   print_endline "Core errors: division by zero, range, non-finite and state rollback return the walker's diagnostic"
 
 let () =

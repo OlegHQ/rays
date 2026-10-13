@@ -4430,3 +4430,32 @@ launcher with `@lib/flow/runtest @lib/flow_graph/runtest`. The first draft graph
 fixture used value context (which requires a Float result); it was corrected to
 the established host context before this passing run. No gate was loosened.
 This is a shared source correctness fix, with no new whole-node port or milestone.
+
+## Exact node versions and strict state context
+
+2026-10-13: `defnode :version` is an exact nonnegative integer literal, defaults
+to 1 and reaches both normal and disconnected-callable runtime nodes. Parameter
+rebuilds and relabelling preserve it; the existing SOP session key already reads
+runtime version. No extra parameter or generated manifest row is introduced.
+Checks include default/0/2/max_int, malformed and duplicate metadata, actual
+lowering and cook reuse, unchanged schemas/parameter keys, real card edits and
+saved source. The first draft inspected the first embedded definition; the test
+now selects the declared `sop/test_encoded` explicitly.
+
+Strict Core execution now retains its residual's state context. `execute`/`run`
+accept `strict`; a compiled failure restores state and returns its diagnostic
+without entering the walker. Ordinary fallback behavior remains. The executor
+supplies root and strict independently. A regression makes walker fallback
+observable, and eight strict state frames compare values, diagnostics, stamps
+and rollback contents to the reference. All three pending array-family state
+regressions also pass, without qualifying their browser integration.
+
+`/tmp/rays-c45-native-focused5.log` and
+`/tmp/rays-defnode-version-focused2.log` completed with EXIT 1 solely for their
+then-pending intended API snapshot. Their functional aliases passed: native
+Flow/IR/SOP/graph, catalog, CLI, workspace shell and dependency checks as recorded
+by each command. After scoped API promotion, `/tmp/rays-strict-state-focused.log`
+records EXIT 0 for `@check @lib/flow_ir/runtest @tools/api_manifest/runtest`.
+The two public version fields and strict Core calls have a separate API acceptance
+commit; the five array primitive tags remain an unstaged, pending integration.
+No new whole-node port or plan milestone is counted here.

@@ -716,7 +716,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
                 not (List.mem_assoc slot.name functions) && (slot.required ||
                   Option.value ~default:[] (List.assoc_opt slot.name bindings) <> []) | _ -> false)
               definition.slots)
-            ~operation:definition.operation ~label:key
+            ~operation:definition.operation ~version:definition.version ~label:key
             ~fields:definition.fields ~normalizers:(Encoded_parameters.for_node checked definition)
             ~source:(Lazy.force (if functions=[] then declaration_source else kernel_source)) ~build:(build bindings)
             (List.filter_map Fun.id inputs) in

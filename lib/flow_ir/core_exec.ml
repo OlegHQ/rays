@@ -874,19 +874,19 @@ let attempt ?root ?force ?resolve prepared ~live =
 
 let fast prepared = if prepared.stateless then Some (fun live -> attempt prepared ~live) else None
 
-(* Any failure restores the evaluation state and reports the tree walker's own diagnostic,
-   as the evaluator's own fallback does. Without a residual there is no walker to ask. *)
-let execute ?root ?force ?resolve prepared ~live = match root with
+(* State needs its residual even in strict mode; strict failures restore it without
+   entering the tree walker. Ordinary failures retain the evaluator's fallback. *)
+let execute ?root ?(strict=false) ?force ?resolve prepared ~live = match root with
   | None -> attempt ?force ?resolve prepared ~live
   | Some r ->
       let restore = if prepared.stateless then ignore else E.Private.checkpoint r in
       (match (try attempt ~root:r ?force ?resolve prepared ~live with _ ->
          Error (Flow.Diagnostic.error ~code:"E_CORE" "Core execution failed.")) with
        | Ok _ as ok -> ok
-       | Error _ as error when resolve<>None -> restore (); error
+       | Error _ as error when strict || resolve<>None -> restore (); error
        | Error _ -> restore (); E.Private.rerun r)
 
-let run ?root ?force ?resolve program ~live = execute ?root ?force ?resolve (prepare program) ~live
+let run ?root ?strict ?force ?resolve program ~live = execute ?root ?strict ?force ?resolve (prepare program) ~live
 
 module Buffers = Core_marks.Buffers
 
