@@ -39,6 +39,7 @@ let agree geometry body expected =
     assert (flow_ok (E.Private.force_reference ~resolve value ~live) = expected);
     assert (flow_ok (Flow_ir.Executor.force ~strict:true ~resolve core ~live) = expected))) [1;8]
 
+let ok_error = function Ok value -> value | Error e -> failwith (Rdk.Error.to_string e)
 let ints a = E.Int_array (Array.copy a)
 
 let () =
@@ -57,3 +58,27 @@ let () =
       ["geometry",geometry;"component",E.Text "next_vertex"])) with
     | Error d -> assert (d.code = "E_DATA_SOURCE") | Ok _ -> assert false)
     [E.No_geo; E.Deferred (Flow.Ty.geometry,7)]
+
+(* D.2: ids and count equal Analysis.classify_connectivity, with and without a mask. *)
+let () =
+  List.iter (fun (_, geometry) ->
+    List.iter (fun (over, owner, group_owner, count) ->
+      let classify mask =
+        let group = Option.map (fun mask -> Rdk.Group.init ~owner:group_owner ~name:"m" count
+          (fun i -> mask.(i) = 1)) mask in
+        let primitives, points = if owner = Rdk.Analysis.Connectivity_primitives then group, None else None, group in
+        let ids, n = Rdk.Analysis.classify_connectivity ?primitives ?points owner geometry |> ok_error in
+        E.Record ["id", ints ids; "count", E.Int n] in
+      agree geometry (Printf.sprintf "(sop/components geo :over \"%s\")" over) (classify None);
+      let mask = Array.init count (fun i -> if i mod 3 = 1 then 0 else 1) in
+      let literal = String.concat " " (Array.to_list (Array.map string_of_int mask)) in
+      agree geometry (Printf.sprintf "(sop/components geo :over \"%s\" :mask (array/int %d 1))" over count)
+        (classify (Some (Array.make count 1)));
+      if count > 0 then
+        agree geometry (Printf.sprintf
+          "(sop/components geo :over \"%s\" :mask (exact (map (fn [(i : int)] (if (int/eq (int/mod i 3) 1) 0 1)) (array/range %d :type int))))"
+          over count) (classify (Some mask));
+      ignore literal)
+      [ "edges", Rdk.Analysis.Connectivity_points, Rdk.Group.Point, G.point_count geometry;
+        "points", Rdk.Analysis.Connectivity_primitives, Rdk.Group.Primitive, G.primitive_count geometry ])
+    (fixtures ())

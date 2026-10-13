@@ -853,6 +853,22 @@ arr1[0.;-0.;0.];arr1[1e16;1.;-1e16];
           |name::rest->Result.bind(resolve(E.Source("sop/adjacency",T.Array T.Int,
               ("component",E.Text name)::args)))(fun value->gather((name,value)::acc)rest) in
         gather [] ["primitive_of_vertex";"next_vertex";"previous_vertex";"edge_of_vertex";"opposite_vertex";"edge_a";"edge_b";"point_edge_offsets";"point_edges";"point_vertex_offsets";"point_vertices"]));
+    let components over mask=
+      let tail=("over",E.Text over)::(match mask with Some m->["mask",m]|None->[]) in
+      let get component=resolve(E.Source("sop/components",(if component="id" then T.Array T.Int else T.Int),
+        ("geometry",handle)::("component",E.Text component)::tail)) in
+      add_host "sop/components" (geometry_value geometry::E.Text over::(match mask with Some m->[m]|None->[]))
+        (host_result(fun()->Result.bind(get "id")(fun id->Result.map(fun count->E.Record["id",id;"count",count])(get "count")))) in
+    List.iter(fun(over,count)->
+      components over None;
+      components over (Some(E.Int_array(Array.make count 1)));
+      components over (Some(E.Int_array(Array.init count (fun i->i land 1))));
+      components over (Some(E.Int_array(Array.init count (fun i->if i mod 3=1 then 0 else 1))));
+      components over (Some(E.Int_array(Array.make count 0)));
+      components over (Some(E.Int_array(Array.make (count+1) 1)));
+      components over (Some(E.Int_array(Array.make count 2))))
+      ["edges",Rdk.Geometry.point_count geometry;"points",Rdk.Geometry.primitive_count geometry];
+    components "faces" None;
     mesh_case(mesh_fields geometry);
     mesh_case ~planes:true(mesh_plane_fields geometry))
     topology_fixtures;
@@ -1295,7 +1311,7 @@ remap_case source unrelated fields;
     let body = String.concat ",\n" (List.rev !(Hashtbl.find cases name)) in
     Out_channel.with_open_bin (Filename.concat outdir (export name ^ ".json")) (fun oc ->
       Printf.fprintf oc "{\"primitive\":%s,\"export\":%s,\"cases\":[\n%s\n]}\n" (str name) (str (export name)) body))
-    (List.map C.primitive_name inventory @ ["array/sum";"sop/context_seed";"sop/delete_attr";"sop/attr";"sop/attr_checked";"sop/with_attr";"sop/has_attr";"sop/count";"sop/edges";"sop/topology";"sop/adjacency";"sop/mesh";"sop/mesh_planes";"sop/remap";
+    (List.map C.primitive_name inventory @ ["array/sum";"sop/context_seed";"sop/delete_attr";"sop/attr";"sop/attr_checked";"sop/with_attr";"sop/has_attr";"sop/count";"sop/edges";"sop/topology";"sop/adjacency";"sop/components";"sop/mesh";"sop/mesh_planes";"sop/remap";
       "sop/group";"sop/group_names";"sop/group_order";"sop/with_group";
       "sop/attr_type";"sop/attr_names";"sop/rename_attr";"sop/swap_attr";"sop/delete_attrs";
       "sop/rename_group";"sop/delete_group";"sop/rename_edge";"sop/delete_edge";"text/glob_error";"text/glob_rewrite_error";

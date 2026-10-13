@@ -1338,6 +1338,48 @@ export function sop_adjacency(geometry) {
     ['edge_a', int(edgeA)], ['edge_b', int(edgeB)], ['point_edge_offsets', int(edgeOffsets)],
     ['point_edges', int(edgeRows)], ['point_vertex_offsets', int(vertexOffsets)], ['point_vertices', int(vertexRows)]]);
 }
+// D.2: the labelling of Analysis.classify_connectivity (no seams, no UVs):
+// classes number the included elements by first element; excluded ones are -1.
+export function sop_components(geometry, over = 'edges', mask) {
+  if (over !== 'edges' && over !== 'points')
+    err('E_COMPONENTS_OVER', 'Components :over is edges or points.');
+  topologyGeometry(geometry);
+  const points = over === 'edges';
+  const count = Number(sop_count(geometry, points ? 'points' : 'primitives'));
+  if (mask !== undefined) {
+    if (!(mask instanceof PArray) || mask.width !== 1 || !(mask.data instanceof BigInt64Array))
+      err('E_COMPONENTS_MASK', 'Components mask is an integer array.');
+    if (mask.data.length !== count)
+      err('E_COMPONENTS_MASK', 'Components mask length differs from the labelled element count.');
+    if (!mask.data.every(bit => bit === 0n || bit === 1n))
+      err('E_COMPONENTS_MASK', 'Components mask holds only 0 and 1.');
+  }
+  const included = i => mask === undefined || mask.data[i] === 1n;
+  const parent = Array.from({ length: count }, (_, i) => i);
+  const root = i => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+  const union = (a, b) => { if (included(a) && included(b)) { const x = root(a), y = root(b); if (x !== y) parent[y] = x; } };
+  if (points) {
+    const edges = sop_edges(geometry), a = edges.get('a').data, b = edges.get('b').data;
+    for (let e = 0; e < a.length; e++) union(Number(a[e]), Number(b[e]));
+  } else {
+    const vertices = geometry.get('vertex_points'), offsets = geometry.get('primitive_offsets');
+    const first = new Map();
+    for (let p = 0; p < count; p++) {
+      if (!included(p)) continue;
+      for (let v = Number(offsets[p]); v < Number(offsets[p + 1]); v++) {
+        const point = Number(vertices[v]);
+        if (first.has(point)) union(p, first.get(point)); else first.set(point, p);
+      }
+    }
+  }
+  const ids = new BigInt64Array(count).fill(-1n), label = new Map();
+  for (let i = 0; i < count; i++) if (included(i)) {
+    const r = root(i);
+    if (!label.has(r)) label.set(r, label.size);
+    ids[i] = BigInt(label.get(r));
+  }
+  return new Map([['id', new PArray(1, ids)], ['count', BigInt(label.size)]]);
+}
 const meshInteger = value => value instanceof PArray && value.width === 1 && value.data instanceof BigInt64Array;
 function meshGeometry(pointCount, positions, vertex_points, primitive_offsets, kinds) {
   for (const kind of kinds.data) if (kind < 0n || kind > 2n)

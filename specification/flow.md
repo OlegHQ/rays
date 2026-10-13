@@ -1543,6 +1543,14 @@ absent), `edge_a`, `edge_b` (as `sop/edges`), `point_edge_offsets` and
 `point_edges`, `point_vertex_offsets` and `point_vertices` (point CSR rows).
 It reads topology only.
 
+`(sop/components geometry :over "edges" :mask m)` returns `{:id (array int)
+:count int}`: connected-component ids as `Analysis.classify_connectivity`
+computes them. `:over "edges"` (default) labels points joined along edges;
+`:over "points"` labels primitives joined through shared points. Ids number the
+classes in order of their first element. The optional 0/1 `:mask` (one entry per
+labelled element) removes elements as deleted topology: they get id -1 and are
+not counted.
+
 `(sop/mesh :points p :vertex_points vp :primitive_offsets po :kinds k)` builds
 geometry from four required typed keyword rows. Points are a vec3 array; the
 other rows are exact integer arrays. An empty mesh uses empty points, vertex

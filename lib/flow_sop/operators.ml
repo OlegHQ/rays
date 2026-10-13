@@ -145,6 +145,19 @@ let adjacency : Flow.Op.t = {
     component,Flow.Value.Source("sop/adjacency",Flow.Ty.Array Flow.Ty.Int,
       args@["component",Flow.Value.Text component]))adjacency_fields));
 }
+let components_type=Flow.Ty.Record["id",Array Int;"count",Int]
+let components : Flow.Op.t = {
+  edges with name="sop/components";
+  signature={pos=["geometry",Flow.Ty.geometry];opt=[];rest=None;
+    kw=["over",Flow.Ty.Text;"mask",Flow.Ty.Array Flow.Ty.Int]};
+  out=(fun _->components_type);choices=["over",["edges";"points"]];
+  check=(fun args->Option.iter(function
+    | Flow.Value.Text("edges"|"points")->()
+    | _->Flow.Value.fail "E_COMPONENTS_OVER" "Components :over is edges or points.")(List.assoc_opt "over" args));
+  body=(fun ~live:_ ~node:_ args->Flow.Value.Record(List.map(fun(component,ty)->
+    component,Flow.Value.Source("sop/components",ty,args@["component",Flow.Value.Text component]))
+    ["id",Flow.Ty.Array Flow.Ty.Int;"count",Flow.Ty.Int]));
+}
 let mesh_fields = ["points",Flow.Ty.Array Flow.Ty.Vec3;
   "vertex_points",Flow.Ty.Array Flow.Ty.Int;
   "primitive_offsets",Flow.Ty.Array Flow.Ty.Int;"kinds",Flow.Ty.Array Flow.Ty.Int]
@@ -388,7 +401,7 @@ let remap : Flow.Op.t = {
   body=(fun ~live:_ ~node args->node "sop/remap" args);
 }
 
-let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; adjacency; mesh; mesh_planes; remap;
+let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; adjacency; components; mesh; mesh_planes; remap;
   group; group_order; group_names; group_entries; with_group; context_seed;
   rename_attr;swap_attr;delete_attrs;rename_group;delete_group;rename_edge;delete_edge;attr_type;attr_names;
   glob_error;glob_rewrite_error;glob_rewrite;glob_literal]
