@@ -1,7 +1,15 @@
 module W = Flow.Workspace
 
+module Memo = Hashtbl.Make (struct type t = W.term let equal = ( == ) let hash = Hashtbl.hash end)
+
+(* Checked terms share subterms; rewrite each once (keeping the sharing), or a shared chain is
+   walked exponentially often. [transform] is pure per term, so the memo changes nothing else. *)
 let map ?(select=Fun.id) transform (graph:W.graph) =
-  let rec term (t:W.term) =
+  let memo=Memo.create 256 in
+  let rec term (t:W.term) = match Memo.find_opt memo t with
+    | Some mapped -> mapped
+    | None -> let mapped=term_once t in Memo.add memo t mapped; mapped
+  and term_once (t:W.term) =
     let t=select t in
     let fields xs=List.map (fun (name,value) -> name,term value) xs in
     let patterns xs=List.map (fun (pattern,value) -> pattern,term value) xs in

@@ -58,28 +58,32 @@ type node_definition = {
 (* Zero-state operators a defnode body reads from its cook context; Context_kernel specializes them. *)
 let body_context_ops = ["sop/context_seed"; "sop/provenance_base"; "sop/context_frame"; "sop/context_time"]
 
+(* Checked terms share subterms (expanded macros, remapped residuals): walk each node once, or a
+   shared chain is visited exponentially often. *)
+module Seen_term = Hashtbl.Make (struct type t = term let equal = ( == ) let hash = Hashtbl.hash end)
 let called_names ~include_ops root =
-  let rec calls (t:term) = match t.node with
-    | Call {kind;args;_} -> kind :: fields args
-    | Op {op;args;_} -> (if include_ops then [op] else []) @ fields args
+  let seen = Seen_term.create 256 and out = ref [] in
+  let rec calls (t:term) = if not (Seen_term.mem seen t) then begin Seen_term.add seen t (); match t.node with
+    | Call {kind;args;_} -> out := kind :: !out; fields args
+    | Op {op;args;_} -> if include_ops then out := op :: !out; fields args
     | Record args -> fields args
-    | Call_fn {args;body;_} -> List.concat_map calls args @ Option.fold ~none:[] ~some:calls body
+    | Call_fn {args;body;_} -> List.iter calls args; Option.iter calls body
     | Graph_ref {inputs;_} -> fields inputs
-    | Let (bindings,body) -> List.concat_map (fun (_,v) -> calls v) bindings @ calls body
-    | State {init;step;_} -> calls init @ calls step
-    | Loop {accs;clauses;body;_} -> List.concat_map (fun (_,v) -> calls v) (accs@clauses) @ calls body
-    | With_error(a,b) -> calls a @ calls b
-    | Error_rows{rows=a;mapper=b;_} -> calls a @ calls b
-    | If (a,b,c) -> calls a @ calls b @ calls c
-    | Cond (arms,default) -> List.concat_map (fun (a,b) -> calls a @ calls b) arms @ calls default
-    | Case (scrutinee,arms,default) -> calls scrutinee @ List.concat_map (fun (_,v) -> calls v) arms @ calls default
-    | Fn {body;capture;_} -> calls body @ Option.fold ~none:[] ~some:calls capture
-    | Hof (_,args) | Vec args | List_lit args | Str args | List_op (_,args) -> List.concat_map calls args
+    | Let (bindings,body) -> List.iter (fun (_,v) -> calls v) bindings; calls body
+    | State {init;step;_} -> calls init; calls step
+    | Loop {accs;clauses;body;_} -> List.iter (fun (_,v) -> calls v) (accs@clauses); calls body
+    | With_error(a,b) -> calls a; calls b
+    | Error_rows{rows=a;mapper=b;_} -> calls a; calls b
+    | If (a,b,c) -> calls a; calls b; calls c
+    | Cond (arms,default) -> List.iter (fun (a,b) -> calls a; calls b) arms; calls default
+    | Case (scrutinee,arms,default) -> calls scrutinee; List.iter (fun (_,v) -> calls v) arms; calls default
+    | Fn {body;capture;_} -> calls body; Option.iter calls capture
+    | Hof (_,args) | Vec args | List_lit args | Str args | List_op (_,args) -> List.iter calls args
     | Get (value,_) | Bypass value | Expanded {body=value;_} -> calls value
-    | Assoc (value,args) -> calls value @ fields args
-    | Lit _ | Text _ | Nil | Time | Ref_binding _ | Fn_ref _ -> []
-  and fields args = List.concat_map (fun (_,v) -> calls v) args in
-  List.sort_uniq String.compare (calls root)
+    | Assoc (value,args) -> calls value; fields args
+    | Lit _ | Text _ | Nil | Time | Ref_binding _ | Fn_ref _ -> () end
+  and fields args = List.iter (fun (_,v) -> calls v) args in
+  calls root; List.sort_uniq String.compare !out
 let kind_calls root = called_names ~include_ops:false root
 
 let bypass_input term =

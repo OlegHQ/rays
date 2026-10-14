@@ -78,7 +78,13 @@ let check_workspace_raw ?ops ?library ?sources:override catalog forms =
   | Error diagnostic -> None, [diagnostic]
   | Ok (sources, nodes) ->
       let sources, nodes = match override with
-        | Some _ -> sources, nodes
+        | Some _ when library = Some true -> sources, nodes
+        | Some _ ->
+            (* An explicit library is pruned the same way: checking all of it per workspace made
+               every test case pay for every Lisp node. *)
+            let sources = reachable sources forms in
+            sources, List.filter (fun (node : Flow.Defnode.t) ->
+              List.exists (fun form -> definition_name form = Some node.kind.qualified) sources) nodes
         | None ->
             let nodes = List.filter (fun (node : Flow.Defnode.t) ->
               List.exists (fun (kind : Flow.Check.kind) -> kind.qualified=node.kind.qualified)

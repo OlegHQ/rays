@@ -54,4 +54,3 @@ module Promote_attributes = Sop.Nodes.Promote_attributes [@@sop.register]
 module Null = Sop.Nodes.Null [@@sop.register]
 module Exploded_view = Sop.Nodes.Exploded_view [@@sop.register]
 
-module Sweep_circle = Sop.Nodes.Sweep_circle [@@sop.register]
