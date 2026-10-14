@@ -1,7 +1,546 @@
-; PARTIAL Carve draft (BLOCKED, see the commit message): parameter block, validation, the missing-group
-; refusal and the unchanged outputs only. Every mode that builds geometry still ends in an error, so the gate
-; fails on the first case that needs one. The native kernel is Curve_ops.carve_curves: descriptors (source
-; primitive, kind, a, b) per selected primitive, then interval extraction with arc-length parameters.
+; Whole Carve port of Curve_ops.carve_curves. Every mode is the same pipeline: a plan of whole-array
+; descriptions (output vertex rows, point and vertex carry maps, source edge spans), then `carve_finish`
+; builds the mesh, carries payload with sop/remap (weighted maps where native interpolates) and rewrites
+; the edge groups from the spans, because a native target edge is a member only when ALL its source edges
+; are (an AND that the remap's OR ancestry cannot say).
+
+(defn carve_error :context value [(reason : text)]
+  (error "invalid_geometry" "carve could not produce valid geometry"
+    :cause (str "carve [invalid_geometry]: " reason)))
+(defn carve_finite :context value [(x : float)] (= (- x x) 0.0))
+; Curve_ops segment length (the native build fuses the squared-norm sum).
+(defn carve_length :context value [(ax : float) (ay : float) (az : float) (bx : float) (by : float) (bz : float)]
+  (let* [dx (- bx ax) dy (- by ay) dz (- bz az)
+         scale (max (abs dx) (max (abs dy) (abs dz)))]
+    (if (= scale 0.0) 0.0
+      (let* [x (/ dx scale) y (/ dy scale) z (/ dz scale)]
+        (* scale (sqrt (fma z z (fma y y (* x x)))))))))
+
+; Per query: how many leading entries of the ascending run arr[base .. base+count-1] are < key
+; (inclusive 0) or <= key (inclusive 1).
+(defn carve_count :context value
+  [(arr : (array float)) (bases : (array int)) (counts : (array int)) (keys : (array float)) (inclusive : int)]
+  (let* [last (int/sub (array/count arr) 1)
+         final (iterate 64 {:lo (array/int (array/count keys) 0) :hi counts}
+           (fn [(c : {:lo (array int) :hi (array int)})]
+             (let* [mids (exact (map (fn [(l : int) (h : int)] (int/div (int/add l h) 2)) c.lo c.hi))
+                    probes (exact (map (fn [(b : int) (m : int)]
+                             (array/nth arr (max 0 (min (int/add b m) last)))) bases mids))
+                    holds (exact (map (fn [(a : float) (v : float)]
+                            (if (or (< a v) (and (int/eq inclusive 1) (= a v))) 1 0)) probes keys))
+                    code (exact (map (fn [(l : int) (h : int) (f : int)]
+                           (if (int/lt l h) (int/sub 2 f) 0)) c.lo c.hi holds))]
+               {:lo (exact (map (fn [(l : int) (m : int) (k : int)] (if (int/eq k 1) (int/add m 1) l)) c.lo mids code))
+                :hi (exact (map (fn [(h : int) (m : int) (k : int)] (if (int/eq k 2) m h)) c.hi mids code))}))
+           :until (fn [(p : {:lo (array int) :hi (array int)}) (n : {:lo (array int) :hi (array int)})]
+                    (int/eq (array/sum (exact (map (fn [(l : int) (h : int)] (if (int/lt l h) 1 0)) n.lo n.hi))) 0)))]
+    final.lo))
+
+; Edge index and fraction of each parameter on its curve (Curve_ops `locate`); snap is the carve_inside
+; rule that a fraction within 1e-12 of the edge end moves to the next edge.
+(defn carve_locate :context value
+  [(cum : (array float)) (bases : (array int)) (counts : (array int)) (params : (array float))
+   (relative : bool) (snap : bool)]
+  (let* [n (array/count params)
+         last (int/sub (array/count cum) 1)
+         rows (array/range n :type int)
+         totals (exact (map (fn [(b : int) (c : int)] (array/nth cum (max 0 (min (int/add b c) last)))) bases counts))
+         distance (exact (map (fn [(p : float) (tt : float)] (* p tt)) params totals))
+         found (carve_count cum (exact (map (fn [(b : int)] (int/add b 1)) bases))
+                 (if relative counts (array/int n 0)) distance 1)
+         edge0 (exact (map (fn [(f : int) (c : int) (p : float)]
+                 (let* [top (int/sub c 1)]
+                   (if relative (min top f) (min top (floor (* p (float c))))))) found counts params))
+         t0 (exact (map (fn [(i : int)]
+              (let* [b (array/nth bases i) e (array/nth edge0 i)
+                     start (array/nth cum (max 0 (min (int/add b e) last)))
+                     stop (array/nth cum (max 0 (min (int/add (int/add b e) 1) last)))]
+                (if relative (/ (- (array/nth distance i) start) (- stop start))
+                  (- (* (array/nth params i) (float (array/nth counts i))) (float e))))) rows))
+         bump (exact (map (fn [(e : int) (tt : float) (c : int)]
+                (if (and snap (and (>= tt (- 1.0 1e-12)) (int/lt (int/add e 1) c))) 1 0)) edge0 t0 counts))]
+    {:edge (exact (map (fn [(e : int) (b : int)] (int/add e b)) edge0 bump))
+     :t (exact (map (fn [(tt : float) (b : int)] (if (int/eq b 1) 0.0 tt)) t0 bump))}))
+
+; Per-primitive parameter array: the constant, or the primitive float attribute (Replace) or constant
+; times the attribute (Scale).
+(defn carve_scaled :context value [(vals : (array float)) (base : float) (scale : bool)]
+  (if scale (exact (map (fn [(x : float)] (* base x)) vals)) vals))
+
+; Cumulative arc length, flat: primitive p owns cb[p] .. cb[p]+edges[p] (zero when it has no edges).
+(defn carve_cum :context value
+  [(px : (array float)) (py : (array float)) (pz : (array float)) (tvp : (array int)) (offsets : (array int))
+   (sizes : (array int)) (edges : (array int)) (cb : (array int))]
+  (let* [total (array/nth cb (array/count edges))
+         rows (array/range total :type int)
+         owner (loft_owners cb)
+         loc (exact (map (fn [(r : int) (o : int)] (int/sub r (array/nth cb o))) rows owner))
+         elen (exact (map (fn [(r : int) (o : int) (l : int)]
+                (let* [first (array/nth offsets o) size (array/nth sizes o)
+                       a (array/nth tvp (int/add first (int/mod (max 0 (int/sub l 1)) size)))
+                       b (array/nth tvp (int/add first (int/mod l size)))]
+                  (if (int/gt l 0)
+                    (carve_length (array/nth px a) (array/nth py a) (array/nth pz a)
+                      (array/nth px b) (array/nth py b) (array/nth pz b))
+                    0.0))) rows owner loc))
+         most (if (int/eq total 0) 0 (array/max edges))
+         final (iterate most {:v (array/float total) :k 0}
+           (fn [(c : {:v (array float) :k int})]
+             {:v (exact (map (fn [(r : int) (l : int)]
+                  (if (int/eq l (int/add c.k 1))
+                    (+ (array/nth c.v (max 0 (int/sub r 1))) (array/nth elen r))
+                    (array/nth c.v r))) rows loc))
+              :k (int/add c.k 1)}))
+         bad (array/compact (exact (map (fn [(l : int) (x : float)]
+               (if (int/gt l 0) (if (and (carve_finite x) (> x 1e-20)) 0 1) 0)) loc elen)))]
+    {:cum final.v :loc loc :owner owner :bad (int_gather owner bad)}))
+
+; ---- the cut engine: carve_inside (snap), Inside with divisions, Outside and Inside and outside ----
+; Descriptor code per output primitive: 0 untouched, 1 leading outside piece, 2 inside division,
+; 3 trailing outside piece, 4 closed wrap-around outside piece, 5 and 6 the open pieces of Outside.
+(defn carve_cut_codes :context value
+  [(s : {:tvp (array int) :off (array int) :sizes (array int) :kinds (array int) :mask (array int)
+         :edges (array int) :cb (array int) :cum (array float) :par (array float) :pa (array float) :pb (array float)})
+   (mode : int) (divisions : int)]
+  (let* [prims (array/count s.sizes)
+         rows (array/range prims :type int)
+         counts (exact (map (fn [(p : int)]
+           (let* [a (array/nth s.pa p) b (array/nth s.pb p)
+                  closed (int/eq (array/nth s.kinds p) 2)
+                  both (int/eq mode 2)
+                  pre (if (and both (and (not closed) (> a 0.0))) 1 0)
+                  post (if (and both (and (not closed) (< b 1.0))) 1 0)
+                  ins (if (or (int/eq mode 0) both) divisions 0)
+                  cyc (and closed (and (> a 0.0) (< b 1.0)))
+                  out (if (or (int/eq mode 1) (and both closed))
+                        (if cyc 1 (int/add (if (> a 0.0) 1 0) (if (< b 1.0) 1 0))) 0)]
+             (if (int/eq (array/nth s.mask p) 0) 1 (int/add (int/add pre post) (int/add ins out))))) rows))
+         doff (array/scan_sum counts)
+         src (loft_owners doff)
+         drows (array/range (array/nth doff prims) :type int)
+         code (exact (map (fn [(r : int) (p : int)]
+           (let* [j (int/sub r (array/nth doff p))
+                  a (array/nth s.pa p)
+                  closed (int/eq (array/nth s.kinds p) 2)
+                  both (int/eq mode 2)
+                  pre (if (and both (and (not closed) (> a 0.0))) 1 0)
+                  ins (if (or (int/eq mode 0) both) divisions 0)
+                  cyc (and closed (and (> a 0.0) (< (array/nth s.pb p) 1.0)))]
+             (if (int/eq (array/nth s.mask p) 0) 0
+               (if (and both (not closed))
+                 (if (int/lt j pre) 1 (if (int/lt j (int/add pre ins)) 2 3))
+                 (if (int/lt j ins) 2
+                   (if cyc 4 (if (and (> a 0.0) (int/eq (int/sub j ins) 0)) 5 6))))))) drows src))
+         dd (exact (map (fn [(r : int) (p : int)]
+           (let* [j (int/sub r (array/nth doff p))
+                  closed (int/eq (array/nth s.kinds p) 2)]
+             (int/sub j (if (and (int/eq mode 2) (and (not closed) (> (array/nth s.pa p) 0.0))) 1 0)))) drows src))
+         da (exact (map (fn [(c : int) (d : int) (p : int)]
+           (let* [a (array/nth s.pa p) b (array/nth s.pb p)]
+             (if (int/eq c 2)
+               (if (int/eq d 0) a (+ a (/ (* (- b a) (float d)) (float divisions))))
+               (if (or (int/eq c 3) (int/eq c 4)) b (if (int/eq c 6) b 0.0))))) code dd src))
+         db (exact (map (fn [(c : int) (d : int) (p : int)]
+           (let* [a (array/nth s.pa p) b (array/nth s.pb p)]
+             (if (int/eq c 2)
+               (if (int/eq (int/add d 1) divisions) b (+ a (/ (* (- b a) (float (int/add d 1))) (float divisions))))
+               (if (or (int/eq c 3) (int/eq c 6)) 1.0 (if (int/eq c 0) 1.0 a))))) code dd src))]
+    {:src src :a da :b db
+     :kind (exact (map (fn [(c : int)] (if (int/eq c 0) 0 (if (int/eq c 4) 2 1))) code))}))
+
+; Output vertex rows of the descriptors: the class of every row (0 untouched, 1 and 2 the located ends,
+; 3 an exact source vertex), its left and right source vertices, weight and source edge.
+(defn carve_cut_rows :context value
+  [(s : {:tvp (array int) :off (array int) :sizes (array int) :kinds (array int) :mask (array int)
+         :edges (array int) :cb (array int) :cum (array float) :par (array float) :pa (array float) :pb (array float)})
+   (d : {:src (array int) :a (array float) :b (array float) :kind (array int)})
+   (relative : bool) (snap : bool)]
+  (let* [dn (array/count d.src)
+         drows (array/range dn :type int)
+         dedges (int_gather s.edges d.src)
+         dbase (int_gather s.cb d.src)
+         dsize (int_gather s.sizes d.src)
+         dfirst (int_gather s.off d.src)
+         inner (exact (map (fn [(e : int) (k : int)] (if (int/eq k 0) 0 (int/sub e 1))) dedges d.kind))
+         ibase (exact (map (fn [(b : int)] (int/add b 1)) dbase))
+         fa (exact (map (fn [(c : int)] (int/add c 1)) (carve_count s.par ibase inner d.a 1)))
+         fl (exact (map (fn [(c : int)] (int/add c 1)) (carve_count s.par ibase inner d.b 0)))
+         dsz (exact (map (fn [(i : int)]
+              (let* [k (array/nth d.kind i) a (array/nth fa i) l (array/nth fl i)]
+                (if (int/eq k 0) (array/nth dsize i)
+                  (if (int/eq k 1) (int/add 2 (max 0 (int/sub l a)))
+                    (int/add (int/add 3 (int/sub (array/nth dedges i) a)) (int/sub l 1)))))) drows))
+         osz (array/scan_sum dsz)
+         total (array/nth osz dn)
+         rows (array/range total :type int)
+         od (loft_owners osz)
+         la (carve_locate s.cum dbase dedges d.a relative snap)
+         lb (carve_locate s.cum dbase dedges d.b relative snap)
+         cls (exact (map (fn [(r : int) (o : int)]
+              (let* [j (int/sub r (array/nth osz o))]
+                (if (int/eq (array/nth d.kind o) 0) 0
+                  (if (int/eq j 0) 1 (if (int/eq j (int/sub (array/nth dsz o) 1)) 2 3))))) rows od))
+         loc (exact (map (fn [(r : int) (o : int)]
+              (int/mod (int/sub (int/add (array/nth fa o) (int/sub r (array/nth osz o))) 1)
+                (max 1 (array/nth dedges o)))) rows od))
+         lv (exact (map (fn [(r : int) (o : int)]
+              (let* [c (array/nth cls r) f (array/nth dfirst o) n (array/nth dsize o)]
+                (if (int/eq c 0) (int/add f (int/sub r (array/nth osz o)))
+                  (if (int/eq c 1) (int/add f (int/mod (array/nth la.edge o) n))
+                    (if (int/eq c 2) (int/add f (int/mod (array/nth lb.edge o) n))
+                      (int/add f (array/nth loc r))))))) rows od))
+         rv (exact (map (fn [(r : int) (o : int)]
+              (let* [c (array/nth cls r) f (array/nth dfirst o) n (array/nth dsize o)]
+                (if (int/eq c 0) (array/nth lv r)
+                  (if (int/eq c 1) (int/add f (int/mod (int/add (array/nth la.edge o) 1) n))
+                    (if (int/eq c 2) (int/add f (int/mod (int/add (array/nth lb.edge o) 1) n))
+                      (if snap (int/add f (int/mod (int/add (array/nth loc r) 1) n)) (array/nth lv r))))))) rows od))
+         w (exact (map (fn [(r : int) (o : int)]
+              (let* [c (array/nth cls r)]
+                (if (int/eq c 1) (array/nth la.t o) (if (int/eq c 2) (array/nth lb.t o) 0.0)))) rows od))
+         se (exact (map (fn [(r : int) (o : int)]
+              (let* [c (array/nth cls r)]
+                (if (int/eq c 0) (int/sub r (array/nth osz o))
+                  (if (int/eq c 1) (array/nth la.edge o) (if (int/eq c 2) (array/nth lb.edge o) (array/nth loc r)))))) rows od))]
+    {:dsz dsz :osz osz :od od :cls cls :lv lv :rv rv :w w :se se :dfirst dfirst :dedges dedges :total total}))
+
+; Source edge spans of the target edges (inclusive global source vertex ranges; hi < lo is empty).
+; The cut rule wraps an inverted range around the closed end; carve_inside (snap) does not.
+(defn carve_cut_edges :context value
+  [(r : {:dsz (array int) :osz (array int) :od (array int) :cls (array int) :lv (array int) :rv (array int)
+         :w (array float) :se (array int) :dfirst (array int) :dedges (array int) :total int})
+   (snap : bool)]
+  (let* [rows (array/range r.total :type int)
+         top (int/sub r.total 1)
+         last (exact (map (fn [(i : int) (o : int)]
+              (let* [nx (min (int/add i 1) top)
+                     ne (array/nth r.se nx) fe (array/nth r.se i) tn (array/nth r.w nx)
+                     e (array/nth r.dedges o)]
+                (if snap (if (<= tn 1e-12) (int/sub ne 1) ne)
+                  (if (> tn 1e-12) ne (if (and (int/eq ne 0) (int/gt fe 0)) (int/sub e 1) (int/sub ne 1)))))) rows r.od))
+         plain (exact (map (fn [(i : int) (l : int)] (if (or snap (int/ge l (array/nth r.se i))) 1 0)) rows last))]
+    {:lo1 (exact (map (fn [(i : int) (o : int)]
+            (if (int/eq (array/nth r.cls i) 0) (array/nth r.lv i) (int/add (array/nth r.dfirst o) (array/nth r.se i)))) rows r.od))
+     :hi1 (exact (map (fn [(i : int) (o : int) (l : int)]
+            (if (int/eq (array/nth r.cls i) 0) (array/nth r.lv i)
+              (if (int/eq (array/nth plain i) 1) (int/add (array/nth r.dfirst o) l)
+                (int/add (array/nth r.dfirst o) (int/sub (array/nth r.dedges o) 1))))) rows r.od last))
+     :lo2 (exact (map (fn [(i : int) (o : int)]
+            (if (or (int/eq (array/nth r.cls i) 0) (int/eq (array/nth plain i) 1)) 0 (array/nth r.dfirst o))) rows r.od))
+     :hi2 (exact (map (fn [(i : int) (o : int) (l : int)]
+            (if (or (int/eq (array/nth r.cls i) 0) (int/eq (array/nth plain i) 1)) -1
+              (int/add (array/nth r.dfirst o) l))) rows r.od last))}))
+
+(defn carve_cut_plan :context value
+  [(s : {:tvp (array int) :off (array int) :sizes (array int) :kinds (array int) :mask (array int)
+         :edges (array int) :cb (array int) :cum (array float) :par (array float) :pa (array float) :pb (array float)})
+   (points : int) (mode : int) (divisions : int) (relative : bool) (snap : bool)]
+  (let* [d (carve_cut_codes s mode divisions)
+         r (carve_cut_rows s d relative snap)
+         sp (carve_cut_edges r snap)
+         rows (array/range r.total :type int)
+         selr (exact (map (fn [(c : int)] (if (int/eq c 0) 0 1)) r.cls))
+         nb (array/scan_sum selr)
+         news (array/compact selr)
+         base (if (int/lt (array/sum s.mask) (array/count s.mask)) points 0)
+         ident (array/range base :type int)
+         left (int_gather s.tvp r.lv)
+         right (int_gather s.tvp r.rv)]
+    {:vp (exact (map (fn [(i : int)]
+           (if (int/eq (array/nth r.cls i) 0) (array/nth left i) (int/add base (array/nth nb i)))) rows))
+     :poff r.osz
+     :kinds (exact (map (fn [(o : int)]
+              (if (int/eq (array/nth d.kind o) 0) (array/nth s.kinds (array/nth d.src o)) 1)) (array/range (array/count d.src) :type int)))
+     :ptc (int/add base (array/count news))
+     :pa (array/concat ident (int_gather left news))
+     :pb (array/concat ident (int_gather right news))
+     :pt (array/concat (array/float base) (exact (map (fn [(i : int)] (array/nth r.w i)) news)))
+     :va r.lv :vb r.rv :vt r.w
+     :prim d.src :wp 1 :wv 1
+     :lo1 sp.lo1 :hi1 sp.hi1 :lo2 sp.lo2 :hi2 sp.hi2}))
+
+; ---- shared tail: mesh, payload carry (edge groups through complement ancestry) ----
+; Edge ancestry CSR: the source edges of every target edge span, rows ordered by target edge. The source
+; carries only the complements of its edge groups, so the OR across a row says "some source edge is outside".
+(defn carve_csr :context value
+  [(plan : {:vp (array int) :poff (array int) :kinds (array int) :ptc int
+            :pa (array int) :pb (array int) :pt (array float) :va (array int) :vb (array int) :vt (array float)
+            :prim (array int) :wp int :wv int
+            :lo1 (array int) :hi1 (array int) :lo2 (array int) :hi2 (array int)}) (te : (array int)) (ev : (array int))]
+  (let* [n (array/count te)
+         rows (array/range n :type int)
+         ecount (if (int/eq n 0) 0 (int/add (array/max te) 1))
+         len1 (exact (map (fn [(i : int)]
+               (if (int/ge (array/nth te i) 0) (max 0 (int/add (int/sub (array/nth plan.hi1 i) (array/nth plan.lo1 i)) 1)) 0)) rows))
+         len2 (exact (map (fn [(i : int)]
+               (if (int/ge (array/nth te i) 0) (max 0 (int/add (int/sub (array/nth plan.hi2 i) (array/nth plan.lo2 i)) 1)) 0)) rows))
+         len (exact (map (fn [(a : int) (b : int)] (int/add a b)) len1 len2))
+         key (exact (map (fn [(e : int)] (if (int/lt e 0) ecount e)) te))
+         order (array/grade key)
+         offs (array/scan_sum (int_gather len order))
+         total (array/nth offs n)
+         owner (loft_owners offs)
+         vals (exact (map (fn [(j : int) (o : int)]
+                  (let* [v (array/nth order o) k (int/sub j (array/nth offs o))
+                         first (int/lt k (array/nth len1 v))
+                         at (if first (int/add (array/nth plan.lo1 v) k)
+                              (int/add (array/nth plan.lo2 v) (int/sub k (array/nth len1 v))))]
+                    (array/nth ev (max 0 (min at (int/sub (array/count ev) 1)))))) (array/range total :type int) owner))
+         per (array/scatter_add key len (int/add ecount 1))]
+    {:offsets (array/scan_sum (array/slice per 0 ecount)) :values vals}))
+
+(defn carve_carry :context sop
+  [(src : geometry)
+   (plan : {:vp (array int) :poff (array int) :kinds (array int) :ptc int
+            :pa (array int) :pb (array int) :pt (array float) :va (array int) :vb (array int) :vt (array float)
+            :prim (array int) :wp int :wv int
+            :lo1 (array int) :hi1 (array int) :lo2 (array int) :hi2 (array int)})]
+  (let* [target (sop/mesh :points (array/vec3 plan.ptc) :vertex_points plan.vp
+                  :primitive_offsets plan.poff :kinds plan.kinds)
+         adj (sop/adjacency src)
+         te (carve_edge_of_vertex plan.vp plan.poff plan.kinds plan.ptc)
+         edges (carve_csr plan te adj.edge_of_vertex)]
+    (if (int/eq plan.wp 1)
+      (if (int/eq plan.wv 1)
+        (sop/remap src target :point_mix {:a plan.pa :b plan.pb :t plan.pt}
+          :vertex_mix {:a plan.va :b plan.vb :t plan.vt} :primitives plan.prim :positions "mapped" :edges edges)
+        (sop/remap src target :point_mix {:a plan.pa :b plan.pb :t plan.pt}
+          :vertices plan.va :primitives plan.prim :positions "mapped" :edges edges))
+      (sop/remap src target :points plan.pa :vertices plan.va :primitives plan.prim
+        :positions "mapped" :edges edges))))
+
+(defn carve_prep :context sop
+  [(in0 : geometry) (mask : (array int)) (pa : (array float)) (pb : (array float)) (relative : bool) (breakpoints : bool)]
+  (let* [topology (sop/topology in0)
+         tvp topology.vertex_points offsets topology.primitive_offsets kinds topology.kinds
+         prims (sop/count in0 :primitives)
+         positions (sop/attr in0 "P")
+         px (exact (map (fn [(q : vec3)] q.x) positions)) py (exact (map (fn [(q : vec3)] q.y) positions))
+         pz (exact (map (fn [(q : vec3)] q.z) positions))
+         prows (array/range prims :type int)
+         sizes (exact (map (fn [(p : int)] (int/sub (array/nth offsets (int/add p 1)) (array/nth offsets p))) prows))
+         edges (exact (map (fn [(p : int)]
+                 (if (int/eq (array/nth mask p) 1)
+                   (int/add (int/sub (array/nth sizes p) 1) (if (int/eq (array/nth kinds p) 2) 1 0)) 0)) prows))
+         cb (array/scan_sum (exact (map (fn [(e : int)] (if (int/gt e 0) (int/add e 1) 0)) edges)))
+         cu (carve_cum px py pz tvp offsets sizes edges cb)
+         par (exact (map (fn [(r : int) (o : int) (l : int)]
+               (if relative (/ (array/nth cu.cum r) (array/nth cu.cum (int/add (array/nth cb o) (array/nth edges o))))
+                 (/ (float l) (float (array/nth edges o))))) (array/range (array/count cu.cum) :type int) cu.owner cu.loc))]
+    {:s {:tvp tvp :off offsets :sizes sizes :kinds kinds :mask mask :edges edges :cb cb
+         :cum cu.cum :par par :pa pa :pb pb}
+     :points (sop/count in0 :points)
+     :bad (if (or relative (not breakpoints)) (array/count cu.bad) 0)
+     :first_bad (if (int/gt (array/count cu.bad) 0) (array/nth cu.bad 0) 0)}))
+
+; Edge ordinal of every target vertex (Topology_index: unique endpoint pairs numbered by first appearance,
+; -1 where the corner has no outgoing edge), so no adjacency of a derived geometry is needed.
+(defn carve_edge_of_vertex :context value [(vp : (array int)) (poff : (array int)) (kinds : (array int)) (points : int)]
+  (let* [rows (array/range (array/count vp) :type int)
+         owner (loft_owners poff)
+         nxt (exact (map (fn [(v : int) (o : int)]
+               (let* [start (array/nth poff o) stop (array/nth poff (int/add o 1))]
+                 (if (int/lt (int/add v 1) stop) (int/add v 1)
+                   (if (int/eq (array/nth kinds o) 1) -1 start)))) rows owner))
+         key (exact (map (fn [(v : int) (n : int)]
+               (if (int/lt n 0) -1
+                 (let* [a (array/nth vp v) b (array/nth vp n)]
+                   (int/add (int/mul (min a b) (int/add points 1)) (max a b))))) rows nxt))
+         first (exact (array/index_of key key))
+         flag (exact (map (fn [(v : int) (k : int)] (if (and (int/ge k 0) (int/eq (array/nth first v) v)) 1 0)) rows key))
+         rank (array/scan_sum flag)]
+    (exact (map (fn [(v : int) (k : int)] (if (int/lt k 0) -1 (array/nth rank (array/nth first v)))) rows key))))
+
+; Kept primitives (flags 0/1): their numbers, kinds and the source vertices of their corners.
+(defn carve_retain :context value [(s : {:tvp (array int) :off (array int) :sizes (array int) :kinds (array int) :mask (array int)
+         :edges (array int) :cb (array int) :cum (array float) :par (array float) :pa (array float) :pb (array float)}) (flags : (array int))]
+  (let* [kept (array/compact flags)
+         ksizes (int_gather s.sizes kept)
+         koff (array/scan_sum ksizes)
+         kowner (loft_owners koff)]
+    {:kept kept :poff koff :kinds (int_gather s.kinds kept)
+     :vmap (exact (map (fn [(i : int) (o : int)]
+             (int/add (array/nth s.off (array/nth kept o)) (int/sub i (array/nth koff o))))
+             (array/range (array/count kowner) :type int) kowner))}))
+
+; ---- Only at breakpoints: first and last breakpoint inside [first, last] of every selected primitive ----
+(defn carve_bounds :context value [(s : {:tvp (array int) :off (array int) :sizes (array int) :kinds (array int) :mask (array int)
+         :edges (array int) :cb (array int) :cum (array float) :par (array float) :pa (array float) :pb (array float)})]
+  (let* [n (exact (map (fn [(e : int)] (if (int/gt e 0) (int/add e 1) 0)) s.edges))]
+    {:fl (carve_count s.par s.cb n s.pa 0)
+     :ll (exact (map (fn [(c : int)] (int/sub c 1)) (carve_count s.par s.cb n s.pb 1)))}))
+
+; carve_breakpoints: pieces of the original vertices between breakpoints (kept as new open polylines).
+; Slot codes: 0 none, 1 untouched, 2 inside, 3 open start, 4 open end, 5 and 6 closed ends, 7 closed wrap.
+(defn carve_slots :context value [(s : {:tvp (array int) :off (array int) :sizes (array int) :kinds (array int) :mask (array int)
+         :edges (array int) :cb (array int) :cum (array float) :par (array float) :pa (array float) :pb (array float)}) (mode : int)]
+  (let* [b (carve_bounds s)
+         srows (array/range (int/mul (array/count s.sizes) 3) :type int)
+         code (exact (map (fn [(i : int)]
+           (let* [p (int/div i 3) k (int/mod i 3) fl (array/nth b.fl p) ll (array/nth b.ll p)
+                  e (array/nth s.edges p) closed (int/eq (array/nth s.kinds p) 2)
+                  ring (if (int/eq fl 0) 5 (if (int/eq ll e) 6 7))
+                  second (if (int/eq mode 2) (int/sub k 1) k)]
+             (if (int/eq (array/nth s.mask p) 0) (if (int/eq k 0) 1 0)
+              (if (not (int/lt fl ll)) (if (and (int/eq k 0) (not (int/eq mode 0))) 1 0)
+               (if (and (not (int/eq mode 1)) (int/eq k 0)) 2
+                 (if (int/eq mode 0) 0
+                   (if closed (if (int/eq second 0) ring 0)
+                     (if (int/eq second 0) 3 (if (int/eq second 1) 4 0))))))))) srows))
+         start (exact (map (fn [(c : int) (i : int)]
+           (let* [p (int/div i 3)]
+             (if (or (int/eq c 3) (int/eq c 6)) 0
+               (if (int/eq c 2) (array/nth b.fl p) (array/nth b.ll p))))) code srows))
+         finish (exact (map (fn [(c : int) (i : int)]
+           (let* [p (int/div i 3)]
+             (if (or (int/eq c 3) (or (int/eq c 6) (int/eq c 7))) (array/nth b.fl p)
+               (if (int/eq c 2) (array/nth b.ll p) (array/nth s.edges p))))) code srows))]
+    {:code code :start start :finish finish}))
+
+(defn carve_break_plan :context value [(s : {:tvp (array int) :off (array int) :sizes (array int) :kinds (array int) :mask (array int)
+         :edges (array int) :cb (array int) :cum (array float) :par (array float) :pa (array float) :pb (array float)}) (points : int) (mode : int) (internal : bool)]
+  (let* [sl (carve_slots s mode)
+         path (exact (map (fn [(i : int)]
+           (if (int/eq (array/nth sl.code i) 7)
+             (int/add (int/sub (array/nth s.edges (int/div i 3)) (array/nth sl.start i)) (array/nth sl.finish i))
+             (int/sub (array/nth sl.finish i) (array/nth sl.start i))))
+           (array/range (array/count sl.code) :type int)))
+         count (exact (map (fn [(c : int) (pe : int)]
+           (if (int/eq c 1) 1 (if (and (int/gt c 1) (int/gt pe 0)) (if internal pe 1) 0))) sl.code path))
+         soff (array/scan_sum count)
+         pn (array/nth soff (array/count count))
+         prow (array/range pn :type int)
+         ps (loft_owners soff)
+         pp (exact (map (fn [(sr : int)] (int/div sr 3)) ps))
+         pj (exact (map (fn [(r : int) (sr : int)] (int/sub r (array/nth soff sr))) prow ps))
+         pass (exact (map (fn [(sr : int)] (if (int/eq (array/nth sl.code sr) 1) 1 0)) ps))
+         pwrap (exact (map (fn [(sr : int)] (if (and (not internal) (int/eq (array/nth sl.code sr) 7)) 1 0)) ps))
+         pfirst (exact (map (fn [(r : int) (sr : int)]
+                  (if internal (int/mod (int/add (array/nth sl.start sr) (array/nth pj r))
+                                 (max 1 (array/nth s.edges (int/div sr 3))))
+                    (array/nth sl.start sr))) prow ps))
+         plast (exact (map (fn [(r : int) (sr : int)]
+                 (if internal (int/add (array/nth pfirst r) 1) (array/nth sl.finish sr))) prow ps))
+         psz (exact (map (fn [(r : int)]
+               (let* [p (array/nth pp r) e (array/nth s.edges p)]
+                 (if (int/eq (array/nth pass r) 1) (array/nth s.sizes p)
+                   (if (int/eq (array/nth pwrap r) 1) (int/add (int/add (int/sub e (array/nth pfirst r)) 1) (array/nth plast r))
+                     (int/add (int/sub (array/nth plast r) (array/nth pfirst r)) 1))))) prow))
+         poff (array/scan_sum psz)
+         vn (array/nth poff pn)
+         vrows (array/range vn :type int)
+         vo (loft_owners poff)
+         sv (exact (map (fn [(v : int) (o : int)]
+              (let* [p (array/nth pp o) j (int/sub v (array/nth poff o)) f (array/nth pfirst o)
+                     n1 (int/add (int/sub (array/nth s.edges p) f) 1)
+                     local (if (int/eq (array/nth pass o) 1) j
+                             (if (int/eq (array/nth pwrap o) 1)
+                               (if (int/lt j n1) (int/add f j) (int/add (int/sub j n1) 1))
+                               (int/add f j)))]
+                (int/add (array/nth s.off p) (int/mod local (array/nth s.sizes p))))) vrows vo))
+         fresh (exact (map (fn [(o : int)] (if (int/eq (array/nth pass o) 1) 0 1)) vo))
+         nb (array/scan_sum fresh)
+         base (if (int/gt (array/sum pass) 0) points 0)
+         news (array/compact fresh)]
+    {:vp (exact (map (fn [(v : int) (o : int)]
+           (if (int/eq (array/nth pass o) 1) (array/nth s.tvp (array/nth sv v)) (int/add base (array/nth nb v)))) vrows vo))
+     :poff poff
+     :kinds (exact (map (fn [(r : int)] (if (int/eq (array/nth pass r) 1) (array/nth s.kinds (array/nth pp r)) 1)) prow))
+     :ptc (int/add base (array/count news))
+     :pa (array/concat (array/range base :type int) (int_gather (int_gather s.tvp sv) news))
+     :pb (array/int 0) :pt (array/float 0)
+     :va sv :vb (array/int 0) :vt (array/float 0)
+     :prim pp :wp 0 :wv 0
+     :lo1 sv :hi1 sv :lo2 (array/int vn 0) :hi2 (array/int vn -1)}))
+
+; Only at breakpoints with Extract points: the breakpoint points of every selected primitive, appended as
+; isolated points next to the kept primitives.
+(defn carve_xb_plan :context value [(s : {:tvp (array int) :off (array int) :sizes (array int) :kinds (array int) :mask (array int)
+         :edges (array int) :cb (array int) :cum (array float) :par (array float) :pa (array float) :pb (array float)}) (points : int) (internal : bool) (keep_original : bool)]
+  (let* [b (carve_bounds s)
+         prims (array/count s.sizes)
+         prows (array/range prims :type int)
+         samples (exact (map (fn [(p : int)]
+           (let* [fl (array/nth b.fl p) ll (array/nth b.ll p)]
+             (if (and (int/eq (array/nth s.mask p) 1) (int/le fl ll))
+               (if internal (int/add (int/sub ll fl) 1) (if (int/eq fl ll) 1 2)) 0))) prows))
+         soff (array/scan_sum samples)
+         sn (array/nth soff prims)
+         srows (array/range sn :type int)
+         so (loft_owners soff)
+         pt (exact (map (fn [(r : int) (p : int)]
+              (let* [j (int/sub r (array/nth soff p))
+                     local (if internal (int/add (array/nth b.fl p) j) (if (int/eq j 0) (array/nth b.fl p) (array/nth b.ll p)))]
+                (array/nth s.tvp (int/add (array/nth s.off p) (int/mod local (array/nth s.sizes p)))))) srows so))
+         flags (exact (map (fn [(m : int)] (if (or keep_original (int/eq m 0)) 1 0)) s.mask))
+         rt (carve_retain s flags)
+         base (if (int/eq (array/count rt.kept) 0) 0 points)]
+    {:vp (int_gather s.tvp rt.vmap) :poff rt.poff :kinds rt.kinds
+     :ptc (int/add base sn)
+     :pa (array/concat (array/range base :type int) pt) :pb (array/int 0) :pt (array/float 0)
+     :va rt.vmap :vb (array/int 0) :vt (array/float 0)
+     :prim rt.kept :wp 0 :wv 0
+     :lo1 rt.vmap :hi1 rt.vmap :lo2 (array/int (array/count rt.vmap) 0) :hi2 (array/int (array/count rt.vmap) -1)}))
+
+; Extract points (interpolated): `divisions` points per selected primitive, appended as isolated points.
+(defn carve_xi_plan :context value [(s : {:tvp (array int) :off (array int) :sizes (array int) :kinds (array int) :mask (array int)
+         :edges (array int) :cb (array int) :cum (array float) :par (array float) :pa (array float) :pb (array float)}) (points : int) (divisions : int) (relative : bool) (keep_original : bool)]
+  (let* [sel (array/compact s.mask)
+         total (int/mul (array/count sel) divisions)
+         rows (array/range total :type int)
+         prim (exact (map (fn [(r : int)] (array/nth sel (int/div r divisions))) rows))
+         param (exact (map (fn [(r : int) (p : int)]
+                 (let* [a (array/nth s.pa p) b (array/nth s.pb p)
+                        blend (if (int/eq divisions 1) 0.0 (/ (float (int/mod r divisions)) (float (int/sub divisions 1))))]
+                   (fma (- b a) blend a))) rows prim))
+         lc (carve_locate s.cum (int_gather s.cb prim) (int_gather s.edges prim) param relative false)
+         left (exact (map (fn [(r : int) (p : int)]
+                (array/nth s.tvp (int/add (array/nth s.off p) (int/mod (array/nth lc.edge r) (array/nth s.sizes p))))) rows prim))
+         right (exact (map (fn [(r : int) (p : int)]
+                 (array/nth s.tvp (int/add (array/nth s.off p) (int/mod (int/add (array/nth lc.edge r) 1) (array/nth s.sizes p))))) rows prim))
+         flags (exact (map (fn [(m : int)] (if (or keep_original (int/eq m 0)) 1 0)) s.mask))
+         rt (carve_retain s flags)
+         base (if (or keep_original (int/gt (array/count rt.kept) 0)) points 0)]
+    {:vp (int_gather s.tvp rt.vmap) :poff rt.poff :kinds rt.kinds
+     :ptc (int/add base total)
+     :pa (array/concat (array/range base :type int) left) :pb (array/concat (array/range base :type int) right)
+     :pt (array/concat (array/float base) lc.t)
+     :va rt.vmap :vb (array/int 0) :vt (array/float 0)
+     :prim rt.kept :wp 1 :wv 0
+     :lo1 rt.vmap :hi1 rt.vmap :lo2 (array/int (array/count rt.vmap) 0) :hi2 (array/int (array/count rt.vmap) -1)}))
+
+; ---- one entry per mode ----
+(defn carve_cut_work :context sop
+  [(src : geometry) (in0 : geometry) (mask : (array int)) (pa : (array float)) (pb : (array float)) (relative : bool)
+   (mode : int) (divisions : int)]
+  (let* [p (carve_prep in0 mask pa pb relative false)]
+    (if (int/gt p.bad 0) (carve_error (str "primitive " p.first_bad " has a zero or non-finite segment"))
+      (carve_carry src (carve_cut_plan p.s p.points mode divisions relative (and (int/eq mode 0) (int/eq divisions 1)))))))
+(defn carve_break_work :context sop
+  [(src : geometry) (in0 : geometry) (mask : (array int)) (pa : (array float)) (pb : (array float)) (relative : bool)
+   (mode : int) (internal : bool)]
+  (let* [p (carve_prep in0 mask pa pb relative true)]
+    (if (int/gt p.bad 0) (carve_error (str "primitive " p.first_bad " has a zero or non-finite segment"))
+      (carve_carry src (carve_break_plan p.s p.points mode internal)))))
+(defn carve_xb_work :context sop
+  [(src : geometry) (in0 : geometry) (mask : (array int)) (pa : (array float)) (pb : (array float)) (relative : bool)
+   (internal : bool) (keep_original : bool)]
+  (let* [p (carve_prep in0 mask pa pb relative true)]
+    (if (int/gt p.bad 0) (carve_error (str "primitive " p.first_bad " has a zero or non-finite segment"))
+      (carve_carry src (carve_xb_plan p.s p.points internal keep_original)))))
+(defn carve_xi_work :context sop
+  [(src : geometry) (in0 : geometry) (mask : (array int)) (pa : (array float)) (pb : (array float)) (relative : bool)
+   (divisions : int) (keep_original : bool)]
+  (let* [p (carve_prep in0 mask pa pb relative false)]
+    (if (int/gt p.bad 0) (carve_error (str "primitive " p.first_bad " has a zero or non-finite segment"))
+      (carve_carry src (carve_xi_plan p.s p.points divisions relative keep_original)))))
+
+; One complement group per edge group: the source's own edge groups are replaced by their complements,
+; and the carry (an OR over each target edge's source edges) then says "some source edge is outside".
+(defn carve_not_group :context sop [(acc : geometry) (source : geometry) (name : text)]
+  (sop/with_group acc (exact (map (fn [(m : int)] (int/sub 1 m)) (sop/group source :name name :owner "edge")))
+    :name (str "carve_not_" name) :owner "edge"))
+
 (defnode sop/carve :label "Carve" :category ["Topology" "Curve"]
   :validate (and (>= first 0.0) (and (<= last 1.0) (if extract_points (<= first last) (< first last))))
   :code "E_PARAM" :message "sop/carve: parameters require 0 <= first < last <= 1 (equality allowed for extraction)"
@@ -24,18 +563,61 @@
          found (or (not has_group)
                  (fold [seen false] [name (sop/group_names in0 "*" :owner "primitive")]
                    (or seen (equal? name group_name))))
+         first_name (text/trim first_attribute)
+         last_name (text/trim last_attribute)
+         first_ok (or (text/blank? first_name) (sop/has_attr in0 (if (text/blank? first_name) "x" first_name) :owner "primitive" :type float))
+         last_ok (or (text/blank? last_name) (sop/has_attr in0 (if (text/blank? last_name) "x" last_name) :owner "primitive" :type float))
          primitives (sop/count in0 :primitives)
          mask (if has_group (sop/group in0 :name group_name :owner "primitive") (array/int primitives 1))
-         selected (array/sum mask)]
-    (cond
-      (not found) (error "missing_group" (str "carve could not find primitive group " (text/repr group_name)))
-      ; Nothing selected leaves the geometry as it is, in every mode.
-      (int/eq selected 0) in0
-      ; Inside with no divisions over the whole curve and no attribute parameters is the identity.
-      (and (and (not extract_points) (not only_at_breakpoints))
-           (and (equal? keep "Inside")
-                (and (int/eq divisions 1) (and (= first 0.0) (and (= last 1.0)
-                  (and (text/blank? (text/trim first_attribute)) (text/blank? (text/trim last_attribute))))))))
-        in0
-      :else (error "invalid_geometry" "carve could not produce valid geometry"
-              :cause "carve [invalid_geometry]: draft: this mode is not ported yet"))))
+         selected (array/sum mask)
+         scale (equal? attribute_mode "Scale")
+         pa (if (text/blank? first_name) (array/float primitives first)
+              (carve_scaled (sop/attr in0 first_name :owner "primitive" :type float) first scale))
+         pb (if (text/blank? last_name) (array/float primitives last)
+              (carve_scaled (sop/attr in0 last_name :owner "primitive" :type float) last scale))
+         no_attributes (and (text/blank? first_name) (text/blank? last_name))
+         kinds (sop/topology in0)
+         polygons (array/sum (exact (map (fn [(m : int) (k : int)] (if (and (int/eq m 1) (int/eq k 0)) 1 0))
+                    mask kinds.kinds)))
+         out_of_range (array/sum (exact (map (fn [(m : int) (a : float) (b : float)]
+                        (if (int/eq m 1)
+                          (if (and (and (carve_finite a) (carve_finite b)) (and (>= a 0.0) (and (<= b 1.0)
+                                (if extract_points (<= a b) (< a b)))))
+                            0 1)
+                          0)) mask pa pb)))
+         ; Inside with one division over the whole curve is the identity, even for polygons.
+         ident_inside (and (and (not extract_points) (not only_at_breakpoints))
+           (and (equal? keep "Inside") (and (int/eq divisions 1) (and no_attributes (and (= first 0.0) (= last 1.0))))))
+         ident_both (and (and (not extract_points) (not only_at_breakpoints))
+           (and (equal? keep "Inside and outside") (and no_attributes (and (= first 0.0) (= last 1.0)))))
+         ident_points (and (and (not extract_points) only_at_breakpoints)
+           (and (not cut_at_all_internal_breakpoints)
+             (and no_attributes (and (= first 0.0) (and (= last 1.0) (not (equal? keep "Outside")))))))
+         active (if (not found) false (if (not first_ok) false (if (not last_ok) false
+                  (if (int/eq selected 0) false (if (int/gt out_of_range 0) false (if ident_inside false
+                    (if (int/gt polygons 0) false (if ident_both false (if ident_points false true)))))))))
+         mode (if (equal? keep "Inside") 0 (if (equal? keep "Outside") 1 2))
+         bp only_at_breakpoints
+         names (sop/group_names in0 "*" :owner "edge")
+         has_edges (int/gt (array/count names) 0)
+         src (fold [acc (if has_edges (sop/delete_group in0 "*" :owner "edge") in0)]
+               [i (array/range (array/count names) :type int)]
+               (carve_not_group acc in0 (array/nth names i)))
+         carried (cond
+           (not found) (error "missing_group" (str "carve could not find primitive group " (text/repr group_name)))
+           (not first_ok) (error "invalid_geometry" "carve could not produce valid geometry" :cause "carve [invalid_geometry]: first attribute must be a primitive float attribute")
+           (not last_ok) (error "invalid_geometry" "carve could not produce valid geometry" :cause "carve [invalid_geometry]: second attribute must be a primitive float attribute")
+           (int/eq selected 0) in0
+           (int/gt out_of_range 0) (error "invalid_geometry" "carve could not produce valid geometry" :cause "carve [invalid_geometry]: primitive parameters require finite 0 <= first <= last <= 1")
+           ident_inside in0
+           (int/gt polygons 0) (error "invalid_geometry" "carve could not produce valid geometry" :cause "carve [invalid_geometry]: a selected primitive is a polygon, not a polygon curve")
+           ident_both in0
+           ident_points in0
+           extract_points
+             (if bp (carve_xb_work src in0 mask pa pb relative_arc_length cut_at_all_internal_breakpoints keep_original)
+               (carve_xi_work src in0 mask pa pb relative_arc_length divisions keep_original))
+           bp (carve_break_work src in0 mask pa pb relative_arc_length mode cut_at_all_internal_breakpoints)
+           :else (carve_cut_work src in0 mask pa pb relative_arc_length mode divisions))]
+    (if (and active has_edges)
+      (sop/group_invert carried :owner "Edges" :pattern "carve_not_*" :new_name "*" :conflict "Overwrite")
+      carried)))
