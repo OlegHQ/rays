@@ -11,14 +11,14 @@ let cases =
      "invert_base/" ^ owner, base owner @ ["base_inverted", P.Bool_value true];
      "pattern/" ^ owner, base owner @ ["base_pattern", P.Text_value "a dest_a"];
      "none/" ^ owner, base owner @ ["base_pattern", P.Text_value "zzz"];
-     "existing/" ^ owner, base owner @ ["name", P.Text_value "a"; "base_pattern", P.Text_value "dest_a"]]
+     "existing/" ^ owner, ["owner", P.Choice_value owner; "name", P.Text_value "a"; "base_pattern", P.Text_value "dest_a"]]
     @ List.concat_map (fun op -> List.map (fun invert ->
       Printf.sprintf "%s/%s/%b" owner op invert,
       base owner @ ["base_pattern", P.Text_value "a";
         "steps", table [[op; "dest_a"; string_of_bool invert]; [op; "old_x"; "false"]]])
       [false; true]) ["replace"; "union"; "intersection"; "subtract"; "xor"])
     ["Points"; "Vertices"; "Primitives"; "Edges"]
-  @ ["blank_name", base "Points" @ ["name", P.Text_value "  "];
+  @ ["blank_name", ["owner", P.Choice_value "Points"; "name", P.Text_value "  "];
      "blank_base", base "Points" @ ["base_pattern", P.Text_value " "];
      "bad_glob", base "Points" @ ["base_pattern", P.Text_value "["];
      "blank_step", base "Points" @ ["steps", table [["union"; " "; "false"]]];

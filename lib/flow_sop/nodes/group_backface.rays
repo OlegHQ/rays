@@ -1,0 +1,104 @@
+; Whole Group Backfaces draft. A polygon is a backface when its fan normal points away from the
+; viewpoint (dot below -64 epsilon), computed in a per-polygon scaled frame.
+(defn group_backface_error :context value [(reason : text)]
+  (error "invalid_group" "group_backface could not produce valid geometry"
+    :cause (str "group_backface [invalid_group]: " reason)))
+(defn group_backface_scale :context value [(v : vec3)]
+  (max (abs v.x) (max (abs v.y) (abs v.z))))
+(defn group_backface_missing :context sop [(geo : geometry) (name : text)]
+  (let* [found (group_exists geo "primitive" (if (equal? name "") "x" name))]
+    (and (not (equal? name "")) (not found))))
+(defn group_backface_finish :context sop
+  [(geo : geometry) (name : text) (operation : text) (base_name : text) (fixed : (array int))]
+  (if (group_backface_missing geo base_name)
+    (group_backface_error (str "Group Backface: missing primitive base group " (text/repr base_name)))
+    (if (equal? base_name "")
+      (group_publish geo "primitive" name operation fixed)
+      (group_publish geo "primitive" name operation
+        (exact (map (fn [(a : int) (b : int)] (int/and a b)) fixed
+                 (sop/group geo :name base_name :owner "primitive")))))))
+(defnode sop/group_backface :label "Group Backfaces" :category ["Group" "Create"]
+  [(in0 : geometry)
+   (name : text "backface" :label "Group name")
+   (viewpoint_x : float 0.0 :label "Viewpoint X" :folder ["Viewpoint"] :min -100 :max 100 :vec3 ["viewpoint" 0])
+   (viewpoint_y : float 0.0 :label "Viewpoint Y" :folder ["Viewpoint"] :min -100 :max 100 :vec3 ["viewpoint" 1])
+   (viewpoint_z : float 10.0 :label "Viewpoint Z" :folder ["Viewpoint"] :min -100 :max 100 :vec3 ["viewpoint" 2])
+   (base : text "" :label "Base group" :folder ["Combine"])
+   (merge : text "Replace" :label "Operation" :folder ["Combine"]
+     :choices ["Replace" "Union" "Intersection" "Subtract" "Exclusive or"])]
+  (let* [viewpoint [viewpoint_x viewpoint_y viewpoint_z]
+         base_name (text/trim base)
+         operation (case merge "Union" "union" "Intersection" "intersection" "Subtract" "subtract"
+                     "Exclusive or" "xor" :else "replace")
+         positions (sop/attr in0 :P)
+         points (sop/count in0 :points)
+         bad (if (int/eq points 0) points
+               (array/min (map (fn [(p : vec3) (i : int)]
+                 (if (<= (group_backface_scale p) 1.7976931348623157e308) points i))
+                 positions (array/range points :type int))))]
+    (cond
+      (text/blank? name) (group_backface_error "Group Backface: empty output name")
+      (> (group_backface_scale viewpoint) 1.7976931348623157e308)
+        (group_backface_error "Group Backface: viewpoint must be finite")
+      (group_backface_missing in0 base_name)
+        (group_backface_error (str "Group Backface: missing primitive base group " (text/repr base_name)))
+      (int/lt bad points) (group_backface_error (str "Group Backface: non-finite position at point " bad))
+      :else
+        (let* [topology (sop/topology in0)
+               adjacency (sop/adjacency in0)
+               pov adjacency.primitive_of_vertex
+               vp topology.vertex_points
+               offsets topology.primitive_offsets
+               vertices (sop/count in0 :vertices)
+               primitives (sop/count in0 :primitives)
+               prim_ids (array/range primitives :type int)
+               corners (array/range vertices :type int)
+               corner_scale (exact (map (fn [(p : int)] (group_backface_scale (array/nth positions p))) vp))
+               scale_at (array/segment_argmax corner_scale offsets)
+               prim_scale (exact (map (fn [(at : int)] (if (int/lt at 0) 0.0 (array/nth corner_scale at))) scale_at))
+               prim_count (exact (map (fn [(first : int) (last : int)] (int/sub last first))
+                            (array/slice offsets 0 primitives) (array/slice offsets 1 primitives)))
+               usable (exact (map (fn [(k : int) (n : int) (s : float)]
+                        (if (and (int/eq k 0) (and (int/ge n 3) (> s 0.0))) 1 0))
+                        topology.kinds prim_count prim_scale))
+               prim_anchor (exact (map (fn [(q : int)]
+                             (if (int/eq (array/nth usable q) 1)
+                               (/ (array/nth positions (array/nth vp (array/nth offsets q))) (array/nth prim_scale q))
+                               [0.0 0.0 0.0]))
+                             prim_ids))
+               corner_q (exact (map (fn [(p : int) (q : int)]
+                          (if (int/eq (array/nth usable q) 1) (/ (array/nth positions p) (array/nth prim_scale q))
+                            [0.0 0.0 0.0]))
+                          vp pov))
+               centroid_sum (array/segment_sum corner_q offsets)
+               ; fan triangle cross terms: corner v closes triangle (anchor, v, v+1) for first < v < last - 1
+               terms (exact (map (fn [(v : int) (q : int)]
+                       (if (and (int/eq (array/nth usable q) 1)
+                             (and (int/gt v (array/nth offsets q)) (int/le v (int/sub (array/nth offsets (int/add q 1)) 2))))
+                         (let* [a (array/nth prim_anchor q)
+                                u (- (array/nth corner_q v) a)
+                                w (- (array/nth corner_q (int/add v 1)) a)]
+                           [(fma (* -1.0 u.z) w.y (* u.y w.z)) (fma (* -1.0 u.x) w.z (* u.z w.x)) (fma (* -1.0 u.y) w.x (* u.x w.y))])
+                         [0.0 0.0 0.0]))
+                       corners pov))
+               normal (array/segment_sum terms offsets)
+               toward (exact (map (fn [(q : int)]
+                        (if (int/eq (array/nth usable q) 0) [0.0 0.0 0.0]
+                        (let* [s (array/nth prim_scale q)
+                               view_scale (max s (group_backface_scale viewpoint))
+                               centroid (* (array/nth centroid_sum q) (/ 1.0 (float (array/nth prim_count q))))]
+                          (let* [ratio (/ s view_scale) origin (/ viewpoint view_scale)]
+                            [(fma (* -1.0 centroid.x) ratio origin.x) (fma (* -1.0 centroid.y) ratio origin.y)
+                             (fma (* -1.0 centroid.z) ratio origin.z)]))))
+                        prim_ids))
+               raw (exact (map (fn [(q : int)]
+                     (let* [nv (array/nth normal q)
+                            normal_scale (group_backface_scale nv)
+                            tv (array/nth toward q)
+                            toward_scale (group_backface_scale tv)]
+                       (if (and (int/eq (array/nth usable q) 1) (and (not (= normal_scale 0.0)) (not (= toward_scale 0.0))))
+                         (let* [n (/ nv normal_scale) w (/ tv toward_scale)]
+                           (if (< (fma n.z w.z (fma n.y w.y (* n.x w.x))) (* -64.0 2.220446049250313e-16)) 1 0))
+                         0)))
+                     prim_ids))]
+          (group_backface_finish in0 name operation base_name (exact raw))))))

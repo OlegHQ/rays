@@ -18,44 +18,59 @@
                nz (/ dz (if (= scale 0.0) 1.0 scale))
                limit (/ radius (if (= scale 0.0) 1.0 scale))]
           (or (= scale 0.0)
-            (<= (+ (+ (* nx nx) (* ny ny)) (* nz nz)) (* limit limit))))))
+            (<= (fma nz nz (fma ny ny (* nx nx))) (* limit limit))))))
     (and (and (>= p.x low.x) (<= p.x high.x))
       (and (and (>= p.y low.y) (<= p.y high.y)) (and (>= p.z low.z) (<= p.z high.z))))))
-(defn group_bounds_segment_box :context value [(a : vec3) (b : vec3) (low : vec3) (high : vec3)]
+; Segment against box, in stages so every kernel stays inside the register limit: the frame
+; (midpoint offset, half direction, half extents) is three maps, then the separating-axis tests.
+(defn group_bounds_box_scale :context value [(a : vec3) (b : vec3) (low : vec3) (high : vec3)]
   (let* [scale (max (max (group_bounds_scale a) (group_bounds_scale b))
-                 (max (group_bounds_scale low) (group_bounds_scale high)))
-         divisor (if (= scale 0.0) 1.0 scale)
-         na (/ a divisor) nb (/ b divisor) l (/ low divisor) h (/ high divisor)
-         mx (- (* (+ na.x nb.x) 0.5) (* (+ l.x h.x) 0.5))
-         my (- (* (+ na.y nb.y) 0.5) (* (+ l.y h.y) 0.5))
-         mz (- (* (+ na.z nb.z) 0.5) (* (+ l.z h.z) 0.5))
-         dx (* (- nb.x na.x) 0.5) dy (* (- nb.y na.y) 0.5) dz (* (- nb.z na.z) 0.5)
-         ex (* (- h.x l.x) 0.5) ey (* (- h.y l.y) 0.5) ez (* (- h.z l.z) 0.5)
-         adx (abs dx) ady (abs dy) adz (abs dz)
-         separated (and (<= (abs mx) (+ ex adx))
-                     (and (<= (abs my) (+ ey ady))
-                       (and (<= (abs mz) (+ ez adz))
-                         (and (<= (abs (- (* my dz) (* mz dy))) (+ (* ey adz) (* ez ady)))
-                           (and (<= (abs (- (* mz dx) (* mx dz))) (+ (* ez adx) (* ex adz)))
-                             (<= (abs (- (* mx dy) (* my dx))) (+ (* ex ady) (* ey adx))))))))]
-    (or (group_bounds_point a false low high 0.0)
-      (or (group_bounds_point b false low high 0.0)
-        (or (= scale 0.0) separated)))))
-(defn group_bounds_segment_sphere :context value [(a : vec3) (b : vec3) (center : vec3) (radius : float)]
-  (if (or (group_bounds_point a true center center radius) (group_bounds_point b true center center radius)) true
-    (let* [scale (max (group_bounds_scale a) (max (group_bounds_scale b) (group_bounds_scale center)))]
-      (if (= scale 0.0) (>= radius 0.0)
-        (let* [na (/ a scale) nb (/ b scale) c (/ center scale)
-               dx (- nb.x na.x) dy (- nb.y na.y) dz (- nb.z na.z)
-               qx (- c.x na.x) qy (- c.y na.y) qz (- c.z na.z)
-               denominator (+ (+ (* dx dx) (* dy dy)) (* dz dz))]
-          (if (= denominator 0.0) false
-            (let* [parameter (max 0.0 (min 1.0 (/ (+ (+ (* qx dx) (* qy dy)) (* qz dz)) denominator)))
-                   ex (- (+ na.x (* parameter dx)) c.x)
-                   ey (- (+ na.y (* parameter dy)) c.y)
-                   ez (- (+ na.z (* parameter dz)) c.z)
-                   limit (/ radius scale)]
-              (<= (+ (+ (* ex ex) (* ey ey)) (* ez ez)) (* limit limit)))))))))
+                 (max (group_bounds_scale low) (group_bounds_scale high)))]
+    (if (= scale 0.0) 1.0 scale)))
+(defn group_bounds_box_mid :context value [(a : vec3) (b : vec3) (low : vec3) (high : vec3) (divisor : float)]
+  (let* [na (/ a divisor) nb (/ b divisor) l (/ low divisor) h (/ high divisor)]
+    [(- (* (+ na.x nb.x) 0.5) (* (+ l.x h.x) 0.5))
+     (- (* (+ na.y nb.y) 0.5) (* (+ l.y h.y) 0.5))
+     (- (* (+ na.z nb.z) 0.5) (* (+ l.z h.z) 0.5))]))
+(defn group_bounds_box_half :context value [(a : vec3) (b : vec3) (low : vec3) (high : vec3) (divisor : float)]
+  (let* [na (/ a divisor) nb (/ b divisor)]
+    [(* (- nb.x na.x) 0.5) (* (- nb.y na.y) 0.5) (* (- nb.z na.z) 0.5)]))
+(defn group_bounds_box_extent :context value [(a : vec3) (b : vec3) (low : vec3) (high : vec3) (divisor : float)]
+  (let* [l (/ low divisor) h (/ high divisor)]
+    [(* (- h.x l.x) 0.5) (* (- h.y l.y) 0.5) (* (- h.z l.z) 0.5)]))
+(defn group_bounds_box_separated :context value [(m : vec3) (d : vec3) (e : vec3)]
+  (let* [adx (abs d.x) ady (abs d.y) adz (abs d.z)]
+    (and (<= (abs m.x) (+ e.x adx))
+      (and (<= (abs m.y) (+ e.y ady))
+        (and (<= (abs m.z) (+ e.z adz))
+          (and (<= (abs (fma (* -1.0 m.z) d.y (* m.y d.z))) (fma e.z ady (* e.y adz)))
+            (and (<= (abs (fma (* -1.0 m.x) d.z (* m.z d.x))) (fma e.x adz (* e.z adx)))
+              (<= (abs (fma (* -1.0 m.y) d.x (* m.x d.y))) (fma e.y adx (* e.x ady))))))))))
+(defn group_bounds_box_trivial :context value [(a : vec3) (b : vec3) (low : vec3) (high : vec3)]
+  (or (group_bounds_point a false low high 0.0)
+    (or (group_bounds_point b false low high 0.0)
+      (= (max (max (group_bounds_scale a) (group_bounds_scale b))
+           (max (group_bounds_scale low) (group_bounds_scale high))) 0.0))))
+; Segment against sphere, in stages for the register limit: the common scale, the clamped
+; parameter of the closest point (-1 when degenerate), then the distance test.
+(defn group_bounds_sphere_scale :context value [(a : vec3) (b : vec3) (center : vec3)]
+  (max (group_bounds_scale a) (max (group_bounds_scale b) (group_bounds_scale center))))
+(defn group_bounds_sphere_param :context value [(a : vec3) (b : vec3) (center : vec3) (scale : float)]
+  (if (= scale 0.0) [scale -1.0]
+    (let* [na (/ a scale) nb (/ b scale) c (/ center scale)
+           dx (- nb.x na.x) dy (- nb.y na.y) dz (- nb.z na.z)
+           qx (- c.x na.x) qy (- c.y na.y) qz (- c.z na.z)
+           denominator (fma dz dz (fma dy dy (* dx dx)))]
+      (if (= denominator 0.0) [scale -1.0]
+        [scale (max 0.0 (min 1.0 (/ (fma qz dz (fma qy dy (* qx dx))) denominator)))]))))
+(defn group_bounds_sphere_hit :context value
+  [(a : vec3) (b : vec3) (center : vec3) (sp : vec2) (radius : float)]
+  (if (< sp.y 0.0) false
+    (let* [na (/ a sp.x) nb (/ b sp.x) c (/ center sp.x)
+           dx (- nb.x na.x) dy (- nb.y na.y) dz (- nb.z na.z)
+           ex (- (fma sp.y dx na.x) c.x) ey (- (fma sp.y dy na.y) c.y) ez (- (fma sp.y dz na.z) c.z)
+           limit (/ radius sp.x)]
+      (<= (fma ez ez (fma ey ey (* ex ex))) (* limit limit)))))
 (defn group_bounds_missing :context sop [(geo : geometry) (name : text) (owner : text)]
   (let* [found (group_exists geo owner (if (equal? name "") "x" name))]
     (and (not (equal? name "")) (not found))))
@@ -116,9 +131,27 @@
                            edges.a edges.b)
                end_a (map (fn [(a : int)] (array/nth positions a)) edges.a)
                end_b (map (fn [(b : int)] (array/nth positions b)) edges.b)
-               edge_partial (map (fn [(pa : vec3) (pb : vec3)]
-                              (if (if sphere (group_bounds_segment_sphere pa pb low radius) (group_bounds_segment_box pa pb low high)) 1 0))
-                              end_a end_b)
+               box_divisor (exact (map (fn [(pa : vec3) (pb : vec3)] (group_bounds_box_scale pa pb low high)) end_a end_b))
+               box_m (exact (map (fn [(pa : vec3) (pb : vec3) (dv : float)] (group_bounds_box_mid pa pb low high dv)) end_a end_b box_divisor))
+               box_d (exact (map (fn [(pa : vec3) (pb : vec3) (dv : float)] (group_bounds_box_half pa pb low high dv)) end_a end_b box_divisor))
+               box_e (exact (map (fn [(pa : vec3) (pb : vec3) (dv : float)] (group_bounds_box_extent pa pb low high dv)) end_a end_b box_divisor))
+               box_separated (exact (map (fn [(m : vec3) (d : vec3) (e : vec3)]
+                               (if (group_bounds_box_separated m d e) 1 0)) box_m box_d box_e))
+               box_trivial (exact (map (fn [(pa : vec3) (pb : vec3)]
+                             (if (group_bounds_box_trivial pa pb low high) 1 0)) end_a end_b))
+               box_partial (exact (map (fn [(x : int) (y : int)] (int/or x y)) box_trivial box_separated))
+               sphere_scale (exact (map (fn [(pa : vec3) (pb : vec3)] (group_bounds_sphere_scale pa pb low)) end_a end_b))
+               sphere_sp (exact (map (fn [(pa : vec3) (pb : vec3) (sc : float)] (group_bounds_sphere_param pa pb low sc))
+                           end_a end_b sphere_scale))
+               sphere_in_a (exact (map (fn [(pa : vec3)] (if (group_bounds_point pa true low low radius) 1 0)) end_a))
+               sphere_in_b (exact (map (fn [(pb : vec3)] (if (group_bounds_point pb true low low radius) 1 0)) end_b))
+               sphere_trivial (exact (map (fn [(x : int) (y : int) (sc : float)]
+                                (if (or (int/eq x 1) (or (int/eq y 1) (and (= sc 0.0) (>= radius 0.0)))) 1 0))
+                                sphere_in_a sphere_in_b sphere_scale))
+               sphere_hit (exact (map (fn [(pa : vec3) (pb : vec3) (sp : vec2)]
+                            (if (group_bounds_sphere_hit pa pb low sp radius) 1 0)) end_a end_b sphere_sp))
+               sphere_partial (exact (map (fn [(x : int) (y : int)] (int/or x y)) sphere_trivial sphere_hit))
+               edge_partial (if sphere sphere_partial box_partial)
                raw (case selected
                      "vertex" gathered
                      "primitive" (if partial

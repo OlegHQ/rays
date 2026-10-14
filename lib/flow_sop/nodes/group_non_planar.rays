@@ -1,0 +1,99 @@
+; Whole Group Non-Planar draft. Each polygon is tested in its own scaled frame: the farthest corner
+; from the first fixes one axis, the largest cross product (first wins ties) gives the plane normal.
+(defn group_non_planar_error :context value [(reason : text)]
+  (error "invalid_group" "group_non_planar could not produce valid geometry"
+    :cause (str "group_non_planar [invalid_group]: " reason)))
+(defn group_non_planar_scale :context value [(v : vec3)]
+  (max (abs v.x) (max (abs v.y) (abs v.z))))
+(defn group_non_planar_dot :context value [(a : vec3) (b : vec3)]
+  (fma a.z b.z (fma a.y b.y (* a.x b.x))))
+(defn group_non_planar_missing :context sop [(geo : geometry) (name : text)]
+  (let* [found (group_exists geo "primitive" (if (equal? name "") "x" name))]
+    (and (not (equal? name "")) (not found))))
+(defn group_non_planar_finish :context sop
+  [(geo : geometry) (name : text) (operation : text) (base_name : text) (fixed : (array int))]
+  (if (group_non_planar_missing geo base_name)
+    (group_non_planar_error (str "Group Non-Planar: missing primitive base group " (text/repr base_name)))
+    (if (equal? base_name "")
+      (group_publish geo "primitive" name operation fixed)
+      (group_publish geo "primitive" name operation
+        (exact (map (fn [(a : int) (b : int)] (int/and a b)) fixed
+                 (sop/group geo :name base_name :owner "primitive")))))))
+(defnode sop/group_non_planar :label "Group Non-Planar" :category ["Group" "Create"]
+  [(in0 : geometry)
+   (name : text "nonplanar" :label "Group name")
+   (tolerance : float 0.000001 :label "Tolerance" :min 0 :max 0.1 :hard_min 0)
+   (base : text "" :label "Base group" :folder ["Combine"])
+   (merge : text "Replace" :label "Operation" :folder ["Combine"]
+     :choices ["Replace" "Union" "Intersection" "Subtract" "Exclusive or"])]
+  (let* [base_name (text/trim base)
+         operation (case merge "Union" "union" "Intersection" "intersection" "Subtract" "subtract"
+                     "Exclusive or" "xor" :else "replace")
+         positions (sop/attr in0 :P)
+         points (sop/count in0 :points)
+         bad (if (int/eq points 0) points
+               (array/min (map (fn [(p : vec3) (i : int)]
+                 (if (<= (group_non_planar_scale p) 1.7976931348623157e308) points i))
+                 positions (array/range points :type int))))]
+    (cond
+      (text/blank? name) (group_non_planar_error "Group Non-Planar: empty output name")
+      (group_non_planar_missing in0 base_name)
+        (group_non_planar_error (str "Group Non-Planar: missing primitive base group " (text/repr base_name)))
+      (int/lt bad points) (group_non_planar_error (str "Group Non-Planar: non-finite position at point " bad))
+      :else
+        (let* [topology (sop/topology in0)
+               adjacency (sop/adjacency in0)
+               pov adjacency.primitive_of_vertex
+               vp topology.vertex_points
+               offsets topology.primitive_offsets
+               vertices (sop/count in0 :vertices)
+               primitives (sop/count in0 :primitives)
+               prim_ids (array/range primitives :type int)
+               ; Stage by stage so each kernel stays small; segment_argmax keeps the first maximum.
+               corner_scale (exact (map (fn [(p : int)] (group_non_planar_scale (array/nth positions p))) vp))
+               scale_at (array/segment_argmax corner_scale offsets)
+               prim_scale (exact (map (fn [(at : int)] (if (int/lt at 0) 0.0 (array/nth corner_scale at))) scale_at))
+               prim_count (exact (map (fn [(first : int) (last : int)] (int/sub last first))
+                            (array/slice offsets 0 primitives) (array/slice offsets 1 primitives)))
+               usable (exact (map (fn [(k : int) (n : int) (s : float)]
+                        (if (and (int/eq k 0) (and (int/gt n 3) (> s 0.0))) 1 0))
+                        topology.kinds prim_count prim_scale))
+               prim_anchor (exact (map (fn [(q : int) (u : int)]
+                             (if (int/eq u 1)
+                               (/ (array/nth positions (array/nth vp (array/nth offsets q))) (array/nth prim_scale q))
+                               [0.0 0.0 0.0]))
+                             prim_ids usable))
+               corner_q (exact (map (fn [(p : int) (q : int)]
+                          (if (int/eq (array/nth usable q) 1)
+                            (- (/ (array/nth positions p) (array/nth prim_scale q)) (array/nth prim_anchor q))
+                            [0.0 0.0 0.0]))
+                          vp pov))
+               corner_d (exact (map (fn [(q : vec3)] (group_non_planar_dot q q)) corner_q))
+               far_at (array/segment_argmax corner_d offsets)
+               far_d (exact (map (fn [(at : int)] (if (int/lt at 0) 0.0 (array/nth corner_d at))) far_at))
+               prim_u (exact (map (fn [(at : int) (q : int)]
+                        (if (int/lt at 0) [0.0 0.0 0.0]
+                          (let* [a (array/nth prim_anchor q)] (- (+ (array/nth corner_q at) a) a))))
+                        far_at prim_ids))
+               corner_c (exact (map (fn [(v : vec3) (r : int)]
+                          (let* [u (array/nth prim_u r)]
+                            [(fma (* -1.0 u.z) v.y (* u.y v.z))
+                             (fma (* -1.0 u.x) v.z (* u.z v.x))
+                             (fma (* -1.0 u.y) v.x (* u.x v.y))]))
+                          corner_q pov))
+               corner_m (exact (map (fn [(c : vec3)] (group_non_planar_dot c c)) corner_c))
+               best_at (array/segment_argmax corner_m offsets)
+               magnitude (exact (map (fn [(at : int)] (if (int/lt at 0) 0.0 (array/nth corner_m at))) best_at))
+               prim_normal (exact (map (fn [(at : int) (m : float)]
+                             (if (> m 0.0) (* (array/nth corner_c at) (/ 1.0 (sqrt m))) [0.0 0.0 0.0]))
+                             best_at magnitude))
+               prim_limit (exact (map (fn [(s : float)] (if (> s 0.0) (/ tolerance s) 0.0)) prim_scale))
+               corner_over (exact (map (fn [(q : vec3) (r : int)]
+                             (if (> (abs (group_non_planar_dot (array/nth prim_normal r) q)) (array/nth prim_limit r)) 1 0))
+                             corner_q pov))
+               over (array/segment_sum corner_over offsets)
+               gate (exact (map (fn [(u : int) (d : float) (m : float)]
+                      (if (and (int/eq u 1) (and (not (= d 0.0)) (not (= m 0.0)))) 1 0))
+                      usable far_d magnitude))
+               raw (exact (map (fn [(g : int) (o : int)] (if (and (int/eq g 1) (int/gt o 0)) 1 0)) gate over))]
+          (group_non_planar_finish in0 name operation base_name (exact raw))))))
