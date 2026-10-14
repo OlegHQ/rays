@@ -12,16 +12,30 @@ let with_parameters geometry =
   let add name f g = Geometry.with_attribute (Attribute.create_owned ~owner:Attribute.Primitive ~name
     (Attribute.Float (Array.init n f)) |> Rdk_test_support.get_string_ok) g |> Rdk_test_support.get_string_ok in
   geometry |> add "u0" (fun i -> 0.1 +. (0.05 *. float i)) |> add "u1" (fun i -> 0.6 +. (0.07 *. float i))
+  |> add "big" (fun i -> 1.5 +. float i)
 
-let curves = with_parameters (decorate (build
+let drop_edge_groups g = Geometry.create ~positions:(Geometry.positions g) ~topology:(Geometry.topology g)
+  ~attributes:(Geometry.attributes g) ~groups:(Geometry.groups g) () |> Rdk_test_support.get_string_ok
+let curves = with_parameters ((decorate (build
   [sec ~kind:open_k 5 0.; sec 6 1. ~radius:1.3; sec ~kind:open_k 4 2. ~radius:0.7; sec 7 3. ~phase:0.5;
-   sec ~kind:open_k 9 4.]))
+   sec ~kind:open_k 9 4.])))
 let single_open = with_parameters (build [sec ~kind:open_k 6 0.])
 let single_closed = with_parameters (build [sec 5 0.])
 
+(* A polygon among the curves, and a curve with a repeated point: the refusals of the native kernels. *)
+let with_polygon = with_parameters (build [sec ~kind:open_k 5 0.; sec ~kind:poly_k 4 1.; sec 6 2.])
+let repeated =
+  let g = build [sec ~kind:open_k 5 0.; sec 6 1.] in
+  let view = Packed.Float3.Private.view (Geometry.positions g) in
+  let x = Array.copy view.x and y = Array.copy view.y and z = Array.copy view.z in
+  x.(1) <- x.(0); y.(1) <- y.(0); z.(1) <- z.(0);
+  with_parameters (Geometry.create ~positions:(Packed.Float3.of_owned ~x ~y ~z |> Rdk_test_support.get_string_ok)
+    ~topology:(Geometry.topology g) () |> Rdk_test_support.get_string_ok)
+
 let inputs =
   List.map (fun (label, g) -> label, [g]) [
-    "empty", points 0; "curves", curves; "single open", single_open; "single closed", single_closed ]
+    "empty", points 0; "polygon", with_polygon; "repeated", repeated;
+    "single open", single_open; "single closed", single_closed; "curves", curves ]
 
 let fields ?(group = "") ?(relative = true) ?(first = 0.) ?(last = 1.) ?(first_attribute = "")
     ?(last_attribute = "") ?(mode = "Replace") ?(breakpoints = false) ?(internal = false)
@@ -54,7 +68,21 @@ let cases = [
   "extract divisions", fields ~first:0.2 ~last:0.8 ~extract:true ~divisions:4 ();
   "extract original", fields ~first:0.2 ~last:0.8 ~extract:true ~original:true ();
   "extract breakpoints", fields ~first:0.2 ~last:0.8 ~extract:true ~breakpoints:true ();
-  "extract internal", fields ~first:0.2 ~last:0.8 ~extract:true ~breakpoints:true ~internal:true ~original:true () ]
+  "extract internal", fields ~first:0.2 ~last:0.8 ~extract:true ~breakpoints:true ~internal:true ~original:true ();
+  "group outside", fields ~group:"a" ~first:0.3 ~last:0.6 ~keep:"Outside" ();
+  "group both divisions", fields ~group:"a" ~first:0.3 ~last:0.6 ~keep:"Inside and outside" ~divisions:2 ();
+  "group breakpoints", fields ~group:"a" ~first:0.2 ~last:0.7 ~breakpoints:true ~keep:"Inside and outside" ();
+  "group extract", fields ~group:"a" ~first:0.2 ~last:0.7 ~extract:true ~divisions:3 ();
+  "group extract breakpoints", fields ~group:"a" ~first:0.2 ~last:0.7 ~extract:true ~breakpoints:true ();
+  "breakpoints index", fields ~first:0.2 ~last:0.7 ~breakpoints:true ~relative:false ();
+  "breakpoints both internal", fields ~first:0.2 ~last:0.7 ~breakpoints:true ~internal:true ~keep:"Inside and outside" ();
+  "breakpoints identity", fields ~breakpoints:true ();
+  "extract attributes", fields ~first_attribute:"u0" ~last_attribute:"u1" ~extract:true ~divisions:2 ~original:true ();
+  "extract index", fields ~first:0.3 ~last:0.9 ~extract:true ~relative:false ~divisions:3 ();
+  "attribute missing", fields ~first_attribute:"nothing" ();
+  "attribute not float", fields ~first_attribute:"integer" ();
+  "attribute out of range", fields ~first_attribute:"big" ();
+  "attribute second out of range", fields ~last_attribute:"big" ~mode:"Scale" () ]
 
 let bench () =
   let sections = List.init 20_000 (fun i -> sec ~kind:open_k 50 (float i *. 0.01) ~radius:(1. +. (0.001 *. float (i mod 7)))) in
