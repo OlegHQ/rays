@@ -1,0 +1,297 @@
+; Whole-node draft. Fits the input's (optionally grouped) bounds to a numeric box or to the bounds of a
+; target geometry: translate, stretch, contain, cover, match one axis, or match the perimeter / area /
+; volume of the target (those three measure through sop/measure). Arithmetic keeps the native order
+; and its arm64 multiply-add fusion.
+(defn ms_error :context value [(reason : text)]
+  (deform_error "match_size" "invalid_geometry" (str "Rdk.Match_size.match_size: " reason)))
+(defn ms_finite :context value [(value : float)] (= (- value value) 0.0))
+; Bounds of the selected points: {:ok :reason :size :center}. mask is 1 for a selected point.
+(defn ms_bounds :context sop [(geo : geometry) (mask : (array int))]
+  (let* [fmax 1.7976931348623157e308
+         positions (sop/attr geo :P)
+         bad (array/compact (map (fn [(p : vec3) (s : int)]
+                 (if (and (int/eq s 1)
+                       (not (and (<= (abs p.x) fmax) (and (<= (abs p.y) fmax) (<= (abs p.z) fmax))))) 1 0))
+               positions mask))
+         count (array/count (array/compact mask))
+         lows (exact (map (fn [(p : vec3) (s : int)] (if (int/eq s 1) p [fmax fmax fmax])) positions mask))
+         highs (exact (map (fn [(p : vec3) (s : int)] (if (int/eq s 1) p [(- 0.0 fmax) (- 0.0 fmax) (- 0.0 fmax)])) positions mask))
+         lo (fold [m [fmax fmax fmax]] [p lows] [(min m.x p.x) (min m.y p.y) (min m.z p.z)])
+         hi (fold [m [(- 0.0 fmax) (- 0.0 fmax) (- 0.0 fmax)]] [p highs] [(max m.x p.x) (max m.y p.y) (max m.z p.z)])
+         sx (float/fma_checked -1.0 lo.x hi.x) sy (float/fma_checked -1.0 lo.y hi.y) sz (float/fma_checked -1.0 lo.z hi.z)
+         size [sx.value sy.value sz.value]
+         center [(+ lo.x (* size.x 0.5)) (+ lo.y (* size.y 0.5)) (+ lo.z (* size.z 0.5))]
+         finite (and sx.valid (and sy.valid sz.valid))]
+    {:ok (and (int/eq (array/count bad) 0) (and (int/gt count 0) finite))
+     :reason (cond (int/gt (array/count bad) 0) (str "selected point " (array/nth bad 0) " has a non-finite position")
+                   (int/eq count 0) "selection contains no points"
+                   :else "selected bounds overflow")
+     :size size :center center}))
+; Bounds of a numeric target box.
+(defn ms_numeric :context value [(center : vec3) (size : vec3)]
+  (let* [half (* size 0.5)
+         lx (float/fma_checked -1.0 half.x center.x) ly (float/fma_checked -1.0 half.y center.y)
+         lz (float/fma_checked -1.0 half.z center.z)
+         hx (float/fma_checked 1.0 half.x center.x) hy (float/fma_checked 1.0 half.y center.y)
+         hz (float/fma_checked 1.0 half.z center.z)
+         finite (and (and lx.valid (and ly.valid lz.valid)) (and hx.valid (and hy.valid hz.valid)))]
+    {:ok finite :reason "numeric target bounds overflow" :size size :center center}))
+; target / source for source > 0: {:v :ok}, not ok when the quotient overflows.
+(defn ms_div :context value [(target : float) (source : float)]
+  (if (or (>= source 1.0) (<= (abs target) (* (min source 1.0) 1.7976931348623157e308)))
+    {:v (/ target source) :ok true}
+    {:v 0.0 :ok false}))
+(defn ms_ratio :context value [(source : float) (target : float)]
+  (if (<= source 1e-20) {:v 1.0 :ok true} (ms_div target source)))
+; One step of the uniform fit: fold axis ratio r into the running choice when the axis is not degenerate.
+; An overflowed ratio is +inf: it poisons a maximum and is ignored by a minimum unless it is the only one.
+(defn ms_step :context value [(s : {:any bool :fin bool :bad bool :v float}) (axis : float)
+                              (r : {:v float :ok bool}) (use_max : bool)]
+  (cond (<= axis 1e-20) s
+        r.ok {:any true :fin true :bad s.bad :v (if s.fin (if use_max (max s.v r.v) (min s.v r.v)) r.v)}
+        :else {:any true :fin s.fin :bad (or s.bad use_max) :v s.v}))
+; {:v :ok}: the uniform ratio over the non-degenerate axes, or 1 when all are degenerate.
+(defn ms_uniform :context value
+  [(size : vec3) (rx : {:v float :ok bool}) (ry : {:v float :ok bool}) (rz : {:v float :ok bool}) (use_max : bool)]
+  (let* [a (ms_step {:any false :fin false :bad false :v 0.0} size.x rx use_max)
+         b (ms_step a size.y ry use_max)
+         c (ms_step b size.z rz use_max)]
+    (cond (not c.any) {:v 1.0 :ok true}
+          c.bad {:v 0.0 :ok false}
+          c.fin {:v c.v :ok true}
+          :else {:v 0.0 :ok false})))
+(defn ms_scaled :context value [(r : {:v float :ok bool}) (scale : float)]
+  (let* [m (float/mul_checked r.v scale)] {:v m.value :ok (and r.ok m.valid)}))
+; Anchor of a bounds: centre + justify * size * 0.5, {:v :ok}.
+(defn ms_anchor :context value [(center : vec3) (justify : vec3) (size : vec3)]
+  (let* [x (float/fma_checked (* justify.x size.x) 0.5 center.x)
+         y (float/fma_checked (* justify.y size.y) 0.5 center.y)
+         z (float/fma_checked (* justify.z size.z) 0.5 center.z)]
+    {:v [x.value y.value z.value] :ok (and x.valid (and y.valid z.valid))}))
+; One translation component: target anchor + offset - source anchor * scale, or 0 when disabled.
+(defn ms_axis :context value [(enabled : bool) (target_anchor : float) (offset : float) (source_anchor : float) (scale : float)]
+  (let* [base (float/fma_checked target_anchor 1.0 offset)
+         moved (float/fma_checked (* -1.0 source_anchor) scale base.value)]
+    (if enabled {:v moved.value :ok (and base.valid moved.valid)} {:v 0.0 :ok true})))
+; Selected polygons the native ear clipper refuses: fewer than three corners, or four or more corners with
+; a degenerate projected area (Polygon_triangulation). Non-simple polygons are not detected here.
+(defn ms_project :context value [(p : vec3) (d : int)]
+  (cond (int/eq d 0) [p.y p.z] (int/eq d 1) [p.x p.z] :else [p.x p.y]))
+(defn ms_degenerate :context sop [(geo : geometry) (selected : (array int))]
+  (let* [topo (sop/topology geo)
+         adjacency (sop/adjacency geo)
+         positions (sop/attr geo :P)
+         vertices (sop/count geo :vertices)
+         prims (sop/count geo :primitives)
+         starts (array/slice topo.primitive_offsets 0 prims)
+         ends (array/slice topo.primitive_offsets 1 prims)
+         indices (array/range vertices :type int)
+         newell (map (fn [(vertex : int) (prim : int)]
+           (let* [first (array/nth starts prim)
+                  last (array/nth ends prim)
+                  a (array/nth positions (array/nth topo.vertex_points vertex))
+                  b (array/nth positions (array/nth topo.vertex_points
+                      (if (int/lt (int/add vertex 1) last) (int/add vertex 1) first)))]
+             [(* (- a.y b.y) (+ a.z b.z)) (* (- a.z b.z) (+ a.x b.x)) (* (- a.x b.x) (+ a.y b.y))]))
+           indices adjacency.primitive_of_vertex)
+         sums (array/segment_sum newell topo.primitive_offsets)
+         dominant (exact (map (fn [(s : vec3)]
+           (let* [ax (abs s.x) ay (abs s.y) az (abs s.z)]
+             (if (and (>= ax ay) (>= ax az)) 0 (if (>= ay az) 1 2)))) sums))
+         area (array/segment_sum
+           (map (fn [(vertex : int) (prim : int)]
+             (let* [first (array/nth starts prim)
+                    last (array/nth ends prim)
+                    d (array/nth dominant prim)
+                    a (ms_project (array/nth positions (array/nth topo.vertex_points vertex)) d)
+                    b (ms_project (array/nth positions (array/nth topo.vertex_points
+                        (if (int/lt (int/add vertex 1) last) (int/add vertex 1) first))) d)]
+               (- (* a.x b.y) (* b.x a.y))))
+             indices adjacency.primitive_of_vertex)
+           topo.primitive_offsets)
+         sizes (exact (map (fn [(first : int) (last : int)] (int/sub last first)) starts ends))
+         degenerate (exact (map (fn [(size : int) (a : float)]
+           (if (or (int/lt size 3) (and (int/gt size 3) (<= (abs a) 1e-14))) 1 0)) sizes area))
+         bad (exact (map (fn [(d : int) (s : int) (k : int)] (if (and (int/eq s 1) (int/eq k 0)) d 0))
+           degenerate selected topo.kinds))]
+    (array/sum bad)))
+; Total perimeter / area / signed volume of the selected primitives, as {:ok :reason :value}.
+(defn ms_metric :context sop [(geo : geometry) (fit : text) (owner : text) (name : text)]
+  (let* [kind (case fit "Match perimeter" "Perimeter" "Match area" "Area" :else "Signed volume")
+         named (not (text/blank? name))
+         topology (sop/topology geo)
+         prims (sop/count geo :primitives)
+         selected (if named (sop/group geo :name name :owner "primitive") (array/int prims 1))
+         curves (if (equal? kind "Perimeter") 0
+                  (array/sum (exact (map (fn [(k : int) (s : int)] (if (and (int/eq s 1) (not (int/eq k 0))) 1 0))
+                    topology.kinds selected))))]
+    (cond
+      (and named (not (equal? owner "primitive")))
+        {:ok false :reason "bounds selection must be primitive-owned for metric fitting" :value 0.0}
+      (int/gt curves 0)
+        {:ok false :reason "a selected primitive is a curve, not a polygon" :value 0.0}
+      (if (equal? kind "Perimeter") false (int/gt (ms_degenerate geo selected) 0))
+        {:ok false :reason "a selected polygon is degenerate" :value 0.0}
+      :else
+        (let* [measured (sop/measure geo :kind kind :group name :accumulation "Throughout"
+                          :attribute "__match_size_measure" :total_attribute "__match_size_total")
+               value (abs (array/nth (sop/attr measured "__match_size_total" :owner "detail" :type float) 0))]
+          (cond (not (ms_finite value)) {:ok false :reason "metric measurement is not finite" :value 0.0}
+                (<= value 1e-20) {:ok false :reason "metric fitting requires a positive measurement" :value 0.0}
+                :else {:ok true :reason "" :value value})))))
+; N rescaled by the inverse scale and renormalised at the selected elements.
+(defn ms_normal_length :context value [(n : vec3) (scale : vec3)]
+  (let* [o (/ n scale)] (sqrt (fused_dot o o))))
+(defn ms_normals :context sop
+  [(geo : geometry) (moved : geometry) (owner : text) (select : (array int)) (scale : vec3)]
+  (if (sop/has_attr geo "N" :owner owner :type vec3)
+    (let* [source (sop/attr geo "N" :owner owner :type vec3)
+           lengths (map (fn [(n : vec3)] (ms_normal_length n scale)) source)
+           bad (array/sum (exact (map (fn [(s : int) (l : float)] (if (and (int/eq s 1) (not (ms_finite l))) 1 0))
+                 select lengths)))]
+      (if (int/gt bad 0) (ms_error (str "transformed " owner " normal is not finite"))
+        (sop/with_attr moved "N"
+          (exact (map (fn [(n : vec3) (s : int) (l : float)]
+            (if (int/eq s 1)
+              (let* [o (/ n scale)] (if (> l 1e-20) (/ o l) [0.0 0.0 0.0]))
+              n)) source select lengths))
+          :owner owner :type vec3)))
+    moved))
+(defn ms_plan :context value [(ok : bool) (reason : text) (scale : vec3)]
+  {:ok ok :reason reason :scale scale})
+; scale * p + translation per axis, checked: {:v :ok}.
+(defn ms_place :context value [(p : vec3) (scale : vec3) (translation : vec3)]
+  (let* [x (float/fma_checked scale.x p.x translation.x)
+         y (float/fma_checked scale.y p.y translation.y)
+         z (float/fma_checked scale.z p.z translation.z)]
+    {:v [x.value y.value z.value] :ok (and x.valid (and y.valid z.valid))}))
+(defn ms_transform :context sop
+  [(geo : geometry) (mask : (array int)) (scale : vec3) (translation : vec3)]
+  (let* [identity (and (and (= scale.x 1.0) (and (= scale.y 1.0) (= scale.z 1.0)))
+                    (and (= translation.x 0.0) (and (= translation.y 0.0) (= translation.z 0.0))))]
+    (if (or identity (int/eq (array/sum mask) 0)) geo
+      (let* [source (sop/attr geo :P)
+             placed (exact (map (fn [(p : vec3) (s : int)]
+               (if (int/eq s 1) (let* [r (ms_place p scale translation)] r.v) p))
+               source mask))
+             bad (array/compact (exact (map (fn [(p : vec3) (s : int)]
+               (if (int/eq s 1) (let* [r (ms_place p scale translation)] (if r.ok 0 1)) 0))
+               source mask)))]
+        (if (int/gt (array/count bad) 0)
+          (ms_error (str "transformed point " (array/nth bad 0) " is not finite"))
+          (let* [moved (sop/with_attr geo :P placed)
+                 unit (and (= scale.x 1.0) (and (= scale.y 1.0) (= scale.z 1.0)))
+                 degenerate (or (<= (abs scale.x) 1e-20) (or (<= (abs scale.y) 1e-20) (<= (abs scale.z) 1e-20)))]
+            (cond
+              unit moved
+              degenerate (sop/delete_attr (sop/delete_attr moved "N" :owner "point") "N" :owner "vertex")
+              :else
+                (let* [topology (sop/topology geo)
+                       point_pass (ms_normals geo moved "point" mask scale)]
+                  (ms_normals geo point_pass "vertex" (int_gather mask topology.vertex_points) scale)))))))))
+(defnode sop/match_size :label "Match Size" :category "Modify"
+  [(input : geometry) (target : geometry :required false)
+   (group_owner : text "Point" :label "Move group type" :choices ["Point" "Vertex" "Primitive" "Edge"])
+   (group : text "" :label "Move group")
+   (source_group_owner : text "Point" :label "Source group type" :choices ["Point" "Vertex" "Primitive" "Edge"])
+   (source_group : text "" :label "Source group")
+   (target_group_owner : text "Point" :label "Target group type" :choices ["Point" "Vertex" "Primitive" "Edge"])
+   (target_group : text "" :label "Target group")
+   (target_justify_mode : text "Explicit" :label "Target justification" :choices ["Explicit" "Auto"])
+   (fit : text "Contain" :label "Fit"
+     :choices ["Translate only" "Stretch" "Contain" "Cover" "Match X" "Match Y" "Match Z" "Match perimeter" "Match area" "Match volume"])
+   (translate_x : bool true :label "Translate X" :folder ["Axes" "Translate"])
+   (translate_y : bool true :label "Translate Y" :folder ["Axes" "Translate"])
+   (translate_z : bool true :label "Translate Z" :folder ["Axes" "Translate"])
+   (scale_x : bool true :label "Scale X" :folder ["Axes" "Scale"])
+   (scale_y : bool true :label "Scale Y" :folder ["Axes" "Scale"])
+   (scale_z : bool true :label "Scale Z" :folder ["Axes" "Scale"])
+   (justify_x : float 0.0 :label "Justify X" :folder ["Justify" "Source"] :min -1 :max 1 :hard_min -1 :hard_max 1 :vec3 ["justify" 0])
+   (justify_y : float 0.0 :label "Justify Y" :folder ["Justify" "Source"] :min -1 :max 1 :hard_min -1 :hard_max 1 :vec3 ["justify" 1])
+   (justify_z : float 0.0 :label "Justify Z" :folder ["Justify" "Source"] :min -1 :max 1 :hard_min -1 :hard_max 1 :vec3 ["justify" 2])
+   (target_justify_x : float 0.0 :label "Justify X" :folder ["Justify" "Target"] :min -1 :max 1 :hard_min -1 :hard_max 1 :vec3 ["target_justify" 0])
+   (target_justify_y : float 0.0 :label "Justify Y" :folder ["Justify" "Target"] :min -1 :max 1 :hard_min -1 :hard_max 1 :vec3 ["target_justify" 1])
+   (target_justify_z : float 0.0 :label "Justify Z" :folder ["Justify" "Target"] :min -1 :max 1 :hard_min -1 :hard_max 1 :vec3 ["target_justify" 2])
+   (offset_x : float 0.0 :label "Offset X" :folder ["Transform" "Offset"] :min -10 :max 10 :vec3 ["offset" 0])
+   (offset_y : float 0.0 :label "Offset Y" :folder ["Transform" "Offset"] :min -10 :max 10 :vec3 ["offset" 1])
+   (offset_z : float 0.0 :label "Offset Z" :folder ["Transform" "Offset"] :min -10 :max 10 :vec3 ["offset" 2])
+   (scale : float 1.0 :label "Scale" :folder ["Transform"] :min 0 :max 10 :hard_min 0)
+   (target_center_x : float 0.0 :label "Center X" :folder ["Numeric target" "Center"] :min -10 :max 10 :vec3 ["target_center" 0])
+   (target_center_y : float 0.0 :label "Center Y" :folder ["Numeric target" "Center"] :min -10 :max 10 :vec3 ["target_center" 1])
+   (target_center_z : float 0.0 :label "Center Z" :folder ["Numeric target" "Center"] :min -10 :max 10 :vec3 ["target_center" 2])
+   (target_size_x : float 1.0 :label "Size X" :folder ["Numeric target" "Size"] :min 0 :max 10 :hard_min 0 :vec3 ["target_size" 0])
+   (target_size_y : float 1.0 :label "Size Y" :folder ["Numeric target" "Size"] :min 0 :max 10 :hard_min 0 :vec3 ["target_size" 1])
+   (target_size_z : float 1.0 :label "Size Z" :folder ["Numeric target" "Size"] :min 0 :max 10 :hard_min 0 :vec3 ["target_size" 2])]
+  (let* [has_target (not (equal? target nil))
+         tgt (if has_target target input)
+         owner (text/lower group_owner) name (text/trim group)
+         src_owner (text/lower source_group_owner) src_name (text/trim source_group)
+         tgt_owner (text/lower target_group_owner) tgt_name (text/trim target_group)]
+    (cond
+      (deform_group_missing input owner name)
+        (error "missing_group" (str "match_size could not find " owner " group " (text/repr name)))
+      (deform_group_missing input src_owner src_name)
+        (error "missing_group" (str "match_size source could not find " src_owner " group " (text/repr src_name)))
+      (and (not has_target) (not (text/blank? tgt_name)))
+        (error "missing_target" "match_size target selection requires a target node")
+      (if has_target (deform_group_missing tgt tgt_owner tgt_name) false)
+        (error "missing_group" (str "match_size target could not find " tgt_owner " group " (text/repr tgt_name)))
+      :else
+        (let* [sb (ms_bounds input (deform_mask input src_owner src_name))
+               tb (if has_target (ms_bounds tgt (deform_mask tgt tgt_owner tgt_name))
+                    (ms_numeric [target_center_x target_center_y target_center_z]
+                                [target_size_x target_size_y target_size_z]))
+               ss sb.size
+               ts tb.size
+               rx (ms_ratio ss.x ts.x) ry (ms_ratio ss.y ts.y) rz (ms_ratio ss.z ts.z)
+               plan
+                 (cond
+                   (equal? fit "Translate only") (ms_plan true "" [1.0 1.0 1.0])
+                   (equal? fit "Stretch")
+                     (let* [x (ms_scaled rx scale) y (ms_scaled ry scale) z (ms_scaled rz scale)]
+                       (ms_plan (and (or (not scale_x) x.ok) (and (or (not scale_y) y.ok) (or (not scale_z) z.ok)))
+                         "computed scale is not finite"
+                         [(if scale_x x.v 1.0) (if scale_y y.v 1.0) (if scale_z z.v 1.0)]))
+                   (equal? fit "Contain")
+                     (let* [v (ms_scaled (ms_uniform ss rx ry rz false) scale)] (ms_plan v.ok "computed scale is not finite" [v.v v.v v.v]))
+                   (equal? fit "Cover")
+                     (let* [v (ms_scaled (ms_uniform ss rx ry rz true) scale)] (ms_plan v.ok "computed scale is not finite" [v.v v.v v.v]))
+                   (and (equal? fit "Match X") (<= ss.x 1e-20))
+                     (ms_plan false "X-axis fitting requires non-degenerate source bounds" [1.0 1.0 1.0])
+                   (and (equal? fit "Match Y") (<= ss.y 1e-20))
+                     (ms_plan false "Y-axis fitting requires non-degenerate source bounds" [1.0 1.0 1.0])
+                   (and (equal? fit "Match Z") (<= ss.z 1e-20))
+                     (ms_plan false "Z-axis fitting requires non-degenerate source bounds" [1.0 1.0 1.0])
+                   (equal? fit "Match X") (let* [v (ms_scaled rx scale)] (ms_plan v.ok "computed scale is not finite" [v.v v.v v.v]))
+                   (equal? fit "Match Y") (let* [v (ms_scaled ry scale)] (ms_plan v.ok "computed scale is not finite" [v.v v.v v.v]))
+                   (equal? fit "Match Z") (let* [v (ms_scaled rz scale)] (ms_plan v.ok "computed scale is not finite" [v.v v.v v.v]))
+                   (not has_target)
+                     (ms_plan false "metric fitting requires target geometry" [1.0 1.0 1.0])
+                   :else
+                     (let* [sm (ms_metric input fit src_owner src_name)
+                            tm (if sm.ok (ms_metric tgt fit tgt_owner tgt_name) sm)]
+                       (cond (not sm.ok) (ms_plan false sm.reason [1.0 1.0 1.0])
+                             (not tm.ok) (ms_plan false tm.reason [1.0 1.0 1.0])
+                             :else
+                               (let* [ratio (ms_div tm.value sm.value)
+                                      linear (cond (equal? fit "Match perimeter") ratio.v
+                                                   (equal? fit "Match area") (sqrt ratio.v)
+                                                   :else (pow ratio.v (/ 1.0 3.0)))
+                                      v (ms_scaled {:v linear :ok ratio.ok} scale)]
+                                 (ms_plan v.ok "computed scale is not finite" [v.v v.v v.v])))))]
+          (cond
+            (not sb.ok) (ms_error sb.reason)
+            (not tb.ok) (ms_error tb.reason)
+            (not plan.ok) (ms_error plan.reason)
+            :else
+              (let* [sc plan.scale
+                     sj [justify_x justify_y justify_z]
+                     tj (if (equal? target_justify_mode "Auto") sj [target_justify_x target_justify_y target_justify_z])
+                     sa (ms_anchor sb.center sj sb.size)
+                     ta (ms_anchor tb.center tj tb.size)
+                     tx (ms_axis translate_x ta.v.x offset_x sa.v.x sc.x)
+                     ty (ms_axis translate_y ta.v.y offset_y sa.v.y sc.y)
+                     tz (ms_axis translate_z ta.v.z offset_z sa.v.z sc.z)]
+                (if (not (and sa.ok (and ta.ok (and tx.ok (and ty.ok tz.ok)))))
+                  (ms_error "computed translation is not finite")
+                  (ms_transform input (deform_mask input owner name) sc [tx.v ty.v tz.v]))))))))
