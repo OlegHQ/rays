@@ -133,9 +133,11 @@
              use_collision_seams (and use_seams use_collision)
              collision_total (case collision_kind "point" (sop/count in0 :points) "vertex" (sop/count in0 :vertices)
                                "primitive" (sop/count in0 :primitives) :else edge_total)
+             ; the union of the matching collision groups: Group Combine with the pattern as its base
              collision_selected (if use_collision_seams
-               (fold [acc (array/int collision_total 0)] [group (sop/group_names in0 collision_pattern :owner collision_kind)]
-                 (exact (map (fn [(a : int) (b : int)] (int/or a b)) acc (sop/group in0 :name group :owner collision_kind))))
+               (sop/group (sop/group_combine in0 :owner collision_owner :name "__rdk_range_collision"
+                            :base_pattern collision_pattern)
+                 :name "__rdk_range_collision" :owner collision_kind)
                (array/int collision_total 0))
              collision_edges (cond
                (not use_collision_seams) no_edges
@@ -148,20 +150,22 @@
              seam_mask (exact (map (fn [(a : int) (b : int)] (int/or a b)) attr_seams collision_edges))
              has_seams (int/gt (array/sum seam_mask) 0)
              has_mask (and use_collision_seams (not keep_boundary))
-             included (if has_mask
-               (exact (map (fn [(h : int)] (int/sub 1 h)) (group_range_promote_edges in0 owner collision_edges)))
-               (array/int total 1))
+             included (exact (map (fn [(h : int)] (if has_mask (int/sub 1 h) 1))
+                        (group_range_promote_edges in0 owner collision_edges)))
              components (cond
                (and has_seams has_mask) (sop/components in0 :over over_text :seams seam_mask :mask included)
                has_seams (sop/components in0 :over over_text :seams seam_mask)
                has_mask (sop/components in0 :over over_text :mask included)
                :else (sop/components in0 :over over_text))
              ids components.id
-             sizes (array/scatter_add ids (array/int total 1) components.count)
-             starts (array/scan_sum sizes)
+             ; excluded elements (id -1) land in slot 0 of the shifted tally
+             shifted (array/scatter_add (exact (map (fn [(c : int)] (int/add c 1)) ids))
+                       (array/int total 1) (int/add components.count 1))
+             sizes (array/slice shifted 1 components.count)
+             starts (array/scan_sum shifted)
              order (array/grade ids)
              sorted_ids (exact (map (fn [(o : int)] (array/nth ids o)) order))
-             sorted_starts (exact (map (fn [(c : int)] (array/nth starts c)) sorted_ids))
+             sorted_starts (exact (map (fn [(c : int)] (array/nth starts (int/add c 1))) sorted_ids))
              local (array/scatter_add order
                      (exact (map (fn [(s : int) (begin : int)] (int/sub s begin)) elements sorted_starts)) total)
              firsts (exact (map (fn [(size : int)]

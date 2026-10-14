@@ -430,6 +430,14 @@ let glob_error : Flow.Op.t = {
   body=(fun ~live:_ ~node:_ args->Flow.Value.Text(match
     Rdk.Attribute_pattern.compile(metadata_text args "pattern") with Ok _->""|Error message->message));
 }
+(* The native encoders print floats as %.17g; a canonical encoded table must match them. *)
+let float_g17 : Flow.Op.t = {
+  glob_error with name="text/float_g17";
+  signature={pos=["value",Flow.Ty.Float];opt=[];rest=None;kw=[]};
+  body=(fun ~live:_ ~node:_ args->match List.assoc "value" args with
+    | Flow.Value.Float value->Flow.Value.Text(Printf.sprintf "%.17g" value)
+    | _->Flow.Value.fail "E_METADATA_TEXT" "text/float_g17 takes a float.");
+}
 let glob_rewrite_error : Flow.Op.t = {
   glob_error with name="text/glob_rewrite_error";
   signature={glob_error.signature with pos=["pattern",Text;"replacement",Text]};
@@ -513,4 +521,4 @@ let concat : Flow.Op.t = {
 let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; adjacency; components; shortest_paths; color; chains; mesh; mesh_planes; remap; concat; attr_planes; with_planes;
   group; group_order; group_names; group_entries; with_group; context_seed; provenance_base; context_frame; context_time;
   rename_attr;swap_attr;delete_attrs;rename_group;delete_group;rename_edge;delete_edge;attr_type;attr_names;attr_entries;
-  glob_error;glob_rewrite_error;glob_rewrite;glob_literal;group_name_valid;group_name_forced]
+  glob_error;float_g17;glob_rewrite_error;glob_rewrite;glob_literal;group_name_valid;group_name_forced]

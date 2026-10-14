@@ -1,0 +1,109 @@
+; Whole Group Ranges: the rules table (21 columns per rule, canonical after normalisation exactly as the
+; native encoder prints it) is applied row by row, each row through the sop/group_range node.
+(defn gr_error :context value [(reason : text)]
+  (error "E_PARAM" (str "Group Ranges: " reason)))
+(defn gr_owner :context value [(raw : text)]
+  (let* [token (text/lower (text/trim raw))]
+    (case token "point" "point" "points" "point" "vertex" "vertex" "vertices" "vertex"
+      "primitive" "primitive" "primitives" "primitive" "edge" "edge" "edges" "edge"
+      :else (gr_error (str "unknown group owner " (text/repr token))))))
+(defn gr_bool :context value [(raw : text)]
+  (let* [token (text/lower (text/trim raw))]
+    (case token "true" "true" "1" "true" "yes" "true" "false" "false" "0" "false" "no" "false"
+      :else (gr_error (str "expected boolean, got " (text/repr token))))))
+(defn gr_merge :context value [(raw : text)]
+  (let* [token (text/lower (text/trim raw))]
+    (case token "replace" "replace" "union" "union" "intersection" "intersection" "subtract" "subtract" "xor" "xor"
+      :else (gr_error (str "unknown group operation " (text/repr token))))))
+(defn gr_int :context value [(raw : text)]
+  (let* [parsed (text/to_int raw)]
+    (if parsed.valid (str parsed.value) (gr_error (str "expected integer, got " (text/repr raw))))))
+(defn gr_float :context value [(raw : text)]
+  (let* [parsed (text/to_float raw)]
+    (if parsed.valid (text/float_g17 parsed.value)
+      (gr_error (str "expected finite float, got " (text/repr raw))))))
+(defn gr_specification :context value [(row : (list text))]
+  (let* [kind (text/lower (text/trim (nth row 5)))]
+    (case kind "start_end" "start_end" "from_ends" "from_ends" "start_length" "start_length" "partition" "partition"
+      :else (gr_error (str "unknown range kind " (text/repr kind))))))
+(defn gr_filter :context value [(row : (list text))]
+  (if (equal? (text/lower (text/trim (nth row 8))) "none") (list "none" "0" "1" "0")
+    (list "filter" (gr_int (nth row 9)) (gr_int (nth row 10)) (gr_int (nth row 11)))))
+; Stricter than native: connectivity columns a row does not use must already be canonical (native reads
+; and discards them, so an edit there would leave the canonical key, and the cache key, unchanged).
+(defn gr_blank :context value [(cell : text) (canonical : text)]
+  (if (equal? cell canonical) canonical (gr_error "an unused connectivity column must be empty or default")))
+(defn gr_unused :context value [(row : (list text)) (from : int) (canonical : (list text))]
+  (if (fold [ok true] [i (range 14 21)]
+        (and ok (equal? (text/trim (nth row i)) (nth canonical (int/sub i 12)))))
+    canonical (gr_error "an unused connectivity column must be empty or default")))
+(defn gr_connectivity :context value [(row : (list text))]
+  (let* [kind (text/lower (text/trim (nth row 12)))
+         region (if (text/blank? (nth row 13)) "" (gr_int (nth row 13)))]
+    (cond
+      (equal? kind "none") (gr_unused row 13 (list "none" "" "" "0" "false" "edge" "" "false" "false"))
+      (equal? kind "disconnected") (gr_unused row 14 (list "disconnected" region "" "0" "false" "edge" "" "false" "false"))
+      (equal? kind "connected")
+        (let* [tolerance (gr_float (nth row 15))
+               collision (equal? (gr_bool (nth row 16)) "true")
+               removing (gr_bool (nth row 20))]
+          (list "connected" region (text/trim (nth row 14)) tolerance (if collision "true" "false")
+            (if collision (gr_owner (nth row 17)) (gr_blank (nth row 17) "edge"))
+            (if collision (nth row 18) (gr_blank (nth row 18) ""))
+            (if collision (gr_bool (nth row 19)) (gr_blank (gr_bool (nth row 19)) "false")) removing))
+      :else (gr_error (str "unknown range connectivity " (text/repr kind))))))
+(defn gr_row :context value [(row : (list text))]
+  (concat (list (gr_owner (nth row 0)) (nth row 1) (text/trim (nth row 2)) (gr_bool (nth row 3)) (gr_merge (nth row 4))
+                (gr_specification row) (gr_int (nth row 6)) (gr_int (nth row 7)))
+    (gr_filter row) (gr_connectivity row)))
+(defn gr_normalize :context value [(raw : text)]
+  (text/table_encode (map (fn [(row : (list text))]
+    (if (= (count row) 21) (gr_row row)
+      (gr_error (str "rule needs 21 columns, got " (count row)))))
+    (text/table_decode raw))))
+(defn gr_title :context value [(owner : text)]
+  (case owner "point" "Points" "vertex" "Vertices" "primitive" "Primitives" :else "Edges"))
+(defn gr_merge_title :context value [(merge : text)]
+  (case merge "replace" "Replace" "union" "Union" "intersection" "Intersection" "subtract" "Subtract" :else "Exclusive or"))
+(defn gr_mode :context value [(kind : text)]
+  (case kind "start_end" "Start and end" "from_ends" "From ends" "start_length" "Start and length" :else "Partition"))
+(defn gr_int_value :context value [(raw : text)] (let* [parsed (text/to_int raw)] parsed.value))
+
+(defnode sop/group_ranges :label "Group Ranges" :category ["Group" "Create"]
+  :validate (>= (count (text/table_decode (gr_normalize rules))) 0)
+  :code "E_PARAM" :message "sop/group_ranges: invalid rules"
+  [(in0 : geometry)
+   (rules : text "point\trange\t\tfalse\treplace\tstart_end\t0\t-1\tnone\t0\t1\t0\tnone\t\t\t0\tfalse\tedge\t\tfalse\tfalse"
+     :label "Range rules" :kind encoded :normalize gr_normalize)]
+  (let* [rows (text/table_decode rules)]
+    (fold [geo in0] [row rows]
+      (let* [name (nth row 1)
+             spec (nth row 5)
+             a (gr_int_value (nth row 6))
+             b (gr_int_value (nth row 7))
+             filtered (equal? (nth row 8) "filter")
+             connectivity (nth row 12)
+             has_region (not (text/blank? (nth row 13)))
+             collision (equal? (nth row 16) "true")]
+        (if (text/blank? name) geo
+          (sop/group_range geo :owner (gr_title (nth row 0)) :name name :base (nth row 2)
+            :invert (equal? (nth row 3) "true") :merge (gr_merge_title (nth row 4))
+            :range_mode (gr_mode spec)
+            :start (if (equal? spec "partition") 0 a)
+            :end_ (if (equal? spec "start_end") b -1)
+            :end_offset (if (equal? spec "from_ends") b 0)
+            :length (if (equal? spec "start_length") b 1)
+            :partition (if (equal? spec "partition") a 0)
+            :partitions (if (equal? spec "partition") b 2)
+            :use_filter filtered
+            :filter_select (if filtered (gr_int_value (nth row 9)) 1)
+            :filter_of (if filtered (gr_int_value (nth row 10)) 1)
+            :filter_offset (if filtered (gr_int_value (nth row 11)) 0)
+            :connectivity_mode (case connectivity "none" "None" "disconnected" "Disconnected regions" :else "Connected with seams")
+            :use_region has_region :region (if has_region (gr_int_value (nth row 13)) 0)
+            :connectivity_attributes (nth row 14)
+            :connectivity_tolerance (if (equal? connectivity "connected") (let* [parsed (text/to_float (nth row 15))] parsed.value) 0.00001)
+            :use_collision collision :collision_owner (gr_title (nth row 17))
+            :collision_pattern (if collision (nth row 18) "collision")
+            :keep_boundary (equal? (nth row 19) "true")
+            :remove_other_regions (equal? (nth row 20) "true")))))))

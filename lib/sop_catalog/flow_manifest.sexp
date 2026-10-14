@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "fb96e071478fa608e6f5a03e8534c3cf")
+  (digest "443a17098b4ccd34f08047d2d0cace7b")
   (kinds
     (kind "sop/switch"
       (key "switch")
@@ -1133,17 +1133,6 @@
         (field "collision_group" "Collision group" (folder "Collision") (text) (text "collision") (primary false) (vec3))
         (field "collision_contain" "Contain region" (folder "Collision") (bool) (bool false) (primary false) (vec3))
         (field "collision_allow_boundary" "Allow boundary" (folder "Collision") (bool) (bool false) (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/group_ranges"
-      (key "group_ranges")
-      (aliases)
-      (operation "group_ranges")
-      (label "Group Ranges")
-      (category "Group" "Create")
-      (slots (slot "in0" required))
-      (fields
-        (field "rules" "Range rules" (folder) (text) (text "point	range		false	replace	start_end	0	-1	none	0	1	0	none			0	false	edge		false	false") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/group_find_path"
@@ -2644,7 +2633,19 @@
         (field "remove_other_regions" "Remove other regions" (folder "Connectivity") (bool) (bool false) (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (body lisp)
-      (calls "sop/group_from_attribute_boundary"))
+      (calls "sop/group_combine" "sop/group_from_attribute_boundary"))
+    (kind "sop/group_ranges"
+      (key "group_ranges")
+      (aliases)
+      (operation "group_ranges")
+      (label "Group Ranges")
+      (category "Group" "Create")
+      (slots (slot "in0" required))
+      (fields
+        (field "rules" "Range rules" (folder) (text) (text "point	range		false	replace	start_end	0	-1	none	0	1	0	none			0	false	edge		false	false") (primary false) (vec3)))
+      (outputs (output "geo" geometry))
+      (body lisp)
+      (calls "sop/group_range"))
     (kind "sop/group_rename"
       (key "group_rename")
       (aliases)
