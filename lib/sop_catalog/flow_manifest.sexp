@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "0249541c4822f5d5d70966286f6bf243")
+  (digest "622fb14d10b1f399980bc3c66e984766")
   (kinds
     (kind "sop/switch"
       (key "switch")
@@ -1260,21 +1260,6 @@
         (field "piece_attribute" "Piece attribute" (folder "Partition") (text) (text "") (primary false) (vec3))
         (field "into_pattern" "Rename pattern" (folder "Output") (text) (text "") (primary false) (vec3))
         (field "index_pattern" "Index pattern" (folder "Output") (text) (text "") (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/measure"
-      (key "measure")
-      (aliases)
-      (operation "measure")
-      (label "Measure")
-      (category "Attribute" "Analysis")
-      (slots (slot "in0" required))
-      (fields
-        (field "kind" "Measure" (folder) (choice "Perimeter" "Area" "Signed volume") (choice "Area") (primary false) (vec3))
-        (field "group" "Primitive group" (folder) (text) (text "") (primary false) (vec3))
-        (field "accumulation" "Accumulation" (folder) (choice "Per element" "Throughout") (choice "Per element") (primary false) (vec3))
-        (field "attribute" "Attribute" (folder "Output") (text) (text "") (primary false) (vec3))
-        (field "total_attribute" "Total attribute" (folder "Output") (text) (text "") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/null"
@@ -2623,6 +2608,22 @@
         (field "emission_r" "Emission red" (folder) (float (soft 0 1) (hard 0 1)) (float 0) (primary false) (vec3 "emission" 0))
         (field "emission_g" "Emission green" (folder) (float (soft 0 1) (hard 0 1)) (float 0) (primary false) (vec3 "emission" 1))
         (field "emission_b" "Emission blue" (folder) (float (soft 0 1) (hard 0 1)) (float 0) (primary false) (vec3 "emission" 2)))
+      (outputs (output "geo" geometry))
+      (body lisp)
+      (calls))
+    (kind "sop/measure"
+      (key "measure")
+      (aliases)
+      (operation "measure")
+      (label "Measure")
+      (category "Attribute" "Analysis")
+      (slots (slot "in0" required))
+      (fields
+        (field "kind" "Measure" (folder) (choice "Perimeter" "Area" "Signed volume") (choice "Area") (primary false) (vec3))
+        (field "group" "Primitive group" (folder) (text) (text "") (primary false) (vec3))
+        (field "accumulation" "Accumulation" (folder) (choice "Per element" "Throughout") (choice "Per element") (primary false) (vec3))
+        (field "attribute" "Attribute" (folder "Output") (text) (text "") (primary false) (vec3))
+        (field "total_attribute" "Total attribute" (folder "Output") (text) (text "") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (body lisp)
       (calls))

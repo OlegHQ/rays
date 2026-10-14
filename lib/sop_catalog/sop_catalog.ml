@@ -52,7 +52,6 @@ module Attribute_transfer = Sop.Nodes.Attribute_transfer [@@sop.register]
 module Attribute_transfer_surface = Sop.Nodes.Attribute_transfer_surface [@@sop.register]
 module Attribute_transfer_all = Sop.Nodes.Attribute_transfer_all [@@sop.register]
 module Promote_attributes = Sop.Nodes.Promote_attributes [@@sop.register]
-module Measure = Sop.Nodes.Measure [@@sop.register]
 module Null = Sop.Nodes.Null [@@sop.register]
 module Exploded_view = Sop.Nodes.Exploded_view [@@sop.register]
 

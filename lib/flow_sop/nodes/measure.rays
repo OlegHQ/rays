@@ -1,0 +1,86 @@
+; Whole Measure draft (Analysis.with_measure): perimeter, area or signed volume per selected primitive,
+; written per element or as the selection total into a primitive float attribute, plus an optional
+; detail total. Area and volume sum the triangles of Rdk's shared ear clipper (sop/triangles); native
+; arithmetic is unfused, so are these sums.
+(defn measure_error :context value [(code : text) (reason : text)]
+  (error code "measure could not produce valid geometry" :cause (str "measure [" code "]: " reason)))
+; Per primitive measurement (all primitives; unselected ones are masked by the caller).
+(defn measure_values :context sop [(geo : geometry) (kind : text)]
+  (let* [topo (sop/topology geo)
+         positions (sop/attr geo :P)
+         prims (sop/count geo :primitives)]
+    (if (equal? kind "Perimeter")
+      (let* [adjacency (sop/adjacency geo)
+             lengths (exact (map (fn [(v : int) (next : int)]
+                       (if (int/lt next 0) 0.0
+                         (let* [d (- (array/nth positions (array/nth topo.vertex_points next))
+                                     (array/nth positions (array/nth topo.vertex_points v)))]
+                           (sqrt (+ (+ (* d.x d.x) (* d.y d.y)) (* d.z d.z))))))
+                       (array/range (array/count topo.vertex_points) :type int) adjacency.next_vertex))]
+        (array/segment_sum lengths topo.primitive_offsets))
+      (let* [tris (sop/triangles geo)
+             pa (exact (map (fn [(v : int)] (array/nth positions (array/nth topo.vertex_points v))) tris.a))
+             pb (exact (map (fn [(v : int)] (array/nth positions (array/nth topo.vertex_points v))) tris.b))
+             pc (exact (map (fn [(v : int)] (array/nth positions (array/nth topo.vertex_points v))) tris.c))
+             low (if (int/eq (array/count positions) 0) [0.0 0.0 0.0] (array/min positions))
+             high (if (int/eq (array/count positions) 0) [0.0 0.0 0.0] (array/max positions))
+             anchor [(* (+ low.x high.x) 0.5) (* (+ low.y high.y) 0.5) (* (+ low.z high.z) 0.5)]
+             terms (if (equal? kind "Area")
+                     (exact (map (fn [(a : vec3) (b : vec3) (c : vec3)]
+                       (let* [ab (- b a) ac (- c a)
+                              nx (- (* ab.y ac.z) (* ab.z ac.y))
+                              ny (- (* ab.z ac.x) (* ab.x ac.z))
+                              nz (- (* ab.x ac.y) (* ab.y ac.x))]
+                         (* 0.5 (sqrt (+ (+ (* nx nx) (* ny ny)) (* nz nz)))))) pa pb pc))
+                     (exact (map (fn [(a : vec3) (b : vec3) (c : vec3)]
+                       (let* [ra (- a anchor) rb (- b anchor) rc (- c anchor)
+                              cx (- (* rb.y rc.z) (* rb.z rc.y))
+                              cy (- (* rb.z rc.x) (* rb.x rc.z))
+                              cz (- (* rb.x rc.y) (* rb.y rc.x))]
+                         (/ (+ (+ (* ra.x cx) (* ra.y cy)) (* ra.z cz)) 6.0))) pa pb pc)))]
+        (array/segment_sum terms tris.offsets)))))
+(defn measure_write :context sop
+  [(geo : geometry) (selection : (array int)) (kind : text) (throughout : bool) (name : text) (total_name : text)]
+  (let* [prims (sop/count geo :primitives)
+         topo (sop/topology geo)
+         tris (if (equal? kind "Perimeter") (array/int prims 1) (get (sop/triangles geo) :ok))
+         refused (array/sum (exact (map (fn [(s : int) (ok : int)] (if (and (int/eq s 1) (int/eq ok 0)) 1 0)) selection tris)))
+         exists (sop/has_attr geo name :owner "primitive")
+         is_float (sop/has_attr geo name :owner "primitive" :type float)]
+    (cond
+      (int/gt refused 0) (measure_error "invalid_measure" "a selected primitive cannot be triangulated")
+      (and exists (not is_float))
+        (measure_error "invalid_measure" (str "existing primitive attribute " name " is not float"))
+      :else
+        (let* [raw (measure_values geo kind)
+               measured (exact (map (fn [(s : int) (v : float)] (if (int/eq s 1) v 0.0)) selection raw))
+               total (array/sum measured)
+               old (if exists (sop/attr geo name :owner "primitive" :type float) (array/float prims 0.0))
+               output (exact (map (fn [(s : int) (v : float) (o : float)]
+                        (if (int/eq s 1) (if throughout total v) (if exists o (if throughout 0.0 v))))
+                        selection measured old))
+               written (sop/with_attr geo name output :owner "primitive" :type float)]
+          (if (text/blank? total_name) written
+            (sop/with_attr written total_name (array/float 1 total) :owner "detail" :type float))))))
+(defnode sop/measure :label "Measure" :category ["Attribute" "Analysis"]
+  [(in0 : geometry)
+   (kind : text "Area" :label "Measure" :choices ["Perimeter" "Area" "Signed volume"])
+   (group : text "" :label "Primitive group")
+   (accumulation : text "Per element" :label "Accumulation" :choices ["Per element" "Throughout"])
+   (attribute : text "" :label "Attribute" :folder ["Output"])
+   (total_attribute : text "" :label "Total attribute" :folder ["Output"])]
+  (let* [selected_group (text/trim group)
+         count (sop/count in0 :primitives)
+         name (if (text/blank? attribute)
+                (cond (equal? kind "Perimeter") "perimeter" (equal? kind "Area") "area" :else "volume")
+                (text/trim attribute))
+         total_name (text/trim total_attribute)
+         throughout (equal? accumulation "Throughout")]
+    (if (text/blank? group)
+      (measure_write in0 (exact (array/int count 1)) kind throughout name total_name)
+      (let* [found (fold [seen false] [n (sop/group_names in0 "" :owner "primitive")]
+                     (or seen (equal? n selected_group)))]
+        (if (not found)
+          (measure_error "missing_group" (str "measure could not find primitive group " selected_group))
+          (measure_write in0 (exact (sop/group in0 :name selected_group :owner "primitive"))
+            kind throughout name total_name))))))

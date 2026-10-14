@@ -200,8 +200,9 @@ let changed (v : P.field_view) = match v.kind, v.current with
 let cache_identity node =
   with_session (fun s ->
     let ok n = Result.is_ok (cook s 1 97 n) and misses () = (Sop.Session.stats s).misses in
-    ignore (ok node); let before = misses () in ignore (ok node);
-    check (misses () = before) "cache: equal parameters did not hit";
+    (* A failed cook is not cached, so a fixture whose default errors natively checks only edits. *)
+    let cooked = ok node in let before = misses () in ignore (ok node);
+    if cooked then check (misses () = before) "cache: equal parameters did not hit";
     List.iter (fun (v : P.field_view) ->
       (* A single edit the node's own validator refuses has no cache entry to test. *)
       match N.apply_parameters node [v.name, changed v] with Error _ -> () | Ok (edited, _) ->
