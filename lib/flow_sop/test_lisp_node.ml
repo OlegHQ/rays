@@ -83,7 +83,7 @@ let () =
     [false;true];
   let healthy=lower(source "(if false (error \"E_BODY\" \"body failure\") geo)") in
   with_session(fun session->ignore(cook session healthy));
-  let seed=Flow_sop.Operators.seed_for ~seed:0L ~namespace:"body_error" ~label:"body_error" in
+  let seed=Flow_sop.Operators.seed_for ~seed:0L ~namespace:"body_error" ~label:"body_error" () in
   let seeded=lower(source(Printf.sprintf
     "(if (int/eq (sop/context_seed \"body_error\") %d) (error \"E_BODY\" \"body failure\" :cause \"authored cause\") geo)" seed)) in
   check(Sop.Context.Dependencies.mem Seed (Sop.Node.dependencies seeded))
@@ -91,6 +91,15 @@ let () =
   with_session(fun session->expect_error session 1 seeded;
     ignore(cook session ~seed:123456789L seeded);
     expect_error session 1 seeded);
+  let salt=(-1582480459898762999) in
+  let salted_seed=Flow_sop.Operators.seed_for ~salt ~seed:0L ~namespace:"body_error" ~label:"body_error" () in
+  check (salted_seed<>seed && Flow_sop.Operators.seed_for ~salt:0 ~seed:0L ~namespace:"body_error" ~label:"body_error" ()=seed)
+    "context seed salt did not change the mix or changed the unsalted one";
+  (* the same salt as native's 0x6a09e667f3bcc909 xor: its low 63 bits *)
+  check (Int64.logand (Int64.of_int salt) Int64.max_int=0x6a09e667f3bcc909L) "salt literal is not native's constant";
+  let saltedcall=lower(source(Printf.sprintf
+    "(if (int/eq (sop/context_seed \"body_error\" :salt %d) %d) (error \"E_BODY\" \"body failure\" :cause \"authored cause\") geo)" salt salted_seed)) in
+  with_session(fun session->expect_error session 1 saltedcall);
   print_endline "Authored body errors cook lazily; parameter rebuilds, causes and context seed changes preserve timing"
 
 let () =

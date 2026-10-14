@@ -1200,9 +1200,9 @@
     {
       "api": [
         "val all : Flow.Op.t list",
-        "val seed_for : seed : int64 -> namespace : string -> label : string -> int"
+        "val seed_for : ? salt : int -> seed : int64 -> namespace : string -> label : string -> unit -> int"
       ],
-      "api_sha256": "23e681c9eda89210ef913a1f2d4378a611c8b3dbf09e1db6f562f652f4dde071",
+      "api_sha256": "82c4c31ff006f64c32a336e018ecf5ab8e550df0522d885cda4d78b8ac3c5ef2",
       "excluded_legacy_symbols": [],
       "library": "flow_sop",
       "module": "Operators",

@@ -523,7 +523,7 @@ arr1[0.;-0.;0.];arr1[1e16;1.;-1e16];
      are not frame-core primitives and do not enlarge the intrinsic inventory. *)
   List.iter (fun seed -> List.iter (fun label ->
     let context=E.Record ["seed",E.Text (Int64.to_string seed);"label",E.Text label] in
-    let result=Flow_sop.Operators.seed_for ~seed ~namespace:"noise_displace" ~label in
+    let result=Flow_sop.Operators.seed_for ~seed ~namespace:"noise_displace" ~label () in
     add_host "sop/context_seed" [E.Text "noise_displace";context] (json (E.Int result)))
     ["Noise Displace";"result";"é日";""]) [0L;1L;(-1L);42L;Int64.max_int;Int64.min_int];
   let geometry =

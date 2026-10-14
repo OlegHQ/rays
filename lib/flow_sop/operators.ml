@@ -306,11 +306,15 @@ let with_group : Flow.Op.t = {
 
 let context_seed : Flow.Op.t = {
   attr with name="sop/context_seed";ctx=Flow.Context.value;category="Random";
-  signature={pos=["namespace",Flow.Ty.Text];opt=[];rest=None;kw=[]};
+  signature={pos=["namespace",Flow.Ty.Text];opt=[];rest=None;kw=["salt",Flow.Ty.Int]};
   out=(fun _ -> Flow.Ty.Int);out_args=None;shape=Flow.Op.Scalar;
-  check=(fun args -> match List.assoc "namespace" args with
+  check=(fun args ->
+    (match List.assoc "namespace" args with
     | Flow.Value.Text namespace when String.trim namespace<>"" -> ()
     | _ -> Flow.Value.fail "E_SEED_NAMESPACE" "A context seed namespace must be nonblank.");
+    match List.assoc_opt "salt" args with
+    | None | Some (Flow.Value.Int _) -> ()
+    | Some _ -> Flow.Value.fail "E_SEED_SALT" "A context seed salt must be an integer.");
   body=(fun ~live:_ ~node:_ _ -> Flow.Value.fail "E_NODE_CONTEXT" "Context seed is available inside a defnode body.");
 }
 
@@ -338,11 +342,13 @@ let context_time : Flow.Op.t = {
   body=(fun ~live:_ ~node:_ _ -> Flow.Value.fail "E_NODE_CONTEXT" "Context time is available inside a defnode body.");
 }
 
-let seed_for ~seed ~namespace ~label =
+let seed_for ?(salt=0) ~seed ~namespace ~label () =
   let identity=ref 0xcbf29ce484222325L in
   String.iter (fun c -> identity:=Int64.mul (Int64.logxor !identity (Int64.of_int (Char.code c)))
     0x100000001b3L) (namespace^":"^label);
-  let mixed=Int64.logxor seed (Int64.mul !identity 0x9e3779b97f4a7c15L) in
+  (* The salt is the low 63 bits of a 64-bit word, xor-ed into the identity before mixing. *)
+  let salt=Int64.logand (Int64.of_int salt) Int64.max_int in
+  let mixed=Int64.logxor seed (Int64.mul (Int64.logxor !identity salt) 0x9e3779b97f4a7c15L) in
   Int64.to_int (Int64.logxor mixed (Int64.shift_right_logical mixed 32))
 
 let metadata_text args name = match List.assoc name args with Flow.Value.Text text->text
