@@ -14,6 +14,7 @@ let cases = [
 
   "text/repr","(text/repr (str \"é日本😀\\t\\n\\\\\\\"\" t))";
   "fma","(fma t 0.9999999999999998 -1.)";
+  "float/next_after","(float/next_after t (- t 1.0))";
   "float/mul_checked","(float/mul_checked t 1.7976931348623157e308)";
   "float/fma_checked","(float/fma_checked t 1.7976931348623157e308 -1.7976931348623157e308)";
   "array/vec4","(array/nth (array/vec4 4 [t 1 2 3]) 2)";

@@ -11,3 +11,7 @@ val node :
     (Sop.Context.t -> (Sop.Node.t, Sop.Diagnostic.error) result) *
     Sop.Context.Dependencies.t * Sop.Node.facts) ->
   Sop.Node.t list -> Sop.Node.t
+
+val with_initial_changes : operation:string -> (string * Param.value) list -> (unit -> 'a) -> 'a
+(** Run an instantiation whose first Lisp node of [operation] starts from these parameter changes
+    instead of its defaults, so a node that is about to be edited is built once, not twice. *)

@@ -1,7 +1,7 @@
 {
   "generator": "tools/api_manifest/api_manifest.exe",
   "kind": "stable_high_level",
-  "module_count": 183,
+  "module_count": 184,
   "modules": [
     {
       "api": [
@@ -780,7 +780,7 @@
         "type literal = | Int of int | Float of float | Bool of bool | Text of string | Vector of float array | List of literal array | Record of ( string * literal ) list | Array of { width : int ; data : float array } | Int_array of int array | Text_array of string array | Empty_geometry",
         "type integer = Flow.Packed_ops.integer = Iadd | Isub | Imul | Idiv | Imod | Iand | Ior | Ixor | Ishl | Ishr",
         "type byte_mode = Clamped | Unclamped",
-        "type primitive = | Numeric of Flow.Packed_ops.binary | Math of Flow.Packed_ops.unary | Remainder | Exp | Floor | Ceil | Round | Int_convert | Float_convert | Integer of integer | Integer_compare of Flow.Packed_ops.comparison | Equal | Show | Text_concat | Text_blank | Text_trim | Text_lower | Text_repr | Text_table_decode | Text_table_encode | Text_split | Text_tokens | Text_to_float | Text_to_int | Sequence_length | Sequence_get | Sequence_build | Sequence_slice | Sequence_concat | Array_max_length | Array_range | Array_int | Array_text | Array_float | Array_vec3 | Array_vec4 | Array_nth | Array_count | Array_slice | Array_concat | Array_reduce of Flow.Op.Private.reduction | Array_segment of Flow.Op.Private.reduction | Array_segment_argmax | Array_scatter_add | Array_compact | Array_scan_sum | Array_grade | Array_index_of | Rand | Rand_at | Fma | Checked_mul | Checked_fma | Noise3 | Color_parse | Color_byte of byte_mode | Coerce of Flow.Ty.t | Truthy | Error | Fail of string * string | Fail_diagnostic of Flow.Diagnostic.t",
+        "type primitive = | Numeric of Flow.Packed_ops.binary | Math of Flow.Packed_ops.unary | Remainder | Exp | Floor | Ceil | Round | Int_convert | Float_convert | Integer of integer | Integer_compare of Flow.Packed_ops.comparison | Equal | Show | Text_concat | Text_blank | Text_trim | Text_lower | Text_repr | Text_table_decode | Text_table_encode | Text_split | Text_tokens | Text_to_float | Text_to_int | Sequence_length | Sequence_get | Sequence_build | Sequence_slice | Sequence_concat | Array_max_length | Array_range | Array_int | Array_text | Array_float | Array_vec3 | Array_vec4 | Array_nth | Array_count | Array_slice | Array_concat | Array_reduce of Flow.Op.Private.reduction | Array_segment of Flow.Op.Private.reduction | Array_segment_argmax | Next_after | Array_scatter_add | Array_compact | Array_scan_sum | Array_grade | Array_index_of | Rand | Rand_at | Fma | Checked_mul | Checked_fma | Noise3 | Color_parse | Color_byte of byte_mode | Coerce of Flow.Ty.t | Truthy | Error | Fail of string * string | Fail_diagnostic of Flow.Diagnostic.t",
         "type frame_field = Time | Dt | Index | Tick | Width | Height | Pointer_x | Pointer_y | Input",
         "type expr = | Constant of int | Local of int | Frame of frame_field | Call_index of int | Source of Flow.Eval.value | Host_source of { name : string ; ty : Flow.Ty.t ; args : ( string * int ) list } | Source_descriptor of { name : string ; ty : Flow.Ty.t ; args : ( string * int ) list } | Prim of primitive * ( string * int ) list | Vec of int list | Fields of ( string * int ) list | Items of int list | Field of int * string",
         "type iteration = Static_index of int | Local_index of int",
@@ -811,7 +811,7 @@
         "val value_of_literal : literal -> Flow.Eval.value",
         "val pp : Format.formatter -> program -> unit"
       ],
-      "api_sha256": "832ba3e2881cf089c9931786ed79d42f632bd089e6c8d9143d60b734583f6188",
+      "api_sha256": "4149b2b4116af0aa790a5591fb1539fe46d3646b958a00f2da499ea0015c4a46",
       "excluded_legacy_symbols": [],
       "library": "flow_ir",
       "module": "Core",
@@ -3063,6 +3063,18 @@
     },
     {
       "api": [
+        "type t = { tree_parent : int array ; child_offsets : int array ; children : int array ; order : int array ; order_count : int ; root_offsets : int array ; root_count : int ; }",
+        "val scan : ? cancel : Cancel.t -> ? grain : int -> ? selected : ( int -> bool ) -> selected_count : int -> int array -> t",
+        "val labels : t -> int array * int array"
+      ],
+      "api_sha256": "957b99da4a38a3e65683ef6067ae0e1b006368c18d2eb7d1abced3c5b5078257",
+      "excluded_legacy_symbols": [],
+      "library": "rdk",
+      "module": "Forest",
+      "source": "lib/rdk/mesh/forest.mli"
+    },
+    {
+      "api": [
         "type fuse_metric = Euclidean | Componentwise",
         "type fuse_using = Point_snap.using = | Least_target_point | Closest_target_point",
         "type fuse_match_condition = Point_snap.match_condition = | Equal_attribute_values | Unequal_attribute_values",
@@ -3783,9 +3795,13 @@
     },
     {
       "api": [
-        "val search : ? cancel : Cancel.t -> ? radius : float -> point_edge_offsets : int array -> point_edges : int array -> edge_a : int array -> edge_b : int array -> lengths : float array -> int array -> float array * int array"
+        "val search : ? cancel : Cancel.t -> ? radius : float -> point_edge_offsets : int array -> point_edges : int array -> edge_a : int array -> edge_b : int array -> lengths : float array -> int array -> float array * int array",
+        "exception Hop_overflow",
+        "val hop_search : ? cancel : Cancel.t -> ? blocked_point : ( int -> bool ) -> ? blocked_edge : ( int -> bool ) -> ? target : int -> depths : int array -> distances : float array -> previous : int array -> queue : int array -> point_edge_offsets : int array -> point_edges : int array -> edge_a : int array -> edge_b : int array -> lengths : float array -> int array -> unit",
+        "type forest = { distance : float array ; parent : int array ; edge : int array ; root : int array ; order : int array ; order_count : int ; }",
+        "val forest_search : ? cancel : Cancel.t -> ? drain_each : bool -> valid_edge : ( int -> bool ) -> capacity : int -> point_edge_offsets : int array -> point_edges : int array -> edge_a : int array -> edge_b : int array -> lengths : float array -> int array -> forest"
       ],
-      "api_sha256": "75af451d9b449fb6a5fadf6cf674ad603d3ed5d3f54a58ecc305b81822ea61da",
+      "api_sha256": "af85aa146326c64c3ab4e55b01a49b7133124a05de27f5f2be8cd61a84f8d52b",
       "excluded_legacy_symbols": [],
       "library": "rdk",
       "module": "Shortest_paths",

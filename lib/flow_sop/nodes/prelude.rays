@@ -1978,4 +1978,189 @@
     (and (not (text/blank? (text/trim mjs_attribute))) (not buckling)) false
     :else true))
 
+; Edge Transport helpers shared by edge_transport and edge_transport_parent (etp_ prefix).
+; Native edge_length: coordinates scaled by the largest magnitude of the six, then
+; scale * sqrt(dx*dx + dy*dy + dz*dz) with the arm64 contraction (right product fused).
+(defn etp_length :context value [(a : vec3) (b : vec3)]
+  (let* [scale (max (max (max (abs a.x) (abs b.x)) (max (abs a.y) (abs b.y)))
+                    (max (abs a.z) (abs b.z)))
+         divisor (if (= scale 0.0) 1.0 scale)
+         dx (- (/ b.x divisor) (/ a.x divisor))
+         dy (- (/ b.y divisor) (/ a.y divisor))
+         dz (- (/ b.z divisor) (/ a.z divisor))]
+    (if (= scale 0.0) 0.0 (* scale (sqrt (fma dz dz (fma dy dy (* dx dx))))))))
+
+; operation: 0 Transport, 1 From root, 2 Total, 3 Maximum, 4 Minimum
+(defn etp_forward :context value
+  [(cfg : {:par (array int) :dep (array int) :rt (array int) :cc (array int) :scale (array float)
+           :inp (array float) :op int :hold bool :split bool :fuse bool :passes int})]
+  (let* [par cfg.par dep cfg.dep rt cfg.rt cc cfg.cc scale cfg.scale inp cfg.inp
+         op cfg.op hold cfg.hold split cfg.split fuse cfg.fuse
+         points (array/range (array/count inp) :type int)]
+    (iterate cfg.passes inp
+      (fn [(state : (array float))]
+        (exact (map (fn [(p : int)]
+          (let* [d (array/nth dep p)]
+            (if (int/lt d 0) (array/nth state p)
+              (if (int/eq d 0)
+                (cond (int/le op 1) (if hold (array/nth inp p) 0.0)
+                      (int/eq op 2) 0.0
+                      :else (array/nth inp p))
+                (let* [q (array/nth par p)
+                       from (array/nth state q)
+                       i (array/nth inp p)
+                       divisor (float (array/nth cc q))]
+                  (cond
+                    (int/eq op 0) (if split (/ from divisor) from)
+                    (int/eq op 1) (array/nth state (array/nth rt p))
+                    (int/eq op 2) (let* [v (if fuse (fma (array/nth inp q) (array/nth scale p) from)
+                                             (+ from (* (array/nth inp q) (array/nth scale p))))]
+                                    (if split (/ v divisor) v))
+                    (int/eq op 3) (if (> i from) i from)
+                    :else (if (< i from) i from)))))))
+          points))))))
+
+; merge: 0 Add, 1 Maximum, 2 Minimum. A child candidate is its value, or for Total
+; value + input * edge scale (fused).
+(defn etp_backward :context value
+  [(cfg : {:off (array int) :kids (array int) :dep (array int) :scale (array float) :inp (array float)
+           :op int :merge int :hold bool :fuse bool :passes int})]
+  (let* [off cfg.off kids cfg.kids dep cfg.dep scale cfg.scale inp cfg.inp
+         op cfg.op merge cfg.merge hold cfg.hold fuse cfg.fuse
+         points (array/range (array/count inp) :type int)
+         slots (array/range (array/count kids) :type int)]
+    (iterate cfg.passes inp
+      (fn [(state : (array float))]
+        (let* [cand (exact (map (fn [(k : int)]
+                      (let* [c (array/nth kids k)]
+                        (if (int/eq op 2)
+                          (if fuse (fma (array/nth inp c) (array/nth scale c) (array/nth state c))
+                            (+ (array/nth state c) (* (array/nth inp c) (array/nth scale c))))
+                          (array/nth state c)))) slots))
+               best (cond
+                      (int/eq merge 0) (array/segment_sum cand off)
+                      (int/eq merge 1)
+                        (let* [at (array/segment_argmax cand off)]
+                          (exact (map (fn [(a : int)] (if (int/lt a 0) 0.0 (array/nth cand a))) at)))
+                      :else
+                        (let* [at (array/segment_argmax (exact (map (fn [(x : float)] (- 0.0 x)) cand)) off)]
+                          (exact (map (fn [(a : int)] (if (int/lt a 0) 0.0 (array/nth cand a))) at))))]
+          (exact (map (fn [(p : int)]
+            (if (int/lt (array/nth dep p) 0) (array/nth state p)
+              (let* [first (array/nth off p)
+                     leaf (int/eq first (array/nth off (int/add p 1)))
+                     i (array/nth inp p)
+                     b (array/nth best p)]
+                (if leaf
+                  (cond (int/le op 1) (if hold i 0.0)
+                        (int/eq op 2) 0.0
+                        :else i)
+                  (cond (int/eq op 3) (if (> i b) i b)
+                        (int/eq op 4) (if (< i b) i b)
+                        :else b)))))
+            points)))))))
+
+; mode: 0 None, 1 Per group, 2 Global. `members` lists the tree points and `keys` gives every point a
+; group key (its tree's root, or its connected component); only members are rewritten.
+(defn etp_normalize :context value
+  [(field : (array float)) (members : (array int)) (keys : (array int)) (mode : int)]
+  (if (or (int/eq mode 0) (int/eq (array/count members) 0)) field
+    (let* [count (array/count members)
+           ranks (array/range count :type int)
+           grade (array/grade (exact (map (fn [(p : int)] (array/nth keys p)) members)))
+           sorted (exact (map (fn [(k : int)] (array/nth members (array/nth grade k))) ranks))
+           sorted_keys (exact (map (fn [(p : int)] (array/nth keys p)) sorted))
+           sorted_values (exact (map (fn [(p : int)] (array/nth field p)) sorted))
+           flags (exact (map (fn [(k : int)]
+                   (if (int/eq k 0) 1
+                     (if (int/eq (array/nth sorted_keys k) (array/nth sorted_keys (int/sub k 1))) 0 1))) ranks))
+           offsets (array/concat (array/compact flags) (array/int 1 count))
+           lows (array/segment_min sorted_values offsets)
+           highs (array/segment_max sorted_values offsets)
+           ids (array/slice (array/scan_sum flags) 1 count)
+           low_all (array/min sorted_values)
+           high_all (array/max sorted_values)
+           normal (exact (map (fn [(v : float) (id : int)]
+                    (let* [low (if (int/eq mode 2) low_all (array/nth lows (int/sub id 1)))
+                           high (if (int/eq mode 2) high_all (array/nth highs (int/sub id 1)))
+                           span (- high low)]
+                      (if (= span 0.0) 0.0 (/ (- v low) span)))) sorted_values ids))
+           scattered (array/scatter_add sorted normal (array/count field))
+           member_mask (array/scatter_add members (array/int count 1) (array/count field))]
+      (exact (map (fn [(p : int) (v : float)] (if (int/eq (array/nth member_mask p) 0) v (array/nth scattered p)))
+        (array/range (array/count field) :type int) field)))))
+
+  ; Shared by attribute_laplacian and measure_curvature (moved from the laplacian draft).
+  ; "" when the polygon surface is a manifold with consistent winding, else the refusal.
+  (defn lap_manifold :context sop [(geo : geometry)]
+    (let* [topo (sop/topology geo)
+           adjacency (sop/adjacency geo)
+           prims (sop/count geo :primitives)
+           points (sop/count geo :points)
+           vertices (sop/count geo :vertices)
+           edge_count (sop/count geo :edges)
+           usage (edge_usage adjacency edge_count)
+           curves (array/sum (exact (map (fn [(k : int)] (if (int/eq k 0) 0 1)) topo.kinds)))
+           starts (array/slice topo.primitive_offsets 0 prims)
+           ends (array/slice topo.primitive_offsets 1 prims)
+           short (array/sum (exact (map (fn [(a : int) (b : int)] (if (int/lt (int/sub b a) 3) 1 0)) starts ends)))
+           ; a point repeated inside a polygon: equal (primitive, point) keys among the corners
+           keys (exact (map (fn [(p : int) (q : int)] (int/add (int/mul p (int/add points 1)) q))
+                  (array/range vertices :type int) topo.vertex_points))
+           sorted (int_gather keys (array/grade keys))
+           repeats (array/sum (exact (map (fn [(i : int)]
+             (if (int/eq i 0) 0 (if (int/eq (array/nth sorted i) (array/nth sorted (int/sub i 1))) 1 0)))
+             (array/range vertices :type int))))
+           overused (array/sum (exact (map (fn [(u : int)] (if (int/gt u 2) 1 0)) usage)))
+           order (array/grade adjacency.edge_of_vertex)
+           unused (array/sum (exact (map (fn [(k : int)] (if (int/lt k 0) 1 0)) adjacency.edge_of_vertex)))
+           usage_offsets (array/scan_sum usage)
+           winding (array/sum (exact (map (fn [(e : int) (u : int)]
+             (if (int/eq u 2)
+               (let* [first (int/add unused (array/nth usage_offsets e))
+                      left (array/nth order first)
+                      right (array/nth order (int/add first 1))
+                      ln (array/nth adjacency.next_vertex left)
+                      rn (array/nth adjacency.next_vertex right)]
+                 (if (or (int/lt ln 0) (int/lt rn 0)) 2
+                   (if (and (int/eq (array/nth topo.vertex_points left) (array/nth topo.vertex_points rn))
+                            (int/eq (array/nth topo.vertex_points ln) (array/nth topo.vertex_points right))) 0 1)))
+               0))
+             (array/range edge_count :type int) usage)))
+           boundary_edges (exact (map (fn [(u : int)] (if (int/eq u 1) 1 0)) usage))
+           boundary_count (array/segment_sum (exact (map (fn [(e : int)] (array/nth boundary_edges e)) adjacency.point_edges))
+                            adjacency.point_edge_offsets)
+           edges_at (exact (map (fn [(p : int)] (int/sub (array/nth adjacency.point_edge_offsets (int/add p 1))
+                                                         (array/nth adjacency.point_edge_offsets p)))
+                      (array/range points :type int)))
+           faces_at (exact (map (fn [(p : int)] (int/sub (array/nth adjacency.point_vertex_offsets (int/add p 1))
+                                                         (array/nth adjacency.point_vertex_offsets p)))
+                      (array/range points :type int)))
+           bad_boundary (array/sum (exact (map (fn [(b : int)] (if (or (int/eq b 0) (int/eq b 2)) 0 1)) boundary_count)))
+           bad_incidence (array/sum (exact (map (fn [(b : int) (e : int) (f : int)]
+             (if (int/eq b 0) (if (int/eq e f) 0 1) (if (int/eq e (int/add f 1)) 0 1)))
+             boundary_count edges_at faces_at)))]
+      (cond (int/gt curves 0) "curves are not part of a polygon surface"
+            (int/gt short 0) "a polygon has fewer than three corners"
+            (int/gt repeats 0) "a polygon references one point more than once"
+            (int/gt overused 0) "a polygon edge has more than two incident faces"
+            (int/gt winding 0) "adjacent polygons have inconsistent winding"
+            (int/gt bad_boundary 0) "a boundary point does not have exactly two boundary edges"
+            (int/gt bad_incidence 0) "a point has non-manifold polygon incidence"
+            :else "")))
+  ; Row id of every element of a ragged expansion of counts.
+  (defn lap_rows :context value [(counts : (array int))]
+    (let* [rows (array/count counts)
+           total (array/sum counts)
+           offsets (array/scan_sum counts)
+           starts (exact (map (fn [(r : int)] (array/nth offsets r)) (array/range rows :type int)))
+           prefix (array/scan_sum (array/scatter_add starts (array/int rows 1) (int/add total 1)))]
+      (exact (map (fn [(s : int)] (int/sub (array/nth prefix (int/add s 1)) 1)) (array/range total :type int)))))
+  (defn lap_times :context value [(v : float) (f : float)] (* v f))
+  (defn lap_pick :context value [(l : int) (a : float) (b : float) (c : float)]
+    (if (int/eq l 0) a (if (int/eq l 1) b c)))
+  (defn lap_pick_int :context value [(l : int) (a : int) (b : int) (c : int)]
+    (if (int/eq l 0) a (if (int/eq l 1) b c)))
+  (defn lap_vec_diff :context value [(a : vec3) (b : vec3)] (- a b))
+  (defn lap_sumsq :context value [(d : vec3)] (fma d.z d.z (fma d.y d.y (* d.x d.x))))
 )

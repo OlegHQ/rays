@@ -220,103 +220,34 @@ let run ?cancel ?(grain = 16_384) ?points ?(roots = Transport_first_point)
              if selected point then component_root.(find point) <- point
            done
        | Transport_root_group _ -> ());
-      let distance = Array.make point_count infinity
-      and tree_parent = Array.make point_count (-1)
-      and tree_edge = Array.make point_count (-1)
-      and tree_root = Array.make point_count (-1)
-      and heap_points = Array.make point_count 0
-      and heap_positions = Array.make point_count (-1)
-      and order = Array.make selected_count 0 in
-      let heap_size = ref 0 and order_count = ref 0 in
-      let less left right =
-        distance.(left) < distance.(right)
-        || (distance.(left) = distance.(right)
-            && (tree_root.(left) < tree_root.(right)
-                || (tree_root.(left) = tree_root.(right) && left < right))) in
-      let assign slot point =
-        heap_points.(slot) <- point; heap_positions.(point) <- slot in
-      let rec bubble slot point =
-        if slot = 0 then assign 0 point
-        else let parent_slot = (slot - 1) / 2 in
-          let parent = heap_points.(parent_slot) in
-          if less point parent then begin
-            assign slot parent; bubble parent_slot point
-          end else assign slot point in
-      let enqueue point =
-        let slot = heap_positions.(point) in
-        if slot = -1 then begin
-          let slot = !heap_size in incr heap_size; bubble slot point
-        end else if slot >= 0 then bubble slot point in
-      let rec sift_down slot point =
-        let left = slot * 2 + 1 in
-        if left >= !heap_size then assign slot point
-        else begin
-          let right = left + 1 in
-          let child = if right < !heap_size
-              && less heap_points.(right) heap_points.(left) then right else left in
-          let child_point = heap_points.(child) in
-          if less child_point point then begin
-            assign slot child_point; sift_down child point
-          end else assign slot point
-        end in
-      let pop () =
-        let point = heap_points.(0) in
-        heap_positions.(point) <- -2; decr heap_size;
-        if !heap_size > 0 then sift_down 0 heap_points.(!heap_size);
-        point in
-      let add_root point =
-        if selected point then begin
-          component_root.(find point) <- point;
-          if distance.(point) = infinity then begin
-            distance.(point) <- 0.; tree_parent.(point) <- point;
-            tree_root.(point) <- point; enqueue point
-          end
-        end in
-      let visits = ref 0 in
-      let drain_heap () =
-        while !heap_size > 0 do
-          if !visits land 4095 = 0 then Cancel.check_opt cancel;
-          incr visits;
-          let point = pop () in
-          order.(!order_count) <- point; incr order_count;
-          for at = view.point_edge_offsets.(point)
-              to view.point_edge_offsets.(point + 1) - 1 do
-            let edge = view.point_edges.(at) in
-            if Bytes.unsafe_get valid_edges edge <> '\000' then begin
-              let a = view.edge_a.(edge) and b = view.edge_b.(edge) in
-              let neighbor = if a = point then b else a in
-              if heap_positions.(neighbor) <> -2 then begin
-                let candidate = distance.(point) +. lengths.(edge) in
-                let better = candidate < distance.(neighbor)
-                  || (candidate = distance.(neighbor)
-                      && (tree_root.(point) < tree_root.(neighbor)
-                          || (tree_root.(point) = tree_root.(neighbor)
-                              && point < tree_parent.(neighbor)))) in
-                if better then begin
-                  distance.(neighbor) <- candidate;
-                  tree_parent.(neighbor) <- point;
-                  tree_edge.(neighbor) <- edge;
-                  tree_root.(neighbor) <- tree_root.(point);
-                  enqueue neighbor
-                end
-              end
-            end
-          done
-        done in
-      (match roots with
-       | Transport_first_point | Transport_last_point ->
-           (* These policies choose exactly one root in each disconnected
-              component.  Draining each independent heap immediately avoids
-              interleaving every component in one unnecessarily large heap. *)
-           for component = 0 to point_count - 1 do
-             if component_root.(component) >= 0 then begin
-               add_root component_root.(component);
-               drain_heap ()
-             end
-           done
-       | Transport_root_group group ->
-           Group.iter add_root group;
-           drain_heap ());
+      let root_points = match roots with
+        | Transport_first_point | Transport_last_point ->
+            (* One root in each disconnected component. *)
+            let found = ref [] in
+            for component = point_count - 1 downto 0 do
+              if component_root.(component) >= 0 then
+                found := component_root.(component) :: !found
+            done;
+            Array.of_list !found
+        | Transport_root_group group ->
+            let found = ref [] in
+            Group.iter (fun point ->
+              if selected point then begin
+                component_root.(find point) <- point;
+                found := point :: !found
+              end) group;
+            Array.of_list (List.rev !found) in
+      let forest = Shortest_paths.forest_search ?cancel
+          ~drain_each:(match roots with
+            | Transport_first_point | Transport_last_point -> true
+            | Transport_root_group _ -> false)
+          ~valid_edge:(fun edge -> Bytes.unsafe_get valid_edges edge <> '\000')
+          ~capacity:selected_count ~point_edge_offsets:view.point_edge_offsets
+          ~point_edges:view.point_edges ~edge_a:view.edge_a ~edge_b:view.edge_b
+          ~lengths root_points in
+      let distance = forest.distance and tree_parent = forest.parent
+      and tree_edge = forest.edge and tree_root = forest.root
+      and order = forest.order and order_count = ref forest.order_count in
       let unrepresentable = ref (-1) in
       for point = 0 to point_count - 1 do
         if !unrepresentable < 0 && selected point
@@ -661,80 +592,17 @@ let run_parent ?cancel ?(grain = 16_384) ?points
           match ordered_fast_path with
           | Some result -> result
           | None -> begin
-          let tree_parent = match points with
-            | None ->
-                let needs_normalization = Atomic.make false in
-                Parallel.for_ ~chunk_size:grain ~start:0 ~finish:(point_count - 1)
-                  (fun point ->
-                    if point land 4095 = 0 then Cancel.check_opt cancel;
-                    let parent = parents.(point) in
-                    if parent < 0 || parent >= point_count then
-                      Atomic.set needs_normalization true);
-                if not (Atomic.get needs_normalization) then parents
-                else begin
-                  let normalized = Array.make point_count 0 in
-                  Parallel.for_ ~chunk_size:grain ~start:0
-                    ~finish:(point_count - 1) (fun point ->
-                      let parent = parents.(point) in
-                      normalized.(point) <- if parent < 0 || parent >= point_count
-                        then point else parent);
-                  normalized
-                end
-            | Some _ ->
-                let normalized = Array.make point_count (-1) in
-                Parallel.for_ ~chunk_size:grain ~start:0
-                  ~finish:(point_count - 1) (fun point ->
-                    if point land 4095 = 0 then Cancel.check_opt cancel;
-                    if selected point then begin
-                      let parent = parents.(point) in
-                      normalized.(point) <- if parent < 0 || parent >= point_count
-                          || parent = point || not (selected parent)
-                        then point else parent
-                    end);
-                normalized in
-          let child_count = Array.make point_count 0 and root_count = ref 0 in
-          for point = 0 to point_count - 1 do
-            let parent = tree_parent.(point) in
-            if parent = point then incr root_count
-            else if parent >= 0 then child_count.(parent) <- child_count.(parent) + 1
-          done;
+          let forest = Forest.scan ?cancel ~grain
+              ?selected:(if Option.is_none points then None else Some selected)
+              ~selected_count parents in
+          let tree_parent = forest.tree_parent and root_count = ref forest.root_count
+          and child_offsets = forest.child_offsets and children = forest.children
+          and order = forest.order and order_count = ref forest.order_count
+          and root_offsets = forest.root_offsets in
           if !root_count = 0 then Ok geometry
           else begin
-            let child_offsets = Array.make (point_count + 1) 0 in
-            for point = 0 to point_count - 1 do
-              child_offsets.(point + 1) <- child_offsets.(point) + child_count.(point)
-            done;
-            let children = Array.make child_offsets.(point_count) 0 in
-            Array.fill child_count 0 point_count 0;
-            for point = 0 to point_count - 1 do
-              let parent = tree_parent.(point) in
-              if parent >= 0 && parent <> point then begin
-                let target = child_offsets.(parent) + child_count.(parent) in
-                children.(target) <- point;
-                child_count.(parent) <- child_count.(parent) + 1
-              end
-            done;
-            let order = Array.make selected_count 0
-            and root_offsets = Array.make (!root_count + 1) 0 in
-            let order_count = ref 0 and root_index = ref 0 in
-            for root = 0 to point_count - 1 do
-              if tree_parent.(root) = root then begin
-                let first = !order_count in
-                root_offsets.(!root_index) <- first;
-                order.(!order_count) <- root; incr order_count;
-                let read = ref first in
-                while !read < !order_count do
-                  let point = order.(!read) in
-                  for at = child_offsets.(point)
-                      to child_offsets.(point + 1) - 1 do
-                    order.(!order_count) <- children.(at); incr order_count
-                  done;
-                  incr read
-                done;
-                incr root_index;
-                root_offsets.(!root_index) <- !order_count
-              end
-            done;
+            let child_count = Array.init point_count (fun point ->
+                child_offsets.(point + 1) - child_offsets.(point)) in
             let positions = Packed.Float3.Private.view
                 (Geometry.positions geometry) in
             let edge_lengths = if scale_by_edge_length then begin

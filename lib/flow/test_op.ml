@@ -47,7 +47,7 @@ let check (o : Op.t) args =
   with Value.Fail (code, msg, _) -> failwith (o.name ^ ": " ^ code ^ ": " ^ msg)
 
 let () =
-  assert (List.length Op.all = 164);
+  assert (List.length Op.all = 165);
   let repr=Option.get(Op.find "text/repr" Context.value) in
   List.iter(fun text -> assert(check repr ["text",Text text]=Text(Printf.sprintf "%S" text)))
     [String.init 256 Char.chr;"";"é日本😀\000\b\t\n\r\\\""];
@@ -353,6 +353,10 @@ let ()=
   assert(apply "array/index_of"["keys",Text_array[|"\255\000";"é";"é"|];
     "queries",Text_array[|"é";"missing";"\255\000"|]]=Int_array[|1;-1;0|]);
   assert(apply "array/compact"["mask",Int_array[|1;0;1|]]=Int_array[|0;2|]);
+  assert(apply "float/next_after"["x",Float 1.;"y",Float 2.]=Float(Float.succ 1.));
+  assert(apply "float/next_after"["x",Float 1.;"y",Float 0.]=Float(Float.pred 1.));
+  assert(apply "float/next_after"["x",Float 3.;"y",Float 3.]=Float 3.);
+  assert(apply "float/next_after"["x",Float 0.;"y",Float 1.]=Float(Int64.float_of_bits 1L));
   assert(apply "array/segment_argmax"["values",Int_array[|2;5;5;1;5|];"offsets",Int_array[|0;3;3;5|]]=Int_array[|1;-1;4|]);
   assert(apply "array/segment_argmax"["values",Float_array[|0.;-0.;0.|];"offsets",Int_array[|0;3|]]=Int_array[|0|]);
   assert(apply "array/segment_argmax"["values",Float_array[||];"offsets",Int_array[|0|]]=Int_array[||]);
@@ -389,6 +393,7 @@ let ()=
      "E_ARRAY_OFFSETS","array/segment_argmax",["values",Int_array[|1|];"offsets",Int_array[|0;2|]];
      "E_ARRAY_TYPE","array/segment_argmax",["values",Vec3_array[|0.;0.;0.|];"offsets",Int_array[|0;1|]];
      "E_NONFINITE","array/segment_argmax",["values",Float_array[|nan|];"offsets",Int_array[|0;1|]];
+     "E_NONFINITE","float/next_after",["x",Float nan;"y",Float 1.];
      "E_ARRAY_TYPE","array/scan_sum",["array",Float_array[|1.|]];
      "E_NONFINITE","array/grade",["keys",Float_array[|nan|]];
      "E_ARRAY_TYPE","array/index_of",["keys",Int_array[||];"queries",Text_array[||]];

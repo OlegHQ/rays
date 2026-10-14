@@ -744,134 +744,37 @@ whole fused native pass. Three shared fixes are in (`3bffaa15`, `8ba568d7`,
 source has no edge groups. Projection: 2× is not reachable for reindexing
 nodes without ancestry-aware host operators.
 
-**Registered this session**
+**Status 2026-10-15: 112/128 registered, 7 drafts pending, 9 without a draft.**
+The earlier per-session tables are superseded; each registration commit
+("Register …", "port-draft <key>: PASS-SLOW Nx") records its gate and bench.
 
-| Node | Task | Note |
-| --- | --- | --- |
-| `attribute_blur` | D.5 | |
-| `blast` | C.8 | error hint text not expressible |
-| `box` | C.7 | vec3 cases only with a local gate patch (PORT_VEC3) |
-| `circle` | C.7 | `segments 2` case dropped; native clamps |
-| `color_by_height` | B.15 | |
-| `compact_points` | C.8 | |
-| `distance_along_geometry` | E.4 | construction refusals not gated |
-| `distance_from_target` | B.15 | cache check cannot pass; vec3 cases in a separate test |
-| `edge_equalize` | D.5 | |
-| `edge_relax` | D.5 | |
-| `edge_transport_curves` | C.9 | shipped gate fails cache check; oracle cases pass |
-| `ends` | C.9 | needs a local eager-build gate patch |
-| `enumerate` | C.12 | |
-| `graph_color` | E.5 | 6 refusal cases dropped; validator relaxed to colour name |
-| `grid` | C.7 | needs a local eager-build gate patch |
-| `group_copy` | C.12 | |
-| `group_edge_depth` | D.8 | |
-| `group_invert` | B.13 | |
-| `group_random` | B.13 | |
-| `group_unshared` | D.8 | |
-| `match_axis` | B.10 | |
-| `material` | B.14 | vec3 cases unverified on the gate |
-| `mirror` | C.8 | passes only with a local gate patch |
-| `name_from_groups` | B.14 | |
-| `point_jitter` | B.10 | vec3 axis cases fail on the gate |
-| `point_velocity` | C.12 | non-finite and absent-snapshot scenarios dropped |
-| `reverse` | C.8 | |
-| `uv_transform` | B.15 | |
+Registered (Lisp body is the production node; the OCaml kernel stays in `lib/rdk` as the oracle):
+`attribute_blur`, `attribute_fade`, `attribute_laplacian`, `attribute_noise_quaternion`, `attribute_noise`, `attribute_randomize`, `attribute_remap`, `bend`, `blast_by_attribute`, `blast`, `bound`, `box`, `carve`, `circle_from_edges`, `circle`, `color_by_height`, `compact_points`, `connectivity`, `convert_line`, `crease`, `delete_attributes`, `delete_edge_group`, `distance_along_geometry`, `distance_from_target`, `duplicate`, `edge_cusp`, `edge_divide`, `edge_equalize`, `edge_relax`, `edge_straighten`, `edge_transport_curves`, `edge_transport_parent`, `edge_transport`, `ends`, `enumerate`, `extract_point_from_curve`, `graph_color`, `grid`, `group_backface`, `group_boundary_components`, `group_bounds`, `group_combine`, `group_copy`, `group_delete`, `group_edge_depth`, `group_edges`, `group_expand`, `group_find_path`, `group_invert`, `group_non_planar`, `group_normal`, `group_promote_boundary`, `group_promotions`, `group_random`, `group_range`, `group_ranges`, `group_rename`, `group_unshared`, `groups_from_name`, `line`, `match_axis`, `match_size`, `material`, `measure_curvature`, `measure`, `merge`, `mirror`, `mountain`, `name_from_groups`, `noise_displace`, `normals`, `ordered_group`, `peak`, `platonic`, `point_generate`, `point_jitter`, `point_velocity`, `points`, `poly_bridge`, `poly_loft`, `poly_path`, `polyframe`, `polywire`, `rename_attributes`, `rename_edge_group`, `resample`, `rest_position`, `reverse`, `revolve`, `rewire_vertices`, `separate_pieces`, `set_color`, `set_float`, `set_int`, `set_orient`, `set_transform`, `set_vector`, `skin`, `smooth`, `snap_to_grid`, `sort`, `spiral`, `swap_attributes`, `sweep_circle`, `torus`, `transform`, `tube`, `uv_auto_seam`, `uv_project`, `uv_sphere`, `uv_transform`, `uv_unitize`.
 
-**Pending drafts**
+Pending drafts (`nodes/<key>.pending`):
 
-| Node | Task | Gate | Blocker or next step |
-| --- | --- | --- | --- |
-| `bend` | B.10 | fail | native E_NODE_FACTS on dynamic capture write |
-| `blast_by_attribute` | C.8 | pass | registration reverted: `blast_by_attribute` raises W_UNKNOWN_GROUP for its temporary group in every workspace; the other three call OCaml-bodied kinds unknown to the web primitive fixtures |
-| `connectivity` | D.4 | pass | not registered; latest commit records PASS-SLOW 3.38x |
-| `extract_centroid` | C.11 | no test | Convex hull needs per-piece geometry node calls |
-| `group_backface` | B.13 | fail | E_PACKED_FORM per-polygon loops; vec3 cases also unrenderable by the gate |
-| `group_boundary_components` | D.8 | pass | not registered; latest commit records PASS-SLOW 13228.9x |
-| `group_bounds` | B.13 | fail | gate cannot drive vec3-grouped fields; Edges+Partially contained does not pack |
-| `group_combine` | B.13 | fail | E_KERNEL_FORM, fold over matched groups with array-record state does not pack |
-| `group_non_planar` | B.13 | fail | E_PACKED_FORM, per-polygon argmax needs segmented arg reductions |
-| `group_normal` | D.8 | timed out | :validate cannot see the vec3 direction group; full gate still running |
-| `group_promote_boundary` | D.8 | pass | registration reverted: `blast_by_attribute` raises W_UNKNOWN_GROUP for its temporary group in every workspace; the other three call OCaml-bodied kinds unknown to the web primitive fixtures |
-| `group_range` | D.8 | pass | connectivity seam sources need sop/components :seams |
-| `groups_from_name` | B.14 | fail | needs group-name validity operators |
-| `ordered_group` | B.13 | fail | needs text tokenizing and text-to-int operators |
-| `resample` | C.9 | fail | draft incomplete (E_PACKED_FORM in attribute/edge-group stage); gate cache_identity cannot pass cross-field validators |
-| `rest_position` | B.10 | pass | registration reverted: `blast_by_attribute` raises W_UNKNOWN_GROUP for its temporary group in every workspace; the other three call OCaml-bodied kinds unknown to the web primitive fixtures |
-| `revolve` | C.9 | fail | attribute order: native lists the generated uv first, Lisp can only append |
-| `smooth` | D.5 | pass | registration reverted: `blast_by_attribute` raises W_UNKNOWN_GROUP for its temporary group in every workspace; the other three call OCaml-bodied kinds unknown to the web primitive fixtures |
-| `uv_sphere` | C.7 | no test | gate cannot judge lowering-time refusals; bench not run |
+| Node | State |
+| --- | --- |
+| `attribute_copy`, `promote_attributes`, `point_split`, `point_replicate` | agent porting; `attribute_copy` PASS-SLOW 15.2x |
+| `extract_centroid` | per-piece convex hull: a fold calling a geometry node fails `E_PACKED_FORM` |
+| `group_from_attribute_boundary` | zone over attribute names `E_DATA_SOURCE`; `text/glob_rewrite` fails in fold bodies |
+| `iso_surface` | the gate cannot feed a function slot; about 1e-16 differences |
 
-**No draft yet**
+No draft yet: `attribute_interpolate` (agent), `scatter`, `edge_flip`, `subdivide` (agent),
+`attr_from_image` (image sampling in a geometry body), `attribute_composite` and `blend_shapes`
+(loop over attribute names building geometry), `copy_to_points`, `sweep`.
 
-| Node | Task | Known blocker |
-| --- | --- | --- |
-| `attr_from_image` | B.15 | no image pixel read in a geometry body |
-| `attribute_composite` | B.15 | dynamic glob-selected attributes of runtime type, rest-layer inputs (not attempted) |
-| `attribute_copy` | D.7 | not attempted |
-| `attribute_fade` | B.15 | ramp text parameters cannot be decoded; frame dependency and optional inputs also unchecked |
-| `attribute_interpolate` | C.12 | not attempted |
-| `attribute_laplacian` | D.5 | cotangent modes need triangulation and a mixed-area surface metric |
-| `attribute_noise` | B.15 | size/speed, not attempted (shares kernel with attribute_noise_quaternion) |
-| `attribute_noise_quaternion` | B.15 | same kernel as attribute_noise (not attempted) |
-| `attribute_randomize` | B.16 | not attempted |
-| `attribute_remap` | B.15 | no text-to-number parse or split for the ramp parameter |
-| `blend_shapes` | C.12 | not attempted |
-| `bound` | C.7 | not attempted |
-| `carve` | E.5 | not attempted |
-| `circle_from_edges` | D.6 | not attempted |
-| `convert_line` | D.6 | not attempted |
-| `copy_to_points` | C.8 | pack mode emits instances (no Lisp output for them); kernel is ~450 lines |
-| `crease` | D.6 | not attempted |
-| `duplicate` | C.8 | size (kernel ~400 lines incl. Duplicate.ml 393) and attribute-list/group-name dynamics |
-| `edge_cusp` | D.6 | not attempted |
-| `edge_divide` | D.6 | not attempted |
-| `edge_flip` | E.5 | needs a polygon triangulation validity check |
-| `edge_straighten` | D.6 | not attempted |
-| `edge_transport` | E.4 | tree build is not graph/shortest_paths; needs the tree scan primitive too (not attempted) |
-| `edge_transport_parent` | E.4 | tree sweeps need a parent-tree scan primitive (not attempted) |
-| `extract_point_from_curve` | C.11 | not attempted |
-| `group_edges` | D.8 | Incident edges basis needs a ragged row expansion primitive |
-| `group_expand` | D.8 | 870-line constraint kernel, needs ragged neighbour traversal and normal/collision/shrink constraints |
-| `group_find_path` | E.4 | search is hop-count BFS, not graph/shortest_paths |
-| `group_from_attribute_boundary` | D.8 | array-valued attribute rows cannot be compared per edge |
-| `group_promotions` | D.8 | rule cells need text-to-number parsing and rewrite sets |
-| `group_ranges` | D.8 | rule cells need text-to-number parsing |
-| `iso_surface` | C.13 | not attempted |
-| `match_size` | B.10 | not attempted |
-| `measure` | C.15 | not attempted |
-| `measure_curvature` | D.5 | needs triangulation and the Surface_metric cotangent tables |
-| `merge` | C.8 | needs an owner-ordered attribute enumeration operator |
-| `mountain` | B.10 | not attempted |
-| `normals` | D.4 | body would far exceed the 552-line OCaml kernel; needs face-normal and cusp primitives |
-| `peak` | B.10 | not attempted |
-| `platonic` | C.7 | not attempted |
-| `point_generate` | C.11 | not attempted |
-| `point_replicate` | C.11 | not attempted |
-| `point_split` | D.6 | not attempted |
-| `poly_bridge` | E.5 | not attempted |
-| `poly_loft` | E.5 | not attempted |
-| `poly_path` | E.5 | connect_end_points needs point clusters that keep every point; payload ancestry too large |
-| `polyframe` | D.5 | six styles over four selection owners, body would exceed the 624-line kernel |
-| `polywire` | C.10 | not attempted |
-| `promote_attributes` | D.7 | not attempted |
-| `rewire_vertices` | C.8 | not completed; body would exceed the 281-line kernel (no hard missing primitive found) |
-| `scatter` | C.11 | not attempted |
-| `separate_pieces` | C.12 | not attempted |
-| `skin` | E.5 | not attempted |
-| `snap_to_grid` | B.10 | not attempted |
-| `sort` | C.8 | Random mode needs a sequential shuffle (no array update primitive) |
-| `spiral` | C.7 | not attempted |
-| `subdivide` | E.6 | not attempted |
-| `sweep` | C.9 | not attempted |
-| `sweep_circle` | C.10 | not attempted |
-| `torus` | C.7 | not attempted |
-| `transform` | B.10 | not attempted |
-| `tube` | C.7 | not attempted |
-| `uv_auto_seam` | D.7 | not attempted |
-| `uv_project` | C.14 | not attempted |
-| `uv_unitize` | D.7 | not attempted |
+Known language limits found by the ports: `cond`/`if` over records ("Cooked selection cannot
+compile record"); a host call whose data-dependent array arguments are shared with a second host
+call (`E_KERNEL_FORM`); plan data inside `iterate` bodies is about 20x slower; `sop/adjacency` /
+`sop/group` of a derived geometry inside a fold ("Topology source requires cooked geometry"); 2,048
+terms per lowered term; 64 kernel registers; `E_SHADOW` forbids rebinding outer names.
 
-Counts: registered 44 (16 completed ports plus 28 in the table above), pending 19, no draft 65; 44 + 19 + 65 = 128, the full Phase B to E inventory. No key is unaccounted for or duplicated.
+Test-time regressions fixed 2026-10-14/15: exponential walks over shared checked subterms
+(`Workspace.called_names`, `Context_kernel.map`, 365dc74a) hung the catalog tests; each Lisp
+instance was lowered twice and re-specialized every prelude helper (d03a92ff), which took
+`test_workspace_cook` from about 19 min to about 3 min. An explicit `~sources` library is pruned to
+the reachable definitions unless `~library:true`.
 
 ### Speed regressions accepted with the ports
 
@@ -912,6 +815,26 @@ before optimizing. The OCaml kernels remain in `lib/rdk` as oracles.
 | `point_velocity` | 80× | 112× | K, H |
 | `reverse` | 119× | 148× | H, K |
 | `grid` | 164× | 114× | K, H; not profiled |
+| `edge_transport` | 5.6× | | D |
+| `poly_bridge` | 13× | 9× | K |
+| `attribute_laplacian` | 12.8× | 13.6× | K, A |
+| `measure` | 13.7× | 29.6× | K, P |
+| `group_find_path` | 13.7× | 15.3× | D |
+| `measure_curvature` | 15.8× | 15.3× | K, A |
+| `sweep_circle` | 18.4× | 18.5× | K, H |
+| `polywire` | 22.1× | 25.8× | K, H |
+| `match_size` | 23× | | K |
+| `separate_pieces` | 39.3× | 31.6× | O(pieces²) placement scan |
+| `skin` | 43× | 34× | K, H |
+| `carve` | 53× | 47× | K, H |
+| `edge_transport_parent` | 85.8× | 75.7× | D, I |
+| `poly_loft` | 90× | 108× | K, H |
+| `group_boundary_components` | 163× | | A, D |
+| `group_expand` | 226× | | I, A |
+| `group_edges` | 239× | 550× | A, B |
+| `ordered_group`, `groups_from_name` | >200× | | T |
+| `poly_path` | 363× | 353× | D, H |
+| `group_promotions` | 798× | | T, B |
 | `material` | n/a | n/a | not benched |
 
 Cause classes, from the profile of `reverse`, `compact_points` and an empty

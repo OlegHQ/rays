@@ -145,6 +145,15 @@ export function float_fma_checked(a, b, c) {
   a = fin('float/fma_checked', num(a)); b = fin('float/fma_checked', num(b)); c = fin('float/fma_checked', num(c));
   return checkedArithmetic(fused(a, b, c));
 }
+export function float_next_after(x, y) {
+  x = fin('float/next_after', num(x)); y = fin('float/next_after', num(y));
+  if (x === y) return y;
+  if (x === 0) return y > 0 ? 5e-324 : -5e-324;
+  fmaBytes.setFloat64(0, x, false);
+  const b = fmaBytes.getBigUint64(0, false) + ((y > x) === (x > 0) ? 1n : -1n);
+  fmaBytes.setBigUint64(0, b, false);
+  return fin('float/next_after', fmaBytes.getFloat64(0, false));
+}
 export const sqrt = x => Math.sqrt(Math.abs(num(x)));
 export const exp = x => fin('exp', Math.exp(num(x)));
 export const abs = x => typeof x === 'bigint' ? (x < 0n ? wrap(-x) : x) : Math.abs(num(x));
@@ -1483,7 +1492,27 @@ const graphFloats = values => new PArray(1, Float64Array.from(values));
 const graphIntegers = values => new PArray(1, BigInt64Array.from(values, BigInt));
 
 // Indexed decrease-key heap ordered by (distance, point); see Shortest_paths.search.
-export function graph_shortest_paths(adjacency, lengths, roots, radius) {
+// A null option is an absent one. With `hops` the search is Shortest_paths.hop_search (hop count, then length,
+// then lower predecessor); `path` is the parent chain of `target`, root first.
+function graphBinary(label, count, per, mask) {
+  if (!graphInt(mask) || mask.data.length !== count)
+    err('E_GRAPH_MASK', `${label} is an integer array with one entry per ${per}.`);
+  if (!mask.data.every(bit => bit === 0n || bit === 1n)) err('E_GRAPH_MASK', `${label} holds only 0 and 1.`);
+  return mask.data;
+}
+function graphTreePath(parents, reached, target) {
+  if (target < 0 || !reached(target)) return [];
+  const path = [target];
+  for (let at = parents[target]; at >= 0; at = parents[at]) path.push(at);
+  return path.reverse();
+}
+export function graph_shortest_paths(adjacency, lengths, roots, radius, hops, blockedPoints, blockedEdges, target, ties) {
+  if (radius === null) radius = undefined;
+  if (ties === null || ties === undefined || ties === 'first') ties = false;
+  else if (ties === 'lowest') ties = true;
+  else err('E_GRAPH_OPTION', 'Graph ties is first or lowest.');
+  if (hops === null || hops === undefined) hops = false;
+  else if (typeof hops !== 'boolean') err('E_GRAPH_OPTION', 'Graph hops is a boolean.');
   const { points, edges, pointEdgeOffsets, pointEdges, edgeA, edgeB } = graphPoints(adjacency);
   if (!(lengths instanceof PArray) || lengths.width !== 1 || !(lengths.data instanceof Float64Array)
       || lengths.data.length !== edges)
@@ -1492,6 +1521,77 @@ export function graph_shortest_paths(adjacency, lengths, roots, radius) {
   if (!graphInt(roots)) err('E_GRAPH_ROOT', 'Graph roots is an integer array of point indices.');
   const rootList = Array.from(roots.data, Number);
   for (const root of rootList) if (root < 0 || root >= points) err('E_GRAPH_ROOT', 'Graph root is not a point index.');
+  if (target === null || target === undefined) target = -1;
+  else if (typeof target !== 'bigint' || target < 0n || target >= BigInt(points)) err('E_GRAPH_TARGET', 'Graph target is a point index.');
+  else target = Number(target);
+  if (blockedPoints === null) blockedPoints = undefined;
+  if (blockedEdges === null) blockedEdges = undefined;
+  if (!hops && !ties && (blockedPoints !== undefined || blockedEdges !== undefined))
+    err('E_GRAPH_OPTION', 'Graph blocked_points and blocked_edges need :hops true or :ties "lowest".');
+  if ((hops || ties) && radius !== undefined) err('E_GRAPH_RADIUS', 'Graph radius does not combine with :hops true or :ties "lowest".');
+  if (hops && ties) err('E_GRAPH_OPTION', 'Graph :hops true does not combine with :ties "lowest".');
+  if (ties && blockedPoints !== undefined) err('E_GRAPH_OPTION', 'Graph :ties "lowest" takes blocked_edges only.');
+  if (ties) {
+    // Rdk.Shortest_paths.forest_search: settle the queued point of least (distance, root, point).
+    const edgeMask = blockedEdges === undefined ? undefined : graphBinary('Graph blocked_edges', edges, 'edge', blockedEdges);
+    const dist = new Array(points).fill(Infinity), parent = new Array(points).fill(-1), root = new Array(points).fill(-1);
+    const settled = new Array(points).fill(false), order = [];
+    for (const r of rootList) if (dist[r] === Infinity) { dist[r] = 0; parent[r] = r; root[r] = r; }
+    for (;;) {
+      let best = -1;
+      for (let point = 0; point < points; point++)
+        if (!settled[point] && dist[point] < Infinity && (best < 0 || dist[point] < dist[best]
+            || (dist[point] === dist[best] && (root[point] < root[best] || (root[point] === root[best] && point < best))))) best = point;
+      if (best < 0) break;
+      settled[best] = true; order.push(best);
+      for (let slot = pointEdgeOffsets[best]; slot < pointEdgeOffsets[best + 1]; slot++) {
+        const edge = pointEdges[slot];
+        if (edgeMask !== undefined && edgeMask[edge] === 1n) continue;
+        const next = edgeA[edge] === best ? edgeB[edge] : edgeA[edge];
+        if (settled[next]) continue;
+        const candidate = dist[best] + lengths.data[edge];
+        if (candidate < dist[next] || (candidate === dist[next]
+            && (root[best] < root[next] || (root[best] === root[next] && best < parent[next])))) {
+          dist[next] = candidate; parent[next] = best; root[next] = root[best];
+        }
+      }
+    }
+    const tree = parent.map((p, point) => p === point ? -1 : p);
+    return new Map([['distance', graphFloats(dist.map(d => d === Infinity ? -1 : d))],
+      ['parent', graphIntegers(tree)],
+      ['path', graphIntegers(graphTreePath(tree, point => dist[point] < Infinity, target))],
+      ['order', graphIntegers(order)]]);
+  }
+  if (hops) {
+    const pointMask = blockedPoints === undefined ? undefined : graphBinary('Graph blocked_points', points, 'point', blockedPoints);
+    const edgeMask = blockedEdges === undefined ? undefined : graphBinary('Graph blocked_edges', edges, 'edge', blockedEdges);
+    const depths = new Array(points).fill(-1), dist = new Array(points).fill(0), previous = new Array(points).fill(-1);
+    const queue = [];
+    for (const root of rootList) if (depths[root] < 0) { depths[root] = 0; dist[root] = 0; queue.push(root); }
+    let head = 0, overflow = false;
+    while (head < queue.length && (target < 0 || depths[target] < 0 || depths[queue[head]] < depths[target])) {
+      const element = queue[head++];
+      for (let slot = pointEdgeOffsets[element]; slot < pointEdgeOffsets[element + 1]; slot++) {
+        const edge = pointEdges[slot];
+        if (edgeMask !== undefined && edgeMask[edge] === 1n) continue;
+        const next = edgeA[edge] === element ? edgeB[edge] : edgeA[edge];
+        if (next === element || !(next === target || pointMask === undefined || pointMask[next] === 0n)) continue;
+        const nextDepth = depths[element] + 1, nextDistance = dist[element] + lengths.data[edge];
+        if (!Number.isFinite(nextDistance)) overflow = true;
+        else if (depths[next] < 0 || nextDepth < depths[next]
+            || (nextDepth === depths[next] && (nextDistance < dist[next] || (nextDistance === dist[next] && element < previous[next])))) {
+          if (depths[next] < 0) queue.push(next);
+          depths[next] = nextDepth; dist[next] = nextDistance; previous[next] = element;
+        }
+      }
+    }
+    if (overflow) err('E_GRAPH_LENGTH', 'Graph accumulated path length is not representable.');
+    const parent = previous.map((p, point) => depths[point] < 0 ? -1 : p);
+    return new Map([['distance', graphFloats(dist.map((d, point) => depths[point] < 0 ? -1 : d))],
+      ['parent', graphIntegers(parent)],
+      ['path', graphIntegers(graphTreePath(parent, point => depths[point] >= 0, target))],
+      ['order', graphIntegers(queue)]]);
+  }
   if (radius === undefined) radius = Infinity;
   else if (typeof radius !== 'number' || !(radius >= 0)) err('E_GRAPH_RADIUS', 'Graph radius is a non-negative float.');
   const distances = new Float64Array(points).fill(Infinity), parents = new Array(points).fill(-1);
@@ -1545,7 +1645,43 @@ export function graph_shortest_paths(adjacency, lengths, roots, radius) {
       }
   }
   return new Map([['distance', graphFloats(Array.from(distances, d => d === Infinity ? -1 : d))],
-    ['parent', graphIntegers(parents)]]);
+    ['parent', graphIntegers(parents)],
+    ['path', graphIntegers(graphTreePath(parents, point => distances[point] < Infinity, target))],
+    ['order', graphIntegers([])]]);
+}
+
+// Rdk.Forest.scan and Rdk.Forest.labels: normalised parents, child CSR in index order, breadth-first order per root.
+export function graph_forest(parents, mask) {
+  if (!graphInt(parents)) err('E_GRAPH_PARENT', 'Graph parents is an integer array with one entry per point.');
+  const count = parents.data.length;
+  if (mask === null) mask = undefined;
+  const selected = mask === undefined ? undefined : graphBinary('Graph forest mask', count, 'point', mask);
+  const chosen = point => selected === undefined || selected[point] === 1n;
+  const tree = new Array(count).fill(-1);
+  for (let point = 0; point < count; point++) if (chosen(point)) {
+    const parent = Number(parents.data[point]);
+    tree[point] = parent < 0 || parent >= count || parent === point || !chosen(parent) ? point : parent;
+  }
+  const offsets = new Array(count + 1).fill(0);
+  for (let point = 0; point < count; point++) if (tree[point] >= 0 && tree[point] !== point) offsets[tree[point] + 1]++;
+  for (let point = 0; point < count; point++) offsets[point + 1] += offsets[point];
+  const children = new Array(offsets[count]), fill = offsets.slice(0, count);
+  for (let point = 0; point < count; point++) if (tree[point] >= 0 && tree[point] !== point) children[fill[tree[point]]++] = point;
+  const depth = new Array(count).fill(-1), root = new Array(count).fill(-1), order = [];
+  for (let start = 0; start < count; start++) if (tree[start] === start) {
+    depth[start] = 0; root[start] = start;
+    const first = order.length;
+    order.push(start);
+    for (let read = first; read < order.length; read++) {
+      const point = order[read];
+      for (let at = offsets[point]; at < offsets[point + 1]; at++) {
+        const child = children[at];
+        depth[child] = depth[point] + 1; root[child] = start; order.push(child);
+      }
+    }
+  }
+  return new Map([['order', graphIntegers(order)], ['depth', graphIntegers(depth)], ['root', graphIntegers(root)],
+    ['offsets', graphIntegers(offsets)], ['children', graphIntegers(children)]]);
 }
 
 export function graph_color(adjacency, order) {

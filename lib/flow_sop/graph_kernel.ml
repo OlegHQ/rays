@@ -44,12 +44,32 @@ let point_graph adjacency =
   check_rows "Graph adjacency point_edges" ~rows:points ~limit:edges point_edge_offsets point_edges;
   points, edges, point_edge_offsets, point_edges, edge_a, edge_b
 
-let binary_mask label count = function
+let binary_mask ?(per = "edge") label count = function
   | Some (E.Int_array mask) when Array.length mask = count ->
       Array.iter (fun bit -> if bit <> 0 && bit <> 1 then
         refuse "E_GRAPH_MASK" (label ^ " holds only 0 and 1.")) mask;
       mask
-  | _ -> refuse "E_GRAPH_MASK" (label ^ " is an integer array with one entry per edge.")
+  | _ -> refuse "E_GRAPH_MASK" (label ^ " is an integer array with one entry per " ^ per ^ ".")
+
+let flag name args = match List.assoc_opt name args with
+  | None -> false
+  | Some (E.Bool value) -> value
+  | Some _ -> refuse "E_GRAPH_OPTION" ("Graph " ^ name ^ " is a boolean.")
+
+(* The tree path from the target back to its root, root first; empty when no
+   target is given or it was not reached. *)
+let tree_path ~parent ~reached target =
+  if target < 0 || not (reached target) then [||]
+  else begin
+    let length = ref 1 and at = ref target in
+    while parent.(!at) >= 0 do incr length; at := parent.(!at) done;
+    let path = Array.make !length target and at = ref target in
+    for slot = !length - 1 downto 0 do
+      path.(slot) <- !at;
+      at := parent.(!at)
+    done;
+    path
+  end
 
 let shortest_paths args =
   let points, edges, point_edge_offsets, point_edges, edge_a, edge_b =
@@ -64,14 +84,72 @@ let shortest_paths args =
     | _ -> refuse "E_GRAPH_ROOT" "Graph roots is an integer array of point indices." in
   Array.iter (fun root -> if root < 0 || root >= points then
     refuse "E_GRAPH_ROOT" "Graph root is not a point index.") roots;
-  let radius = match List.assoc_opt "radius" args with
-    | None -> infinity
-    | Some (E.Float radius) when radius >= 0. -> radius
-    | Some _ -> refuse "E_GRAPH_RADIUS" "Graph radius is a non-negative float." in
-  let distances, parents = Rdk.Shortest_paths.search ~radius ~point_edge_offsets ~point_edges
-    ~edge_a ~edge_b ~lengths roots in
-  (* Flow floats are finite: a point outside every root's reach reports -1. *)
-  Array.map (fun d -> if d = infinity then -1. else d) distances, parents
+  let hops = flag "hops" args in
+  let lowest = match List.assoc_opt "ties" args with
+    | None | Some (E.Text "first") -> false
+    | Some (E.Text "lowest") -> true
+    | Some _ -> refuse "E_GRAPH_OPTION" "Graph ties is first or lowest." in
+  let target = match List.assoc_opt "target" args with
+    | None -> -1
+    | Some (E.Int target) when target >= 0 && target < points -> target
+    | Some _ -> refuse "E_GRAPH_TARGET" "Graph target is a point index." in
+  let masked = List.mem_assoc "blocked_points" args || List.mem_assoc "blocked_edges" args in
+  if not hops && not lowest && masked then
+    refuse "E_GRAPH_OPTION" "Graph blocked_points and blocked_edges need :hops true or :ties \"lowest\".";
+  if (hops || lowest) && List.mem_assoc "radius" args then
+    refuse "E_GRAPH_RADIUS" "Graph radius does not combine with :hops true or :ties \"lowest\".";
+  if hops && lowest then refuse "E_GRAPH_OPTION" "Graph :hops true does not combine with :ties \"lowest\".";
+  if lowest && List.mem_assoc "blocked_points" args then
+    refuse "E_GRAPH_OPTION" "Graph :ties \"lowest\" takes blocked_edges only.";
+  let blocked_edge = Option.map (fun mask -> let mask = binary_mask "Graph blocked_edges" edges (Some mask) in
+      fun edge -> mask.(edge) = 1) (List.assoc_opt "blocked_edges" args) in
+  if hops then begin
+    let blocked_point = Option.map (fun mask -> let mask = binary_mask ~per:"point" "Graph blocked_points" points (Some mask) in
+        fun point -> mask.(point) = 1) (List.assoc_opt "blocked_points" args) in
+    let depths = Array.make points (-1) and distances = Array.make points 0.
+    and previous = Array.make points (-1) and queue = Array.make points 0 in
+    (try Rdk.Shortest_paths.hop_search ?blocked_point ?blocked_edge ~target ~depths ~distances ~previous
+           ~queue ~point_edge_offsets ~point_edges ~edge_a ~edge_b ~lengths roots
+     with Rdk.Shortest_paths.Hop_overflow ->
+       refuse "E_GRAPH_LENGTH" "Graph accumulated path length is not representable.");
+    let parent = Array.mapi (fun point depth -> if depth < 0 then -1 else previous.(point)) depths in
+    let reached = Array.fold_left (fun count depth -> if depth >= 0 then count + 1 else count) 0 depths in
+    Array.mapi (fun point depth -> if depth < 0 then -1. else distances.(point)) depths, parent,
+    tree_path ~parent ~reached:(fun point -> depths.(point) >= 0) target, Array.sub queue 0 reached
+  end else if lowest then begin
+    let forest = Rdk.Shortest_paths.forest_search
+      ~valid_edge:(match blocked_edge with None -> fun _ -> true | Some blocked -> fun edge -> not (blocked edge))
+      ~capacity:points ~point_edge_offsets ~point_edges ~edge_a ~edge_b ~lengths roots in
+    let parent = Array.mapi (fun point p -> if p = point then -1 else p) forest.parent in
+    Array.map (fun d -> if d = infinity then -1. else d) forest.distance, parent,
+    tree_path ~parent ~reached:(fun point -> forest.distance.(point) < infinity) target,
+    Array.sub forest.order 0 forest.order_count
+  end else begin
+    let radius = match List.assoc_opt "radius" args with
+      | None -> infinity
+      | Some (E.Float radius) when radius >= 0. -> radius
+      | Some _ -> refuse "E_GRAPH_RADIUS" "Graph radius is a non-negative float." in
+    let distances, parents = Rdk.Shortest_paths.search ~radius ~point_edge_offsets ~point_edges
+      ~edge_a ~edge_b ~lengths roots in
+    (* Flow floats are finite: a point outside every root's reach reports -1. *)
+    Array.map (fun d -> if d = infinity then -1. else d) distances, parents,
+    tree_path ~parent:parents ~reached:(fun point -> distances.(point) < infinity) target, [||]
+  end
+
+
+let forest args =
+  let parents = match List.assoc_opt "parents" args with
+    | Some (E.Int_array parents) -> parents
+    | _ -> refuse "E_GRAPH_PARENT" "Graph parents is an integer array with one entry per point." in
+  let points = Array.length parents in
+  let selected = Option.map (fun mask -> let mask = binary_mask ~per:"point" "Graph forest mask" points (Some mask) in
+      mask) (List.assoc_opt "mask" args) in
+  let select = Option.map (fun mask point -> mask.(point) = 1) selected in
+  let selected_count = match selected with
+    | None -> points | Some mask -> Array.fold_left (+) 0 mask in
+  let forest = Rdk.Forest.scan ?selected:select ~selected_count parents in
+  let depth, root = Rdk.Forest.labels forest in
+  Array.sub forest.order 0 forest.order_count, depth, root, forest.child_offsets, forest.children
 
 let color args =
   let fields = record (List.assoc_opt "adjacency" args) in
@@ -109,9 +187,17 @@ let resolve = function
          let unknown () = refuse "E_DATA_SOURCE" "Unknown graph component." in
          match name with
          | "graph/shortest_paths" ->
-             let distance, parent = shortest_paths args in
+             let distance, parent, path, order = shortest_paths args in
              Ok (match component with "distance" -> E.Float_array distance
-               | "parent" -> E.Int_array parent | _ -> unknown ())
+               | "parent" -> E.Int_array parent | "path" -> E.Int_array path
+               | "order" -> E.Int_array order
+               | _ -> unknown ())
+         | "graph/forest" ->
+             let order, depth, root, offsets, children = forest args in
+             Ok (match component with "order" -> E.Int_array order
+               | "depth" -> E.Int_array depth | "root" -> E.Int_array root
+               | "offsets" -> E.Int_array offsets | "children" -> E.Int_array children
+               | _ -> unknown ())
          | "graph/color" ->
              let colors, count = color args in
              Ok (match component with "color" -> E.Int_array colors

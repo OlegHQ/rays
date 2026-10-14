@@ -62,9 +62,28 @@ let arguments fields values =
       @ List.filter_map (fun (f : Param.field_view) ->
           if f.vec3=None then None else Some (f.name, scalar f.current)) fields
 
+(* Lowering instantiates a node and then edits it to its authored parameters; building the body
+   at the defaults first (a 48 x 24 sphere, say) costs far more than the edit. The pending
+   changes are consumed by the first node of their operation, never by a nested build. *)
+let initial = Domain.DLS.new_key (fun () -> None)
+
+let with_initial_changes ~operation changes f =
+  if changes = [] then f () else begin
+    Domain.DLS.set initial (Some (operation, changes));
+    Fun.protect ~finally:(fun () -> Domain.DLS.set initial None) f
+  end
+
 let node ?(unbound_function = false) ~operation ~version ~label ~fields ~normalizers ~source ~build inputs =
   let schema = schema "parameters" fields normalizers in
-  Sop.Custom.node ~label ~operation ~schema ~values:(Param.default schema) inputs
+  let defaults = Param.default schema in
+  let values = match Domain.DLS.get initial with
+    | Some (target, changes) when String.equal target operation ->
+        Domain.DLS.set initial None;
+        (match Param.apply_all schema defaults changes with
+         | Ok (values, effects) when effects.Param.cook -> values
+         | Ok _ | Error _ -> defaults)
+    | _ -> defaults in
+  Sop.Custom.node ~label ~operation ~schema ~values inputs
     (fun ~label ~inputs ~parameters ->
       if unbound_function then
         N.Private.make ~label ~operation ~version ~parameters:source

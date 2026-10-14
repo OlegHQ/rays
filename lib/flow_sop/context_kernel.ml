@@ -1,7 +1,18 @@
 module W = Flow.Workspace
 
+(* The form id spreads terms; hashing the term itself collides on the many alike subtrees and degrades into long bucket scans. *)
+module Memo = Hashtbl.Make (struct type t = W.term let equal = ( == ) let hash (t : W.term) = t.form.Flow.Syntax.id land max_int end)
+
+(* Checked terms share subterms; rewrite each once (keeping the sharing), or a shared chain is
+   walked exponentially often. [transform] is pure per term, so the memo changes nothing else. *)
 let map ?(select=Fun.id) transform (graph:W.graph) =
-  let rec term (t:W.term) =
+  let memo=Memo.create 256 in
+  let rec term (t:W.term) = match t.node with
+    | Lit _ | Text _ | Nil | Time | Ref_binding _ | Fn_ref _ -> term_once t  (* cheaper to rebuild than to look up *)
+    | _ -> match Memo.find_opt memo t with
+      | Some mapped -> mapped
+      | None -> let mapped=term_once t in Memo.add memo t mapped; mapped
+  and term_once (t:W.term) =
     let t=select t in
     let fields xs=List.map (fun (name,value) -> name,term value) xs in
     let patterns xs=List.map (fun (pattern,value) -> pattern,term value) xs in
@@ -198,3 +209,10 @@ let kernel_source (checked:W.t) =
   Digest.string(fst(Flow.Lisp.print (checked.source @
     scoped_forms checked ~leading:(List.map (fun (g:W.graph)->g.form) checked.graphs) ~skip:""
       ~start:(fun ~node:_ ~graph -> List.iter graph checked.graphs))))
+
+let uses_context graph =
+  let found = ref false in
+  ignore (map (fun t -> (match t.W.node with
+    | W.Op {op;_} when List.mem op context_ops -> found := true
+    | _ -> ()); t) graph);
+  !found
