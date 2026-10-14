@@ -1,0 +1,234 @@
+; Whole-node draft. A group of the edges where chosen attributes change (points: end values differ,
+; primitives and vertices: the corners sharing an edge differ), optionally plus the unshared edges, then
+; promoted to points or primitives. Attribute planes are the rules' (owner, pattern) matches, compared with the
+; tolerance for floats and exactly for ints, text and rows. Each comparison stage is its own kernel.
+(defn gab_error :context value [(reason : text)]
+  (error "invalid_group" "group_from_attribute_boundary could not produce valid geometry"
+    :cause (str "group_from_attribute_boundary [invalid_group]: " reason)))
+(defn gab_owner :context value [(raw : text)]
+  (let* [token (text/lower (text/trim raw))]
+    (case token
+      "point" "point" "points" "point" "vertex" "vertex" "vertices" "vertex"
+      "primitive" "primitive" "primitives" "primitive" "detail" "detail"
+      :else (error "E_PARAM" (str "unknown attribute owner " (text/repr token))))))
+(defn gab_normalize :context value [(raw : text)]
+  (text/table_encode (map (fn [(row : (list text))]
+    (if (= (count row) 2) (list (gab_owner (nth row 0)) (nth row 1))
+      (error "E_PARAM" (str "boundary attribute needs owner and pattern, got " (count row) " columns"))))
+    (text/table_decode raw))))
+(defn gab_len :context value [(offsets : (array int)) (i : int)]
+  (int/sub (array/nth offsets (int/add i 1)) (array/nth offsets i)))
+(defn gab_safe :context value [(i : int)] (if (int/lt i 0) 0 i))
+(defn gab_owner_rows :context value [(rows : (list (list text))) (kind : text)]
+  (fold [patterns (array/text 0)] [row rows]
+    (if (equal? (nth row 0) kind) (array/concat patterns (array/text 1 (nth row 1))) patterns)))
+; Per pair (left, right) of element indexes: 1 when the attribute differs between them.
+(defn gab_rows_float :context value
+  [(rows : {:offsets (array int) :values (array float)}) (tolerance : float) (left : (array int)) (right : (array int))]
+  (let* [count (int/sub (array/count rows.offsets) 1)
+         widest (if (int/eq count 0) 0 (array/max (exact (map (fn [(i : int)] (gab_len rows.offsets i)) (array/range count :type int)))))
+         start (exact (map (fn [(l : int) (r : int)] (if (int/eq (gab_len rows.offsets l) (gab_len rows.offsets r)) 0 1)) left right))]
+    (get (iterate widest {:k 0 :d start}
+      (fn [(state : {:k int :d (array int)})]
+        {:k (int/add state.k 1)
+         :d (exact (map (fn [(l : int) (r : int) (previous : int)]
+              (if (and (int/lt state.k (gab_len rows.offsets l)) (int/eq (gab_len rows.offsets l) (gab_len rows.offsets r)))
+                (if (> (abs (- (array/nth rows.values (int/add (array/nth rows.offsets l) state.k))
+                               (array/nth rows.values (int/add (array/nth rows.offsets r) state.k)))) tolerance) 1 previous)
+                previous))
+              left right state.d))})) :d)))
+(defn gab_rows_int :context value
+  [(rows : {:offsets (array int) :values (array int)}) (left : (array int)) (right : (array int))]
+  (let* [count (int/sub (array/count rows.offsets) 1)
+         widest (if (int/eq count 0) 0 (array/max (exact (map (fn [(i : int)] (gab_len rows.offsets i)) (array/range count :type int)))))
+         start (exact (map (fn [(l : int) (r : int)] (if (int/eq (gab_len rows.offsets l) (gab_len rows.offsets r)) 0 1)) left right))]
+    (get (iterate widest {:k 0 :d start}
+      (fn [(state : {:k int :d (array int)})]
+        {:k (int/add state.k 1)
+         :d (exact (map (fn [(l : int) (r : int) (previous : int)]
+              (if (and (int/lt state.k (gab_len rows.offsets l)) (int/eq (gab_len rows.offsets l) (gab_len rows.offsets r)))
+                (if (int/eq (array/nth rows.values (int/add (array/nth rows.offsets l) state.k))
+                            (array/nth rows.values (int/add (array/nth rows.offsets r) state.k))) previous 1)
+                previous))
+              left right state.d))})) :d)))
+(defn gab_differs :context sop
+  [(geo : geometry) (owner : text) (name : text) (kind : text) (tolerance : float) (left : (array int)) (right : (array int))]
+  (cond
+    (and (equal? owner "point") (equal? name "P"))
+      (let* [p (sop/attr geo :P)]
+        (exact (map (fn [(l : int) (r : int)]
+          (let* [a (array/nth p l) b (array/nth p r)]
+            (if (or (> (abs (- a.x b.x)) tolerance) (or (> (abs (- a.y b.y)) tolerance) (> (abs (- a.z b.z)) tolerance))) 1 0)))
+          left right)))
+    (equal? kind "float")
+      (let* [p (sop/attr geo name :owner owner :type float)]
+        (exact (map (fn [(l : int) (r : int)] (if (> (abs (- (array/nth p l) (array/nth p r))) tolerance) 1 0)) left right)))
+    (equal? kind "int")
+      (let* [p (sop/attr geo name :owner owner :type int)]
+        (exact (map (fn [(l : int) (r : int)] (if (int/eq (array/nth p l) (array/nth p r)) 0 1)) left right)))
+    (equal? kind "text")
+      (let* [p (sop/attr geo name :owner owner :type text)
+             ids (array/index_of p p)]
+        (exact (map (fn [(l : int) (r : int)] (if (int/eq (array/nth ids l) (array/nth ids r)) 0 1)) left right)))
+    (equal? kind "vec2")
+      (let* [p (sop/attr geo name :owner owner :type vec2)]
+        (exact (map (fn [(l : int) (r : int)]
+          (let* [a (array/nth p l) b (array/nth p r)]
+            (if (or (> (abs (- a.x b.x)) tolerance) (> (abs (- a.y b.y)) tolerance)) 1 0)))
+          left right)))
+    (equal? kind "vec3")
+      (let* [p (sop/attr geo name :owner owner :type vec3)]
+        (exact (map (fn [(l : int) (r : int)]
+          (let* [a (array/nth p l) b (array/nth p r)]
+            (if (or (> (abs (- a.x b.x)) tolerance) (or (> (abs (- a.y b.y)) tolerance) (> (abs (- a.z b.z)) tolerance))) 1 0)))
+          left right)))
+    (equal? kind "vec4")
+      (let* [p (sop/attr geo name :owner owner :type vec4)]
+        (exact (map (fn [(l : int) (r : int)]
+          (let* [a (array/nth p l) b (array/nth p r)]
+            (if (or (or (> (abs (- a.x b.x)) tolerance) (> (abs (- a.y b.y)) tolerance))
+                    (or (> (abs (- a.z b.z)) tolerance) (> (abs (- a.w b.w)) tolerance))) 1 0)))
+          left right)))
+    :else left))
+(defn gab_or :context value [(a : (array int)) (b : (array int))]
+  (exact (map (fn [(x : int) (y : int)] (int/or x y)) a b)))
+; Edge mask of one attribute plane. c carries the edge / corner facts shared by all planes.
+(defn gab_plane :context sop
+  [(geo : geometry)
+   (c : {:edges int :ev (array int) :lead (array int) :live (array int) :ea (array int) :eb (array int)
+         :prim (array int) :next (array int) :vp (array int)})
+   (owner : text) (name : text) (kind : text) (tolerance : float)]
+  (let* [corners (array/count c.ev)]
+    (cond
+      (equal? owner "point")
+        (gab_differs geo owner name kind tolerance c.ea c.eb)
+      (equal? owner "primitive")
+        (let* [left (exact (map (fn [(v : int)] (array/nth c.prim (array/nth c.lead v))) (array/range corners :type int)))
+               right c.prim
+               d (gab_differs geo owner name kind tolerance left right)]
+          (exact (map (fn [(n : int)] (if (int/gt n 0) 1 0))
+            (array/scatter_add c.ev (exact (map (fn [(x : int) (l : int)] (int/mul x l)) d c.live)) c.edges))))
+      :else
+        (let* [vertex_range (array/range corners :type int)
+               start_a (exact (map (fn [(v : int)] (if (int/eq (array/nth c.vp v) (array/nth c.ea (array/nth c.ev v))) 1 0)) vertex_range))
+               ref_start_a (exact (map (fn [(v : int)]
+                 (let* [r (array/nth c.lead v)]
+                   (if (int/eq (array/nth c.vp r) (array/nth c.ea (array/nth c.ev v))) 1 0))) vertex_range))
+               nx (exact (map (fn [(v : int)] (array/nth c.next v)) vertex_range))
+               rnx (exact (map (fn [(v : int)] (array/nth c.next (array/nth c.lead v))) vertex_range))
+               xa (exact (map (fn [(v : int) (s : int) (n : int)] (if (int/eq s 1) v n)) vertex_range start_a nx))
+               xb (exact (map (fn [(v : int) (s : int) (n : int)] (if (int/eq s 1) n v)) vertex_range start_a nx))
+               ra (exact (map (fn [(v : int) (s : int) (n : int)] (if (int/eq s 1) (array/nth c.lead v) n)) vertex_range ref_start_a rnx))
+               rb (exact (map (fn [(v : int) (s : int) (n : int)] (if (int/eq s 1) n (array/nth c.lead v))) vertex_range ref_start_a rnx))
+               negative (exact (map (fn [(a : int) (b : int) (x : int)]
+                 (if (or (int/lt a 0) (or (int/lt b 0) (int/lt x 0))) 1 0)) xa xb ra))
+
+               xa_s (exact (map gab_safe xa)) xb_s (exact (map gab_safe xb)) ra_s (exact (map gab_safe ra)) rb_s (exact (map gab_safe rb))
+               first_pair (gab_differs geo owner name kind tolerance ra_s xa_s)
+               second_pair (gab_differs geo owner name kind tolerance rb_s xb_s)
+               rb_bad (exact (map (fn [(b : int) (y : int)] (if (or (int/lt b 0) (int/lt y 0)) 1 0)) xb rb))
+               invalid (gab_or negative rb_bad)
+               changed (gab_or first_pair second_pair)
+               d (gab_or invalid changed)]
+          (exact (map (fn [(n : int)] (if (int/gt n 0) 1 0))
+            (array/scatter_add c.ev (exact (map (fn [(x : int) (l : int)] (int/mul x l)) d c.live)) c.edges)))))))
+(defnode sop/group_from_attribute_boundary :label "Group from Attribute Boundary" :category ["Group" "Create"]
+  [(in0 : geometry)
+   (owner : text "Edges" :label "Group type" :choices ["Points" "Vertices" "Primitives" "Edges"])
+   (name : text "attribute_boundary" :label "Group name")
+   (attributes : text "" :label "Attributes (owner, pattern)" :kind encoded :normalize gab_normalize)
+   (tolerance : float 0.00001 :label "Tolerance" :min 0 :max 1 :hard_min 0)
+   (include_unshared_edges : bool false :label "Include unshared edges")
+   (include_all_unshared_curve_edges : bool false :label "Include all unshared curve edges")
+   (include_all_primitives_sharing_boundary_points : bool false :label "Include primitives sharing boundary points")]
+  (let* [rows (text/table_decode attributes)
+         pattern_errors (fold [first ""] [row rows]
+           (if (equal? first "") (text/glob_error (nth row 1)) first))
+         has_detail (fold [found false] [row rows] (or found (equal? (nth row 0) "detail")))]
+    (cond
+      (text/blank? name) (gab_error "Group from Attribute Boundary: empty output name")
+      (or (< tolerance 0.0) (not (= (- tolerance tolerance) 0.0)))
+        (gab_error "Group from Attribute Boundary: tolerance must be finite and non-negative")
+      (equal? owner "Vertices") (gab_error "Group from Attribute Boundary: vertex output is not supported")
+      (and include_all_unshared_curve_edges (not include_unshared_edges))
+        (gab_error "Group from Attribute Boundary: all curve edges require unshared edges")
+      (and include_all_primitives_sharing_boundary_points (not (equal? owner "Primitives")))
+        (gab_error "Group from Attribute Boundary: point-sharing expansion requires primitive output")
+      has_detail (gab_error "Group from Attribute Boundary: detail attributes have no topology boundary")
+      (not (equal? pattern_errors "")) (gab_error pattern_errors)
+      :else
+        (let* [adjacency (sop/adjacency in0)
+               topo (sop/topology in0)
+               points (sop/count in0 :points)
+               vertices (sop/count in0 :vertices)
+               prims (sop/count in0 :primitives)
+               edge_count (sop/count in0 :edges)
+               usage (edge_usage adjacency edge_count)
+               usage_offsets (array/scan_sum usage)
+               order (array/grade adjacency.edge_of_vertex)
+               unused (array/sum (exact (map (fn [(k : int)] (if (int/lt k 0) 1 0)) adjacency.edge_of_vertex)))
+               first_vertex (exact (map (fn [(e : int)] (array/nth order (int/add unused (array/nth usage_offsets e))))
+                 (array/range edge_count :type int)))
+               ev (exact (map (fn [(e : int)] (if (int/lt e 0) 0 e)) adjacency.edge_of_vertex))
+               live (exact (map (fn [(e : int)] (if (and (int/ge e 0) (int/ge (array/nth usage (if (int/lt e 0) 0 e)) 2)) 1 0)) adjacency.edge_of_vertex))
+               leader (exact (map (fn [(e : int)] (array/nth first_vertex e)) ev))
+               context {:edges edge_count :ev ev :lead leader :live live :ea adjacency.edge_a :eb adjacency.edge_b
+                        :prim adjacency.primitive_of_vertex :next adjacency.next_vertex :vp topo.vertex_points}
+               zero (array/int edge_count 0)
+               ; a one-point geometry with a point group named P: a rule matches the position plane exactly
+               ; when its pattern matches that group name
+               probe (sop/with_group (sop/mesh :points (array/vec3 1 [0.0 0.0 0.0]) :vertex_points (array/int 0)
+                                       :primitive_offsets (array/int 1) :kinds (array/int 0))
+                       (array/int 1 1) :name "P" :owner "point")
+               ; one zone step per rule, one inner step per matched attribute name; the states carry the
+               ; geometry so the zone bodies may read attributes by name
+               point_scan (fold [state {:geometry in0 :mask zero :hit (array/int 1 0)}]
+                            [pattern (gab_owner_rows rows "point")]
+                            (let* [names (sop/attr_names state.geometry pattern :owner "point")
+                                   inner (fold [step {:geometry state.geometry :mask state.mask :hit state.hit}]
+                                           [attribute names]
+                                           {:geometry (sop/with_attr step.geometry "__gab_step" (array/int 1 0) :owner "detail" :type int)
+                                            :mask (gab_or step.mask (gab_plane step.geometry context "point" attribute
+                                                    (sop/attr_type step.geometry attribute :owner "point") tolerance))
+                                            :hit (array/int 1 1)})]
+                              {:geometry (sop/with_attr inner.geometry "__gab_step" (array/int 1 0) :owner "detail" :type int)
+                               :mask inner.mask :hit inner.hit}))
+               position_plane false
+               attribute_edges point_scan.mask
+               planes (array/nth point_scan.hit 0)
+               ; the zone's geometry carries a scratch marker; publishing on it keeps the zone a graph zone
+               published (sop/delete_attr point_scan.geometry "__gab_step" :owner "detail")
+               ; unshared edges: the sole corner of a used-once edge
+               unshared (if include_unshared_edges
+                 (exact (map (fn [(e : int) (u : int)]
+                   (if (int/eq u 1)
+                     (let* [v (array/nth first_vertex e)
+                            p (array/nth adjacency.primitive_of_vertex v)
+                            kind (array/nth topo.kinds p)
+                            first (array/nth topo.primitive_offsets p)
+                            last (array/nth topo.primitive_offsets (int/add p 1))]
+                       (cond (int/eq kind 0) 1 (int/eq kind 2) 1
+                             (int/eq kind 1) (if include_all_unshared_curve_edges 1
+                                               (if (or (int/eq v first) (int/eq v (int/sub last 2))) 1 0))
+                             :else 0))
+                     0))
+                   (array/range edge_count :type int) usage))
+                 zero)
+               edge_mask (gab_or attribute_edges unshared)]
+          (cond
+            (and (int/gt (count rows) 0) (int/eq planes 0))
+              (gab_error "Group from Attribute Boundary: attribute patterns matched nothing")
+            (equal? owner "Edges") (sop/with_group published edge_mask :name name :owner "edge")
+            :else
+              (let* [point_hits (array/segment_sum
+                      (exact (map (fn [(e : int)] (array/nth edge_mask e)) adjacency.point_edges))
+                      adjacency.point_edge_offsets)
+                     point_mask (exact (map (fn [(h : int)] (if (int/gt h 0) 1 0)) point_hits))]
+                (if (equal? owner "Points")
+                  (sop/with_group published point_mask :name name :owner "point")
+                  (let* [corner (if include_all_primitives_sharing_boundary_points
+                                  (exact (map (fn [(p : int)] (array/nth point_mask p)) topo.vertex_points))
+                                  (exact (map (fn [(e : int)] (if (int/lt e 0) 0 (array/nth edge_mask e))) adjacency.edge_of_vertex)))
+                         hits (array/segment_sum corner topo.primitive_offsets)]
+                    (sop/with_group published (exact (map (fn [(h : int)] (if (int/gt h 0) 1 0)) hits))
+                      :name name :owner "primitive")))))))))

@@ -1,0 +1,337 @@
+; Whole-node draft. Discrete Laplacian of a point attribute (or P): uniform (mean-value umbrella, neighbours from
+; sop/adjacency) or cotangent (the ear-clipped triangulation of each polygon, cotangent weights, mixed Voronoi
+; areas), optionally normalised and limited to a point group. Sums run per point in the native incidence order by
+; counted rounds so the arithmetic keeps its order and its arm64 multiply-add fusion.
+; Limits: polygons are triangulated by clipping the first ear (exact for convex polygons and triangles);
+; the per-point fan connectivity walk of Topology_index is not repeated (manifold counts and winding are).
+(defn lap_error :context value [(reason : text)]
+  (error "invalid_laplacian" "attribute_laplacian could not produce valid geometry"
+    :cause (str "attribute_laplacian [invalid_laplacian]: " reason)))
+; "" when the polygon surface is a manifold with consistent winding, else the refusal.
+(defn lap_manifold :context sop [(geo : geometry)]
+  (let* [topo (sop/topology geo)
+         adjacency (sop/adjacency geo)
+         prims (sop/count geo :primitives)
+         points (sop/count geo :points)
+         vertices (sop/count geo :vertices)
+         edge_count (sop/count geo :edges)
+         usage (edge_usage adjacency edge_count)
+         curves (array/sum (exact (map (fn [(k : int)] (if (int/eq k 0) 0 1)) topo.kinds)))
+         starts (array/slice topo.primitive_offsets 0 prims)
+         ends (array/slice topo.primitive_offsets 1 prims)
+         short (array/sum (exact (map (fn [(a : int) (b : int)] (if (int/lt (int/sub b a) 3) 1 0)) starts ends)))
+         ; a point repeated inside a polygon: equal (primitive, point) keys among the corners
+         keys (exact (map (fn [(p : int) (q : int)] (int/add (int/mul p (int/add points 1)) q))
+                (array/range vertices :type int) topo.vertex_points))
+         sorted (int_gather keys (array/grade keys))
+         repeats (array/sum (exact (map (fn [(i : int)]
+           (if (int/eq i 0) 0 (if (int/eq (array/nth sorted i) (array/nth sorted (int/sub i 1))) 1 0)))
+           (array/range vertices :type int))))
+         overused (array/sum (exact (map (fn [(u : int)] (if (int/gt u 2) 1 0)) usage)))
+         order (array/grade adjacency.edge_of_vertex)
+         unused (array/sum (exact (map (fn [(k : int)] (if (int/lt k 0) 1 0)) adjacency.edge_of_vertex)))
+         usage_offsets (array/scan_sum usage)
+         winding (array/sum (exact (map (fn [(e : int) (u : int)]
+           (if (int/eq u 2)
+             (let* [first (int/add unused (array/nth usage_offsets e))
+                    left (array/nth order first)
+                    right (array/nth order (int/add first 1))
+                    ln (array/nth adjacency.next_vertex left)
+                    rn (array/nth adjacency.next_vertex right)]
+               (if (or (int/lt ln 0) (int/lt rn 0)) 2
+                 (if (and (int/eq (array/nth topo.vertex_points left) (array/nth topo.vertex_points rn))
+                          (int/eq (array/nth topo.vertex_points ln) (array/nth topo.vertex_points right))) 0 1)))
+             0))
+           (array/range edge_count :type int) usage)))
+         boundary_edges (exact (map (fn [(u : int)] (if (int/eq u 1) 1 0)) usage))
+         boundary_count (array/segment_sum (exact (map (fn [(e : int)] (array/nth boundary_edges e)) adjacency.point_edges))
+                          adjacency.point_edge_offsets)
+         edges_at (exact (map (fn [(p : int)] (int/sub (array/nth adjacency.point_edge_offsets (int/add p 1))
+                                                       (array/nth adjacency.point_edge_offsets p)))
+                    (array/range points :type int)))
+         faces_at (exact (map (fn [(p : int)] (int/sub (array/nth adjacency.point_vertex_offsets (int/add p 1))
+                                                       (array/nth adjacency.point_vertex_offsets p)))
+                    (array/range points :type int)))
+         bad_boundary (array/sum (exact (map (fn [(b : int)] (if (or (int/eq b 0) (int/eq b 2)) 0 1)) boundary_count)))
+         bad_incidence (array/sum (exact (map (fn [(b : int) (e : int) (f : int)]
+           (if (int/eq b 0) (if (int/eq e f) 0 1) (if (int/eq e (int/add f 1)) 0 1)))
+           boundary_count edges_at faces_at)))]
+    (cond (int/gt curves 0) "curves are not part of a polygon surface"
+          (int/gt short 0) "a polygon has fewer than three corners"
+          (int/gt repeats 0) "a polygon references one point more than once"
+          (int/gt overused 0) "a polygon edge has more than two incident faces"
+          (int/gt winding 0) "adjacent polygons have inconsistent winding"
+          (int/gt bad_boundary 0) "a boundary point does not have exactly two boundary edges"
+          (int/gt bad_incidence 0) "a point has non-manifold polygon incidence"
+          :else "")))
+; The point attribute as four float planes (zero padded) and its width, or width 0 with the refusal.
+(defn lap_source :context sop [(geo : geometry) (name : text)]
+  (let* [kind (if (equal? name "P") "vec3" (if (sop/has_attr geo name) (sop/attr_type geo name :owner "point") "missing"))
+         count (sop/count geo :points)
+         zero (array/float count 0.0)]
+    (cond
+      (equal? name "P")
+        (let* [p (sop/attr geo :P)]
+          {:width 3 :x (exact (map (fn [(v : vec3)] v.x) p)) :y (exact (map (fn [(v : vec3)] v.y) p))
+           :z (exact (map (fn [(v : vec3)] v.z) p)) :w zero :reason ""})
+      (equal? kind "float") {:width 1 :x (sop/attr geo name :owner "point" :type float) :y zero :z zero :w zero :reason ""}
+      (equal? kind "int")
+        {:width 1 :x (exact (map (fn [(v : int)] (float v)) (sop/attr geo name :owner "point" :type int)))
+         :y zero :z zero :w zero :reason ""}
+      (equal? kind "vec2")
+        (let* [p (sop/attr geo name :owner "point" :type vec2)]
+          {:width 2 :x (exact (map (fn [(v : vec2)] v.x) p)) :y (exact (map (fn [(v : vec2)] v.y) p)) :z zero :w zero :reason ""})
+      (equal? kind "vec3")
+        (let* [p (sop/attr geo name :owner "point" :type vec3)]
+          {:width 3 :x (exact (map (fn [(v : vec3)] v.x) p)) :y (exact (map (fn [(v : vec3)] v.y) p))
+           :z (exact (map (fn [(v : vec3)] v.z) p)) :w zero :reason ""})
+      (equal? kind "vec4")
+        (let* [p (sop/attr geo name :owner "point" :type vec4)]
+          {:width 4 :x (exact (map (fn [(v : vec4)] v.x) p)) :y (exact (map (fn [(v : vec4)] v.y) p))
+           :z (exact (map (fn [(v : vec4)] v.z) p)) :w (exact (map (fn [(v : vec4)] v.w) p)) :reason ""})
+      (equal? kind "missing")
+        {:width 0 :x zero :y zero :z zero :w zero :reason (str "point source attribute " (text/repr name) " is missing")}
+      :else
+        {:width 0 :x zero :y zero :z zero :w zero
+         :reason (str "point source attribute " (text/repr name) " must use scalar or fixed-width numeric storage")})))
+; Row id of every element of a ragged expansion of counts.
+(defn lap_rows :context value [(counts : (array int))]
+  (let* [rows (array/count counts)
+         total (array/sum counts)
+         offsets (array/scan_sum counts)
+         starts (exact (map (fn [(r : int)] (array/nth offsets r)) (array/range rows :type int)))
+         prefix (array/scan_sum (array/scatter_add starts (array/int rows 1) (int/add total 1)))]
+    (exact (map (fn [(s : int)] (int/sub (array/nth prefix (int/add s 1)) 1)) (array/range total :type int)))))
+(defn lap_times :context value [(v : float) (f : float)] (* v f))
+(defn lap_pick :context value [(l : int) (a : float) (b : float) (c : float)]
+  (if (int/eq l 0) a (if (int/eq l 1) b c)))
+(defn lap_pick_int :context value [(l : int) (a : int) (b : int) (c : int)]
+  (if (int/eq l 0) a (if (int/eq l 1) b c)))
+; The existing output attribute as planes (zeros when absent); ok false when its storage does not fit the width.
+(defn lap_existing :context sop [(geo : geometry) (name : text) (width : int)]
+  (let* [count (sop/count geo :points)
+         zero (array/float count 0.0)
+         present (sop/has_attr geo name :owner "point")
+         kind (if present (sop/attr_type geo name :owner "point") "")
+         wanted (cond (int/eq width 1) "float" (int/eq width 2) "vec2" (int/eq width 3) "vec3" :else "vec4")]
+    (cond
+      (not present) {:ok true :x zero :y zero :z zero :w zero}
+      (not (equal? kind wanted)) {:ok false :x zero :y zero :z zero :w zero}
+      (int/eq width 1) {:ok true :x (sop/attr geo name :owner "point" :type float) :y zero :z zero :w zero}
+      (int/eq width 2)
+        (let* [p (sop/attr geo name :owner "point" :type vec2)]
+          {:ok true :x (exact (map (fn [(v : vec2)] v.x) p)) :y (exact (map (fn [(v : vec2)] v.y) p)) :z zero :w zero})
+      (int/eq width 3)
+        (let* [p (sop/attr geo name :owner "point" :type vec3)]
+          {:ok true :x (exact (map (fn [(v : vec3)] v.x) p)) :y (exact (map (fn [(v : vec3)] v.y) p))
+           :z (exact (map (fn [(v : vec3)] v.z) p)) :w zero})
+      :else
+        (let* [p (sop/attr geo name :owner "point" :type vec4)]
+          {:ok true :x (exact (map (fn [(v : vec4)] v.x) p)) :y (exact (map (fn [(v : vec4)] v.y) p))
+           :z (exact (map (fn [(v : vec4)] v.z) p)) :w (exact (map (fn [(v : vec4)] v.w) p))}))))
+; Selected points take the new plane, the others keep the existing one.
+(defn lap_select :context value [(mask : (array int)) (fresh : (array float)) (old : (array float))]
+  (exact (map (fn [(s : int) (v : float) (o : float)] (if (int/eq s 1) v o)) mask fresh old)))
+; Uniform umbrella of one plane: round k adds the k-th neighbour of every point, in edge-table order.
+(defn lap_uniform_plane :context value
+  [(plane : (array float)) (offsets : (array int)) (slot_neighbour : (array int)) (degree : (array int)) (rounds : int)]
+  (let* [points (array/count plane)
+         indices (array/range points :type int)]
+    (get (iterate rounds {:k 0 :out (array/float points 0.0)}
+      (fn [(state : {:k int :out (array float)})]
+        (let* [slot (exact (map (fn [(p : int) (d : int)]
+                      (if (int/lt state.k d) (int/add (array/nth offsets p) state.k) -1)) indices degree))]
+          {:k (int/add state.k 1)
+           :out (exact (map (fn [(p : int) (s : int) (o : float)]
+                  (if (int/lt s 0) o
+                    (- (+ o (array/nth plane (array/nth slot_neighbour s))) (array/nth plane p))))
+                  indices slot state.out))}))) :out)))
+(defn lap_uniform :context sop
+  [(geo : geometry) (sx : (array float)) (sy : (array float)) (sz : (array float)) (sw : (array float)) (normalize : bool)]
+  (let* [adjacency (sop/adjacency geo)
+         points (sop/count geo :points)
+         offsets adjacency.point_edge_offsets
+         degree (exact (map (fn [(p : int)] (int/sub (array/nth offsets (int/add p 1)) (array/nth offsets p)))
+                  (array/range points :type int)))
+         slot_point (lap_rows degree)
+         slot_neighbour (exact (map (fn [(s : int)]
+           (let* [p (array/nth slot_point s) e (array/nth adjacency.point_edges s)]
+             (if (int/eq (array/nth adjacency.edge_a e) p) (array/nth adjacency.edge_b e) (array/nth adjacency.edge_a e))))
+           (array/range (array/count adjacency.point_edges) :type int)))
+         rounds (if (int/eq points 0) 0 (array/max degree))
+         factor (exact (map (fn [(d : int)] (if (and normalize (int/gt d 0)) (/ 1.0 (float d)) 1.0)) degree))]
+    {:x (exact (map lap_times (lap_uniform_plane sx offsets slot_neighbour degree rounds) factor))
+     :y (exact (map lap_times (lap_uniform_plane sy offsets slot_neighbour degree rounds) factor))
+     :z (exact (map lap_times (lap_uniform_plane sz offsets slot_neighbour degree rounds) factor))
+     :w (exact (map lap_times (lap_uniform_plane sw offsets slot_neighbour degree rounds) factor))}))
+; One component of the cotangent sum: round k folds the k-th incident triangle corner of every point.
+(defn lap_cotan_plane :context value
+  [(plane : (array float)) (offsets : (array int)) (order : (array int)) (counts : (array int)) (rounds : int)
+   (na : (array int)) (nb : (array int)) (wa : (array float)) (wb : (array float)) (corner_point : (array int))]
+  (let* [points (array/count plane)
+         indices (array/range points :type int)]
+    (get (iterate rounds {:k 0 :out (array/float points 0.0)}
+      (fn [(state : {:k int :out (array float)})]
+        (let* [corner (exact (map (fn [(p : int) (n : int)]
+                        (if (int/lt state.k n) (array/nth order (int/add (array/nth offsets p) state.k)) -1)) indices counts))]
+          {:k (int/add state.k 1)
+           :out (exact (map (fn [(p : int) (c : int) (o : float)]
+                  (if (int/lt c 0) o
+                    (let* [center (array/nth plane p)]
+                      (fma (array/nth wb c) (- (array/nth plane (array/nth nb c)) center)
+                        (fma (array/nth wa c) (- (array/nth plane (array/nth na c)) center) o)))))
+                  indices corner state.out))}))) :out)))
+(defn lap_vec_diff :context value [(a : vec3) (b : vec3)] (- a b))
+(defn lap_sumsq :context value [(d : vec3)] (fma d.z d.z (fma d.y d.y (* d.x d.x))))
+; Cotangent Laplacian of the four planes. {:ok :reason :x :y :z :w}.
+(defn lap_cotan :context sop
+  [(geo : geometry) (mask : (array int)) (sx : (array float)) (sy : (array float)) (sz : (array float))
+   (sw : (array float)) (positive : bool) (normalize : bool)]
+  (let* [topo (sop/topology geo)
+         points (sop/count geo :points)
+         prims (sop/count geo :primitives)
+         positions (sop/attr geo :P)
+         starts (array/slice topo.primitive_offsets 0 prims)
+         ends (array/slice topo.primitive_offsets 1 prims)
+         sizes (exact (map (fn [(a : int) (b : int)] (int/sub b a)) starts ends))
+         counts (exact (map (fn [(n : int)] (int/sub n 2)) sizes))
+         tri_offsets (array/scan_sum counts)
+         tri_prim (lap_rows counts)
+         triangles (array/sum counts)
+         tri_range (array/range triangles :type int)
+         local (exact (map (fn [(tri : int) (p : int)] (int/sub tri (array/nth tri_offsets p))) tri_range tri_prim))
+         ; first clipped ear per polygon: (last, j, j+1) while j < size - 3, then the remaining triangle
+         slot_a (exact (map (fn [(p : int) (j : int)]
+           (if (int/lt j (int/sub (array/nth sizes p) 3)) (int/add (array/nth starts p) (int/sub (array/nth sizes p) 1))
+             (int/add (array/nth starts p) (int/sub (array/nth sizes p) 3)))) tri_prim local))
+         slot_b (exact (map (fn [(p : int) (j : int)]
+           (if (int/lt j (int/sub (array/nth sizes p) 3)) (int/add (array/nth starts p) j)
+             (int/add (array/nth starts p) (int/sub (array/nth sizes p) 2)))) tri_prim local))
+         slot_c (exact (map (fn [(p : int) (j : int)]
+           (if (int/lt j (int/sub (array/nth sizes p) 3)) (int/add (array/nth starts p) (int/add j 1))
+             (int/add (array/nth starts p) (int/sub (array/nth sizes p) 1)))) tri_prim local))
+         ta (int_gather topo.vertex_points slot_a)
+         tb (int_gather topo.vertex_points slot_b)
+         tc (int_gather topo.vertex_points slot_c)
+         scale (if (int/eq points 0) 0.0 (array/max (exact (map (fn [(p : vec3) ]
+                   (max (abs p.x) (max (abs p.y) (abs p.z)))) positions))))
+         safe (if (= scale 0.0) 1.0 scale)
+         scaled (exact (map (fn [(p : vec3)] (/ p safe)) positions))
+         u (exact (map (fn [(a : int) (b : int)] (- (array/nth scaled b) (array/nth scaled a))) ta tb))
+         v (exact (map (fn [(a : int) (c : int)] (- (array/nth scaled c) (array/nth scaled a))) ta tc))
+         double_area (exact (map (fn [(p : vec3) (q : vec3)]
+           (let* [cx (fma (* -1.0 p.z) q.y (* p.y q.z))
+                  cy (fma (* -1.0 p.x) q.z (* p.z q.x))
+                  cz (fma (* -1.0 p.y) q.x (* p.x q.y))]
+             (hypot cx (hypot cy cz)))) u v))
+         uv (exact (map (fn [(p : vec3) (q : vec3)] (fma p.z q.z (fma p.y q.y (* p.x q.x)))) u v))
+         uu (exact (map lap_sumsq u))
+         vv (exact (map lap_sumsq v))
+         bad_triangles (array/sum (exact (map (fn [(a : float)] (if (> a 0.0) 0 1)) double_area)))
+         ca (exact (map (fn [(d : float) (x : float)] (/ x d)) double_area uv))
+         cb (exact (map (fn [(d : float) (x : float) (y : float)] (/ (- x y) d)) double_area uu uv))
+         cc (exact (map (fn [(d : float) (x : float) (y : float)] (/ (- x y) d)) double_area vv uv))
+         ; corners: 3 per triangle, corner c = 3 t + l
+         corner_total (int/mul 3 triangles)
+         corner_range (array/range corner_total :type int)
+         ct (exact (map (fn [(c : int)] (int/div c 3)) corner_range))
+         cl (exact (map (fn [(c : int)] (int/mod c 3)) corner_range))
+         corner_point (exact (map (fn [(tri : int) (l : int)]
+           (lap_pick_int l (array/nth ta tri) (array/nth tb tri) (array/nth tc tri))) ct cl))
+         na (exact (map (fn [(tri : int) (l : int)]
+           (lap_pick_int l (array/nth tb tri) (array/nth tc tri) (array/nth ta tri))) ct cl))
+         nb (exact (map (fn [(tri : int) (l : int)]
+           (lap_pick_int l (array/nth tc tri) (array/nth ta tri) (array/nth tb tri))) ct cl))
+         corner_cot (exact (map (fn [(tri : int) (l : int)]
+           (lap_pick l (array/nth ca tri) (array/nth cb tri) (array/nth cc tri))) ct cl))
+         cot_na (exact (map (fn [(tri : int) (l : int)]
+           (lap_pick l (array/nth cb tri) (array/nth cc tri) (array/nth ca tri))) ct cl))
+         cot_nb (exact (map (fn [(tri : int) (l : int)]
+           (lap_pick l (array/nth cc tri) (array/nth ca tri) (array/nth cb tri))) ct cl))
+         wa (exact (map (fn [(w : float)] (if (and positive (< w 0.0)) 0.0 w)) cot_nb))
+         wb (exact (map (fn [(w : float)] (if (and positive (< w 0.0)) 0.0 w)) cot_na))
+         len_a (exact (map (fn [(p : int) (n : int)] (lap_sumsq (- (array/nth scaled n) (array/nth scaled p)))) corner_point na))
+         len_b (exact (map (fn [(p : int) (n : int)] (lap_sumsq (- (array/nth scaled n) (array/nth scaled p)))) corner_point nb))
+         tri_negative (exact (map (fn [(x : float) (y : float) (z : float)]
+           (if (or (< x 0.0) (or (< y 0.0) (< z 0.0))) 1 0)) ca cb cc))
+         order (array/grade corner_point)
+         corners_at (array/scatter_add corner_point (array/int corner_total 1) points)
+         offsets (array/scan_sum corners_at)
+         rounds (if (int/eq points 0) 0 (array/max corners_at))
+         area_terms (exact (map (fn [(tri : int) (c : int) (cot : float)]
+           (if (int/eq (array/nth tri_negative tri) 1)
+             (/ (array/nth double_area tri) (if (< cot 0.0) 4.0 8.0))
+             (/ (fma (array/nth len_b c) (array/nth cot_na c) (* (array/nth len_a c) (array/nth cot_nb c))) 8.0)))
+           ct corner_range corner_cot))
+         areas (array/segment_sum (exact (map (fn [(c : int)] (array/nth area_terms c)) order)) offsets)
+         bad_area (if normalize
+           (array/sum (exact (map (fn [(s : int) (n : int) (a : float)]
+             (if (and (int/eq s 1) (and (int/gt n 0) (not (> a 0.0)))) 1 0)) mask corners_at areas)))
+           0)
+         factor (exact (map (fn [(n : int) (a : float)]
+           (if (and normalize (int/gt n 0)) (/ (/ (/ 0.5 a) scale) scale) 0.5)) corners_at areas))
+         ox (lap_cotan_plane sx offsets order corners_at rounds na nb wa wb corner_point)
+         oy (lap_cotan_plane sy offsets order corners_at rounds na nb wa wb corner_point)
+         oz (lap_cotan_plane sz offsets order corners_at rounds na nb wa wb corner_point)
+         ow (lap_cotan_plane sw offsets order corners_at rounds na nb wa wb corner_point)]
+    (cond
+      (and (int/gt triangles 0) (= scale 0.0)) {:ok false :reason "surface triangles are metrically degenerate" :x sx :y sy :z sz :w sw}
+      (int/gt bad_triangles 0)
+        {:ok false :reason "surface contains a degenerate or numerically unrepresentable triangle" :x sx :y sy :z sz :w sw}
+      (int/gt bad_area 0) {:ok false :reason "cotangent laplacian output is not finite" :x sx :y sy :z sz :w sw}
+      :else {:ok true :reason ""
+             :x (exact (map lap_times ox factor)) :y (exact (map lap_times oy factor))
+             :z (exact (map lap_times oz factor)) :w (exact (map lap_times ow factor))})))
+(defn lap_publish :context sop
+  [(geo : geometry) (name : text) (width : int) (mask : (array int)) (fresh : {:x (array float) :y (array float) :z (array float) :w (array float)})
+   (old : {:ok bool :x (array float) :y (array float) :z (array float) :w (array float)})]
+  (let* [x (lap_select mask fresh.x old.x)
+         y (lap_select mask fresh.y old.y)
+         z (lap_select mask fresh.z old.z)
+         w (lap_select mask fresh.w old.w)]
+    (cond
+      (int/eq width 1) (sop/with_attr geo name x :owner "point" :type float)
+      (int/eq width 2)
+        (sop/with_attr geo name (exact (map (fn [(a : float) (b : float)] [a b]) x y)) :owner "point" :type vec2)
+      (int/eq width 3)
+        (sop/with_attr geo name (exact (map (fn [(a : float) (b : float) (c : float)] [a b c]) x y z)) :owner "point" :type vec3)
+      :else
+        (let* [xy (exact (map (fn [(a : float) (b : float)] [a b]) x y))]
+          (sop/with_attr geo name (exact (map (fn [(p : vec2) (c : float) (d : float)] [p.x p.y c d]) xy z w))
+            :owner "point" :type vec4)))))
+(defnode sop/attribute_laplacian :label "Attribute Laplacian" :category ["Attribute" "Filter"]
+  :validate (not (equal? (text/trim output) "P"))
+  :code "E_PARAM" :message "sop/attribute_laplacian: output must be non-empty and not P"
+  [(in0 : geometry)
+   (point_group : text "" :label "Point group")
+   (weighting : text "Cotangent" :label "Weighting" :choices ["Cotangent" "Positive cotangent" "Uniform"])
+   (normalize : bool true :label "Normalize")
+   (source : text "P" :label "Source attribute")
+   (output : text "laplacian" :label "Output attribute")]
+  (let* [group_name (text/trim point_group)
+         output_name (if (text/blank? output) (if (equal? source "P") "laplacian" (str source "_laplacian")) (text/trim output))
+         points (sop/count in0 :points)]
+    (cond
+      (deform_group_missing in0 "point" group_name)
+        (error "missing_group" (str "attribute_laplacian could not find point group " (text/repr group_name)))
+      (text/blank? source) (lap_error "laplacian source name is empty")
+      (or (text/blank? output_name) (equal? output_name "P"))
+        (lap_error "laplacian output name must be non-empty and not P")
+      :else
+        (let* [data (lap_source in0 source)
+               old (lap_existing in0 output_name (if (int/eq data.width 0) 1 data.width))
+               mask (deform_mask in0 "point" group_name)
+               manifold (lap_manifold in0)]
+          (cond
+            (int/eq data.width 0) (lap_error data.reason)
+            (not old.ok) (lap_error (str "point output attribute " (text/repr output_name) " has incompatible storage"))
+            (not (equal? manifold "")) (lap_error manifold)
+            (equal? weighting "Uniform")
+              (lap_publish in0 output_name data.width mask
+                (lap_uniform in0 data.x data.y data.z data.w normalize) old)
+            :else
+              (let* [result (lap_cotan in0 mask data.x data.y data.z data.w
+                              (equal? weighting "Positive cotangent") normalize)]
+                (if result.ok
+                  (lap_publish in0 output_name data.width mask result old)
+                  (lap_error result.reason))))))))
