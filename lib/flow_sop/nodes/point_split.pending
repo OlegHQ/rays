@@ -1,14 +1,427 @@
-; Point Split draft. DONE: selection (point, vertex or primitive group), the no-seam mode (blank Attributes:
-; every selected corner of a point leaves it, the first stays when no corner is unselected), point and
-; edge-group carrying through sop/remap. NOT DONE: seam mode (a nonblank Attributes pattern): the per-point
-; sort by seam tuple, the tolerance clustering (a data-dependent greedy over a growing representative list)
-; and Promote attributes. Those cases return E_UNSUPPORTED here and fail the gate.
-(defn split_safe :context value [(index : int)] (if (int/ge index 0) index 0))
-(defn split_owners :context value [(offsets : (array int)) (total : int)]
+; Whole Point Split port. Native Point_split.point_split_raw: the corners of every point are split into clusters.
+; Without an Attributes pattern a selected corner leaves its point (the first stays when no corner is unselected).
+; With one, the corners of a point are sorted by the matched vertex/primitive attributes and groups (seam tuple,
+; then vertex index) and clustered greedily: unselected corners first, then selected corners that match no
+; unselected representative; a match is the last representative at tolerance 0, else the highest equal one.
+; Seam planes are kept as flat per-vertex float/int planes (text ranked, rows expanded by position, groups 0/1),
+; the lexicographic sort is a chain of stable grades and the greedy scan runs one round per corner rank.
+(defn ps_range :context value [(n : int)] (array/range n :type int))
+(defn ps_owners :context value [(offsets : (array int)) (total : int)]
   (let* [segments (int/sub (array/count offsets) 1)
          starts (exact (map (fn [(p : int)] (array/nth offsets p)) (array/range segments :type int)))
          prefix (array/scan_sum (array/scatter_add starts (array/int segments 1) (int/add total 1)))]
     (exact (map (fn [(s : int)] (int/sub (array/nth prefix (int/add s 1)) 1)) (array/range total :type int)))))
+(defn ps_lens :context value [(offs : (array int))]
+  (exact (map (fn [(d : int)] (int/sub (array/nth offs (int/add d 1)) (array/nth offs d)))
+    (ps_range (int/sub (array/count offs) 1)))))
+(defn ps_error :context value [(reason : text)]
+  (error "invalid_geometry" "point_split could not produce valid geometry"
+    :cause (str "point_split [invalid_geometry]: Point Split " reason)))
+(defn ps_gather_text :context value [(source : (array text)) (idx : (array int))]
+  (exact (map (fn [(k : int)] (array/nth source k)) idx)))
+
+; ---- matched seams: attributes (native attribute order) then groups, vertex or primitive owned
+(defn ps_matched :context sop [(geo : geometry) (pattern : text)]
+  (let* [e (sop/attr_entries geo :owner "any")
+         vn (sop/attr_names geo pattern :owner "vertex")
+         pn (sop/attr_names geo pattern :owner "primitive")
+         ov (array/index_of (array/text 1 "vertex") e.owner)
+         op (array/index_of (array/text 1 "primitive") e.owner)
+         mv (array/index_of vn e.name)
+         mp (array/index_of pn e.name)
+         mask_a (exact (map (fn [(i : int)]
+                  (if (int/ge (array/nth ov i) 0) (if (int/ge (array/nth mv i) 0) 1 0)
+                    (if (int/ge (array/nth op i) 0) (if (int/ge (array/nth mp i) 0) 1 0) 0)))
+                  (ps_range (array/count e.name))))
+         ia (array/compact mask_a)
+         ge (sop/group_entries geo pattern :owner "any")
+         gv (array/index_of (array/text 1 "vertex") ge.owners)
+         gp (array/index_of (array/text 1 "primitive") ge.owners)
+         mask_g (exact (map (fn [(i : int)] (if (int/ge (array/nth gv i) 0) 1 (if (int/ge (array/nth gp i) 0) 1 0)))
+                  (ps_range (array/count ge.names))))
+         ig (array/compact mask_g)]
+    {:names (array/concat (ps_gather_text e.name ia) (ps_gather_text ge.names ig))
+     :owners (array/concat (ps_gather_text e.owner ia) (ps_gather_text ge.owners ig))
+     :types (array/concat (ps_gather_text e.type ia) (array/text (array/count ig) "group"))
+     :natt (array/count ia)}))
+(defn ps_duplicate :context value [(names : (array text))]
+  (int/gt (array/sum (exact (map (fn [(f : int) (i : int)] (if (int/eq f i) 0 1))
+    (array/index_of names names) (ps_range (array/count names))))) 0))
+
+; ---- planes
+(defn ps_text_rank :context value [(texts : (array text))]
+  (let* [n (array/count texts)
+         firsts (array/index_of texts texts)
+         order (array/grade texts)
+         flags (exact (map (fn [(k : int)]
+                 (if (int/eq k 0) 1
+                   (if (int/eq (array/nth firsts (array/nth order k)) (array/nth firsts (array/nth order (int/sub k 1)))) 0 1)))
+                 (ps_range n)))
+         rank (array/scan_sum flags)]
+    (array/scatter_add order (exact (map (fn [(k : int)] (int/sub (array/nth rank (int/add k 1)) 1)) (ps_range n))) n)))
+(defn ps_expand_f :context value [(v : (array float)) (is_vertex : bool) (pov : (array int))]
+  (if is_vertex v (exact (map (fn [(p : int)] (array/nth v p)) pov))))
+(defn ps_expand_i :context value [(v : (array int)) (is_vertex : bool) (pov : (array int))]
+  (if is_vertex v (exact (map (fn [(p : int)] (array/nth v p)) pov))))
+(defn ps_add_f :context value
+  [(st : {:pf (array float) :pint (array int) :pk (array int) :ps (array int) :nf int :ni int :chosen int})
+   (plane : (array float)) (numeric : bool)]
+  {:pf (array/concat st.pf plane) :pint st.pint
+   :pk (array/concat st.pk (array/int 1 0)) :ps (array/concat st.ps (array/int 1 st.nf))
+   :nf (int/add st.nf 1) :ni st.ni
+   :chosen (if (and numeric (int/lt st.chosen 0)) st.nf st.chosen)})
+(defn ps_add_i :context value
+  [(st : {:pf (array float) :pint (array int) :pk (array int) :ps (array int) :nf int :ni int :chosen int})
+   (plane : (array int))]
+  {:pf st.pf :pint (array/concat st.pint plane)
+   :pk (array/concat st.pk (array/int 1 1)) :ps (array/concat st.ps (array/int 1 st.ni))
+   :nf st.nf :ni (int/add st.ni 1) :chosen st.chosen})
+; Row seams: for each position j a presence plane then a value plane (shorter rows first, then value order).
+(defn ps_add_int_rows :context value
+  [(st : {:pf (array float) :pint (array int) :pk (array int) :ps (array int) :nf int :ni int :chosen int})
+   (offsets : (array int)) (vals : (array int)) (is_vertex : bool) (pov : (array int)) (vcount : int)]
+  (let* [lens (ps_lens offsets)
+         ml (if (int/eq (array/count lens) 0) 0 (array/max lens))
+         total (int/mul ml vcount)
+         pres (exact (map (fn [(q : int)]
+                (let* [j (int/div q vcount) v (int/mod q vcount) e (if is_vertex v (array/nth pov v))]
+                  (if (int/gt (array/nth lens e) j) 1 0)))
+                (ps_range total)))
+         val (exact (map (fn [(q : int)]
+               (let* [j (int/div q vcount) v (int/mod q vcount) e (if is_vertex v (array/nth pov v))]
+                 (if (int/gt (array/nth lens e) j) (array/nth vals (int/add (array/nth offsets e) j)) 0)))
+               (ps_range total)))]
+    {:pf st.pf :pint (array/concat (array/concat st.pint pres) val)
+     :pk (array/concat st.pk (array/int (int/mul 2 ml) 1))
+     :ps (array/concat st.ps (exact (map (fn [(q : int)]
+            (if (int/eq (int/mod q 2) 0) (int/add st.ni (int/div q 2)) (int/add (int/add st.ni ml) (int/div q 2))))
+            (ps_range (int/mul 2 ml)))))
+     :nf st.nf :ni (int/add st.ni (int/mul 2 ml)) :chosen st.chosen}))
+(defn ps_add_float_rows :context value
+  [(st : {:pf (array float) :pint (array int) :pk (array int) :ps (array int) :nf int :ni int :chosen int})
+   (offsets : (array int)) (vals : (array float)) (is_vertex : bool) (pov : (array int)) (vcount : int)]
+  (let* [lens (ps_lens offsets)
+         ml (if (int/eq (array/count lens) 0) 0 (array/max lens))
+         total (int/mul ml vcount)
+         pres (exact (map (fn [(q : int)]
+                (let* [j (int/div q vcount) v (int/mod q vcount) e (if is_vertex v (array/nth pov v))]
+                  (if (int/gt (array/nth lens e) j) 1 0)))
+                (ps_range total)))
+         val (exact (map (fn [(q : int)]
+               (let* [j (int/div q vcount) v (int/mod q vcount) e (if is_vertex v (array/nth pov v))]
+                 (if (int/gt (array/nth lens e) j) (array/nth vals (int/add (array/nth offsets e) j)) 0.0)))
+               (ps_range total)))]
+    {:pf (array/concat st.pf val) :pint (array/concat st.pint pres)
+     :pk (array/concat st.pk (exact (map (fn [(q : int)] (if (int/eq (int/mod q 2) 0) 1 0)) (ps_range (int/mul 2 ml)))))
+     :ps (array/concat st.ps (exact (map (fn [(q : int)]
+            (if (int/eq (int/mod q 2) 0) (int/add st.ni (int/div q 2)) (int/add st.nf (int/div q 2))))
+            (ps_range (int/mul 2 ml)))))
+     :nf (int/add st.nf ml) :ni (int/add st.ni ml) :chosen st.chosen}))
+(defn ps_planes :context sop
+  [(geo : geometry) (names : (array text)) (owners : (array text)) (types : (array text)) (pov : (array int))
+   (vcount : int)]
+  (let* [done (fold [acc {:st {:pf (array/float 0 0.0) :pint (array/int 0 0) :pk (array/int 0 0) :ps (array/int 0 0)
+                               :nf 0 :ni 0 :chosen -1}
+                          :k 0}]
+                [name names]
+                (let* [st acc.st
+                       own (array/nth owners acc.k)
+                       kind (array/nth types acc.k)
+                       is_vertex (equal? own "vertex")]
+                  {:st (cond
+                    (equal? kind "group")
+                      (ps_add_i st (ps_expand_i (sop/group geo :name name :owner own) is_vertex pov))
+                    (equal? kind "float")
+                      (ps_add_f st (ps_expand_f (sop/attr geo name :owner own :type float) is_vertex pov) true)
+                    (equal? kind "int")
+                      (ps_add_i st (ps_expand_i (sop/attr geo name :owner own :type int) is_vertex pov))
+                    (equal? kind "text")
+                      (ps_add_i st (ps_expand_i (ps_text_rank (sop/attr geo name :owner own :type text)) is_vertex pov))
+                    (equal? kind "vec2")
+                      (let* [p (sop/attr_planes geo name :owner own)]
+                        (ps_add_f (ps_add_f st (ps_expand_f p.x is_vertex pov) true) (ps_expand_f p.y is_vertex pov) true))
+                    (equal? kind "vec3")
+                      (let* [p (sop/attr_planes geo name :owner own)]
+                        (ps_add_f (ps_add_f (ps_add_f st (ps_expand_f p.x is_vertex pov) true)
+                          (ps_expand_f p.y is_vertex pov) true) (ps_expand_f p.z is_vertex pov) true))
+                    (equal? kind "vec4")
+                      (let* [p (sop/attr_planes geo name :owner own)]
+                        (ps_add_f (ps_add_f (ps_add_f (ps_add_f st (ps_expand_f p.x is_vertex pov) true)
+                          (ps_expand_f p.y is_vertex pov) true) (ps_expand_f p.z is_vertex pov) true)
+                          (ps_expand_f p.w is_vertex pov) true))
+                    (equal? kind "int_array")
+                      (let* [r (sop/attr geo name :owner own :type int_array)]
+                        (ps_add_int_rows st r.offsets r.values is_vertex pov vcount))
+                    :else
+                      (let* [r (sop/attr geo name :owner own :type float_array)]
+                        (ps_add_float_rows st r.offsets r.values is_vertex pov vcount)))
+                   :k (int/add acc.k 1)}))]
+    done.st))
+
+; ---- lexicographic sort of the corners of each point (stable grades, lowest priority first)
+(defn ps_pass :context value
+  [(order : (array int)) (is_float : bool) (slot : int) (pf : (array float)) (pint : (array int)) (vcount : int)]
+  (let* [n (array/count order)
+         g (if is_float
+             (array/grade (exact (map (fn [(k : int)] (array/nth pf (int/add (int/mul slot vcount) (array/nth order k))))
+               (ps_range n))))
+             (array/grade (exact (map (fn [(k : int)] (array/nth pint (int/add (int/mul slot vcount) (array/nth order k))))
+               (ps_range n)))))]
+    (exact (map (fn [(k : int)] (array/nth order (array/nth g k))) (ps_range n)))))
+(defn ps_sort :context value
+  [(pf : (array float)) (pint : (array int)) (pk : (array int)) (ps : (array int)) (planes : int) (vcount : int)
+   (point_of : (array int)) (chosen : int)]
+  (let* [lsd (iterate planes {:order (ps_range vcount) :step 0}
+               (fn [s] (let* [c (int/sub (int/sub planes 1) s.step)]
+                 {:order (ps_pass s.order (int/eq (array/nth pk c) 0) (array/nth ps c) pf pint vcount)
+                  :step (int/add s.step 1)})))
+         with_chosen (if (int/ge chosen 0) (ps_pass lsd.order true chosen pf pint vcount) lsd.order)
+         keys (exact (map (fn [(k : int)] (array/nth point_of (array/nth with_chosen k))) (ps_range vcount)))
+         by_point (array/grade keys)]
+    (exact (map (fn [(k : int)] (array/nth with_chosen (array/nth by_point k))) (ps_range vcount)))))
+
+; ---- seam equality of vertex pairs (tolerance on float planes, exact on integer planes)
+(defn ps_eq :context value
+  [(a : (array int)) (b : (array int)) (pf : (array float)) (pint : (array int)) (pk : (array int)) (ps : (array int))
+   (planes : int) (vcount : int) (tol : float)]
+  (let* [n (array/count a)
+         done (iterate planes {:acc (array/int n 1) :c 0}
+                (fn [s] {:acc (exact (map (fn [(i : int)]
+                                  (if (int/eq (array/nth s.acc i) 0) 0
+                                    (let* [base (int/mul (array/nth ps s.c) vcount)
+                                           x (int/add base (array/nth a i))
+                                           y (int/add base (array/nth b i))]
+                                      (if (int/eq (array/nth pk s.c) 0)
+                                        (if (<= (abs (- (array/nth pf x) (array/nth pf y))) tol) 1 0)
+                                        (if (int/eq (array/nth pint x) (array/nth pint y)) 1 0)))))
+                                  (ps_range n)))
+                         :c (int/add s.c 1)}))]
+    done.acc))
+; Greedy clustering of ordered per-point corner lists: match[e] is the local representative index of element e.
+(defn ps_greedy :context value
+  [(verts : (array int)) (offs : (array int)) (pf : (array float)) (pint : (array int)) (pk : (array int))
+   (ps : (array int)) (planes : int) (vcount : int) (tol : float) (last_only : bool)]
+  (let* [n (array/count verts)
+         pc (int/sub (array/count offs) 1)
+         lens (ps_lens offs)
+         rounds (if (int/eq pc 0) 0 (array/max lens))
+         owner (ps_owners offs n)
+         local (exact (map (fn [(e : int) (p : int)] (int/sub e (array/nth offs p))) (ps_range n) owner))]
+    (iterate rounds {:rep (array/int n -1) :cnt (array/int pc 0) :match (array/int n -1) :round 0}
+      (fn [s]
+        (let* [r s.round
+               cand (exact (map (fn [(p : int)]
+                      (if (int/gt (array/nth lens p) r) (array/nth verts (int/add (array/nth offs p) r)) 0))
+                      (ps_range pc)))
+               found (iterate rounds {:found (array/int pc -1) :jj 0}
+                       (fn [f]
+                         (let* [has (exact (map (fn [(p : int)]
+                                      (if (int/lt f.jj (array/nth s.cnt p))
+                                        (if last_only (if (int/eq f.jj (int/sub (array/nth s.cnt p) 1)) 1 0) 1)
+                                        0))
+                                      (ps_range pc)))
+                                repv (exact (map (fn [(p : int)]
+                                       (if (int/eq (array/nth has p) 1)
+                                         (array/nth s.rep (int/add (array/nth offs p) f.jj)) 0))
+                                       (ps_range pc)))
+                                same (ps_eq repv cand pf pint pk ps planes vcount tol)]
+                           {:found (exact (map (fn [(p : int)]
+                                     (if (int/eq (array/nth has p) 1)
+                                       (if (int/eq (array/nth same p) 1) f.jj (array/nth f.found p))
+                                       (array/nth f.found p)))
+                                     (ps_range pc)))
+                            :jj (int/add f.jj 1)})))
+               fresh (exact (map (fn [(p : int)]
+                       (if (int/gt (array/nth lens p) r) (if (int/lt (array/nth found.found p) 0) 1 0) 0))
+                       (ps_range pc)))]
+          {:rep (exact (map (fn [(e : int) (p : int)]
+                  (if (int/eq (array/nth fresh p) 1)
+                    (if (int/eq (int/sub e (array/nth offs p)) (array/nth s.cnt p)) (array/nth cand p) (array/nth s.rep e))
+                    (array/nth s.rep e)))
+                  (ps_range n) owner))
+           :cnt (exact (map (fn [(p : int)] (int/add (array/nth s.cnt p) (array/nth fresh p))) (ps_range pc)))
+           :match (exact (map (fn [(e : int) (p : int)]
+                    (if (int/eq (int/sub e (array/nth offs p)) r)
+                      (if (int/eq (array/nth fresh p) 1) (array/nth s.cnt p) (array/nth found.found p))
+                      (array/nth s.match e)))
+                    (ps_range n) owner))
+           :round (int/add r 1)})))))
+; For each element of a corner list: does it equal a representative (the last one at tolerance 0, else any)?
+(defn ps_matches_reps :context value
+  [(verts : (array int)) (point_of : (array int)) (reps : (array int)) (roffs : (array int)) (rcnt : (array int))
+   (pf : (array float)) (pint : (array int)) (pk : (array int)) (ps : (array int)) (planes : int) (vcount : int)
+   (tol : float) (last_only : bool)]
+  (let* [n (array/count verts)
+         rounds (if (int/eq (array/count rcnt) 0) 0 (array/max rcnt))
+         done (iterate rounds {:hit (array/int n 0) :jj 0}
+                (fn [f]
+                  (let* [has (exact (map (fn [(i : int)]
+                               (let* [p (array/nth point_of i)]
+                                 (if (int/lt f.jj (array/nth rcnt p))
+                                   (if last_only (if (int/eq f.jj (int/sub (array/nth rcnt p) 1)) 1 0) 1) 0)))
+                               (ps_range n)))
+                         repv (exact (map (fn [(i : int)]
+                                (if (int/eq (array/nth has i) 1)
+                                  (array/nth reps (int/add (array/nth roffs (array/nth point_of i)) f.jj)) 0))
+                                (ps_range n)))
+                         same (ps_eq repv verts pf pint pk ps planes vcount tol)]
+                    {:hit (exact (map (fn [(i : int)]
+                            (if (int/eq (array/nth has i) 1)
+                              (if (int/eq (array/nth same i) 1) 1 (array/nth f.hit i))
+                              (array/nth f.hit i)))
+                            (ps_range n)))
+                     :jj (int/add f.jj 1)})))]
+    done.hit))
+
+; ---- seam clustering: {:cluster per vertex, :extra per point, :rep per point}
+(defn ps_cluster :context value
+  [(ord : (array int)) (po : (array int)) (sel : (array int)) (slot_v : (array int)) (pf : (array float))
+   (pint : (array int)) (pk : (array int)) (ps : (array int)) (planes : int) (vcount : int) (tol : float)]
+  (let* [pc (int/sub (array/count po) 1)
+         last_only (<= tol 0.0)
+         point_of_corner (ps_owners po vcount)
+         unsel (exact (map (fn [(k : int)] (int/sub 1 (array/nth sel (array/nth ord k)))) (ps_range vcount)))
+         pos_u (array/compact unsel)
+         vu (exact (map (fn [(k : int)] (array/nth ord k)) pos_u))
+         pu (exact (map (fn [(k : int)] (array/nth point_of_corner k)) pos_u))
+         suo (array/scan_sum (array/scatter_add pu (array/int (array/count pu) 1) pc))
+         gu (ps_greedy vu suo pf pint pk ps planes vcount tol last_only)
+         pos_s (array/compact (exact (map (fn [(k : int)] (array/nth sel (array/nth ord k))) (ps_range vcount))))
+         vs0 (exact (map (fn [(k : int)] (array/nth ord k)) pos_s))
+         ps0 (exact (map (fn [(k : int)] (array/nth point_of_corner k)) pos_s))
+         hit (ps_matches_reps vs0 ps0 gu.rep suo gu.cnt pf pint pk ps planes vcount tol last_only)
+         pos_r (array/compact (exact (map (fn [(i : int)] (int/sub 1 (array/nth hit i))) (ps_range (array/count vs0)))))
+         vr (exact (map (fn [(i : int)] (array/nth vs0 i)) pos_r))
+         pr (exact (map (fn [(i : int)] (array/nth ps0 i)) pos_r))
+         sro (array/scan_sum (array/scatter_add pr (array/int (array/count pr) 1) pc))
+         gs (ps_greedy vr sro pf pint pk ps planes vcount tol last_only)
+         cluster_r (exact (map (fn [(e : int)]
+                     (int/add (array/nth gs.match e) (if (int/gt (array/nth gu.cnt (array/nth pr e)) 0) 1 0)))
+                     (ps_range (array/count vr))))
+         cluster (array/scatter_add vr cluster_r vcount)
+         extra (exact (map (fn [(p : int)]
+                 (if (int/gt (array/nth gu.cnt p) 0) (array/nth gs.cnt p)
+                   (if (int/gt (array/nth gs.cnt p) 1) (int/sub (array/nth gs.cnt p) 1) 0)))
+                 (ps_range pc)))
+         slot_pt (ps_owners po vcount)
+         su (array/compact (exact (map (fn [(k : int)] (int/sub 1 (array/nth sel (array/nth slot_v k)))) (ps_range vcount))))
+         pts_u (exact (map (fn [(k : int)] (array/nth slot_pt k)) su))
+         firstidx (array/index_of pts_u (ps_range pc))
+         rep (exact (map (fn [(p : int)]
+               (if (int/ge (array/nth firstidx p) 0) (array/nth slot_v (array/nth su (array/nth firstidx p)))
+                 (if (int/gt (array/nth gs.cnt p) 0) (array/nth gs.rep (array/nth sro p)) -1)))
+               (ps_range pc)))]
+    {:cluster cluster :extra extra :rep rep}))
+
+; ---- apply a vertex clustering: new points, remap, edge ancestry
+(defn ps_split :context sop [(in0 : geometry) (cluster : (array int)) (extra : (array int))]
+  (let* [point_total (sop/count in0 :points)
+         vertex_total (sop/count in0 :vertices)
+         primitive_total (sop/count in0 :primitives)
+         adj (sop/adjacency in0)
+         topology (sop/topology in0)
+         vp topology.vertex_points
+         extra_offsets (array/scan_sum extra)
+         extra_total (array/nth extra_offsets point_total)
+         slots (ps_range vertex_total)
+         new_points (exact (map (fn [(v : int)]
+                      (let* [p (array/nth vp v) c (array/nth cluster v)]
+                        (if (int/eq c 0) p (int/sub (int/add (int/add point_total (array/nth extra_offsets p)) c) 1))))
+                      slots))
+         output_total (int/add point_total extra_total)
+         moved (exact (map (fn [(v : int)] (if (int/eq (array/nth cluster v) 0) output_total (array/nth new_points v))) slots))
+         extra_count (array/scatter_add moved (array/int vertex_total 1) (int/add output_total 1))
+         extra_source (array/scatter_add moved (exact (map (fn [(v : int)] (int/add (array/nth vp v) 1)) slots))
+                        (int/add output_total 1))
+         point_map (exact (map (fn [(k : int)]
+                     (if (int/lt k point_total) k
+                       (int/sub (int/div (array/nth extra_source k) (array/nth extra_count k)) 1)))
+                     (ps_range output_total)))
+         target (sop/mesh :points (array/vec3 output_total) :vertex_points new_points
+                  :primitive_offsets topology.primitive_offsets :kinds topology.kinds)
+         target_adjacency (sop/adjacency target)
+         target_edge_total (array/count target_adjacency.edge_a)
+         leaving (exact (map (fn [(te : int)] (if (int/lt te 0) target_edge_total te)) target_adjacency.edge_of_vertex))
+         ancestor (exact (map (fn [(e : int)] (int/add e 1)) adj.edge_of_vertex))
+         edge_count (array/scatter_add leaving (array/int vertex_total 1) (int/add target_edge_total 1))
+         edge_sum (array/scatter_add leaving ancestor (int/add target_edge_total 1))
+         edge_values (exact (map (fn [(e : int)]
+                       (int/sub (int/div (array/nth edge_sum e) (if (int/gt (array/nth edge_count e) 0) (array/nth edge_count e) 1)) 1))
+                     (ps_range target_edge_total)))]
+    (sop/remap in0 target :points point_map :vertices slots
+      :primitives (ps_range primitive_total) :positions "mapped"
+      :edges {:offsets (ps_range (int/add target_edge_total 1)) :values edge_values})))
+; Representative vertex of every output point: the original ones, then the last vertex of each new cluster point.
+(defn ps_output_rep :context sop
+  [(in0 : geometry) (cluster : (array int)) (extra : (array int)) (rep : (array int))]
+  (let* [point_total (sop/count in0 :points)
+         vertex_total (sop/count in0 :vertices)
+         topology (sop/topology in0)
+         vp topology.vertex_points
+         extra_offsets (array/scan_sum extra)
+         output_total (int/add point_total (array/nth extra_offsets point_total))
+         new_points (exact (map (fn [(v : int)]
+                      (let* [p (array/nth vp v) c (array/nth cluster v)]
+                        (if (int/eq c 0) output_total (int/sub (int/add (int/add point_total (array/nth extra_offsets p)) c) 1))))
+                      (ps_range vertex_total)))
+         reversed (exact (map (fn [(i : int)] (array/nth new_points (int/sub (int/sub vertex_total 1) i)))
+                    (ps_range vertex_total)))
+         found (array/index_of reversed (ps_range output_total))]
+    (exact (map (fn [(k : int)]
+      (if (int/lt k point_total) (array/nth rep k)
+        (if (int/ge (array/nth found k) 0) (int/sub (int/sub vertex_total 1) (array/nth found k)) -1)))
+      (ps_range output_total)))))
+
+; ---- promotion of one seam attribute to a point attribute from the representative corners
+(defn ps_elements :context value [(rep : (array int)) (is_vertex : bool) (pov : (array int))]
+  (exact (map (fn [(r : int)] (if (int/ge r 0) (if is_vertex r (array/nth pov r)) -1)) rep)))
+(defn ps_promote :context sop
+  [(geo : geometry) (src : geometry) (name : text) (own : text) (kind : text) (rep : (array int)) (pov : (array int))]
+  (let* [is_vertex (equal? own "vertex")
+         el (ps_elements rep is_vertex pov)
+         n (array/count el)]
+    (cond
+      (equal? kind "float")
+        (let* [v (sop/attr src name :owner own :type float)]
+          (sop/with_attr geo name (exact (map (fn [(e : int)] (if (int/ge e 0) (array/nth v e) 0.0)) el)) :owner "point" :type float))
+      (equal? kind "int")
+        (let* [v (sop/attr src name :owner own :type int)]
+          (sop/with_attr geo name (exact (map (fn [(e : int)] (if (int/ge e 0) (array/nth v e) 0)) el)) :owner "point" :type int))
+      (equal? kind "text")
+        (let* [v (sop/attr src name :owner own :type text)]
+          (sop/with_attr geo name (exact (map (fn [(e : int)] (if (int/ge e 0) (array/nth v e) "")) el)) :owner "point" :type text))
+      (or (equal? kind "vec2") (or (equal? kind "vec3") (equal? kind "vec4")))
+        (let* [p (sop/attr_planes src name :owner own)
+               pick (fn [(plane : (array float))]
+                      (exact (map (fn [(e : int)] (if (int/ge e 0) (array/nth plane e) 0.0)) el)))]
+          (sop/with_planes geo name
+            {:width p.width :x (pick p.x) :y (if (int/ge p.width 2) (pick p.y) (array/float n 0.0))
+             :z (if (int/ge p.width 3) (pick p.z) (array/float n 0.0))
+             :w (if (int/ge p.width 4) (pick p.w) (array/float n 0.0))} :owner "point"))
+      (equal? kind "int_array")
+        (let* [r (sop/attr src name :owner own :type int_array)
+               lens (ps_lens r.offsets)
+               row (exact (map (fn [(e : int)] (if (int/ge e 0) (array/nth lens e) 0)) el))
+               offsets (array/scan_sum row)
+               total (array/nth offsets n)
+               owner (ps_owners offsets total)]
+          (sop/with_attr geo name
+            {:offsets offsets
+             :values (exact (map (fn [(j : int) (q : int)]
+               (array/nth r.values (int/add (array/nth r.offsets (array/nth el q)) (int/sub j (array/nth offsets q)))))
+               (ps_range total) owner))} :owner "point" :type int_array))
+      :else
+        (let* [r (sop/attr src name :owner own :type float_array)
+               lens (ps_lens r.offsets)
+               row (exact (map (fn [(e : int)] (if (int/ge e 0) (array/nth lens e) 0)) el))
+               offsets (array/scan_sum row)
+               total (array/nth offsets n)
+               owner (ps_owners offsets total)]
+          (sop/with_attr geo name
+            {:offsets offsets
+             :values (exact (map (fn [(j : int) (q : int)]
+               (array/nth r.values (int/add (array/nth r.offsets (array/nth el q)) (int/sub j (array/nth offsets q)))))
+               (ps_range total) owner))} :owner "point" :type float_array)))))
 
 (defnode sop/point_split :label "Point Split" :category ["Topology" "Point"]
   [(in0 : geometry)
@@ -22,15 +435,25 @@
   (let* [group_name (text/trim group)
          has_group (not (text/blank? group_name))
          owner_name (case group_owner "Vertex" "vertex" "Primitive" "primitive" :else "point")
-         group_literal (text/glob_literal (if has_group group_name "x"))
-         missing (and has_group (int/eq (array/count (sop/group_names in0 group_literal :owner owner_name)) 0))
+         missing (and has_group
+                   (not (fold [found false] [probe (sop/group_names in0 "" :owner owner_name)]
+                          (or found (equal? probe group_name)))))
+         seam (not (text/blank? attributes))
+         pattern_error (if seam (text/glob_error attributes) "")
          vertex_total (sop/count in0 :vertices)
          point_total (sop/count in0 :points)
-         primitive_total (sop/count in0 :primitives)]
+         primitive_total (sop/count in0 :primitives)
+         matched (if (and seam (equal? pattern_error "")) (ps_matched in0 attributes)
+                   {:names (array/text 0) :owners (array/text 0) :types (array/text 0) :natt 0})
+         matched_total (array/count matched.names)
+         promote_conflict (and promote_attributes
+           (ps_duplicate (ps_gather_text matched.names (array/compact (exact (map (fn [(k : int)] (if (int/lt k matched.natt) 1 0))
+             (ps_range matched_total)))))))]
     (cond
       missing (error "missing_group" (str "point_split could not find " owner_name " group " (text/repr group_name)))
-      (not (text/blank? attributes))
-        (error "E_UNSUPPORTED" "sop/point_split: seam mode (a nonblank Attributes pattern) is not ported")
+      (not (equal? pattern_error "")) (ps_error pattern_error)
+      (and seam (int/eq matched_total 0)) (ps_error (str "pattern " (text/repr attributes) " matched no vertex/primitive attributes or groups"))
+      promote_conflict (ps_error "promoted attribute is present on both vertex and primitive owners")
       (int/eq vertex_total 0) in0
       :else
       (let* [adj (sop/adjacency in0)
@@ -42,58 +465,61 @@
                  (if (equal? owner_name "point") (array/nth mask (array/nth vp v))
                    (if (equal? owner_name "vertex") (array/nth mask v)
                      (array/nth mask (array/nth adj.primitive_of_vertex v))))))
-               (array/range vertex_total :type int)))
+               (ps_range vertex_total)))
              selected_total (array/sum selected)]
         (if (int/eq selected_total 0) in0
-          (let* [slots (array/range vertex_total :type int)
-                 slot_vertex adj.point_vertices
-                 slot_owner (split_owners adj.point_vertex_offsets vertex_total)
+          (let* [slot_vertex adj.point_vertices
+                 slot_owner (ps_owners adj.point_vertex_offsets vertex_total)
+                 has_promotable (and promote_attributes (int/gt matched.natt 0))
+                 pov adj.primitive_of_vertex
+                 planes (if seam (ps_planes in0 matched.names matched.owners matched.types pov vertex_total)
+                          {:pf (array/float 0 0.0) :pint (array/int 0 0) :pk (array/int 0 0) :ps (array/int 0 0)
+                           :nf 0 :ni 0 :chosen -1})
+                 plane_count (array/count planes.pk)
+                 chosen (if (> tolerance 0.0) planes.chosen -1)
+                 ord (if seam
+                       (ps_sort planes.pf planes.pint planes.pk planes.ps plane_count vertex_total vp chosen)
+                       slot_vertex)
+                 seamed (if seam
+                          (ps_cluster ord adj.point_vertex_offsets selected slot_vertex planes.pf planes.pint planes.pk
+                            planes.ps plane_count vertex_total tolerance)
+                          {:cluster (array/int 0 0) :extra (array/int 0 0) :rep (array/int 0 0)})
                  slot_selected (exact (map (fn [(v : int)] (array/nth selected v)) slot_vertex))
                  running (array/scan_sum slot_selected)
                  per_point_selected (array/segment_sum slot_selected adj.point_vertex_offsets)
-                 per_point_total (exact (map (fn [(p : int)]
-                   (int/sub (array/nth adj.point_vertex_offsets (int/add p 1)) (array/nth adj.point_vertex_offsets p)))
-                   (array/range point_total :type int)))
+                 per_point_total (ps_lens adj.point_vertex_offsets)
                  unselected_here (exact (map (fn [(p : int)]
                    (if (int/gt (int/sub (array/nth per_point_total p) (array/nth per_point_selected p)) 0) 1 0))
-                   (array/range point_total :type int)))
-                 extra (exact (map (fn [(p : int)]
+                   (ps_range point_total)))
+                 plain_extra (exact (map (fn [(p : int)]
                    (if (int/eq (array/nth unselected_here p) 1) (array/nth per_point_selected p)
                      (if (int/gt (array/nth per_point_selected p) 1) (int/sub (array/nth per_point_selected p) 1) 0)))
-                   (array/range point_total :type int)))
-                 extra_offsets (array/scan_sum extra)
-                 extra_total (array/nth extra_offsets point_total)]
-            (if (int/eq extra_total 0) in0
-              (let* [slot_cluster (exact (map (fn [(j : int)]
-                       (let* [p (array/nth slot_owner j)
-                              rank (int/sub (array/nth running j) (array/nth running (array/nth adj.point_vertex_offsets p)))]
-                         (if (int/eq (array/nth slot_selected j) 0) 0
-                           (if (int/eq (array/nth unselected_here p) 1) (int/add rank 1) rank))))
-                       slots))
-                     cluster (array/scatter_add slot_vertex slot_cluster vertex_total)
-                     new_points (exact (map (fn [(v : int)]
-                       (let* [p (array/nth vp v) c (array/nth cluster v)]
-                         (if (int/eq c 0) p (int/sub (int/add (int/add point_total (array/nth extra_offsets p)) c) 1))))
-                       slots))
-                     output_total (int/add point_total extra_total)
-                     extra_source (array/scatter_add
-                       (exact (map (fn [(v : int)] (if (int/eq (array/nth cluster v) 0) output_total (array/nth new_points v))) slots))
-                       (exact (map (fn [(v : int)] (int/add (array/nth vp v) 1)) slots))
-                       (int/add output_total 1))
-                     point_map (exact (map (fn [(k : int)]
-                       (if (int/lt k point_total) k (int/sub (array/nth extra_source k) 1)))
-                       (array/range output_total :type int)))
-                     target (sop/mesh :points (array/vec3 output_total) :vertex_points new_points
-                              :primitive_offsets topology.primitive_offsets :kinds topology.kinds)
-                     target_adjacency (sop/adjacency target)
-                     target_edge_total (array/count target_adjacency.edge_a)
-                     leaving (exact (map (fn [(te : int)] (if (int/lt te 0) target_edge_total te)) target_adjacency.edge_of_vertex))
-                     ancestor (exact (map (fn [(e : int)] (int/add e 1)) adj.edge_of_vertex))
-                     edge_count (array/scatter_add leaving (array/int vertex_total 1) (int/add target_edge_total 1))
-                     edge_sum (array/scatter_add leaving ancestor (int/add target_edge_total 1))
-                     edge_values (exact (map (fn [(e : int)]
-                         (int/sub (int/div (array/nth edge_sum e) (if (int/gt (array/nth edge_count e) 0) (array/nth edge_count e) 1)) 1))
-                       (array/range target_edge_total :type int)))]
-                (sop/remap in0 target :points point_map :vertices slots
-                  :primitives (array/range primitive_total :type int) :positions "mapped"
-                  :edges {:offsets (array/range (int/add target_edge_total 1) :type int) :values edge_values})))))))))
+                   (ps_range point_total)))
+                 plain_slot_cluster (exact (map (fn [(j : int)]
+                   (let* [p (array/nth slot_owner j)
+                          rank (int/sub (array/nth running j) (array/nth running (array/nth adj.point_vertex_offsets p)))]
+                     (if (int/eq (array/nth slot_selected j) 0) 0
+                       (if (int/eq (array/nth unselected_here p) 1) (int/add rank 1) rank))))
+                   (ps_range vertex_total)))
+                 plain_cluster (array/scatter_add slot_vertex plain_slot_cluster vertex_total)
+                 cluster (if seam seamed.cluster plain_cluster)
+                 extra (if seam seamed.extra plain_extra)
+                 extra_total (array/sum extra)]
+            (if (and (int/eq extra_total 0) (not has_promotable)) in0
+              (let* [split (if (int/eq extra_total 0) in0 (ps_split in0 cluster extra))
+                     rep (if has_promotable (ps_output_rep in0 cluster extra seamed.rep) (array/int 0 0))
+                     attribute_idx (array/compact (exact (map (fn [(k : int)] (if (int/lt k matched.natt) 1 0))
+                                     (ps_range matched_total))))
+                     cleared (fold [acc split] [k attribute_idx]
+                               (if has_promotable
+                                 (sop/delete_attr
+                                   (sop/delete_attr
+                                     (sop/delete_attr acc (text/glob_literal (array/nth matched.names k)) :owner "point")
+                                     (text/glob_literal (array/nth matched.names k)) :owner "vertex")
+                                   (text/glob_literal (array/nth matched.names k)) :owner "primitive")
+                                 acc))]
+                (if has_promotable
+                  (fold [acc cleared] [k attribute_idx]
+                    (ps_promote acc in0 (array/nth matched.names k) (array/nth matched.owners k)
+                      (array/nth matched.types k) rep pov))
+                  split)))))))))
