@@ -976,4 +976,77 @@
                   (sop/normals cleared :owner (if had_point "Point" "Vertex") :weighting "Face area")
                   cleared)))))))))
 
+  ; Shared by attribute_laplacian and measure_curvature (moved from the laplacian draft).
+  ; "" when the polygon surface is a manifold with consistent winding, else the refusal.
+  (defn lap_manifold :context sop [(geo : geometry)]
+    (let* [topo (sop/topology geo)
+           adjacency (sop/adjacency geo)
+           prims (sop/count geo :primitives)
+           points (sop/count geo :points)
+           vertices (sop/count geo :vertices)
+           edge_count (sop/count geo :edges)
+           usage (edge_usage adjacency edge_count)
+           curves (array/sum (exact (map (fn [(k : int)] (if (int/eq k 0) 0 1)) topo.kinds)))
+           starts (array/slice topo.primitive_offsets 0 prims)
+           ends (array/slice topo.primitive_offsets 1 prims)
+           short (array/sum (exact (map (fn [(a : int) (b : int)] (if (int/lt (int/sub b a) 3) 1 0)) starts ends)))
+           ; a point repeated inside a polygon: equal (primitive, point) keys among the corners
+           keys (exact (map (fn [(p : int) (q : int)] (int/add (int/mul p (int/add points 1)) q))
+                  (array/range vertices :type int) topo.vertex_points))
+           sorted (int_gather keys (array/grade keys))
+           repeats (array/sum (exact (map (fn [(i : int)]
+             (if (int/eq i 0) 0 (if (int/eq (array/nth sorted i) (array/nth sorted (int/sub i 1))) 1 0)))
+             (array/range vertices :type int))))
+           overused (array/sum (exact (map (fn [(u : int)] (if (int/gt u 2) 1 0)) usage)))
+           order (array/grade adjacency.edge_of_vertex)
+           unused (array/sum (exact (map (fn [(k : int)] (if (int/lt k 0) 1 0)) adjacency.edge_of_vertex)))
+           usage_offsets (array/scan_sum usage)
+           winding (array/sum (exact (map (fn [(e : int) (u : int)]
+             (if (int/eq u 2)
+               (let* [first (int/add unused (array/nth usage_offsets e))
+                      left (array/nth order first)
+                      right (array/nth order (int/add first 1))
+                      ln (array/nth adjacency.next_vertex left)
+                      rn (array/nth adjacency.next_vertex right)]
+                 (if (or (int/lt ln 0) (int/lt rn 0)) 2
+                   (if (and (int/eq (array/nth topo.vertex_points left) (array/nth topo.vertex_points rn))
+                            (int/eq (array/nth topo.vertex_points ln) (array/nth topo.vertex_points right))) 0 1)))
+               0))
+             (array/range edge_count :type int) usage)))
+           boundary_edges (exact (map (fn [(u : int)] (if (int/eq u 1) 1 0)) usage))
+           boundary_count (array/segment_sum (exact (map (fn [(e : int)] (array/nth boundary_edges e)) adjacency.point_edges))
+                            adjacency.point_edge_offsets)
+           edges_at (exact (map (fn [(p : int)] (int/sub (array/nth adjacency.point_edge_offsets (int/add p 1))
+                                                         (array/nth adjacency.point_edge_offsets p)))
+                      (array/range points :type int)))
+           faces_at (exact (map (fn [(p : int)] (int/sub (array/nth adjacency.point_vertex_offsets (int/add p 1))
+                                                         (array/nth adjacency.point_vertex_offsets p)))
+                      (array/range points :type int)))
+           bad_boundary (array/sum (exact (map (fn [(b : int)] (if (or (int/eq b 0) (int/eq b 2)) 0 1)) boundary_count)))
+           bad_incidence (array/sum (exact (map (fn [(b : int) (e : int) (f : int)]
+             (if (int/eq b 0) (if (int/eq e f) 0 1) (if (int/eq e (int/add f 1)) 0 1)))
+             boundary_count edges_at faces_at)))]
+      (cond (int/gt curves 0) "curves are not part of a polygon surface"
+            (int/gt short 0) "a polygon has fewer than three corners"
+            (int/gt repeats 0) "a polygon references one point more than once"
+            (int/gt overused 0) "a polygon edge has more than two incident faces"
+            (int/gt winding 0) "adjacent polygons have inconsistent winding"
+            (int/gt bad_boundary 0) "a boundary point does not have exactly two boundary edges"
+            (int/gt bad_incidence 0) "a point has non-manifold polygon incidence"
+            :else "")))
+  ; Row id of every element of a ragged expansion of counts.
+  (defn lap_rows :context value [(counts : (array int))]
+    (let* [rows (array/count counts)
+           total (array/sum counts)
+           offsets (array/scan_sum counts)
+           starts (exact (map (fn [(r : int)] (array/nth offsets r)) (array/range rows :type int)))
+           prefix (array/scan_sum (array/scatter_add starts (array/int rows 1) (int/add total 1)))]
+      (exact (map (fn [(s : int)] (int/sub (array/nth prefix (int/add s 1)) 1)) (array/range total :type int)))))
+  (defn lap_times :context value [(v : float) (f : float)] (* v f))
+  (defn lap_pick :context value [(l : int) (a : float) (b : float) (c : float)]
+    (if (int/eq l 0) a (if (int/eq l 1) b c)))
+  (defn lap_pick_int :context value [(l : int) (a : int) (b : int) (c : int)]
+    (if (int/eq l 0) a (if (int/eq l 1) b c)))
+  (defn lap_vec_diff :context value [(a : vec3) (b : vec3)] (- a b))
+  (defn lap_sumsq :context value [(d : vec3)] (fma d.z d.z (fma d.y d.y (* d.x d.x))))
 )
