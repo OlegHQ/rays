@@ -1,4 +1,4 @@
-(* sop/polywire (the same engine as sop/sweep_circle; see port_sweep_circle.ml). The node has two native
+(* sop/polywire (the same engine and fixtures as sop/sweep_circle: port_sweep_circle.ml reuses this file). The node has two native
    paths: Sweep_circle.run takes the legacy fast path of mesh/sweep_circle.ml when the group, segments,
    joint, smoothing, seam and UV-range options are all at the defaults of that path (use_u_range and
    use_v_range off), and the general engine curve/polywire.ml otherwise. Both are covered: the legacy cases
@@ -248,28 +248,29 @@ let debug () =
     Printf.printf "close_geometry 4 ulps: %b\n" (Rdk_test_support.close_geometry ~ulps:4 e g)
 
 let debugging = Sys.getenv_opt "PW_DEBUG" <> None
-let node = if debugging then
-    { key = "polywire"; native = Sop.Nodes.Polywire.factory;
-      inputs = [List.nth inputs (try int_of_string (Sys.getenv "PW_INPUT") with Not_found -> 0)];
+let make key native =
+  if debugging then
+    { key; native; inputs = [List.nth inputs (try int_of_string (Sys.getenv "PW_INPUT") with Not_found -> 0)];
       cases = []; ulps = 4; bench = None }
   else match Sys.getenv_opt "PW_CASES" with
     | Some text ->
-      (* scratch: PW_CASES=prefix,prefix [PW_INPUT=n]: only the matching cases, on one fixture (or all) *)
+      (* scratch: PW_CASES=prefix,prefix [PW_INPUT=n]: only the matching cases, on one fixture (or the last) *)
       let prefixes = String.split_on_char ',' text in
       let matches label = List.exists (fun p -> p = "*" || (String.length label >= String.length p && String.sub label 0 (String.length p) = p)) prefixes in
-      { key = "polywire"; native = Sop.Nodes.Polywire.factory;
+      { key; native;
         inputs = (match Sys.getenv_opt "PW_INPUT" with Some n -> [List.nth inputs (int_of_string n)] | None -> [List.nth inputs (List.length inputs - 1)]);
         cases = List.filter (fun (l, _) -> matches l) cases; ulps = 4; bench = None }
-    | None -> { key = "polywire"; native = Sop.Nodes.Polywire.factory; inputs; cases; ulps = 4; bench = Some bench }
+    | None -> { key; native; inputs; cases; ulps = 4; bench = Some bench }
+let node = make "polywire" Sop.Nodes.Polywire.factory
 let () = register node
 
-let extra () =
+let extra node =
   let dir = Filename.concat (Filename.dirname Sys.executable_name) "../../../../../lib/flow_sop/nodes" in
   let run (fixture, g) cases =
     let ctx = Port_gate.context ~dir node [g] in
     List.iter (fun (label, changes) ->
     try Port_gate.verify_case ~full:false ctx 4 (fixture ^ "/" ^ label) changes
-    with Failure m -> Printf.printf "FAIL polywire extra: %s\n%!" m; exit 1) cases in
+    with Failure m -> Printf.printf "FAIL %s extra: %s\n%!" node.key m; exit 1) cases in
   run ("polygons", polygons) [
     "defaults", []; "group polyline", [tx "group" "dest_a"]; "group polygon", [tx "group" "a"];
     "group polyline caps", [tx "group" "dest_a"; bo "caps" true]; "group legacy", tx "group" "dest_a" :: legacy;
@@ -282,6 +283,7 @@ let extra () =
   run ("repeated", repeated) [
     "defaults", []; "legacy", legacy; "group", [tx "group" "dest_a"]; "segment scales", [bo "use_segment_scales" true];
     "no smooth", [bo "smooth_point" false] ];
-  Printf.printf "PASS polywire extra: retained polygon and refusals\n%!"
-let () = if Array.length Sys.argv >= 2 && Sys.argv.(1) = "polywire" && not (Array.mem "--bench" Sys.argv) && Sys.getenv_opt "PW_DEBUG" = None && Sys.getenv_opt "PW_CASES" = None then extra ()
+  Printf.printf "PASS %s extra: retained polygon and refusals\n%!" node.key
+let run_extra_for key node = if Array.length Sys.argv >= 2 && Sys.argv.(1) = key && not (Array.mem "--bench" Sys.argv) && Sys.getenv_opt "PW_DEBUG" = None && Sys.getenv_opt "PW_CASES" = None then extra node
+let () = run_extra_for "polywire" node
 let () = if Sys.getenv_opt "PW_DEBUG" <> None then at_exit (fun () -> try debug () with e -> print_endline (Printexc.to_string e))

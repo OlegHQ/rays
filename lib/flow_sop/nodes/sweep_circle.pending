@@ -1,0 +1,45 @@
+; Sweep Circle: the same node as PolyWire (both run Rdk.Sweep_circle.run); the engine pw_run lives in prelude.rays.
+(defnode sop/sweep_circle :label "Sweep Circle" :category ["Topology" "Surface"]
+  :validate (pw_valid radius first_segment_scale last_segment_scale maximum_joint_scale u_min u_max v_min v_max
+    sides segments max_valence use_segment_scales maximum_joint_scale_attribute prevent_joint_buckling)
+  :code "E_PARAM" :message "sop/polywire: numeric values must be finite"
+  [(in0 : geometry)
+   (group : text "" :label "Primitive group")
+   (radius : float 0.1 :label "Radius" :min 0.0001 :max 10 :hard_min 0)
+   (use_sides : bool true :label "Set divisions")
+   (sides : int 8 :label "Divisions" :min 3 :max 256 :hard_min 3)
+   (divisions_attribute : text "" :label "Divisions attribute" :folder ["Overrides"])
+   (segments : int 1 :label "Segments" :min 1 :max 256 :hard_min 1)
+   (segments_attribute : text "" :label "Segments attribute" :folder ["Overrides"])
+   (use_segment_scales : bool false :label "Scale segment endpoints")
+   (first_segment_scale : float 0.0 :label "First segment scale" :folder ["Segments"] :min 0 :max 1 :hard_min 0 :hard_max 1)
+   (last_segment_scale : float 1.0 :label "Last segment scale" :folder ["Segments"] :min 0 :max 1 :hard_min 0 :hard_max 1)
+   (segment_scales_attribute : text "" :label "Segment scales attribute" :folder ["Overrides"])
+   (prevent_joint_buckling : bool false :label "Prevent joint buckling" :folder ["Joints"])
+   (maximum_joint_scale : float 10.0 :label "Maximum joint scale" :folder ["Joints"] :min 1 :max 100 :hard_min 1)
+   (maximum_joint_scale_attribute : text "" :label "Maximum scale attribute" :folder ["Overrides"])
+   (smooth_point : bool true :label "Smooth points" :folder ["Joints"])
+   (smooth_attribute : text "" :label "Smooth attribute" :folder ["Overrides"])
+   (use_max_valence : bool false :label "Limit smooth valence" :folder ["Joints"])
+   (max_valence : int 4 :label "Maximum valence" :folder ["Joints"] :min 1 :max 128 :hard_min 1)
+   (scale_attribute : text "" :label "Scale attribute" :folder ["Overrides"])
+   (seam_offset : int 0 :label "Seam offset" :folder ["Seams"] :min -256 :max 256)
+   (seam_attribute : text "" :label "Seam attribute" :folder ["Overrides"])
+   (segment_seam_attribute : text "" :label "Segment seam attribute" :folder ["Overrides"])
+   (v_attribute : text "" :label "V attribute" :folder ["Overrides"])
+   (up_attribute : text "" :label "Up attribute" :folder ["Overrides"])
+   (generate_uv : bool true :label "Generate UV" :folder ["UV"])
+   (use_u_range : bool true :label "Set U range" :folder ["UV" "U range"])
+   (u_min : float 0.0 :label "U minimum" :folder ["UV" "U range"] :min -10 :max 10)
+   (u_max : float 1.0 :label "U maximum" :folder ["UV" "U range"] :min -10 :max 10)
+   (use_v_range : bool true :label "Set V range" :folder ["UV" "V range"])
+   (v_min : float 0.0 :label "V minimum" :folder ["UV" "V range"] :min -10 :max 10)
+   (v_max : float 1.0 :label "V maximum" :folder ["UV" "V range"] :min -10 :max 10)
+   (uv_range_attribute : text "" :label "UV range attribute" :folder ["Overrides"])
+   (caps : bool false :label "End caps")
+   (cap_group : text "caps" :label "Cap group")]
+  (pw_run in0 group radius use_sides sides divisions_attribute segments segments_attribute use_segment_scales
+    first_segment_scale last_segment_scale segment_scales_attribute prevent_joint_buckling maximum_joint_scale
+    maximum_joint_scale_attribute smooth_point smooth_attribute use_max_valence max_valence scale_attribute
+    seam_offset seam_attribute segment_seam_attribute v_attribute up_attribute generate_uv use_u_range u_min u_max
+    use_v_range v_min v_max uv_range_attribute caps cap_group))
