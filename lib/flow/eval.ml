@@ -112,7 +112,9 @@ and residual = { rid : int; rterm : W.term; renv : value Smap.t; rc : ctx;
   mutable live : st option;  (* the evaluation that last offered this residual to the executor *)
   mutable core : (unit ref * (Frame_input.t -> (value, Diagnostic.t) result) *
     (Frame_input.t -> (value, Diagnostic.t) result) option) option
-    (* the prepared program of the executor named by the unit ref (physical): total, restores state and reruns the walker on failure *) }
+    (* the prepared program of the executor named by the unit ref (physical): total, restores state and reruns the walker on failure *);
+  mutable dep_frame : int; mutable dep_state : int
+    (* memo of frame_dependent / state_dependent for this immutable residual: 0 unknown, 1 no, 2 yes *) }
 
 and state = { mutable source : string; mutable frame : int option;
   mutable before : value Smap.t; mutable next : value Smap.t; mutable host : state option }
@@ -368,7 +370,7 @@ and ev c env (x : W.term) : value =
       (match st.observe_kernel, x.node with
        | Some observe, (W.Hof ((`Map | `Reduce), _) | W.Loop _ | W.Op {op = ("array/sum" | "image/map"); _}) ->
            observe {rid = Atomic.fetch_and_add bulk_ids (-1); rterm = x;
-             renv = capture x env; rc = c; previous = false; live = None; core = None}
+             renv = capture x env; rc = c; previous = false; live = None; core = None; dep_frame = 0; dep_state = 0}
        | _ -> ());
       let saved = st.nodes and saved_n = st.nnodes and saved_authored = st.authored in
       (match ev_raw c env x with
@@ -377,7 +379,7 @@ and ev c env (x : W.term) : value =
            (* ponytail: nodes made by the abandoned attempt are dropped, its records are kept *)
            st.nodes <- saved; st.nnodes <- saved_n; st.authored <- saved_authored;
            st.rids <- st.rids + 1;
-           let r = Residual { rid = st.rids; rterm = x; renv = capture x env; rc = c; previous = false; live = None; core = None} in
+           let r = Residual { rid = st.rids; rterm = x; renv = capture x env; rc = c; previous = false; live = None; core = None; dep_frame = 0; dep_state = 0} in
            (match x.node with W.State _ -> st.states <- r :: st.states | _ -> ());
            (* the record is the residual: a probe forces it at the time it shows *)
            (match x.path with Some p -> note c p r | None -> ()); r
@@ -387,7 +389,7 @@ and ev c env (x : W.term) : value =
       let evaluate () = match st.execute, x.node with
         | Some execute, (W.Hof ((`Map | `Reduce), _) | W.Loop _ | W.Op {op = "array/sum"; _}) ->
             st.rids <- st.rids + 1;
-            let r = {rid = st.rids; rterm = x; renv = capture x env; rc = c; previous = false; live = None; core = None} in
+            let r = {rid = st.rids; rterm = x; renv = capture x env; rc = c; previous = false; live = None; core = None; dep_frame = 0; dep_state = 0} in
             (match execute r live with
              | Some (Ok v) -> v
              | Some (Error d) -> raise_diagnostic d
@@ -516,7 +518,7 @@ and ev_raw c env (x : W.term) : value =
       let previous = match st.time with
         | None ->
             st.rids <- st.rids + 1;
-            Residual {rid = st.rids; rterm = x; renv = capture x env; rc = c; previous = true; live = None; core = None}
+            Residual {rid = st.rids; rterm = x; renv = capture x env; rc = c; previous = true; live = None; core = None; dep_frame = 0; dep_state = 0}
         | Some _ -> state_previous c env zone init in
       let env = bind_pat c ~mk:(Some (fun n -> zone @ [":" ^ n])) ~whole:true binder previous env in
       (match st.time with
@@ -753,7 +755,7 @@ and hof c env term kind f rest =
    | `Map, Closure cl when c.st.record && c.rec_ && (match out with Ty.Array _ -> true | _ -> false) ->
        c.st.rids <- c.st.rids + 1;
        let call = Residual {rid = c.st.rids; rterm = term; renv = capture term env; rc = c;
-         previous = false; live = None; core = None} in
+         previous = false; live = None; core = None; dep_frame = 0; dep_state = 0} in
        note c (cl.zone @ ["~calls"]) (Record ["offset", Int !(cl.calls); "call", call])
    | _ -> ());
   let lists_of ts = List.mapi (fun i t ->
@@ -772,7 +774,7 @@ and hof c env term kind f rest =
            let head = match array_init Ty.Int max_iterations (fun k -> concrete c (item k)) with
              | Int_array data -> data | _ -> assert false in
            let whole = bulk {rid = Atomic.fetch_and_add bulk_ids (-1); rterm = term;
-             renv = capture term env; rc = c; previous = false; live = None; core = None} in
+             renv = capture term env; rc = c; previous = false; live = None; core = None; dep_frame = 0; dep_state = 0} in
            (match whole with
             | Some (Int_array data as value) when Array.length data = n
                 && Array.for_all2 Int.equal head (Array.sub data 0 max_iterations) ->
@@ -803,7 +805,7 @@ and hof c env term kind f rest =
                    && Int64.equal (Int64.bits_of_float d.(!i)) (Int64.bits_of_float walked.(!i)) do incr i done;
              !i = Array.length walked) in
            let whole = match bulk {rid = Atomic.fetch_and_add bulk_ids (-1); rterm = term;
-               renv = capture term env; rc = c; previous = false; live = None; core = None} with
+               renv = capture term env; rc = c; previous = false; live = None; core = None; dep_frame = 0; dep_state = 0} with
              | Some (Float_array d as v) when width = 1 && same d -> Some v
              | Some (Vec2_array d as v) when width = 2 && same d -> Some v
              | Some (Vec3_array d as v) when width = 3 && same d -> Some v
@@ -1021,7 +1023,7 @@ and geometry_loop c cz env op fs p body zone =
     if points then begin
       c.st.rids <- c.st.rids + 1;
       let term = { W.path = None; ty = Ty.Vec3; node = W.Ref_binding (ekey, []); form = body.W.form } in
-      Residual { rid = c.st.rids; rterm = term; renv = Smap.empty; rc = ci; previous = false; live = None; core = None}, Text ekey
+      Residual { rid = c.st.rids; rterm = term; renv = Smap.empty; rc = ci; previous = false; live = None; core = None; dep_frame = 0; dep_state = 0}, Text ekey
     end else
       (match mk_node (sub ci "element") "zone/element" [] with
        | Deferred ((Ty.Named "geometry"), id) as g -> g, Int id
@@ -1156,8 +1158,18 @@ let rec is_live = function
   | Record fs | Struct (_, _, fs) -> List.exists (fun (_, v) -> is_live v) fs
   | _ -> false
 
+(* Residuals are shared and immutable: each remembers its answer, or a let-bound array read by many later
+   bindings is walked once per reader and the walk is exponential in the depth of the sharing, and the
+   executor asks the same question of every region pair while fusing (Carve's plans). *)
 let rec dependent frame = function
-  | Residual r -> term_dependent frame r.rc.st r.renv r.rterm
+  | Residual r ->
+      let known = if frame then r.dep_frame else r.dep_state in
+      if known <> 0 then known = 2
+      else begin
+        let answer = term_dependent frame r.rc.st r.renv r.rterm in
+        if frame then r.dep_frame <- (if answer then 2 else 1) else r.dep_state <- (if answer then 2 else 1);
+        answer
+      end
   | List xs -> Array.exists (dependent frame) xs
   | Record fs | Struct (_, _, fs) | Source (_, _, fs) -> List.exists (fun (_, v) -> dependent frame v) fs
   | Fn (Closure cl) -> term_dependent frame cl.at.st cl.env cl.body
@@ -1322,7 +1334,7 @@ module Private = struct
     Residual {rid = Atomic.fetch_and_add bulk_ids (-1); rterm = term;
       renv = List.fold_left (fun env (name, value) -> Smap.add name value env)
         (Smap.singleton function_name (Fn fn)) inputs;
-      rc = {at with data = true; rec_ = false}; previous = false; live = None; core = None})
+      rc = {at with data = true; rec_ = false}; previous = false; live = None; core = None; dep_frame = 0; dep_state = 0})
   let free_names term = Names.elements (free_names term)
   let free_name_walks () = Atomic.get free_walks
   let with_bindings r ~term bindings =
@@ -1339,12 +1351,24 @@ module Private = struct
     Closure {params;body;zone;env=Smap.of_seq(List.to_seq bindings);calls=ref 0;
       fid=Atomic.fetch_and_add bulk_ids (-1);at={r.rc with inst=instance;prefix}}
   let remap_function_geometry ~sources fn =
+    (* Residuals are shared: each is rewritten once, or the copy is exponential in the depth of the sharing. *)
+    let module Seen = Hashtbl.Make (struct
+      type t = residual
+      let equal = ( == )
+      let hash (r : residual) = Hashtbl.hash r.rid
+    end) in
+    let seen = Seen.create 64 in
     let rec value = function
       | Deferred (ty, id) when Ty.is_geometry ty ->
           Deferred (ty, Option.value ~default:id (List.assoc_opt id sources))
       | Fn fn -> Fn (function_value fn)
-      | Residual r -> Residual {r with rid = Atomic.fetch_and_add bulk_ids (-1);
-          renv = Smap.map value r.renv; live = None; core = None}
+      | Residual r ->
+          (match Seen.find_opt seen r with
+           | Some copy -> Residual copy
+           | None ->
+               let copy = {r with rid = Atomic.fetch_and_add bulk_ids (-1);
+                 renv = Smap.map value r.renv; live = None; core = None; dep_frame = 0; dep_state = 0} in
+               Seen.add seen r copy; Residual copy)
       | List values -> List (Array.map value values)
       | Record fields -> Record (List.map (fun (name, v) -> name, value v) fields)
       | Struct (name, ty, fields) -> Struct (name, ty, List.map (fun (name, v) -> name, value v) fields)
