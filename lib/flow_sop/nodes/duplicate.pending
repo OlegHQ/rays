@@ -1,0 +1,220 @@
+; Whole Duplicate draft. The output is the input followed by `copies` blocks of the selected primitives (with
+; the points and corners they use; every primitive when no group is given, then the unused points copy too and
+; the original is transformed by the identity like native materialize_instances). One sop/remap carries every
+; attribute and group; positions and normals are recomputed per block, ordered groups are given the native
+; copy-major order, edge groups get an ancestry (edge t of a copy comes from the source edge it copies), and the
+; optional copy groups mark each block's primitives.
+(defn dup_fail :context value [(reason : text)]
+  (error "invalid_parameter" "duplicate could not produce valid geometry"
+    :cause (str "duplicate [invalid_parameter]: Rdk.Instance_copy.duplicate: " reason)))
+(defn dup_identity_rows :context value []
+  {:r0 (array/vec4 1 [1.0 0.0 0.0 0.0]) :r1 (array/vec4 1 [0.0 1.0 0.0 0.0])
+   :r2 (array/vec4 1 [0.0 0.0 1.0 0.0]) :r3 (array/vec4 1 [0.0 0.0 0.0 1.0])})
+; Index i of an output block layout: head elements first, then `copies` blocks of `size`.
+(defn dup_block :context value [(i : int) (head : int) (size : int)]
+  (if (int/lt i head) 0 (int/div (int/sub i head) (if (int/gt size 0) size 1))))
+(defn dup_slot :context value [(i : int) (head : int) (size : int)]
+  (int/mod (int/sub i head) (if (int/gt size 0) size 1)))
+; The copy-major tail of the native order of an ordered group: for each copy, the listed elements the copies
+; include, as their output positions.
+(defn dup_order_tail :context value
+  [(order : (array int)) (local : (array int)) (copies : int) (head : int) (selected : int)]
+  (let* [kept (array/compact (exact (map (fn [(e : int)] (if (int/ge (array/nth local e) 0) 1 0)) order)))
+         width (array/count kept)]
+    (exact (map (fn [(i : int)]
+      (let* [copy (int/div i (if (int/gt width 0) width 1))
+             element (array/nth order (array/nth kept (int/mod i (if (int/gt width 0) width 1))))]
+        (int/add (int/add head (int/mul copy selected)) (array/nth local element))))
+      (array/range (int/mul copies width) :type int)))))
+; One block of positions / normals: the listed source elements through a matrix.
+(defn dup_block_points :context value
+  [(source : (array vec3)) (indices : (array int)) (matrix : {:r0 vec4 :r1 vec4 :r2 vec4 :r3 vec4})]
+  (exact (map (fn [(q : int)] (transform_point_fused matrix (array/nth source q))) indices)))
+(defn dup_block_normals :context value
+  [(source : (array vec3)) (indices : (array int)) (matrix : {:r0 vec4 :r1 vec4 :r2 vec4 :r3 vec4})]
+  (exact (map (fn [(q : int)]
+    (let* [o (mat4_transform_direction matrix (array/nth source q))
+           length (sqrt (vec3_dot o o))]
+      (if (> length 1e-20) (/ o length) [0.0 0.0 0.0])))
+    indices)))
+
+(defnode sop/duplicate :label "Duplicate" :category "Copy"
+  :validate (int/lt copies (array/max_length :type int))
+  :code "E_PARAM" :message "sop/duplicate: copies must fit a nonnegative array count"
+  [(in0 : geometry)
+   (copies : int 1 :label "Copies" :min 1 :max 1024 :hard_min 0)
+   (cumulative : bool true :label "Cumulative transform")
+   (m00 : float 1.0 :label "M00" :folder ["Transform" "Row 0"] :min -10 :max 10)
+   (m01 : float 0.0 :label "M01" :folder ["Transform" "Row 0"] :min -10 :max 10)
+   (m02 : float 0.0 :label "M02" :folder ["Transform" "Row 0"] :min -10 :max 10)
+   (m03 : float 0.0 :label "M03" :folder ["Transform" "Row 0"] :min -10 :max 10)
+   (m10 : float 0.0 :label "M10" :folder ["Transform" "Row 1"] :min -10 :max 10)
+   (m11 : float 1.0 :label "M11" :folder ["Transform" "Row 1"] :min -10 :max 10)
+   (m12 : float 0.0 :label "M12" :folder ["Transform" "Row 1"] :min -10 :max 10)
+   (m13 : float 0.0 :label "M13" :folder ["Transform" "Row 1"] :min -10 :max 10)
+   (m20 : float 0.0 :label "M20" :folder ["Transform" "Row 2"] :min -10 :max 10)
+   (m21 : float 0.0 :label "M21" :folder ["Transform" "Row 2"] :min -10 :max 10)
+   (m22 : float 1.0 :label "M22" :folder ["Transform" "Row 2"] :min -10 :max 10)
+   (m23 : float 0.0 :label "M23" :folder ["Transform" "Row 2"] :min -10 :max 10)
+   (m30 : float 0.0 :label "M30" :folder ["Transform" "Row 3"] :min -10 :max 10)
+   (m31 : float 0.0 :label "M31" :folder ["Transform" "Row 3"] :min -10 :max 10)
+   (m32 : float 0.0 :label "M32" :folder ["Transform" "Row 3"] :min -10 :max 10)
+   (m33 : float 1.0 :label "M33" :folder ["Transform" "Row 3"] :min -10 :max 10)
+   (group : text "" :label "Primitive group")
+   (copy_group_prefix : text "" :label "Copy group prefix" :folder ["Output"])
+   (preserve_groups : bool false :label "Preserve groups" :folder ["Output"])]
+  (let* [group_name (text/trim group)
+         has_group (not (text/blank? group_name))
+         group_literal (text/glob_literal (if has_group group_name "x"))
+         prefix (text/trim copy_group_prefix)
+         has_prefix (not (text/blank? prefix))
+         found (or (not has_group) (int/gt (array/count (sop/group_names in0 group_literal :owner "primitive")) 0))
+         n (sop/count in0 :points)
+         verts (sop/count in0 :vertices)
+         prims (sop/count in0 :primitives)]
+    (cond
+      (not found) (error "missing_group" (str "duplicate could not find primitive group " (text/repr group_name)))
+      (int/eq copies 0) in0
+      :else
+        (let* [full (not has_group)
+               work (if (and has_prefix (int/gt copies 4096)) 0 copies)
+               topo (sop/topology in0)
+               vp topo.vertex_points
+               off topo.primitive_offsets
+               adjacency (sop/adjacency in0)
+               chosen (if full (array/int prims 1) (sop/group in0 :name group_name :owner "primitive"))
+               sel_prims (array/compact chosen)
+               sf (array/count sel_prims)
+               lengths (exact (map (fn [(f : int)] (int/sub (array/nth off (int/add f 1)) (array/nth off f))) sel_prims))
+               soff (array/scan_sum lengths)
+               sv (array/nth soff sf)
+               starts (exact (map (fn [(j : int)] (array/nth soff j)) (array/range sf :type int)))
+               cover (array/scan_sum (array/scatter_add starts (array/int sf 1) (int/add sv 1)))
+               sel_verts (exact (map (fn [(s : int)]
+                 (let* [j (int/sub (array/nth cover (int/add s 1)) 1)]
+                   (int/add (array/nth off (array/nth sel_prims j)) (int/sub s (array/nth soff j)))))
+                 (array/range sv :type int)))
+               used (exact (map (fn [(c : int)] (if (int/gt c 0) 1 0))
+                      (array/scatter_add (exact (map (fn [(v : int)] (array/nth vp v)) sel_verts)) (array/int sv 1) n)))
+               point_mask (if full (array/int n 1) used)
+               sel_points (array/compact point_mask)
+               sp (array/count sel_points)
+               rank (array/scan_sum point_mask)
+               trivial (or (and full (and (int/eq n 0) (and (int/eq verts 0) (int/eq prims 0)))) (and (not full) (int/eq sf 0)))
+               out_p (int/add n (int/mul work sp))
+               out_v (int/add verts (int/mul work sv))
+               out_f (int/add prims (int/mul work sf))
+               plocal (exact (map (fn [(m : int) (r : int)] (if (int/eq m 1) r -1)) point_mask rank))
+               vlocal (exact (map (fn [(c : int)] (int/sub c 1))
+                        (array/scatter_add sel_verts (exact (map (fn [(s : int)] (int/add s 1)) (array/range sv :type int))) verts)))
+               flocal (exact (map (fn [(c : int)] (int/sub c 1))
+                        (array/scatter_add sel_prims (exact (map (fn [(s : int)] (int/add s 1)) (array/range sf :type int))) prims)))
+               pmap (exact (map (fn [(i : int)] (if (int/lt i n) i (array/nth sel_points (dup_slot i n sp))))
+                      (array/range out_p :type int)))
+               vmap (exact (map (fn [(i : int)] (if (int/lt i verts) i (array/nth sel_verts (dup_slot i verts sv))))
+                      (array/range out_v :type int)))
+               fmap (exact (map (fn [(i : int)] (if (int/lt i prims) i (array/nth sel_prims (dup_slot i prims sf))))
+                      (array/range out_f :type int)))
+               new_vp (exact (map (fn [(i : int)]
+                        (if (int/lt i verts) (array/nth vp i)
+                          (int/add (int/add n (int/mul (dup_block i verts sv) sp))
+                            (array/nth rank (array/nth vp (array/nth sel_verts (dup_slot i verts sv)))))))
+                        (array/range out_v :type int)))
+               new_off (array/concat
+                         (exact (map (fn [(i : int)]
+                           (if (int/lt i prims) (array/nth off i)
+                             (int/add (int/add verts (int/mul (dup_block i prims sf) sv)) (array/nth soff (dup_slot i prims sf)))))
+                           (array/range out_f :type int)))
+                         (array/int 1 out_v))
+               new_kinds (exact (map (fn [(i : int)]
+                           (array/nth topo.kinds (if (int/lt i prims) i (array/nth sel_prims (dup_slot i prims sf)))))
+                           (array/range out_f :type int)))
+               target (sop/mesh :points (array/vec3 out_p) :vertex_points new_vp :primitive_offsets new_off :kinds new_kinds)
+               point_normals (sop/has_attr in0 "N" :owner "point" :type vec3)
+               vertex_normals (sop/has_attr in0 "N" :owner "vertex" :type vec3)
+               source_p (sop/attr in0 :P)
+               source_pn (if point_normals (sop/attr in0 "N" :owner "point" :type vec3) (array/vec3 n))
+               source_vn (if vertex_normals (sop/attr in0 "N" :owner "vertex" :type vec3) (array/vec3 verts))
+               step {:r0 [m00 m01 m02 m03] :r1 [m10 m11 m12 m13] :r2 [m20 m21 m22 m23] :r3 [m30 m31 m32 m33]}
+               identity (mat4_identity)
+               point_ids (array/range n :type int)
+               vertex_ids (array/range verts :type int)
+               blocks (iterate work
+                        {:m identity :k 0 :bad 0
+                         :pos (if full (dup_block_points source_p point_ids identity) source_p)
+                         :pn (dup_block_normals source_pn point_ids identity)
+                         :vn (dup_block_normals source_vn vertex_ids identity)}
+                        (fn [s]
+                          (let* [product (mat4_mul s.m step)
+                                 next (if (and cumulative (or full (int/gt s.k 0))) product step)
+                                 inverse (mat4_inverse next)
+                                 singular (= (count inverse) 0)
+                                 nm (if singular identity (mat4_transpose (nth inverse 0)))]
+                            {:m next :k (int/add s.k 1) :bad (int/add s.bad (if singular 1 0))
+                             :pos (array/concat s.pos (dup_block_points source_p sel_points next))
+                             :pn (array/concat s.pn (dup_block_normals source_pn sel_points nm))
+                             :vn (array/concat s.vn (dup_block_normals source_vn sel_verts nm))})))
+               moved blocks.pos
+               edge_total (sop/count in0 :edges)
+               edge_entries (sop/group_entries in0 "*" :owner "edge")
+               has_edge_groups (int/gt (array/count edge_entries.names) 0)
+               target_edges (sop/count target :edges)
+               edge_of (exact (map (fn [(v : int)] (array/nth adjacency.edge_of_vertex v)) sel_verts))
+               first_seen (array/index_of edge_of edge_of)
+               edge_firsts (array/compact (exact (map (fn [(e : int) (f : int) (j : int)]
+                             (if (and (int/ge e 0) (int/eq f j)) 1 0)) edge_of first_seen (array/range sv :type int))))
+               sel_edges (exact (map (fn [(j : int)] (array/nth edge_of j)) edge_firsts))
+               sel_edge_count (array/count sel_edges)
+               ancestry {:offsets (array/range (int/add target_edges 1) :type int)
+                         :values (exact (map (fn [(slot_edge : int)]
+                                   (if full (int/mod slot_edge (if (int/gt edge_total 0) edge_total 1))
+                                     (if (int/lt slot_edge edge_total) slot_edge (array/nth sel_edges (dup_slot slot_edge edge_total sel_edge_count)))))
+                                   (array/range target_edges :type int)))}
+               remapped (sop/remap in0 target :points pmap :vertices vmap :primitives fmap :positions "mapped" :edges ancestry)
+               placed (sop/with_attr remapped :P moved)
+               normals_ok (int/eq blocks.bad 0)
+               normals_point (if point_normals
+                               (if normals_ok (sop/with_attr placed "N" blocks.pn :owner "point" :type vec3)
+                                 (sop/delete_attr placed "N" :owner "point"))
+                               placed)
+               normals_vertex (if vertex_normals
+                                (if normals_ok (sop/with_attr normals_point "N" blocks.vn :owner "vertex" :type vec3)
+                                  (sop/delete_attr normals_point "N" :owner "vertex"))
+                                normals_point)
+               ordered_entries (sop/group_entries in0 "*" :owner "any")
+               ordered (fold [state normals_vertex] [index (array/range (array/count ordered_entries.names) :type int)]
+                         (let* [owner (array/nth ordered_entries.owners index)
+                                name (array/nth ordered_entries.names index)
+                                edge_group (equal? owner "edge")
+                                ordering (sop/group_order in0 :name name :owner owner)
+                                local (case owner "point" plocal "vertex" vlocal :else flocal)
+                                head (case owner "point" n "vertex" verts :else prims)
+                                selected (case owner "point" sp "vertex" sv :else sf)
+                                tail (dup_order_tail ordering.indices local work head selected)]
+                           (if (or edge_group (not ordering.ordered)) state
+                             (sop/with_group state (exact (sop/group state :name name :owner owner)) :name name :owner owner
+                               :order {:ordered true :indices (array/concat ordering.indices tail)}))))
+               base (if trivial in0 ordered)
+               built_prims (if trivial prims out_f)
+               per_copy (if full prims sf)
+               groups_ok (and (int/le copies 4096) (int/le (int/div (int/add built_prims 7) 8) (int/div 268435456 (if (int/gt copies 0) copies 1))))
+               grouped (fold [state base] [c (array/range (if (and has_prefix groups_ok) copies 0) :type int)]
+                         (let* [name (str prefix (int/add c 1))
+                                literal (text/glob_literal name)
+                                begin (int/sub built_prims (int/mul (int/sub copies c) per_copy))
+                                created (exact (map (fn [(i : int)] (if (and (int/ge i begin) (int/lt i (int/add begin per_copy))) 1 0))
+                                          (array/range built_prims :type int)))
+                                exists (int/gt (array/count (sop/group_names state literal :owner "primitive")) 0)
+                                keeping (and exists preserve_groups)
+                                merged (if keeping (group_publish state "primitive" name "union" created) state)
+                                mask (if keeping (sop/group merged :name name :owner "primitive") created)
+                                ordering (if keeping (sop/group_order merged :name name :owner "primitive")
+                                           {:ordered false :indices (array/int 0)})
+                                cleared (if exists (sop/delete_group merged literal :owner "primitive") merged)]
+                           (if keeping
+                             (sop/with_group cleared (exact mask) :name name :owner "primitive"
+                               :order {:ordered ordering.ordered :indices (exact ordering.indices)})
+                             (sop/with_group cleared (exact mask) :name name :owner "primitive"))))]
+          (cond
+            (and has_prefix (not groups_ok)) (dup_fail "output copy groups exceed the copy-group limits")
+            :else grouped)))))
