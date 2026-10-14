@@ -1,0 +1,24 @@
+(defnode sop/poly_loft :label "PolyLoft" :category ["Topology" "Polygon"]
+  :validate (<= collinearity_tolerance 1.0) :code "E_PARAM"
+  :message "sop/poly_loft: collinearity tolerance must be between zero and one"
+  [(input : geometry) (rest : geometry :required false)
+   (group : text "" :label "Primitive group")
+   (connect_closest_ends : bool true :label "Connect closest ends")
+   (minimize : text "Two point distance" :label "Minimize" :choices ["Two point distance" "Three point distance"])
+   (u_wrap : bool false :label "Wrap U")
+   (v_wrap : bool false :label "Wrap V")
+   (keep_primitives : bool false :label "Keep source primitives")
+   (output_group : text "loft" :label "Output group")
+   (collinearity_tolerance : float 0.0 :label "Collinearity tolerance" :min 0 :max 1 :hard_min 0)
+   (recompute_normals : bool true :label "Recompute normals")]
+  (let* [group_name (text/trim group)
+         has_group (not (text/blank? group_name))
+         found (or (not has_group)
+                 (fold [seen false] [name (sop/group_names input "*" :owner "primitive")]
+                   (or seen (equal? name group_name))))
+         missing (not found)]
+    (if missing
+      (error "missing_group" (str "poly_loft could not find primitive group " (text/repr group_name)))
+      (loft_run input (if (equal? rest nil) input rest) "poly_loft" group_name connect_closest_ends
+        (equal? minimize "Three point distance") u_wrap v_wrap keep_primitives (text/trim output_group)
+        collinearity_tolerance recompute_normals false))))

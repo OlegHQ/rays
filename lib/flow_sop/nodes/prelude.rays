@@ -570,4 +570,410 @@
                 (>= x 1.0) (array/nth v (int/sub knots 1))
                 :else (fma (/ (- x x0) (- x1 x0)) (- y1 y0) y0))))
         xs lows))))
+
+; Whole PolyLoft draft (the engine is shared with Skin and PolyBridge: the helpers below move to the
+; prelude when a second node needs them). Sections are ragged vertex lists; every adjacent pair is aligned
+; (closest ends / closest closed points) and zipped. The greedy zipper is sequential per pair, so it runs
+; as one `iterate` step per zipper move over all pairs at once (only the move bits are kept), and the
+; triangles are rebuilt from prefix sums of the moves. The output is described by arrays, built with
+; sop/mesh and carried by sop/remap. The helpers work on whole arrays with their arithmetic inline: the
+; checker types every call site again, so few, flat call sites keep the workspace inside its budget.
+
+; ---- robust lengths over guide positions g = {:x :y :z :p} (vertex -> point -> coordinates) ----
+; Max-norm of the difference of the two vertices' points.
+(defn loft_scales :context value
+  [(g : {:x (array float) :y (array float) :z (array float) :p (array int)}) (us : (array int)) (vs : (array int))]
+  (exact (map (fn [(u : int) (v : int)]
+    (let* [a (array/nth g.p u) b (array/nth g.p v)]
+      (max (abs (- (array/nth g.x a) (array/nth g.x b)))
+        (max (abs (- (array/nth g.y a) (array/nth g.y b))) (abs (- (array/nth g.z a) (array/nth g.z b)))))))
+    us vs)))
+; sqrt of the squared normalised components (0 when the vector is zero).
+(defn loft_nlens :context value
+  [(g : {:x (array float) :y (array float) :z (array float) :p (array int)}) (us : (array int)) (vs : (array int))
+   (scales : (array float))]
+  (exact (map (fn [(u : int) (v : int) (scale : float)]
+    (let* [a (array/nth g.p u) b (array/nth g.p v)]
+      (if (= scale 0.0) 0.0
+        (let* [x (/ (- (array/nth g.x a) (array/nth g.x b)) scale)
+               y (/ (- (array/nth g.y a) (array/nth g.y b)) scale)
+               z (/ (- (array/nth g.z a) (array/nth g.z b)) scale)]
+          (sqrt (fma z z (fma y y (* x x))))))))
+    us vs scales)))
+; Poly_loft.robust_length.
+(defn loft_dists :context value
+  [(g : {:x (array float) :y (array float) :z (array float) :p (array int)}) (us : (array int)) (vs : (array int))]
+  (let* [scales (loft_scales g us vs)
+         lens (loft_nlens g us vs scales)]
+    (exact (map (fn [(s : float) (l : float)] (* s l)) scales lens))))
+
+; Vertex number at `local` along each section (shifted and optionally reversed).
+(defn loft_vertices :context value
+  [(off : (array int)) (vert : (array int)) (secs : (array int)) (shifts : (array int)) (revs : (array int))
+   (locals : (array int))]
+  (exact (map (fn [(i : int)]
+    (let* [sec (array/nth secs i) shift (array/nth shifts i) rev (array/nth revs i) local (array/nth locals i)
+           first (array/nth off sec) count (int/sub (array/nth off (int/add sec 1)) first)
+           k (if (int/eq rev 1) (int/mod (int/add (int/sub shift local) count) count)
+               (int/mod (int/add shift local) count))]
+      (array/nth vert (int/add first k))))
+    (array/range (array/count secs) :type int))))
+
+; Poly_loft.non_collinear on triples of vertices (0/1 per triple).
+(defn loft_ncs :context value
+  [(g : {:x (array float) :y (array float) :z (array float) :p (array int)}) (tol : float)
+   (us : (array int)) (vs : (array int)) (ws : (array int))]
+  (let* [n (array/count us)
+         rows (array/range n :type int)
+         pa (exact (map (fn [(u : int)] (array/nth g.p u)) us))
+         pb (exact (map (fn [(v : int)] (array/nth g.p v)) vs))
+         pc (exact (map (fn [(w : int)] (array/nth g.p w)) ws))
+         ; Edge vectors b - a and c - a, then their max-norm scales.
+         ux (exact (map (fn [(a : int) (b : int)] (- (array/nth g.x b) (array/nth g.x a))) pa pb))
+         uy (exact (map (fn [(a : int) (b : int)] (- (array/nth g.y b) (array/nth g.y a))) pa pb))
+         uz (exact (map (fn [(a : int) (b : int)] (- (array/nth g.z b) (array/nth g.z a))) pa pb))
+         vx (exact (map (fn [(a : int) (c : int)] (- (array/nth g.x c) (array/nth g.x a))) pa pc))
+         vy (exact (map (fn [(a : int) (c : int)] (- (array/nth g.y c) (array/nth g.y a))) pa pc))
+         vz (exact (map (fn [(a : int) (c : int)] (- (array/nth g.z c) (array/nth g.z a))) pa pc))
+         su (exact (map (fn [(r : int)] (max (abs (array/nth ux r)) (max (abs (array/nth uy r)) (abs (array/nth uz r))))) rows))
+         sv (exact (map (fn [(r : int)] (max (abs (array/nth vx r)) (max (abs (array/nth vy r)) (abs (array/nth vz r))))) rows))
+         ; Normalised vectors (a zero scale divides by one: those rows are rejected below).
+         nux (exact (map (fn [(x : float) (s : float)] (/ x (if (= s 0.0) 1.0 s))) ux su))
+         nuy (exact (map (fn [(x : float) (s : float)] (/ x (if (= s 0.0) 1.0 s))) uy su))
+         nuz (exact (map (fn [(x : float) (s : float)] (/ x (if (= s 0.0) 1.0 s))) uz su))
+         nvx (exact (map (fn [(x : float) (s : float)] (/ x (if (= s 0.0) 1.0 s))) vx sv))
+         nvy (exact (map (fn [(x : float) (s : float)] (/ x (if (= s 0.0) 1.0 s))) vy sv))
+         nvz (exact (map (fn [(x : float) (s : float)] (/ x (if (= s 0.0) 1.0 s))) vz sv))
+         cx (exact (map (fn [(r : int)] (fma (* -1.0 (array/nth nuz r)) (array/nth nvy r) (* (array/nth nuy r) (array/nth nvz r)))) rows))
+         cy (exact (map (fn [(r : int)] (fma (* -1.0 (array/nth nux r)) (array/nth nvz r) (* (array/nth nuz r) (array/nth nvx r)))) rows))
+         cz (exact (map (fn [(r : int)] (fma (* -1.0 (array/nth nuy r)) (array/nth nvx r) (* (array/nth nux r) (array/nth nvy r)))) rows))
+         cross (exact (map (fn [(x : float) (y : float) (z : float)] (sqrt (fma z z (fma y y (* x x))))) cx cy cz))
+         ul (exact (map (fn [(x : float) (y : float) (z : float)] (sqrt (fma z z (fma y y (* x x))))) nux nuy nuz))
+         vl (exact (map (fn [(x : float) (y : float) (z : float)] (sqrt (fma z z (fma y y (* x x))))) nvx nvy nvz))]
+    (exact (map (fn [(r : int)]
+      (let* [a (array/nth pa r) b (array/nth pb r) c (array/nth pc r)
+             distinct (and (not (int/eq a b)) (and (not (int/eq b c)) (not (int/eq c a))))]
+        (if (and distinct (and (> (array/nth su r) 0.0) (and (> (array/nth sv r) 0.0)
+              (> (array/nth cross r) (* (* tol (array/nth ul r)) (array/nth vl r)))))) 1 0)))
+      rows))))
+
+; A copy of a[start, start + len) (a plain packed array, usable as a map input).
+(defn loft_part :context value [(a : (array int)) (start : int) (len : int)]
+  (exact (map (fn [(i : int)] (array/nth a (int/add start i))) (array/range len :type int))))
+
+; ---- alignment of every pair: shifts and reversals of both sections ----
+(defn loft_align :context sop
+  [(g : {:x (array float) :y (array float) :z (array float) :p (array int)})
+   (off : (array int)) (vert : (array int)) (closed : (array int))
+   (pa : (array int)) (pb : (array int)) (connect : bool) (shift : int)]
+  (let* [pairs (array/count pa)
+         idx (array/range pairs :type int)
+         ac (exact (map (fn [(p : int)] (int/sub (array/nth off (int/add (array/nth pa p) 1)) (array/nth off (array/nth pa p)))) idx))
+         bc (exact (map (fn [(p : int)] (int/sub (array/nth off (int/add (array/nth pb p) 1)) (array/nth off (array/nth pb p)))) idx))
+         both (exact (map (fn [(p : int)]
+                (int/mul (array/nth closed (array/nth pa p)) (array/nth closed (array/nth pb p)))) idx))
+         a0 (exact (map (fn [(p : int)] (array/nth vert (array/nth off (array/nth pa p)))) idx))
+         a1 (exact (map (fn [(p : int)] (array/nth vert (int/sub (array/nth off (int/add (array/nth pa p) 1)) 1))) idx))
+         b0 (exact (map (fn [(p : int)] (array/nth vert (array/nth off (array/nth pb p)))) idx))
+         b1 (exact (map (fn [(p : int)] (array/nth vert (int/sub (array/nth off (int/add (array/nth pb p) 1)) 1))) idx))
+         ; The four end-to-end distances in one call: ff, fl, lf, ll.
+         cands (loft_dists g (array/concat (array/concat a0 a0) (array/concat a1 a1))
+                             (array/concat (array/concat b0 b1) (array/concat b0 b1)))
+         ; Endpoint alignment: first strictly smaller candidate wins.
+         best (exact (map (fn [(p : int)]
+                (let* [x0 (array/nth cands p) x1 (array/nth cands (int/add p pairs))
+                       x2 (array/nth cands (int/add p (int/mul 2 pairs))) x3 (array/nth cands (int/add p (int/mul 3 pairs)))
+                       m1 (if (< x1 x0) x1 x0) m2 (if (< x2 m1) x2 m1)]
+                  (if (< x3 m2) 3 (if (< x2 m1) 2 (if (< x1 x0) 1 0))))) idx))
+         ; Closest closed points: brute force over every (a, b) vertex pair, lexicographically first minimum.
+         use_closed (exact (map (fn [(c : int)] (if connect c 0)) both))
+         cps (array/compact use_closed)
+         ncp (array/count cps)
+         crange (array/range ncp :type int)
+         per (exact (map (fn [(k : int)] (int/mul (array/nth ac (array/nth cps k)) (array/nth bc (array/nth cps k)))) crange))
+         roff (array/scan_sum per)
+         total (array/nth roff ncp)
+         cumulative (array/scan_sum (array/scatter_add (array/slice roff 0 ncp) (array/int ncp 1) (int/add total 1)))
+         rows (array/range total :type int)
+         rk (exact (map (fn [(r : int)] (int/sub (array/nth cumulative (int/add r 1)) 1)) rows))
+         row_a (exact (map (fn [(r : int) (k : int)]
+                 (let* [p (array/nth cps k) local (int/sub r (array/nth roff k))]
+                   (array/nth vert (int/add (array/nth off (array/nth pa p)) (int/div local (array/nth bc p)))))) rows rk))
+         row_b (exact (map (fn [(r : int) (k : int)]
+                 (let* [p (array/nth cps k) local (int/sub r (array/nth roff k))]
+                   (array/nth vert (int/add (array/nth off (array/nth pb p)) (int/mod local (array/nth bc p)))))) rows rk))
+         rd (loft_dists g row_a row_b)
+         mins (array/segment_min rd roff)
+         hit (array/compact (exact (map (fn [(d : float) (k : int)] (if (= d (array/nth mins k)) 1 0)) rd rk)))
+         first_hit (int_gather hit (array/index_of (int_gather rk hit) crange))
+         best_a (exact (map (fn [(k : int)] (int/div (int/sub (array/nth first_hit k) (array/nth roff k))
+                  (array/nth bc (array/nth cps k)))) crange))
+         best_b (exact (map (fn [(k : int)] (int/mod (int/sub (array/nth first_hit k) (array/nth roff k))
+                  (array/nth bc (array/nth cps k)))) crange))
+         ; Reverse b when the next a vertex is closer to the previous than to the next b vertex.
+         t_an (exact (map (fn [(k : int)]
+                (let* [p (array/nth cps k)]
+                  (array/nth vert (int/add (array/nth off (array/nth pa p))
+                    (int/mod (int/add (array/nth best_a k) 1) (array/nth ac p)))))) crange))
+         t_bn (exact (map (fn [(k : int)]
+                (let* [p (array/nth cps k)]
+                  (array/nth vert (int/add (array/nth off (array/nth pb p))
+                    (int/mod (int/add (array/nth best_b k) 1) (array/nth bc p)))))) crange))
+         t_bp (exact (map (fn [(k : int)]
+                (let* [p (array/nth cps k)]
+                  (array/nth vert (int/add (array/nth off (array/nth pb p))
+                    (int/mod (int/add (array/nth best_b k) (int/sub (array/nth bc p) 1)) (array/nth bc p)))))) crange))
+         turns (loft_dists g (array/concat t_an t_an) (array/concat t_bp t_bn))
+         turn (exact (map (fn [(k : int)] (if (< (array/nth turns k) (array/nth turns (int/add k ncp))) 1 0)) crange))
+         crank (array/scan_sum use_closed)
+         at (exact (map (fn [(p : int)] (if (int/eq (array/nth use_closed p) 1) (array/nth crank p) ncp)) idx))
+         pad_a (array/concat best_a (array/int 1 0))
+         pad_b (array/concat best_b (array/int 1 0))
+         pad_t (array/concat turn (array/int 1 0))
+         a_rev (exact (map (fn [(p : int)]
+                 (if (int/eq (array/nth use_closed p) 1) 0
+                   (if (and connect (int/ge (array/nth best p) 2)) 1 0))) idx))
+         b_rev (exact (map (fn [(p : int)]
+                 (if (int/eq (array/nth use_closed p) 1) (array/nth pad_t (array/nth at p))
+                   (if (and connect (int/eq (int/mod (array/nth best p) 2) 1)) 1 0))) idx))
+         a_shift (exact (map (fn [(p : int)]
+                   (if (int/eq (array/nth use_closed p) 1) (array/nth pad_a (array/nth at p))
+                     (if (int/eq (array/nth a_rev p) 1) (int/sub (array/nth ac p) 1) 0))) idx))
+         b_base (exact (map (fn [(p : int)]
+                  (if (int/eq (array/nth use_closed p) 1) (array/nth pad_b (array/nth at p))
+                    (if (int/eq (array/nth b_rev p) 1) (int/sub (array/nth bc p) 1) 0))) idx))
+         b_shift (exact (map (fn [(p : int)]
+                   (let* [bcn (array/nth bc p)
+                          sm (int/mod (int/add (int/mod shift bcn) bcn) bcn)]
+                     (int/mod (int/add (array/nth b_base p) sm) bcn))) idx))]
+    {:a_shift a_shift :a_rev a_rev :b_shift b_shift :b_rev b_rev}))
+
+; ---- zipper (one move of every pair per iteration) and polygon pairing ----
+; Returns generated primitives as corner vertex rows c0..c3 (c3 = -1 for triangles) and their pair.
+(defn loft_zip :context sop
+  [(g : {:x (array float) :y (array float) :z (array float) :p (array int)})
+   (off : (array int)) (vert : (array int)) (closed : (array int))
+   (pa : (array int)) (pb : (array int))
+   (al : {:a_shift (array int) :a_rev (array int) :b_shift (array int) :b_rev (array int)})
+   (three : bool) (tol : float) (polygons : bool)]
+  (let* [pairs (array/count pa)
+         idx (array/range pairs :type int)
+         ash al.a_shift arv al.a_rev bsh al.b_shift brv al.b_rev
+         ac (exact (map (fn [(p : int)] (int/sub (array/nth off (int/add (array/nth pa p) 1)) (array/nth off (array/nth pa p)))) idx))
+         bc (exact (map (fn [(p : int)] (int/sub (array/nth off (int/add (array/nth pb p) 1)) (array/nth off (array/nth pb p)))) idx))
+         both (exact (map (fn [(p : int)]
+                (int/mul (array/nth closed (array/nth pa p)) (array/nth closed (array/nth pb p)))) idx))
+         a_steps (exact (map (fn [(p : int)] (int/sub (array/nth ac p) (int/sub 1 (array/nth both p)))) idx))
+         b_steps (exact (map (fn [(p : int)] (int/sub (array/nth bc p) (int/sub 1 (array/nth both p)))) idx))
+         quad (exact (map (fn [(p : int)] (if (and polygons (int/eq (array/nth ac p) (array/nth bc p))) 1 0)) idx))
+         total (exact (map (fn [(p : int)] (if (int/eq (array/nth quad p) 1) 0 (int/add (array/nth a_steps p) (array/nth b_steps p)))) idx))
+         most (if (int/eq pairs 0) 0 (array/max total))
+         ; The four sides of every query: a at ai, a at ai+1, b at bi, b at bi+1.
+         sec4 (array/concat (array/concat pa pa) (array/concat pb pb))
+         sh4 (array/concat (array/concat ash ash) (array/concat bsh bsh))
+         rv4 (array/concat (array/concat arv arv) (array/concat brv brv))
+         final (iterate most {:ai (array/int pairs 0) :bi (array/int pairs 0) :hist (array/int (int/mul most pairs) 0) :k 0}
+           (fn [(c : {:ai (array int) :bi (array int) :hist (array int) :k int})]
+             (let* [ai c.ai bi c.bi
+                    vs (loft_vertices off vert sec4 sh4 rv4
+                         (array/concat (array/concat ai (exact (map (fn [(a : int)] (int/add a 1)) ai)))
+                                       (array/concat bi (exact (map (fn [(b : int)] (int/add b 1)) bi)))))
+                    av (array/slice vs 0 pairs) an (array/slice vs pairs pairs)
+                    bv (array/slice vs (int/mul 2 pairs) pairs) bn (array/slice vs (int/mul 3 pairs) pairs)
+                    left (array/concat (array/concat an av) (array/concat av bv))
+                    right (array/concat (array/concat bv bn) (array/concat an bn))
+                    sc (loft_scales g left right)
+                    ln (loft_nlens g left right sc)
+                    ds (exact (map (fn [(s : float) (l : float)] (* s l)) sc ln))
+                    cmp3 (exact (map (fn [(p : int)]
+                           (let* [sa (+ (array/nth ds p) (array/nth ds (int/add p (int/mul 2 pairs))))
+                                  sb (+ (array/nth ds (int/add p pairs)) (array/nth ds (int/add p (int/mul 3 pairs))))
+                                  fa (if (= (- sa sa) 0.0) sa 1.7976931348623157e308)
+                                  fb (if (= (- sb sb) 0.0) sb 1.7976931348623157e308)]
+                             (if (<= fa fb) 1 0))) idx))
+                    cmp2 (exact (map (fn [(p : int)]
+                           (let* [x (array/nth sc p) y (array/nth sc (int/add p pairs))
+                                  lx (array/nth ln p) ly (array/nth ln (int/add p pairs))
+                                  rx (if (= x 0.0) 1.0 x) ry (if (= y 0.0) 1.0 y)
+                                  small (<= (* (/ x ry) lx) ly) large (<= lx (* (/ y rx) ly))]
+                             (if (= x 0.0) 1
+                               (if (= y 0.0) 0
+                                 (if (<= x y) (if small 1 0) (if large 1 0)))))) idx))
+                    cmp (exact (map (fn [(a : int) (b : int)] (if three a b)) cmp3 cmp2))
+                    code (exact (map (fn [(p : int)]
+                           (let* [can_a (int/lt (array/nth ai p) (array/nth a_steps p))
+                                  can_b (int/lt (array/nth bi p) (array/nth b_steps p))
+                                  active (and (int/eq (array/nth quad p) 0) (or can_a can_b))]
+                             (if active
+                               (if can_b (if can_a (array/nth cmp p) 0) 1)
+                               2))) idx))]
+               {:ai (exact (map (fn [(a : int) (k : int)] (if (int/eq k 1) (int/add a 1) a)) ai code))
+                :bi (exact (map (fn [(b : int) (k : int)] (if (int/eq k 0) (int/add b 1) b)) bi code))
+                :hist (exact (map (fn [(a : int) (b : int)] (int/add a b)) c.hist
+                        (array/scatter_add (exact (map (fn [(p : int)] (int/add (int/mul c.k pairs) p)) idx))
+                          code (int/mul most pairs))))
+                :k (int/add c.k 1)})))
+         hist final.hist
+         ; ---- triangles from the zipper moves ----
+         toff (array/scan_sum total)
+         steps (array/nth toff pairs)
+         srows (array/range steps :type int)
+         tcum (array/scan_sum (array/scatter_add (array/slice toff 0 pairs) (array/int pairs 1) (int/add steps 1)))
+         tp (exact (map (fn [(r : int)] (int/sub (array/nth tcum (int/add r 1)) 1)) srows))
+         moves (exact (map (fn [(r : int) (p : int)] (array/nth hist (int/add (int/mul (int/sub r (array/nth toff p)) pairs) p))) srows tp))
+         msum (array/scan_sum moves)
+         zai (exact (map (fn [(r : int) (p : int)] (int/sub (array/nth msum r) (array/nth msum (array/nth toff p)))) srows tp))
+         zbi (exact (map (fn [(r : int) (p : int) (a : int)] (int/sub (int/sub r (array/nth toff p)) a)) srows tp zai))
+         ra (int_gather pa tp) rb (int_gather pb tp)
+         rash (int_gather ash tp) rarv (int_gather arv tp) rbsh (int_gather bsh tp) rbrv (int_gather brv tp)
+         zv (loft_vertices off vert
+              (array/concat (array/concat ra ra) (array/concat rb rb))
+              (array/concat (array/concat rash rash) (array/concat rbsh rbsh))
+              (array/concat (array/concat rarv rarv) (array/concat rbrv rbrv))
+              (array/concat (array/concat zai (exact (map (fn [(a : int)] (int/add a 1)) zai)))
+                            (array/concat zbi (exact (map (fn [(b : int)] (int/add b 1)) zbi)))))
+         zav (loft_part zv 0 steps) zan (loft_part zv steps steps)
+         zbv (loft_part zv (int/mul 2 steps) steps) zbn (loft_part zv (int/mul 3 steps) steps)
+         zc1 (exact (map (fn [(m : int) (u : int) (v : int)] (int/add (int/mul m u) (int/mul (int/sub 1 m) v))) moves zan zbn))
+         zgood (exact (map (fn [(u : int) (v : int) (w : int)]
+                 (let* [pu (array/nth g.p u) pv (array/nth g.p v) pw (array/nth g.p w)]
+                   (if (and (not (int/eq pu pv)) (and (not (int/eq pv pw)) (not (int/eq pw pu)))) 1 0)))
+                 zav zc1 zbv))
+         znc (loft_ncs g tol zav zc1 zbv)
+         zflat (exact (map (fn [(a : int) (b : int)] (if (and (int/eq a 1) (or (= tol 0.0) (int/eq b 1))) 1 0)) zgood znc))
+         zkeep (array/compact zflat)
+         ; ---- quads of equal-count pairs ----
+         qn (exact (map (fn [(p : int)] (if (int/eq (array/nth quad p) 1) (array/nth a_steps p) 0)) idx))
+         qoff (array/scan_sum qn)
+         qtotal (array/nth qoff pairs)
+         qrows (array/range qtotal :type int)
+         qcum (array/scan_sum (array/scatter_add (array/slice qoff 0 pairs) (array/int pairs 1) (int/add qtotal 1)))
+         qp (exact (map (fn [(r : int)] (int/sub (array/nth qcum (int/add r 1)) 1)) qrows))
+         qlocal (exact (map (fn [(r : int) (p : int)] (int/sub r (array/nth qoff p))) qrows qp))
+         qa (int_gather pa qp) qb (int_gather pb qp)
+         qv (loft_vertices off vert
+              (array/concat (array/concat qa qa) (array/concat qb qb))
+              (array/concat (array/concat (int_gather ash qp) (int_gather ash qp)) (array/concat (int_gather bsh qp) (int_gather bsh qp)))
+              (array/concat (array/concat (int_gather arv qp) (int_gather arv qp)) (array/concat (int_gather brv qp) (int_gather brv qp)))
+              (array/concat (array/concat qlocal (exact (map (fn [(l : int)] (int/add l 1)) qlocal)))
+                            (array/concat qlocal (exact (map (fn [(l : int)] (int/add l 1)) qlocal)))))
+         qav (loft_part qv 0 qtotal) qan (loft_part qv qtotal qtotal)
+         qbv (loft_part qv (int/mul 2 qtotal) qtotal) qbn (loft_part qv (int/mul 3 qtotal) qtotal)
+         qunique (exact (map (fn [(r : int)]
+                   (let* [ap (array/nth g.p (array/nth qav r)) anp (array/nth g.p (array/nth qan r))
+                          bp (array/nth g.p (array/nth qbv r)) bnp (array/nth g.p (array/nth qbn r))]
+                     (if (int/ge (int/add (int/add (int/add 1 (if (int/eq anp ap) 0 1))
+                                    (if (and (not (int/eq bp ap)) (not (int/eq bp anp))) 1 0))
+                                  (if (and (not (int/eq bnp ap)) (and (not (int/eq bnp anp)) (not (int/eq bnp bp)))) 1 0)) 3) 1 0)))
+                   qrows))
+         qfirst (loft_ncs g tol qav qan qbn)
+         qsecond (loft_ncs g tol qav qbn qbv)
+         qflat (exact (map (fn [(u : int) (a : int) (b : int)]
+                 (if (and (int/eq u 1) (or (= tol 0.0) (or (int/eq a 1) (int/eq b 1)))) 1 0))
+                 qunique qfirst qsecond))
+         qkeep (array/compact qflat)
+         tri_count (array/count zkeep)
+         all_c0 (array/concat (int_gather zav zkeep) (int_gather qav qkeep))
+         all_c1 (array/concat (int_gather zc1 zkeep) (int_gather qan qkeep))
+         all_c2 (array/concat (int_gather zbv zkeep) (int_gather qbn qkeep))
+         all_c3 (array/concat (array/int tri_count -1) (int_gather qbv qkeep))
+         all_pair (array/concat (int_gather tp zkeep) (int_gather qp qkeep))
+         order (array/grade all_pair)]
+    {:c0 (int_gather all_c0 order) :c1 (int_gather all_c1 order) :c2 (int_gather all_c2 order)
+     :c3 (int_gather all_c3 order) :pair (int_gather all_pair order)}))
+
+; ---- the node body shared by PolyLoft (triangles) and Skin (polygons) ----
+(defn loft_error :context value [(operation : text) (reason : text)]
+  (error "invalid_topology" (str operation " could not produce valid geometry")
+    :cause (str operation " [invalid_topology]: " reason)))
+
+; Expand a CSR (offsets over `rows` owners) into per-element owner ids.
+(defn loft_owners :context value [(offsets : (array int))]
+  (let* [rows (int/sub (array/count offsets) 1)
+         total (array/nth offsets rows)
+         cumulative (array/scan_sum (array/scatter_add (array/slice offsets 0 rows) (array/int rows 1) (int/add total 1)))]
+    (exact (map (fn [(r : int)] (int/sub (array/nth cumulative (int/add r 1)) 1)) (array/range total :type int)))))
+
+(defn loft_run :context sop
+  [(in0 : geometry) (guide : geometry) (operation : text) (group_name : text) (connect : bool) (three : bool)
+   (u_wrap : bool) (v_wrap : bool) (keep : bool) (output_name : text) (tol : float) (recompute : bool)
+   (polygons : bool)]
+  (let* [topology (sop/topology in0)
+         offsets topology.primitive_offsets kinds topology.kinds tvp topology.vertex_points
+         prims (sop/count in0 :primitives)
+         points (sop/count in0 :points)
+         mask (if (text/blank? group_name) (array/int prims 1) (sop/group in0 :name group_name :owner "primitive"))
+         sizes (exact (map (fn [(p : int)] (int/sub (array/nth offsets (int/add p 1)) (array/nth offsets p))) (array/range prims :type int)))
+         bad (array/compact (exact (map (fn [(m : int) (k : int) (s : int)]
+               (if (int/eq m 1) (if (int/eq k 1) (if (int/lt s 2) 1 0) (if (int/lt s 3) 1 0)) 0)) mask kinds sizes)))]
+    (if (int/gt (array/count bad) 0)
+      (let* [p (array/nth bad 0)]
+        (if (int/eq (array/nth kinds p) 1)
+          (loft_error operation (str "selected open curve " p " has fewer than two vertices"))
+          (loft_error operation (str "selected closed section " p " has fewer than three vertices"))))
+      (let* [sections (array/compact mask)
+             sc (array/count sections)]
+        (cond
+          (int/lt sc 2) in0
+          (not (int/eq (sop/count guide :points) points))
+            (loft_error operation "rest geometry point count does not match input")
+          :else
+          (let* [positions (sop/attr guide "P")
+                 g {:x (exact (map (fn [(q : vec3)] q.x) positions)) :y (exact (map (fn [(q : vec3)] q.y) positions))
+                    :z (exact (map (fn [(q : vec3)] q.z) positions)) :p tvp}
+                 sec_off (array/scan_sum (exact (map (fn [(p : int)] (array/nth sizes p)) sections)))
+                 owner (loft_owners sec_off)
+                 vert (exact (map (fn [(i : int) (s : int)]
+                        (int/add (array/nth offsets (array/nth sections s)) (int/sub i (array/nth sec_off s))))
+                        (array/range (array/count owner) :type int) owner))
+                 closed (exact (map (fn [(p : int)] (if (or u_wrap (not (int/eq (array/nth kinds p) 1))) 1 0)) sections))
+                 pair_count (int/add (int/sub sc 1) (if (and v_wrap (int/gt sc 2)) 1 0))
+                 pa (array/range pair_count :type int)
+                 pb (exact (map (fn [(p : int)] (if (int/lt (int/add p 1) sc) (int/add p 1) 0)) pa))
+                 al (loft_align g sec_off vert closed pa pb connect 0)
+                 plan (loft_zip g sec_off vert closed pa pb al three tol polygons)
+                 generated (array/count plan.c0)]
+            (if (and (int/eq generated 0) (and keep (text/blank? output_name))) in0
+              (let* [keep_flags (exact (map (fn [(m : int)] (if (or keep (int/eq m 0)) 1 0)) mask))
+                     kept (array/compact keep_flags)
+                     kept_count (array/count kept)
+                     kept_sizes (int_gather sizes kept)
+                     kept_off (array/scan_sum kept_sizes)
+                     kept_owner (loft_owners kept_off)
+                     kept_vertices (exact (map (fn [(i : int) (s : int)]
+                       (int/add (array/nth offsets (array/nth kept s)) (int/sub i (array/nth kept_off s))))
+                       (array/range (array/count kept_owner) :type int) kept_owner))
+                     arity (exact (map (fn [(c : int)] (if (int/lt c 0) 3 4)) plan.c3))
+                     gen_off (array/scan_sum arity)
+                     gen_owner (loft_owners gen_off)
+                     corner_table (array/concat (array/concat plan.c0 plan.c1) (array/concat plan.c2 plan.c3))
+                     gen_vertices (exact (map (fn [(i : int) (j : int)]
+                       (array/nth corner_table (int/add (int/mul (int/sub i (array/nth gen_off j)) generated) j)))
+                       (array/range (array/count gen_owner) :type int) gen_owner))
+                     vertex_map (array/concat kept_vertices gen_vertices)
+                     sizes_all (array/concat kept_sizes arity)
+                     out_offsets (array/scan_sum sizes_all)
+                     out_points (int_gather tvp vertex_map)
+                     out_kinds (array/concat (int_gather kinds kept) (array/int generated 0))
+                     primitive_map (array/concat kept (exact (map (fn [(pair : int)] (array/nth sections (array/nth pa pair))) plan.pair)))
+                     target (sop/mesh :points (array/vec3 points) :vertex_points out_points
+                              :primitive_offsets out_offsets :kinds out_kinds)
+                     source_adjacency (sop/adjacency in0)
+                     target_adjacency (sop/adjacency target)
+                     remapped (sop/remap in0 target :points (array/range points :type int) :vertices vertex_map
+                                :primitives primitive_map :positions "mapped"
+                                :edges (edge_ancestry source_adjacency.edge_a source_adjacency.edge_b
+                                         target_adjacency.edge_a target_adjacency.edge_b points))
+                     total_out (int/add kept_count generated)
+                     grouped (if (text/blank? output_name) remapped
+                               (sop/with_group remapped
+                                 (exact (map (fn [(p : int)] (if (int/ge p kept_count) 1 0)) (array/range total_out :type int)))
+                                 :name output_name :owner "primitive"))
+                     had_point (sop/has_attr in0 "N" :owner "point")
+                     had_vertex (sop/has_attr in0 "N" :owner "vertex")
+                     cleared (sop/delete_attr (sop/delete_attr grouped "N" :owner "point") "N" :owner "vertex")]
+                (if (and recompute (or had_point had_vertex))
+                  (sop/normals cleared :owner (if had_point "Point" "Vertex") :weighting "Face area")
+                  cleared)))))))))
+
 )
