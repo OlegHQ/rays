@@ -9,7 +9,11 @@ let sources =
   let text = Fun.protect ~finally:(fun () -> close_in channel)
     (fun () -> really_input_string channel (in_channel_length channel)) in
   let workspace = parse text |> List.hd in
-  Flow.Syntax.children workspace |> List.filter (fun form -> Flow.Syntax.head form = Some "defn")
+  Flow.Syntax.children workspace |> List.filter (fun form -> Flow.Syntax.head form = Some "defn"
+    (* sop helpers may call Lisp-registered nodes, absent from this bare catalog *)
+    && (match Flow.Syntax.children form with
+        | _ :: _ :: { node = Kw "context"; _ } :: { node = Sym "sop"; _ } :: _ -> false
+        | _ -> true))
 let evaluate body =
   let source = parse ("(workspace math_helpers (graph result :context host " ^ body ^ "))") in
   let workspace = match Flow_sop.Catalog.check_workspace ~ops:Flow_sop.Operators.all ~library:false ~sources

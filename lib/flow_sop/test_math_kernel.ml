@@ -67,7 +67,11 @@ let () =
   let text=Fun.protect ~finally:(fun()->close_in channel)
     (fun()->really_input_string channel(in_channel_length channel)) in
   let sources=Flow.Syntax.parse text |> ok |> List.hd |> Flow.Syntax.children
-    |> List.filter(fun form->Flow.Syntax.head form=Some "defn") in
+    |> List.filter(fun form->Flow.Syntax.head form = Some "defn"
+    (* sop helpers may call Lisp-registered nodes, absent from this bare catalog *)
+    && (match Flow.Syntax.children form with
+        | _ :: _ :: { node = Kw "context"; _ } :: { node = Sym "sop"; _ } :: _ -> false
+        | _ -> true)) in
   let limit=sqrt Float.max_float in
   let cases=[|(-0.),0.,0.,0.;1e-12,0.,0.,0.;1e308,(-1e308),0.,(-0.);
     limit,0.,0.,(-0.);Float.next_after limit infinity,0.,0.,(-0.);
@@ -86,7 +90,11 @@ let () =
 let () =
   let text=In_channel.with_open_text "nodes/prelude.rays" In_channel.input_all in
   let sources=Flow.Syntax.parse text |>ok |>List.hd |>Flow.Syntax.children
-    |>List.filter(fun form->Flow.Syntax.head form=Some "defn") in
+    |>List.filter(fun form->Flow.Syntax.head form = Some "defn"
+    (* sop helpers may call Lisp-registered nodes, absent from this bare catalog *)
+    && (match Flow.Syntax.children form with
+        | _ :: _ :: { node = Kw "context"; _ } :: { node = Sym "sop"; _ } :: _ -> false
+        | _ -> true)) in
   let count=5001 and live=Frame_input.at_time 0. in
   let cases=[|Rays_math.Vec3.zero;Rays_math.Vec3.create (-0.) 0. (-0.);
     Rays_math.Vec3.create 0.3 (-0.7) 1.2;

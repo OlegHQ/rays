@@ -4,7 +4,11 @@ let ok = function Ok x -> x | Error d -> failwith (Flow.Diagnostic.to_string d)
 let sources =
   let text = In_channel.with_open_text "nodes/prelude.rays" In_channel.input_all in
   let workspace = ok (Flow.Syntax.parse text) |> List.hd in
-  Flow.Syntax.children workspace |> List.filter (fun form -> Flow.Syntax.head form = Some "defn")
+  Flow.Syntax.children workspace |> List.filter (fun form -> Flow.Syntax.head form = Some "defn"
+    (* sop helpers may call Lisp-registered nodes, absent from this bare catalog *)
+    && (match Flow.Syntax.children form with
+        | _ :: _ :: { node = Kw "context"; _ } :: { node = Sym "sop"; _ } :: _ -> false
+        | _ -> true))
 let checked ?seed body =
   let binding=match seed with None->"" | Some seed->Printf.sprintf "seed %d " seed in
   let source = ok (Flow.Syntax.parse
