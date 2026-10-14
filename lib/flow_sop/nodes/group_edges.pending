@@ -1,0 +1,215 @@
+; Whole-node draft. An edge group from filters: incidence (boundary, manifold, non-manifold), length range,
+; and angle range measured either between the two primitive normals of a manifold edge (dihedral) or
+; between the edge and the other edges at its end points (incident edges). Edges are the unique edges
+; of sop/adjacency; arithmetic keeps the native order and its arm64 multiply-add fusion.
+(defn ge_error :context value [(reason : text)]
+  (error "invalid_edge_group" "group_edges could not produce valid geometry"
+    :cause (str "group_edges [invalid_edge_group]: " reason)))
+(defn ge_bad_length :context value [(value : float)] (or (< value 0.0) (not (= (- value value) 0.0))))
+(defn ge_bad_angle :context value [(value : float)]
+  (or (< value 0.0) (or (> value 3.141592653589793) (not (= (- value value) 0.0)))))
+; Row id of every element of a ragged expansion of counts (zero counts own no element).
+(defn ge_rows :context value [(counts : (array int))]
+  (let* [rows (array/count counts)
+         total (array/sum counts)
+         offsets (array/scan_sum counts)
+         starts (exact (map (fn [(r : int)] (array/nth offsets r)) (array/range rows :type int)))
+         prefix (array/scan_sum (array/scatter_add starts (array/int rows 1) (int/add total 1)))]
+    (exact (map (fn [(s : int)] (int/sub (array/nth prefix (int/add s 1)) 1)) (array/range total :type int)))))
+; Scale used by the native edge direction: the largest magnitude of both end points.
+(defn ge_scale :context value [(a : vec3) (b : vec3)]
+  (max (max (max (max (max (abs a.x) (abs b.x)) (abs a.y)) (abs b.y)) (abs a.z)) (abs b.z)))
+; Normalised difference b/scale - a/scale.
+(defn ge_delta :context value [(a : vec3) (b : vec3) (scale : float)]
+  [(- (/ b.x scale) (/ a.x scale)) (- (/ b.y scale) (/ a.y scale)) (- (/ b.z scale) (/ a.z scale))])
+; Whether edge length (normalised, scale) satisfies the minimum / maximum.
+(defn ge_length_matches :context value
+  [(a : vec3) (b : vec3) (has_min : bool) (minimum : float) (has_max : bool) (maximum : float)]
+  (let* [scale (ge_scale a b)
+         safe (if (= scale 0.0) 1.0 scale)
+         d (ge_delta a b safe)
+         normalized (sqrt (fused_dot d d))]
+    (if (= scale 0.0)
+      (and (or (not has_min) (<= minimum 0.0)) (or (not has_max) (>= maximum 0.0)))
+      (and (or (not has_min) (>= normalized (/ minimum safe)))
+           (or (not has_max) (<= normalized (/ maximum safe)))))))
+; Unit direction of an edge, or zero for a degenerate one.
+(defn ge_direction :context value [(a : vec3) (b : vec3)]
+  (let* [scale (ge_scale a b)
+         d (ge_delta a b (if (= scale 0.0) 1.0 scale))
+         length (sqrt (fused_dot d d))]
+    (if (or (= scale 0.0) (= length 0.0)) [0.0 0.0 0.0] (/ d length))))
+(defn ge_clamp :context value [(dot : float)] (if (< dot -1.0) -1.0 (if (> dot 1.0) 1.0 dot)))
+(defn ge_angle_ok :context value
+  [(dot : float) (has_min : bool) (min_angle : float) (has_max : bool) (max_angle : float)]
+  (and (or (not has_min) (<= dot (+ (cos min_angle) 1.4210854715202004e-14)))
+       (or (not has_max) (>= dot (- (cos max_angle) 1.4210854715202004e-14)))))
+; Unit polygon normals per primitive from the fan area vector (Face_normals.compute) and the number of
+; selected primitives that are not finite non-degenerate polygons. Fan accumulation is stepwise per
+; fan triangle like the native loop.
+(defn ge_normals :context sop [(geo : geometry) (selected : (array int))]
+  (let* [topo (sop/topology geo)
+         positions (sop/attr geo :P)
+         prims (sop/count geo :primitives)
+         starts (array/slice topo.primitive_offsets 0 prims)
+         ends (array/slice topo.primitive_offsets 1 prims)
+         sizes (exact (map (fn [(a : int) (b : int)] (int/sub b a)) starts ends))
+         steps (if (int/eq prims 0) 0 (array/max (exact (map (fn [(n : int)] (if (int/gt n 2) (int/sub n 2) 0)) sizes))))
+         area (iterate steps {:k 0 :n (array/vec3 prims [0.0 0.0 0.0])}
+                (fn [(state : {:k int :n (array vec3)})]
+                  {:k (int/add state.k 1)
+                   :n (exact (map (fn [(first : int) (size : int) (acc : vec3)]
+                        (if (int/lt state.k (int/sub size 2))
+                          (let* [a (array/nth positions (array/nth topo.vertex_points first))
+                                 b (array/nth positions (array/nth topo.vertex_points (int/add first (int/add state.k 1))))
+                                 c (array/nth positions (array/nth topo.vertex_points (int/add first (int/add state.k 2))))
+                                 u (- b a)
+                                 v (- c a)]
+                            [(fma (* -1.0 u.z) v.y (fma u.y v.z acc.x))
+                             (fma (* -1.0 u.x) v.z (fma u.z v.x acc.y))
+                             (fma (* -1.0 u.y) v.x (fma u.x v.y acc.z))])
+                          acc))
+                        starts sizes state.n))}))
+         total area.n
+         scales (exact (map (fn [(n : vec3)] (max (abs n.x) (max (abs n.y) (abs n.z)))) total))
+         bad (array/sum (exact (map (fn [(s : int) (k : int) (scale : float)]
+               (if (and (int/eq s 1) (or (not (int/eq k 0)) (= scale 0.0))) 1 0))
+               selected topo.kinds scales)))
+         normals (exact (map (fn [(n : vec3) (scale : float)]
+               (let* [x (/ n.x scale) y (/ n.y scale) z (/ n.z scale)
+                      inverse (/ 1.0 (sqrt (fma z z (fma y y (* x x)))))]
+                 [(* x inverse) (* y inverse) (* z inverse)]))
+               total scales))]
+    {:bad bad :normals normals}))
+(defnode sop/group_edges :label "Group Edges" :category ["Group" "Create"]
+  [(in0 : geometry)
+   (name : text "edges" :label "Group name")
+   (group : text "" :label "Primitive group")
+   (incidence : text "Any" :label "Incidence" :choices ["Any" "Boundary" "Manifold" "Non-manifold"])
+   (use_min_length : bool false :label "Minimum length" :folder ["Length"])
+   (min_length : float 0.0 :label "Minimum" :folder ["Length"] :min 0 :max 10 :hard_min 0)
+   (use_max_length : bool false :label "Maximum length" :folder ["Length"])
+   (max_length : float 1.0 :label "Maximum" :folder ["Length"] :min 0 :max 10 :hard_min 0)
+   (angle_basis : text "Primitive dihedral" :label "Angle basis" :folder ["Angle"]
+     :choices ["Primitive dihedral" "Incident edges"])
+   (use_min_angle : bool false :label "Minimum angle" :folder ["Angle"])
+   (min_angle : float 0.0 :label "Minimum" :folder ["Angle"] :min 0 :max 3.141592653589793)
+   (use_max_angle : bool false :label "Maximum angle" :folder ["Angle"])
+   (max_angle : float 3.141592653589793 :label "Maximum" :folder ["Angle"] :min 0 :max 3.141592653589793)]
+  (let* [group_name (text/trim group)
+         angle_filter (or use_min_angle use_max_angle)
+         dihedral (equal? angle_basis "Primitive dihedral")]
+    (cond
+      (deform_group_missing in0 "primitive" group_name)
+        (error "missing_group" (str "group_edges could not find primitive group " (text/repr group_name)))
+      (text/blank? name) (ge_error "Edge Group name must not be empty")
+      (and use_min_length (ge_bad_length min_length)) (ge_error "Edge Group minimum length must be finite and non-negative")
+      (and use_max_length (ge_bad_length max_length)) (ge_error "Edge Group maximum length must be finite and non-negative")
+      (and use_min_angle (ge_bad_angle min_angle)) (ge_error "Edge Group minimum angle must be finite and within [0, pi]")
+      (and use_max_angle (ge_bad_angle max_angle)) (ge_error "Edge Group maximum angle must be finite and within [0, pi]")
+      (and (and use_min_length use_max_length) (> min_length max_length))
+        (ge_error "Edge Group minimum length exceeds maximum length")
+      (and (and use_min_angle use_max_angle) (> min_angle max_angle))
+        (ge_error "Edge Group minimum angle exceeds maximum angle")
+      :else
+        (let* [adjacency (sop/adjacency in0)
+               edge_count (sop/count in0 :edges)
+               vertices (sop/count in0 :vertices)
+               prims (sop/count in0 :primitives)
+               positions (sop/attr in0 :P)
+               named (not (text/blank? group_name))
+               selected (if named (sop/group in0 :name group_name :owner "primitive") (array/int prims 1))
+               usage (edge_usage adjacency edge_count)
+               usage_offsets (array/scan_sum usage)
+               ; candidate edges: touched by a selected primitive (all when no group)
+               touched (array/scatter_add
+                         (exact (map (fn [(e : int)] (if (int/lt e 0) 0 e)) adjacency.edge_of_vertex))
+                         (exact (map (fn [(e : int) (p : int)]
+                           (if (and (int/ge e 0) (int/eq (array/nth selected p) 1)) 1 0))
+                           adjacency.edge_of_vertex adjacency.primitive_of_vertex))
+                         edge_count)
+               candidate (if named (exact (map (fn [(count : int)] (if (int/gt count 0) 1 0)) touched)) (array/int edge_count 1))
+               ea (exact (map (fn [(e : int)] (array/nth positions (array/nth adjacency.edge_a e))) (array/range edge_count :type int)))
+               eb (exact (map (fn [(e : int)] (array/nth positions (array/nth adjacency.edge_b e))) (array/range edge_count :type int)))
+               length_ok (if (or use_min_length use_max_length)
+                 (exact (map (fn [(a : vec3) (b : vec3)]
+                   (if (ge_length_matches a b use_min_length min_length use_max_length max_length) 1 0)) ea eb))
+                 (array/int edge_count 1))
+               min_dot (cos min_angle)
+               max_dot (cos max_angle)
+               normal_data (if (and angle_filter dihedral) (ge_normals in0 selected)
+                             {:bad 0 :normals (array/vec3 prims [0.0 0.0 0.0])})
+               ; the two primitives of a manifold edge: its two vertices in vertex order
+               order (array/grade adjacency.edge_of_vertex)
+               unused (array/sum (exact (map (fn [(k : int)] (if (int/lt k 0) 1 0)) adjacency.edge_of_vertex)))
+               dihedral_ok
+                 (exact (map (fn [(e : int) (u : int)]
+                   (if (int/eq u 2)
+                     (let* [first (int/add unused (array/nth usage_offsets e))
+                            l (array/nth adjacency.primitive_of_vertex (array/nth order first))
+                            r (array/nth adjacency.primitive_of_vertex (array/nth order (int/add first 1)))]
+                       (if (and (int/eq (array/nth selected l) 1) (int/eq (array/nth selected r) 1))
+                         (let* [dot (ge_clamp (fused_dot (array/nth normal_data.normals l) (array/nth normal_data.normals r)))]
+                           (if (ge_angle_ok dot use_min_angle min_angle use_max_angle max_angle) 1 0))
+                         0))
+                     0))
+                   (array/range edge_count :type int) usage))
+               ; incident-edge basis: every (edge, other edge at one of its points) pair
+               directions (exact (map (fn [(a : vec3) (b : vec3)] (ge_direction a b)) ea eb))
+               valid_direction (exact (map (fn [(d : vec3)]
+                 (if (or (not (= d.x 0.0)) (or (not (= d.y 0.0)) (not (= d.z 0.0)))) 1 0)) directions))
+               slot_count (array/count adjacency.point_edges)
+               point_degree (exact (map (fn [(p : int)]
+                 (int/sub (array/nth adjacency.point_edge_offsets (int/add p 1)) (array/nth adjacency.point_edge_offsets p)))
+                 (array/range (sop/count in0 :points) :type int)))
+               slot_point (ge_rows point_degree)
+               slot_degree (exact (map (fn [(s : int)] (array/nth point_degree (array/nth slot_point s)))
+                 (array/range slot_count :type int)))
+               rounds (if (int/eq slot_count 0) 0 (array/max point_degree))
+               slot_edge adjacency.point_edges
+               ; round k pairs every slot with the k-th edge of its point; each stage is its own kernel
+               slot_found
+                 (iterate rounds {:k 0 :found (array/int slot_count 0)}
+                   (fn [(state : {:k int :found (array int)})]
+                     (let* [partner (exact (map (fn [(s : int)]
+                              (let* [p (array/nth slot_point s)
+                                     e (array/nth slot_edge s)
+                                     w (int/add (array/nth adjacency.point_edge_offsets p) state.k)
+                                     n (array/nth slot_edge (if (int/lt state.k (array/nth point_degree p)) w s))]
+                                (if (and (int/lt state.k (array/nth point_degree p))
+                                      (and (not (int/eq n e))
+                                        (and (int/eq (array/nth candidate n) 1)
+                                          (and (int/eq (array/nth valid_direction n) 1) (int/eq (array/nth valid_direction e) 1)))))
+                                  n -1)))
+                              (array/range slot_count :type int)))
+                            dots (exact (map (fn [(s : int) (n : int)]
+                              (if (int/lt n 0) 9.0
+                                (let* [p (array/nth slot_point s)
+                                       e (array/nth slot_edge s)
+                                       raw (fused_dot (array/nth directions e) (array/nth directions n))
+                                       at_a (int/eq (array/nth adjacency.edge_a e) p)
+                                       n_starts (int/eq (array/nth adjacency.edge_a n) p)
+                                       flipped (if at_a (not n_starts) n_starts)]
+                                  (ge_clamp (if flipped (* -1.0 raw) raw)))))
+                              (array/range slot_count :type int) partner))]
+                       {:k (int/add state.k 1)
+                        :found (exact (map (fn [(dot : float) (previous : int)]
+                          (if (and (<= dot 1.0) (ge_angle_ok dot use_min_angle min_angle use_max_angle max_angle)) 1 previous))
+                          dots state.found))})))
+               incident_found (array/scatter_add adjacency.point_edges slot_found.found edge_count)
+               members (exact (map (fn [(e : int)]
+                 (if (and (int/eq (array/nth candidate e) 1)
+                       (and (int/eq (array/nth length_ok e) 1)
+                         (and
+                           (cond (equal? incidence "Boundary") (int/eq (array/nth usage e) 1)
+                                 (equal? incidence "Manifold") (int/eq (array/nth usage e) 2)
+                                 (equal? incidence "Non-manifold") (int/gt (array/nth usage e) 2)
+                                 :else true)
+                           (cond (not angle_filter) true
+                                 dihedral (int/eq (array/nth dihedral_ok e) 1)
+                                 :else (int/gt (array/nth incident_found e) 0)))))
+                   1 0))
+                 (array/range edge_count :type int)))]
+          (if (int/gt normal_data.bad 0)
+            (ge_error "Edge Group: selected primitives must be finite non-degenerate polygons")
+            (sop/with_group in0 members :name name :owner "edge"))))))
