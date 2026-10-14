@@ -1,0 +1,41 @@
+; PARTIAL Carve draft (BLOCKED, see the commit message): parameter block, validation, the missing-group
+; refusal and the unchanged outputs only. Every mode that builds geometry still ends in an error, so the gate
+; fails on the first case that needs one. The native kernel is Curve_ops.carve_curves: descriptors (source
+; primitive, kind, a, b) per selected primitive, then interval extraction with arc-length parameters.
+(defnode sop/carve :label "Carve" :category ["Topology" "Curve"]
+  :validate (and (>= first 0.0) (and (<= last 1.0) (if extract_points (<= first last) (< first last))))
+  :code "E_PARAM" :message "sop/carve: parameters require 0 <= first < last <= 1 (equality allowed for extraction)"
+  [(in0 : geometry)
+   (group : text "" :label "Primitive group")
+   (relative_arc_length : bool true :label "Relative arc length")
+   (first : float 0.0 :label "First U" :min 0 :max 1)
+   (last : float 1.0 :label "Second U" :min 0 :max 1)
+   (first_attribute : text "" :label "First attribute" :folder ["Attributes"])
+   (last_attribute : text "" :label "Second attribute" :folder ["Attributes"])
+   (attribute_mode : text "Replace" :label "Attribute mode" :folder ["Attributes"] :choices ["Replace" "Scale"])
+   (only_at_breakpoints : bool false :label "Only at breakpoints")
+   (cut_at_all_internal_breakpoints : bool false :label "Cut at internal breakpoints")
+   (keep : text "Inside" :label "Keep" :choices ["Inside" "Outside" "Inside and outside"])
+   (extract_points : bool false :label "Extract points")
+   (divisions : int 1 :label "Divisions" :min 1 :max 256 :hard_min 1)
+   (keep_original : bool false :label "Keep original")]
+  (let* [group_name (text/trim group)
+         has_group (not (text/blank? group_name))
+         found (or (not has_group)
+                 (fold [seen false] [name (sop/group_names in0 "*" :owner "primitive")]
+                   (or seen (equal? name group_name))))
+         primitives (sop/count in0 :primitives)
+         mask (if has_group (sop/group in0 :name group_name :owner "primitive") (array/int primitives 1))
+         selected (array/sum mask)]
+    (cond
+      (not found) (error "missing_group" (str "carve could not find primitive group " (text/repr group_name)))
+      ; Nothing selected leaves the geometry as it is, in every mode.
+      (int/eq selected 0) in0
+      ; Inside with no divisions over the whole curve and no attribute parameters is the identity.
+      (and (and (not extract_points) (not only_at_breakpoints))
+           (and (equal? keep "Inside")
+                (and (int/eq divisions 1) (and (= first 0.0) (and (= last 1.0)
+                  (and (text/blank? (text/trim first_attribute)) (text/blank? (text/trim last_attribute))))))))
+        in0
+      :else (error "invalid_geometry" "carve could not produce valid geometry"
+              :cause "carve [invalid_geometry]: draft: this mode is not ported yet"))))
