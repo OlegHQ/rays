@@ -9,7 +9,10 @@ let () =
   let workspace = Flow_sop.Catalog.check_workspace catalog authored |> checked in
   assert (workspace.nodes=[] && workspace.ops=[]);
   let sources = parse "(defnode sop/selected_fixture [(geo : geometry)] geo)" in
+  (* An explicit library is pruned to what the workspace reaches; ~library:true checks all of it. *)
   let workspace = Flow_sop.Catalog.check_workspace ~sources catalog authored |> checked in
+  assert (workspace.nodes=[] && workspace.source=authored);
+  let workspace = Flow_sop.Catalog.check_workspace ~library:true ~sources catalog authored |> checked in
   assert (List.map (fun (node : Flow.Workspace.node_definition) -> node.kind.qualified)
     workspace.nodes=["sop/selected_fixture"]);
   assert (workspace.source=authored)
