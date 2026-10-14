@@ -1,0 +1,57 @@
+(* PORT_ISO=1 main.exe nonexistent: compares the iso_surface draft with native on several fields and
+   parameter sets. The port gate cannot feed a function slot (see port_iso_surface.ml), so this is the
+   oracle comparison for that node: the same expression is lowered natively (Lisp_sop.node) and through
+   the draft, both are cooked, and the geometries must agree within 4 ulps (close_geometry). *)
+open Rdk
+let () = if Sys.getenv_opt "PORT_ISO" <> None then at_exit (fun () ->
+  let node = List.find (fun (n : Port_gate.t) -> n.key = "iso_surface") (Port_gate.registered ()) in
+  let ctx = Port_gate.context ~dir:"lib/flow_sop/nodes" node [] in
+  let lisp_node body =
+    let text = Printf.sprintf "(workspace port (graph g :context sop %s))" body in
+    match Flow.Syntax.parse text with
+    | Error d -> Error (Flow.Diagnostic.to_string d)
+    | Ok forms -> match Flow_sop.Catalog.check_workspace ~sources:ctx.Port_gate.sources ~ops:Flow_sop.Operators.all ctx.catalog forms with
+      | Some w, ds when Port_gate.errors ds = [] ->
+          (match Flow_sop.Lower.of_checked ~factories:ctx.factories w with
+           | Error d -> Error (Flow.Diagnostic.to_string d)
+           | Ok lowered -> let g = List.hd lowered.graphs in
+               Sop.Edit_graph.compile_node g.network.geometry ~node_id:(Option.get g.root))
+      | _, ds -> Error (String.concat "\n" (List.map Flow.Diagnostic.to_string ds)) in
+  let fields = [
+    "sphere", "(fn [p] (- (length p) 1.3))";
+    "torus", "(fn [p] (- (+ (* (- (length [p.x p.y 0.0]) 1.2) (- (length [p.x p.y 0.0]) 1.2)) (* p.z p.z)) 0.25))";
+    "waves", "(fn [p] (+ (* (sin (* 2.1 p.x)) (cos (* 1.7 p.y))) (* 0.5 (sin (* 3.0 p.z)))))";
+    "plane", "(fn [p] (- (+ p.x (* 0.37 p.y)) 0.11))";
+    "box", "(fn [p] (- (max (max (abs p.x) (abs p.y)) (abs p.z)) 1.0))" ] in
+  let params = [
+    "default", ":resolution [12 12 12]";
+    "uneven", ":resolution [7 5 9] :min [-2.5 -1.5 -2.0] :max [2.0 2.5 1.75]";
+    "iso", ":resolution [9 9 9] :iso 0.4";
+    "flat", ":resolution [8 6 7] :smooth false";
+    "thin", ":resolution [1 1 1] :min [-1.0 -1.0 -1.0] :max [1.5 1.0 1.0] :iso -0.2";
+    "empty", ":resolution [4 4 4] :iso 50.0" ] in
+  let session = Result.get_ok (Sop.Session.create ~max_entries:64 ~max_payload_bytes:512_000_000) in
+  let cook n = match Sop.Session.cook session ~context:(Result.get_ok (Sop.Context.create ~domains:1 ~grain:97 ())) n with
+    | Ok o -> Sop.Payload.geometry o.Sop.Session.payload |> Result.map_error Sop.Diagnostic.error_to_string
+    | Error d -> Error d.Sop.Diagnostic.code in
+  List.iter (fun (fname, field) -> List.iter (fun (pname, words) -> if Sys.getenv "PORT_ISO" = "1" || Sys.getenv "PORT_ISO" = fname ^ ":" ^ pname then
+    let body = Printf.sprintf "(sop/iso_surface :field %s %s)" field words in
+    let expected = cook (Lisp_sop.node body) in
+    let actual = match lisp_node body with Error m -> Error ("refused: " ^ m) | Ok n -> cook n in
+    match expected, actual with
+    | Ok e, Ok a ->
+        Printf.printf "%-6s %-8s native %d pts / lisp %d pts: %s\n%!" fname pname (Geometry.point_count e) (Geometry.point_count a)
+          (let pos g = Packed.Float3.Private.view (Geometry.positions g) in
+           let nrm g = match Geometry.find_attribute ~owner:Attribute.Point "N" g with
+             | Some a -> (match Attribute.Private.storage a with Attribute.Float3 v -> Packed.Float3.Private.view v | _ -> pos g)
+             | None -> pos g in
+           let worst (a : Packed.Float3.Private.view) (b : Packed.Float3.Private.view) =
+             let w = ref 0. and at = ref 0 in
+             Array.iteri (fun i v -> let d = Float.max (abs_float (v -. b.x.(i))) (Float.max (abs_float (a.y.(i) -. b.y.(i))) (abs_float (a.z.(i) -. b.z.(i)))) in
+               if d > !w then (w := d; at := i)) a.x; !w, !at in
+           let wp, ip = worst (pos e) (pos a) and wn, i_n = worst (nrm e) (nrm a) in
+           Printf.sprintf "%s (max |dP| %.3g at %d, max |dN| %.3g at %d)"
+             (if Rdk_test_support.close_geometry ~ulps:4 e a then "OK" else "DIFFERS") wp ip wn i_n)
+    | Error e, Error a -> Printf.printf "%-6s %-8s both error (%s / %s)\n%!" fname pname e a
+    | Ok _, Error a -> Printf.printf "%-6s %-8s native ok, lisp error %s\n%!" fname pname a
+    | Error e, Ok _ -> Printf.printf "%-6s %-8s native error %s, lisp ok\n%!" fname pname e) params) fields)

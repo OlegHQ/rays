@@ -1,0 +1,221 @@
+; Whole UV Project draft. Planar, cylindrical and spherical projections of the selected primitives'
+; corners; cylinder/sphere seam and pole repair are per-primitive segment reductions over the
+; (contiguous) corners of each primitive. Fused multiply-adds follow the native arm64 object code.
+(defn uvp_finite :context value [(x : float)] (= (- x x) 0.0))
+; Rdk.Uv_ops.normalized_with_inverse: unit direction and 1 / original length.
+(defn uvp_unit :context value [(x : float) (y : float) (z : float)]
+  (let* [scale (max (max (abs x) (abs y)) (abs z))
+         nx (/ x scale) ny (/ y scale) nz (/ z scale)
+         inverse (/ 1.0 (sqrt (fma nz nz (fma ny ny (* nx nx)))))]
+    {:x (* nx inverse) :y (* ny inverse) :z (* nz inverse) :inverse (/ inverse scale) :scale scale}))
+; Rdk.Uv_ops.radial_frame: axis, seam and the third axis; radial_sq is the seam's remaining length.
+(defn uvp_radial :context value [(axis_x : float) (axis_y : float) (axis_z : float)
+                                  (seam_x : float) (seam_y : float) (seam_z : float)]
+  (let* [a (uvp_unit axis_x axis_y axis_z)
+         s (uvp_unit seam_x seam_y seam_z)
+         projection (fma s.z a.z (fma s.y a.y (* s.x a.x)))
+         rx (fma (* -1.0 projection) a.x s.x)
+         ry (fma (* -1.0 projection) a.y s.y)
+         rz (fma (* -1.0 projection) a.z s.z)
+         radial_sq (fma rz rz (fma ry ry (* rx rx)))
+         inverse (/ 1.0 (sqrt radial_sq))
+         sx (* rx inverse) sy (* ry inverse) sz (* rz inverse)]
+    {:ax a.x :ay a.y :az a.z :sx sx :sy sy :sz sz
+     :tx (fma (* -1.0 a.z) sy (* a.y sz))
+     :ty (fma (* -1.0 a.x) sz (* a.z sx))
+     :tz (fma (* -1.0 a.y) sx (* a.x sy))
+     :radial_sq radial_sq :scale_a a.scale :scale_s s.scale}))
+(defn uvp_planar_cosine :context value [(u : {:x float :y float :z float}) (v : {:x float :y float :z float})]
+  (fma u.z v.z (fma u.y v.y (* u.x v.x))))
+; Construction-time refusal: Sop.Attributes.Uv_project's validate.
+(defn uvp_valid :context value
+  [(projection : text) (origin_x : float) (origin_y : float) (origin_z : float)
+   (axis_x : float) (axis_y : float) (axis_z : float) (seam_x : float) (seam_y : float) (seam_z : float)
+   (planar_u_x : float) (planar_u_y : float) (planar_u_z : float)
+   (planar_v_x : float) (planar_v_y : float) (planar_v_z : float)
+   (height : float) (u_min : float) (u_max : float) (v_min : float) (v_max : float)]
+  (let* [finite (and (and (and (and (uvp_finite origin_x) (uvp_finite origin_y)) (and (uvp_finite origin_z) (uvp_finite axis_x)))
+                           (and (and (uvp_finite axis_y) (uvp_finite axis_z)) (and (uvp_finite seam_x) (uvp_finite seam_y))))
+                      (and (and (and (uvp_finite seam_z) (uvp_finite planar_u_x)) (and (uvp_finite planar_u_y) (uvp_finite planar_u_z)))
+                           (and (and (and (uvp_finite planar_v_x) (uvp_finite planar_v_y)) (and (uvp_finite planar_v_z) (uvp_finite height)))
+                                (and (and (uvp_finite u_min) (uvp_finite u_max)) (and (uvp_finite v_min) (uvp_finite v_max))))))
+         planar (equal? projection "Planar")
+         first_x (if planar planar_u_x axis_x) first_y (if planar planar_u_y axis_y) first_z (if planar planar_u_z axis_z)
+         second_x (if planar planar_v_x seam_x) second_y (if planar planar_v_y seam_y) second_z (if planar planar_v_z seam_z)
+         first_zero (= (max (max (abs first_x) (abs first_y)) (abs first_z)) 0.0)
+         second_zero (= (max (max (abs second_x) (abs second_y)) (abs second_z)) 0.0)
+         radial (uvp_radial first_x first_y first_z second_x second_y second_z)
+         unit_a (uvp_unit first_x first_y first_z)
+         unit_b (uvp_unit second_x second_y second_z)
+         cosine (uvp_planar_cosine unit_a unit_b)
+         degenerate (if planar (<= (fma (* -1.0 cosine) cosine 1.0) 1e-12) (<= radial.radial_sq 1e-24))]
+    (and finite
+      (and (and (>= height 0.0) (not (and (equal? projection "Cylindrical") (= height 0.0))))
+           (and (not (or first_zero second_zero)) (not degenerate))))))
+(defn uvp_error :context value [(code : text) (reason : text)]
+  (error code "uv_project could not produce valid geometry"
+    :cause (str "uv_project [" code "]: " reason)))
+
+(defnode sop/uv_project :label "UV Project" :category ["UV" "Create"]
+  :validate (uvp_valid projection origin_x origin_y origin_z axis_x axis_y axis_z seam_x seam_y seam_z
+              planar_u_x planar_u_y planar_u_z planar_v_x planar_v_y planar_v_z height u_min u_max v_min v_max)
+  :code "E_PARAM" :message "sop/uv_project: invalid projection parameters"
+  [(in0 : geometry)
+   (projection : text "Planar" :label "Projection" :choices ["Planar" "Cylindrical" "Spherical"])
+   (name : text "uv" :label "UV attribute")
+   (group : text "" :label "Primitive group")
+   (origin_x : float 0.0 :label "Origin X" :folder ["Projection" "Origin"] :min -10 :max 10 :vec3 ["origin" 0])
+   (origin_y : float 0.0 :label "Origin Y" :folder ["Projection" "Origin"] :min -10 :max 10 :vec3 ["origin" 1])
+   (origin_z : float 0.0 :label "Origin Z" :folder ["Projection" "Origin"] :min -10 :max 10 :vec3 ["origin" 2])
+   (axis_x : float 0.0 :label "Axis X" :folder ["Projection" "Axis"] :min -1 :max 1 :vec3 ["axis" 0])
+   (axis_y : float 1.0 :label "Axis Y" :folder ["Projection" "Axis"] :min -1 :max 1 :vec3 ["axis" 1])
+   (axis_z : float 0.0 :label "Axis Z" :folder ["Projection" "Axis"] :min -1 :max 1 :vec3 ["axis" 2])
+   (seam_x : float 1.0 :label "Seam X" :folder ["Projection" "Seam"] :min -1 :max 1 :vec3 ["seam" 0])
+   (seam_y : float 0.0 :label "Seam Y" :folder ["Projection" "Seam"] :min -1 :max 1 :vec3 ["seam" 1])
+   (seam_z : float 0.0 :label "Seam Z" :folder ["Projection" "Seam"] :min -1 :max 1 :vec3 ["seam" 2])
+   (planar_u_x : float 1.0 :label "U axis X" :folder ["Projection" "Planar"] :min -1 :max 1 :vec3 ["planar_u" 0])
+   (planar_u_y : float 0.0 :label "U axis Y" :folder ["Projection" "Planar"] :min -1 :max 1 :vec3 ["planar_u" 1])
+   (planar_u_z : float 0.0 :label "U axis Z" :folder ["Projection" "Planar"] :min -1 :max 1 :vec3 ["planar_u" 2])
+   (planar_v_x : float 0.0 :label "V axis X" :folder ["Projection" "Planar"] :min -1 :max 1 :vec3 ["planar_v" 0])
+   (planar_v_y : float 0.0 :label "V axis Y" :folder ["Projection" "Planar"] :min -1 :max 1 :vec3 ["planar_v" 1])
+   (planar_v_z : float 1.0 :label "V axis Z" :folder ["Projection" "Planar"] :min -1 :max 1 :vec3 ["planar_v" 2])
+   (height : float 1.0 :label "Cylinder height" :folder ["Projection" "Cylindrical"] :min 0.01 :max 10 :hard_min 0)
+   (u_min : float 0.0 :label "U minimum" :folder ["Range" "U"] :min -10 :max 10)
+   (u_max : float 1.0 :label "U maximum" :folder ["Range" "U"] :min -10 :max 10)
+   (v_min : float 0.0 :label "V minimum" :folder ["Range" "V"] :min -10 :max 10)
+   (v_max : float 1.0 :label "V maximum" :folder ["Range" "V"] :min -10 :max 10)
+   (fix_seams : bool true :label "Fix seams")
+   (fix_poles : bool true :label "Fix poles")]
+  (let* [group_name (text/trim group)
+         has_group (not (text/blank? group_name))
+         group_literal (text/glob_literal (if has_group group_name "x"))
+         primitive_count (sop/count in0 :primitives)
+         vertex_count (sop/count in0 :vertices)
+         point_count (sop/count in0 :points)
+         positions (sop/attr in0 "P")
+         nonfinite_points (array/sum (exact (map (fn [(p : vec3)]
+                            (if (and (uvp_finite p.x) (and (uvp_finite p.y) (uvp_finite p.z))) 0 1)) positions)))
+         has_existing (if (text/blank? name) false (sop/has_attr in0 name :owner "vertex"))]
+    (cond
+      (and has_group (int/eq (array/count (sop/group_names in0 group_literal :owner "primitive")) 0))
+        (uvp_error "missing_group" (str "uv_project could not find primitive group " (text/repr group_name)))
+      (text/blank? name) (uvp_error "invalid_projection" "UV attribute name must not be empty")
+      (int/gt nonfinite_points 0) (uvp_error "invalid_projection" "UV Project requires finite point positions")
+      (and has_existing (not (sop/has_attr in0 name :owner "vertex" :type vec2)))
+        (uvp_error "invalid_projection" (str "existing vertex attribute " (text/repr name) " must have float2 storage"))
+      :else
+      (let* [topology (sop/topology in0)
+             offsets topology.primitive_offsets
+             selected (if has_group (sop/group in0 :name group_name :owner "primitive") (array/int primitive_count 1))
+             owner (prim_of_vertex (array/slice offsets 0 primitive_count) vertex_count)
+             corner_selected (exact (map (fn [(p : int)] (array/nth selected p)) owner))
+             point_x (exact (map (fn [(p : vec3)] p.x) positions))
+             point_y (exact (map (fn [(p : vec3)] p.y) positions))
+             point_z (exact (map (fn [(p : vec3)] p.z) positions))
+             vp topology.vertex_points
+             gx (exact (map (fn [(p : int)] (array/nth point_x p)) vp))
+             gy (exact (map (fn [(p : int)] (array/nth point_y p)) vp))
+             gz (exact (map (fn [(p : int)] (array/nth point_z p)) vp))
+             tau 6.283185307179586
+             ; A range whose width overflows makes every selected coordinate non-finite natively.
+             half_range 8.98846567431158e307
+             u_over (> (abs (- (* 0.5 u_max) (* 0.5 u_min))) half_range)
+             v_over (> (abs (- (* 0.5 v_max) (* 0.5 v_min))) half_range)
+             u_scale (if u_over 0.0 (- u_max u_min))
+             v_scale (if v_over 0.0 (- v_max v_min))
+             projected
+             (case projection
+               "Planar"
+               (let* [pu (uvp_unit planar_u_x planar_u_y planar_u_z)
+                      pv (uvp_unit planar_v_x planar_v_y planar_v_z)
+                      cosine (uvp_planar_cosine pu pv)
+                      inverse_det (/ 1.0 (fma (* -1.0 cosine) cosine 1.0))
+                      uv (exact (map (fn [(x : float) (y : float) (z : float)]
+                           (let* [dx (- x origin_x) dy (- y origin_y) dz (- z origin_z)
+                                  du (fma dz pu.z (fma dy pu.y (* dx pu.x)))
+                                  dv (fma dz pv.z (fma dy pv.y (* dx pv.x)))
+                                  u (fma (* (fma (* -1.0 dv) cosine du) inverse_det) pu.inverse 0.5)
+                                  v (fma (* (fma (* -1.0 du) cosine dv) inverse_det) pv.inverse 0.5)]
+                             [(fma u u_scale u_min) (fma v v_scale v_min)])) gx gy gz))]
+                 {:u (exact (map (fn [(q : vec2)] q.x) uv)) :v (exact (map (fn [(q : vec2)] q.y) uv))})
+               :else
+               (let* [frame (uvp_radial axis_x axis_y axis_z seam_x seam_y seam_z)
+                      cylinder (equal? projection "Cylindrical")
+                      cylinder_inverse_height (/ 1.0 height)
+                      raw (exact (if cylinder
+                        (map (fn [(x : float) (y : float) (z : float)]
+                          (let* [dx (- x origin_x) dy (- y origin_y) dz (- z origin_z)
+                                 axial (fma dz frame.az (fma dy frame.ay (* dx frame.ax)))
+                                 rx (fma (* -1.0 axial) frame.ax dx)
+                                 ry (fma (* -1.0 axial) frame.ay dy)
+                                 rz (fma (* -1.0 axial) frame.az dz)
+                                 radial_sq (fma rz rz (fma ry ry (* rx rx)))
+                                 length_sq (fma dz dz (fma dy dy (* dx dx)))
+                                 cosine (fma rz frame.sz (fma ry frame.sy (* rx frame.sx)))
+                                 sine (fma rz frame.tz (fma ry frame.ty (* rx frame.tx)))
+                                 pole (<= radial_sq (* 1e-24 length_sq))
+                                 u (/ (atan2 sine cosine) tau)]
+                            [(if pole 0.0 (if (< u 0.0) (+ u 1.0) u))
+                             (fma axial cylinder_inverse_height 0.5)
+                             (if pole 1.0 0.0)])) gx gy gz)
+                        (let* [sa (exact (map (fn [(x : float) (y : float) (z : float)]
+                                    (let* [dx (- x origin_x) dy (- y origin_y) dz (- z origin_z)
+                                           length_sq (fma dz dz (fma dy dy (* dx dx)))
+                                           inverse_length (/ 1.0 (sqrt (if (= length_sq 0.0) 1.0 length_sq)))
+                                           axial0 (* (fma dz frame.az (fma dy frame.ay (* dx frame.ax))) inverse_length)]
+                                      [(if (< axial0 -1.0) -1.0 (if (> axial0 1.0) 1.0 axial0)) length_sq])) gx gy gz))
+                               sr (exact (map (fn [(x : float) (y : float) (z : float)]
+                                    (let* [dx (- x origin_x) dy (- y origin_y) dz (- z origin_z)
+                                           length_sq (fma dz dz (fma dy dy (* dx dx)))
+                                           inverse_length (/ 1.0 (sqrt (if (= length_sq 0.0) 1.0 length_sq)))
+                                           axial0 (* (fma dz frame.az (fma dy frame.ay (* dx frame.ax))) inverse_length)
+                                           axial (if (< axial0 -1.0) -1.0 (if (> axial0 1.0) 1.0 axial0))
+                                           reach (/ axial inverse_length)]
+                                      [(fma (* -1.0 reach) frame.ax dx) (fma (* -1.0 reach) frame.ay dy)
+                                       (fma (* -1.0 reach) frame.az dz)])) gx gy gz))]
+                          (map (fn [(a : vec2) (r : vec3)]
+                            (let* [length_sq a.y
+                                   radial_sq (fma r.z r.z (fma r.y r.y (* r.x r.x)))
+                                   cosine (fma r.z frame.sz (fma r.y frame.sy (* r.x frame.sx)))
+                                   sine (fma r.z frame.tz (fma r.y frame.ty (* r.x frame.tx)))
+                                   pole (or (= length_sq 0.0) (<= radial_sq (* 1e-24 length_sq)))
+                                   u (/ (atan2 sine cosine) tau)]
+                              [(if pole 0.0 (if (< u 0.0) (+ u 1.0) u))
+                               (if (= length_sq 0.0) 0.5 (+ (/ (asin a.x) 3.141592653589793) 0.5))
+                               (if pole 1.0 0.0)])) sa sr))))
+                      ru (exact (map (fn [(q : vec3)] q.x) raw))
+                      rv(exact (map (fn [(q : vec3)] q.y) raw))
+                      rp (exact (map (fn [(q : vec3)] q.z) raw))
+                      low (exact (map (fn [(u : float) (p : float)] (if (> p 0.5) 1e300 u)) ru rp))
+                      high (exact (map (fn [(u : float) (p : float)] (if (> p 0.5) -1e300 u)) ru rp))
+                      lowest (array/segment_min low offsets)
+                      highest (array/segment_max high offsets)
+                      crosses (exact (map (fn [(lo : float) (hi : float)]
+                                (if (and fix_seams (> (- hi lo) 0.5)) 1.0 0.0)) lowest highest))
+                      shifted (exact (map (fn [(u : float) (p : float) (s : int)]
+                                (if (> p 0.5) 0.0
+                                  (if (and (> (array/nth crosses s) 0.5) (< u 0.5)) (+ u 1.0) u)))
+                                ru rp owner))
+                      totals (array/segment_sum shifted offsets)
+                      counts (array/segment_sum (exact (map (fn [(p : float)] (- 1.0 p)) rp)) offsets)
+                      pole_u (exact (map (fn [(total : float) (count : float)]
+                               (if (and fix_poles (> count 0.5)) (/ total count) 0.0)) totals counts))
+                      final_u (exact (map (fn [(u : float) (p : float) (s : int)]
+                                (fma (if (> p 0.5) (array/nth pole_u s) u) u_scale u_min)) shifted rp owner))
+                      final_v (exact (map (fn [(v : float)] (fma v v_scale v_min)) rv))]
+                 {:u final_u :v final_v}))
+             bad (array/sum (exact (map (fn [(s : int) (u : float) (v : float)]
+                   (if (and (int/eq s 1) (not (and (uvp_finite u) (uvp_finite v)))) 1 0))
+                   corner_selected projected.u projected.v)))]
+        (if (or (int/gt bad 0) (and (or u_over v_over) (int/gt (array/sum corner_selected) 0)))
+          (uvp_error "invalid_projection" "UV Project produced a non-finite coordinate; check projection scale and input magnitude")
+          (let* [ex (if has_existing
+                      (exact (map (fn [(q : vec2)] q.x) (sop/attr in0 name :owner "vertex" :type vec2)))
+                      (array/float vertex_count))
+                 ey (if has_existing
+                      (exact (map (fn [(q : vec2)] q.y) (sop/attr in0 name :owner "vertex" :type vec2)))
+                      (array/float vertex_count))
+                 out_u (exact (map (fn [(s : int) (u : float) (a : float)] (if (int/eq s 1) u a)) corner_selected projected.u ex))
+                 out_v (exact (map (fn [(s : int) (v : float) (b : float)] (if (int/eq s 1) v b)) corner_selected projected.v ey))]
+            (sop/with_attr in0 name (exact (map (fn [(u : float) (v : float)] [u v]) out_u out_v))
+              :owner "vertex" :type vec2)))))))

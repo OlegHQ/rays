@@ -1,0 +1,292 @@
+; Whole Sort draft (Rdk.Ordering.sort). The sorted `sources` are a stable grade of the key over the
+; (optionally restricted, possibly ordered) slots, then a permutation of points or primitives is applied
+; with sop/remap. Random is Rdk's sequential Fisher-Yates swap list resolved in parallel: position i is
+; final after its own swap, and the value a swap moves is found by following "the next swap that
+; targets this position" with pointer jumping. The spatial Morton key uses 63 bits, so it is
+; flipped by the sign bit before it is graded as a signed int.
+(defn sort_error :context value [(reason : text)]
+  (error "invalid_sort" "sort could not produce valid geometry" :cause (str "sort [invalid_sort]: " reason)))
+(defn sort_reverse :context value [(vals : (array int))]
+  (let* [n (array/count vals)]
+    (exact (map (fn [(k : int)] (array/nth vals (int/sub (int/sub n 1) k))) (array/range n :type int)))))
+(defn sort_by_float :context value [(sources : (array int)) (keys : (array float)) (descending : bool)]
+  (int_gather sources (array/grade (exact (map (fn [(s : int)] (array/nth keys s)) sources)) :descending descending)))
+(defn sort_by_int :context value [(sources : (array int)) (keys : (array int)) (descending : bool)]
+  (int_gather sources (array/grade (exact (map (fn [(s : int)] (array/nth keys s)) sources)) :descending descending)))
+(defn sort_by_text :context value [(sources : (array int)) (keys : (array text)) (descending : bool)]
+  (int_gather sources (array/grade (exact (map (fn [(s : int)] (array/nth keys s)) sources)) :descending descending)))
+; Order_from_indices: the sources placed at the slot their index attribute names; ok is 1 for a valid
+; permutation of the slots.
+(defn sort_from_indices :context value [(slots : (array int)) (vals : (array int)) (n : int)]
+  (let* [m (array/count slots)
+         position (exact (map (fn [(tg : int)] (int/sub tg 1))
+                    (array/scatter_add slots (exact (map (fn [(k : int)] (int/add k 1)) (array/range m :type int))) n)))
+         local (exact (map (fn [(s : int)]
+                  (let* [tg (array/nth vals s)]
+                    (if (and (int/ge tg 0) (int/lt tg n)) (array/nth position (if (and (int/ge tg 0) (int/lt tg n)) tg 0)) -1)))
+                  slots))
+         safe (exact (map (fn [(l : int)] (if (int/ge l 0) l 0)) local))
+         known (int/eq (array/sum (exact (map (fn [(l : int)] (if (int/ge l 0) 0 1)) local))) 0)
+         hits (array/scatter_add safe (array/int m 1) m)
+         distinct (int/eq (array/sum (exact (map (fn [(h : int)] (if (int/eq h 1) 0 1)) hits))) 0)]
+    {:ok (and known distinct) :order (array/scatter_add safe slots m)}))
+; Rdk.Ordering.randomize_in_place on the identity: for i = n-1 downto 1 swap A[i] with A[o_i].
+(defn sort_random :context value [(n : int) (seed : int)]
+  (let* [idx (array/range n :type int)
+         o (exact (map (fn [(i : int)]
+             (if (int/eq i 0) 0
+               (int (* (rand/at seed (int/xor i 1821285621)) (float (int/add i 1)))))) idx))
+         g (array/grade o)
+         sk (int_gather o g)
+         following (exact (map (fn [(j : int)]
+           (if (and (int/lt (int/add j 1) n)
+                    (int/eq (array/nth sk (if (int/lt (int/add j 1) n) (int/add j 1 ) 0)) (array/nth sk j)))
+             (array/nth g (if (int/lt (int/add j 1) n) (int/add j 1) 0)) -1)) idx))
+         next_same (exact (map (fn [(tg : int)] (int/sub tg 1)) (array/scatter_add g (exact (map (fn [(f : int)] (int/add f 1)) following)) n)))
+         head (array/compact (exact (map (fn [(j : int)]
+           (if (or (int/eq j 0) (not (int/eq (array/nth sk j) (array/nth sk (if (int/eq j 0) 0 (int/sub j 1)))))) 1 0)) idx)))
+         first_of (exact (map (fn [(tg : int)] (int/sub tg 1))
+           (array/scatter_add (int_gather sk head) (exact (map (fn [(h : int)] (int/add (array/nth g h) 1)) head)) n)))
+         ahead (exact (map (fn [(v : int)]
+           (let* [f (array/nth first_of v)]
+             (if (int/lt f 0) v (if (int/gt f v) f (if (int/lt (array/nth next_same v) 0) v (array/nth next_same v))))))
+           idx))
+         jumped (iterate 64 ahead
+           (fn [(p : (array int))] (exact (map (fn [(x : int)] (array/nth p x)) p)))
+           :until (fn [(a : (array int)) (b : (array int))] (int/eq (array/sum a) (array/sum b))))]
+    (exact (map (fn [(i : int)]
+      (let* [tg (array/nth next_same i)]
+        (if (int/lt tg 0) (array/nth o i) (array/nth jumped (if (int/lt tg 0) 0 tg))))) idx))))
+; Morton helpers: 21 bits spread to every third bit (all masks fit a 63-bit int).
+(defn sort_spread :context value [(v : int)]
+  (let* [a (int/and v 2097151)
+         b (int/and (int/or a (int/shl a 32)) 8725724278095871)
+         c (int/and (int/or b (int/shl b 16)) 8725728556220671)
+         d (int/and (int/or c (int/shl c 8)) 1157144660301377551)
+         e (int/and (int/or d (int/shl d 4)) 1207822528635744451)]
+    (int/and (int/or e (int/shl e 2)) 1317624576693539401)))
+(defn sort_quantize :context value [(minimum : float) (maximum : float) (value : float)]
+  (if (= minimum maximum) 0
+    (let* [scale (max (abs minimum) (abs maximum))
+           safe (if (= scale 0.0) 1.0 scale)
+           lower (/ minimum safe)
+           extent (- (/ maximum safe) lower)
+           normalized (if (or (= scale 0.0) (= extent 0.0)) 0.0 (/ (- (/ value safe) lower) (if (= extent 0.0) 1.0 extent)))]
+      (floor (fma (max 0.0 (min 1.0 normalized)) 2097151.0 0.5)))))
+; Coordinates of the sorted entity: point positions, or primitive centres.
+(defn sort_coords :context sop [(geo : geometry) (primitives : bool)]
+  (let* [positions (sop/attr geo :P)
+         px (exact (map (fn [(p : vec3)] p.x) positions))
+         py (exact (map (fn [(p : vec3)] p.y) positions))
+         pz (exact (map (fn [(p : vec3)] p.z) positions))]
+    (if (not primitives) {:x px :y py :z pz}
+      (let* [topology (sop/topology geo)
+             vp topology.vertex_points
+             offsets topology.primitive_offsets
+             m (sop/count geo :primitives)
+             starts (array/slice offsets 0 m)
+             ends (array/slice offsets 1 m)
+             scale (exact (map (fn [(a : int) (b : int)] (/ 1.0 (float (int/sub b a)))) starts ends))
+             plane_sum (fn [(plane : (array float))]
+                   (array/segment_sum (exact (map (fn [(p : int)] (array/nth plane p)) vp)) offsets))]
+        {:x (exact (map (fn [(s : float) (k : float)] (* s k)) (plane_sum px) scale))
+         :y (exact (map (fn [(s : float) (k : float)] (* s k)) (plane_sum py) scale))
+         :z (exact (map (fn [(s : float) (k : float)] (* s k)) (plane_sum pz) scale))}))))
+
+(defnode sop/sort :label "Sort" :category "Utility"
+  [(in0 : geometry)
+   (owner : text "Points" :label "Entity" :choices ["Points" "Primitives"])
+   (key : text "X" :label "Sort by"
+     :choices ["X" "Y" "Z" "Distance to point" "Along vector" "Attribute component" "Vertex order"
+               "Primitive index" "Spatial locality" "Random" "Index attribute" "Reverse" "Shift"])
+   (group : text "" :label "Group")
+   (descending : bool false :label "Descending")
+   (x : float 0.0 :label "X" :folder ["Key" "Point or vector"] :min -10 :max 10)
+   (y : float 0.0 :label "Y" :folder ["Key" "Point or vector"] :min -10 :max 10)
+   (z : float 1.0 :label "Z" :folder ["Key" "Point or vector"] :min -10 :max 10)
+   (attribute : text "id" :label "Attribute" :folder ["Key" "Attribute"])
+   (component : int 0 :label "Component" :folder ["Key" "Attribute"] :min 0 :max 15 :hard_min 0)
+   (seed : int 0 :label "Random seed" :folder ["Key"] :min 0 :max 9999)
+   (shift : int 1 :label "Shift" :folder ["Key"] :min -100 :max 100)
+   (output_indices : text "" :label "Output indices" :folder ["Output"])
+   (combine_indices : bool false :label "Combine indices" :folder ["Output"])]
+  (let* [primitives (equal? owner "Primitives")
+         kind (if primitives "primitive" "point")
+         group_name (text/trim group)
+         has_group (not (text/blank? group_name))
+         output_name (text/trim output_indices)
+         has_output (not (text/blank? output_name))
+         group_found (or (not has_group)
+           (fold [seen false] [candidate (sop/group_names in0 "*" :owner kind)] (or seen (equal? candidate group_name))))
+         n (if primitives (sop/count in0 :primitives) (sop/count in0 :points))
+         value_key (not (or (or (equal? key "Reverse") (equal? key "Shift"))
+                            (or (equal? key "Random") (equal? key "Index attribute"))))]
+    (cond
+      (not group_found)
+        (error "missing_group" (str "sort could not find " (if primitives "primitives" "points") " group " (text/repr group_name)))
+      (and combine_indices (not has_output)) (sort_error "combine_indices requires output_indices")
+      (and combine_indices (not value_key)) (sort_error "combine_indices requires a value-based sort key")
+      (and has_output (equal? output_name "P")) (sort_error "sort output index attribute name must be non-empty and not P")
+      (and (equal? key "Random") has_group) (sort_error "random sort does not support a restricted group")
+      :else
+      (let* [selection (if has_group (sop/group in0 :name group_name :owner kind) (array/int n 1))
+             slots (if has_group (array/compact selection) (array/range n :type int))
+             m (array/count slots)
+             combine_present (if combine_indices (sop/has_attr in0 output_name :owner kind) false)
+             combine_ok (if combine_indices (sop/has_attr in0 output_name :owner kind :type int) false)
+             combine (if combine_ok
+                       (sort_from_indices slots (sop/attr in0 output_name :owner kind :type int) n)
+                       {:ok true :order slots})
+             sources combine.order
+             reverse_when_descending (fn [(a : (array int))] (if descending (sort_reverse a) a))
+             key_indices (if (equal? key "Index attribute")
+                           (if (sop/has_attr in0 attribute :owner kind :type int)
+                             (sort_from_indices slots (sop/attr in0 attribute :owner kind :type int) n)
+                             {:ok true :order slots})
+                           {:ok true :order slots})]
+        (cond
+          (and combine_indices (not combine_present))
+            (sort_error (str "missing sort index attribute " output_name))
+          (and combine_indices (not combine_ok))
+            (sort_error (str "sort index attribute " output_name " must be integer"))
+          (not combine.ok) (sort_error "sort index attribute must be a permutation of 0..N-1")
+          (and (equal? key "Along vector") (<= (vec3_dot [x y z] [x y z]) 1e-30))
+            (sort_error "sort vector must be finite and non-zero")
+          (and (equal? key "Vertex order") primitives) (sort_error "By Vertex Order is only valid for points")
+          (and (equal? key "Primitive index") primitives) (sort_error "By Primitive Index is only valid for points")
+          (if (equal? key "Attribute component") (not (sop/has_attr in0 attribute :owner kind)) false)
+            (sort_error (str "missing sort attribute " attribute))
+          (if (equal? key "Index attribute") (not (sop/has_attr in0 attribute :owner kind)) false)
+            (sort_error (str "missing sort index attribute " attribute))
+          (if (equal? key "Index attribute") (not (sop/has_attr in0 attribute :owner kind :type int)) false)
+            (sort_error (str "sort index attribute " attribute " must be integer"))
+          (if (equal? key "Index attribute") (not key_indices.ok) false)
+            (sort_error "sort index attribute must be a permutation of 0..N-1")
+          :else
+          (let* [coords (if (or (or (equal? key "X") (equal? key "Y")) (or (equal? key "Z")
+                               (or (equal? key "Distance to point") (or (equal? key "Along vector") (equal? key "Spatial locality")))))
+                          (sort_coords in0 primitives) {:x (array/float 0) :y (array/float 0) :z (array/float 0)})
+                 attribute_type (if (equal? key "Attribute component") (sop/attr_type in0 attribute :owner kind) "float")
+                 width (case attribute_type "vec2" 2 "vec3" 3 "vec4" 4 :else 1)
+                 array_storage (or (equal? attribute_type "float_array") (equal? attribute_type "int_array"))]
+            (cond
+              (if (equal? key "Attribute component") array_storage false)
+                (sort_error "sort key attribute cannot use array storage")
+              (if (equal? key "Attribute component") (or (int/lt component 0) (int/ge component width)) false)
+                (sort_error "sort attribute component is out of range")
+              :else
+              (let* [ordered
+                     (case key
+                       "Reverse" (if descending sources (sort_reverse sources))
+                       "Shift"
+                         (let* [length (array/count sources)
+                                offset (if (int/eq length 0) 0 (int/mod (int/add (int/mod shift length) length) length))
+                                moved (exact (map (fn [(index : int)]
+                                  (array/nth sources (int/mod (int/add (int/sub index offset) length) length)))
+                                  (array/range length :type int)))]
+                           (reverse_when_descending moved))
+                       "Random" (reverse_when_descending (sort_random n seed))
+                       "Index attribute"
+                         (reverse_when_descending key_indices.order)
+                       "X" (sort_by_float sources coords.x descending)
+                       "Y" (sort_by_float sources coords.y descending)
+                       "Z" (sort_by_float sources coords.z descending)
+                       "Distance to point"
+                         (let* [c coords]
+                           (sort_by_float sources (exact (map (fn [(a : float) (b : float) (d : float)]
+                             (let* [dx (- a x) dy (- b y) dz (- d z)] (fma dz dz (fma dy dy (* dx dx))))) c.x c.y c.z)) descending))
+                       "Along vector"
+                         (let* [c coords v (vec3_normalize [x y z])]
+                           (sort_by_float sources (exact (map (fn [(a : float) (b : float) (d : float)]
+                             (+ (+ (* a v.x) (* b v.y)) (* d v.z))) c.x c.y c.z)) descending))
+                       "Vertex order"
+                         (let* [topology (sop/topology in0)
+                                vp topology.vertex_points
+                                vertices (array/count vp)
+                                by_point (array/grade vp)
+                                sorted (int_gather vp by_point)
+                                heads (array/compact (exact (map (fn [(j : int)]
+                                  (if (or (int/eq j 0) (not (int/eq (array/nth sorted j) (array/nth sorted (if (int/eq j 0) 0 (int/sub j 1)))))) 1 0))
+                                  (array/range vertices :type int))))
+                                first_vertex (exact (map (fn [(tg : int)] (int/sub tg 1))
+                                  (array/scatter_add (int_gather sorted heads)
+                                    (exact (map (fn [(h : int)] (int/add (array/nth by_point h) 1)) heads)) n)))]
+                           (sort_by_int sources first_vertex descending))
+                       "Primitive index"
+                         (let* [topology (sop/topology in0)
+                                vp topology.vertex_points
+                                vertices (array/count vp)
+                                owner_of (prim_of_vertex (array/slice topology.primitive_offsets 0 (sop/count in0 :primitives)) vertices)
+                                by_point (array/grade vp)
+                                sorted (int_gather vp by_point)
+                                heads (array/compact (exact (map (fn [(j : int)]
+                                  (if (or (int/eq j 0) (not (int/eq (array/nth sorted j) (array/nth sorted (if (int/eq j 0) 0 (int/sub j 1)))))) 1 0))
+                                  (array/range vertices :type int))))
+                                first_vertex (exact (map (fn [(tg : int)] (int/sub tg 1))
+                                  (array/scatter_add (int_gather sorted heads)
+                                    (exact (map (fn [(h : int)] (int/add (array/nth by_point h) 1)) heads)) n)))]
+                           (sort_by_int sources (exact (map (fn [(f : int)]
+                             (if (int/ge f 0) (array/nth owner_of (if (int/ge f 0) f 0)) -1)) first_vertex)) descending))
+                       "Spatial locality"
+                         (if (int/eq n 0) sources
+                           (let* [c coords
+                                  lx (array/min c.x) hx (array/max c.x)
+                                  ly (array/min c.y) hy (array/max c.y)
+                                  lz (array/min c.z) hz (array/max c.z)
+                                  qx (exact (map (fn [(a : float)] (sort_spread (sort_quantize lx hx a))) c.x))
+                                  qy (exact (map (fn [(a : float)] (sort_spread (sort_quantize ly hy a))) c.y))
+                                  qz (exact (map (fn [(a : float)] (sort_spread (sort_quantize lz hz a))) c.z))
+                                  keys (exact (map (fn [(a : int) (b : int) (d : int)]
+                                    (int/xor (int/or a (int/or (int/shl b 1) (int/shl d 2))) (int/shl 1 62))) qx qy qz))]
+                             (sort_by_int sources keys descending)))
+                       :else
+                         (case attribute_type
+                           "int" (sort_by_int sources (sop/attr in0 attribute :owner kind :type int) descending)
+                           "text" (sort_by_text sources (sop/attr in0 attribute :owner kind :type text) descending)
+                           "vec2" (sort_by_float sources (exact (map (fn [(q : vec2)] (if (int/eq component 0) q.x q.y))
+                                    (sop/attr in0 attribute :owner kind :type vec2))) descending)
+                           "vec3" (sort_by_float sources (exact (map (fn [(q : vec3)]
+                                    (if (int/eq component 0) q.x (if (int/eq component 1) q.y q.z)))
+                                    (sop/attr in0 attribute :owner kind :type vec3))) descending)
+                           "vec4" (sort_by_float sources (exact (map (fn [(q : vec4)]
+                                    (if (int/eq component 0) q.x (if (int/eq component 1) q.y (if (int/eq component 2) q.z q.w))))
+                                    (sop/attr in0 attribute :owner kind :type vec4))) descending)
+                           :else (sort_by_float sources (sop/attr in0 attribute :owner kind :type float) descending)))
+                     permutation (array/scatter_add slots ordered n)
+                     touched (array/scatter_add slots (array/int m 1) n)
+                     full (exact (map (fn [(own : int) (p : int) (tg : int)] (if (int/eq tg 1) p own))
+                            (array/range n :type int) permutation touched))]
+                (if has_output
+                  (sop/with_attr in0 output_name (array/scatter_add full (array/range n :type int) n) :owner kind :type int)
+                  (if primitives
+                    (let* [topology (sop/topology in0)
+                           offsets topology.primitive_offsets
+                           vp topology.vertex_points
+                           vertices (array/count vp)
+                           points (sop/count in0 :points)
+                           sizes (exact (map (fn [(q : int)]
+                             (int/sub (array/nth offsets (int/add q 1)) (array/nth offsets q))) full))
+                           new_offsets (array/scan_sum sizes)
+                           owner_of (prim_of_vertex (array/slice new_offsets 0 n) vertices)
+                           vertex_map (exact (map (fn [(v : int) (p : int)]
+                             (int/add (array/nth offsets (array/nth full p)) (int/sub v (array/nth new_offsets p))))
+                             (array/range vertices :type int) owner_of))
+                           target (sop/mesh :points (sop/attr in0 :P) :vertex_points (int_gather vp vertex_map)
+                                    :primitive_offsets new_offsets :kinds (int_gather topology.kinds full))
+                           source_edges (sop/edges in0)
+                           target_edges (sop/edges target)
+                           ancestry (edge_ancestry source_edges.a source_edges.b target_edges.a target_edges.b points)]
+                      (sop/remap in0 target :points (array/range points :type int) :vertices vertex_map
+                        :primitives full :positions "mapped" :edges ancestry))
+                    (let* [topology (sop/topology in0)
+                           vertices (sop/count in0 :vertices)
+                           prims (sop/count in0 :primitives)
+                           inverse (array/scatter_add full (array/range n :type int) n)
+                           target (sop/mesh :points (array/vec3 n) :vertex_points (int_gather inverse topology.vertex_points)
+                                    :primitive_offsets topology.primitive_offsets :kinds topology.kinds)
+                           source_edges (sop/edges in0)
+                           target_edges (sop/edges target)
+                           ancestry (edge_ancestry source_edges.a source_edges.b
+                                      (int_gather full target_edges.a) (int_gather full target_edges.b) n)]
+                      (sop/remap in0 target :points full :vertices (array/range vertices :type int)
+                        :primitives (array/range prims :type int) :positions "mapped" :edges ancestry))))))))))))

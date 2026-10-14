@@ -1,0 +1,266 @@
+; Whole Group Expand draft (Rdk.Group_ops.expand). Every owner is one neighbour relation stored as
+; directed pairs (source influences destination): points by edge, edges by shared point, vertices by
+; next/previous corner and shared point, primitives by shared point or edge. Stepping, flooding and
+; shrinking are one level-synchronous `iterate` over a state `selected + 2 * step`, with transition
+; pairs filtered by seam edges (boundary attributes, collision edges) and normal spread, candidates
+; filtered by containment and collision boundary, and shrinking pinned by the seam boundary.
+(defn gx_error :context value [(reason : text)]
+  (error "invalid_group" "group_expand could not produce valid geometry"
+    :cause (str "group_expand [invalid_group]: " reason)))
+(defn gx_owner :context value [(raw : text)]
+  (case raw "Points" "point" "Vertices" "vertex" "Primitives" "primitive" :else "edge"))
+(defn gx_finite :context value [(x : float)] (= (- x x) 0.0))
+; Pairs of distinct members of every key group (negative keys are skipped): src and dst are the
+; payloads of two different members of one group, key the group.
+(defn gx_ragged :context value [(keys : (array int)) (payload : (array int))]
+  (let* [valid (array/compact (exact (map (fn [(k : int)] (if (int/ge k 0) 1 0)) keys)))
+         order (array/grade (int_gather keys valid))
+         sorted_item (int_gather valid order)
+         skey (int_gather keys sorted_item)
+         spay (int_gather payload sorted_item)
+         total (array/count valid)
+         boundary (exact (map (fn [(j : int)]
+           (if (or (int/eq j 0) (not (int/eq (array/nth skey j) (array/nth skey (if (int/eq j 0) 0 (int/sub j 1)))))) 1 0))
+           (array/range total :type int)))
+         gstarts (array/compact boundary)
+         goffsets (array/concat gstarts (array/int 1 total))
+         gid (prim_of_vertex gstarts total)
+         gstart (int_gather gstarts gid)
+         cnt (exact (map (fn [(g : int)] (int/sub (int/sub (array/nth goffsets (int/add g 1)) (array/nth goffsets g)) 1)) gid))
+         pend (array/scan_sum cnt)
+         pairs (array/nth pend total)
+         pj (prim_of_vertex (array/slice pend 0 total) pairs)
+         other (exact (map (fn [(i : int) (j : int)]
+           (let* [k (int/sub i (array/nth pend j))
+                  pos (int/sub j (array/nth gstart j))]
+             (int/add (array/nth gstart j) (if (int/lt k pos) k (int/add k 1)))))
+           (array/range pairs :type int) pj))]
+    {:src (int_gather spay other) :dst (int_gather spay pj) :key (int_gather skey pj)}))
+; Unit vector as Group_ops.expand_normal_planes normalises it (zero stays zero).
+(defn gx_unit :context value [(v : vec3)]
+  (let* [scale (max (abs v.x) (max (abs v.y) (abs v.z)))
+         live (> scale 0.0)
+         safe (if live scale 1.0)
+         nx (/ v.x safe) ny (/ v.y safe) nz (/ v.z safe)
+         inverse (/ 1.0 (sqrt (if live (fma nz nz (fma ny ny (* nx nx))) 1.0)))]
+    (if live [(* nx inverse) (* ny inverse) (* nz inverse)] [0.0 0.0 0.0])))
+; Per-target (point or primitive) normalised sum of the unit source normals.
+(defn gx_normal_field :context value
+  [(target : text) (source : text) (unit : (array vec3)) (vp : (array int)) (pov : (array int))
+   (offsets : (array int)) (count : int)]
+  (let* [sums (if (equal? target "point")
+                (case source
+                  "point" unit
+                  "vertex" (array/scatter_add vp unit count)
+                  :else (array/scatter_add vp (exact (map (fn [(p : int)] (array/nth unit p)) pov)) count))
+                (case source
+                  "primitive" unit
+                  "point" (array/segment_sum (exact (map (fn [(p : int)] (array/nth unit p)) vp)) offsets)
+                  :else (array/segment_sum unit offsets)))]
+    (exact (map (fn [(v : vec3)] (gx_unit v)) sums))))
+(defn gx_valid :context value
+  [(owner : text) (group : text) (steps : int) (flood : bool) (step_attribute : text)
+   (primitive_connectivity : text) (normal_spread : float) (use_normal_attribute : bool)
+   (normal_name : text) (attributes : text) (connectivity_tolerance : float) (use_collision : bool)
+   (collision_owner : text) (collision_group : text) (collision_contain : bool)]
+  (let* [has_attributes (int/gt (count (text/table_decode attributes)) 0)
+         constrained (or (or (< normal_spread 3.141592653589793) use_normal_attribute) (or has_attributes use_collision))]
+    (and (and (and (not (text/blank? group))
+                   (and (gx_finite normal_spread) (and (>= normal_spread 0.0) (<= normal_spread 3.141592653589793))))
+              (and (and (gx_finite connectivity_tolerance) (>= connectivity_tolerance 0.0))
+                   (and (or (not use_normal_attribute) (not (text/blank? normal_name)))
+                        (or (not use_collision) (not (text/blank? collision_group))))))
+         (and (and (or (not (and use_collision collision_contain)) (not (equal? collision_owner "Edges")))
+                   (or (not (equal? owner "Edges")) (text/blank? step_attribute)))
+              (and (not (and flood (int/lt steps 0)))
+                   (and (or (not constrained) (or (equal? owner "Points") (equal? owner "Primitives")))
+                        (or (not (and (or has_attributes use_collision) (equal? owner "Primitives")))
+                            (equal? primitive_connectivity "Share edges"))))))))
+
+(defnode sop/group_expand :label "Group Expand" :category ["Group" "Expand"]
+  :validate (gx_valid owner group steps flood step_attribute primitive_connectivity normal_spread
+              use_normal_attribute normal_name connectivity_attributes connectivity_tolerance use_collision
+              collision_owner collision_group collision_contain)
+  :code "E_PARAM" :message "sop/group_expand: invalid parameters"
+  [(in0 : geometry)
+   (owner : text "Points" :label "Group type" :choices ["Points" "Vertices" "Primitives" "Edges"])
+   (group : text "group" :label "Source group")
+   (name : text "" :label "Output group")
+   (steps : int 1 :label "Steps" :min -100 :max 100)
+   (flood : bool false :label "Flood fill")
+   (step_attribute : text "" :label "Step attribute" :folder ["Output"])
+   (primitive_connectivity : text "Share points" :label "Primitive connectivity" :folder ["Connectivity"]
+     :choices ["Share points" "Share edges"])
+   (normal_spread : float 3.141592653589793 :label "Normal spread" :folder ["Connectivity" "Normals"]
+     :min 0 :max 3.141592653589793 :hard_min 0 :hard_max 3.141592653589793)
+   (use_normal_attribute : bool false :label "Use normal attribute" :folder ["Connectivity" "Normals"])
+   (normal_owner : text "Primitive" :label "Normal owner" :folder ["Connectivity" "Normals"]
+     :choices ["Point" "Vertex" "Primitive"])
+   (normal_name : text "N" :label "Normal attribute" :folder ["Connectivity" "Normals"])
+   (connectivity_attributes : text "" :label "Boundary attributes (owner, pattern)" :folder ["Connectivity"]
+     :kind encoded :normalize group_promote_boundary_normalize)
+   (connectivity_tolerance : float 0.00001 :label "Attribute tolerance" :folder ["Connectivity"]
+     :min 0 :max 1 :hard_min 0)
+   (use_collision : bool false :label "Use collision group" :folder ["Collision"])
+   (collision_owner : text "Edges" :label "Collision owner" :folder ["Collision"]
+     :choices ["Points" "Vertices" "Primitives" "Edges"])
+   (collision_group : text "collision" :label "Collision group" :folder ["Collision"])
+   (collision_contain : bool false :label "Contain region" :folder ["Collision"])
+   (collision_allow_boundary : bool false :label "Allow boundary" :folder ["Collision"])]
+  (let* [kind (gx_owner owner)
+         out_name (if (text/blank? name) group (text/trim name))
+         step_name (text/trim step_attribute)
+         has_step (not (text/blank? step_name))
+         growing (or flood (int/gt steps 0))
+         has_attributes (int/gt (count (text/table_decode connectivity_attributes)) 0)
+         normals_active (and growing (< normal_spread 3.141592653589793))
+         effective (or normals_active (or has_attributes use_collision))
+         compile (and effective (not (int/eq steps 0)))
+         c_kind (gx_owner collision_owner)
+         c_exists (and compile (and use_collision
+                    (fold [seen false] [candidate (sop/group_names in0 "*" :owner c_kind)]
+                      (or seen (equal? candidate collision_group)))))
+         normal_kind (text/lower normal_owner)
+         normal_present (if (and (and compile normals_active) use_normal_attribute)
+                          (sop/has_attr in0 normal_name :owner normal_kind) false)]
+    (cond
+      (int/eq steps -4611686018427387904)
+        (gx_error "Group Expand: steps magnitude exceeds the supported integer range")
+      (not (fold [seen false] [candidate (sop/group_names in0 "*" :owner kind)] (or seen (equal? candidate group))))
+        (gx_error (str "Group Expand: missing " kind " group " (text/repr group)))
+      (and (and compile normals_active) (and use_normal_attribute (not normal_present)))
+        (gx_error (str "Group Expand: missing " normal_kind " normal attribute " (text/repr normal_name)))
+      (and normal_present (not (sop/has_attr in0 normal_name :owner normal_kind :type vec3)))
+        (gx_error (str "Group Expand: normal attribute " (text/repr normal_name) " must use float3 storage"))
+      (if normal_present
+           (int/gt (array/sum (exact (map (fn [(q : vec3)]
+             (if (and (gx_finite q.x) (and (gx_finite q.y) (gx_finite q.z))) 0 1))
+             (sop/attr in0 normal_name :owner normal_kind :type vec3)))) 0) false)
+        (gx_error (str "Group Expand: normal attribute " (text/repr normal_name) " is non-finite"))
+      (and (and compile use_collision) (not c_exists))
+        (gx_error (str "Group Expand: missing " c_kind " collision group " (text/repr collision_group)))
+      :else
+      (let* [selected (sop/group in0 :name group :owner kind)
+             count (array/count selected)
+             cardinality (array/sum selected)
+             edge_count (sop/count in0 :edges)
+             attribute_edges (if (and compile has_attributes)
+               (sop/group (sop/group_from_attribute_boundary in0 :owner "Edges"
+                            :name "__rdk_group_expand_attribute_edges"
+                            :attributes connectivity_attributes :tolerance connectivity_tolerance)
+                 :name "__rdk_group_expand_attribute_edges" :owner "edge")
+               (array/int edge_count 0))
+             collision_mask (if (and compile use_collision) (sop/group in0 :name collision_group :owner c_kind)
+                              (array/int (if (equal? c_kind "edge") edge_count 0) 0))
+             collision_edges (cond
+               (not (and compile use_collision)) (array/int edge_count 0)
+               (equal? c_kind "edge") collision_mask
+               :else (sop/group
+                       (sop/group_from_attribute_boundary
+                         (sop/with_attr in0 "__rdk_membership" collision_mask :owner c_kind :type int)
+                         :owner "Edges" :name "__rdk_group_expand_collision_edges"
+                         :attributes (text/table_encode (list (list c_kind "__rdk_membership"))))
+                       :name "__rdk_group_expand_collision_edges" :owner "edge"))
+             seam_mask (exact (map (fn [(a : int) (b : int)] (int/or a b)) attribute_edges collision_edges))
+             has_seams (int/gt (array/sum seam_mask) 0)
+             shrink_pinned (and (and compile (not growing)) has_seams)
+             shortcut (or (or (int/eq steps 0) (int/eq cardinality 0))
+                          (and (int/eq cardinality count) (not shrink_pinned)))]
+        (let* [published
+               (if shortcut
+                 (let* [ordering (sop/group_order in0 :name group :owner kind)]
+                   {:group (if ordering.ordered
+                             (sop/with_group in0 selected :name out_name :owner kind :order ordering.indices)
+                             (sop/with_group in0 selected :name out_name :owner kind))
+                    :values (array/int count 0)})
+                 (let* [adjacency (sop/adjacency in0)
+                        topology (sop/topology in0)
+                        vp topology.vertex_points
+                        vertex_count (sop/count in0 :vertices)
+                        point_count (sop/count in0 :points)
+                        pov adjacency.primitive_of_vertex
+                        eov adjacency.edge_of_vertex
+                        edge_range (array/range edge_count :type int)
+                        pairs (case kind
+                          "point" {:src (array/concat adjacency.edge_b adjacency.edge_a)
+                                   :dst (array/concat adjacency.edge_a adjacency.edge_b)
+                                   :eid (array/concat edge_range edge_range)}
+                          "edge" (let* [r (gx_ragged (array/concat adjacency.edge_a adjacency.edge_b)
+                                                     (array/concat edge_range edge_range))]
+                                   {:src r.src :dst r.dst :eid (array/int (array/count r.src) -1)})
+                          "vertex" (let* [vertices (array/range vertex_count :type int)
+                                          has_next (array/compact (exact (map (fn [(v : int)]
+                                                       (if (int/ge (array/nth adjacency.next_vertex v) 0) 1 0)) vertices)))
+                                          has_previous (array/compact (exact (map (fn [(v : int)]
+                                                       (if (int/ge (array/nth adjacency.previous_vertex v) 0) 1 0)) vertices)))
+                                          r (gx_ragged vp vertices)
+                                          dst (array/concat (array/concat has_next has_previous) r.dst)]
+                                     {:src (array/concat (array/concat (int_gather adjacency.next_vertex has_next)
+                                                                       (int_gather adjacency.previous_vertex has_previous))
+                                                         r.src)
+                                      :dst dst :eid (array/int (array/count dst) -1)})
+                          :else (if (equal? primitive_connectivity "Share edges")
+                                  (let* [r (gx_ragged eov pov)] {:src r.src :dst r.dst :eid r.key})
+                                  (let* [r (gx_ragged vp pov)]
+                                    {:src r.src :dst r.dst :eid (array/int (array/count r.src) -1)})))
+                        pair_count (array/count pairs.src)
+                        ; Normal planes of the owner's elements (point or primitive owners only).
+                        field (if (and compile normals_active)
+                          (let* [geo (if use_normal_attribute in0
+                                       (sop/normals in0 :owner (if (equal? kind "point") "Point" "Primitive")
+                                         :weighting "Face area" :attribute "__rdk_group_expand_geometric_normal"))
+                                 source (if use_normal_attribute normal_kind kind)
+                                 raw (sop/attr geo (if use_normal_attribute normal_name "__rdk_group_expand_geometric_normal")
+                                       :owner source :type vec3)
+                                 unit (exact (map (fn [(v : vec3)] (gx_unit v)) raw))]
+                            (gx_normal_field kind source unit vp pov topology.primitive_offsets count))
+                          (array/vec3 count))
+                        threshold (- (cos normal_spread) (* 64.0 2.220446049250313e-16))
+                        normal_ok (if (and compile normals_active)
+                          (exact (map (fn [(s : int) (d : int)]
+                            (let* [a (array/nth field s) b (array/nth field d)
+                                   live_a (or (not (= a.x 0.0)) (or (not (= a.y 0.0)) (not (= a.z 0.0))))
+                                   live_b (or (not (= b.x 0.0)) (or (not (= b.y 0.0)) (not (= b.z 0.0))))]
+                              (if (and live_a (and live_b (>= (fma a.z b.z (fma a.y b.y (* a.x b.x))) threshold))) 1 0)))
+                            pairs.src pairs.dst))
+                          (array/int pair_count 1))
+                        seam_ok (exact (map (fn [(e : int)]
+                          (if (int/ge e 0) (int/sub 1 (array/nth seam_mask e)) 1)) pairs.eid))
+                        ok (exact (map (fn [(a : int) (b : int)] (int/and a b)) normal_ok seam_ok))
+                        promote (fn [(from : text) (mask : (array int))] (group_promote_any in0 from kind mask))
+                        contain (if (and compile (and use_collision collision_contain))
+                                  (promote c_kind collision_mask) (array/int count 1))
+                        collision_boundary (if (and compile use_collision) (promote "edge" collision_edges) (array/int count 0))
+                        cand (exact (map (fn [(c : int) (b : int)]
+                          (if (and (int/eq c 1) (not (and (not collision_allow_boundary) (int/eq b 1)))) 1 0))
+                          contain collision_boundary))
+                        forced (if shrink_pinned (promote "edge" seam_mask) (array/int count 0))
+                        passes (if flood (int/add count 1) (if (int/lt steps 0) (int/sub 0 steps) steps))
+                        state (iterate passes selected
+                          (fn [(s : (array int))]
+                            (let* [mask (exact (map (fn [(x : int)] (int/and x 1)) s))
+                                   step (int/add (array/max (exact (map (fn [(x : int)] (int/shr x 1)) s))) 1)]
+                              (if growing
+                                (let* [act (exact (map (fn [(a : int) (o : int)]
+                                             (if (and (int/eq o 1) (int/eq (array/nth mask a) 1)) 1 0)) pairs.src ok))
+                                       hits (array/scatter_add pairs.dst act count)]
+                                  (exact (map (fn [(x : int) (h : int) (c : int)]
+                                    (if (int/eq (int/and x 1) 1) x
+                                      (if (and (int/gt h 0) (int/eq c 1)) (int/add 1 (int/mul 2 step)) x)))
+                                    s hits cand)))
+                                (let* [act (exact (map (fn [(a : int) (o : int)]
+                                             (if (and (int/eq o 1) (int/eq (array/nth mask a) 0)) 1 0)) pairs.src ok))
+                                       hits (array/scatter_add pairs.dst act count)]
+                                  (exact (map (fn [(x : int) (h : int) (f : int)]
+                                    (if (int/eq (int/and x 1) 1)
+                                      (if (and (int/eq h 0) (int/eq f 0)) x (int/mul 2 step))
+                                      x))
+                                    s hits forced))))))
+                          :until (fn [(previous : (array int)) (next : (array int))]
+                            (int/eq (array/sum previous) (array/sum next))))]
+                   {:group (sop/with_group in0 (exact (map (fn [(x : int)] (int/and x 1)) state))
+                             :name out_name :owner kind)
+                    :values (exact (map (fn [(x : int)] (int/shr x 1)) state))}))]
+          (if has_step
+            (sop/with_attr published.group step_name published.values :owner kind :type int)
+            published.group))))))
