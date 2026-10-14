@@ -1,0 +1,180 @@
+; Whole Iso surface draft (Rdk.Iso_surface): marching tetrahedra, six tetrahedra per lattice cell. The field
+; is sampled on the lattice with `map`, gradients are central differences, every (cell, tetrahedron) slot
+; counts its triangles (min(pop, 4 - pop) of its four corner bits), `scan_sum` places them, and vertices,
+; orientation flips and (optionally) flat normals are computed per triangle edge. Triangles own their
+; three vertices; N is a point attribute.
+(defn iso_kx :context value [(k : int)] (case k 1 1 2 1 5 1 6 1 :else 0))
+(defn iso_ky :context value [(k : int)] (case k 2 1 3 1 6 1 7 1 :else 0))
+(defn iso_kz :context value [(k : int)] (if (int/ge k 4) 1 0))
+; Cube corner of local tetrahedron vertex `local` (0..3) in tetrahedron `tet`.
+(defn iso_corner :context value [(tet : int) (local : int)]
+  (case local
+    0 0
+    1 (case tet 0 1 1 2 2 3 3 7 4 4 :else 5)
+    2 (case tet 0 2 1 3 2 7 3 4 4 5 :else 1)
+    :else 6))
+; Edge `e` of triangle `j` of marching-tetrahedra case `code`, as local pair p * 4 + q.
+(defn iso_edge :context value [(code : int) (j : int) (e : int)]
+  (let* [family (case code 1 1 14 1 2 2 13 2 4 3 11 3 8 4 7 4 3 5 12 5 5 6 10 6 :else 7)]
+    (case family
+      1 (case e 0 1 1 2 :else 3)
+      2 (case e 0 4 1 6 :else 7)
+      3 (case e 0 8 1 9 :else 11)
+      4 (case e 0 12 1 13 :else 14)
+      5 (if (int/eq j 0) (case e 0 2 1 3 :else 7) (case e 0 2 1 7 :else 6))
+      6 (if (int/eq j 0) (case e 0 1 1 3 :else 11) (case e 0 1 1 11 :else 9))
+      :else (if (int/eq j 0) (case e 0 1 1 2 :else 14) (case e 0 1 1 14 :else 13)))))
+(defn iso_origin :context value [(c : int) (rx : int) (ry : int) (nx : int) (plane : int)]
+  (int/add (int/add (int/mod c rx) (int/mul nx (int/mod (int/div c rx) ry))) (int/mul plane (int/div c (int/mul rx ry)))))
+(defn iso_corner_index :context value [(i0 : int) (k : int) (nx : int) (plane : int)]
+  (int/add i0 (int/add (iso_kx k) (int/add (int/mul nx (iso_ky k)) (int/mul plane (iso_kz k))))))
+(defn iso_bit :context value [(mask : int) (k : int)] (int/and (int/shr mask k) 1))
+(defn iso_finite :context value [(x : float)] (= (- x x) 0.0))
+(defn iso_valid :context value
+  [(rx : float) (ry : float) (rz : float) (lx : float) (ly : float) (lz : float)
+   (hx : float) (hy : float) (hz : float) (iso : float)]
+  (let* [cells (fn [(r : float)] (and (>= r 1.0) (and (< r 6.0e15) (= r (float (floor r))))))
+         grid (and (cells rx) (and (cells ry) (cells rz)))
+         extent (fn [(lo : float) (hi : float)] (and (iso_finite (- hi lo)) (> hi lo)))]
+    (and grid (and (<= (* (+ rx 1.0) (* (+ ry 1.0) (+ rz 1.0))) 6.0e15)
+              (and (and (extent lx hx) (and (extent ly hy) (extent lz hz))) (iso_finite iso))))))
+
+(defnode sop/iso_surface :label "Iso surface" :category ["Create" "Field"]
+  :validate (iso_valid resolution_x resolution_y resolution_z min_x min_y min_z max_x max_y max_z iso)
+  :code "E_PARAM" :message "sop/iso_surface: invalid parameters"
+  [(field : (fn [vec3] float) :keyword true)
+   (resolution_x : float 64.0 :label "Resolution x" :min 1 :max 128 :primary true :vec3 ["resolution" 0])
+   (resolution_y : float 64.0 :label "Resolution y" :min 1 :max 128 :vec3 ["resolution" 1])
+   (resolution_z : float 64.0 :label "Resolution z" :min 1 :max 128 :vec3 ["resolution" 2])
+   (min_x : float -2.0 :label "Min x" :min -10 :max 10 :vec3 ["min" 0])
+   (min_y : float -2.0 :label "Min y" :min -10 :max 10 :vec3 ["min" 1])
+   (min_z : float -2.0 :label "Min z" :min -10 :max 10 :vec3 ["min" 2])
+   (max_x : float 2.0 :label "Max x" :min -10 :max 10 :vec3 ["max" 0])
+   (max_y : float 2.0 :label "Max y" :min -10 :max 10 :vec3 ["max" 1])
+   (max_z : float 2.0 :label "Max z" :min -10 :max 10 :vec3 ["max" 2])
+   (iso : float 0.0 :label "Iso" :min -10 :max 10 :primary true)
+   (smooth : bool true :label "Smooth")]
+  (let* [rx (int resolution_x) ry (int resolution_y) rz (int resolution_z)
+         nx (int/add rx 1) ny (int/add ry 1) nz (int/add rz 1)
+         plane (int/mul nx ny) total (int/mul plane nz)
+         dx (/ (- max_x min_x) (float rx)) dy (/ (- max_y min_y) (float ry)) dz (/ (- max_z min_z) (float rz))
+         lattice (exact (map (fn [(i : int)]
+           (let* [x (int/mod i nx) y (int/mod (int/div i nx) ny) z (int/div i plane)]
+             [(fma (float x) dx min_x) (fma (float y) dy min_y) (fma (float z) dz min_z)]))
+           (array/range total :type int)))
+         samples (exact (map field lattice))
+         indices (array/range total :type int)
+         gx (exact (map (fn [(i : int)]
+           (let* [x (int/mod i nx)
+                  lo (if (int/eq x 0) i (int/sub i 1)) hi (if (int/eq x rx) i (int/add i 1))]
+             (/ (- (array/nth samples hi) (array/nth samples lo)) (if (or (int/eq x 0) (int/eq x rx)) dx (* 2.0 dx)))))
+           indices))
+         gy (exact (map (fn [(i : int)]
+           (let* [y (int/mod (int/div i nx) ny)
+                  lo (if (int/eq y 0) i (int/sub i nx)) hi (if (int/eq y ry) i (int/add i nx))]
+             (/ (- (array/nth samples hi) (array/nth samples lo)) (if (or (int/eq y 0) (int/eq y ry)) dy (* 2.0 dy)))))
+           indices))
+         gz (exact (map (fn [(i : int)]
+           (let* [z (int/div i plane)
+                  lo (if (int/eq z 0) i (int/sub i plane)) hi (if (int/eq z rz) i (int/add i plane))]
+             (/ (- (array/nth samples hi) (array/nth samples lo)) (if (or (int/eq z 0) (int/eq z rz)) dz (* 2.0 dz)))))
+           indices))
+         cells (int/mul (int/mul rx ry) rz)
+         masks (exact (map (fn [(c : int)]
+           (let* [i0 (iso_origin c rx ry nx plane)
+                  b0 (if (>= (array/nth samples (iso_corner_index i0 0 nx plane)) iso) 1 0)
+                  b1 (if (>= (array/nth samples (iso_corner_index i0 1 nx plane)) iso) 2 0)
+                  b2 (if (>= (array/nth samples (iso_corner_index i0 2 nx plane)) iso) 4 0)
+                  b3 (if (>= (array/nth samples (iso_corner_index i0 3 nx plane)) iso) 8 0)
+                  b4 (if (>= (array/nth samples (iso_corner_index i0 4 nx plane)) iso) 16 0)
+                  b5 (if (>= (array/nth samples (iso_corner_index i0 5 nx plane)) iso) 32 0)
+                  b6 (if (>= (array/nth samples (iso_corner_index i0 6 nx plane)) iso) 64 0)
+                  b7 (if (>= (array/nth samples (iso_corner_index i0 7 nx plane)) iso) 128 0)]
+             (int/or (int/or (int/or b0 b1) (int/or b2 b3)) (int/or (int/or b4 b5) (int/or b6 b7)))))
+           (array/range cells :type int)))
+         slots (int/mul cells 6)
+         codes (exact (map (fn [(s : int)]
+           (let* [mask (array/nth masks (int/div s 6)) tet (int/mod s 6)]
+             (int/or (int/or (iso_bit mask 0) (int/shl (iso_bit mask (iso_corner tet 1)) 1))
+                     (int/or (int/shl (iso_bit mask (iso_corner tet 2)) 2) (int/shl (iso_bit mask 6) 3)))))
+           (array/range slots :type int)))
+         counts (exact (map (fn [(code : int)]
+           (let* [pop (int/add (int/add (int/and code 1) (int/and (int/shr code 1) 1))
+                               (int/add (int/and (int/shr code 2) 1) (int/and (int/shr code 3) 1)))]
+             (min pop (int/sub 4 pop)))) codes))
+         offsets (array/scan_sum counts)
+         triangles (array/nth offsets slots)]
+    (if (int/eq triangles 0)
+      (error "invalid_parameter" "iso_surface could not produce valid geometry"
+        :cause "iso_surface [invalid_parameter]: Iso3.extract: the requested isosurface is empty")
+      (let* [owner (prim_of_vertex (array/slice offsets 0 slots) triangles)
+             edge_count (int/mul triangles 3)
+             edge_ids (array/range edge_count :type int)
+             ; pair (left corner, right corner) of every triangle edge, and the lattice index of each end
+             pair (exact (map (fn [(m : int)]
+               (let* [k (int/div m 3) e (int/mod m 3) s (array/nth owner k)
+                      j (int/sub k (array/nth offsets s))
+                      code (array/nth codes s) tet (int/mod s 6)
+                      pq (iso_edge code j e)]
+                 (int/or (int/shl (iso_corner tet (int/div pq 4)) 3) (iso_corner tet (int/mod pq 4)))))
+               edge_ids))
+             left_index (exact (map (fn [(m : int) (p : int)]
+               (let* [s (array/nth owner (int/div m 3)) left (int/shr p 3)]
+                 (iso_corner_index (iso_origin (int/div s 6) rx ry nx plane) left nx plane)))
+               edge_ids pair))
+             right_index (exact (map (fn [(m : int) (p : int)]
+               (let* [s (array/nth owner (int/div m 3)) right (int/and p 7)]
+                 (iso_corner_index (iso_origin (int/div s 6) rx ry nx plane) right nx plane)))
+               edge_ids pair))
+             amount (exact (map (fn [(il : int) (ir : int)]
+               (let* [denominator (- (array/nth samples ir) (array/nth samples il))]
+                 (if (<= (abs denominator) 1e-15) 0.5
+                   (max 0.0 (min 1.0 (/ (- iso (array/nth samples il)) denominator))))))
+               left_index right_index))
+             positions (exact (map (fn [(il : int) (ir : int) (a : float)]
+               (let* [lx (fma (float (int/mod il nx)) dx min_x) ly (fma (float (int/mod (int/div il nx) ny)) dy min_y)
+                      lz (fma (float (int/div il plane)) dz min_z)
+                      rx2 (fma (float (int/mod ir nx)) dx min_x) ry2 (fma (float (int/mod (int/div ir nx) ny)) dy min_y)
+                      rz2 (fma (float (int/div ir plane)) dz min_z)]
+                 [(+ lx (* (- rx2 lx) a)) (+ ly (* (- ry2 ly) a)) (+ lz (* (- rz2 lz) a))]))
+               left_index right_index amount))
+             normals (exact (map (fn [(il : int) (ir : int) (a : float)]
+               (let* [nx2 (* -1.0 (+ (array/nth gx il) (* (- (array/nth gx ir) (array/nth gx il)) a)))
+                      ny2 (* -1.0 (+ (array/nth gy il) (* (- (array/nth gy ir) (array/nth gy il)) a)))
+                      nz2 (* -1.0 (+ (array/nth gz il) (* (- (array/nth gz ir) (array/nth gz il)) a)))
+                      len (sqrt (+ (+ (* nx2 nx2) (* ny2 ny2)) (* nz2 nz2)))]
+                 (if (<= len 1e-18) [0.0 0.0 0.0] [(/ nx2 len) (/ ny2 len) (/ nz2 len)])))
+               left_index right_index amount))
+             tri_ids (array/range triangles :type int)
+             ; geometric normal (cross product of two edges) and whether the vertex order flips
+             face (exact (map (fn [(k : int)]
+               (let* [a (array/nth positions (int/mul k 3)) b (array/nth positions (int/add (int/mul k 3) 1))
+                      c (array/nth positions (int/add (int/mul k 3) 2))
+                      abx (- b.x a.x) aby (- b.y a.y) abz (- b.z a.z)
+                      acx (- c.x a.x) acy (- c.y a.y) acz (- c.z a.z)]
+                 [(- (* aby acz) (* abz acy)) (- (* abz acx) (* abx acz)) (- (* abx acy) (* aby acx))]))
+               tri_ids))
+             flips (exact (map (fn [(k : int) (g : vec3)]
+               (let* [n0 (array/nth normals (int/mul k 3)) n1 (array/nth normals (int/add (int/mul k 3) 1))
+                      n2 (array/nth normals (int/add (int/mul k 3) 2))
+                      ox (+ (+ n0.x n1.x) n2.x) oy (+ (+ n0.y n1.y) n2.y) oz (+ (+ n0.z n1.z) n2.z)]
+                 (if (< (+ (+ (* g.x ox) (* g.y oy)) (* g.z oz)) 0.0) 1 0)))
+               tri_ids face))
+             source (exact (map (fn [(v : int)]
+               (let* [k (int/div v 3) r (int/mod v 3) flipped (array/nth flips k)]
+                 (int/add (int/mul k 3) (if (int/eq flipped 1) (case r 0 0 1 2 :else 1) r))))
+               (array/range edge_count :type int)))
+             out_positions (exact (map (fn [(v : int)] (array/nth positions v)) source))
+             out_normals (if smooth
+               (exact (map (fn [(v : int)] (array/nth normals v)) source))
+               (exact (map (fn [(v : int) (g : vec3)]
+                 (let* [len (sqrt (+ (+ (* g.x g.x) (* g.y g.y)) (* g.z g.z)))
+                        sign (if (int/eq (array/nth flips (int/div v 3)) 1) -1.0 1.0)]
+                   (if (<= len 1e-18) [0.0 0.0 0.0]
+                     [(/ (* sign g.x) len) (/ (* sign g.y) len) (/ (* sign g.z) len)])))
+                 (array/range edge_count :type int)
+                 (exact (map (fn [(v : int)] (array/nth face (int/div v 3))) (array/range edge_count :type int))))))
+             mesh (sop/mesh :points out_positions :vertex_points (array/range edge_count :type int)
+                    :primitive_offsets (exact (map (fn [(k : int)] (int/mul k 3)) (array/range (int/add triangles 1) :type int)))
+                    :kinds (array/int triangles 0))]
+        (sop/with_attr mesh "N" out_normals :owner "point" :type vec3)))))
