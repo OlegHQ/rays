@@ -1,0 +1,571 @@
+; Whole Attribute Randomize draft (Rdk.Attribute_ops.randomize). Every sample is computed in a vec4
+; lane (components beyond the output dimension are ignored) from four uniform streams per element
+; (rand/at of the element's identity, or the fraction attribute), blended with the existing attribute
+; by one of five operations and written through sop/with_planes. Bisection quantiles run as fixed
+; `iterate` passes; ramp and weighted lookups are merge-grades of the knots with the fractions.
+(defn ar_error :context value [(reason : text)]
+  (error "invalid_randomize" "attribute_randomize could not produce valid geometry"
+    :cause (str "attribute_randomize [invalid_randomize]: Rdk.Attribute_ops.randomize: " reason)))
+(defn ar_finite :context value [(x : float)] (= (- x x) 0.0))
+(defn ar_kind_dim :context value [(kind : text)] (case kind "Scalar" 1 "Vector 2" 2 "Vector 3" 3 :else 4))
+(defn ar_nb :context value [(raw : text)] (not (text/blank? raw)))
+; Predicates over the first `kd` components of a lane.
+(defn ar_ge0 :context value [(kd : int) (v : vec4)]
+  (and (>= v.x 0.0) (and (or (int/lt kd 2) (>= v.y 0.0))
+    (and (or (int/lt kd 3) (>= v.z 0.0)) (or (int/lt kd 4) (>= v.w 0.0))))))
+(defn ar_gt0 :context value [(kd : int) (v : vec4)]
+  (and (> v.x 0.0) (and (or (int/lt kd 2) (> v.y 0.0))
+    (and (or (int/lt kd 3) (> v.z 0.0)) (or (int/lt kd 4) (> v.w 0.0))))))
+(defn ar_le :context value [(kd : int) (a : vec4) (b : vec4)]
+  (and (<= a.x b.x) (and (or (int/lt kd 2) (<= a.y b.y))
+    (and (or (int/lt kd 3) (<= a.z b.z)) (or (int/lt kd 4) (<= a.w b.w))))))
+(defn ar_iso :context value [(kd : int) (v : vec4)]
+  (and (or (int/lt kd 2) (= v.y v.x)) (and (or (int/lt kd 3) (= v.z v.x)) (or (int/lt kd 4) (= v.w v.x)))))
+(defn ar_zero :context value [(kd : int) (v : vec4)]
+  (and (= v.x 0.0) (and (or (int/lt kd 2) (= v.y 0.0)) (and (or (int/lt kd 3) (= v.z 0.0)) (or (int/lt kd 4) (= v.w 0.0))))))
+; Rdk.Attribute_ops.sigma of one log-normal component (0 for a zero deviation).
+(defn ar_sigma :context value [(median : float) (deviation : float)]
+  (if (= deviation 0.0) 0.0
+    (let* [ratio (/ (* deviation deviation) (* median median))]
+      (sqrt (log (* 0.5 (+ 1.0 (sqrt (fma 4.0 ratio 1.0)))))))))
+; Ramp "position:value,..." -> knots; ok only for a valid ramp (>= 2 knots, 0..1, increasing).
+(defn ar_ramp :context value [(source : text)]
+  (let* [acc (if (text/blank? source) {:ok false :pos (array/float 0) :vals (array/float 0)}
+               (fold [st {:ok true :pos (array/float 0) :vals (array/float 0)}] [token (text/split source ",")]
+                 (let* [parts (text/split token ":")]
+                   (if (int/eq (array/count parts) 2)
+                     (let* [p (text/to_float (text/trim (array/nth parts 0)))
+                            v (text/to_float (text/trim (array/nth parts 1)))]
+                       {:ok (and st.ok (and (and p.valid v.valid)
+                                   (and (ar_finite p.value) (and (ar_finite v.value) (and (>= p.value 0.0) (<= p.value 1.0))))))
+                        :pos (array/concat st.pos (array/float 1 p.value))
+                        :vals (array/concat st.vals (array/float 1 v.value))})
+                     {:ok false :pos st.pos :vals st.vals}))))
+         n (array/count acc.pos)
+         rising (if (int/lt n 2) false
+                  (int/eq (array/sum (exact (map (fn [(i : int)]
+                    (if (> (array/nth acc.pos (int/add i 1)) (array/nth acc.pos i)) 0 1))
+                    (array/range (int/sub n 1) :type int)))) 0))]
+    {:ok (and acc.ok (and (int/ge n 2) (and rising (and (= (array/nth acc.pos 0) 0.0)
+                                                         (= (array/nth acc.pos (int/sub n 1)) 1.0)))))
+     :pos acc.pos :vals acc.vals}))
+; Numeric weighted table: rows "component... weight" with exactly `kd` components.
+(defn ar_table :context value [(source : text) (kd : int)]
+  (let* [acc (fold [st {:ok true :c0 (array/float 0) :c1 (array/float 0) :c2 (array/float 0) :c3 (array/float 0)
+                        :cum (array/float 0) :total 0.0 :last -1 :index 0}]
+               [row (text/table_decode source)]
+               (if (int/eq (count row) (int/add kd 1))
+                 (let* [cell (fn [(k : int)] (if (int/lt k kd) (text/to_float (nth row k)) {:value 0.0 :valid true}))
+                        weight (text/to_float (nth row kd))
+                        c0 (cell 0) c1 (cell 1) c2 (cell 2) c3 (cell 3)
+                        next (+ st.total weight.value)]
+                   {:ok (and st.ok (and (and c0.valid (and c1.valid (and c2.valid c3.valid)))
+                                        (and weight.valid (and (>= weight.value 0.0) (ar_finite next)))))
+                    :c0 (array/concat st.c0 (array/float 1 c0.value)) :c1 (array/concat st.c1 (array/float 1 c1.value))
+                    :c2 (array/concat st.c2 (array/float 1 c2.value)) :c3 (array/concat st.c3 (array/float 1 c3.value))
+                    :cum (array/concat st.cum (array/float 1 next)) :total next
+                    :last (if (> weight.value 0.0) st.index st.last) :index (int/add st.index 1)})
+                 {:ok false :c0 st.c0 :c1 st.c1 :c2 st.c2 :c3 st.c3 :cum st.cum :total st.total :last st.last :index st.index}))]
+    {:ok (and acc.ok (and (int/gt acc.index 0) (> acc.total 0.0)))
+     :c0 acc.c0 :c1 acc.c1 :c2 acc.c2 :c3 acc.c3 :cum acc.cum :total acc.total :last acc.last}))
+(defn ar_text_table :context value [(source : text)]
+  (let* [acc (fold [st {:ok true :v (array/text 0) :cum (array/float 0) :total 0.0 :last -1 :index 0}]
+               [row (text/table_decode source)]
+               (if (int/eq (count row) 2)
+                 (let* [weight (text/to_float (nth row 1))
+                        next (+ st.total weight.value)]
+                   {:ok (and st.ok (and weight.valid (and (>= weight.value 0.0) (ar_finite next))))
+                    :v (array/concat st.v (array/text 1 (nth row 0)))
+                    :cum (array/concat st.cum (array/float 1 next)) :total next
+                    :last (if (> weight.value 0.0) st.index st.last) :index (int/add st.index 1)})
+                 {:ok false :v st.v :cum st.cum :total st.total :last st.last :index st.index}))]
+    {:ok (and acc.ok (and (int/gt acc.index 0) (> acc.total 0.0)))
+     :v acc.v :cum acc.cum :total acc.total :last acc.last}))
+; Direction plan validity (cone angle range and a non-zero direction of >= 2 components).
+(defn ar_direction_ok :context value [(kd : int) (axis : vec4) (cone : float) (orientation : bool)]
+  (and (int/ge kd 2) (and (not (ar_zero kd axis))
+    (and (>= cone 0.0) (<= cone (if (and orientation (int/eq kd 4)) 6.283185307179586 3.141592653589793))))))
+(defn ar_valid :context value
+  [(owner : text) (name : text) (group : text) (selection_group : text) (kind : text) (distribution : text)
+   (operation : text) (scale : float) (a : vec4) (b : vec4) (step : vec4) (probability_b : float)
+   (cone_angle : float) (dimensions : int) (direction_bias : float) (ramp : text) (entries : text)
+   (text_entries : text) (use_minimum : bool) (use_maximum : bool) (use_vector_limits : bool)
+   (minimum : float) (maximum : float) (min4 : vec4) (max4 : vec4)]
+  (let* [kd (ar_kind_dim kind)
+         text_dist (equal? distribution "Custom discrete text")
+         inside (equal? distribution "Inside sphere")
+         dimension (if inside dimensions kd)
+         directional (or (equal? distribution "Direction") (equal? distribution "Inside sphere cone"))
+         ramp_table (if (equal? distribution "Custom ramp") (ar_ramp ramp) {:ok true :pos (array/float 0) :vals (array/float 0)})
+         table (if (equal? distribution "Custom discrete") (ar_table entries kd)
+                 {:ok true :c0 (array/float 0) :c1 (array/float 0) :c2 (array/float 0) :c3 (array/float 0) :cum (array/float 0) :total 1.0 :last 0})
+         text_rows (if text_dist (ar_text_table text_entries) {:ok true :v (array/text 0) :cum (array/float 0) :total 1.0 :last 0})
+         lognormal (if (equal? distribution "Log normal")
+                     (and (ar_gt0 kd a) (and (ar_ge0 kd b)
+                       (and (ar_finite (ar_sigma a.x b.x))
+                         (and (or (int/lt kd 2) (ar_finite (ar_sigma a.y b.y)))
+                           (and (or (int/lt kd 3) (ar_finite (ar_sigma a.z b.z))) (or (int/lt kd 4) (ar_finite (ar_sigma a.w b.w))))))))
+                     true)
+         distribution_ok (case distribution
+           "Constant" true
+           "Two values" (and (>= probability_b 0.0) (<= probability_b 1.0))
+           "Uniform" (ar_le kd a b)
+           "Uniform discrete" (and (ar_le kd a b) (ar_gt0 kd step))
+           "Normal" (ar_ge0 kd b)
+           "Exponential" (ar_gt0 kd a)
+           "Log normal" lognormal
+           "Cauchy" (and (ar_ge0 kd b) (ar_iso kd b))
+           "Direction" (ar_direction_ok kd a cone_angle true)
+           "Inside sphere" (and (int/ge dimensions 2) (int/le dimensions 4))
+           "Inside sphere cone" (ar_direction_ok kd a cone_angle false)
+           "Custom ramp" ramp_table.ok
+           "Custom discrete" table.ok
+           :else text_rows.ok)
+         limits_ok (if (and use_minimum use_maximum)
+                     (if use_vector_limits (ar_le kd min4 max4) (<= minimum maximum))
+                     true)]
+    (and (and (ar_nb name) (and (not (and (ar_nb group) (ar_nb selection_group)))
+                                (not (and (equal? owner "Detail") (or (ar_nb group) (ar_nb selection_group))))))
+         (and (and (> direction_bias -1.0) (or directional (= direction_bias 0.0)))
+              (and distribution_ok
+                   (if text_dist
+                     (and (equal? operation "Set") (and (= scale 1.0)
+                       (and (not (or use_minimum use_maximum)) (not (and (equal? owner "Point") (equal? name "P"))))))
+                     (and (not (and (equal? owner "Point") (and (equal? name "P") (not (int/eq dimension 3)))))
+                          (and (or (not (or use_minimum use_maximum)) (int/eq kd dimension)) limits_ok))))))))
+
+; ---- samplers -------------------------------------------------------------------------------
+; Peter Acklam's inverse-normal approximation (Rdk.Attribute_ops.normal_quantile); fused like arm64.
+(defn ar_quantile_array :context value [(p : (array float))]
+  (let* [lower (exact (map (fn [(x : float)]
+           (let* [q (sqrt (* -2.0 (log (if (and (> x 0.0) (< x 0.02425)) x 0.5))))]
+             (/ (fma (fma (fma (fma (fma -0.007784894002430293 q -0.3223964580411365) q -2.400758277161838) q -2.549732539343734) q 4.374664141464968) q 2.938163982698783)
+                (fma (fma (fma (fma 0.007784695709041462 q 0.3224671290700398) q 2.445134137142996) q 3.754408661907416) q 1.0)))) p))
+         upper (exact (map (fn [(x : float)]
+           (let* [q (sqrt (* -2.0 (log (if (and (< x 1.0) (> x 0.97575)) (- 1.0 x) 0.5))))]
+             (/ (* -1.0 (fma (fma (fma (fma (fma -0.007784894002430293 q -0.3223964580411365) q -2.400758277161838) q -2.549732539343734) q 4.374664141464968) q 2.938163982698783))
+                (fma (fma (fma (fma 0.007784695709041462 q 0.3224671290700398) q 2.445134137142996) q 3.754408661907416) q 1.0)))) p))
+         central (exact (map (fn [(x : float)]
+           (let* [q (- x 0.5) r (* q q)]
+             (/ (* (fma (fma (fma (fma (fma -39.69683028665376 r 220.9460984245205) r -275.9285104469687) r 138.3577518672690) r -30.66479806614716) r 2.506628277459239) q)
+                (fma (fma (fma (fma (fma -54.47609879822406 r 161.5858368580409) r -155.6989798598866) r 66.80131188771972) r -13.28068155288572) r 1.0)))) p))
+         tails (exact (map (fn [(x : float) (lo : float) (hi : float)]
+           (cond (<= x 0.0) -1e300 (>= x 1.0) 1e300 (< x 0.02425) lo (> x 0.97575) hi :else 0.0)) p lower upper))]
+    (exact (map (fn [(x : float) (tail : float) (mid : float)]
+      (if (or (<= x 0.0) (or (>= x 1.0) (or (< x 0.02425) (> x 0.97575)))) tail mid)) p tails central))))
+; Second Box-Muller stream (index xor 0x14d049bb133111eb) of the four component streams.
+(defn ar_second_stream :context value [(identity : (array int)) (seed : int)]
+  (exact (map (fn [(id : int)]
+    [(rand/at seed (int/xor (int/xor id 1276007651554290947) 1499779743744070123))
+     (rand/at seed (int/xor (int/xor id (int/mul 2 1276007651554290947)) 1499779743744070123))
+     (rand/at seed (int/xor (int/xor id (int/mul 3 1276007651554290947)) 1499779743744070123))
+     (rand/at seed (int/xor (int/xor id (int/mul 4 1276007651554290947)) 1499779743744070123))]) identity)))
+; Four standard normals per element: inverse-normal of the fractions, or Box-Muller of two streams.
+(defn ar_normal_lane :context value [(u : (array vec4)) (v : (array vec4)) (fractions : bool)]
+  (let* [plane (fn [(k : int)] (exact (map (fn [(q : vec4)] (case k 0 q.x 1 q.y 2 q.z :else q.w)) u)))
+         other (fn [(k : int)] (exact (map (fn [(q : vec4)] (case k 0 q.x 1 q.y 2 q.z :else q.w)) v)))
+         one (fn [(k : int)]
+               (if fractions (ar_quantile_array (plane k))
+                 (exact (map (fn [(a : float) (c : float)] (ar_standard_normal a c)) (plane k) (other k)))))
+         xy (exact (map (fn [(a : float) (c : float)] [a c]) (one 0) (one 1)))
+         zw (exact (map (fn [(a : float) (c : float)] [a c]) (one 2) (one 3)))]
+    (exact (map (fn [(p : vec2) (q : vec2)] [p.x p.y q.x q.y]) xy zw))))
+(defn ar_standard_normal :context value [(u1 : float) (u2 : float)]
+  (* (sqrt (* -2.0 (log (max 2.2250738585072014e-308 u1)))) (cos (* 6.283185307179586 u2))))
+; Direction plan: axis, householder vector, its norm, cap angle (all vec4 lanes).
+(defn ar_plan :context value [(kd : int) (axis : vec4) (cone : float) (orientation : bool)]
+  (let* [scale (max (abs axis.x) (max (abs axis.y) (max (abs axis.z) (abs axis.w))))
+         safe (if (> scale 0.0) scale 1.0)
+         nx (/ axis.x safe) ny (if (int/ge kd 2) (/ axis.y safe) 0.0)
+         nz (if (int/ge kd 3) (/ axis.z safe) 0.0) nw (if (int/ge kd 4) (/ axis.w safe) 0.0)
+         length2 (fma nw nw (fma nz nz (fma ny ny (* nx nx))))
+         inverse (/ 1.0 (sqrt (if (> length2 0.0) length2 1.0)))
+         ax (* nx inverse) ay (* ny inverse) az (* nz inverse) aw (* nw inverse)
+         hx (* -1.0 ax) hy (* -1.0 ay) hz (* -1.0 az) hw (* -1.0 aw)
+         ix (if (int/eq kd 1) (+ hx 1.0) hx) iy (if (int/eq kd 2) (+ hy 1.0) hy)
+         iz (if (int/eq kd 3) (+ hz 1.0) hz) iw (if (int/eq kd 4) (+ hw 1.0) hw)
+         norm2 (fma iw iw (fma iz iz (fma iy iy (* ix ix))))]
+    {:axis [ax ay az aw] :house [ix iy iz iw] :norm2 norm2
+     :cap (if (and orientation (int/eq kd 4)) (* cone 0.5) cone)}))
+; cap4_angle: bisection of m/2 - sin(2m)/4 = fraction * (cap/2 - sin(2cap)/4).
+(defn ar_cap4 :context value [(axial : (array float)) (cap : float)]
+  (if (= cap 0.0) (exact (map (fn [(a : float)] 0.0) axial))
+    (let* [denominator (- (* cap 0.5) (* (sin (* 2.0 cap)) 0.25))
+           target (exact (map (fn [(a : float)] (* a denominator)) axial))
+           st (iterate 40 (exact (map (fn [(a : float)] [0.0 cap]) axial))
+                   (fn [(s : (array vec2))]
+                     (exact (map (fn [(q : vec2) (goal : float)]
+                       (let* [middle (* (+ q.x q.y) 0.5)
+                              integral (- (* middle 0.5) (* (sin (* 2.0 middle)) 0.25))]
+                         (if (< integral goal) [middle q.y] [q.x middle]))) s target))))]
+      (exact (map (fn [(q : vec2)] (* (+ q.x q.y) 0.5)) st)))))
+; Cauchy radius quantile for 3 or 4 dimensions (48 bisection passes).
+(defn ar_cauchy_radius :context value [(dimensions : int) (fraction : (array float))]
+  (let* [st (iterate 48 (exact (map (fn [(f : float)] [0.0 1.5707963267948966]) fraction))
+                 (fn [(s : (array vec2))]
+                   (exact (map (fn [(q : vec2) (f : float)]
+                     (let* [angle (* (+ q.x q.y) 0.5)
+                            sine (sin angle) cosine (cos angle)
+                            cumulative (if (int/eq dimensions 3)
+                              (* 0.6366197723675814 (- angle (* sine cosine)))
+                              (fma (* (* 0.5 cosine) cosine) cosine (fma -1.5 cosine 1.0)))]
+                       (if (< cumulative f) [angle q.y] [q.x angle]))) s fraction))))]
+    (exact (map (fn [(q : vec2) (f : float)]
+      (if (<= f 0.0) 0.0 (if (>= f 1.0) 1e300 (tan (* (+ q.x q.y) 0.5))))) st fraction))))
+(defn ar_cauchy_radius2 :context value [(fraction : (array float))]
+  (exact (map (fn [(f : float)]
+    (let* [cosine (- 1.0 f)]
+      (if (<= f 0.0) 0.0 (if (>= f 1.0) 1e300 (sqrt (max 0.0 (- (/ 1.0 (* cosine cosine)) 1.0))))))) fraction)))
+; sample_direction for one element: u0..u2 uniform fractions, theta4 the 4-D cap angle.
+(defn ar_direction :context value
+  [(kd : int) (u0 : float) (u1 : float) (u2 : float) (theta4 : float) (axis : vec4) (house : vec4)
+   (norm2 : float) (cap : float) (bias : float)]
+  (cond
+    (= cap 0.0) axis
+    (and (int/eq kd 4) (and (= cap 3.141592653589793) (= bias 0.0)))
+      (let* [angle_a (* 6.283185307179586 u1) angle_b (* 6.283185307179586 u2)
+             lower (sqrt (- 1.0 u0)) upper (sqrt u0)]
+        [(* lower (sin angle_a)) (* lower (cos angle_a)) (* upper (sin angle_b)) (* upper (cos angle_b))])
+    (int/eq kd 2)
+      (let* [signed (- (* 2.0 u0) 1.0)
+             magnitude (abs signed)
+             biased (- 1.0 (pow (- 1.0 magnitude) (/ 1.0 (+ bias 1.0))))
+             shaped (if (= bias 0.0) signed (if (< signed 0.0) (* -1.0 biased) biased))
+             angle (* shaped cap)
+             cosine (cos angle) sine (sin angle)]
+        [(fma axis.x cosine (* -1.0 (* axis.y sine))) (fma axis.y cosine (* axis.x sine)) 0.0 0.0])
+    :else
+      (let* [axial (if (= bias 0.0) u0 (- 1.0 (pow (- 1.0 u0) (/ 1.0 (+ bias 1.0)))))
+             theta (if (int/eq kd 3) (acos (- 1.0 (* axial (- 1.0 (cos cap))))) theta4)
+             azimuth (* 6.283185307179586 u1)
+             tangent_z (- 1.0 (* 2.0 u2))
+             tangent_radius (sqrt (max 0.0 (fma (* -1.0 tangent_z) tangent_z 1.0)))
+             s0 (if (int/eq kd 3) (cos azimuth) (* tangent_radius (cos azimuth)))
+             s1 (if (int/eq kd 3) (sin azimuth) (* tangent_radius (sin azimuth)))
+             s2 (if (int/eq kd 3) 0.0 tangent_z)
+             projection (fma house.w 0.0 (fma house.z s2 (fma house.y s1 (fma house.x s0 0.0))))
+             factor (if (= norm2 0.0) 0.0 (/ (* 2.0 projection) norm2))
+             cosine (cos theta) sine (sin theta)
+             t0 (- s0 (* house.x factor)) t1 (- s1 (* house.y factor))
+             t2 (- s2 (* house.z factor)) t3 (* -1.0 (* house.w factor))]
+        [(fma t0 sine (* axis.x cosine)) (fma t1 sine (* axis.y cosine))
+         (fma t2 sine (* axis.z cosine)) (if (int/eq kd 4) (fma t3 sine (* axis.w cosine)) 0.0)])))
+(defn ar_sphere :context value [(dimensions : int) (u0 : float) (u1 : float) (u2 : float) (u3 : float)]
+  (cond
+    (int/eq dimensions 2)
+      (let* [angle (* 6.283185307179586 u0) radius (sqrt u1)] [(* radius (cos angle)) (* radius (sin angle)) 0.0 0.0])
+    (int/eq dimensions 3)
+      (let* [axial (- 1.0 (* 2.0 u0)) angle (* 6.283185307179586 u1)
+             planar (sqrt (max 0.0 (fma (* -1.0 axial) axial 1.0)))
+             radius (pow u2 (/ 1.0 3.0))]
+        [(* (* radius planar) (cos angle)) (* (* radius planar) (sin angle)) (* radius axial) 0.0])
+    :else
+      (let* [angle_a (* 6.283185307179586 u1) angle_b (* 6.283185307179586 u2)
+             radius (sqrt (sqrt u3)) lower (sqrt (- 1.0 u0)) upper (sqrt u0)]
+        [(* (* radius lower) (sin angle_a)) (* (* radius lower) (cos angle_a))
+         (* (* radius upper) (sin angle_b)) (* (* radius upper) (cos angle_b))])))
+; Count of knots (sorted ascending) that are <= each query: merge-grade with knots first on ties.
+(defn ar_rank :context value [(knots : (array float)) (queries : (array float))]
+  (let* [k (array/count knots) q (array/count queries)
+         order (array/grade (array/concat knots queries))
+         inverse (array/scatter_add order (array/range (int/add k q) :type int) (int/add k q))
+         flags (exact (map (fn [(at : int)] (if (int/lt (array/nth order at) k) 1 0)) (array/range (int/add k q) :type int)))
+         prefix (array/scan_sum flags)]
+    (exact (map (fn [(j : int)] (array/nth prefix (array/nth inverse (int/add k j)))) (array/range q :type int)))))
+(defn ar_ramp_sample :context value [(pos : (array float)) (vals : (array float)) (fraction : (array float))]
+  (let* [n (array/count pos)
+         rank (ar_rank pos fraction)]
+    (exact (map (fn [(f : float) (r : int)]
+      (let* [low (max 0 (min (int/sub n 2) (int/sub r 1)))
+             x0 (array/nth pos low) x1 (array/nth pos (int/add low 1))
+             y0 (array/nth vals low) y1 (array/nth vals (int/add low 1))]
+        (cond (<= f 0.0) (array/nth vals 0)
+              (>= f 1.0) (array/nth vals (int/sub n 1))
+              :else (fma (/ (- f x0) (- x1 x0)) (- y1 y0) y0))))
+      fraction rank))))
+(defn ar_choice :context value [(cumulative : (array float)) (total : float) (final : int) (fraction : (array float))]
+  (let* [rank (ar_rank cumulative (exact (map (fn [(f : float)] (* f total)) fraction)))
+         n (array/count cumulative)]
+    (exact (map (fn [(r : int)] (if (int/eq r n) final r)) rank))))
+(defn ar_apply :context value [(opcode : int) (previous : float) (generated : float)]
+  (case opcode 0 generated 1 (+ previous generated) 2 (min previous generated) 3 (max previous generated)
+    :else (* previous generated)))
+(defn ar_limit :context value [(mode : int) (lo : float) (hi : float) (v : float)]
+  (case mode 1 (max lo v) 2 (min hi v) 3 (max lo (min hi v)) :else v))
+
+(defnode sop/attribute_randomize :label "Attribute Randomize" :category ["Attribute" "Random"]
+  :validate (ar_valid owner name group selection_group kind distribution operation scale
+              [a_x a_y a_z a_w] [b_x b_y b_z b_w] [step_x step_y step_z step_w] probability_b cone_angle
+              dimensions direction_bias ramp entries text_entries use_minimum use_maximum use_vector_limits
+              minimum maximum [minimum_vector_x minimum_vector_y minimum_vector_z minimum_w]
+              [maximum_vector_x maximum_vector_y maximum_vector_z maximum_w])
+  :code "E_PARAM" :message "sop/attribute_randomize: invalid parameters"
+  [(in0 : geometry)
+   (selection_owner : text "Point" :label "Selection owner" :folder ["Selection"] :choices ["Point" "Vertex" "Primitive" "Edge"])
+   (selection_group : text "" :label "Selection group" :folder ["Selection"])
+   (ramp : text "0:0,1:1" :label "Ramp" :folder ["Distribution" "Custom"])
+   (entries : text "0\t1\n1\t1" :label "Numeric entries (components, weight)" :folder ["Distribution" "Custom"])
+   (text_entries : text "low\t1\nhigh\t1" :label "Text entries (text, weight)" :folder ["Distribution" "Custom"])
+   (use_vector_limits : bool false :label "Per-component limits" :folder ["Clamp"])
+   (minimum_vector_x : float 0.0 :label "minimum x" :folder ["Clamp"] :min -10 :max 10 :vec3 ["minimum_vector" 0])
+   (minimum_vector_y : float 0.0 :label "minimum y" :folder ["Clamp"] :min -10 :max 10 :vec3 ["minimum_vector" 1])
+   (minimum_vector_z : float 0.0 :label "minimum z" :folder ["Clamp"] :min -10 :max 10 :vec3 ["minimum_vector" 2])
+   (minimum_w : float 0.0 :label "minimum w" :folder ["Clamp"] :min -10 :max 10)
+   (maximum_vector_x : float 1.0 :label "maximum x" :folder ["Clamp"] :min -10 :max 10 :vec3 ["maximum_vector" 0])
+   (maximum_vector_y : float 1.0 :label "maximum y" :folder ["Clamp"] :min -10 :max 10 :vec3 ["maximum_vector" 1])
+   (maximum_vector_z : float 1.0 :label "maximum z" :folder ["Clamp"] :min -10 :max 10 :vec3 ["maximum_vector" 2])
+   (maximum_w : float 1.0 :label "maximum w" :folder ["Clamp"] :min -10 :max 10)
+   (owner : text "Point" :label "Owner" :choices ["Point" "Vertex" "Primitive" "Detail"])
+   (name : text "random" :label "Attribute")
+   (group : text "" :label "Group")
+   (kind : text "Scalar" :label "Value type" :choices ["Scalar" "Vector 2" "Vector 3" "Vector 4"])
+   (distribution : text "Uniform" :label "Distribution"
+     :choices ["Constant" "Two values" "Uniform" "Uniform discrete" "Normal" "Exponential" "Log normal" "Cauchy"
+               "Direction" "Inside sphere" "Inside sphere cone" "Custom ramp" "Custom discrete" "Custom discrete text"])
+   (context_seed : bool false :label "Use context seed" :folder ["Random"])
+   (seed : int 0 :label "Seed" :folder ["Random"] :min 0 :max 9999)
+   (seed_attribute : text "" :label "Seed attribute" :folder ["Random"])
+   (fraction_attribute : text "" :label "Fraction attribute" :folder ["Random"])
+   (a_x : float 0.0 :label "A / minimum X" :folder ["Distribution" "A"] :min -10 :max 10 :vec3 ["a" 0])
+   (a_y : float 0.0 :label "A / minimum Y" :folder ["Distribution" "A"] :min -10 :max 10 :vec3 ["a" 1])
+   (a_z : float 0.0 :label "A / minimum Z" :folder ["Distribution" "A"] :min -10 :max 10 :vec3 ["a" 2])
+   (a_w : float 0.0 :label "A / minimum W" :folder ["Distribution" "A"] :min -10 :max 10)
+   (b_x : float 1.0 :label "B / maximum X" :folder ["Distribution" "B"] :min -10 :max 10 :vec3 ["b" 0])
+   (b_y : float 1.0 :label "B / maximum Y" :folder ["Distribution" "B"] :min -10 :max 10 :vec3 ["b" 1])
+   (b_z : float 1.0 :label "B / maximum Z" :folder ["Distribution" "B"] :min -10 :max 10 :vec3 ["b" 2])
+   (b_w : float 1.0 :label "B / maximum W" :folder ["Distribution" "B"] :min -10 :max 10)
+   (step_x : float 1.0 :label "Step X" :folder ["Distribution" "Step"] :min 0 :max 10 :vec3 ["step" 0])
+   (step_y : float 1.0 :label "Step Y" :folder ["Distribution" "Step"] :min 0 :max 10 :vec3 ["step" 1])
+   (step_z : float 1.0 :label "Step Z" :folder ["Distribution" "Step"] :min 0 :max 10 :vec3 ["step" 2])
+   (step_w : float 1.0 :label "Step W" :folder ["Distribution" "Step"] :min 0 :max 10)
+   (probability_b : float 0.5 :label "Probability B" :folder ["Distribution"] :min 0 :max 1 :hard_min 0 :hard_max 1)
+   (cone_angle : float 0.7853981633974483 :label "Cone angle" :folder ["Distribution"] :min 0 :max 3.141592653589793)
+   (dimensions : int 3 :label "Dimensions" :folder ["Distribution"] :min 1 :max 4 :hard_min 1 :hard_max 4)
+   (use_minimum : bool false :label "Clamp minimum" :folder ["Clamp"])
+   (minimum : float 0.0 :label "Minimum" :folder ["Clamp"] :min -10 :max 10)
+   (use_maximum : bool false :label "Clamp maximum" :folder ["Clamp"])
+   (maximum : float 1.0 :label "Maximum" :folder ["Clamp"] :min -10 :max 10)
+   (direction_bias : float 0.0 :label "Direction bias" :folder ["Output"] :min -1 :max 1)
+   (operation : text "Set" :label "Operation" :folder ["Output"] :choices ["Set" "Add" "Minimum" "Maximum" "Multiply"])
+   (scale : float 1.0 :label "Global scale" :folder ["Output"] :min -10 :max 10)]
+  (let* [target (text/lower owner)
+         detail (equal? owner "Detail")
+         count (case owner "Point" (sop/count in0 :points) "Vertex" (sop/count in0 :vertices)
+                 "Primitive" (sop/count in0 :primitives) :else 1)
+         kd (ar_kind_dim kind)
+         text_dist (equal? distribution "Custom discrete text")
+         inside (equal? distribution "Inside sphere")
+         dim (if inside dimensions kd)
+         group_name (text/trim group)
+         selection_name (text/trim selection_group)
+         selection_kind (text/lower selection_owner)
+         seed_name (text/trim seed_attribute)
+         fraction_name (text/trim fraction_attribute)
+         has_fraction (ar_nb fraction_name)
+         use_seed_attribute (and (ar_nb seed_name) (not has_fraction))
+         on_position (and (equal? owner "Point") (equal? name "P"))
+         ; fractions expected by the distribution
+         expected (case distribution
+           "Two values" 1 "Custom discrete" 1 "Custom discrete text" 1
+           "Direction" (int/sub kd 1) "Inside sphere" dimensions "Inside sphere cone" kd
+           :else kd)
+         group_ok (cond
+           (ar_nb group_name) (fold [seen false] [candidate (sop/group_names in0 "*" :owner target)] (or seen (equal? candidate group_name)))
+           (ar_nb selection_name)
+             (fold [seen false] [candidate (sop/group_names in0 "*" :owner selection_kind)] (or seen (equal? candidate selection_name)))
+           :else true)
+         exists (if on_position true (sop/has_attr in0 name :owner target))
+         existing_type (if on_position "vec3" (if exists (sop/attr_type in0 name :owner target) "none"))
+         existing_dim (case existing_type "float" 1 "vec2" 2 "vec3" 3 "vec4" 4 :else 0)
+         seed_present (if use_seed_attribute (sop/has_attr in0 seed_name :owner target) false)
+         seed_int (if seed_present (sop/has_attr in0 seed_name :owner target :type int) true)
+         fraction_present (if has_fraction (or (and (equal? owner "Point") (equal? fraction_name "P")) (sop/has_attr in0 fraction_name :owner target)) true)
+         fraction_type (if (and has_fraction fraction_present)
+                         (if (and (equal? owner "Point") (equal? fraction_name "P")) "vec3" (sop/attr_type in0 fraction_name :owner target))
+                         "float")
+         fraction_dim (case fraction_type "float" 1 "vec2" 2 "vec3" 3 "vec4" 4 :else 0)]
+    (cond
+      (not group_ok)
+        (error "missing_group" (str "attribute_randomize could not find "
+          (if (ar_nb group_name) target selection_kind) " group "
+          (text/repr (if (ar_nb group_name) group_name selection_name))))
+      (if has_fraction (not fraction_present) false)
+        (ar_error (str "missing source attribute " fraction_name))
+      (if has_fraction (int/eq fraction_dim 0) false)
+        (ar_error "attribute must have floating scalar or tuple storage")
+      (if text_dist (and exists (not (equal? existing_type "text"))) (and exists (int/eq existing_dim 0)))
+        (ar_error (if text_dist "existing attribute is not text" "existing attribute is not floating point"))
+      (and (not text_dist) (and exists (not (int/eq existing_dim dim))))
+        (ar_error "distribution dimension does not match target")
+      (and use_seed_attribute (and seed_present (not seed_int)))
+        (ar_error "seed attribute must be integer")
+      (and has_fraction (not (int/eq fraction_dim expected)))
+        (ar_error (str "fraction attribute " fraction_name " must have " expected " component" (if (int/eq expected 1) "" "s")))
+      :else
+      (let* [mask (cond
+                    (ar_nb group_name) (sop/group in0 :name group_name :owner target)
+                    (ar_nb selection_name)
+                      (group_promote_any in0 selection_kind target (sop/group in0 :name selection_name :owner selection_kind))
+                    :else (array/int count 1))
+             effective_seed (cond has_fraction 0 context_seed (sop/context_seed "attribute_randomize") :else seed)
+             seeds (if (and use_seed_attribute seed_present) (sop/attr in0 seed_name :owner target :type int) (array/int count 0))
+             identity (exact (map (fn [(i : int) (s : int)]
+               (int/mul (if (and use_seed_attribute seed_present) s i) 2177342782468422677)) (array/range count :type int) seeds))
+             planes (if has_fraction (sop/attr_planes in0 fraction_name :owner target)
+                      {:width 1 :x (array/float count) :y (array/float count) :z (array/float count) :w (array/float count)})
+             ; four uniform streams per element (or the fraction planes)
+             uniform (if has_fraction
+                       (let* [xy (exact (map (fn [(x : float) (y : float)] [x y]) planes.x planes.y))
+                              zw (exact (map (fn [(z : float) (w : float)] [z w]) planes.z planes.w))]
+                         (exact (map (fn [(a : vec2) (b : vec2)] [a.x a.y b.x b.y]) xy zw)))
+                       (exact (map (fn [(id : int)]
+                         [(rand/at effective_seed (int/xor id 1276007651554290947))
+                          (rand/at effective_seed (int/xor id (int/mul 2 1276007651554290947)))
+                          (rand/at effective_seed (int/xor id (int/mul 3 1276007651554290947)))
+                          (rand/at effective_seed (int/xor id (int/mul 4 1276007651554290947)))]) identity)))
+             choice (if has_fraction planes.x (exact (map (fn [(id : int)] (rand/at effective_seed id)) identity)))
+             ; fraction validity over the selected elements
+             invalid (if has_fraction
+                       (int/gt (array/sum (exact (map (fn [(m : int) (u : vec4)]
+                         (if (and (int/eq m 1)
+                                  (not (and (and (ar_finite u.x) (and (>= u.x 0.0) (<= u.x 1.0)))
+                                            (and (or (int/lt fraction_dim 2) (and (ar_finite u.y) (and (>= u.y 0.0) (<= u.y 1.0))))
+                                                 (and (or (int/lt fraction_dim 3) (and (ar_finite u.z) (and (>= u.z 0.0) (<= u.z 1.0))))
+                                                      (or (int/lt fraction_dim 4) (and (ar_finite u.w) (and (>= u.w 0.0) (<= u.w 1.0)))))))))
+                           1 0)) mask uniform))) 0)
+                       false)]
+        (if invalid (ar_error "fraction is invalid at an element")
+          (if text_dist
+            ; ---- text output ----
+            (let* [rows (ar_text_table text_entries)
+                   picked (ar_choice rows.cum rows.total rows.last choice)
+                   previous (if exists (sop/attr in0 name :owner target :type text) (array/text count ""))
+                   result (exact (map (fn [(m : int) (k : int) (old : text)]
+                     (if (int/eq m 1) (array/nth rows.v k) old)) mask picked previous))]
+              (sop/with_attr in0 name result :owner target :type text))
+            ; ---- numeric output ----
+            (let* [a4 [a_x a_y a_z a_w] b4 [b_x b_y b_z b_w] step4 [step_x step_y step_z step_w]
+                   sample
+                   (case distribution
+                     "Constant" (array/vec4 count a4)
+                     "Two values" (exact (map (fn [(c : float)] (if (< c probability_b) b4 a4)) choice))
+                     "Uniform" (exact (map (fn [(u : vec4)]
+                       [(+ a_x (* u.x (- b_x a_x))) (+ a_y (* u.y (- b_y a_y))) (+ a_z (* u.z (- b_z a_z))) (+ a_w (* u.w (- b_w a_w)))])
+                       uniform))
+                     "Uniform discrete" (exact (map (fn [(u : vec4)]
+                       (let* [sx (float (floor (* u.x (+ (float (floor (/ (- b_x a_x) step_x))) 1.0))))
+                              sy (float (floor (* u.y (+ (float (floor (/ (- b_y a_y) step_y))) 1.0))))
+                              sz (float (floor (* u.z (+ (float (floor (/ (- b_z a_z) step_z))) 1.0))))
+                              sw (float (floor (* u.w (+ (float (floor (/ (- b_w a_w) step_w))) 1.0))))]
+                         [(min b_x (fma sx step_x a_x)) (min b_y (fma sy step_y a_y))
+                          (min b_z (fma sz step_z a_z)) (min b_w (fma sw step_w a_w))]))
+                       uniform))
+                     "Normal"
+                       (let* [second (if has_fraction uniform (ar_second_stream identity effective_seed))
+                              normals (ar_normal_lane uniform second has_fraction)]
+                         (exact (map (fn [(n : vec4)]
+                           [(fma b_x n.x a_x) (fma b_y n.y a_y) (fma b_z n.z a_z) (fma b_w n.w a_w)]) normals)))
+                     "Exponential" (exact (map (fn [(u : vec4)]
+                       [(* (/ (* -1.0 a_x) (log 2.0)) (log (- 1.0 u.x))) (* (/ (* -1.0 a_y) (log 2.0)) (log (- 1.0 u.y)))
+                        (* (/ (* -1.0 a_z) (log 2.0)) (log (- 1.0 u.z))) (* (/ (* -1.0 a_w) (log 2.0)) (log (- 1.0 u.w)))])
+                       uniform))
+                     "Log normal"
+                       (let* [second (if has_fraction uniform (ar_second_stream identity effective_seed))
+                              normals (ar_normal_lane uniform second has_fraction)
+                              sx (ar_sigma a_x b_x) sy (ar_sigma a_y b_y) sz (ar_sigma a_z b_z) sw (ar_sigma a_w b_w)]
+                         (exact (map (fn [(n : vec4)]
+                           [(if (= sx 0.0) a_x (exp (fma sx n.x (log a_x)))) (if (= sy 0.0) a_y (exp (fma sy n.y (log a_y))))
+                            (if (= sz 0.0) a_z (exp (fma sz n.z (log a_z)))) (if (= sw 0.0) a_w (exp (fma sw n.w (log a_w))))])
+                           normals)))
+                     "Cauchy"
+                       (if (int/eq kd 1)
+                         (exact (map (fn [(u : vec4)] [(+ a_x (* b_x (tan (* 3.141592653589793 (- u.x 0.5))))) 0.0 0.0 0.0]) uniform))
+                         (let* [axis_value (if (int/eq kd 2) [0.0 1.0 0.0 0.0] (if (int/eq kd 3) [0.0 0.0 1.0 0.0] [0.0 0.0 0.0 1.0]))
+                                plan (ar_plan kd axis_value 3.141592653589793 false)]
+                           (if has_fraction
+                             (let* [radius (cond (int/eq kd 2) (ar_cauchy_radius2 (exact (map (fn [(u : vec4)] (if (int/eq kd 2) u.y u.x)) uniform)))
+                                                 :else (ar_cauchy_radius kd (exact (map (fn [(u : vec4)] (if (int/eq kd 3) u.z u.w)) uniform))))
+                                    theta4 (exact (map (fn [(u : vec4)] 0.0) uniform))]
+                               (exact (map (fn [(u : vec4) (r : float) (t4 : float)]
+                                 (let* [d (ar_direction kd u.x u.y u.z t4 plan.axis plan.house plan.norm2 3.141592653589793 0.0)]
+                                   [(+ a_x (* (* b_x r) d.x)) (+ a_y (* (* b_x r) d.y)) (+ a_z (* (* b_x r) d.z)) (+ a_w (* (* b_x r) d.w))]))
+                                 uniform radius theta4)))
+                             (let* [second (ar_second_stream identity effective_seed)
+                                    denominator (exact (map (fn [(id : int)]
+                                      (abs (ar_standard_normal
+                                        (rand/at effective_seed (int/xor id (int/mul (int/add kd 1) 1276007651554290947)))
+                                        (rand/at effective_seed (int/xor (int/xor id (int/mul (int/add kd 1) 1276007651554290947)) 1499779743744070123)))))
+                                      identity))]
+                               (exact (map (fn [(u : vec4) (v : vec4) (den : float)]
+                                 (let* [n0 (ar_standard_normal u.x v.x) n1 (ar_standard_normal u.y v.y)
+                                        n2 (if (int/ge kd 3) (ar_standard_normal u.z v.z) 0.0)
+                                        n3 (if (int/ge kd 4) (ar_standard_normal u.w v.w) 0.0)]
+                                   [(+ a_x (* b_x (/ n0 den))) (+ a_y (* b_x (/ n1 den)))
+                                    (if (int/ge kd 3) (+ a_z (* b_x (/ n2 den))) 0.0) (if (int/ge kd 4) (+ a_w (* b_x (/ n3 den))) 0.0)]))
+                                 uniform second denominator))))))
+                     "Direction"
+                       (let* [plan (ar_plan kd a4 cone_angle true)
+                              theta4 (if (int/eq kd 4) (ar_cap4 (exact (map (fn [(u : vec4)]
+                                         (if (= direction_bias 0.0) u.x (- 1.0 (pow (- 1.0 u.x) (/ 1.0 (+ direction_bias 1.0)))))) uniform)) plan.cap)
+                                       (exact (map (fn [(u : vec4)] 0.0) uniform)))]
+                         (exact (map (fn [(u : vec4) (t4 : float)]
+                           (ar_direction kd u.x u.y u.z t4 plan.axis plan.house plan.norm2 plan.cap direction_bias)) uniform theta4)))
+                     "Inside sphere" (exact (map (fn [(u : vec4)] (ar_sphere dimensions u.x u.y u.z u.w)) uniform))
+                     "Inside sphere cone"
+                       (let* [plan (ar_plan kd a4 cone_angle false)
+                              theta4 (if (int/eq kd 4) (ar_cap4 (exact (map (fn [(u : vec4)]
+                                         (if (= direction_bias 0.0) u.x (- 1.0 (pow (- 1.0 u.x) (/ 1.0 (+ direction_bias 1.0)))))) uniform)) plan.cap)
+                                       (exact (map (fn [(u : vec4)] 0.0) uniform)))]
+                         (exact (map (fn [(u : vec4) (t4 : float)]
+                           (let* [d (ar_direction kd u.x u.y u.z t4 plan.axis plan.house plan.norm2 plan.cap direction_bias)
+                                  radius (pow (if (int/eq kd 2) u.y (if (int/eq kd 3) u.z u.w)) (/ 1.0 (float kd)))]
+                             [(* d.x radius) (* d.y radius) (* d.z radius) (* d.w radius)])) uniform theta4)))
+                     "Custom ramp"
+                       (let* [table (ar_ramp ramp)
+                              q0 (ar_ramp_sample table.pos table.vals (exact (map (fn [(u : vec4)] u.x) uniform)))
+                              q1 (if (int/ge kd 2) (ar_ramp_sample table.pos table.vals (exact (map (fn [(u : vec4)] u.y) uniform))) q0)
+                              q2 (if (int/ge kd 3) (ar_ramp_sample table.pos table.vals (exact (map (fn [(u : vec4)] u.z) uniform))) q0)
+                              q3 (if (int/ge kd 4) (ar_ramp_sample table.pos table.vals (exact (map (fn [(u : vec4)] u.w) uniform))) q0)]
+                         (exact (map (fn [(v : vec3) (h : float)] [v.x v.y v.z (+ a_w (* h (- b_w a_w)))])
+                           (exact (map (fn [(f : float) (g : float) (h : float)]
+                             [(+ a_x (* f (- b_x a_x))) (+ a_y (* g (- b_y a_y))) (+ a_z (* h (- b_z a_z)))]) q0 q1 q2))
+                           q3)))
+                     :else
+                       (let* [table (ar_table entries kd)
+                              picked (ar_choice table.cum table.total table.last choice)
+                              c0 (array/concat table.c0 (array/float 0)) c1 (array/concat table.c1 (array/float 0))
+                              c2 (array/concat table.c2 (array/float 0)) c3 (array/concat table.c3 (array/float 0))
+                              xy (exact (map (fn [(k : int)] [(array/nth c0 k) (array/nth c1 k)]) picked))
+                              zw (exact (map (fn [(k : int)] [(array/nth c2 k) (array/nth c3 k)]) picked))]
+                         (exact (map (fn [(p : vec2) (q : vec2)] [p.x p.y q.x q.y]) xy zw))))
+                   mode (cond (and use_minimum use_maximum) 3 use_minimum 1 use_maximum 2 :else 0)
+                   lo (if use_vector_limits [minimum_vector_x minimum_vector_y minimum_vector_z minimum_w] [minimum minimum minimum minimum])
+                   hi (if use_vector_limits [maximum_vector_x maximum_vector_y maximum_vector_z maximum_w] [maximum maximum maximum maximum])
+                   opcode (case operation "Set" 0 "Add" 1 "Minimum" 2 "Maximum" 3 :else 4)
+                   generated (exact (map (fn [(s : vec4)]
+                     [(* (ar_limit mode lo.x hi.x s.x) scale) (* (ar_limit mode lo.y hi.y s.y) scale)
+                      (* (ar_limit mode lo.z hi.z s.z) scale) (* (ar_limit mode lo.w hi.w s.w) scale)]) sample))
+                   old (if exists (sop/attr_planes in0 name :owner target)
+                         {:width dim :x (array/float count) :y (array/float count) :z (array/float count) :w (array/float count)})
+                   out_x (exact (map (fn [(m : int) (p : float) (g : vec4)] (if (int/eq m 1) (ar_apply opcode p g.x) p)) mask old.x generated))
+                   out_y (exact (map (fn [(m : int) (p : float) (g : vec4)] (if (int/eq m 1) (ar_apply opcode p g.y) p)) mask old.y generated))
+                   out_z (exact (map (fn [(m : int) (p : float) (g : vec4)] (if (int/eq m 1) (ar_apply opcode p g.z) p)) mask old.z generated))
+                   out_w (exact (map (fn [(m : int) (p : float) (g : vec4)] (if (int/eq m 1) (ar_apply opcode p g.w) p)) mask old.w generated))
+                   bad (fn [(plane : (array float))]
+                     (int/gt (array/sum (exact (map (fn [(m : int) (v : float)] (if (and (int/eq m 1) (not (ar_finite v))) 1 0)) mask plane))) 0))
+                   nonfinite (or (bad out_x) (or (if (int/ge dim 2) (bad out_y) false)
+                                 (or (if (int/ge dim 3) (bad out_z) false) (if (int/ge dim 4) (bad out_w) false))))
+                   differs (fn [(a : (array float)) (b : (array float))]
+                     (int/gt (array/sum (exact (map (fn [(x : float) (y : float)] (if (= x y) 0 1)) a b))) 0))
+                   changed (if exists
+                             (or (differs old.x out_x) (or (if (int/ge dim 2) (differs old.y out_y) false)
+                                 (or (if (int/ge dim 3) (differs old.z out_z) false) (if (int/ge dim 4) (differs old.w out_w) false))))
+                             true)]
+              (cond
+                nonfinite (ar_error "output is non-finite at an element")
+                (not changed) in0
+                :else
+                  (let* [written (sop/with_planes in0 name {:width dim :x out_x :y out_y :z out_z :w out_w} :owner target)]
+                    (if on_position
+                      (sop/delete_attr (sop/delete_attr written "N" :owner "point") "N" :owner "vertex")
+                      written))))))))))
