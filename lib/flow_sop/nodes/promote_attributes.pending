@@ -1,6 +1,445 @@
-; STUB Promote Attributes draft (BLOCKED: parameter block only; the body reports not-ported). The block is copied
-; from lib/sop_catalog/flow_manifest.sexp so the gate's descriptor and cache checks can be exercised.
-(defnode sop/promote_attributes :label "Promote Attributes" :category ["Attribute" "Promote"]
+; Whole Promote Attributes port. Native Attribute_promote.promote_pattern: the selected source attributes are
+; reduced over a relation (source owner elements -> destination owner elements, optionally partitioned into pieces)
+; by one of twelve methods; sorted methods (minimum, maximum, median, mode, unique values) use two stable grades
+; (value, then unit) and run starts; sums run in element order through array/segment_sum.
+; Limit: the rename/index patterns are split on ASCII spaces only (an escaped or tab-separated term list is not
+; split like Attribute_pattern.split_terms); exclusion terms and several positive terms are handled.
+(defn pa_error :context value [(reason : text)]
+  (error "invalid_attribute" "attribute_promote could not produce valid geometry"
+    :cause (str "attribute_promote [invalid_attribute]: Rdk.Attribute_ops.promote: " reason)))
+(defn pa_owner :context value [(raw : text)]
+  (case raw "Vertex" "vertex" "Primitive" "primitive" "Detail" "detail" :else "point"))
+(defn pa_count :context sop [(geo : geometry) (owner : text)]
+  (case owner "vertex" (sop/count geo :vertices) "primitive" (sop/count geo :primitives)
+    "detail" 1 :else (sop/count geo :points)))
+(defn pa_range :context value [(n : int)] (array/range n :type int))
+; Unit (segment) of every flat slot.
+(defn pa_owners :context value [(offsets : (array int)) (total : int)]
+  (let* [segments (int/sub (array/count offsets) 1)
+         starts (exact (map (fn [(p : int)] (array/nth offsets p)) (array/range segments :type int)))
+         prefix (array/scan_sum (array/scatter_add starts (array/int segments 1) (int/add total 1)))]
+    (exact (map (fn [(s : int)] (int/sub (array/nth prefix (int/add s 1)) 1)) (array/range total :type int)))))
+(defn pa_lens :context value [(offs : (array int))]
+  (exact (map (fn [(d : int)] (int/sub (array/nth offs (int/add d 1)) (array/nth offs d)))
+    (pa_range (int/sub (array/count offs) 1)))))
+
+; ---- relations: {:offs :idx}, destination (or piece) -> source elements
+(defn pa_primitive_to_point :context sop [(geo : geometry)]
+  (let* [adjacency (sop/adjacency geo)
+         po adjacency.point_vertex_offsets
+         pv adjacency.point_vertices
+         pov adjacency.primitive_of_vertex
+         total (array/count pv)
+         seg (pa_owners po total)
+         prim (exact (map (fn [(v : int)] (array/nth pov v)) pv))
+         keep (exact (map (fn [(k : int) (s : int)]
+                (if (int/eq k (array/nth po s)) 1
+                  (if (int/eq (array/nth prim k) (array/nth prim (int/sub k 1))) 0 1)))
+                (pa_range total) seg))]
+    {:offs (array/scan_sum (array/segment_sum keep po))
+     :idx (exact (map (fn [(k : int)] (array/nth prim k)) (array/compact keep)))}))
+(defn pa_relation :context sop [(geo : geometry) (src : text) (dst : text)]
+  (let* [dn (pa_count geo dst) sn (pa_count geo src)]
+    (cond
+      (equal? src dst) {:offs (pa_range (int/add dn 1)) :idx (pa_range dn)}
+      (equal? src "detail") {:offs (pa_range (int/add dn 1)) :idx (array/int dn 0)}
+      (equal? dst "detail") {:offs (array/concat (array/int 1 0) (array/int 1 sn)) :idx (pa_range sn)}
+      (and (equal? src "point") (equal? dst "vertex"))
+        (let* [topo (sop/topology geo)] {:offs (pa_range (int/add dn 1)) :idx topo.vertex_points})
+      (and (equal? src "primitive") (equal? dst "vertex"))
+        (let* [a (sop/adjacency geo)] {:offs (pa_range (int/add dn 1)) :idx a.primitive_of_vertex})
+      (and (equal? src "vertex") (equal? dst "point"))
+        (let* [a (sop/adjacency geo)] {:offs a.point_vertex_offsets :idx a.point_vertices})
+      (and (equal? src "vertex") (equal? dst "primitive"))
+        (let* [topo (sop/topology geo)] {:offs topo.primitive_offsets :idx (pa_range sn)})
+      (and (equal? src "point") (equal? dst "primitive"))
+        (let* [topo (sop/topology geo)] {:offs topo.primitive_offsets :idx topo.vertex_points})
+      :else (pa_primitive_to_point geo))))
+
+; ---- pieces: dense ids in first-appearance order
+(defn pa_ids :context value [(firsts : (array int))]
+  (let* [n (array/count firsts)
+         flags (exact (map (fn [(f : int) (d : int)] (if (int/eq f d) 1 0)) firsts (pa_range n)))
+         rank (array/scan_sum flags)]
+    {:id (exact (map (fn [(f : int)] (array/nth rank f)) firsts)) :count (array/nth rank n)}))
+(defn pa_piece_relation :context value
+  [(offs : (array int)) (idx : (array int)) (source_count : int) (ids : (array int)) (pieces : int) (identity : bool)]
+  (if identity
+    {:offs (array/scan_sum (array/scatter_add ids (array/int (array/count ids) 1) pieces))
+     :idx (array/grade ids)}
+    (let* [total (array/count idx)
+           owner (pa_owners offs total)
+           keys (exact (map (fn [(s : int) (d : int)] (int/add (int/mul (array/nth ids d) source_count) s)) idx owner))
+           order (array/grade keys)
+           sorted (exact (map (fn [(k : int)] (array/nth keys (array/nth order k))) (pa_range total)))
+           first (exact (map (fn [(k : int)]
+                   (if (int/eq k 0) 1 (if (int/eq (array/nth sorted k) (array/nth sorted (int/sub k 1))) 0 1)))
+                   (pa_range total)))
+           unique (exact (map (fn [(k : int)] (array/nth sorted k)) (array/compact first)))
+           piece (exact (map (fn [(key : int)] (int/div key source_count)) unique))]
+      {:offs (array/scan_sum (array/scatter_add piece (array/int (array/count piece) 1) pieces))
+       :idx (exact (map (fn [(key : int)] (int/mod key source_count)) unique))})))
+
+; ---- sorting by (unit, value), stable
+(defn pa_order :context value [(by_value : (array int)) (seg : (array int))]
+  (let* [n (array/count by_value)
+         keys (exact (map (fn [(k : int)] (array/nth seg (array/nth by_value k))) (pa_range n)))
+         by_unit (array/grade keys)]
+    (exact (map (fn [(k : int)] (array/nth by_value (array/nth by_unit k))) (pa_range n)))))
+(defn pa_order_float :context value [(flat : (array float)) (seg : (array int)) (desc : bool)]
+  (if desc (pa_order (array/grade flat :descending true) seg) (pa_order (array/grade flat) seg)))
+(defn pa_order_int :context value [(flat : (array int)) (seg : (array int)) (desc : bool)]
+  (if desc (pa_order (array/grade flat :descending true) seg) (pa_order (array/grade flat) seg)))
+(defn pa_order_text :context value [(flat : (array text)) (seg : (array int)) (desc : bool)]
+  (if desc (pa_order (array/grade flat :descending true) seg) (pa_order (array/grade flat) seg)))
+; 1 at every sorted position that starts a new run of equal values (or a new unit).
+(defn pa_runs_float :context value [(flat : (array float)) (order : (array int)) (offs : (array int)) (seg : (array int))]
+  (let* [sv (exact (map (fn [(k : int)] (array/nth flat (array/nth order k))) (pa_range (array/count order))))]
+    (exact (map (fn [(k : int) (u : int)]
+      (if (int/eq k (array/nth offs u)) 1
+        (let* [a (array/nth sv k) b (array/nth sv (int/sub k 1))]
+          (if (and (= a b) (= (atan2 0.0 a) (atan2 0.0 b))) 0 1))))
+      (pa_range (array/count order)) seg))))
+(defn pa_runs_int :context value [(flat : (array int)) (order : (array int)) (offs : (array int)) (seg : (array int))]
+  (let* [sv (exact (map (fn [(k : int)] (array/nth flat (array/nth order k))) (pa_range (array/count order))))]
+    (exact (map (fn [(k : int) (u : int)]
+      (if (int/eq k (array/nth offs u)) 1
+        (if (int/eq (array/nth sv k) (array/nth sv (int/sub k 1))) 0 1)))
+      (pa_range (array/count order)) seg))))
+(defn pa_runs_text :context value [(flat : (array text)) (order : (array int)) (offs : (array int)) (seg : (array int))]
+  (pa_runs_int (array/index_of flat flat) order offs seg))
+; Flat slot of the first value of the most frequent run of each unit (smallest value on ties), -1 if empty.
+(defn pa_mode_slots :context value [(order : (array int)) (flags : (array int)) (offs : (array int))]
+  (let* [total (array/count order)
+         runs (array/compact flags)
+         rcount (array/count runs)
+         run_len (exact (map (fn [(j : int)]
+                   (int/sub (if (int/lt (int/add j 1) rcount) (array/nth runs (int/add j 1)) total) (array/nth runs j)))
+                   (pa_range rcount)))
+         roffs (array/scan_sum (array/segment_sum flags offs))
+         best (array/segment_argmax run_len roffs)]
+    (exact (map (fn [(b : int)] (if (int/ge b 0) (array/nth order (array/nth runs b)) -1)) best))))
+(defn pa_slots_edge :context value [(offs : (array int)) (last : bool)]
+  (exact (map (fn [(d : int)]
+    (let* [a (array/nth offs d) b (array/nth offs (int/add d 1))]
+      (if (int/gt b a) (if last (int/sub b 1) a) -1)))
+    (pa_range (int/sub (array/count offs) 1)))))
+(defn pa_slots_ordered :context value [(order : (array int)) (offs : (array int)) (median : bool)]
+  (exact (map (fn [(d : int)]
+    (let* [a (array/nth offs d) b (array/nth offs (int/add d 1))]
+      (if (int/gt b a) (array/nth order (if median (int/add a (int/div (int/sub b a) 2)) a)) -1)))
+    (pa_range (int/sub (array/count offs) 1)))))
+(defn pa_pick_idx :context value [(idx : (array int)) (slots : (array int))]
+  (exact (map (fn [(s : int)] (if (int/ge s 0) (array/nth idx s) -1)) slots)))
+
+; ---- unit reductions: {:v values :i source element of the chosen slot}
+(defn pa_unit_float :context value
+  [(method : text) (src : (array float)) (offs : (array int)) (idx : (array int))]
+  (let* [flat (exact (map (fn [(i : int)] (array/nth src i)) idx))
+         units (int/sub (array/count offs) 1)
+         total (array/count flat)
+         lens (pa_lens offs)
+         seg (pa_owners offs total)
+         pick (fn [(slots : (array int))]
+                {:v (exact (map (fn [(s : int)] (if (int/ge s 0) (array/nth flat s) 0.0)) slots))
+                 :i (pa_pick_idx idx slots)})]
+    (case method
+      "First" (pick (pa_slots_edge offs false))
+      "Last" (pick (pa_slots_edge offs true))
+      "Minimum" (pick (pa_slots_ordered (pa_order_float flat seg false) offs false))
+      "Maximum" (pick (pa_slots_ordered (pa_order_float flat seg true) offs false))
+      "Median" (pick (pa_slots_ordered (pa_order_float flat seg false) offs true))
+      "Mode" (let* [order (pa_order_float flat seg false)]
+               (pick (pa_mode_slots order (pa_runs_float flat order offs seg) offs)))
+      "Sum" {:v (array/segment_sum flat offs) :i (array/int units -1)}
+      "Sum of squares" {:v (array/segment_sum (exact (map (fn [(v : float)] (* v v)) flat)) offs) :i (array/int units -1)}
+      "Root mean square"
+        {:v (exact (map (fn [(s : float) (n : int)] (if (int/gt n 0) (sqrt (/ s (float n))) 0.0))
+              (array/segment_sum (exact (map (fn [(v : float)] (* v v)) flat)) offs) lens))
+         :i (array/int units -1)}
+      :else {:v (exact (map (fn [(s : float) (n : int)] (if (int/gt n 0) (/ s (float n)) 0.0))
+               (array/segment_sum flat offs) lens))
+             :i (array/int units -1)})))
+(defn pa_unit_int :context value
+  [(method : text) (src : (array int)) (offs : (array int)) (idx : (array int))]
+  (let* [flat (exact (map (fn [(i : int)] (array/nth src i)) idx))
+         total (array/count flat)
+         seg (pa_owners offs total)
+         pick (fn [(slots : (array int))]
+                {:v (exact (map (fn [(s : int)] (if (int/ge s 0) (array/nth flat s) 0)) slots))
+                 :i (pa_pick_idx idx slots)})]
+    (case method
+      "First" (pick (pa_slots_edge offs false))
+      "Last" (pick (pa_slots_edge offs true))
+      "Minimum" (pick (pa_slots_ordered (pa_order_int flat seg false) offs false))
+      "Maximum" (pick (pa_slots_ordered (pa_order_int flat seg true) offs false))
+      "Median" (pick (pa_slots_ordered (pa_order_int flat seg false) offs true))
+      :else (let* [order (pa_order_int flat seg false)]
+              (pick (pa_mode_slots order (pa_runs_int flat order offs seg) offs))))))
+(defn pa_unit_text :context value
+  [(method : text) (src : (array text)) (offs : (array int)) (idx : (array int))]
+  (let* [flat (exact (map (fn [(i : int)] (array/nth src i)) idx))
+         total (array/count flat)
+         seg (pa_owners offs total)
+         pick (fn [(slots : (array int))]
+                {:v (exact (map (fn [(s : int)] (if (int/ge s 0) (array/nth flat s) "")) slots))
+                 :i (pa_pick_idx idx slots)})]
+    (case method
+      "Last" (pick (pa_slots_edge offs true))
+      "Median" (pick (pa_slots_ordered (pa_order_text flat seg false) offs true))
+      "Average" (pick (pa_slots_ordered (pa_order_text flat seg false) offs true))
+      "Mode" (let* [order (pa_order_text flat seg false)]
+               (pick (pa_mode_slots order (pa_runs_text flat order offs seg) offs)))
+      :else (pick (pa_slots_edge offs false)))))
+
+; ---- ragged outputs: {:offsets :values}
+(defn pa_unique_float :context value [(src : (array float)) (offs : (array int)) (idx : (array int))]
+  (let* [flat (exact (map (fn [(i : int)] (array/nth src i)) idx))
+         total (array/count flat)
+         seg (pa_owners offs total)
+         order (pa_order_float flat seg false)
+         flags (pa_runs_float flat order offs seg)
+         starts (array/compact flags)]
+    {:offsets (array/scan_sum (array/segment_sum flags offs))
+     :values (exact (map (fn [(k : int)] (array/nth flat (array/nth order k))) starts))}))
+(defn pa_unique_int :context value [(src : (array int)) (offs : (array int)) (idx : (array int))]
+  (let* [flat (exact (map (fn [(i : int)] (array/nth src i)) idx))
+         total (array/count flat)
+         seg (pa_owners offs total)
+         order (pa_order_int flat seg false)
+         flags (pa_runs_int flat order offs seg)
+         starts (array/compact flags)]
+    {:offsets (array/scan_sum (array/segment_sum flags offs))
+     :values (exact (map (fn [(k : int)] (array/nth flat (array/nth order k))) starts))}))
+; Rows of a per-unit ragged result handed to every destination of its unit.
+(defn pa_rows_float :context value
+  [(rows : {:offsets (array int) :values (array float)}) (mapping : (array int))]
+  (let* [n (array/count mapping)
+         lens (pa_lens rows.offsets)
+         lengths (exact (map (fn [(m : int)] (array/nth lens m)) mapping))
+         offsets (array/scan_sum lengths)
+         total (array/nth offsets n)
+         owner (pa_owners offsets total)]
+    {:offsets offsets
+     :values (exact (map (fn [(j : int) (r : int)]
+       (array/nth rows.values (int/add (array/nth rows.offsets (array/nth mapping r)) (int/sub j (array/nth offsets r)))))
+       (pa_range total) owner))}))
+(defn pa_rows_int :context value
+  [(rows : {:offsets (array int) :values (array int)}) (mapping : (array int))]
+  (let* [n (array/count mapping)
+         lens (pa_lens rows.offsets)
+         lengths (exact (map (fn [(m : int)] (array/nth lens m)) mapping))
+         offsets (array/scan_sum lengths)
+         total (array/nth offsets n)
+         owner (pa_owners offsets total)]
+    {:offsets offsets
+     :values (exact (map (fn [(j : int) (r : int)]
+       (array/nth rows.values (int/add (array/nth rows.offsets (array/nth mapping r)) (int/sub j (array/nth offsets r)))))
+       (pa_range total) owner))}))
+
+
+; ---- text concatenation (Sum): round r appends the r-th text of every unit
+(defn pa_concat_text :context value [(src : (array text)) (offs : (array int)) (idx : (array int))]
+  (let* [flat (exact (map (fn [(i : int)] (array/nth src i)) idx))
+         lens (pa_lens offs)
+         units (array/count lens)
+         rounds (if (int/eq units 0) 0 (array/max lens))
+         done (iterate rounds {:text (array/text units "") :round 0}
+                (fn [s] {:text (exact (map (fn [(d : int)]
+                                   (let* [prior (array/nth s.text d)]
+                                     (if (int/gt (array/nth lens d) s.round)
+                                       (str prior (array/nth flat (int/add (array/nth offs d) s.round))) prior)))
+                                 (pa_range units)))
+                         :round (int/add s.round 1)}))]
+    done.text))
+
+; ---- piece mapping of per-unit results
+(defn pa_mf :context value [(v : (array float)) (mapping : (array int)) (has_piece : bool)]
+  (if has_piece (exact (map (fn [(m : int)] (array/nth v m)) mapping)) v))
+(defn pa_mi :context value [(v : (array int)) (mapping : (array int)) (has_piece : bool)]
+  (if has_piece (exact (map (fn [(m : int)] (array/nth v m)) mapping)) v))
+(defn pa_mt :context value [(v : (array text)) (mapping : (array int)) (has_piece : bool)]
+  (if has_piece (exact (map (fn [(m : int)] (array/nth v m)) mapping)) v))
+(defn pa_planes :context value
+  [(width : int) (x : (array float)) (y : (array float)) (z : (array float)) (w : (array float))]
+  {:width width :x x :y y :z z :w w})
+(defn pa_tuple :context value [(w : int) (ix : (array int)) (iy : (array int)) (iz : (array int)) (iw : (array int))]
+  (let* [n (array/count ix)]
+    {:offsets (exact (map (fn [(d : int)] (int/mul d w)) (pa_range (int/add n 1))))
+     :values (exact (map (fn [(j : int)]
+        (let* [d (int/div j w) c (int/mod j w)]
+          (cond (int/eq c 0) (array/nth ix d) (int/eq c 1) (array/nth iy d)
+                (int/eq c 2) (array/nth iz d) :else (array/nth iw d))))
+        (pa_range (int/mul n w))))}))
+
+; ---- one attribute
+(defn pa_one_float :context sop
+  [(geo : geometry) (src_geo : geometry) (source : text) (dest : text) (name : text) (into : text) (index : text)
+   (kind : text) (method : text) (offs : (array int)) (idx : (array int)) (mapping : (array int)) (has_piece : bool)
+   (want_index : bool)]
+  (let* [p (sop/attr_planes src_geo name :owner source)]
+    (cond
+      (and (equal? kind "float") (equal? method "Array of all"))
+        (let* [flat (exact (map (fn [(i : int)] (array/nth p.x i)) idx))
+               rows {:offsets offs :values flat}
+               out (if has_piece (pa_rows_float rows mapping) rows)]
+          (sop/with_attr geo into out :owner dest :type float_array))
+      (and (equal? kind "float") (equal? method "Unique values"))
+        (let* [rows (pa_unique_float p.x offs idx)
+               out (if has_piece (pa_rows_float rows mapping) rows)]
+          (sop/with_attr geo into out :owner dest :type float_array))
+      (or (equal? method "Array of all") (equal? method "Unique values"))
+        (pa_error "vector storage does not support arrays")
+      :else
+        (let* [rx (pa_unit_float method p.x offs idx)
+               ry (if (int/ge p.width 2) (pa_unit_float method p.y offs idx) rx)
+               rz (if (int/ge p.width 3) (pa_unit_float method p.z offs idx) rx)
+               rw (if (int/ge p.width 4) (pa_unit_float method p.w offs idx) rx)
+               vx (pa_mf rx.v mapping has_piece)
+               zero (array/float (array/count vx) 0.0)
+               planes (pa_planes p.width vx
+                        (if (int/ge p.width 2) (pa_mf ry.v mapping has_piece) zero)
+                        (if (int/ge p.width 3) (pa_mf rz.v mapping has_piece) zero)
+                        (if (int/ge p.width 4) (pa_mf rw.v mapping has_piece) zero))
+               promoted (sop/with_planes geo into planes :owner dest)]
+          (cond
+            (not want_index) promoted
+            (equal? kind "float") (sop/with_attr promoted index (pa_mi rx.i mapping has_piece) :owner dest :type int)
+            :else (sop/with_attr promoted index
+                    (pa_tuple p.width (pa_mi rx.i mapping has_piece) (pa_mi ry.i mapping has_piece)
+                      (pa_mi rz.i mapping has_piece) (pa_mi rw.i mapping has_piece))
+                    :owner dest :type int_array))))))
+(defn pa_one_int :context sop
+  [(geo : geometry) (src_geo : geometry) (source : text) (dest : text) (name : text) (into : text) (index : text)
+   (method : text) (offs : (array int)) (idx : (array int)) (mapping : (array int)) (has_piece : bool)
+   (want_index : bool)]
+  (let* [src (sop/attr src_geo name :owner source :type int)]
+    (cond
+      (equal? method "Array of all")
+        (let* [flat (exact (map (fn [(i : int)] (array/nth src i)) idx))
+               rows {:offsets offs :values flat}
+               out (if has_piece (pa_rows_int rows mapping) rows)]
+          (sop/with_attr geo into out :owner dest :type int_array))
+      (equal? method "Unique values")
+        (let* [rows (pa_unique_int src offs idx)
+               out (if has_piece (pa_rows_int rows mapping) rows)]
+          (sop/with_attr geo into out :owner dest :type int_array))
+      (or (equal? method "Average") (or (equal? method "Sum")
+            (or (equal? method "Sum of squares") (equal? method "Root mean square"))))
+        (pa_error "integer storage does not support this method")
+      :else
+        (let* [r (pa_unit_int method src offs idx)
+               promoted (sop/with_attr geo into (pa_mi r.v mapping has_piece) :owner dest :type int)]
+          (if want_index (sop/with_attr promoted index (pa_mi r.i mapping has_piece) :owner dest :type int) promoted)))))
+(defn pa_one_text :context sop
+  [(geo : geometry) (src_geo : geometry) (source : text) (dest : text) (name : text) (into : text) (index : text)
+   (method : text) (offs : (array int)) (idx : (array int)) (mapping : (array int)) (has_piece : bool)
+   (want_index : bool)]
+  (let* [src (sop/attr src_geo name :owner source :type text)]
+    (cond
+      (or (equal? method "Array of all") (equal? method "Unique values"))
+        (pa_error "text storage does not support arrays")
+      (equal? method "Sum")
+        (sop/with_attr geo into (pa_mt (pa_concat_text src offs idx) mapping has_piece) :owner dest :type text)
+      :else
+        (let* [r (pa_unit_text method src offs idx)
+               promoted (sop/with_attr geo into (pa_mt r.v mapping has_piece) :owner dest :type text)]
+          (if want_index (sop/with_attr promoted index (pa_mi r.i mapping has_piece) :owner dest :type int) promoted)))))
+(defn pa_one :context sop
+  [(geo : geometry) (src_geo : geometry) (source : text) (dest : text) (name : text) (into : text) (index : text)
+   (kind : text) (method : text) (offs : (array int)) (idx : (array int)) (mapping : (array int)) (has_piece : bool)
+   (want_index : bool)]
+  (cond
+    (or (equal? kind "float") (or (equal? kind "vec2") (or (equal? kind "vec3") (equal? kind "vec4"))))
+      (pa_one_float geo src_geo source dest name into index kind method offs idx mapping has_piece want_index)
+    (equal? kind "int") (pa_one_int geo src_geo source dest name into index method offs idx mapping has_piece want_index)
+    (equal? kind "text") (pa_one_text geo src_geo source dest name into index method offs idx mapping has_piece want_index)
+    :else (pa_error "array storage does not support promotion")))
+
+; ---- rename / index patterns: Attribute_pattern.rewrite_set (last matching positive term wins)
+(defn pa_touch :context sop [(geo : geometry)] (sop/count geo :points))
+(defn pa_nonblank :context sop [(parts : (array text)) (geo : geometry)]
+  (fold [acc (array/text 0)] [term parts]
+    (if (int/lt (pa_touch geo) 0) acc
+      (if (text/blank? term) acc (array/concat acc (array/text 1 term))))))
+(defn pa_positive :context sop [(pattern : text) (geo : geometry)]
+  (fold [acc (array/text 0)] [term (text/split pattern " ")]
+    (if (int/lt (pa_touch geo) 0) acc
+      (if (text/blank? term) acc
+        (if (equal? (array/nth (text/split term "^") 0) "") acc (array/concat acc (array/text 1 term)))))))
+; name is an attribute of geo with the given owner
+(defn pa_rewrite :context sop [(pattern : text) (replacement : text) (name : text) (geo : geometry) (owner : text)]
+  (let* [positive (pa_positive pattern geo)
+         reps (pa_nonblank (text/split replacement " ") geo)]
+    (fold [found ""] [j (pa_range (array/count positive))]
+      (let* [matches (sop/attr_names geo (array/nth positive j) :owner owner)
+             matched (int/ge (array/nth (array/index_of matches (array/text 1 name)) 0) 0)]
+        (if (and matched (int/lt j (array/count reps)))
+          (text/glob_rewrite (array/nth positive j) (array/nth reps j) name)
+          found)))))
+(defn pa_duplicate :context value [(keys : (array text))]
+  (int/gt (array/sum (exact (map (fn [(f : int) (i : int)] (if (int/eq f i) 0 1))
+    (array/index_of keys keys) (pa_range (array/count keys))))) 0))
+(defn pa_piece_ids :context sop [(geo : geometry) (owner : text) (name : text)]
+  (if (sop/has_attr geo name :owner owner :type int)
+    (let* [v (sop/attr geo name :owner owner :type int)] (pa_ids (array/index_of v v)))
+    (let* [v (sop/attr geo name :owner owner :type text)] (pa_ids (array/index_of v v)))))
+
+; ---- construction-time validation (pure): pattern/rewrite compile and index method
+(defn pv_nonblank :context value [(parts : (array text))]
+  (fold [acc (array/text 0)] [term parts] (if (text/blank? term) acc (array/concat acc (array/text 1 term)))))
+(defn pv_positive :context value [(pattern : text)]
+  (fold [acc (array/text 0)] [term (text/split pattern " ")]
+    (if (text/blank? term) acc
+      (if (equal? (array/nth (text/split term "^") 0) "") acc (array/concat acc (array/text 1 term))))))
+(defn pv_rewrite_ok :context value [(pattern : text) (replacement : text)]
+  (let* [positive (pv_positive pattern)
+         reps (pv_nonblank (text/split replacement " "))]
+    (and (and (int/gt (array/count positive) 0) (int/eq (array/count positive) (array/count reps)))
+      (fold [ok true] [j (pa_range (array/count positive))]
+        (if (int/lt j (array/count reps))
+          (and ok (equal? (text/glob_rewrite_error (array/nth positive j) (array/nth reps j)) ""))
+          false)))))
+(defn pa_valid :context value
+  [(method : text) (pattern : text) (into_pattern : text) (index_pattern : text)]
+  (let* [into_p (text/trim into_pattern)
+         idx_p (text/trim index_pattern)]
+    (and (equal? (text/glob_error pattern) "")
+      (and (or (text/blank? idx_p)
+               (or (equal? method "First") (or (equal? method "Last") (or (equal? method "Minimum")
+                 (or (equal? method "Maximum") (equal? method "Mode"))))))
+        (and (or (text/blank? into_p) (pv_rewrite_ok pattern into_p))
+             (or (text/blank? idx_p) (pv_rewrite_ok pattern idx_p)))))))
+
+(defn pa_select :context sop
+  [(in0 : geometry) (src : text) (dst : text) (names : (array text)) (pattern : text) (into_p : text) (idx_p : text)
+   (want_index : bool) (has_piece : bool) (piece : text) (filter_noop : bool)]
+  (fold [st {:names (array/text 0) :intos (array/text 0) :indexes (array/text 0)
+                             :kinds (array/text 0) :slots (array/text 0) :keep (array/int 0 0) :bad false}]
+                    [name names]
+                    (let* [kind (sop/attr_type in0 name :owner src)
+                           into (if (text/blank? into_p) name (pa_rewrite pattern into_p name in0 src))
+                           idx (if want_index (pa_rewrite pattern idx_p name in0 src) "")
+                           bad_into (or (text/blank? into) (and (equal? dst "point") (equal? into "P")))
+                           bad_idx (if want_index
+                                     (or (text/blank? idx)
+                                       (or (and (equal? dst "point") (equal? idx "P"))
+                                         (or (equal? idx into)
+                                           (or (and has_piece (equal? idx piece))
+                                             (or (equal? kind "int_array") (equal? kind "float_array"))))))
+                                     false)]
+                      {:names (array/concat st.names (array/text 1 name))
+                       :intos (array/concat st.intos (array/text 1 into))
+                       :indexes (array/concat st.indexes (array/text 1 idx))
+                       :kinds (array/concat st.kinds (array/text 1 kind))
+                       :slots (array/concat st.slots
+                               (if want_index (array/concat (array/text 1 into) (array/text 1 idx)) (array/text 1 into)))
+                       :keep (array/concat st.keep (array/int 1 (if (and filter_noop (equal? name into)) 0 1)))
+                       :bad (or st.bad (or bad_into bad_idx))})))
+
+(defnode sop/promote_attributes :label "Promote Attributes" :operation "attribute_promote_pattern" :category ["Attribute" "Promote"]
+  :validate (pa_valid method_ pattern into_pattern index_pattern)
+  :code "E_PARAM" :message "sop/promote_attributes: invalid pattern, rewrite or index request"
   [(in0 : geometry)
    (source : text "Point" :label "Source owner" :choices ["Point" "Vertex" "Primitive" "Detail"])
    (destination : text "Primitive" :label "Destination owner" :choices ["Point" "Vertex" "Primitive" "Detail"])
@@ -11,4 +450,36 @@
    (piece_attribute : text "" :label "Piece attribute" :folder ["Partition"])
    (into_pattern : text "" :label "Rename pattern" :folder ["Output"])
    (index_pattern : text "" :label "Index pattern" :folder ["Output"])]
-  (error "E_PORT_TODO" "promote_attributes is not ported"))
+  (let* [src (pa_owner source)
+         dst (pa_owner destination)
+         piece (text/trim piece_attribute)
+         has_piece (not (text/blank? piece))
+         into_p (text/trim into_pattern)
+         idx_p (text/trim index_pattern)
+         want_index (not (text/blank? idx_p))
+         same (equal? src dst)
+         names (sop/attr_names in0 pattern :owner src)
+         selected (pa_select in0 src dst names pattern into_p idx_p want_index has_piece piece (and same (not has_piece)))
+         kept (array/compact selected.keep)
+         kept_n (array/count kept)
+         piece_ok (if has_piece
+                    (if (sop/has_attr in0 piece :owner dst :type int) true (sop/has_attr in0 piece :owner dst :type text))
+                    true)
+         go (and (not selected.bad) (and (not (pa_duplicate selected.slots)) (and (int/gt kept_n 0) piece_ok)))
+         rel (if go (pa_relation in0 src dst) {:offs (array/int 1 0) :idx (array/int 0 0)})
+         ids (if (and go has_piece) (pa_piece_ids in0 dst piece) {:id (array/int 0 0) :count 0})
+         unit (if (and go has_piece)
+                (pa_piece_relation rel.offs rel.idx (pa_count in0 src) ids.id ids.count same) rel)
+         cleared (fold [acc in0] [i kept]
+                   (if delete_source
+                     (sop/delete_attr acc (text/glob_literal (array/nth selected.names i)) :owner src) acc))]
+    (cond
+      selected.bad (pa_error "invalid output attribute names")
+      (pa_duplicate selected.slots) (pa_error "multiple outputs use the same name")
+      (int/eq kept_n 0) in0
+      (not piece_ok) (pa_error "piece attribute is missing or has the wrong storage")
+      :else
+        (fold [acc cleared] [i kept]
+          (pa_one acc in0 src dst (array/nth selected.names i) (array/nth selected.intos i)
+            (array/nth selected.indexes i) (array/nth selected.kinds i) method_ unit.offs unit.idx ids.id
+            has_piece want_index)))))
