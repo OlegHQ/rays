@@ -1267,6 +1267,10 @@ empty ragged row, the same defaults as `Point_generate`'s created points), it is
 group, and under `:positions "mapped"` its P is the origin. Any other negative
 index is `E_REMAP_INDEX`.
 
+**Leading target attributes.** `:lead true` lists the attributes already on `target` before the
+carried source attributes (native `Revolve` conses its generated `uv` in front); default `false`
+appends nothing (the target's own attributes are otherwise dropped).
+
 **Weighted carry.** In place of `:points`, `:vertices` or `:primitives` an owner may be given
 `:point_mix`, `:vertex_mix` or `:primitive_mix` (not both, `E_ARGS`), a record
 `{:a (array int) :b (array int) :t (array float)}` (exactly those three keys, each as long as the

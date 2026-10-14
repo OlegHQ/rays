@@ -416,17 +416,18 @@
              edge_found (array/index_of source_keys edge_queries)
              edge_has (exact (map (fn [(e : int)] (if (int/ge e 0) 1 0)) edge_found))
              edge_values (exact (map (fn [(e : int)] (array/nth edge_found e)) (array/compact edge_has)))
-             mapped (if (int/gt edge_group_count 0)
-               (sop/remap source_clean built.target :points point_map :vertices built.vertex_map
-                 :primitives built.primitive_map :positions "target"
-                 :edges {:offsets (array/scan_sum edge_has) :values edge_values})
-               (sop/remap source_clean built.target :points point_map :vertices built.vertex_map
-                 :primitives built.primitive_map :positions "target"))
-             with_uv (if has_uv
-               (sop/with_attr mapped uv_name {:x built.uv_x :y built.uv_y}
+             ; native conses the generated uv in front: write it on the target and let remap lead with it
+             target_uv (if has_uv
+               (sop/with_attr built.target uv_name {:x built.uv_x :y built.uv_y}
                  :owner uv_owner :type vec2)
-               mapped)]
+               built.target)
+             mapped (if (int/gt edge_group_count 0)
+               (sop/remap source_clean target_uv :points point_map :vertices built.vertex_map
+                 :primitives built.primitive_map :positions "target" :lead true
+                 :edges {:offsets (array/scan_sum edge_has) :values edge_values})
+               (sop/remap source_clean target_uv :points point_map :vertices built.vertex_map
+                 :primitives built.primitive_map :positions "target" :lead true))]
         (if has_cap_group
-          (sop/with_group with_uv built.cap_flags
+          (sop/with_group mapped built.cap_flags
             :name cap_name :owner "primitive")
-          with_uv)))))
+          mapped)))))

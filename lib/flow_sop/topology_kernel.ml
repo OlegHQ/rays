@@ -250,6 +250,11 @@ let remap ?cancel ~grain ~source ~target args =
           ~x:(R.select_float ?cancel ~grain ~missing:0. point_map p.x)
           ~y:(R.select_float ?cancel ~grain ~missing:0. point_map p.y)
           ~z:(R.select_float ?cancel ~grain ~missing:0. point_map p.z) in
+    (* [:lead true]: attributes already on the target come first, ahead of the carried ones. *)
+    let attributes = match List.assoc_opt "lead" args with
+      | Some (E.Bool true) -> G.attributes target @ attributes
+      | None | Some (E.Bool false) -> attributes
+      | _ -> refuse "E_REMAP_LEAD" "Remap lead is a Boolean." in
     check ();
     let output = result "E_REMAP" (G.create ~positions ~topology:target_topology
         ~attributes ~groups ~edge_groups ()) in

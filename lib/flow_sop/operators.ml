@@ -482,7 +482,7 @@ let remap : Flow.Op.t = {
   signature={pos=["source",Flow.Ty.geometry;"target",Flow.Ty.geometry];opt=[];rest=None;
     kw=["points",Flow.Ty.Array Int;"vertices",Flow.Ty.Array Int;"primitives",Flow.Ty.Array Int;
       "point_mix",mix_type;"vertex_mix",mix_type;"primitive_mix",mix_type;
-      "positions",Text;"edges",Record ["offsets",Array Int;"values",Array Int]]};
+      "positions",Text;"edges",Record ["offsets",Array Int;"values",Array Int];"lead",Bool]};
   choices=["positions",["target";"mapped"]];
   check=(fun args->List.iter(fun (name,mix)->
     match List.mem_assoc name args,List.mem_assoc mix args with
