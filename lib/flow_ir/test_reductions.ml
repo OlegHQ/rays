@@ -65,6 +65,8 @@ let () =
      "(array/segment_sum (map (fn [x] [x t 1.]) (array/range 5001)) (map (fn [x] (int x)) (array/range 5002)))";
      "(array/segment_min (array/float 5001 t) (map (fn [x] (int x)) (array/range 5002)))";
      "(array/segment_max (array/int 5001 (frame/index)) (map (fn [x] (int x)) (array/range 5002)))";
+     "(array/segment_argmax (map (fn [(i : int)] (int/mod (int/mul i 5) 7)) (array/range 5001 :type int)) (map (fn [(i : int)] (int/mul i 3)) (array/range 1668 :type int)))";
+     "(array/segment_argmax (map (fn [(i : int)] (* t (float (int/mod (int/mul i 5) 7)))) (array/range 5001 :type int)) (map (fn [(i : int)] (int/mul i 3)) (array/range 1668 :type int)))";
      "(let* [minimum (array/min (array/float 5001 t))] (map (fn [x] (+ x minimum)) (array/range 11)))";
      "(map (fn [x] (+ x t)) (array/segment_sum (array/float 5001 1.) (map (fn [x] (int x)) (array/range 5002))))";
      "(let* [threshold (int/add (frame/index) 9007199254740993)] (map (fn [x] (int/add x threshold)) (array/range 5001 :type int)))";

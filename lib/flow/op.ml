@@ -341,6 +341,37 @@ module Private = struct
          (match width with 1 -> Float_array result | 2 -> Vec2_array result
           | 3 -> Vec3_array result | _ -> Vec4_array result))
     | _ -> fail "E_ARRAY_TYPE" "Array reductions need int, float or vector arrays."
+  (* Index (into [values]) of the first maximum of each segment; -1 for an empty segment. *)
+  let segment_argmax ?(rows = fun ~start ~finish f -> for i=start to finish do f i done) ~offsets values =
+    let count = array_length values in
+    let offsets = match offsets with Int_array offsets -> offsets
+      | _ -> fail "E_ARRAY_TYPE" "Segment offsets must be an integer array." in
+    let n = Array.length offsets in
+    let bad () = fail "E_ARRAY_OFFSETS" "Segment offsets must start at zero, be nondecreasing and end at the value count." in
+    if n=0 || offsets.(0)<>0 || offsets.(n-1)<>count then bad ();
+    for i=1 to n-1 do if offsets.(i)<offsets.(i-1) then bad () done;
+    let segments = n-1 in
+    let result = Array.make segments (-1) in
+    (match values with
+     | Int_array values ->
+       rows ~start:0 ~finish:(segments-1) (fun row ->
+         let first=offsets.(row) and finish=offsets.(row+1) in
+         if first<finish then begin
+           let best=ref first in
+           for i=first+1 to finish-1 do if values.(i)>values.(!best) then best:=i done;
+           result.(row)<- !best end)
+     | Float_array values ->
+       rows ~start:0 ~finish:(segments-1) (fun row ->
+         let first=offsets.(row) and finish=offsets.(row+1) in
+         if first<finish then begin
+           let name="array/segment_argmax" in
+           let best=ref first in
+           ignore(fin name values.(first));
+           for i=first+1 to finish-1 do
+             let v=fin name values.(i) in if v>values.(!best) then best:=i done;
+           result.(row)<- !best end)
+     | _ -> fail "E_ARRAY_TYPE" "array/segment_argmax needs an int or float array.");
+    Int_array result
 end
 let reduction_type segmented = function
   | Ty.Array (Ty.Int | Float | Vec2 | Vec3 | Vec4 as element) :: _ ->
@@ -487,6 +518,12 @@ let reductions =
       {run=fun ~name:_ ~node:_ args -> Private.reduce_array operation
         ~offsets:(List.assoc "offsets" args) (List.assoc "values" args)})
     [Private.Sum;Minimum;Maximum]
+  @ [mk ~category:"Array" "array/segment_argmax" ["values",Ty.Array Ty.Any;"offsets",Ty.Array Ty.Int]
+      (function
+        | Ty.Array (Ty.Int | Float | Any) :: _ -> Ty.Array Ty.Int
+        | _ -> fail "E_ARRAY_TYPE" "array/segment_argmax needs an int or float array.")
+      {run=fun ~name:_ ~node:_ args -> Private.segment_argmax
+        ~offsets:(List.assoc "offsets" args) (List.assoc "values" args)}]
 let constant_array ty count value =
   (* Validate one element through the shared packed-storage boundary. Empty
      arrays intentionally do not inspect their unused fill value. *)

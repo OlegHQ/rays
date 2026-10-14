@@ -295,7 +295,7 @@ let signature : C.primitive -> string list option = function
   | Array_grade -> Some ["keys";"descending"] | Array_index_of -> Some ["keys";"queries"]
   | Array_compact -> Some ["mask"] | Array_scan_sum -> Some ["array"]
   | Array_scatter_add -> Some ["indices";"values";"size"]
-  | Array_reduce _ -> Some ["array"] | Array_segment _ -> Some ["values";"offsets"]
+  | Array_reduce _ -> Some ["array"] | Array_segment _ | Array_segment_argmax -> Some ["values";"offsets"]
   | Sequence_length -> Some ["list"] | Sequence_get -> Some ["list"; "index"]
   | Sequence_build -> Some ["count"; "width"; "type"; "cooked"]
   | Sequence_slice -> Some ["list"; "first"; "count"]

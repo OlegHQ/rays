@@ -243,6 +243,7 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
     | "array/segment_sum" -> Some (Array_segment Sum)
     | "array/segment_min" -> Some (Array_segment Minimum)
     | "array/segment_max" -> Some (Array_segment Maximum)
+    | "array/segment_argmax" -> Some Array_segment_argmax
     | "int/add" -> Some (Integer Iadd) | "int/sub" -> Some (Integer Isub)
     | "int/mul" -> Some (Integer Imul) | "int/div" -> Some (Integer Idiv) | "int/mod" -> Some (Integer Imod)
     | "int/and" -> Some (Integer Iand) | "int/or" -> Some (Integer Ior) | "int/xor" -> Some (Integer Ixor)

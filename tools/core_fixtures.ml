@@ -38,7 +38,7 @@ let inventory = [
   Equal; Show; Text_concat; Text_blank; Text_trim; Text_lower; Text_repr; Text_table_decode; Text_table_encode;
   Text_split; Text_tokens; Text_to_float; Text_to_int;
   Sequence_length; Sequence_get; Sequence_build; Sequence_slice; Sequence_concat;
-  Array_reduce Minimum; Array_reduce Maximum; Array_segment Sum; Array_segment Minimum; Array_segment Maximum;
+  Array_reduce Minimum; Array_reduce Maximum; Array_segment Sum; Array_segment Minimum; Array_segment Maximum; Array_segment_argmax;
   Array_grade; Array_index_of; Array_compact; Array_scan_sum; Array_scatter_add; Array_max_length; Array_range; Array_int; Array_text; Array_float; Array_vec3; Array_vec4; Array_nth; Array_count; Array_slice; Array_concat;
   Rand; Rand_at; Fma; Checked_mul; Checked_fma; Noise3; Color_parse; Color_byte Clamped; Coerce T.Any; Truthy; Error; Fail ("", "") ]
 
@@ -115,7 +115,7 @@ let arg_name prim i = match prim, i with
   | Array_grade, _ -> [|"keys";"descending"|].(i) | Array_index_of, _ -> [|"keys";"queries"|].(i)
   | Array_compact, _ -> "mask" | Array_scan_sum, _ -> "array"
   | Array_scatter_add, _ -> [|"indices";"values";"size"|].(i)
-  | Array_segment _, _ -> if i=0 then "values" else "offsets"
+  | (Array_segment _ | Array_segment_argmax), _ -> if i=0 then "values" else "offsets"
   | Array_nth, _ -> if i = 0 then "array" else "index"
   | Exp, _ -> "x"
   | Array_slice, _ -> [|"array"; "first"; "count"|].(i)
@@ -307,6 +307,13 @@ arr1[0.;-0.;0.];arr1[1e16;1.;-1e16];
       [[|0;count|];[|0;0;count|];[|0|];[||];[|0;count+1;count|];[|0;-1;count|];[|0;max_int;count|]];
     add(C.Array_segment operation)[array;arr1[0.;float count]]) arrays)
     [Flow.Op.Private.Sum;Minimum;Maximum];
+  List.iter(fun array->
+    let count=Flow.Value.array_length array in
+    List.iter(fun offsets->add C.Array_segment_argmax [array;E.Int_array offsets])
+      [[|0;count|];[|0;0;count|];[|0|];[||];[|0;count+1;count|];[|0;-1;count|];[|0;max_int;count|];
+       [|0;count/2;count|]];
+    add C.Array_segment_argmax [array;arr1[0.;float count]])
+    (arrays @ [E.Int_array[|2;5;5;1;5|]; arr1[1.;3.;3.;-0.;0.;2.;3.]; arr1[0.;-0.;0.]]);
   List.iter(fun values->let n=Flow.Value.array_length values in
     let indices=E.Int_array(Array.init n(fun i->i mod 2)) in
     List.iter(fun size->add C.Array_scatter_add[indices;values;int size])[0;1;2;4;-1;max_int];
@@ -1404,7 +1411,7 @@ let fields=["points",E.Int_array[|0;1;2|];"vertices",E.Int_array[|0;1;2|];
 remap_case source changed_p fields;
 remap_case source unrelated fields;
   (* write *)
-  assert (List.length inventory = 100);
+  assert (List.length inventory = 101);
   if not (Sys.file_exists outdir) then Sys.mkdir outdir 0o755;
   List.iter (fun name ->
     let body = String.concat ",\n" (List.rev !(Hashtbl.find cases name)) in

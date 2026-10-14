@@ -525,6 +525,29 @@ function arrayReduce(operation, a, offsets) {
     result[row * width + c] = reduce(Number(offsets.data[row]), Number(offsets.data[row + 1]), c);
   return new PArray(width, result);
 }
+export function array_segment_argmax(a, offsets) {
+  if (!(offsets instanceof PArray) || offsets.width !== 1 || !(offsets.data instanceof BigInt64Array))
+    err('E_ARRAY_TYPE', 'Segment offsets must be an integer array.');
+  const count = length(a), o = offsets.data, n = o.length;
+  const bad = () => err('E_ARRAY_OFFSETS', 'Segment offsets must start at zero, be nondecreasing and end at the value count.');
+  if (!n || o[0] !== 0n || o[n - 1] !== BigInt(count)) bad();
+  for (let i = 1; i < n; i++) if (o[i] < o[i - 1]) bad();
+  if (!(a instanceof PArray) || a.width !== 1) err('E_ARRAY_TYPE', 'array/segment_argmax needs an int or float array.');
+  const integer = a.data instanceof BigInt64Array;
+  const result = new BigInt64Array(n - 1).fill(-1n);
+  for (let row = 0; row < n - 1; row++) {
+    const first = Number(o[row]), finish = Number(o[row + 1]);
+    if (first >= finish) continue;
+    let best = first;
+    if (!integer) fin('array/segment_argmax', a.data[first]);
+    for (let i = first + 1; i < finish; i++) {
+      if (!integer) fin('array/segment_argmax', a.data[i]);
+      if (a.data[i] > a.data[best]) best = i;
+    }
+    result[row] = BigInt(best);
+  }
+  return new PArray(1, result);
+}
 // Whole-array ordered operations: input buffers are borrowed and never changed.
 // Byte keys reuse the reversible native text codec, not Unicode collation.
 const arrayTextKey = text => Array.from(textBytes(text), byte => String.fromCharCode(byte)).join('');

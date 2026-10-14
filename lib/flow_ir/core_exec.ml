@@ -217,6 +217,11 @@ let primitive ~track ~locals op args =
         fun st -> Flow.Op.Private.reduce_array
           ~rows:(fun ~start ~finish f -> Rays_math.Parallel.for_ ~start ~finish f) operation
           ~offsets:st.values.(offsets) st.values.(values)
+    | Array_segment_argmax ->
+        let values=a_ "values" and offsets=a_ "offsets" in
+        fun st -> Flow.Op.Private.segment_argmax
+          ~rows:(fun ~start ~finish f -> Rays_math.Parallel.for_ ~start ~finish f)
+          ~offsets:st.values.(offsets) st.values.(values)
     | Remainder -> let a=a () and b=b () in
         fun st -> V.Float (V.fin "remainder" (Float.rem (V.num st.values.(a)) (V.num st.values.(b))))
     | Array_count when List.map fst args=["array"] -> fun st -> V.Int (V.array_length st.values.(first))

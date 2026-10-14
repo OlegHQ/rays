@@ -34,6 +34,7 @@ let cases = [
   "array/segment_sum","(array/nth (array/segment_sum (array/vec3 5 [t 1 2]) (map (fn [x] (int x)) (array/range 6))) 3)";
   "array/segment_min","(array/nth (array/segment_min (array/float 5 t) (map (fn [x] (int x)) (array/range 6))) 3)";
   "array/segment_max","(array/nth (array/segment_max (array/int 5 (frame/index)) (map (fn [x] (int x)) (array/range 6))) 3)";
+  "array/segment_argmax","(array/nth (array/segment_argmax (array/int 5 (frame/index)) (map (fn [x] (int x)) (array/range 6))) 3)";
   "tan","(tan t)"; "atan2","(atan2 t -0.3)";
   "asin","(asin (* t 0.1))"; "acos","(acos (* t 0.1))";
   "log","(log (+ t 4.0))"; "sign","(sign t)"; "hypot","(hypot t 3.0)";

@@ -74,4 +74,10 @@ module Private : sig
   (** Shared numeric bulk reduction. [rows] dispatches inclusive, disjoint
       output row indices; callers may use a pooled executor. Input storage is
       borrowed immutably. Offsets are checked before allocation or dispatch. *)
+
+  val segment_argmax :
+    ?rows:(start:int -> finish:int -> (int -> unit) -> unit) ->
+    offsets:('f, 'r) Value.t -> ('f, 'r) Value.t -> ('f, 'r) Value.t
+  (** Index into the values of the first maximum of each segment (-1 when the
+      segment is empty), for int or finite float values. *)
 end
