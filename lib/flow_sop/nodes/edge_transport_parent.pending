@@ -1,0 +1,78 @@
+; Whole Edge Transport Parent draft. The tree scan is graph/forest (the factored Rdk.Forest.scan of
+; the native node); the forward and backward sweeps are Jacobi passes over the points: a point only
+; reads its parent (forward) or its children in CSR order (backward), so after depth+1 passes every
+; tree point holds exactly the value the native breadth-first sweep writes. Points outside every tree
+; (unselected, parent cycles) keep their input. The sweep helpers (etp_*) are in prelude.rays.
+
+(defnode sop/edge_transport_parent :label "Edge Transport Parent" :category ["Attribute" "Transport"]
+  :validate (and (not (text/blank? parent_attribute))
+              (and (not (text/blank? attribute))
+                (and (not (equal? attribute "P"))
+                     (or (equal? operation "Total") (not (or integrate_constant scale_by_edge_length))))))
+  :code "E_PARAM" :message "sop/edge_transport_parent: invalid parameters"
+  [(in0 : geometry)
+   (attribute : text "value" :label "Attribute")
+   (point_group : text "" :label "Point group")
+   (parent_attribute : text "parent" :label "Parent attribute")
+   (direction : text "Forward" :label "Direction" :choices ["Forward" "Backward"])
+   (operation : text "Transport" :label "Operation"
+     :choices ["Transport" "From root" "Total" "Maximum" "Minimum"])
+   (root_value : text "Zero" :label "Root value" :choices ["Zero" "Hold"])
+   (integrate_constant : bool false :label "Integrate constant")
+   (scale_by_edge_length : bool false :label "Scale by edge length")
+   (split : text "Copy" :label "Branch split" :choices ["Copy" "Split"])
+   (merge : text "Add" :label "Branch merge" :choices ["Add" "Maximum" "Minimum"])
+   (normalization : text "None" :label "Normalization" :choices ["None" "Per component" "Global"])]
+  (let* [group_name (text/trim point_group)
+         found_group (or (text/blank? group_name)
+           (fold [found false] [name (sop/group_names in0 "" :owner "point")]
+             (or found (equal? name group_name))))]
+    (if (not found_group)
+      (error "missing_group" (str "edge_transport_parent could not find point group " (text/repr group_name)))
+      (cond
+        (not (sop/has_attr in0 parent_attribute :owner "point"))
+          (error "invalid_edge_transport" "edge_transport_parent could not produce valid geometry"
+            :cause "edge_transport_parent [invalid_edge_transport]: Edge Transport Parent could not find integer point attribute")
+        (not (sop/has_attr in0 parent_attribute :owner "point" :type int))
+          (error "invalid_edge_transport" "edge_transport_parent could not produce valid geometry"
+            :cause "edge_transport_parent [invalid_edge_transport]: Edge Transport Parent requires an integer point parent attribute")
+        (and (not integrate_constant) (not (sop/has_attr in0 attribute :owner "point"))) in0
+        (and (not integrate_constant) (not (sop/has_attr in0 attribute :owner "point" :type float)))
+          (error "invalid_edge_transport" "edge_transport_parent could not produce valid geometry"
+            :cause "edge_transport_parent [invalid_edge_transport]: Edge Transport Parent requires a scalar float point attribute")
+        :else
+          (let* [n (sop/count in0 :points)
+                 selection (if (text/blank? group_name) (array/int n 1)
+                             (sop/group in0 :name group_name :owner "point"))
+                 parents (sop/attr in0 parent_attribute :owner "point" :type int)
+                 tree (graph/forest parents :mask selection)
+                 order tree.order
+                 dep tree.depth
+                 off tree.offsets
+                 passes (if (int/eq (array/count order) 0) 0 (int/add 1 (array/max dep)))
+                 points (array/range n :type int)
+                 op (cond (equal? operation "Transport") 0 (equal? operation "From root") 1
+                          (equal? operation "Total") 2 (equal? operation "Maximum") 3 :else 4)
+                 source (if integrate_constant (array/float n 1.0)
+                          (sop/attr in0 attribute :owner "point" :type float))
+                 position_data (sop/attr_checked in0 "P")
+                 positions position_data.values
+                 scale (if scale_by_edge_length
+                         (exact (map (fn [(p : int)]
+                           (if (int/gt (array/nth dep p) 0)
+                             (etp_length (array/nth positions (array/nth parents p)) (array/nth positions p))
+                             0.0)) points))
+                         (array/float n 1.0))
+                 hold (equal? root_value "Hold")
+                 swept (if (equal? direction "Forward")
+                         (etp_forward {:par parents :dep dep :rt tree.root
+                                       :cc (exact (map (fn [(p : int)] (int/sub (array/nth off (int/add p 1)) (array/nth off p))) points))
+                                       :scale scale :inp source :op op :hold hold
+                                       :split (equal? split "Split") :fuse true :passes passes})
+                         (etp_backward {:off off :kids tree.children :dep dep :scale scale :inp source
+                                        :op op :merge (cond (equal? merge "Add") 0 (equal? merge "Maximum") 1 :else 2)
+                                        :hold hold :fuse true :passes passes}))
+                 output (etp_normalize swept order tree.root
+                          (cond (equal? normalization "None") 0 (equal? normalization "Global") 2 :else 1))]
+            (if (int/eq (array/count order) 0) in0
+              (sop/with_attr in0 attribute output :owner "point" :type float)))))))

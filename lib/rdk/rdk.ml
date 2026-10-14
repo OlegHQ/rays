@@ -41,6 +41,7 @@ module Group_mesh = Rdk_mesh.Group_mesh
 module Graph_color = Rdk_mesh.Graph_color
 module Poly_path = Rdk_curve.Poly_path
 module Shortest_paths = Rdk_mesh.Shortest_paths
+module Forest = Rdk_mesh.Forest
 module Blast_by_attribute = Rdk_mesh.Blast_by_attribute
 module Separate_pieces = Rdk_mesh.Separate_pieces
 module Deletion = Rdk_mesh.Deletion

@@ -190,9 +190,15 @@ let graph_op name ~pos ~kw ~out ~fields : Flow.Op.t = {
 }
 let shortest_paths = graph_op "graph/shortest_paths"
   ~pos:["adjacency",adjacency_type;"lengths",Flow.Ty.Array Flow.Ty.Float;"roots",Flow.Ty.Array Flow.Ty.Int]
-  ~kw:["radius",Flow.Ty.Float]
-  ~out:(Flow.Ty.Record["distance",Array Float;"parent",Array Int])
-  ~fields:["distance",Flow.Ty.Array Flow.Ty.Float;"parent",Flow.Ty.Array Flow.Ty.Int]
+  ~kw:["radius",Flow.Ty.Float;"hops",Flow.Ty.Bool;"blocked_points",Flow.Ty.Array Flow.Ty.Int;
+       "blocked_edges",Flow.Ty.Array Flow.Ty.Int;"target",Flow.Ty.Int;"ties",Flow.Ty.Text]
+  ~out:(Flow.Ty.Record["distance",Array Float;"parent",Array Int;"path",Array Int;"order",Array Int])
+  ~fields:["distance",Flow.Ty.Array Flow.Ty.Float;"parent",Flow.Ty.Array Flow.Ty.Int;"path",Flow.Ty.Array Flow.Ty.Int;"order",Flow.Ty.Array Flow.Ty.Int]
+let forest = graph_op "graph/forest"
+  ~pos:["parents",Flow.Ty.Array Flow.Ty.Int] ~kw:["mask",Flow.Ty.Array Flow.Ty.Int]
+  ~out:(Flow.Ty.Record["order",Array Int;"depth",Array Int;"root",Array Int;"offsets",Array Int;"children",Array Int])
+  ~fields:["order",Flow.Ty.Array Flow.Ty.Int;"depth",Flow.Ty.Array Flow.Ty.Int;"root",Flow.Ty.Array Flow.Ty.Int;
+           "offsets",Flow.Ty.Array Flow.Ty.Int;"children",Flow.Ty.Array Flow.Ty.Int]
 let color = graph_op "graph/color"
   ~pos:["adjacency",rows_type;"order",Flow.Ty.Array Flow.Ty.Int] ~kw:[]
   ~out:(Flow.Ty.Record["color",Array Int;"count",Int])
@@ -526,7 +532,7 @@ let concat : Flow.Op.t = {
   body=(fun ~live:_ ~node args->node "sop/concat" args);
 }
 
-let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; adjacency; triangles; components; shortest_paths; color; chains; mesh; mesh_planes; remap; concat; attr_planes; with_planes;
+let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; adjacency; triangles; components; shortest_paths; forest; color; chains; mesh; mesh_planes; remap; concat; attr_planes; with_planes;
   group; group_order; group_names; group_entries; with_group; context_seed; provenance_base; context_frame; context_time;
   rename_attr;swap_attr;delete_attrs;rename_group;delete_group;rename_edge;delete_edge;attr_type;attr_names;attr_entries;
   glob_error;float_g17;glob_rewrite_error;glob_rewrite;glob_literal;group_name_valid;group_name_forced]
