@@ -73,48 +73,6 @@
   (let* [base (float/fma_checked target_anchor 1.0 offset)
          moved (float/fma_checked (* -1.0 source_anchor) scale base.value)]
     (if enabled {:v moved.value :ok (and base.valid moved.valid)} {:v 0.0 :ok true})))
-; Selected polygons the native ear clipper refuses: fewer than three corners, or four or more corners with
-; a degenerate projected area (Polygon_triangulation). Non-simple polygons are not detected here.
-(defn ms_project :context value [(p : vec3) (d : int)]
-  (cond (int/eq d 0) [p.y p.z] (int/eq d 1) [p.x p.z] :else [p.x p.y]))
-(defn ms_degenerate :context sop [(geo : geometry) (selected : (array int))]
-  (let* [topo (sop/topology geo)
-         adjacency (sop/adjacency geo)
-         positions (sop/attr geo :P)
-         vertices (sop/count geo :vertices)
-         prims (sop/count geo :primitives)
-         starts (array/slice topo.primitive_offsets 0 prims)
-         ends (array/slice topo.primitive_offsets 1 prims)
-         indices (array/range vertices :type int)
-         newell (map (fn [(vertex : int) (prim : int)]
-           (let* [first (array/nth starts prim)
-                  last (array/nth ends prim)
-                  a (array/nth positions (array/nth topo.vertex_points vertex))
-                  b (array/nth positions (array/nth topo.vertex_points
-                      (if (int/lt (int/add vertex 1) last) (int/add vertex 1) first)))]
-             [(* (- a.y b.y) (+ a.z b.z)) (* (- a.z b.z) (+ a.x b.x)) (* (- a.x b.x) (+ a.y b.y))]))
-           indices adjacency.primitive_of_vertex)
-         sums (array/segment_sum newell topo.primitive_offsets)
-         dominant (exact (map (fn [(s : vec3)]
-           (let* [ax (abs s.x) ay (abs s.y) az (abs s.z)]
-             (if (and (>= ax ay) (>= ax az)) 0 (if (>= ay az) 1 2)))) sums))
-         area (array/segment_sum
-           (map (fn [(vertex : int) (prim : int)]
-             (let* [first (array/nth starts prim)
-                    last (array/nth ends prim)
-                    d (array/nth dominant prim)
-                    a (ms_project (array/nth positions (array/nth topo.vertex_points vertex)) d)
-                    b (ms_project (array/nth positions (array/nth topo.vertex_points
-                        (if (int/lt (int/add vertex 1) last) (int/add vertex 1) first))) d)]
-               (- (* a.x b.y) (* b.x a.y))))
-             indices adjacency.primitive_of_vertex)
-           topo.primitive_offsets)
-         sizes (exact (map (fn [(first : int) (last : int)] (int/sub last first)) starts ends))
-         degenerate (exact (map (fn [(size : int) (a : float)]
-           (if (or (int/lt size 3) (and (int/gt size 3) (<= (abs a) 1e-14))) 1 0)) sizes area))
-         bad (exact (map (fn [(d : int) (s : int) (k : int)] (if (and (int/eq s 1) (int/eq k 0)) d 0))
-           degenerate selected topo.kinds))]
-    (array/sum bad)))
 ; Total perimeter / area / signed volume of the selected primitives, as {:ok :reason :value}.
 (defn ms_metric :context sop [(geo : geometry) (fit : text) (owner : text) (name : text)]
   (let* [kind (case fit "Match perimeter" "Perimeter" "Match area" "Area" :else "Signed volume")
@@ -130,11 +88,13 @@
         {:ok false :reason "bounds selection must be primitive-owned for metric fitting" :value 0.0}
       (int/gt curves 0)
         {:ok false :reason "a selected primitive is a curve, not a polygon" :value 0.0}
-      (if (equal? kind "Perimeter") false (int/gt (ms_degenerate geo selected) 0))
-        {:ok false :reason "a selected polygon is degenerate" :value 0.0}
       :else
-        (let* [measured (sop/measure geo :kind kind :group name :accumulation "Throughout"
-                          :attribute "__match_size_measure" :total_attribute "__match_size_total")
+        ; sop/measure refuses degenerate or non-simple polygons with its own code; native match_size
+        ; reports every metric failure as invalid_geometry.
+        (let* [measured (with_error
+                          (sop/measure geo :kind kind :group name :accumulation "Throughout"
+                            :attribute "__match_size_measure" :total_attribute "__match_size_total")
+                          (fn [failure] (assoc failure :code "invalid_geometry")))
                value (abs (array/nth (sop/attr measured "__match_size_total" :owner "detail" :type float) 0))]
           (cond (not (ms_finite value)) {:ok false :reason "metric measurement is not finite" :value 0.0}
                 (<= value 1e-20) {:ok false :reason "metric fitting requires a positive measurement" :value 0.0}

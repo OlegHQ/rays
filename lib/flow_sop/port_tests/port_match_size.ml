@@ -34,9 +34,7 @@ let mixed () = empty_groups (with_normals (fixture_attributes (fixture_groups (p
 (* A small quad grid keeps --full short (the standard 64 x 64 one makes every case slow). *)
 let small_grid () = Plane_generators.grid ~connectivity:Grid_quads ~columns:6 ~rows:5 ~size:8. () |> get_ok
 let big_grid () = empty_groups (with_normals (fixture_groups (small_grid ())))
-(* A planar affine image of the grid: its quads stay simple, so area and volume fits can measure it.
-   A bowtie quad would make native's triangulation fail with code invalid_geometry, where the Lisp body
-   (which measures through sop/measure) reports invalid_measure; that case is not in this gate. *)
+(* A planar affine image of the grid: its quads stay simple, so area and volume fits can measure it. *)
 let moved_grid () =
   let g = fixture_groups (small_grid ()) in
   let n = Geometry.point_count g in
@@ -51,7 +49,9 @@ let inputs = [
   "mixed", [mixed ()];
   "grid", [big_grid ()];
   "mixed -> grid", [mixed (); moved_grid ()];
-  "grid -> mixed", [moved_grid (); mixed ()] ]
+  "grid -> mixed", [moved_grid (); mixed ()];
+  (* Scattered points make bowtie quads: native's ear clipper refuses them in metric fits. *)
+  "scattered -> grid", [empty_groups (with_normals (spread (fixture_groups (small_grid ())))); moved_grid ()] ]
 
 let cases =
   let owners = ["Point"; "Vertex"; "Primitive"; "Edge"] in
