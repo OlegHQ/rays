@@ -1,0 +1,217 @@
+; Whole PolyPath draft. Selected non-self source edges (after the optional endpoint clustering) form a
+; unique graph; graph/chains walks it like Poly_path.trace_paths, and the output polylines are rebuilt with
+; sop/mesh and carried by sop/remap (points identity, vertices by corner ancestry, primitives by lowest
+; source primitive, edge groups through an OR ancestry CSR). Primitive groups need an any-edge-touches rule
+; that a plain remap cannot express, so they are rewritten after the remap.
+
+; Binary search over sorted xs for each key: first index with xs >= key (upper 0) or xs > key (upper 1).
+(defn poly_path_bound :context value [(xs : (array float)) (keys : (array float)) (upper : int)]
+  (let* [count (array/count keys)
+         last (int/sub (array/count xs) 1)
+         final (iterate 40 {:lo (array/int count 0) :hi (array/int count (array/count xs))}
+           (fn [(c : {:lo (array int) :hi (array int)})]
+             (let* [mids (exact (map (fn [(l : int) (h : int)]
+                           (let* [m (int/div (int/add l h) 2)] (if (int/lt m last) m last))) c.lo c.hi))
+                    probes (exact (map (fn [(m : int)] (array/nth xs m)) mids))
+                    less (exact (map (fn [(a : float) (v : float)]
+                           (if (or (< a v) (and (int/eq upper 1) (= a v))) 1 0)) probes keys))
+                    code (exact (map (fn [(l : int) (h : int) (f : int)]
+                           (if (int/lt l h) (int/sub 2 f) 0)) c.lo c.hi less))]
+               {:lo (exact (map (fn [(l : int) (m : int) (k : int)] (if (int/eq k 1) (int/add m 1) l)) c.lo mids code))
+                :hi (exact (map (fn [(h : int) (m : int) (k : int)] (if (int/eq k 2) m h)) c.hi mids code))})))]
+    final.lo))
+
+; Point_clusters.create (Euclidean, inclusive) position test.
+(defn poly_path_near :context value [(dx : float) (dy : float) (dz : float) (tol : float)]
+  (if (= tol 0.0) (and (= dx 0.0) (and (= dy 0.0) (= dz 0.0)))
+    (let* [scale (max (abs dx) (max (abs dy) (abs dz)))]
+      (if (= scale 0.0) true
+        (if (> scale tol) false
+          (let* [x (/ dx scale) y (/ dy scale) z (/ dz scale) ratio (/ scale tol)]
+            (<= (* (* ratio ratio) (+ (+ (* x x) (* y y)) (* z z))) 1.0)))))))
+
+; Cluster representative (lowest point) of every point: endpoints join every point within the tolerance
+; (only other endpoints when asked), transitively. Candidates come from an x-sorted slab.
+(defn poly_path_clusters :context sop
+  [(geo : geometry) (degree : (array int)) (tol : float) (only : bool)]
+  (let* [n (array/count degree)
+         positions (sop/attr geo "P")
+         px (exact (map (fn [(q : vec3)] q.x) positions)) py (exact (map (fn [(q : vec3)] q.y) positions))
+         pz (exact (map (fn [(q : vec3)] q.z) positions))
+         by_x (array/grade px)
+         xs (exact (map (fn [(i : int)] (array/nth px i)) by_x))
+         ends (array/compact (exact (map (fn [(d : int)] (if (int/eq d 1) 1 0)) degree)))
+         lows (exact (map (fn [(e : int)] (let* [x (array/nth px e)] (- (- x tol) (* (+ (abs x) tol) 1e-9)))) ends))
+         highs (exact (map (fn [(e : int)] (let* [x (array/nth px e)] (+ (+ x tol) (* (+ (abs x) tol) 1e-9)))) ends))
+         lo (poly_path_bound xs lows 0)
+         hi (poly_path_bound xs highs 1)
+         counts (exact (map (fn [(l : int) (h : int)] (if (int/gt h l) (int/sub h l) 0)) lo hi))
+         offsets (array/scan_sum counts)
+         ecount (array/count ends)
+         total (array/nth offsets ecount)
+         cumulative (array/scan_sum (array/scatter_add (array/slice offsets 0 ecount)
+                      (array/int ecount 1) (int/add total 1)))
+         rows (array/range total :type int)
+         owners (exact (map (fn [(r : int)] (int/sub (array/nth cumulative (int/add r 1)) 1)) rows))
+         left (exact (map (fn [(r : int) (o : int)] (array/nth ends o)) rows owners))
+         right (exact (map (fn [(r : int) (o : int)]
+                 (array/nth by_x (int/add (array/nth lo o) (int/sub r (array/nth offsets o))))) rows owners))
+         dx (exact (map (fn [(a : int) (b : int)] (- (array/nth px a) (array/nth px b))) left right))
+         dy (exact (map (fn [(a : int) (b : int)] (- (array/nth py a) (array/nth py b))) left right))
+         dz (exact (map (fn [(a : int) (b : int)] (- (array/nth pz a) (array/nth pz b))) left right))
+         close (exact (map (fn [(x : float) (y : float) (z : float)] (if (poly_path_near x y z tol) 1 0)) dx dy dz))
+         keep (exact (map (fn [(a : int) (b : int) (c : int)]
+                 (if (and (not (int/eq a b)) (and (int/eq c 1) (or (not only) (int/eq (array/nth degree b) 1)))) 1 0))
+                 left right close))
+         kept (array/compact keep)
+         pa (int_gather left kept) pb (int_gather right kept)
+         pairs (array/count kept)
+         mesh (sop/mesh :points (array/vec3 n)
+                :vertex_points (exact (map (fn [(i : int)]
+                  (if (int/eq (int/mod i 2) 0) (array/nth pa (int/div i 2)) (array/nth pb (int/div i 2))))
+                  (array/range (int/mul 2 pairs) :type int)))
+                :primitive_offsets (exact (map (fn [(i : int)] (int/mul i 2)) (array/range (int/add pairs 1) :type int)))
+                :kinds (array/int pairs 1))
+         ids (sop/components mesh :over "edges")
+         labels ids.id]
+    (array/index_of labels labels)))
+
+; Primitive group of the output paths: a path is a member when any merged source edge touches a member
+; primitive; ordered groups follow Group.remap_order over the lowest-primitive ancestry.
+(defn poly_path_group :context sop
+  [(acc : geometry) (source : geometry) (name : text) (touch_edge : (array int)) (path_of : (array int))
+   (path_prim : (array int))]
+  (let* [mask (sop/group source :name name :owner "primitive")
+         adj (sop/adjacency source)
+         aea adj.edge_a aev adj.edge_of_vertex apv adj.primitive_of_vertex
+         edge_total (array/count aea)
+         vertex_flag (exact (map (fn [(v : int)] (array/nth mask (array/nth apv v)))
+                       (array/range (array/count aev) :type int)))
+         touched (array/scatter_add (exact (map (fn [(e : int)] (if (int/lt e 0) edge_total e)) aev))
+                   vertex_flag (int/add edge_total 1))
+         paths (array/count path_prim)
+         hits (exact (map (fn [(s : int)] (if (int/gt (array/nth touched s) 0) 1 0)) touch_edge))
+         per_path (array/scatter_add path_of hits paths)
+         selected (exact (map (fn [(h : int)] (if (int/gt h 0) 1 0)) per_path))
+         order (sop/group_order source :name name :owner "primitive")]
+    (if order.ordered
+      (let* [total (array/count mask)
+             ranks (array/scatter_add order.indices
+                     (exact (map (fn [(j : int)] (int/add j 1)) (array/range (array/count order.indices) :type int)))
+                     total)
+             members (array/compact selected)
+             keys (exact (map (fn [(p : int)]
+                    (let* [rank (array/nth ranks (array/nth path_prim p))]
+                      (if (int/gt rank 0) (int/sub rank 1) total))) members))
+             sorted (int_gather members (array/grade keys))]
+        (sop/with_group acc selected :name name :owner "primitive" :order {:ordered true :indices sorted}))
+      (sop/with_group acc selected :name name :owner "primitive"))))
+
+(defnode sop/poly_path :label "PolyPath" :category ["Topology" "Curve"]
+  [(in0 : geometry)
+   (connect_end_points : bool false :label "Connect endpoints")
+   (maximum_distance : float 0.001 :label "Maximum distance" :min 0 :max 10 :hard_min 0)
+   (connect_only_to_other_end_points : bool false :label "Only other endpoints")
+   (make_isolated_loops_closed : bool false :label "Close isolated loops")]
+  (let* [n (sop/count in0 :points)
+         adj (sop/adjacency in0)
+         topology (sop/topology in0)
+         aea adj.edge_a aeb adj.edge_b aev adj.edge_of_vertex anv adj.next_vertex apv adj.primitive_of_vertex
+         tvp topology.vertex_points
+         edge_total (array/count aea)
+         flags (exact (map (fn [(a : int) (b : int)] (if (int/eq a b) 0 1)) aea aeb))
+         degree (exact (map (fn [(x : int) (y : int)] (int/add x y))
+                  (array/scatter_add aea flags n) (array/scatter_add aeb flags n)))
+         map_point (if connect_end_points
+                     (poly_path_clusters in0 degree maximum_distance connect_only_to_other_end_points)
+                     (array/range n :type int))
+         mapped_a (int_gather map_point aea) mapped_b (int_gather map_point aeb)
+         valid (exact (map (fn [(a : int) (b : int)] (if (int/eq a b) 0 1)) mapped_a mapped_b))
+         chosen (array/compact valid)
+         m (array/count chosen)
+         va (exact (map (fn [(s : int)] (min (array/nth mapped_a s) (array/nth mapped_b s))) chosen))
+         vb (exact (map (fn [(s : int)] (max (array/nth mapped_a s) (array/nth mapped_b s))) chosen))
+         ; Unique graph edges in order of first appearance, with the source edge that created each.
+         keys (exact (map (fn [(a : int) (b : int)] (int/add (int/mul a n) b)) va vb))
+         ord (array/grade keys)
+         sorted_keys (int_gather keys ord)
+         starts (exact (map (fn [(i : int)]
+                  (if (int/eq i 0) 1
+                    (if (int/eq (array/nth sorted_keys i) (array/nth sorted_keys (int/sub i 1))) 0 1)))
+                  (array/range m :type int)))
+         run_scan (array/scan_sum starts)
+         first_of_run (int_gather ord (array/compact starts))
+         is_first (array/scatter_add first_of_run (array/int (array/count first_of_run) 1) m)
+         gid_scan (array/scan_sum is_first)
+         graph_total (array/nth gid_scan m)
+         inverse (array/grade ord)
+         graph_of (exact (map (fn [(j : int)]
+                    (array/nth gid_scan (array/nth first_of_run
+                      (int/sub (array/nth run_scan (int/add (array/nth inverse j) 1)) 1))))
+                  (array/range m :type int)))
+         graph_first (array/compact is_first)
+         graph_a (int_gather va graph_first) graph_b (int_gather vb graph_first)
+         graph_source (int_gather chosen graph_first)
+         graph_keys (exact (map (fn [(a : int) (b : int)] (int/add (int/mul a n) b)) graph_a graph_b))
+         graph_mesh (sop/mesh :points (array/vec3 n)
+                      :vertex_points (exact (map (fn [(i : int)]
+                        (if (int/eq (int/mod i 2) 0) (array/nth graph_a (int/div i 2)) (array/nth graph_b (int/div i 2))))
+                        (array/range (int/mul 2 graph_total) :type int)))
+                      :primitive_offsets (exact (map (fn [(i : int)] (int/mul i 2)) (array/range (int/add graph_total 1) :type int)))
+                      :kinds (array/int graph_total 1))
+         graph_adjacency (sop/adjacency graph_mesh)
+         chains (graph/chains graph_adjacency)
+         cv chains.values co chains.offsets cc chains.closed
+         paths (array/count cc)
+         rows (array/count cv)
+         row_ids (array/range rows :type int)
+         cumulative (array/scan_sum (array/scatter_add (array/slice co 0 paths)
+                      (array/int paths 1) (int/add rows 1)))
+         owner (exact (map (fn [(r : int)] (int/sub (array/nth cumulative (int/add r 1)) 1)) row_ids))
+         is_last (exact (map (fn [(r : int) (p : int)]
+                   (if (int/eq r (int/sub (array/nth co (int/add p 1)) 1)) 1 0)) row_ids owner))
+         step_edge (array/index_of graph_keys
+                     (exact (map (fn [(r : int) (l : int)]
+                       (if (int/eq l 1) -1
+                         (let* [v (array/nth cv r) w (array/nth cv (int/add r 1))]
+                           (int/add (int/mul (min v w) n) (max v w))))) row_ids is_last)))
+         row_edge (exact (map (fn [(r : int) (l : int)]
+                    (array/nth step_edge (if (int/eq l 1) (int/sub r 1) r))) row_ids is_last))
+         first_corner (array/index_of aev (array/range edge_total :type int))
+         close_path (exact (map (fn [(c : int)] (if (and make_isolated_loops_closed (int/eq c 1)) 1 0)) cc))
+         keep (exact (map (fn [(l : int) (p : int)]
+                (if (and (int/eq l 1) (int/eq (array/nth close_path p) 1)) 0 1)) is_last owner))
+         kept_rows (array/compact keep)
+         out_points (exact (map (fn [(r : int)] (array/nth cv r)) kept_rows))
+         vertex_map (exact (map (fn [(r : int)]
+                      (let* [corner (array/nth first_corner (array/nth graph_source (array/nth row_edge r)))]
+                        (if (int/eq (array/nth map_point (array/nth tvp corner))
+                                    (array/nth cv r))
+                          corner (array/nth anv corner)))) kept_rows))
+         sizes (exact (map (fn [(p : int) (c : int)]
+                 (int/sub (int/sub (array/nth co (int/add p 1)) (array/nth co p)) c))
+                 (array/range paths :type int) close_path))
+         out_offsets (array/scan_sum sizes)
+         target (sop/mesh :points (array/vec3 n) :vertex_points out_points :primitive_offsets out_offsets
+                  :kinds (exact (map (fn [(c : int)] (if (int/eq c 1) 0 1)) close_path)))
+         ; Path of every graph edge, lowest source primitive per path, and the target-edge ancestry.
+         step_of_graph (array/index_of step_edge (array/range graph_total :type int))
+         path_of_graph (exact (map (fn [(s : int)] (array/nth owner s)) step_of_graph))
+         path_of (int_gather path_of_graph graph_of)
+         edge_prim (exact (map (fn [(s : int)] (array/nth apv (array/nth first_corner s)))
+                     (array/range edge_total :type int)))
+         by_path (array/grade path_of)
+         path_prim (array/segment_min (int_gather (int_gather edge_prim chosen) by_path)
+                     (array/scan_sum (array/scatter_add path_of (array/int m 1) paths)))
+         steps (array/compact (exact (map (fn [(l : int)] (int/sub 1 l)) is_last)))
+         target_graph (int_gather step_edge steps)
+         at_of_graph (array/index_of target_graph (array/range graph_total :type int))
+         target_of (int_gather at_of_graph graph_of)
+         step_total (array/count steps)
+         carried (sop/remap in0 target :points (array/range n :type int) :vertices vertex_map :primitives path_prim
+                   :positions "mapped"
+                   :edges {:offsets (array/scan_sum (array/scatter_add target_of (array/int m 1) step_total))
+                           :values (int_gather chosen (array/grade target_of))})
+         entries (sop/group_names in0 "*" :owner "primitive")]
+    (fold [acc carried] [i (array/range (array/count entries) :type int)]
+      (poly_path_group acc in0 (array/nth entries i) chosen path_of path_prim))))
