@@ -7,16 +7,23 @@ let flow = function Ok x->x|Error d->failwith(Flow.Diagnostic.to_string d)
 let parse s=Flow.Syntax.parse s |>flow
 let words=[|0L;Int64.min_int;1L;0x7ff0000000000000L;0xfff0000000000000L;
   0x7ff8000000000011L;0x7ff8000000000022L|]
-let raw i=Int64.float_of_bits words.(i mod Array.length words)
+(* Weighted arithmetic does not define which NaN payload survives, so its test canonicalises them. *)
+let canonical_nan=ref false
+let raw i=let v=Int64.float_of_bits words.(i mod Array.length words) in
+  if !canonical_nan && Float.is_nan v then Int64.float_of_bits 0x7ff8000000000000L else v
 let source count =
-  let topology=if count<3 then Topology.empty ~point_count:count else
+  let topology=if count<3 then Topology.empty ~point_count:count else if count=4 then
+    Topology.create_owned ~point_count:count ~vertex_points:[|0;1;2;1;2;3|]
+      ~primitive_offsets:[|0;3;6|] ~primitive_kinds:[|Topology.Polygon;Topology.Polygon|] |>get_string_ok else
     Topology.create_owned ~point_count:count ~vertex_points:[|0;1;2|]
       ~primitive_offsets:[|0;3|] ~primitive_kinds:[|Topology.Polygon|] |>get_string_ok in
   let attrs=List.concat_map(fun owner->let n=match owner with Attribute.Point->count
       |Vertex->Topology.vertex_count topology|Primitive->Topology.primitive_count topology|Detail->1 in
     let floats k=Array.init n(fun i->raw(i+k)) in
     let offsets=Array.init(n+1)(fun i->i*16) in
-    let kinds=["float",Attribute.Float(floats 0);"int",Int(Array.init n(fun i->(1 lsl 55)+i));
+    let kinds=["N",Attribute.Float3(Packed.Float3.Private.of_owned_exn ~x:(Array.init n(fun i->float i-.1.))
+        ~y:(Array.init n(fun i->0.25*.float(i mod 3))) ~z:(Array.init n(fun i->if i mod 4=0 then 0. else 2.)));
+      "float",Attribute.Float(floats 0);"int",Int(Array.init n(fun i->(1 lsl 55)+i));
       "text",Text(Array.init n(fun i->if i mod 2=0 then "猫\255" else "😀\000"));
       "vec2",Float2(Packed.Float2.of_owned ~x:(floats 1) ~y:(floats 2)|>get_string_ok);
       "vec3",Float3(Packed.Float3.Private.of_owned_exn ~x:(floats 3) ~y:(floats 4) ~z:(floats 5));
@@ -57,6 +64,9 @@ let source_text ?(edge=true) body=Printf.sprintf {|(workspace remap_test
   (graph g :context sop [(points : (array int) (array/int 0))
     (vertices : (array int) (array/int 0)) (primitives : (array int) (array/int 0))
     (positions : text "target")
+    (pa : (array int) (array/int 0)) (pb : (array int) (array/int 0)) (pt : (array float) (array/float 0 0.0))
+    (va : (array int) (array/int 0)) (vb : (array int) (array/int 0)) (vt : (array float) (array/float 0 0.0))
+    (ra : (array int) (array/int 0)) (rb : (array int) (array/int 0)) (rt : (array float) (array/float 0 0.0))
     (edge_map : {:offsets (array int) :values (array int)} {:offsets (array/int 1) :values (array/int 0)})]
     (let* [source (sop/src) target (sop/dst) tested %s] tested)))|}
     (if body="" then "(sop/remap source target :points points :vertices vertices :primitives primitives :positions positions"^
@@ -438,3 +448,136 @@ let ()=
      invoke ~grain:(-1) ~topology:(Geometry.topology dst)(Geometry.edge_groups src),"grain must be positive";
      invoke ~grain:97 ~topology:(Geometry.topology src)(Geometry.edge_groups src),"target index affinity mismatch";
      invoke ~grain:97 ~topology:(Geometry.topology dst)(Geometry.edge_groups unrelated),"source group affinity mismatch"]
+
+(* Weighted carry: every owner and storage against an independent reference, the shared helper's
+   bytes against Curve_ops.interpolate_attribute on point and vertex attributes, mixed plain and
+   weighted owners, reference/CPU, 1 and 8 domains, and the refusals. *)
+let () =
+  let mix_of ~count ~shift n =
+    let weights=[|0.;0.25;0.5;0.75;1.;0.4999999999;1.5;-0.5;0.5000000001|] in
+    Array.init n (fun i -> (i*shift+shift) mod count), Array.init n (fun i -> (i*2+1+shift) mod count),
+    Array.init n (fun i -> weights.((i+shift) mod Array.length weights)) in
+  let mix_args (pa,pb,pt) (va,vb,vt) (ra,rb,rt) policy offsets ancestors=
+    ["pa",E.Int_array pa;"pb",E.Int_array pb;"pt",E.Float_array pt;
+     "va",E.Int_array va;"vb",E.Int_array vb;"vt",E.Float_array vt;
+     "ra",E.Int_array ra;"rb",E.Int_array rb;"rt",E.Float_array rt;
+     "positions",E.Text policy;
+     "edge_map",E.Record["offsets",E.Int_array offsets;"values",E.Int_array ancestors]] in
+  let body ~points ~vertices ~primitives=Printf.sprintf
+    "(sop/remap source target %s %s %s :positions positions :edges edge_map)"
+    (if points then ":point_mix {:a pa :b pb :t pt}" else ":points pa")
+    (if vertices then ":vertex_mix {:a va :b vb :t vt}" else ":vertices va")
+    (if primitives then ":primitive_mix {:a ra :b rb :t rt}" else ":primitives ra") in
+  let nearest (l,r,t)=Array.mapi(fun i w->if w<0.5 then l.(i) else r.(i))t in
+  let mix a b t=let d=b-.a in if Float.is_finite d then a+.d*.t else a*.(1.-.t)+.b*.t in
+  let blend_plane (l,r,t) plane=Array.mapi(fun i w->mix plane.(l.(i)) plane.(r.(i)) w)t in
+  let reference_attribute carry attribute=
+    let (l,r,t)=carry in
+    let plane=blend_plane carry in
+    let storage=match Attribute.Private.storage attribute with
+      |Attribute.Float v->Attribute.Float(plane v)
+      |Float2 v->let v=Packed.Float2.Private.view v in
+        Float2(Packed.Float2.of_owned ~x:(plane v.x) ~y:(plane v.y)|>get_string_ok)
+      |Float3 v->let v=Packed.Float3.Private.view v in
+        let x=plane v.x and y=plane v.y and z=plane v.z in
+        if Attribute.name attribute="N" then
+          Array.iteri(fun i _->let length=sqrt(x.(i)*.x.(i)+.y.(i)*.y.(i)+.z.(i)*.z.(i)) in
+            if length>1e-20 then (x.(i)<-x.(i)/.length;y.(i)<-y.(i)/.length;z.(i)<-z.(i)/.length))x;
+        Float3(Packed.Float3.Private.of_owned_exn ~x ~y ~z)
+      |Float4 v->let v=Packed.Float4.Private.view v in
+        Float4(Packed.Float4.of_owned ~x:(plane v.x) ~y:(plane v.y) ~z:(plane v.z) ~w:(plane v.w)|>get_string_ok)
+      |_->Attribute.Private.storage(Rdk_core.Topology_remap.attribute ~grain:97 (nearest(l,r,t)) attribute) in
+    ignore (l,r);
+    Attribute.create_owned ~name:(Attribute.name attribute) ~owner:(Attribute.owner attribute) storage|>get_string_ok in
+  canonical_nan:=true;
+  let src=source 4 in
+  List.iter(fun copies->
+    let dst=target copies src in
+    let np=Geometry.point_count dst and nv=Geometry.vertex_count dst and nr=Geometry.primitive_count dst in
+    let pc=mix_of ~count:(Geometry.point_count src) ~shift:1 np
+    and vc=mix_of ~count:(Geometry.vertex_count src) ~shift:2 nv
+    and rc=mix_of ~count:(Geometry.primitive_count src) ~shift:3 nr in
+    let edges=Topology_index.edge_count(Topology_index.create(Geometry.topology dst))
+    and se=Topology_index.edge_count(Topology_index.create(Geometry.topology src)) in
+    let offsets=Array.init(edges+1)Fun.id and ancestors=Array.init edges(fun i->i mod se) in
+    let plain (l,_,_)=l in
+    List.iter(fun (points,vertices,primitives)->
+      let carry owner flag=match owner,flag with
+        |Attribute.Point,true->pc|Vertex,true->vc|Primitive,true->rc
+        |Point,false->(plain pc,plain pc,Array.make np 0.)|Vertex,false->(plain vc,plain vc,Array.make nv 0.)
+        |_,_->(plain rc,plain rc,Array.make nr 0.) in
+      let flag=function Attribute.Point->points|Vertex->vertices|Primitive->primitives|Detail->false in
+      let group_flag=function Group.Point->points|Vertex->vertices|Primitive->primitives in
+      let base=oracle src dst(plain pc)(plain vc)(plain rc)offsets ancestors true in
+      let attributes=List.map(fun a->match Attribute.owner a with
+        |Detail->a
+        |owner->if flag owner then reference_attribute(carry owner true)a
+          else Attribute.create_owned ~name:(Attribute.name a) ~owner(Attribute.Private.storage
+            (Rdk_core.Topology_remap.attribute ~grain:97 (match owner with Point->plain pc|Vertex->plain vc|_->plain rc) a))
+            |>get_string_ok)(Geometry.attributes src) in
+      let groups=List.map(fun g->let owner=Group.owner g in
+        let (l,r,t)=match owner with Group.Point->pc|Vertex->vc|Primitive->rc in
+        Rdk_core.Topology_remap.group ~grain:97 (if group_flag owner then nearest(l,r,t) else l) g)(Geometry.groups src) in
+      let positions=
+        let v=Packed.Float3.Private.view(Geometry.positions src) in
+        if points then Packed.Float3.Private.of_owned_exn ~x:(blend_plane pc v.x) ~y:(blend_plane pc v.y) ~z:(blend_plane pc v.z)
+        else Geometry.positions base in
+      let positions=if points then positions else
+        let v=Packed.Float3.Private.view(Geometry.positions src) in
+        let l=plain pc in
+        Packed.Float3.Private.of_owned_exn ~x:(Array.map(fun i->v.x.(i))l) ~y:(Array.map(fun i->v.y.(i))l)
+          ~z:(Array.map(fun i->v.z.(i))l) in
+      let expected=Geometry.create ~positions ~topology:(Geometry.topology dst) ~attributes ~groups
+        ~edge_groups:(Geometry.edge_groups base) ()|>get_string_ok in
+      (* the shared helper is Curve_ops' rule, byte for byte *)
+      if points && vertices then
+        List.iter(fun a->match Attribute.owner a with
+          |Attribute.Point|Vertex->
+              let (pl,pr,pw)=pc and (vl,vr,vw)=vc in
+              let curve=Curve_ops.interpolate_attribute pl pr pw vl vr vw a in
+              let got=Option.get(Geometry.find_attribute ~owner:(Attribute.owner a)(Attribute.name a)expected) in
+              let attach attribute=geometry_bytes(Geometry.create ~positions:(Geometry.positions base)
+                ~topology:(Geometry.topology base) ~attributes:[attribute] ()|>get_string_ok) in
+              check(attach curve=attach got)
+                (Printf.sprintf "weighted remap differs from Curve_ops.interpolate_attribute (%s copies %d)" (Attribute.name a) copies)
+          |_->())(Geometry.attributes src);
+      List.iter(fun reference->
+        let node=compile ~reference ~body:(Printf.sprintf "(let* [out %s] out)" (body ~points ~vertices ~primitives))
+            src dst(mix_args pc vc rc "mapped" offsets ancestors) in
+        List.iter(fun domains->List.iter(fun grain->
+          let before=geometry_bytes src in
+          check(geometry_bytes(geometry(run ~domains ~grain node))=geometry_bytes expected)
+            "weighted remap bytes differ from the reference";
+          check(geometry_bytes src=before)"weighted remap mutated its source") [1;97]) [1;8]) [false;true])
+      [true,true,true; true,false,false; false,true,false; false,false,true; true,true,false])
+    [0;1;2];
+  (* refusals *)
+  let dst=target 1 src in
+  let np=Geometry.point_count dst and nv=Geometry.vertex_count dst and nr=Geometry.primitive_count dst in
+  let ok_args=mix_args (mix_of ~count:4 ~shift:1 np)(mix_of ~count:6 ~shift:2 nv)(mix_of ~count:2 ~shift:3 nr)"target"
+    (Array.init(Topology_index.edge_count(Topology_index.create(Geometry.topology dst))+1)Fun.id)
+    (Array.init(Topology_index.edge_count(Topology_index.create(Geometry.topology dst)))(fun i->i mod 3)) in
+  let with_ key value=List.map(fun(k,old)->k,if k=key then value else old)ok_args in
+  let all=body ~points:true ~vertices:true ~primitives:true in
+  List.iter(fun(key,value,code)->match run(compile ~body:all src dst(with_ key value)) with
+    |Error d->check(d.code=code)("weighted remap " ^ key ^ " code " ^ d.code ^ " is not " ^ code)
+    |Ok _->fail ("weighted remap accepted a bad " ^ key))
+    ["pt",E.Float_array(Array.make(np-1)0.5),"E_REMAP_COUNT";
+     "pa",E.Int_array(Array.make np 4),"E_REMAP_INDEX";
+     "pb",E.Int_array(Array.make np (-1)),"E_REMAP_INDEX";
+     "va",E.Int_array(Array.make nv 6),"E_REMAP_INDEX";
+     "rb",E.Int_array(Array.make nr (-1)),"E_REMAP_INDEX"];
+  (* a non-finite weight never reaches the kernel: the array input is refused first *)
+  List.iter(fun weight->match (try Ok(compile ~body:all src dst(with_ "pt" (E.Float_array(Array.make np weight)))) with Failure m->Error m) with
+    |Error m->check(String.starts_with ~prefix:"E_NONFINITE" m)"non-finite weight refused with another code"
+    |Ok node->(match run node with Error _->() |Ok _->fail "non-finite weight accepted"))
+    [Float.nan;Float.infinity];
+  List.iter(fun text->match Flow.Syntax.parse text with
+    |Error d->failwith(Flow.Diagnostic.to_string d)
+    |Ok forms->
+      let factories=factory "src" src::factory "dst" dst::Sop_catalog.Editor.factories in
+      check(Result.is_error(L.workspace ~factories forms)) "malformed weighted remap lowered")
+    ["(workspace w (graph g :context sop (sop/remap (sop/src) (sop/dst) :points (array/int 0) :point_mix {:a (array/int 0) :b (array/int 0) :t (array/float 0 0.0)} :vertices (array/int 0) :primitives (array/int 0))))";
+     "(workspace w (graph g :context sop (sop/remap (sop/src) (sop/dst) :vertices (array/int 0) :primitives (array/int 0))))";
+     "(workspace w (graph g :context sop (sop/remap (sop/src) (sop/dst) :point_mix {:a (array/int 0) :b (array/int 0)} :vertices (array/int 0) :primitives (array/int 0))))"];
+  print_endline "Weighted remap: every owner and storage, N renormalisation, Curve_ops bytes, mixed owners, reference/CPU, 1 and 8 domains, refusals"

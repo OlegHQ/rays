@@ -154,35 +154,6 @@ let with_length_attribute ?cancel ?grain ~name geometry =
       ()
   with Curve_error message -> Error message
 
-let interpolate_array ?cancel ?grain left right weight source =
-  let output = Array.make (Array.length weight) 0. in
-  run_ranges ?grain (Array.length output) (fun first last ->
-    Cancel.check_opt cancel;
-    for index = first to last - 1 do
-      let left_value = source.(left.(index))
-      and right_value = source.(right.(index)) in
-      let delta = right_value -. left_value in
-      output.(index) <- if Float.is_finite delta
-        then left_value +. (delta *. weight.(index))
-        else (left_value *. (1. -. weight.(index)))
-          +. (right_value *. weight.(index))
-    done);
-  output
-
-let nearest_array ?cancel ?grain left right weight source =
-  let count = Array.length weight in
-  if count = 0 then [||]
-  else begin
-    let output = Array.make count source.(left.(0)) in
-    run_ranges ?grain count (fun first last ->
-      Cancel.check_opt cancel;
-      for index = first to last - 1 do
-        output.(index) <- source.
-          ((if weight.(index) < 0.5 then left else right).(index))
-      done);
-    output
-  end
-
 let interpolate_attribute ?cancel ?grain point_left point_right point_weight
     vertex_left vertex_right vertex_weight attribute =
   let mapping = match Attribute.owner attribute with
@@ -192,56 +163,9 @@ let interpolate_attribute ?cancel ?grain point_left point_right point_weight
   match mapping with
   | None -> attribute
   | Some (left, right, weight) ->
-      let storage = match Attribute.Private.storage attribute with
-        | Attribute.Float values ->
-            Attribute.Float (interpolate_array ?cancel ?grain left right weight values)
-        | Attribute.Int values ->
-            Attribute.Int (nearest_array ?cancel ?grain left right weight values)
-        | Attribute.Int_array values ->
-            let mapping = Array.init (Array.length weight) (fun index ->
-              (if weight.(index) < 0.5 then left else right).(index)) in
-            Attribute.Int_array
-              (Ragged_ops.remap_int ?cancel ?grain mapping values)
-        | Attribute.Float_array values ->
-            let mapping = Array.init (Array.length weight) (fun index ->
-              (if weight.(index) < 0.5 then left else right).(index)) in
-            Attribute.Float_array
-              (Ragged_ops.remap_float ?cancel ?grain mapping values)
-        | Attribute.Text values ->
-            Attribute.Text (nearest_array ?cancel ?grain left right weight values)
-        | Attribute.Float2 values ->
-            let values = Packed.Float2.Private.view values in
-            Attribute.Float2 (Packed.Float2.of_owned
-              ~x:(interpolate_array ?cancel ?grain left right weight values.x)
-              ~y:(interpolate_array ?cancel ?grain left right weight values.y)
-              |> Result.get_ok)
-        | Attribute.Float3 values ->
-            let values = Packed.Float3.Private.view values in
-            let x = interpolate_array ?cancel ?grain left right weight values.x
-            and y = interpolate_array ?cancel ?grain left right weight values.y
-            and z = interpolate_array ?cancel ?grain left right weight values.z in
-            if String.equal (Attribute.name attribute) "N" then
-              run_ranges ?grain (Array.length x) (fun first last ->
-                for index = first to last - 1 do
-                  let length = sqrt (x.(index) *. x.(index)
-                      +. y.(index) *. y.(index) +. z.(index) *. z.(index)) in
-                  if length > 1e-20 then begin
-                    x.(index) <- x.(index) /. length;
-                    y.(index) <- y.(index) /. length;
-                    z.(index) <- z.(index) /. length
-                  end
-                done);
-            Attribute.Float3 (Packed.Float3.Private.of_owned_exn ~x ~y ~z)
-        | Attribute.Float4 values ->
-            let values = Packed.Float4.Private.view values in
-            Attribute.Float4 (Packed.Float4.of_owned
-              ~x:(interpolate_array ?cancel ?grain left right weight values.x)
-              ~y:(interpolate_array ?cancel ?grain left right weight values.y)
-              ~z:(interpolate_array ?cancel ?grain left right weight values.z)
-              ~w:(interpolate_array ?cancel ?grain left right weight values.w)
-              |> Result.get_ok) in
-      Attribute.create_owned ~name:(Attribute.name attribute)
-        ~owner:(Attribute.owner attribute) storage |> Result.get_ok
+      let grain = Option.value grain ~default:16_384 in
+      if grain <= 0 then fail "grain must be positive";
+      Topology_remap.blend_attribute ?cancel ~grain left right weight attribute
 
 type carve_parameters = Constant of float * float
   | Varying of {

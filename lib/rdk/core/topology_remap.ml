@@ -67,6 +67,70 @@ let attribute_result ?cancel ~grain ?(defaults = false) mapping attribute =
 let attribute ?cancel ~grain ?defaults mapping value =
   attribute_result ?cancel ~grain ?defaults mapping value |> Result.get_ok
 
+(* Weighted carry: row [i] of a new owner is the mix of source rows [left.(i)] and [right.(i)] at
+   [weight.(i)]. Floats and vectors use [a + (b - a) * t], or [a * (1 - t) + b * t] when the delta is
+   not finite; a vec3 named [N] is renormalised when its length exceeds 1e-20; everything else
+   (Int, Text, ragged rows, group membership) takes [left] when [t < 0.5] and [right] otherwise. *)
+let blend_ranges ?cancel ~grain count operation =
+  if grain <= 0 then invalid_arg "Topology_remap.blend: grain must be positive";
+  let ranges = (count + grain - 1) / grain in
+  if ranges > 0 then Parallel.for_ ~chunk_size:1 ~start:0 ~finish:(ranges - 1) (fun range ->
+    Cancel.check_opt cancel;
+    operation (range * grain) (min count ((range + 1) * grain)))
+
+let blend_float ?cancel ~grain left right weight source =
+  let output = Array.make (Array.length weight) 0. in
+  blend_ranges ?cancel ~grain (Array.length output) (fun first last ->
+    for index = first to last - 1 do
+      let left_value = source.(left.(index)) and right_value = source.(right.(index)) in
+      let delta = right_value -. left_value in
+      output.(index) <- if Float.is_finite delta
+        then left_value +. (delta *. weight.(index))
+        else (left_value *. (1. -. weight.(index))) +. (right_value *. weight.(index))
+    done);
+  output
+
+let nearest_rows left right weight =
+  Array.init (Array.length weight) (fun index ->
+    (if weight.(index) < 0.5 then left else right).(index))
+
+let blend_attribute ?cancel ~grain left right weight attribute =
+  let nearest () = nearest_rows left right weight in
+  let float = blend_float ?cancel ~grain left right weight in
+  let storage = match Attribute.Private.storage attribute with
+    | Attribute.Float values -> Attribute.Float (float values)
+    | Attribute.Int values ->
+        Attribute.Int (if Array.length weight = 0 then [||] else select ?cancel ~grain (nearest ()) values)
+    | Attribute.Text values ->
+        Attribute.Text (if Array.length weight = 0 then [||] else select ?cancel ~grain (nearest ()) values)
+    | Attribute.Int_array values ->
+        Attribute.Int_array (Ragged_ops.remap_int ?cancel ~grain (nearest ()) values)
+    | Attribute.Float_array values ->
+        Attribute.Float_array (Ragged_ops.remap_float ?cancel ~grain (nearest ()) values)
+    | Attribute.Float2 values ->
+        let values = Packed.Float2.Private.view values in
+        Attribute.Float2 (Packed.Float2.of_owned ~x:(float values.x) ~y:(float values.y) |> Result.get_ok)
+    | Attribute.Float3 values ->
+        let values = Packed.Float3.Private.view values in
+        let x = float values.x and y = float values.y and z = float values.z in
+        if String.equal (Attribute.name attribute) "N" then
+          blend_ranges ?cancel ~grain (Array.length x) (fun first last ->
+            for index = first to last - 1 do
+              let length = sqrt (x.(index) *. x.(index) +. y.(index) *. y.(index) +. z.(index) *. z.(index)) in
+              if length > 1e-20 then begin
+                x.(index) <- x.(index) /. length;
+                y.(index) <- y.(index) /. length;
+                z.(index) <- z.(index) /. length
+              end
+            done);
+        Attribute.Float3 (Packed.Float3.Private.of_owned_exn ~x ~y ~z)
+    | Attribute.Float4 values ->
+        let values = Packed.Float4.Private.view values in
+        Attribute.Float4 (Packed.Float4.of_owned ~x:(float values.x) ~y:(float values.y)
+          ~z:(float values.z) ~w:(float values.w) |> Result.get_ok) in
+  Attribute.create_owned ~name:(Attribute.name attribute)
+    ~owner:(Attribute.owner attribute) storage |> Result.get_ok
+
 let drop_point_vertex_normals =
   [Attribute.Point, "N"; Attribute.Vertex, "N"]
 
@@ -92,6 +156,14 @@ let group ?cancel ~grain mapping group =
         if output land 4095 = 0 then Cancel.check_opt cancel;
         Group.mem mapping.(output) group) in
   Group.Private.remap_order ~source:group ~source_of_target:mapping output
+
+let blend_group ?cancel ~grain left right weight value =
+  group ?cancel ~grain (nearest_rows left right weight) value
+
+let blend_positions ?cancel ~grain left right weight positions =
+  let p = Packed.Float3.Private.view positions in
+  let blend = blend_float ?cancel ~grain left right weight in
+  Packed.Float3.Private.of_owned_exn ~x:(blend p.x) ~y:(blend p.y) ~z:(blend p.z)
 
 let mapped_group ?cancel ~grain ~point_map ~vertex_map ~primitive_map value =
   let mapping = match Group.owner value with

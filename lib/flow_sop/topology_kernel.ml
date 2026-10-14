@@ -163,20 +163,37 @@ let remap ?cancel ~grain ~source ~target args =
       | None | Some (E.Text "target") -> false
       | Some (E.Text "mapped") -> true
       | _ -> refuse "E_REMAP_POLICY" "Remap positions is target or mapped." in
+    (* A plain map is one source row per new element (-1: a created default); a weighted map
+       {:a :b :t} mixes rows a and b at t (rules in R.blend_attribute). *)
     let mapping name source_count target_count =
-      match List.assoc_opt name args with
-      | Some (E.Int_array map) ->
-          if Array.length map <> target_count then
-            refuse "E_REMAP_COUNT" ("Remap " ^ name ^ " map must match target owner count.");
-          Array.iteri (fun row index ->
-            if row land 4095 = 0 then check ();
-            if index < -1 || index >= source_count then
-              refuse "E_REMAP_INDEX" ("Remap " ^ name ^ " source index is out of bounds.")) map;
-          map
+      let bounded label map =
+        if Array.length map <> target_count then
+          refuse "E_REMAP_COUNT" ("Remap " ^ name ^ " map must match target owner count.");
+        Array.iteri (fun row index ->
+          if row land 4095 = 0 then check ();
+          if index < (if label = "" then -1 else 0) || index >= source_count then
+            refuse "E_REMAP_INDEX" ("Remap " ^ name ^ " source index is out of bounds.")) map in
+      let mix=match name with "points"->"point_mix"|"vertices"->"vertex_mix"|_->"primitive_mix" in
+      match (match List.assoc_opt name args with Some _ as plain -> plain | None -> List.assoc_opt mix args) with
+      | Some (E.Int_array map) -> bounded "" map; `Plain map
+      | Some (E.Record fields) ->
+          (match List.sort compare (List.map fst fields), List.assoc_opt "a" fields,
+                 List.assoc_opt "b" fields, List.assoc_opt "t" fields with
+           | ["a"; "b"; "t"], Some (E.Int_array a), Some (E.Int_array b), Some (E.Float_array t) ->
+               if Array.length t <> target_count then
+                 refuse "E_REMAP_COUNT" ("Remap " ^ name ^ " map must match target owner count.");
+               bounded "a" a; bounded "b" b;
+               Array.iteri (fun row weight ->
+                 if row land 4095 = 0 then check ();
+                 if not (Float.is_finite weight) then
+                   refuse "E_REMAP_WEIGHT" ("Remap " ^ name ^ " weight must be finite.")) t;
+               `Weighted (a, b, t)
+           | _ -> refuse "E_REMAP_TYPE"
+                ("Remap " ^ mix ^ " is {:a :b :t} integer, integer and float arrays."))
       | _ -> refuse "E_REMAP_TYPE" ("Remap " ^ name ^ " requires an integer array.") in
-    let point_map = mapping "points" (G.point_count source) (G.point_count target) in
-    let vertex_map = mapping "vertices" (G.vertex_count source) (G.vertex_count target) in
-    let primitive_map = mapping "primitives" (G.primitive_count source) (G.primitive_count target) in
+    let point_carry = mapping "points" (G.point_count source) (G.point_count target) in
+    let vertex_carry = mapping "vertices" (G.vertex_count source) (G.vertex_count target) in
+    let primitive_carry = mapping "primitives" (G.primitive_count source) (G.primitive_count target) in
     let target_topology = G.topology target and source_topology = G.topology source in
     (* Explicit CSR is checked even if there are no source edge groups. *)
     let edge_groups = match List.assoc_opt "edges" args with
@@ -198,9 +215,11 @@ let remap ?cancel ~grain ~source ~target args =
       let same = ref true in
       Array.iteri (fun i value -> if i land 4095 = 0 then check (); if i <> value then same := false) map;
       !same in
-    let point_same = Array.length point_map = G.point_count source && identity point_map
-    and vertex_same = Array.length vertex_map = G.vertex_count source && identity vertex_map
-    and primitive_same = Array.length primitive_map = G.primitive_count source && identity primitive_map in
+    let same carry count = match carry with
+      | `Plain map -> Array.length map = count && identity map | `Weighted _ -> false in
+    let point_same = same point_carry (G.point_count source)
+    and vertex_same = same vertex_carry (G.vertex_count source)
+    and primitive_same = same primitive_carry (G.primitive_count source) in
     let attributes = List.map (fun attribute ->
       check ();
       match Rdk.Attribute.owner attribute with
@@ -208,21 +227,25 @@ let remap ?cancel ~grain ~source ~target args =
       | Point when point_same -> attribute
       | Vertex when vertex_same -> attribute
       | Primitive when primitive_same -> attribute
-      | Point -> R.attribute ?cancel ~grain ~defaults:true point_map attribute
-      | Vertex -> R.attribute ?cancel ~grain ~defaults:true vertex_map attribute
-      | Primitive -> R.attribute ?cancel ~grain ~defaults:true primitive_map attribute) (G.attributes source) in
+      | owner ->
+          match (match owner with Point -> point_carry | Vertex -> vertex_carry | _ -> primitive_carry) with
+          | `Plain map -> R.attribute ?cancel ~grain ~defaults:true map attribute
+          | `Weighted (a, b, t) -> R.blend_attribute ?cancel ~grain a b t attribute) (G.attributes source) in
     let groups = List.map (fun group ->
       check ();
       match Rdk.Group.owner group with
       | Point when point_same -> group
       | Vertex when vertex_same -> group
       | Primitive when primitive_same -> group
-      | Point -> R.group ?cancel ~grain point_map group
-      | Vertex -> R.group ?cancel ~grain vertex_map group
-      | Primitive -> R.group ?cancel ~grain primitive_map group) (G.groups source) in
+      | owner ->
+          match (match owner with Point -> point_carry | Vertex -> vertex_carry | _ -> primitive_carry) with
+          | `Plain map -> R.group ?cancel ~grain map group
+          | `Weighted (a, b, t) -> R.blend_group ?cancel ~grain a b t group) (G.groups source) in
     let positions = if not positions then G.positions target
       else if point_same then G.positions source
-      else let p = Rdk.Packed.Float3.Private.view (G.positions source) in
+      else match point_carry with
+      | `Weighted (a, b, t) -> R.blend_positions ?cancel ~grain a b t (G.positions source)
+      | `Plain point_map -> let p = Rdk.Packed.Float3.Private.view (G.positions source) in
         Rdk.Packed.Float3.Private.of_owned_exn
           ~x:(R.select_float ?cancel ~grain ~missing:0. point_map p.x)
           ~y:(R.select_float ?cancel ~grain ~missing:0. point_map p.y)

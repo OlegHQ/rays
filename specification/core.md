@@ -1265,9 +1265,31 @@ index must be in bounds or `-1`. `-1` is a created element: every attribute
 storage takes its default (Float 0, Int 0, Text "", vector components 0, an
 empty ragged row, the same defaults as `Point_generate`'s created points), it is in no
 group, and under `:positions "mapped"` its P is the origin. Any other negative
-index is `E_REMAP_INDEX`. Weighted carry (mixing two source rows) is not part of
-`sop/remap`: the native nodes that interpolate (`Curve_ops`, `Resample_curves`)
-each carry their own rule.
+index is `E_REMAP_INDEX`.
+
+**Weighted carry.** In place of `:points`, `:vertices` or `:primitives` an owner may be given
+`:point_mix`, `:vertex_mix` or `:primitive_mix` (not both, `E_ARGS`), a record
+`{:a (array int) :b (array int) :t (array float)}` (exactly those three keys, each as long as the
+target owner count): new element `i` is the mix of source rows `a[i]` and
+`b[i]` at weight `t[i]`. Both indices must be in `[0, source count)` (`-1` is not a weighted
+row: `E_REMAP_INDEX`), `t` must be finite (`E_REMAP_WEIGHT`; values outside `[0,1]`
+extrapolate), and any other shape is `E_REMAP_TYPE`. The rule applies to every owner given a
+weighted map, to attributes, groups and `:positions "mapped"` alike:
+
+- Float, Float2/3/4 components: `a + (b - a) * t`, or `a * (1 - t) + b * t` when the delta
+  `b - a` is not finite (the `Curve_ops.interpolate_array` rule). A Float3 attribute named
+  `N` is then renormalised in place when its length exceeds `1e-20`; `P` is not.
+- Int, Text, ragged Int and Float rows (matrix rows included) and group membership take row
+  `a` when `t < 0.5` and row `b` otherwise. Ordered groups follow the plain ordered rule over
+  the chosen rows.
+- Detail attributes and edge groups are unchanged (`:edges` ancestry stays the caller's).
+
+One helper, `Topology_remap.blend_attribute` (with `blend_group`, `blend_positions`), implements
+this; `Curve_ops.interpolate_attribute` calls it, so a curve resample and a weighted remap of
+the same point attribute are byte-identical. `Resample_curves` keeps its own copy: it has no
+non-finite fallback (`a + (b - a) * t` always), so sharing it would change bytes for infinite or
+NaN data.
+The JavaScript twin has no weighted form and no fixture for it.
 Target supplies topology and, by default, canonical P. `:positions "mapped"`
 selects source P through the point map. This selection copies raw native bits,
 including signed zero, subnormals, infinities and NaN payloads; it is a storage

@@ -473,15 +473,23 @@ let with_planes : Flow.Op.t = {
   body=(fun ~live:_ ~node args->node "sop/with_planes" args);
 }
 
+(* Weighted carry for one owner: new row i mixes source rows a.(i) and b.(i) at t.(i). *)
+let mix_type=Flow.Ty.Record ["a",Flow.Ty.Array Int;"b",Flow.Ty.Array Int;"t",Flow.Ty.Array Float]
+
 let remap : Flow.Op.t = {
   mesh with name="sop/remap";
   out_args=None;
   signature={pos=["source",Flow.Ty.geometry;"target",Flow.Ty.geometry];opt=[];rest=None;
     kw=["points",Flow.Ty.Array Int;"vertices",Flow.Ty.Array Int;"primitives",Flow.Ty.Array Int;
+      "point_mix",mix_type;"vertex_mix",mix_type;"primitive_mix",mix_type;
       "positions",Text;"edges",Record ["offsets",Array Int;"values",Array Int]]};
   choices=["positions",["target";"mapped"]];
-  check=(fun args->List.iter(fun name->if not(List.mem_assoc name args) then
-    Flow.Value.fail "E_ARGS" ("sop/remap needs :"^name^".")) ["points";"vertices";"primitives"]);
+  check=(fun args->List.iter(fun (name,mix)->
+    match List.mem_assoc name args,List.mem_assoc mix args with
+    |true,false|false,true->()
+    |false,false->Flow.Value.fail "E_ARGS" ("sop/remap needs :"^name^" or :"^mix^".")
+    |true,true->Flow.Value.fail "E_ARGS" ("sop/remap takes :"^name^" or :"^mix^", not both."))
+    ["points","point_mix";"vertices","vertex_mix";"primitives","primitive_mix"]);
   body=(fun ~live:_ ~node args->node "sop/remap" args);
 }
 

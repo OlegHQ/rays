@@ -67,3 +67,20 @@ val edge_groups_from_ancestry :
   target_topology:Topology.t -> target_index:Topology_index.t ->
   offsets:int array -> ancestors:int array -> Edge_group.t list ->
   (Edge_group.t list, string) result
+
+val blend_attribute :
+  ?cancel:Cancel.t -> grain:int -> int array -> int array -> float array -> Attribute.t -> Attribute.t
+(** [blend_attribute ~grain left right weight attribute]: row [i] mixes source rows [left.(i)] and
+    [right.(i)] at [weight.(i)] (all in bounds). Float and vector storage: [a + (b - a) * t], or
+    [a * (1 - t) + b * t] when the delta is not finite; a [Float3] named ["N"] is renormalised when
+    its length exceeds [1e-20]. Int, text and ragged rows take [left] when [t < 0.5], else [right].
+    Bytes equal [Curve_ops.interpolate_attribute]'s. Raises [Invalid_argument] on a non-positive grain. *)
+
+val blend_group :
+  ?cancel:Cancel.t -> grain:int -> int array -> int array -> float array -> Group.t -> Group.t
+(** Membership of the nearer source row ([left] when [t < 0.5]); ordered groups follow {!group}. *)
+
+val blend_positions :
+  ?cancel:Cancel.t -> grain:int -> int array -> int array -> float array ->
+  Packed.Float3.t -> Packed.Float3.t
+(** The point positions mixed like a [Float] attribute (no renormalisation). *)
