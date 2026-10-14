@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "c6e76d7038dced84f93cc308590ddbb4")
+  (digest "c45b612f1c74f0d886dcdf4d7fbcb3bc")
   (kinds
     (kind "sop/switch"
       (key "switch")
@@ -1773,24 +1773,6 @@
         (field "total_attribute" "Total attribute" (folder "Output") (text) (text "") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/connectivity"
-      (key "connectivity")
-      (aliases)
-      (operation "connectivity")
-      (label "Connectivity")
-      (category "Attribute" "Analysis")
-      (slots (slot "in0" required))
-      (fields
-        (field "owner" "Connectivity type" (folder) (choice "Points" "Primitives") (choice "Primitives") (primary false) (vec3))
-        (field "primitive_group" "Primitive group" (folder "Selection") (text) (text "") (primary false) (vec3))
-        (field "point_group" "Point group" (folder "Selection") (text) (text "") (primary false) (vec3))
-        (field "seam_group" "Seam edge group" (folder "Seams") (text) (text "") (primary false) (vec3))
-        (field "uv_attribute" "UV attribute" (folder "Seams") (text) (text "") (primary false) (vec3))
-        (field "name" "Attribute" (folder "Output") (text) (text "class") (primary false) (vec3))
-        (field "output" "Storage" (folder "Output") (choice "Integer" "Text") (choice "Integer") (primary false) (vec3))
-        (field "text_prefix" "Text prefix" (folder "Output") (text) (text "piece") (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/null"
       (key "null")
       (aliases)
@@ -2186,6 +2168,25 @@
       (category "Topology" "Cleanup")
       (slots (slot "in0" required))
       (fields)
+      (outputs (output "geo" geometry))
+      (body lisp)
+      (calls))
+    (kind "sop/connectivity"
+      (key "connectivity")
+      (aliases)
+      (operation "connectivity")
+      (label "Connectivity")
+      (category "Attribute" "Analysis")
+      (slots (slot "in0" required))
+      (fields
+        (field "owner" "Connectivity type" (folder) (choice "Points" "Primitives") (choice "Primitives") (primary false) (vec3))
+        (field "primitive_group" "Primitive group" (folder "Selection") (text) (text "") (primary false) (vec3))
+        (field "point_group" "Point group" (folder "Selection") (text) (text "") (primary false) (vec3))
+        (field "seam_group" "Seam edge group" (folder "Seams") (text) (text "") (primary false) (vec3))
+        (field "uv_attribute" "UV attribute" (folder "Seams") (text) (text "") (primary false) (vec3))
+        (field "name" "Attribute" (folder "Output") (text) (text "class") (primary false) (vec3))
+        (field "output" "Storage" (folder "Output") (choice "Integer" "Text") (choice "Integer") (primary false) (vec3))
+        (field "text_prefix" "Text prefix" (folder "Output") (text) (text "piece") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (body lisp)
       (calls))

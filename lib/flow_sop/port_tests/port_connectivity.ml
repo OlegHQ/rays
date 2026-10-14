@@ -1,4 +1,4 @@
-(* sop/connectivity: one geometry input (pending draft nodes/connectivity.pending). *)
+(* sop/connectivity: one geometry input (nodes/connectivity.rays). *)
 open Rdk
 open Rdk_test_support
 open Port_gate
@@ -27,10 +27,23 @@ let nonmanifold () =
   let g = Geometry.create ~positions:(Geometry.positions (points 8)) ~topology () |> get_string_ok in
   with_uv "uv" ~three:false (fixture_groups g)
 
+(* Three triangles share edge 0-1 with three different UV layouts: triangle 0 differs from 1 and 2, while 1 and 2
+   (opposite winding on the shared edge) agree with each other. Joining every vertex of the edge to its first
+   vertex only finds the pairs that involve triangle 0; native compares all pairs and joins 1 with 2. *)
+let nonmanifold_uv () =
+  let topology = Topology.create_owned ~point_count:5
+    ~vertex_points:[|0;1;2; 0;1;3; 1;0;4|] ~primitive_offsets:[|0;3;6;9|]
+    ~primitive_kinds:[|Topology.Polygon; Polygon; Polygon|] |> get_string_ok in
+  let g = Geometry.create ~positions:(Geometry.positions (points 5)) ~topology () |> get_string_ok in
+  let uv = Attribute.Float2 (Packed.Float2.of_owned ~x:[|0.;1.;0.; 0.2;1.2;0.2; 1.2;0.2;0.7|]
+    ~y:[|0.;0.;1.; 0.;0.;1.; 0.;0.;1.|] |> get_string_ok) in
+  fixture_groups (Geometry.with_attribute (Attribute.create_owned ~owner:Attribute.Vertex ~name:"uv" uv |> get_string_ok) g
+    |> get_string_ok)
+
 let uv_grid ~three = with_uv "uv" ~three (fixture_groups (grid ()))
 let inputs = standard_inputs @ [
   "uv-grid2", [uv_grid ~three:false]; "uv-grid3", [uv_grid ~three:true];
-  "nonmanifold", [nonmanifold ()]]
+  "nonmanifold", [nonmanifold ()]; "nonmanifold-uv", [nonmanifold_uv ()]]
 
 (* Dropped cases (the gate cannot express them): the four construction-time refusals
    (UV with Points, UV with seams, point group with Primitives, name P with Points).
