@@ -1,9 +1,185 @@
-; PARTIAL Point Replicate draft (BLOCKED, see the commit message): the parameter block is complete and matches
-; the native descriptor; the body is a stub that returns the input. Not ported: the per-source copy frame of the
-; instancing basis (Instance_copy.copy_frames), quasi-stratified radical-inverse sequences, the noise seed derived
-; as mixed_seed(context, identity xor 0x6a09e667f3bcc909) (no seed operator can reproduce that salt), the velocity
-; and transform-attribute outputs, and the custom shape. The generation half is the point_generate draft.
+; Whole Point Replicate (input driven, optional custom shape). Counts per point come from the id attribute
+; (point_generate's per-point rule keyed by id), then ONE sop/point_generate call (counts passed as an exact
+; float count attribute with points_per_point 1) produces the generated points, their source and local index.
+; Per source point the instancing frame (Houdini copy-to-points attributes: pscale/scale, transform | orient |
+; N/v with up, rot, trans/pivot) becomes an origin T and three axes A B C; each generated point is the shape
+; sample, optionally noised, rotated by the node orientation and carried into that frame. Velocity, custom shape
+; index and inherited transforms follow. Native arm64 contracts a +. b *. c: the second product of an Add or
+; Sub fuses, written here with explicit fma.
+(defn pr_error :context value [(reason : text)]
+  (error "invalid_geometry" "point_replicate could not produce valid geometry"
+    :cause (str "point_replicate [invalid_geometry]: Rdk_gen.Point_replicate.point_replicate: " reason)))
+(defn pr_pattern_ok :context value [(pattern : text)]
+  (or (text/blank? pattern) (equal? (text/glob_error pattern) "")))
+(defmacro pr_bad [geo name type]
+  `(and (sop/has_attr ~geo ~name :owner "point")
+        (not (sop/has_attr ~geo ~name :owner "point" :type ~type))))
+(defn pr_fresh :context sop [(geo : geometry) (base : text)]
+  (cond (not (sop/has_attr geo base :owner "point")) base
+        (not (sop/has_attr geo (str base "1") :owner "point")) (str base "1")
+        (not (sop/has_attr geo (str base "2") :owner "point")) (str base "2")
+        :else (str base "3")))
+(defn pr_missing_float :context sop [(geo : geometry) (name : text)]
+  (cond (text/blank? name) false
+        (sop/has_attr geo name :owner "point" :type float) false
+        :else true))
+(defn pr_float_or_ones :context sop [(geo : geometry) (name : text) (n : int)]
+  (cond (text/blank? name) (array/float n 1.0)
+        (sop/has_attr geo name :owner "point" :type float) (sop/attr geo name :owner "point" :type float)
+        :else (array/float n 1.0)))
+(defn pr_fract :context value [(x : float)] (- x (float_floor x)))
+(defn pr_ix :context value [(n : int)] (array/range n :type int))
+
+; ---- quaternions: normalized like copy_frames' set_quaternion, rows of the rotation matrix
+(defn pr_qn :context value [(q : vec4)]
+  (let* [scale (max (abs q.x) (max (abs q.y) (max (abs q.z) (abs q.w))))
+         live (> scale 0.0)
+         s (if live scale 1.0)
+         x (/ q.x s) y (/ q.y s) z (/ q.z s) w (/ q.w s)
+         length (sqrt (fma w w (fma z z (fma y y (* x x)))))
+         l (if live length 1.0)]
+    (if live [(/ x l) (/ y l) (/ z l) (/ w l)] [0.0 0.0 0.0 1.0])))
+(defn pr_qrow0 :context value [(q : vec4)]
+  [(- 1.0 (* 2.0 (+ (* q.y q.y) (* q.z q.z)))) (* 2.0 (- (* q.x q.y) (* q.w q.z))) (* 2.0 (+ (* q.x q.z) (* q.w q.y)))])
+(defn pr_qrow1 :context value [(q : vec4)]
+  [(* 2.0 (+ (* q.x q.y) (* q.w q.z))) (- 1.0 (* 2.0 (+ (* q.x q.x) (* q.z q.z)))) (* 2.0 (- (* q.y q.z) (* q.w q.x)))])
+(defn pr_qrow2 :context value [(q : vec4)]
+  [(* 2.0 (- (* q.x q.z) (* q.w q.y))) (* 2.0 (+ (* q.y q.z) (* q.w q.x))) (- 1.0 (* 2.0 (+ (* q.x q.x) (* q.y q.y))))])
+; a . B for a row a and the rows b0 b1 b2 of B: ((a.x b0 + a.y b1) + a.z b2) as the native fused chain.
+(defn pr_row_mul :context value [(a : vec3) (b0 : vec3) (b1 : vec3) (b2 : vec3)]
+  [(fma a.z b2.x (fma a.y b1.x (* a.x b0.x)))
+   (fma a.z b2.y (fma a.y b1.y (* a.x b0.y)))
+   (fma a.z b2.z (fma a.y b1.z (* a.x b0.z)))])
+
+; ---- N / v direction frames: z axis (w = 1 when the direction is nonzero), x = up x z (w = 1 when aligned)
+(defn pr_dir_z :context value [(n : vec3)]
+  (let* [scale (max (abs n.x) (max (abs n.y) (abs n.z)))
+         live (> scale 0.0)
+         s (if live scale 1.0)
+         x (/ n.x s) y (/ n.y s) z (/ n.z s)
+         length (sqrt (fma z z (fma y y (* x x))))
+         l (if live length 1.0)]
+    (if live [(/ x l) (/ y l) (/ z l) 1.0] [0.0 0.0 1.0 0.0])))
+(defn pr_dir_x :context value [(z : vec4) (u : vec3) (has_up : bool)]
+  (let* [uscale (max (abs u.x) (max (abs u.y) (abs u.z)))
+         live (and (> z.w 0.5) (and has_up (> uscale 0.0)))
+         us (if live uscale 1.0)
+         ux (/ u.x us) uy (/ u.y us) uz (/ u.z us)
+         cx (fma (* -1.0 uz) z.y (* uy z.z))
+         cy (fma (* -1.0 ux) z.z (* uz z.x))
+         cz (fma (* -1.0 uy) z.x (* ux z.y))
+         xscale (max (abs cx) (max (abs cy) (abs cz)))
+         ok (and live (> xscale 1e-20))
+         xs (if ok xscale 1.0)
+         nx (/ cx xs) ny (/ cy xs) nz (/ cz xs)
+         xl (sqrt (fma nz nz (fma ny ny (* nx nx))))
+         l (if ok xl 1.0)]
+    (if ok [(/ nx l) (/ ny l) (/ nz l) 1.0] [0.0 0.0 0.0 0.0])))
+(defn pr_dir_q :context value [(z : vec4) (x : vec4)]
+  (cond (or (< z.w 0.5) (> x.w 0.5)) [0.0 0.0 0.0 1.0]
+        (<= z.z (+ -1.0 1e-12)) [0.0 1.0 0.0 0.0]
+        :else [(* -1.0 z.y) z.x 0.0 (+ 1.0 z.z)]))
+(defn pr_aligned_row0 :context value [(z : vec4) (x : vec4)]
+  [x.x (fma (* -1.0 z.z) x.y (* z.y x.z)) z.x])
+(defn pr_aligned_row1 :context value [(z : vec4) (x : vec4)]
+  [x.y (fma (* -1.0 z.x) x.z (* z.z x.x)) z.y])
+(defn pr_aligned_row2 :context value [(z : vec4) (x : vec4)]
+  [x.z (fma (* -1.0 z.y) x.x (* z.x x.y)) z.z])
+
+; ---- quasi-stratified sequence: radical inverse of 0 .. count-1 in a base
+(defn pr_radical :context value [(count : int) (base : int)]
+  (let* [inverse (/ 1.0 (float base))]
+    (get (iterate 48 {:v (array/range count :type int) :f (array/float count inverse) :o (array/float count 0.0)}
+      (fn [(s : {:v (array int) :f (array float) :o (array float)})]
+        {:v (exact (map (fn [(v : int)] (int/div v base)) s.v))
+         :f (exact (map (fn [(f : float) (v : int)] (if (int/gt v 0) (* f inverse) f)) s.f s.v))
+         :o (exact (map (fn [(o : float) (v : int) (f : float)]
+              (if (int/gt v 0) (fma (float (int/mod v base)) f o) o)) s.o s.v s.f))})) :o)))
+
+; ---- the node shape sample in [0,1)^3 -> a local position
+(defn pr_box :context value [(s : vec3)] [(- s.x 0.5) (- s.y 0.5) (- s.z 0.5)])
+(defn pr_sphere :context value [(s : vec3)]
+  (let* [z (- (* 2.0 s.x) 1.0)
+         radial (* 0.5 (pow s.z (/ 1.0 3.0)))
+         planar (* radial (sqrt (max 0.0 (fma (* -1.0 z) z 1.0))))
+         angle (* (* 2.0 3.141592653589793) s.y)]
+    [(* planar (cos angle)) (* planar (sin angle)) (* radial z)]))
+(defn pr_disk :context value [(s : vec3)]
+  (let* [radius (* 0.5 (sqrt s.x))
+         angle (* (* 2.0 3.141592653589793) s.y)]
+    [(* radius (cos angle)) (* radius (sin angle)) 0.0]))
+(defn pr_line :context value [(s : vec3)] [0.0 0.0 (- s.x 0.5)])
+(defn pr_custom_index :context value [(s : vec3) (count : int)]
+  (let* [at (int (* s.x (float count)))] (if (int/lt at (int/sub count 1)) at (int/sub count 1))))
+
+; ---- noise: a decorrelated fBm sample, signed and shaped
+(defn pr_shape_noise :context value [(sample : float) (attenuation : float)]
+  (let* [s (- (* 2.0 sample) 1.0)
+         m (pow s attenuation)]
+    (if (< s 0.0) (* -1.0 m) m)))
+
+; ---- inherited-attribute transforms through the frame (a b c are the frame axes)
+(defn pr_scaled_matrix_scale :context value [(a3 : vec3) (b3 : vec3) (c3 : vec3)]
+  (let* [sc (max (abs a3.x) (max (abs b3.x) (max (abs c3.x) (max (abs a3.y) (max (abs b3.y) (max (abs c3.y)
+              (max (abs a3.z) (max (abs b3.z) (abs c3.z)))))))))]
+    (if (= sc 0.0) 1.0 sc)))
+(defn pr_cof0 :context value [(a3 : vec3) (b3 : vec3) (c3 : vec3) (s : float)]
+  (let* [d (/ a3.y s) g (/ a3.z s) e (/ b3.y s) h (/ b3.z s) f (/ c3.y s) i (/ c3.z s)]
+    [(fma (* -1.0 f) h (* e i)) (fma (* -1.0 d) i (* f g)) (fma (* -1.0 e) g (* d h))]))
+(defn pr_cof1 :context value [(a3 : vec3) (b3 : vec3) (c3 : vec3) (s : float)]
+  (let* [a (/ a3.x s) d (/ a3.y s) g (/ a3.z s) b (/ b3.x s) h (/ b3.z s) c (/ c3.x s) i (/ c3.z s)]
+    [(fma (* -1.0 b) i (* c h)) (fma (* -1.0 c) g (* a i)) (fma (* -1.0 a) h (* b g))]))
+(defn pr_cof2 :context value [(a3 : vec3) (b3 : vec3) (c3 : vec3) (s : float)]
+  (let* [a (/ a3.x s) d (/ a3.y s) b (/ b3.x s) e (/ b3.y s) c (/ c3.x s) f (/ c3.y s)]
+    [(fma (* -1.0 c) e (* b f)) (fma (* -1.0 a) f (* c d)) (fma (* -1.0 b) d (* a e))]))
+(defn pr_det :context value [(a3 : vec3) (b3 : vec3) (c3 : vec3) (s : float) (r : vec3)]
+  (fma (/ c3.x s) r.z (fma (/ b3.x s) r.y (* (/ a3.x s) r.x))))
+(defn pr_normal_apply :context value [(r0 : vec3) (r1 : vec3) (r2 : vec3) (sign : float) (v : vec3)]
+  (let* [ox (* sign (fma r0.z v.z (fma r0.y v.y (* r0.x v.x))))
+         oy (* sign (fma r1.z v.z (fma r1.y v.y (* r1.x v.x))))
+         oz (* sign (fma r2.z v.z (fma r2.y v.y (* r2.x v.x))))
+         len (sqrt (fma oz oz (fma oy oy (* ox ox))))
+         inv (if (<= len 1e-20) 0.0 (/ 1.0 len))]
+    [(* ox inv) (* oy inv) (* oz inv)]))
+(defn pr_plain_xf :context value [(a : vec3) (b : vec3) (c : vec3) (v : vec3)]
+  [(fma c.x v.z (fma b.x v.y (* a.x v.x)))
+   (fma c.y v.z (fma b.y v.y (* a.y v.x)))
+   (fma c.z v.z (fma b.z v.y (* a.z v.x)))])
+(defn pr_inv_length :context value [(a : vec3)]
+  (let* [length (sqrt (fma a.z a.z (fma a.y a.y (* a.x a.x))))]
+    (if (<= length 1e-20) 0.0 (/ 1.0 length))))
+
+(defn pr_xf_attr :context sop [(geo : geometry) (name : text) (singular : bool) (prefix : int) (gcount : int)
+                              (srcs : (array int)) (fa : (array vec3)) (fb : (array vec3)) (fc : (array vec3))
+                              (cof0 : (array vec3)) (cof1 : (array vec3)) (cof2 : (array vec3)) (sgn : (array float))]
+  (if (and (not (equal? name "P")) (equal? (sop/attr_type geo name :owner "point") "vec3"))
+    (if (and (equal? name "N") singular)
+      (sop/delete_attr geo "N" :owner "point")
+      (let* [current (sop/attr geo name :owner "point" :type vec3)
+             tail (array/slice current prefix gcount)
+             moved (if (equal? name "N")
+                     (exact (map (fn [(src : int) (v : vec3)]
+                       (pr_normal_apply (array/nth cof0 src) (array/nth cof1 src) (array/nth cof2 src) (array/nth sgn src) v))
+                       srcs tail))
+                     (exact (map (fn [(src : int) (v : vec3)]
+                       (pr_plain_xf (array/nth fa src) (array/nth fb src) (array/nth fc src) v)) srcs tail)))]
+        (sop/with_attr geo name (array/concat (array/slice current 0 prefix) moved) :owner "point" :type vec3)))
+    geo))
+
 (defnode sop/point_replicate :label "Point Replicate" :category ["Create" "Points"]
+  :validate (and (and (and (>= points_per_point 0.0) (<= points_per_point 18014398509481984.0))
+                      (and (and (>= size_x 0.0) (>= size_y 0.0)) (and (>= size_z 0.0) (>= uniform_scale 0.0))))
+                 (and (and (and (>= noise_roughness 0.0) (<= noise_roughness 1.0))
+                           (and (> noise_attenuation 0.0) (int/ge noise_turbulence 1)))
+                      (and (and (not (text/blank? id_attribute))
+                                (or (not keep_source_attributes)
+                                    (and (and (not (text/blank? source_point_attribute))
+                                              (not (equal? source_point_attribute "P")))
+                                         (and (and (not (text/blank? source_index_attribute))
+                                                   (not (equal? source_index_attribute "P")))
+                                              (not (equal? source_point_attribute source_index_attribute))))))
+                           (and (pr_pattern_ok copy_point_attributes) (pr_pattern_ok transform_attributes)))))
+  :code "E_PARAM" :message "sop/point_replicate: invalid parameters"
   [(input : geometry)
    (custom_shape : geometry :required false)
    (group : text "" :label "Point group")
@@ -50,4 +226,290 @@
    (transform_attributes : text "P" :label "Transform attributes" :folder ["Transfer"])
    (source_point_attribute : text "sourcepoint" :label "Source point" :folder ["Output"])
    (source_index_attribute : text "sourceindex" :label "Source index" :folder ["Output"])]
-  input)
+  (let* [pts (sop/count input :points)
+         idx (pr_ix pts)
+         group_name (text/trim group)
+         scale_name (text/trim scale_attribute)
+         gen_name (text/trim generated_group)
+         group_literal (text/glob_literal (if (text/blank? group_name) "x" group_name))
+         custom (equal? shape "Custom")
+         has_custom (not (equal? custom_shape nil))
+         cpos (if has_custom (sop/attr custom_shape :P) (array/vec3 0 [0.0 0.0 0.0]))
+         ccount (if has_custom (sop/count custom_shape :points) 0)
+         has_id (sop/has_attr input id_attribute :owner "point" :type int)
+         has_v (sop/has_attr input "v" :owner "point" :type vec3)
+         has_rest (and use_noise (sop/has_attr input "rest" :owner "point" :type vec3))
+         has_pscale (sop/has_attr input "pscale" :owner "point" :type float)
+         has_scale (sop/has_attr input "scale" :owner "point" :type vec3)
+         has_orient (sop/has_attr input "orient" :owner "point" :type vec4)
+         has_n (sop/has_attr input "N" :owner "point" :type vec3)
+         has_up (sop/has_attr input "up" :owner "point" :type vec3)
+         has_rot (sop/has_attr input "rot" :owner "point" :type vec4)
+         has_trans (sop/has_attr input "trans" :owner "point" :type vec3)
+         has_pivot (sop/has_attr input "pivot" :owner "point" :type vec3)
+         has_matrix (sop/has_attr input "transform" :owner "point" :type float_array)
+         has_dir (or has_n has_v)
+         mat (if has_matrix (sop/attr input "transform" :owner "point" :type float_array)
+               {:offsets (array/int (int/add pts 1) 0) :values (array/float 16 0.0)})
+         moffs mat.offsets
+         mvals mat.values
+         mw (if (int/eq pts 0) 16 (int/sub (array/nth moffs 1) (array/nth moffs 0)))
+         bad_rows (array/sum (exact (map (fn [(i : int)]
+                    (let* [first (array/nth moffs i)
+                           width (int/sub (array/nth moffs (int/add i 1)) first)]
+                      (if (int/eq width mw)
+                        (if (int/eq mw 16)
+                          (if (or (or (> (abs (array/nth mvals (int/add first 12))) 1e-12)
+                                      (> (abs (array/nth mvals (int/add first 13))) 1e-12))
+                                  (or (> (abs (array/nth mvals (int/add first 14))) 1e-12)
+                                      (> (abs (- (array/nth mvals (int/add first 15)) 1.0)) 1e-12)))
+                            1 0)
+                          0)
+                        1))) idx)))
+         ids (if has_id (sop/attr input id_attribute :owner "point" :type int) idx)
+         selected (if (text/blank? group_name) (array/int pts 1) (sop/group input :name group_name :owner "point"))
+         weights (pr_float_or_ones input scale_name pts)
+         bad_weights (array/sum (exact (map (fn [(w : float) (s : int)]
+                       (if (and (int/eq s 1) (or (< w 0.0) (> (* points_per_point w) 18014398509481984.0))) 1 0))
+                       weights selected)))
+         problem (cond
+                   (and custom (not has_custom)) 2
+                   (and custom (int/eq ccount 0)) 3
+                   (pr_bad input id_attribute int) 4
+                   (pr_bad input "v" vec3) 5
+                   (and use_noise (pr_bad input "rest" vec3)) 6
+                   (pr_missing_float input scale_name) 7
+                   (int/gt bad_weights 0) 8
+                   (pr_bad input "pscale" float) 9
+                   (pr_bad input "scale" vec3) 10
+                   (pr_bad input "orient" vec4) 11
+                   (pr_bad input "N" vec3) 12
+                   (pr_bad input "up" vec3) 13
+                   (pr_bad input "rot" vec4) 14
+                   (pr_bad input "trans" vec3) 15
+                   (pr_bad input "pivot" vec3) 16
+                   (and (sop/has_attr input "transform" :owner "point") (not has_matrix)) 17
+                   (and has_matrix (and (not (int/eq mw 9)) (not (int/eq mw 16)))) 18
+                   (and has_matrix (int/gt bad_rows 0)) 19
+                   :else 0)]
+    (if (and (not (text/blank? group_name))
+             (int/eq (array/count (sop/group_names input group_literal :owner "point")) 0))
+      (error "missing_group" (str "point_replicate could not find point group " (text/repr group_name)))
+      (if (int/gt problem 0)
+        (cond
+          (int/eq problem 2) (pr_error "custom shape requires shape geometry")
+          (int/eq problem 3) (pr_error "custom shape must contain at least one point")
+          (int/eq problem 4) (pr_error "id attribute must use int storage")
+          (int/eq problem 5) (pr_error "point attribute \"v\" must use float3 storage")
+          (int/eq problem 6) (pr_error "point attribute \"rest\" must use float3 storage")
+          (int/eq problem 7) (pr_error "scale attribute must be an existing point float attribute")
+          (int/eq problem 8) (pr_error "selected point has a non-finite, negative, or excessive generation scale")
+          (int/eq problem 9) (pr_error "pscale must be point float")
+          (int/eq problem 10) (pr_error "scale must be point float3")
+          (int/eq problem 11) (pr_error "orient must be point float4")
+          (int/eq problem 12) (pr_error "N must be point float3")
+          (int/eq problem 13) (pr_error "up must be point float3")
+          (int/eq problem 14) (pr_error "rot must be point float4")
+          (int/eq problem 15) (pr_error "trans must be point float3")
+          (int/eq problem 16) (pr_error "pivot must be point float3")
+          (int/eq problem 17) (pr_error "transform must be a point float-array matrix")
+          (int/eq problem 18) (pr_error "transform rows must contain 9 or 16 floats")
+          (int/eq problem 19) (pr_error "transform must contain fixed-width affine matrices")
+          :else (pr_error "invalid"))
+      (let* [seed_main (if context_seed (sop/context_seed "point_replicate") seed)
+             seed_noise (if noise_context_seed (sop/context_seed "point_replicate" :salt -1582480459898762999) noise_seed)
+             counts_in (exact (map (fn [(w : float) (s : int) (id : int)]
+                         (let* [expected (* points_per_point (if (int/eq s 1) w 0.0))
+                                integral (floor expected)
+                                fraction (- expected (float integral))
+                                chance (rand/at seed_main (int/xor id 668265261))]
+                           (int/add integral (if (and (int/eq s 1) (and (> fraction 0.0) (< chance fraction))) 1 0))))
+                         weights selected ids))
+             tmp "__rdk_replicate_count"
+             isrc (if keep_source_attributes source_point_attribute (pr_fresh input "__rdk_replicate_sourcepoint"))
+             iidx (if keep_source_attributes source_index_attribute (pr_fresh input "__rdk_replicate_sourceindex"))
+             counted (sop/with_attr input tmp (exact (map (fn [(c : int)] (float c)) counts_in)) :owner "point" :type float)
+             generated0 (sop/point_generate counted :mode "Per point" :keep_input keep_input :points_per_point 1.0
+                          :scale_attribute tmp :generated_group gen_name :source_point_attribute isrc
+                          :source_index_attribute iidx :copy_point_attributes copy_point_attributes
+                          :copy_detail_attributes "")
+             generated (sop/delete_attr generated0 tmp :owner "point")
+             total (sop/count generated :points)
+             prefix (if keep_input pts 0)
+             gcount (int/sub total prefix)
+             srcs (array/slice (sop/attr generated isrc :owner "point" :type int) prefix gcount)
+             locs (array/slice (sop/attr generated iidx :owner "point" :type int) prefix gcount)
+             counts (array/scatter_add srcs (array/int gcount 1) pts)
+             psrc (sop/attr input :P)
+             vsrc (if has_v (sop/attr input "v" :owner "point" :type vec3) (array/vec3 pts [0.0 0.0 0.0]))
+             ; ---- frame scale
+             ps (if has_pscale (sop/attr input "pscale" :owner "point" :type float) (array/float pts 1.0))
+             sc (if has_scale (sop/attr input "scale" :owner "point" :type vec3) (array/vec3 pts [1.0 1.0 1.0]))
+             svec (if has_matrix (array/vec3 pts [1.0 1.0 1.0])
+                    (exact (map (fn [(a : float) (b : vec3)] [(* a b.x) (* a b.y) (* a b.z)]) ps sc)))
+             ; ---- frame rotation: transform | orient | N/v with up
+             o1 (if (int/eq mw 9) 3 4)
+             o2 (if (int/eq mw 9) 6 8)
+             mr0 (if has_matrix (exact (map (fn [(i : int)] (let* [f (array/nth moffs i)] [(array/nth mvals (int/add f 0)) (array/nth mvals (int/add f (int/add 0 1))) (array/nth mvals (int/add f (int/add 0 2)))])) idx)) svec)
+             mr1 (if has_matrix (exact (map (fn [(i : int)] (let* [f (array/nth moffs i)] [(array/nth mvals (int/add f o1)) (array/nth mvals (int/add f (int/add o1 1))) (array/nth mvals (int/add f (int/add o1 2)))])) idx)) svec)
+             mr2 (if has_matrix (exact (map (fn [(i : int)] (let* [f (array/nth moffs i)] [(array/nth mvals (int/add f o2)) (array/nth mvals (int/add f (int/add o2 1))) (array/nth mvals (int/add f (int/add o2 2)))])) idx)) svec)
+             dirs (if has_n (sop/attr input "N" :owner "point" :type vec3) vsrc)
+             use_dir (and (not has_matrix) (and (not has_orient) has_dir))
+             za (if use_dir (exact (map (fn [(a : vec3)] (pr_dir_z a)) dirs)) (array/vec4 pts [0.0 0.0 1.0 0.0]))
+             ups (if has_up (sop/attr input "up" :owner "point" :type vec3) (array/vec3 pts [0.0 0.0 0.0]))
+             xa (if use_dir (exact (map (fn [(z : vec4) (u : vec3)] (pr_dir_x z u has_up)) za ups))
+                  (array/vec4 pts [0.0 0.0 0.0 0.0]))
+             qa (cond has_orient (sop/attr input "orient" :owner "point" :type vec4)
+                      use_dir (exact (map (fn [(z : vec4) (x : vec4)] (pr_dir_q z x)) za xa))
+                      :else (array/vec4 pts [0.0 0.0 0.0 1.0]))
+             qn (exact (map (fn [(q : vec4)] (pr_qn q)) qa))
+             br0 (if has_matrix mr0 (exact (map (fn [(q : vec4) (z : vec4) (x : vec4)]
+                    (if (> x.w 0.5) (pr_aligned_row0 z x) (pr_qrow0 q))) qn za xa)))
+             br1 (if has_matrix mr1 (exact (map (fn [(q : vec4) (z : vec4) (x : vec4)]
+                    (if (> x.w 0.5) (pr_aligned_row1 z x) (pr_qrow1 q))) qn za xa)))
+             br2 (if has_matrix mr2 (exact (map (fn [(q : vec4) (z : vec4) (x : vec4)]
+                    (if (> x.w 0.5) (pr_aligned_row2 z x) (pr_qrow2 q))) qn za xa)))
+             post (and has_rot (not has_matrix))
+             rots (if post (exact (map (fn [(q : vec4)] (pr_qn q)) (sop/attr input "rot" :owner "point" :type vec4))) (array/vec4 pts [0.0 0.0 0.0 1.0]))
+             rr0 (if post (exact (map (fn [(r : vec4) (i : int)]
+                   (pr_row_mul (pr_qrow0 r) (array/nth br0 i) (array/nth br1 i) (array/nth br2 i))) rots idx)) br0)
+             rr1 (if post (exact (map (fn [(r : vec4) (i : int)]
+                   (pr_row_mul (pr_qrow1 r) (array/nth br0 i) (array/nth br1 i) (array/nth br2 i))) rots idx)) br1)
+             rr2 (if post (exact (map (fn [(r : vec4) (i : int)]
+                   (pr_row_mul (pr_qrow2 r) (array/nth br0 i) (array/nth br1 i) (array/nth br2 i))) rots idx)) br2)
+             ; ---- frame translation: P + trans (+ matrix translation) - R (pivot * scale)
+             t0 (if has_trans (exact (map (fn [(p : vec3) (d : vec3)] (+ p d)) psrc
+                  (sop/attr input "trans" :owner "point" :type vec3))) psrc)
+             t1 (if (and has_matrix (int/eq mw 16))
+                  (exact (map (fn [(p : vec3) (i : int)]
+                    (let* [first (array/nth moffs i)]
+                      [(+ p.x (array/nth mvals (int/add first 3))) (+ p.y (array/nth mvals (int/add first 7)))
+                       (+ p.z (array/nth mvals (int/add first 11)))])) t0 idx))
+                  t0)
+             pivots (if has_pivot (sop/attr input "pivot" :owner "point" :type vec3) (array/vec3 pts [0.0 0.0 0.0]))
+             tt (if has_pivot
+                  (exact (map (fn [(tq : vec3) (i : int)]
+                    (let* [pv (array/nth pivots i) s (array/nth svec i)
+                           x (* pv.x s.x) y (* pv.y s.y) z (* pv.z s.z)
+                           r0 (array/nth rr0 i) r1 (array/nth rr1 i) r2 (array/nth rr2 i)]
+                      [(- tq.x (fma r0.z z (fma r0.y y (* r0.x x))))
+                       (- tq.y (fma r1.z z (fma r1.y y (* r1.x x))))
+                       (- tq.z (fma r2.z z (fma r2.y y (* r2.x x))))])) t1 idx))
+                  t1)
+             ; ---- frame axes through the 4-point basis
+             fa (exact (map (fn [(i : int)]
+                  (let* [r0 (array/nth rr0 i) r1 (array/nth rr1 i) r2 (array/nth rr2 i)
+                         s (array/nth svec i) tq (array/nth tt i)]
+                    [(- (+ (* r0.x s.x) tq.x) tq.x) (- (+ (* r1.x s.x) tq.y) tq.y) (- (+ (* r2.x s.x) tq.z) tq.z)])) idx))
+             fb (exact (map (fn [(i : int)]
+                  (let* [r0 (array/nth rr0 i) r1 (array/nth rr1 i) r2 (array/nth rr2 i)
+                         s (array/nth svec i) tq (array/nth tt i)]
+                    [(- (+ (* r0.y s.y) tq.x) tq.x) (- (+ (* r1.y s.y) tq.y) tq.y) (- (+ (* r2.y s.y) tq.z) tq.z)])) idx))
+             fc (exact (map (fn [(i : int)]
+                  (let* [r0 (array/nth rr0 i) r1 (array/nth rr1 i) r2 (array/nth rr2 i)
+                         s (array/nth svec i) tq (array/nth tt i)]
+                    [(- (+ (* r0.z s.z) tq.x) tq.x) (- (+ (* r1.z s.z) tq.y) tq.y) (- (+ (* r2.z s.z) tq.z) tq.z)])) idx))
+             stretching (not (equal? velocity_stretch "None"))
+             sv (if (and stretching has_v)
+                  (exact (map (fn [(v : vec3)] (fma (sqrt (fma v.z v.z (fma v.y v.y (* v.x v.x)))) velocity_scale 1.0)) vsrc))
+                  (array/float pts 1.0))
+             inv (if (equal? velocity_stretch "Velocity only")
+                   (exact (map (fn [(a : vec3) (b : vec3) (c : vec3)] [(pr_inv_length a) (pr_inv_length b) (pr_inv_length c)])
+                     fa fb fc))
+                   (array/vec3 pts [1.0 1.0 1.0]))
+             ; ---- per generated point: the shape sample
+             quasi quasi_stratified
+             maximum (if (int/eq pts 0) 0 (array/max counts))
+             seqv (if quasi (pr_radical maximum 2) (array/float 0))
+             seqw (if quasi (pr_radical maximum 3) (array/float 0))
+             off_u (if quasi (exact (map (fn [(id : int)] (rand/at seed_main (int/xor (int/mul id 165902235) 668265261))) ids)) (array/float 0))
+             off_v (if quasi (exact (map (fn [(id : int)] (rand/at seed_main (int/xor (int/mul id 165902235) 1821285621))) ids)) (array/float 0))
+             off_w (if quasi (exact (map (fn [(id : int)] (rand/at seed_main (int/xor (int/mul id 165902235) 1540483477))) ids)) (array/float 0))
+             smp (if quasi
+                   (exact (map (fn [(src : int) (loc : int)]
+                     (let* [cnt (array/nth counts src)
+                            c (if (int/gt cnt 1) cnt 1)]
+                       [(pr_fract (+ (/ (+ (float loc) 0.5) (float c)) (array/nth off_u src)))
+                        (pr_fract (+ (array/nth seqv loc) (array/nth off_v src)))
+                        (pr_fract (+ (array/nth seqw loc) (array/nth off_w src)))])) srcs locs))
+                   (exact (map (fn [(src : int) (loc : int)]
+                     (let* [id (array/nth ids src)
+                            key (int/xor (int/mul id 506952121) (int/mul loc 374761393))]
+                       [(rand/at seed_main (int/xor key 668265261))
+                        (rand/at seed_main (int/xor key 1821285621))
+                        (rand/at seed_main (int/xor key 1540483477))])) srcs locs)))
+             lp (cond (equal? shape "Box") (exact (map (fn [(a : vec3)] (pr_box a)) smp))
+                      (equal? shape "Sphere") (exact (map (fn [(a : vec3)] (pr_sphere a)) smp))
+                      (equal? shape "Disk") (exact (map (fn [(a : vec3)] (pr_disk a)) smp))
+                      (equal? shape "Line") (exact (map (fn [(a : vec3)] (pr_line a)) smp))
+                      custom (exact (map (fn [(s : vec3)] (array/nth cpos (pr_custom_index s ccount))) smp))
+                      :else (array/vec3 gcount [0.0 0.0 0.0]))
+             spn (if custom (exact (map (fn [(s : vec3)] (pr_custom_index s ccount)) smp)) (array/int 0))
+             qpos (exact (map (fn [(l : vec3)]
+                    [(+ center_x (* (* l.x size_x) uniform_scale)) (+ center_y (* (* l.y size_y) uniform_scale))
+                     (+ center_z (* (* l.z size_z) uniform_scale))]) lp))
+             restv (if has_rest (sop/attr input "rest" :owner "point" :type vec3) psrc)
+             qnoise (if use_noise
+                      (exact (map (fn [(src : int) (q : vec3)]
+                        (let* [r (array/nth restv src)
+                               nx (fma (+ r.x q.x) noise_frequency_x noise_offset_x)
+                               ny (fma (+ r.y q.y) noise_frequency_y noise_offset_y)
+                               nz (fma (+ r.z q.z) noise_frequency_z noise_offset_z)
+                               sx (pr_shape_noise (noise3 [nx ny nz] :seed seed_noise :octaves noise_turbulence
+                                                    :lacunarity 2.0 :gain noise_roughness) noise_attenuation)
+                               sy (pr_shape_noise (noise3 [(+ nz 31.416) nx ny] :seed seed_noise :octaves noise_turbulence
+                                                    :lacunarity 2.0 :gain noise_roughness) noise_attenuation)
+                               sz (pr_shape_noise (noise3 [ny (+ nz 73.205) nx] :seed seed_noise :octaves noise_turbulence
+                                                    :lacunarity 2.0 :gain noise_roughness) noise_attenuation)]
+                          [(fma sx noise_amplitude_x q.x) (fma sy noise_amplitude_y q.y) (fma sz noise_amplitude_z q.z)]))
+                        srcs qpos))
+                      qpos)
+             ; ---- node rotation Rz (Ry Rx), the Mat4.mul fused chains
+             cxo (cos orientation_x) sxo (sin orientation_x)
+             cyo (cos orientation_y) syo (sin orientation_y)
+             czo (cos orientation_z) szo (sin orientation_z)
+             rxm0 [1.0 0.0 0.0] rxm1 [0.0 cxo (* -1.0 sxo)] rxm2 [0.0 sxo cxo]
+             rym0 [cyo 0.0 syo] rym1 [0.0 1.0 0.0] rym2 [(* -1.0 syo) 0.0 cyo]
+             rzm0 [czo (* -1.0 szo) 0.0] rzm1 [szo czo 0.0] rzm2 [0.0 0.0 1.0]
+             m10 (pr_row_mul rym0 rxm0 rxm1 rxm2) m11 (pr_row_mul rym1 rxm0 rxm1 rxm2) m12 (pr_row_mul rym2 rxm0 rxm1 rxm2)
+             l0 (pr_row_mul rzm0 m10 m11 m12) l1 (pr_row_mul rzm1 m10 m11 m12) l2 (pr_row_mul rzm2 m10 m11 m12)
+             rotated (exact (map (fn [(q : vec3)]
+                       [(fma l0.z q.z (fma l0.y q.y (* l0.x q.x)))
+                        (fma l1.z q.z (fma l1.y q.y (* l1.x q.x)))
+                        (fma l2.z q.z (fma l2.y q.y (* l2.x q.x)))]) qnoise))
+             newpos (exact (map (fn [(src : int) (r : vec3)]
+                      (let* [a (array/nth fa src) b (array/nth fb src) c (array/nth fc src)
+                             tq (array/nth tt src) iv (array/nth inv src) st (array/nth sv src)
+                             rz (* r.z st)]
+                        [(fma (* c.x iv.z) rz (fma (* b.x iv.y) r.y (fma (* a.x iv.x) r.x tq.x)))
+                         (fma (* c.y iv.z) rz (fma (* b.y iv.y) r.y (fma (* a.y iv.x) r.x tq.y)))
+                         (fma (* c.z iv.z) rz (fma (* b.z iv.y) r.y (fma (* a.z iv.x) r.x tq.z)))])) srcs rotated))
+             gpos (sop/attr generated :P)
+             positioned (sop/with_attr generated :P (exact (array/concat (array/slice gpos 0 prefix) newpos)))
+             ; ---- velocity
+             vpre (if keep_input vsrc (array/vec3 0 [0.0 0.0 0.0]))
+             vgen (exact (map (fn [(src : int) (p : vec3)]
+                    (let* [vs (array/nth vsrc src) sp (array/nth psrc src)]
+                      [(fma radial_velocity (- p.x sp.x) (if has_v (* vs.x inherit_velocity) 0.0))
+                       (fma radial_velocity (- p.y sp.y) (if has_v (* vs.y inherit_velocity) 0.0))
+                       (fma radial_velocity (- p.z sp.z) (if has_v (* vs.z inherit_velocity) 0.0))])) srcs newpos))
+             velocity (if (or has_v (not (= radial_velocity 0.0)))
+                        (sop/with_attr positioned "v" (array/concat vpre vgen) :owner "point" :type vec3)
+                        positioned)
+             shaped (if custom (sop/with_attr velocity "shapeptnum" (array/concat (array/int prefix -1) spn) :owner "point" :type int)
+                      velocity)
+             ; ---- inherited transforms
+             xf_names (if (text/blank? transform_attributes) (array/text 0 "")
+                        (sop/attr_names shaped transform_attributes :owner "point"))
+             msc (exact (map (fn [(i : int)] (pr_scaled_matrix_scale (array/nth fa i) (array/nth fb i) (array/nth fc i))) idx))
+             cof0 (exact (map (fn [(i : int)] (pr_cof0 (array/nth fa i) (array/nth fb i) (array/nth fc i) (array/nth msc i))) idx))
+             cof1 (exact (map (fn [(i : int)] (pr_cof1 (array/nth fa i) (array/nth fb i) (array/nth fc i) (array/nth msc i))) idx))
+             cof2 (exact (map (fn [(i : int)] (pr_cof2 (array/nth fa i) (array/nth fb i) (array/nth fc i) (array/nth msc i))) idx))
+             detv (exact (map (fn [(i : int)] (pr_det (array/nth fa i) (array/nth fb i) (array/nth fc i) (array/nth msc i) (array/nth cof0 i))) idx))
+             sgn (exact (map (fn [(d : float)] (if (< d 0.0) -1.0 1.0)) detv))
+             singular (int/gt (array/sum (exact (map (fn [(n : int) (d : float)]
+                          (if (and (int/gt n 0) (<= (abs d) 1e-20)) 1 0)) counts detv))) 0)
+             transformed (fold [state shaped] [index (pr_ix (array/count xf_names))]
+                           (pr_xf_attr state (array/nth xf_names index) singular prefix gcount srcs fa fb fc cof0 cof1 cof2 sgn))]
+        (if keep_source_attributes transformed
+          (sop/delete_attr (sop/delete_attr transformed isrc :owner "point") iidx :owner "point")))))))
