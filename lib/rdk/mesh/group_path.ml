@@ -58,10 +58,55 @@ let checked_edge_lengths ?cancel ~grain geometry index =
     fail (Printf.sprintf "edge %d length is not representable" !edge);
   lengths
 
+type dual = {
+  offsets : int array;
+  edges : int array;
+  edge_a : int array;
+  edge_b : int array;
+}
+
 type primitive_graph = {
   topology : Topology.Private.view;
   index : Topology_index.Private.view;
+  dual : dual;
 }
+
+(* The primitive graph as point/edge adjacency: one edge per two-sided
+   topology edge (same edge ids), listed per primitive in vertex order. *)
+let dual_graph (topology : Topology.Private.view)
+    (view : Topology_index.Private.view) =
+  let primitive_count = Bytes.length topology.primitive_kinds
+  and edge_count = Array.length view.edge_a in
+  let edge_a = Array.make edge_count 0 and edge_b = Array.make edge_count 0
+  and two_sided = Array.make edge_count false in
+  for edge = 0 to edge_count - 1 do
+    let first = view.edge_offsets.(edge) in
+    if view.edge_offsets.(edge + 1) - first = 2 then begin
+      two_sided.(edge) <- true;
+      edge_a.(edge) <- view.primitive_of_vertex.(view.edge_vertices.(first));
+      edge_b.(edge) <- view.primitive_of_vertex.(view.edge_vertices.(first + 1))
+    end
+  done;
+  let offsets = Array.make (primitive_count + 1) 0 in
+  let each_slot visit =
+    for primitive = 0 to primitive_count - 1 do
+      for vertex = topology.primitive_offsets.(primitive)
+          to topology.primitive_offsets.(primitive + 1) - 1 do
+        let edge = view.edge_of_vertex.(vertex) in
+        if edge >= 0 && two_sided.(edge) then visit primitive edge
+      done
+    done in
+  each_slot (fun primitive _ ->
+    offsets.(primitive + 1) <- offsets.(primitive + 1) + 1);
+  for primitive = 0 to primitive_count - 1 do
+    offsets.(primitive + 1) <- offsets.(primitive + 1) + offsets.(primitive)
+  done;
+  let edges = Array.make offsets.(primitive_count) 0
+  and fill = Array.sub offsets 0 primitive_count in
+  each_slot (fun primitive edge ->
+    edges.(fill.(primitive)) <- edge;
+    fill.(primitive) <- fill.(primitive) + 1);
+  { offsets; edges; edge_a; edge_b }
 
 type graph =
   | Point_graph of Topology_index.Private.view
@@ -156,7 +201,8 @@ let checked_primitive_lengths ?cancel ~grain geometry index =
   if !edge < edge_count then
     fail (Printf.sprintf
       "primitive-center distance across edge %d is not representable" !edge);
-  Primitive_graph { topology; index = view }, lengths
+  Primitive_graph { topology; index = view; dual = dual_graph topology view },
+  lengths
 
 let validate_group ~label ~owner ~length group =
   if Group.owner group <> owner then
@@ -186,15 +232,15 @@ let find ?cancel ~scratch ~graph ~lengths ~allowed ~used ~blocked_elements
   let element_count = graph_count graph in
   if Array.length scratch.depths <> element_count then
     invalid_arg "Group Find Path: scratch length does not match owner count";
-  Array.fill scratch.depths 0 element_count (-1);
   let depths = scratch.depths and distances = scratch.distances
   and previous = scratch.previous and queue = scratch.queue in
-  let element_allowed element =
-    element = start || element = finish
-    || (allowed element
-        && (match used with None -> true | Some bits -> not (Support.Bits.mem bits element))
-        && (match blocked_elements with
-            | None -> true | Some bits -> not (Support.Bits.mem bits element))) in
+  let blocked_point element =
+    not (allowed element)
+    || (match used with None -> false | Some bits -> Support.Bits.mem bits element)
+    || (match blocked_elements with
+        | None -> false | Some bits -> Support.Bits.mem bits element)
+  and blocked_edge edge = match blocked_edges with
+    | None -> false | Some bits -> Support.Bits.mem bits edge in
   let owner_name = match graph_owner graph with
     | Group.Point -> "point" | Group.Vertex -> "vertex"
     | Group.Primitive -> "primitive" in
@@ -202,68 +248,17 @@ let find ?cancel ~scratch ~graph ~lengths ~allowed ~used ~blocked_elements
     fail (Printf.sprintf "start %s %d is constrained" owner_name start);
   if not (allowed finish) then
     fail (Printf.sprintf "end %s %d is constrained" owner_name finish);
-  depths.(start) <- 0;
-  distances.(start) <- 0.;
-  queue.(0) <- start;
-  let head = ref 0 and tail = ref 1 and overflow = ref false in
-  let[@inline always] relax element edge next =
-    if element_allowed next then begin
-      let next_depth = depths.(element) + 1
-      and next_distance = distances.(element) +. lengths.(edge) in
-      if not (Float.is_finite next_distance) then overflow := true
-      else if depths.(next) < 0
-          || next_depth < depths.(next)
-          || (next_depth = depths.(next)
-              && (next_distance < distances.(next)
-                  || (next_distance = distances.(next)
-                      && element < previous.(next)))) then begin
-        if depths.(next) < 0 then begin
-          queue.(!tail) <- next;
-          incr tail
-        end;
-        depths.(next) <- next_depth;
-        distances.(next) <- next_distance;
-        previous.(next) <- element
-      end
-    end in
-  while !head < !tail
-      && (depths.(finish) < 0 || depths.(queue.(!head)) < depths.(finish)) do
-    let element = queue.(!head) in
-    if !head land 4095 = 0 then Cancel.check_opt cancel;
-    incr head;
-    match graph with
+  let point_edge_offsets, point_edges, edge_a, edge_b = match graph with
     | Point_graph view ->
-        let first = view.point_edge_offsets.(element)
-        and last = view.point_edge_offsets.(element + 1) in
-        for slot = first to last - 1 do
-          let edge = view.point_edges.(slot) in
-          if match blocked_edges with None -> true
-              | Some bits -> not (Support.Bits.mem bits edge) then begin
-            let a = view.edge_a.(edge) and b = view.edge_b.(edge) in
-            relax element edge (if a = element then b else a)
-          end
-        done
-    | Primitive_graph graph ->
-        let first = graph.topology.primitive_offsets.(element)
-        and last = graph.topology.primitive_offsets.(element + 1) in
-        for vertex = first to last - 1 do
-          let edge = graph.index.edge_of_vertex.(vertex) in
-          if edge >= 0
-              && (match blocked_edges with None -> true
-                  | Some bits -> not (Support.Bits.mem bits edge)) then begin
-            let edge_first = graph.index.edge_offsets.(edge)
-            and edge_last = graph.index.edge_offsets.(edge + 1) in
-            if edge_last - edge_first = 2 then begin
-              let left = graph.index.primitive_of_vertex.(
-                  graph.index.edge_vertices.(edge_first))
-              and right = graph.index.primitive_of_vertex.(
-                  graph.index.edge_vertices.(edge_first + 1)) in
-              relax element edge (if left = element then right else left)
-            end
-          end
-        done
-  done;
-  if !overflow then fail "accumulated path length is not representable";
+        view.point_edge_offsets, view.point_edges, view.edge_a, view.edge_b
+    | Primitive_graph { dual; _ } ->
+        dual.offsets, dual.edges, dual.edge_a, dual.edge_b in
+  (try
+     Shortest_paths.hop_search ?cancel ~blocked_point ~blocked_edge
+       ~target:finish ~depths ~distances ~previous ~queue ~point_edge_offsets
+       ~point_edges ~edge_a ~edge_b ~lengths [| start |]
+   with Shortest_paths.Hop_overflow ->
+     fail "accumulated path length is not representable");
   if depths.(finish) < 0 then
     Error (Printf.sprintf "no path from %s %d to %s %d"
       owner_name start owner_name finish)

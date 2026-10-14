@@ -913,8 +913,8 @@ arr1[0.;-0.;0.];arr1[1e16;1.;-1e16];
     with Ok fields->E.Record(List.rev fields)|Error d->failwith(Flow.Diagnostic.to_string d) in
     let points=Rdk.Geometry.point_count geometry
     and edges=Rdk.Topology_index.edge_count(Rdk.Topology_index.create(Rdk.Geometry.topology geometry)) in
-    let graph name ty components args=
-      add_host name (List.map snd args)
+    let graph ?positional name ty components args=
+      add_host name (match positional with Some p->p|None->List.map snd args)
         (host_result(fun()->
           let get component=resolve(E.Source(name,ty,("component",E.Text component)::args)) in
           let rec gather acc=function
@@ -922,8 +922,17 @@ arr1[0.;-0.;0.];arr1[1e16;1.;-1e16];
             |component::rest->Result.bind(get component)(fun value->gather((component,value)::acc)rest) in
           gather [] components)) in
     let paths ?radius lengths roots=
-      graph "graph/shortest_paths" T.Any ["distance";"parent"]
+      graph "graph/shortest_paths" T.Any ["distance";"parent";"path";"order"]
         (["adjacency",adjacency;"lengths",lengths;"roots",roots]@(match radius with Some r->["radius",r]|None->[])) in
+    (* :hops forms; the JavaScript twin takes the options positionally, null when absent. *)
+    let hop_paths ?radius ?(hops=true) ?blocked_points ?blocked_edges ?target ?ties lengths roots=
+      let opt name=function Some v->[name,v]|None->[] in
+      let named=["adjacency",adjacency;"lengths",lengths;"roots",roots]@opt "radius" radius
+        @(if hops then ["hops",E.Bool true] else [])@opt "blocked_points" blocked_points
+        @opt "blocked_edges" blocked_edges@opt "target" target@opt "ties" ties in
+      let slot=function Some v->v|None->E.No_geo in
+      graph "graph/shortest_paths" T.Any ["distance";"parent";"path";"order"] named
+        ~positional:[adjacency;lengths;roots;slot radius;E.Bool hops;slot blocked_points;slot blocked_edges;slot target;slot ties] in
     let unit=E.Float_array(Array.make edges 1.) and mixed=E.Float_array(Array.init edges (fun i->float(1+i mod 2)))
     and ramp=E.Float_array(Array.init edges (fun i->0.25*.float i)) in
     List.iter(fun roots->if roots<=points then List.iter(fun lengths->
@@ -938,6 +947,64 @@ arr1[0.;-0.;0.];arr1[1e16;1.;-1e16];
     paths unit (E.Int_array [|-1|]);
     paths unit (E.Int_array [||]);
     paths unit (E.Int_array(Array.make 3 (-0)));
+    if points>0 then hop_paths ~hops:false ~target:(E.Int (points-1)) unit (E.Int_array [|0|]);
+    if points>0 then hop_paths ~hops:false ~target:(E.Int 0) mixed (E.Int_array [|0|]);
+    hop_paths ~hops:false ~target:(E.Int points) unit (E.Int_array [||]);
+    hop_paths ~hops:false ~target:(E.Int (-1)) unit (E.Int_array [||]);
+    hop_paths ~hops:false ~target:(E.Float 0.) unit (E.Int_array [||]);
+    List.iter(fun lengths->
+      List.iter(fun roots->if roots<=points then begin
+        hop_paths lengths (E.Int_array(Array.init roots Fun.id));
+        if points>0 then List.iter(fun target->
+          hop_paths ~target:(E.Int target) lengths (E.Int_array(Array.init roots Fun.id));
+          hop_paths ~target:(E.Int target) ~blocked_points:(E.Int_array(Array.init points (fun i->i land 1)))
+            lengths (E.Int_array(Array.init roots Fun.id));
+          hop_paths ~target:(E.Int target) ~blocked_edges:(E.Int_array(Array.init edges (fun i->if i mod 3=1 then 1 else 0)))
+            lengths (E.Int_array(Array.init roots Fun.id));
+          hop_paths ~blocked_points:(E.Int_array(Array.init points (fun i->if i mod 3=0 then 1 else 0)))
+            ~blocked_edges:(E.Int_array(Array.init edges (fun i->i land 1))) lengths (E.Int_array(Array.init roots Fun.id)))
+          [0;points-1;points/2]
+      end)[0;1;2])[unit;mixed;ramp];
+    hop_paths ~hops:false ~blocked_points:(E.Int_array(Array.make points 0)) unit (E.Int_array [||]);
+    hop_paths ~radius:(E.Float 1.) unit (E.Int_array [||]);
+    hop_paths ~blocked_points:(E.Int_array(Array.make (points+1) 0)) unit (E.Int_array [||]);
+    hop_paths ~blocked_points:(E.Int_array(Array.make points 2)) unit (E.Int_array [||]);
+    hop_paths ~blocked_edges:(E.Int_array(Array.make (edges+1) 0)) unit (E.Int_array [||]);
+    hop_paths ~target:(E.Int points) unit (E.Int_array [||]);
+    hop_paths ~target:(E.Float 1.) unit (E.Int_array [||]);
+    hop_paths unit (E.Int_array [|points|]);
+    let lowest=E.Text "lowest" in
+    let zeros=E.Float_array(Array.init edges (fun i->float(i mod 3))) in
+    List.iter(fun lengths->
+      List.iter(fun roots->if roots<=points then begin
+        hop_paths ~hops:false ~ties:lowest lengths (E.Int_array(Array.init roots Fun.id));
+        if points>0 then List.iter(fun target->
+          hop_paths ~hops:false ~ties:lowest ~target:(E.Int target) lengths (E.Int_array(Array.init roots Fun.id));
+          hop_paths ~hops:false ~ties:lowest ~target:(E.Int target)
+            ~blocked_edges:(E.Int_array(Array.init edges (fun i->if i mod 3=1 then 1 else 0)))
+            lengths (E.Int_array(Array.init roots Fun.id)))
+          [0;points-1;points/2]
+      end)[0;1;2;3])[unit;mixed;zeros];
+    hop_paths ~hops:false ~ties:(E.Text "first") unit (E.Int_array [|0|]);
+    hop_paths ~hops:false ~ties:(E.Text "other") unit (E.Int_array [||]);
+    hop_paths ~hops:false ~ties:lowest ~radius:(E.Float 1.) unit (E.Int_array [||]);
+    hop_paths ~hops:false ~ties:lowest ~blocked_points:(E.Int_array(Array.make points 0)) unit (E.Int_array [||]);
+    hop_paths ~ties:lowest unit (E.Int_array [||]);
+    let forest ?mask parents=
+      graph "graph/forest" T.Any ["order";"depth";"root";"offsets";"children"]
+        (["parents",parents]@(match mask with Some m->["mask",m]|None->[]))
+        ~positional:[parents;(match mask with Some m->m|None->E.No_geo)] in
+    List.iter(fun parents->
+      let n=Array.length parents in
+      forest (E.Int_array parents);
+      forest ~mask:(E.Int_array(Array.make n 1)) (E.Int_array parents);
+      forest ~mask:(E.Int_array(Array.init n (fun i->i land 1))) (E.Int_array parents);
+      forest ~mask:(E.Int_array(Array.init n (fun i->if i mod 3=1 then 0 else 1))) (E.Int_array parents);
+      forest ~mask:(E.Int_array(Array.make n 0)) (E.Int_array parents))
+      [[||];[|0|];[|-1|];[|-1;0;0;1;1;2|];[|5;0;1;2;3;4|];[|1;0;1;9;-4;4|];[|-1;-1;1;1;3;2;2;7|];[|3;3;3;3;0;4;4;5|]];
+    forest ~mask:(E.Int_array [|1|]) (E.Int_array [|0;0|]);
+    forest ~mask:(E.Int_array [|2;0|]) (E.Int_array [|0;0|]);
+    forest (E.Float_array [|0.|]);
     let chains mask=graph "graph/chains" T.Any ["offsets";"values";"closed"]
       (["adjacency",adjacency]@(match mask with Some m->["mask",m]|None->[])) in
     chains None;
@@ -1417,7 +1484,7 @@ remap_case source unrelated fields;
     let body = String.concat ",\n" (List.rev !(Hashtbl.find cases name)) in
     Out_channel.with_open_bin (Filename.concat outdir (export name ^ ".json")) (fun oc ->
       Printf.fprintf oc "{\"primitive\":%s,\"export\":%s,\"cases\":[\n%s\n]}\n" (str name) (str (export name)) body))
-    (List.map C.primitive_name inventory @ ["array/sum";"sop/context_seed";"sop/delete_attr";"sop/attr";"sop/attr_checked";"sop/with_attr";"sop/has_attr";"sop/count";"sop/edges";"sop/topology";"sop/adjacency";"sop/components";"graph/shortest_paths";"graph/chains";"graph/color";"sop/mesh";"sop/mesh_planes";"sop/remap";
+    (List.map C.primitive_name inventory @ ["array/sum";"sop/context_seed";"sop/delete_attr";"sop/attr";"sop/attr_checked";"sop/with_attr";"sop/has_attr";"sop/count";"sop/edges";"sop/topology";"sop/adjacency";"sop/components";"graph/shortest_paths";"graph/forest";"graph/chains";"graph/color";"sop/mesh";"sop/mesh_planes";"sop/remap";
       "sop/group";"sop/group_names";"sop/group_order";"sop/with_group";
       "sop/attr_type";"sop/attr_names";"sop/attr_entries";"sop/rename_attr";"sop/swap_attr";"sop/delete_attrs";
       "sop/rename_group";"sop/delete_group";"sop/rename_edge";"sop/delete_edge";"text/glob_error";"text/glob_rewrite_error";

@@ -1,0 +1,119 @@
+; Whole Edge Transport draft. Roots come from the connected components of the selected edge graph
+; (sop/components with the selection as mask) or the root group; the shortest-path forest is
+; graph/shortest_paths :ties "lowest" over the edges whose two ends are selected (the factored
+; Rdk.Shortest_paths.forest_search of the native node), graph/forest labels depth and root, and the
+; sweeps are the shared etp_ Jacobi passes of prelude.rays. Backward sweeps read the children of a
+; point in the order the search settled them, like the native children table.
+
+(defnode sop/edge_transport :label "Edge Transport" :category ["Attribute" "Transport"]
+  :validate (and (not (text/blank? attribute))
+              (and (not (equal? attribute "P"))
+                   (or (equal? operation "Total") (not (or integrate_constant scale_by_edge_length)))))
+  :code "E_PARAM" :message "sop/edge_transport: invalid parameters"
+  [(in0 : geometry)
+   (attribute : text "value" :label "Attribute")
+   (point_group : text "" :label "Point group")
+   (roots : text "First point" :label "Roots" :choices ["First point" "Last point" "Root group"])
+   (root_group : text "" :label "Root group")
+   (direction : text "Forward" :label "Direction" :choices ["Forward" "Backward"])
+   (operation : text "Transport" :label "Operation"
+     :choices ["Transport" "From root" "Total" "Maximum" "Minimum"])
+   (root_value : text "Zero" :label "Root value" :choices ["Zero" "Hold"])
+   (integrate_constant : bool false :label "Integrate constant")
+   (scale_by_edge_length : bool false :label "Scale by edge length")
+   (split : text "Copy" :label "Branch split" :choices ["Copy" "Split"])
+   (merge : text "Add" :label "Branch merge" :choices ["Add" "Maximum" "Minimum"])
+   (normalization : text "None" :label "Normalization" :choices ["None" "Per component" "Global"])]
+  (let* [group_name (text/trim point_group)
+         root_name (text/trim root_group)
+         use_root_group (and (equal? roots "Root group") (not (text/blank? root_name)))
+         found_group (or (text/blank? group_name)
+           (fold [found false] [name (sop/group_names in0 "" :owner "point")]
+             (or found (equal? name group_name))))
+         found_root (or (not use_root_group)
+           (fold [found false] [name (sop/group_names in0 "" :owner "point")]
+             (or found (equal? name root_name))))]
+    (cond
+      (not found_group)
+        (error "missing_group" (str "edge_transport could not find point group " (text/repr group_name)))
+      (not found_root)
+        (error "missing_group" (str "edge_transport could not find root point group " (text/repr root_name)))
+      (and (not integrate_constant) (not (sop/has_attr in0 attribute :owner "point"))) in0
+      (and (not integrate_constant) (not (sop/has_attr in0 attribute :owner "point" :type float)))
+        (error "invalid_edge_transport" "edge_transport could not produce valid geometry"
+          :cause "edge_transport [invalid_edge_transport]: Edge Transport requires a scalar float point attribute")
+      :else
+        (let* [n (sop/count in0 :points)
+               selection (if (text/blank? group_name) (array/int n 1)
+                           (sop/group in0 :name group_name :owner "point"))
+               adjacency (sop/adjacency in0)
+               position_data (sop/attr_checked in0 "P")
+               positions position_data.values
+               edge_a adjacency.edge_a
+               edge_b adjacency.edge_b
+               lengths (exact (map (fn [(a : int) (b : int)]
+                         (etp_length (array/nth positions a) (array/nth positions b))) edge_a edge_b))
+               blocked (exact (map (fn [(a : int) (b : int)]
+                         (if (and (int/eq (array/nth selection a) 1) (int/eq (array/nth selection b) 1)) 0 1))
+                         edge_a edge_b))
+               components (sop/components in0 :over "edges" :mask selection)
+               ids components.id
+               points (array/range n :type int)
+               first_of (array/index_of ids ids)
+               reversed (exact (map (fn [(p : int)] (array/nth ids (int/sub (int/sub n 1) p))) points))
+               last_of (array/index_of reversed reversed)
+               root_flags (cond
+                 use_root_group
+                   (let* [chosen (sop/group in0 :name root_name :owner "point")]
+                     (exact (map (fn [(s : int) (c : int)] (if (and (int/eq s 1) (int/eq c 1)) 1 0))
+                       selection chosen)))
+                 (equal? roots "Last point")
+                   (exact (map (fn [(p : int)]
+                     (if (and (int/ge (array/nth ids p) 0)
+                              (int/eq (array/nth last_of (int/sub (int/sub n 1) p)) (int/sub (int/sub n 1) p))) 1 0))
+                     points))
+                 :else
+                   (exact (map (fn [(p : int)]
+                     (if (and (int/ge (array/nth ids p) 0) (int/eq (array/nth first_of p) p)) 1 0)) points)))
+               tree (graph/shortest_paths adjacency lengths (array/compact root_flags)
+                      :ties "lowest" :blocked_edges blocked)
+               settle tree.order
+               tree_parent tree.parent
+               reached (exact (map (fn [(d : float)] (if (>= d 0.0) 1 0)) tree.distance))
+               shape (graph/forest tree_parent :mask reached)
+               dep shape.depth
+               op (cond (equal? operation "Transport") 0 (equal? operation "From root") 1
+                        (equal? operation "Total") 2 (equal? operation "Maximum") 3 :else 4)
+               source (if integrate_constant (array/float n 1.0)
+                        (sop/attr in0 attribute :owner "point" :type float))
+               scale (if scale_by_edge_length
+                       (exact (map (fn [(p : int)]
+                         (if (int/gt (array/nth dep p) 0)
+                           (etp_length (array/nth positions (array/nth tree_parent p)) (array/nth positions p))
+                           0.0)) points))
+                       (array/float n 1.0))
+               hold (equal? root_value "Hold")
+               passes (if (int/eq (array/count settle) 0) 0 (int/add 1 (array/max dep)))
+               ; children in settle order: stable grade of the settled points by parent (roots last)
+               settle_keys (exact (map (fn [(p : int)]
+                 (if (int/lt (array/nth tree_parent p) 0) n (array/nth tree_parent p))) settle))
+               by_parent (array/grade settle_keys)
+               ordered (exact (map (fn [(k : int)] (array/nth settle (array/nth by_parent k)))
+                         (array/range (array/count settle) :type int)))
+               child_total (array/sum (exact (map (fn [(p : int)]
+                 (if (int/lt (array/nth tree_parent p) 0) 0 1)) settle)))
+               kids (array/slice ordered 0 child_total)
+               counts (array/scatter_add (exact (map (fn [(p : int)] (array/nth tree_parent p)) kids))
+                        (array/int child_total 1) n)
+               off (array/scan_sum counts)
+               swept (if (equal? direction "Forward")
+                       (etp_forward {:par tree_parent :dep dep :rt shape.root :cc counts
+                                     :scale scale :inp source :op op :hold hold
+                                     :split (equal? split "Split") :fuse false :passes passes})
+                       (etp_backward {:off off :kids kids :dep dep :scale scale :inp source
+                                      :op op :merge (cond (equal? merge "Add") 0 (equal? merge "Maximum") 1 :else 2)
+                                      :hold hold :fuse false :passes passes}))
+               output (etp_normalize swept settle ids
+                        (cond (equal? normalization "None") 0 (equal? normalization "Global") 2 :else 1))]
+          (if (int/eq (array/count settle) 0) in0
+            (sop/with_attr in0 attribute output :owner "point" :type float))))))

@@ -1,7 +1,7 @@
 {
   "generator": "tools/api_manifest/api_manifest.exe",
   "kind": "stable_high_level",
-  "module_count": 183,
+  "module_count": 184,
   "modules": [
     {
       "api": [
@@ -3063,6 +3063,18 @@
     },
     {
       "api": [
+        "type t = { tree_parent : int array ; child_offsets : int array ; children : int array ; order : int array ; order_count : int ; root_offsets : int array ; root_count : int ; }",
+        "val scan : ? cancel : Cancel.t -> ? grain : int -> ? selected : ( int -> bool ) -> selected_count : int -> int array -> t",
+        "val labels : t -> int array * int array"
+      ],
+      "api_sha256": "957b99da4a38a3e65683ef6067ae0e1b006368c18d2eb7d1abced3c5b5078257",
+      "excluded_legacy_symbols": [],
+      "library": "rdk",
+      "module": "Forest",
+      "source": "lib/rdk/mesh/forest.mli"
+    },
+    {
+      "api": [
         "type fuse_metric = Euclidean | Componentwise",
         "type fuse_using = Point_snap.using = | Least_target_point | Closest_target_point",
         "type fuse_match_condition = Point_snap.match_condition = | Equal_attribute_values | Unequal_attribute_values",
@@ -3783,9 +3795,13 @@
     },
     {
       "api": [
-        "val search : ? cancel : Cancel.t -> ? radius : float -> point_edge_offsets : int array -> point_edges : int array -> edge_a : int array -> edge_b : int array -> lengths : float array -> int array -> float array * int array"
+        "val search : ? cancel : Cancel.t -> ? radius : float -> point_edge_offsets : int array -> point_edges : int array -> edge_a : int array -> edge_b : int array -> lengths : float array -> int array -> float array * int array",
+        "exception Hop_overflow",
+        "val hop_search : ? cancel : Cancel.t -> ? blocked_point : ( int -> bool ) -> ? blocked_edge : ( int -> bool ) -> ? target : int -> depths : int array -> distances : float array -> previous : int array -> queue : int array -> point_edge_offsets : int array -> point_edges : int array -> edge_a : int array -> edge_b : int array -> lengths : float array -> int array -> unit",
+        "type forest = { distance : float array ; parent : int array ; edge : int array ; root : int array ; order : int array ; order_count : int ; }",
+        "val forest_search : ? cancel : Cancel.t -> ? drain_each : bool -> valid_edge : ( int -> bool ) -> capacity : int -> point_edge_offsets : int array -> point_edges : int array -> edge_a : int array -> edge_b : int array -> lengths : float array -> int array -> forest"
       ],
-      "api_sha256": "75af451d9b449fb6a5fadf6cf674ad603d3ed5d3f54a58ecc305b81822ea61da",
+      "api_sha256": "af85aa146326c64c3ab4e55b01a49b7133124a05de27f5f2be8cd61a84f8d52b",
       "excluded_legacy_symbols": [],
       "library": "rdk",
       "module": "Shortest_paths",

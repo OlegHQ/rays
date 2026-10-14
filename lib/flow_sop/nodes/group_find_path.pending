@@ -1,0 +1,238 @@
+; Whole Group Find Path draft. Each segment is one graph/shortest_paths :hops true call (the factored
+; Rdk.Shortest_paths.hop_search of the native node: hop count, then accumulated length, then lower
+; predecessor) over the point graph, or over the primitive graph built from the two-sided edges
+; (centroid distances as lengths). Collision, the self-avoidance set and the closing return leg become
+; blocked_points / blocked_edges masks; a loop over the segments carries the used mask and the joined
+; path. gfp_ names are private to this node.
+(defn gfp_error :context value [(reason : text)]
+  (error "invalid_group" "group_find_path could not produce valid geometry"
+    :cause (str "group_find_path [invalid_group]: " reason)))
+
+(defn gfp_imax :context value [(a : int) (b : int)] (if (int/gt a b) a b))
+(defn gfp_imin :context value [(a : int) (b : int)] (if (int/lt a b) a b))
+; `a` without its first `head` and last `tail` elements (empty when shorter).
+(defn gfp_inner :context value [(a : (array int)) (head : int) (tail : int)]
+  (let* [size (array/count a)]
+    (array/slice a (gfp_imin head size) (gfp_imax 0 (int/sub size (int/add head tail))))))
+(defn gfp_zeros :context value [(n : int)]
+  (exact (map (fn [(i : int)] 0) (array/range n :type int))))
+
+; Native distance: scale by the largest component difference, then scale * |normalised|.
+(defn gfp_distance :context value [(a : vec3) (b : vec3)]
+  (let* [dx (- b.x a.x) dy (- b.y a.y) dz (- b.z a.z)
+         scale (max (abs dx) (max (abs dy) (abs dz)))]
+    (if (= scale 0.0) 0.0
+      (let* [x (/ dx scale) y (/ dy scale) z (/ dz scale)]
+        (* scale (sqrt (fma z z (fma y y (* x x)))))))))
+
+; Primitive centroids as the native mean of coordinates scaled by the largest magnitude.
+(defn gfp_centroids :context value
+  [(positions : (array vec3)) (vertex_points : (array int)) (offsets : (array int)) (owner : (array int))]
+  (let* [at (exact (map (fn [(v : int)] (array/nth positions (array/nth vertex_points v)))
+              (array/range (array/count vertex_points) :type int)))
+         peak (exact (map (fn [(p : vec3)] (max (abs p.x) (max (abs p.y) (abs p.z)))) at))
+         scale (array/segment_max peak offsets)
+         scaled (exact (map (fn [(p : vec3) (o : int)]
+                  (let* [s (array/nth scale o)]
+                    (if (> s 0.0) [(/ p.x s) (/ p.y s) (/ p.z s)] [0.0 0.0 0.0]))) at owner))
+         sum_x (array/segment_sum (exact (map (fn [(p : vec3)] p.x) scaled)) offsets)
+         sum_y (array/segment_sum (exact (map (fn [(p : vec3)] p.y) scaled)) offsets)
+         sum_z (array/segment_sum (exact (map (fn [(p : vec3)] p.z) scaled)) offsets)]
+    (exact (map (fn [(i : int)]
+      (let* [s (array/nth scale i)
+             divisor (float (int/sub (array/nth offsets (int/add i 1)) (array/nth offsets i)))]
+        (if (> s 0.0)
+          [(* (/ (array/nth sum_x i) divisor) s) (* (/ (array/nth sum_y i) divisor) s) (* (/ (array/nth sum_z i) divisor) s)]
+          [0.0 0.0 0.0])))
+      (array/range (array/count scale) :type int)))))
+
+; The primitive graph as point/edge adjacency: one edge per two-sided topology edge (same ids), listed
+; per primitive in vertex order. :a / :b are the primitives of the edge (0 for the others).
+(defn gfp_dual :context value
+  [(edge_of_vertex : (array int)) (owner : (array int)) (prims : int) (edges : int)]
+  (let* [with_edge (array/compact (exact (map (fn [(e : int)] (if (int/ge e 0) 1 0)) edge_of_vertex)))
+         edge_vs (exact (map (fn [(k : int)] (array/nth edge_of_vertex k)) with_edge))
+         prim_vs (exact (map (fn [(k : int)] (array/nth owner k)) with_edge))
+         per_edge (array/scatter_add edge_vs (array/int (array/count edge_vs) 1) edges)
+         prim_sum (array/scatter_add edge_vs prim_vs edges)
+         first_vertex (array/index_of edge_of_vertex (array/range edges :type int))
+         erange (array/range edges :type int)
+         edge_a (exact (map (fn [(e : int)]
+                  (if (int/eq (array/nth per_edge e) 2) (array/nth owner (array/nth first_vertex e)) 0)) erange))
+         edge_b (exact (map (fn [(e : int)]
+                  (if (int/eq (array/nth per_edge e) 2) (int/sub (array/nth prim_sum e) (array/nth edge_a e)) 0)) erange))
+         kept (array/compact (exact (map (fn [(e : int)] (if (int/eq (array/nth per_edge e) 2) 1 0)) edge_vs)))
+         kept_prims (exact (map (fn [(k : int)] (array/nth prim_vs k)) kept))
+         kept_edges (exact (map (fn [(k : int)] (array/nth edge_vs k)) kept))
+         counts (array/scatter_add kept_prims (array/int (array/count kept) 1) prims)]
+    {:off (array/scan_sum counts) :edges kept_edges :a edge_a :b edge_b :per_edge per_edge}))
+
+; Mark `path` elements in `mask` (0/1 ints of length n).
+(defn gfp_mark :context value [(mask : (array int)) (path : (array int))]
+  (let* [marked (array/scatter_add path (array/int (array/count path) 1) (array/count mask))]
+    (exact (map (fn [(m : int) (x : int)] (if (or (int/eq m 1) (int/gt x 0)) 1 0)) mask marked))))
+
+; Interior of the closing return leg: the path from the end of `primary` back to its start that avoids
+; the primary's interior points and the edges it walked. {:ok bool :interior (array int)}.
+(defn gfp_close :context sop
+  [(cfg : {:adj {:primitive_of_vertex (array int) :next_vertex (array int) :previous_vertex (array int)
+                 :edge_of_vertex (array int) :opposite_vertex (array int) :edge_a (array int) :edge_b (array int)
+                 :point_edge_offsets (array int) :point_edges (array int) :point_vertex_offsets (array int)
+                 :point_vertices (array int)}
+           :lengths (array float) :block (array int) :keys (array int) :count int})
+   (primary : (array int)) (used : (array int))]
+  (let* [len (array/count primary)
+         n cfg.count
+         interior (gfp_mark (gfp_zeros n) (gfp_inner primary 1 1))
+         blocked (exact (map (fn [(b : int) (u : int) (i : int)] (if (or (int/eq b 1) (or (int/eq u 1) (int/eq i 1))) 1 0))
+                   cfg.block used interior))
+         connections (exact (map (fn [(i : int)]
+                       (let* [a (array/nth primary i) b (array/nth primary (int/add i 1))]
+                         (int/add (int/mul (gfp_imin a b) n) (gfp_imax a b))))
+                       (array/range (int/sub len 1) :type int)))
+         lookup (array/index_of connections cfg.keys)
+         edge_block (exact (map (fn [(f : int)] (if (int/ge f 0) 1 0)) lookup))
+         found (graph/shortest_paths cfg.adj cfg.lengths (array/int 1 (array/nth primary (int/sub len 1)))
+                 :hops true :blocked_points blocked :blocked_edges edge_block :target (array/nth primary 0))
+         secondary found.path
+         size (array/count secondary)]
+    {:ok (int/gt size 0)
+     :interior (gfp_inner secondary 1 1)}))
+
+; One segment of the loop. state: {:k :used :out :fail}; mode_pairs closes each pair as it goes.
+(defn gfp_step :context sop
+  [(cfg : {:adj {:primitive_of_vertex (array int) :next_vertex (array int) :previous_vertex (array int)
+                 :edge_of_vertex (array int) :opposite_vertex (array int) :edge_a (array int) :edge_b (array int)
+                 :point_edge_offsets (array int) :point_edges (array int) :point_vertex_offsets (array int)
+                 :point_vertices (array int)}
+           :lengths (array float) :block (array int) :keys (array int) :count int
+           :from (array int) :to (array int) :avoid bool :pairs bool :close bool})
+   (s : {:k int :used (array int) :out (array int) :fail int})]
+  (if (int/gt s.fail 0) {:k (int/add s.k 1) :used s.used :out s.out :fail s.fail}
+    (let* [start (array/nth cfg.from s.k)
+           finish (array/nth cfg.to s.k)
+           blocked (if cfg.avoid
+                     (exact (map (fn [(b : int) (u : int)] (if (or (int/eq b 1) (int/eq u 1)) 1 0)) cfg.block s.used))
+                     cfg.block)
+           found (graph/shortest_paths cfg.adj cfg.lengths (array/int 1 start)
+                   :hops true :blocked_points blocked :target finish)
+           primary found.path
+           reached (int/gt (array/count primary) 0)
+           used_primary (if cfg.avoid (gfp_mark s.used primary) s.used)
+           closing (if (and reached (and cfg.pairs cfg.close))
+                     (if (int/lt (array/count primary) 2) {:ok false :interior (array/int 0 0)}
+                       (gfp_close cfg primary (if cfg.avoid used_primary (gfp_zeros cfg.count))))
+                     {:ok true :interior (array/int 0 0)})
+           used_next (if cfg.avoid (gfp_mark used_primary closing.interior) used_primary)
+           extra (if cfg.pairs closing.interior (array/int 0 0))
+           piece (if (and (not cfg.pairs) (int/gt s.k 0))
+                   (gfp_inner primary 1 0)
+                   primary)]
+      (if (and reached closing.ok)
+        {:k (int/add s.k 1) :used used_next :out (array/concat (array/concat s.out piece) extra) :fail 0}
+        {:k (int/add s.k 1) :used s.used :out s.out :fail (int/add s.k 1)}))))
+
+(defnode sop/group_find_path :label "Group Find Path" :category ["Group" "Path"]
+  [(in0 : geometry)
+   (owner : text "Points" :label "Group type" :choices ["Points" "Vertices" "Primitives"])
+   (base_group : text "ordered" :label "Base group")
+   (name : text "path" :label "Output group")
+   (mode : text "Through each" :label "Path mode" :choices ["Through each" "Start/end pairs"])
+   (ending : text "Stop at end" :label "Ending" :choices ["Stop at end" "Close path"])
+   (avoid_self_intersection : bool true :label "Avoid self-intersection")
+   (collision_group : text "" :label "Collision group" :folder "Collision")
+   (contain : bool false :label "Contain path" :folder "Collision")]
+  (let* [key (cond (equal? owner "Points") "point" (equal? owner "Vertices") "vertex" :else "primitive")
+         collision_name (text/trim collision_group)
+         has_collision (not (text/blank? collision_name))
+         base_found (fold [found false] [n (sop/group_names in0 "" :owner key)] (or found (equal? n base_group)))
+         collision_found (or (not has_collision)
+           (fold [found false] [n (sop/group_names in0 "" :owner key)] (or found (equal? n collision_name))))]
+    (cond
+      (not base_found)
+        (error "missing_group" (str "group_find_path could not find " key " group " (text/repr base_group)))
+      (not collision_found)
+        (error "missing_group" (str "group_find_path could not find collision " key " group " (text/repr collision_name)))
+      (text/blank? name) (gfp_error "output group name must not be empty")
+      (equal? owner "Vertices") (gfp_error "vertex paths are not supported")
+      :else
+        (let* [base (sop/group_order in0 :name base_group :owner key)
+               order base.indices
+               count (array/count order)
+               pairs_mode (equal? mode "Start/end pairs")
+               n (if (equal? owner "Points") (sop/count in0 :points) (sop/count in0 :primitives))
+               collision (if has_collision (sop/group in0 :name collision_name :owner key) (gfp_zeros n))
+               block (exact (map (fn [(c : int)]
+                       (if has_collision (if contain (if (int/eq c 1) 0 1) c) 0)) collision))
+               adjacency (sop/adjacency in0)
+               position_data (sop/attr_checked in0 "P")
+               positions position_data.values
+               bad_position (if (int/eq (array/count position_data.valid) 0) 0
+                              (int/sub 1 (array/min position_data.valid)))]
+          (cond
+            (not base.ordered) (gfp_error "base group must have an explicit order")
+            (int/eq count 0) (gfp_error "base group must not be empty")
+            (and contain (not has_collision)) (gfp_error "contain requires a collision group")
+            (and pairs_mode (int/eq (int/mod count 2) 1))
+              (gfp_error "start/end-pair mode requires an even number of base elements")
+            :else
+              (let* [primitive_graph (equal? owner "Primitives")
+                     edges (sop/count in0 :edges)
+                     topo (sop/topology in0)
+                     per_vertex (array/count adjacency.edge_of_vertex)
+                     dual (gfp_dual adjacency.edge_of_vertex adjacency.primitive_of_vertex n edges)
+                     non_manifold (if primitive_graph (array/sum (exact (map (fn [(c : int)] (if (int/ge c 3) 1 0)) dual.per_edge))) 0)]
+                (cond
+                  (and primitive_graph (int/gt non_manifold 0)) (gfp_error "primitive paths require manifold topology")
+                  (int/gt bad_position 0) (gfp_error "a point has a non-finite position")
+                  :else
+                    (let* [centroids (if primitive_graph
+                                       (gfp_centroids positions topo.vertex_points topo.primitive_offsets
+                                         adjacency.primitive_of_vertex)
+                                       (array/vec3 0))
+                           lengths (if primitive_graph
+                                     (exact (map (fn [(a : int) (b : int) (e : int)]
+                                       (if (int/eq (array/nth dual.per_edge e) 2)
+                                         (gfp_distance (array/nth centroids a) (array/nth centroids b)) 0.0))
+                                       dual.a dual.b (array/range edges :type int)))
+                                     (exact (map (fn [(a : int) (b : int)]
+                                       (gfp_distance (array/nth positions a) (array/nth positions b)))
+                                       adjacency.edge_a adjacency.edge_b)))
+                           graph_a (if primitive_graph dual.a adjacency.edge_a)
+                           graph_b (if primitive_graph dual.b adjacency.edge_b)
+                           adj {:primitive_of_vertex adjacency.primitive_of_vertex :next_vertex adjacency.next_vertex
+                                :previous_vertex adjacency.previous_vertex :edge_of_vertex adjacency.edge_of_vertex
+                                :opposite_vertex adjacency.opposite_vertex :edge_a graph_a :edge_b graph_b
+                                :point_edge_offsets (if primitive_graph dual.off adjacency.point_edge_offsets)
+                                :point_edges (if primitive_graph dual.edges adjacency.point_edges)
+                                :point_vertex_offsets adjacency.point_vertex_offsets
+                                :point_vertices adjacency.point_vertices}
+                           keys (exact (map (fn [(a : int) (b : int)] (int/add (int/mul (gfp_imin a b) n) (gfp_imax a b)))
+                                  graph_a graph_b))
+                           constrained (array/sum (exact (map (fn [(e : int)] (array/nth block e)) order)))
+                           pair_count (if pairs_mode (int/div count 2) (gfp_imax 0 (int/sub count 1)))
+                           from (exact (map (fn [(k : int)] (array/nth order (if pairs_mode (int/mul k 2) k)))
+                                  (array/range pair_count :type int)))
+                           to (exact (map (fn [(k : int)] (array/nth order (if pairs_mode (int/add (int/mul k 2) 1) (int/add k 1))))
+                                (array/range pair_count :type int)))
+                           close (equal? ending "Close path")
+                           cfg {:adj adj :lengths lengths :block block :keys keys :count n :from from :to to
+                                :avoid avoid_self_intersection :pairs pairs_mode :close close}
+                           start {:k 0 :used (gfp_zeros n) :out (array/int 0 0) :fail 0}
+                           finished (iterate pair_count start (fn [(s : {:k int :used (array int) :out (array int) :fail int})] (gfp_step cfg s)))
+                           head (if (int/gt pair_count 0) finished.out order)
+                           closing (if (and close (not pairs_mode))
+                                     (if (int/lt (array/count head) 2) {:ok false :interior (array/int 0 0)}
+                                       (gfp_close cfg head (if avoid_self_intersection finished.used (gfp_zeros n))))
+                                     {:ok true :interior (array/int 0 0)})
+                           joined (array/concat head closing.interior)
+                           first_seen (array/index_of joined joined)
+                           unique (array/compact (exact (map (fn [(f : int) (i : int)] (if (int/eq f i) 1 0))
+                                    first_seen (array/range (array/count joined) :type int))))
+                           final (exact (map (fn [(u : int)] (array/nth joined u)) unique))
+                           mask (array/scatter_add final (array/int (array/count final) 1) n)]
+                      (cond
+                        (int/gt constrained 0) (gfp_error "a base element is constrained by the collision group")
+                        (int/gt finished.fail 0) (gfp_error "no path between consecutive base elements")
+                        (not closing.ok) (gfp_error "the path cannot be closed")
+                        :else (sop/with_group in0 mask :name name :owner key :order final))))))))))

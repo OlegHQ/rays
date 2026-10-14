@@ -1566,8 +1566,12 @@ not counted.
 
 The `graph/` operators are pure array functions over the adjacency record, so
 they need no geometry. `(graph/shortest_paths adjacency lengths roots)` returns
-`{:distance (array float) :parent (array int)}` (distance -1 where unreached;
-optional `:radius`), `(graph/color rows order)` returns `{:color (array int)
+`{:distance (array float) :parent (array int) :path (array int) :order (array int)}` (distance -1 where unreached;
+optional `:radius`; `:hops true` orders by hop count, then length, then lower predecessor,
+and takes `:blocked_points`/`:blocked_edges` 0/1 masks; `:ties "lowest"` is the Edge Transport
+forest, lower parent index at equal distance; `:target t` makes `:path` the root-first
+parent chain to `t`; `:order` is the settle order for those two modes), `(graph/forest parents :mask m)` returns the breadth-first tree scan of a
+parent array `{:order :depth :root :offsets :children}`, `(graph/color rows order)` returns `{:color (array int)
 :count int}` by first fit in the given order over `{:offsets :values}` neighbour
 rows, and `(graph/chains adjacency :mask m)` returns the ragged point chains
 `{:offsets :values :closed}` of the selected edges. Each wraps the RDK routine

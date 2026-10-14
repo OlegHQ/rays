@@ -289,7 +289,7 @@ let rec resolve ~geometry value = match constant_source value with
         Topology_kernel.resolve ~geometry (E.Source (name, ty, args)))
   | E.Source (("sop/count"|"sop/edges"|"sop/topology"|"sop/adjacency"),_,_) as source -> Topology_kernel.resolve ~geometry source
   | E.Source (("sop/attr_type"|"sop/attr_names"|"sop/attr_entries"),_,_) as source -> Attribute_metadata.resolve ~geometry source
-  | E.Source (("graph/shortest_paths"|"graph/color"|"graph/chains") as name,ty,args) ->
+  | E.Source (("graph/shortest_paths"|"graph/forest"|"graph/color"|"graph/chains") as name,ty,args) ->
       Result.bind (concrete_args ~geometry args) (fun args ->
         Graph_kernel.resolve (E.Source (name, ty, args)))
   | source -> Group_kernel.resolve ~geometry source
@@ -298,7 +298,7 @@ let rec resolve ~geometry value = match constant_source value with
    record): resolve them so the algorithm sees concrete arrays. *)
 and concrete_args ~geometry args =
   let rec concrete = function
-    | E.Source _ as source -> Result.bind (resolve ~geometry source) concrete
+    | (E.Source _ | E.Struct ("sop/attr", _, _)) as source -> Result.bind (resolve ~geometry source) concrete
     | E.Record fields -> Result.map (fun fields -> E.Record fields) (all fields)
     | value -> Ok value
   and all = function
