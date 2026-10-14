@@ -1,0 +1,222 @@
+; Whole-node draft. Separate Pieces (Rdk.Separate_pieces): Separate packs the pieces named by an integer or text
+; attribute along an axis, each after the previous one's far end plus a gap, storing each element's translation;
+; Move back subtracts a stored translation. The placement cursor is an `iterate` over the pieces with record state;
+; the native "nudge up to 8 ulps until the piece clears the cursor" is a counted inner iterate of float/next_after.
+(defn sp_error :context value [(reason : text)]
+  (error "invalid_separate_pieces" "separate_pieces could not produce valid geometry"
+    :cause (str "separate_pieces [invalid_separate_pieces]: " reason)))
+; Dense ids in order of first appearance of every distinct key.
+(defn sp_ids_int :context value [(keys : (array int))]
+  (let* [n (array/count keys)
+         first (array/index_of keys keys)
+         flags (exact (map (fn [(i : int) (f : int)] (if (int/eq i f) 1 0)) (array/range n :type int) first))
+         prefix (array/scan_sum flags)]
+    {:ids (exact (map (fn [(f : int)] (array/nth prefix f)) first)) :count (array/nth prefix n)}))
+(defn sp_ids_text :context value [(keys : (array text))]
+  (let* [n (array/count keys)
+         first (array/index_of keys keys)
+         flags (exact (map (fn [(i : int) (f : int)] (if (int/eq i f) 1 0)) (array/range n :type int) first))
+         prefix (array/scan_sum flags)]
+    {:ids (exact (map (fn [(f : int)] (array/nth prefix f)) first)) :count (array/nth prefix n)}))
+; The piece id of every element of the owner. reason "" when valid.
+(defn sp_pieces :context sop [(geo : geometry) (owner : text) (name : text)]
+  (let* [present (sop/has_attr geo name :owner owner)
+         kind (if present (sop/attr_type geo name :owner owner) "")
+         none (array/int 0 0)]
+    (cond
+      (not present) {:reason (str owner " piece attribute " (text/repr name) " was not found") :ids none :count 0}
+      (equal? kind "int")
+        (let* [r (sp_ids_int (sop/attr geo name :owner owner :type int))] {:reason "" :ids r.ids :count r.count})
+      (equal? kind "text")
+        (let* [r (sp_ids_text (sop/attr geo name :owner owner :type text))] {:reason "" :ids r.ids :count r.count})
+      :else {:reason (str "piece attribute " (text/repr name) " must use integer or text storage, not " kind)
+             :ids none :count 0})))
+; Piece of every point (-1 for a point on no primitive) and the refusal when a primitive/point spans pieces.
+(defn sp_point_piece :context sop [(geo : geometry) (owner : text) (ids : (array int))]
+  (let* [topo (sop/topology geo)
+         adjacency (sop/adjacency geo)
+         points (sop/count geo :points)]
+    (if (equal? owner "point")
+      (let* [vertices (array/count topo.vertex_points)
+             range (array/range vertices :type int)
+             first_vertex (exact (map (fn [(v : int)] (array/nth topo.primitive_offsets (array/nth adjacency.primitive_of_vertex v))) range))
+             bad (array/compact (exact (map (fn [(v : int) (f : int)]
+                   (if (int/eq (array/nth ids (array/nth topo.vertex_points v))
+                               (array/nth ids (array/nth topo.vertex_points f))) 0 1)) range first_vertex)))]
+        {:reason (if (int/gt (array/count bad) 0)
+                   (str "primitive " (array/nth adjacency.primitive_of_vertex (array/nth bad 0)) " references points from different pieces")
+                   "")
+         :point_piece ids})
+      (let* [offsets adjacency.point_vertex_offsets
+             counts (exact (map (fn [(p : int)] (int/sub (array/nth offsets (int/add p 1)) (array/nth offsets p)))
+                      (array/range points :type int)))
+             slot_point (lap_rows counts)
+             slots (array/count adjacency.point_vertices)
+             slot_piece (exact (map (fn [(s : int)]
+               (array/nth ids (array/nth adjacency.primitive_of_vertex (array/nth adjacency.point_vertices s))))
+               (array/range slots :type int)))
+             point_piece (exact (map (fn [(p : int) (n : int)] (if (int/gt n 0) (array/nth slot_piece (array/nth offsets p)) -1))
+                           (array/range points :type int) counts))
+             bad (array/compact (exact (map (fn [(s : int) (p : int)]
+                   (if (int/eq s (array/nth point_piece p)) 0 1)) slot_piece slot_point)))]
+        {:reason (if (int/gt (array/count bad) 0)
+                   (str "point " (array/nth slot_point (array/nth bad 0)) " is shared by primitives from different pieces")
+                   "")
+         :point_piece point_piece}))))
+(defn sp_axis_ok :context value [(x : float) (y : float) (z : float)]
+  (> (max (abs x) (max (abs y) (abs z))) 0.0))
+; The normalized packing axis.
+(defn sp_axis :context value [(x : float) (y : float) (z : float)]
+  (let* [scale (max (abs x) (max (abs y) (abs z)))
+         ax (/ x scale) ay (/ y scale) az (/ z scale)
+         length (sqrt (fma az az (fma ay ay (* ax ax))))]
+    [(/ ax length) (/ ay length) (/ az length)]))
+; Per piece {:low :high :live}: extremes of the projection over the piece's points.
+(defn sp_bounds :context value
+  [(point_piece : (array int)) (projection : (array float)) (pieces : int)]
+  (let* [points (array/count point_piece)
+         keys (exact (map (fn [(k : int)] (if (int/lt k 0) pieces k)) point_piece))
+         order (array/grade keys)
+         counts (array/scatter_add keys (array/int points 1) (int/add pieces 1))
+         offsets (array/scan_sum counts)
+         sorted (exact (map (fn [(i : int)] (array/nth projection (array/nth order i))) (array/range points :type int)))
+         negated (exact (map (fn [(v : float)] (* -1.0 v)) sorted))
+         hi (array/slice (array/segment_argmax sorted offsets) 0 pieces)
+         lo (array/slice (array/segment_argmax negated offsets) 0 pieces)
+         range (array/range pieces :type int)]
+    {:live (exact (map (fn [(h : int)] (if (int/lt h 0) 0 1)) hi))
+     :high (exact (map (fn [(h : int)] (if (int/lt h 0) 0.0 (array/nth sorted h))) hi))
+     :low (exact (map (fn [(l : int)] (if (int/lt l 0) 0.0 (array/nth sorted l))) lo))}))
+; One placement step on piece k.
+(defn sp_step :context value
+  [(s : {:k int :placed int :cursor float :bad int :offsets (array float)})
+   (low : (array float)) (high : (array float)) (live : (array int)) (last : int) (gap : float)]
+  (let* [k s.k
+         on (array/nth live k)
+         l (array/nth low k)
+         h (array/nth high k)
+         placed (int/eq s.placed 1)
+         initial (if placed (- s.cursor l) 0.0)
+         nudged (get (iterate 8 {:o initial}
+                  (fn [(n : {:o float})]
+                    (if (and placed (< (+ l n.o) s.cursor))
+                      {:o (float/next_after n.o 1.7976931348623157e308)}
+                      n))) :o)
+         translated_low (+ l nudged)
+         translated_high (+ h nudged)
+         has_next (int/lt k last)
+         next (if has_next (+ translated_high gap) translated_high)
+         bad (or (and placed (< translated_low s.cursor))
+                 (and has_next (and (> gap 0.0) (<= next translated_high))))]
+    {:k (int/add k 1)
+     :placed (if (int/eq on 1) 1 s.placed)
+     :cursor (if (int/eq on 1) next s.cursor)
+     :bad (if (and (int/eq on 1) bad) (if (int/eq s.bad 0) (int/add k 1) s.bad) s.bad)
+     :offsets (if (int/eq on 1)
+                (exact (map (fn [(i : int) (o : float)] (if (int/eq i k) nudged o)) (array/range (array/count low) :type int) s.offsets))
+                s.offsets)}))
+; Offsets per piece along the axis; bad is 1 + the first unrepresentable piece, else 0.
+(defn sp_place :context value
+  [(low : (array float)) (high : (array float)) (live : (array int)) (gap : float)]
+  (let* [pieces (array/count low)
+         last (if (int/eq pieces 0) -1
+                (array/max (exact (map (fn [(k : int) (l : int)] (if (int/eq l 1) k -1)) (array/range pieces :type int) live))))]
+    (iterate pieces {:k 0 :placed 0 :cursor 0.0 :bad 0 :offsets (array/float pieces 0.0)}
+      (fn [(s : {:k int :placed int :cursor float :bad int :offsets (array float)})]
+        (sp_step s low high live last gap)))))
+(defn sp_scale :context value [(offsets : (array float)) (c : float)] (exact (map (fn [(o : float)] (* o c)) offsets)))
+(defn sp_any :context value [(plane : (array float))]
+  (array/sum (exact (map (fn [(v : float)] (if (= v 0.0) 0 1)) plane))))
+; A position plane moved by the per-piece plane t where the point belongs to a piece.
+(defn sp_move :context value
+  [(plane : (array float)) (point_piece : (array int)) (shift : (array float))]
+  (if (int/eq (sp_any shift) 0) plane
+    (exact (map (fn [(v : float) (k : int)] (if (int/lt k 0) v (+ v (array/nth shift k)))) plane point_piece))))
+(defn sp_px :context value [(v : vec3)] v.x)
+(defn sp_py :context value [(v : vec3)] v.y)
+(defn sp_pz :context value [(v : vec3)] v.z)
+(defn sp_join :context value [(x : (array float)) (y : (array float)) (z : (array float))]
+  (exact (map (fn [(a : float) (b : float) (c : float)] [a b c]) x y z)))
+(defn sp_separate :context sop
+  [(geo : geometry) (owner : text) (piece_name : text) (translation_name : text) (ax : float) (ay : float) (az : float)
+   (gap : float)]
+  (let* [pieces (sp_pieces geo owner piece_name)]
+    (if (not (equal? pieces.reason "")) (sp_error pieces.reason)
+      (let* [placed (sp_point_piece geo owner pieces.ids)]
+        (if (not (equal? placed.reason "")) (sp_error placed.reason)
+          (let* [axis (sp_axis ax ay az)
+                 positions (sop/attr geo :P)
+                 projection (exact (map (fn [(p : vec3) (k : int)]
+                   (if (int/lt k 0) 0.0 (fma p.z axis.z (fma p.y axis.y (* p.x axis.x))))) positions placed.point_piece))
+                 b (sp_bounds placed.point_piece projection pieces.count)
+                 prefix (sp_place b.low b.high b.live gap)]
+            (if (int/gt prefix.bad 0)
+              (sp_error (str "packing translation is not representable for piece " (int/sub prefix.bad 1)))
+              (let* [tx (sp_scale prefix.offsets axis.x)
+                     ty (sp_scale prefix.offsets axis.y)
+                     tz (sp_scale prefix.offsets axis.z)
+                     element (exact (map (fn [(k : int)] [(array/nth tx k) (array/nth ty k) (array/nth tz k)]) pieces.ids))
+                     moved (sp_join (sp_move (exact (map sp_px positions)) placed.point_piece tx)
+                                    (sp_move (exact (map sp_py positions)) placed.point_piece ty)
+                                    (sp_move (exact (map sp_pz positions)) placed.point_piece tz))
+                     changed (int/gt (int/add (sp_any tx) (int/add (sp_any ty) (sp_any tz))) 0)]
+                (sop/with_attr (if changed (sop/with_attr geo :P moved) geo) translation_name element
+                  :owner owner :type vec3)))))))))
+; Move back: the stored translations, per point.
+(defn sp_back :context sop [(geo : geometry) (owner : text) (translation_name : text)]
+  (let* [present (sop/has_attr geo translation_name :owner owner)
+         is_vec3 (sop/has_attr geo translation_name :owner owner :type vec3)]
+    (cond
+      (not present) (sp_error (str "translation attribute " (text/repr translation_name) " was not found"))
+      (not is_vec3) (sp_error (str "translation attribute " (text/repr translation_name) " must use float3 storage"))
+      :else
+        (let* [stored (sop/attr geo translation_name :owner owner :type vec3)
+               positions (sop/attr geo :P)
+               points (sop/count geo :points)]
+          (if (equal? owner "point")
+            (back_apply geo positions stored (array/int points 1))
+            (let* [adjacency (sop/adjacency geo)
+                   offsets adjacency.point_vertex_offsets
+                   counts (exact (map (fn [(p : int)] (int/sub (array/nth offsets (int/add p 1)) (array/nth offsets p)))
+                            (array/range points :type int)))
+                   slot_point (lap_rows counts)
+                   slot_value (exact (map (fn [(s : int)]
+                     (array/nth stored (array/nth adjacency.primitive_of_vertex (array/nth adjacency.point_vertices s))))
+                     (array/range (array/count adjacency.point_vertices) :type int)))
+                   assigned (exact (map (fn [(n : int)] (if (int/gt n 0) 1 0)) counts))
+                   per_point (exact (map (fn [(p : int) (n : int)]
+                     (if (int/gt n 0) (array/nth slot_value (array/nth offsets p)) [0.0 0.0 0.0]))
+                     (array/range points :type int) counts))
+                   conflicts (array/sum (exact (map (fn [(v : vec3) (p : int)]
+                     (let* [w (array/nth per_point p)]
+                       (if (and (= v.x w.x) (and (= v.y w.y) (= v.z w.z))) 0 1))) slot_value slot_point)))]
+              (if (int/gt conflicts 0)
+                (sp_error "a point has non-finite or conflicting primitive translations")
+                (back_apply geo positions per_point assigned))))))))
+(defn back_apply :context sop
+  [(geo : geometry) (positions : (array vec3)) (tv : (array vec3)) (assigned : (array int))]
+  (let* [tx (exact (map sp_px tv)) ty (exact (map sp_py tv)) tz (exact (map sp_pz tv))
+         plane (fn [(source : (array float)) (shift : (array float))]
+                 (if (int/eq (sp_any shift) 0) source
+                   (exact (map (fn [(v : float) (d : float) (a : int)] (if (int/eq a 1) (- v d) v)) source shift assigned))))]
+    (sop/with_attr geo :P (sp_join (plane (exact (map sp_px positions)) tx)
+                                   (plane (exact (map sp_py positions)) ty)
+                                   (plane (exact (map sp_pz positions)) tz)))))
+(defnode sop/separate_pieces :label "Separate Pieces" :category ["Modify" "Pieces"]
+  [(in0 : geometry)
+   (owner : text "Primitive" :label "Piece owner" :choices ["Point" "Primitive"])
+   (piece_attribute : text "piece" :label "Piece attribute")
+   (translation_attribute : text "piece_translation" :label "Translation attribute")
+   (axis_x : float 1.0 :label "Axis X" :folder ["Axis"] :min -1 :max 1 :vec3 ["axis" 0])
+   (axis_y : float 0.0 :label "Axis Y" :folder ["Axis"] :min -1 :max 1 :vec3 ["axis" 1])
+   (axis_z : float 0.0 :label "Axis Z" :folder ["Axis"] :min -1 :max 1 :vec3 ["axis" 2])
+   (gap : float 0.001 :label "Gap" :min 0 :max 1 :hard_min 0)
+   (mode : text "Separate" :label "Mode" :choices ["Separate" "Move back"])]
+  (let* [owner_name (if (equal? owner "Point") "point" "primitive")]
+    (cond
+      (text/blank? piece_attribute) (sp_error "piece attribute name must not be empty")
+      (text/blank? translation_attribute) (sp_error "translation attribute name must not be empty")
+      (equal? piece_attribute translation_attribute) (sp_error "piece and translation attribute names must differ")
+      (equal? mode "Move back") (sp_back in0 owner_name translation_attribute)
+      (not (sp_axis_ok axis_x axis_y axis_z)) (sp_error "packing axis must be non-zero")
+      :else (sp_separate in0 owner_name piece_attribute translation_attribute axis_x axis_y axis_z gap))))
