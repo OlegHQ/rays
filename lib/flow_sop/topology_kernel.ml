@@ -31,6 +31,34 @@ let adjacency geometry component =
 (* The union-find of [Analysis.classify_connectivity]: [over] edges labels
    points, [over] points labels primitives; a 0/1 mask keeps the labelled
    elements (-1 elsewhere, not counted). *)
+(* Rdk's shared ear clipping, every primitive in order (triangles included, no shortcut): vertex
+   corners per triangle, primitive offsets into them, and ok 0 where the clipper refused (curve,
+   degenerate or non-simple), which then emits no triangles. *)
+let triangles geometry component =
+  let topology = Rdk.Topology.Private.view (G.topology geometry) in
+  let positions = Rdk.Packed.Float3.Private.view (G.positions geometry) in
+  let count = Bytes.length topology.primitive_kinds in
+  let offsets = Array.make (count + 1) 0 and ok = Array.make count 1 in
+  let primitive = ref [] and a = ref [] and b = ref [] and c = ref [] in
+  let scratch = Rdk_core.Polygon_triangulation.create_scratch () in
+  for p = 0 to count - 1 do
+    let rows = ref [] in
+    (match Rdk_core.Polygon_triangulation.primitive ~positions ~topology ~scratch p
+             ~emit:(fun _ x y z -> rows := (x, y, z) :: !rows) with
+     | Ok () -> List.iter (fun (x, y, z) ->
+         primitive := p :: !primitive; a := x :: !a; b := y :: !b; c := z :: !c) (List.rev !rows)
+     | Error _ -> ok.(p) <- 0; rows := []);
+    offsets.(p + 1) <- offsets.(p) + List.length !rows
+  done;
+  (* ponytail: list accumulation; pre-size from corner counts if this shows in a profile. *)
+  let array l = Ok (E.Int_array (Array.of_list (List.rev l))) in
+  match component with
+  | "offsets" -> Ok (E.Int_array offsets)
+  | "ok" -> Ok (E.Int_array ok)
+  | "primitive" -> array !primitive
+  | "a" -> array !a | "b" -> array !b | "c" -> array !c
+  | _ -> error "E_DATA_SOURCE" "Triangles source requires offsets, ok, primitive, a, b or c."
+
 let components geometry args =
   let owner = match List.assoc_opt "over" args with
     | None | Some (E.Text "edges") -> Ok (Rdk.Analysis.Connectivity_points, Rdk.Group.Point, G.point_count geometry)
@@ -135,7 +163,7 @@ let count geometry = function
   | _ -> error "E_TOPOLOGY_COUNT" "Count element is points, vertices, primitives or edges."
 
 let resolve ~geometry = function
-  | E.Source (("sop/count" | "sop/edges" | "sop/topology" | "sop/adjacency" | "sop/components" as name), _, args) ->
+  | E.Source (("sop/count" | "sop/edges" | "sop/topology" | "sop/adjacency" | "sop/components" | "sop/triangles" as name), _, args) ->
       (match List.assoc_opt "geometry" args with
        | Some (E.Deferred (ty, id)) when Flow.Ty.is_geometry ty ->
            (match geometry id with
@@ -150,6 +178,10 @@ let resolve ~geometry = function
                    | Some (E.Text component) -> topology geometry component
                    | _ -> error "E_DATA_SOURCE" "Topology source requires vertex_points, primitive_offsets or kinds.")
                 else if name="sop/components" then components geometry args
+                else if name="sop/triangles" then
+                  (match List.assoc_opt "component" args with
+                   | Some (E.Text component) -> triangles geometry component
+                   | _ -> error "E_DATA_SOURCE" "Triangles source requires a component name.")
                 else if name="sop/adjacency" then
                   (match List.assoc_opt "component" args with
                    | Some (E.Text component) -> adjacency geometry component

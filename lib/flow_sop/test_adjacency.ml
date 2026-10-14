@@ -119,3 +119,26 @@ let () =
     if edges > 0 then refused (Printf.sprintf "(sop/components geo :seams (array/int %d 2))" edges) "E_COMPONENTS_SEAMS")
     (fixtures ());
   print_endline "Components seams: edge mask equals Analysis.classify_connectivity with seams, alone and masked"
+
+(* sop/triangles: Polygon_triangulation's ear order per primitive; a curve (or a polygon the clipper
+   refuses) emits nothing and reports ok 0. *)
+let () =
+  let topology = T.create_owned ~point_count:9
+    ~vertex_points:[|0;1;2;3;4;5; 0;1; 6;7;8|] ~primitive_offsets:[|0;6;8;11|]
+    ~primitive_kinds:[|T.Polygon;Open_polyline;Polygon|] |> ok in
+  (* an L hexagon (concave at point 3), a curve, then a collinear triangle *)
+  let positions = Rdk.Packed.Float3.Private.of_owned_exn
+    ~x:[|0.;2.;2.;1.;1.;0.;0.;1.;2.|] ~y:[|0.;0.;1.;1.;2.;2.;5.;5.;5.|] ~z:(Array.make 9 0.) in
+  let geometry = G.create ~positions ~topology () |> ok in
+  let rows = ref [] in
+  let view = Rdk.Packed.Float3.Private.view positions and top = T.Private.view topology in
+  ignore (Rdk_core.Polygon_triangulation.primitive ~positions:view ~topology:top 0
+    ~emit:(fun _ a b c -> rows := (a, b, c) :: !rows));
+  (* a three-corner polygon passes through unclipped, even collinear *)
+  let rows = Array.of_list (List.rev ((8, 9, 10) :: !rows)) in
+  assert (Array.length rows = 5);
+  let corner f = ints (Array.map f rows) in
+  agree geometry "(sop/triangles geo)" (E.Record [
+    "offsets", ints [|0;4;4;5|]; "ok", ints [|1;0;1|]; "primitive", ints [|0;0;0;0;2|];
+    "a", corner (fun (a, _, _) -> a); "b", corner (fun (_, b, _) -> b); "c", corner (fun (_, _, c) -> c)]);
+  print_endline "Triangles: ear order per primitive, refused primitives emit nothing"

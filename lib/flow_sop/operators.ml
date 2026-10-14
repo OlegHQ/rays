@@ -157,6 +157,14 @@ let adjacency : Flow.Op.t = {
     component,Flow.Value.Source("sop/adjacency",Flow.Ty.Array Flow.Ty.Int,
       args@["component",Flow.Value.Text component]))adjacency_fields));
 }
+let triangles_fields=["offsets";"ok";"primitive";"a";"b";"c"]
+let triangles : Flow.Op.t = {
+  edges with name="sop/triangles";
+  out=(fun _->Flow.Ty.Record(List.map(fun name->name,Flow.Ty.Array Flow.Ty.Int)triangles_fields));
+  body=(fun ~live:_ ~node:_ args->Flow.Value.Record(List.map(fun component->
+    component,Flow.Value.Source("sop/triangles",Flow.Ty.Array Flow.Ty.Int,
+      args@["component",Flow.Value.Text component]))triangles_fields));
+}
 let components_type=Flow.Ty.Record["id",Array Int;"count",Int]
 let components : Flow.Op.t = {
   edges with name="sop/components";
@@ -518,7 +526,7 @@ let concat : Flow.Op.t = {
   body=(fun ~live:_ ~node args->node "sop/concat" args);
 }
 
-let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; adjacency; components; shortest_paths; color; chains; mesh; mesh_planes; remap; concat; attr_planes; with_planes;
+let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; adjacency; triangles; components; shortest_paths; color; chains; mesh; mesh_planes; remap; concat; attr_planes; with_planes;
   group; group_order; group_names; group_entries; with_group; context_seed; provenance_base; context_frame; context_time;
   rename_attr;swap_attr;delete_attrs;rename_group;delete_group;rename_edge;delete_edge;attr_type;attr_names;attr_entries;
   glob_error;float_g17;glob_rewrite_error;glob_rewrite;glob_literal;group_name_valid;group_name_forced]

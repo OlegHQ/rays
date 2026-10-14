@@ -55,7 +55,7 @@ let reads value =
            | Some (E.Text name), Some (E.Deferred (ty, id)) when Flow.Ty.is_geometry ty ->
                names := name :: !names; safe := id :: !safe
            | _ -> opaque := true)
-      | Op {op=("sop/count"|"sop/edges"|"sop/topology"|"sop/adjacency"|"sop/components"|"sop/group"|"sop/group_names"|"sop/group_order"|"sop/group_entries");args;_} ->
+      | Op {op=("sop/count"|"sop/edges"|"sop/topology"|"sop/adjacency"|"sop/components"|"sop/triangles"|"sop/group"|"sop/group_names"|"sop/group_order"|"sop/group_entries");args;_} ->
           (match Option.bind (List.assoc_opt "geometry" args) (lookup bindings) with
            | Some (E.Deferred (ty,id)) when Flow.Ty.is_geometry ty -> safe:=id::!safe
            | _ -> opaque:=true)
@@ -86,7 +86,7 @@ let reads value =
     scan term;
     List.filter (fun id -> not (List.mem id !unsafe)) !safe in
   let rec visit safe = function
-    | E.Source (("sop/count"|"sop/edges"|"sop/topology"|"sop/adjacency"|"sop/components"|"sop/group"|"sop/group_names"|"sop/group_order"|"sop/group_entries"),_,args) ->
+    | E.Source (("sop/count"|"sop/edges"|"sop/topology"|"sop/adjacency"|"sop/components"|"sop/triangles"|"sop/group"|"sop/group_names"|"sop/group_order"|"sop/group_entries"),_,args) ->
         (match List.assoc_opt "geometry" args with
          | Some (E.Deferred (ty,_)) when Flow.Ty.is_geometry ty -> ()
          | _ -> opaque:=true)
@@ -287,7 +287,7 @@ let rec resolve ~geometry value = match constant_source value with
   | E.Source ("sop/components" as name,ty,args) ->
       Result.bind (concrete_args ~geometry args) (fun args ->
         Topology_kernel.resolve ~geometry (E.Source (name, ty, args)))
-  | E.Source (("sop/count"|"sop/edges"|"sop/topology"|"sop/adjacency"),_,_) as source -> Topology_kernel.resolve ~geometry source
+  | E.Source (("sop/count"|"sop/edges"|"sop/topology"|"sop/adjacency"|"sop/triangles"),_,_) as source -> Topology_kernel.resolve ~geometry source
   | E.Source (("sop/attr_type"|"sop/attr_names"|"sop/attr_entries"),_,_) as source -> Attribute_metadata.resolve ~geometry source
   | E.Source (("graph/shortest_paths"|"graph/color"|"graph/chains") as name,ty,args) ->
       Result.bind (concrete_args ~geometry args) (fun args ->
