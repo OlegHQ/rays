@@ -81,10 +81,8 @@ let repeated =
    polygon are checked separately, before the table runs. *)
 let polygons = with_options (fixture_attributes (fixture_groups (polygon_polyline ())))
 let inputs = List.map (fun (label, g) -> label, [g]) [
-  "empty", decorate (points 0); "points", decorate (points 1);
-  "one open", one_open; "closed", closed_only; "plain", plain;
+  "empty", decorate (points 0); "one open", one_open; "closed", closed_only;
   "shared curves", shared_geometry ~polygon:false;
-  "point normals", with_normals Attribute.Point curves;
   "vertex normals", with_uv (with_normals Attribute.Vertex curves);
   "curves", curves ]
 

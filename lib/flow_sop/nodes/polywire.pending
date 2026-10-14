@@ -36,6 +36,16 @@
          c (vec3_cross a tv)]
     (pw_normalize c.x c.y c.z)))
 
+;
+; The legacy path normalises with a plain length (no pre-scaling by the largest component).
+(defn pw_unit_leg :context value [(x : float) (y : float) (z : float)]
+  (let* [l (sqrt (fma z z (fma y y (* x x))))] [(/ x l) (/ y l) (/ z l)]))
+(defn pw_init_frame_leg :context value [(tv : vec3)]
+  (let* [x (abs tv.x) y (abs tv.y) z (abs tv.z)
+         a (if (and (<= x y) (<= x z)) [1.0 0.0 0.0] (if (<= y z) [0.0 1.0 0.0] [0.0 0.0 1.0]))
+         c (vec3_cross a tv)]
+    (pw_unit_leg c.x c.y c.z)))
+
 ; Rodrigues transport of frame `fp` from tangent `tp` to `tr` (native `transport`).
 (defn pw_transport :context value [(tp : vec3) (tr : vec3) (fp : vec3)]
   (let* [a (vec3_cross tp tr)
@@ -287,9 +297,9 @@
 
 ; pw_transport over arrays, in small kernel stages; `force` 1 starts a fresh frame (initialize_frame).
 (defn pw_trans_arr :context value
-  [(tp : (array vec3)) (tr : (array vec3)) (fp : (array vec3)) (force : (array int))]
+  [(tp : (array vec3)) (tr : (array vec3)) (fp : (array vec3)) (force : (array int)) (leg : bool) (keep : bool)]
   (let* [arows (array/range (array/count tp) :type int)
-         ini (exact (map (fn [(v : vec3)] (pw_init_frame v)) tr))
+         ini (exact (map (fn [(v : vec3)] (if leg (pw_init_frame_leg v) (pw_init_frame v))) tr))
          av (exact (map (fn [(u : vec3) (v : vec3)] (pw_cross_imp u v)) tp tr))
          sine (exact (map (fn [(v : vec3)] (sqrt (fma v.z v.z (fma v.y v.y (* v.x v.x))))) av))
          cosine (exact (map (fn [(u : vec3) (v : vec3)] (pw_dot_imp u v)) tp tr))
@@ -305,13 +315,13 @@
     (exact (map (fn [(i : int)]
       (let* [sn (array/nth sine i) co (array/nth cosine i)
              v (if (int/eq (array/nth force i) 1) (array/nth ini i)
-                 (if (<= sn 1e-12) (if (>= co 0.0) (array/nth fp i) (array/nth ini i)) (array/nth rot i)))]
+                 (if (<= sn 1e-12) (if (or keep (>= co 0.0)) (array/nth fp i) (array/nth ini i)) (array/nth rot i)))]
         [(pw_fin v.x) (pw_fin v.y) (pw_fin v.z)])) arows))))
 
 ; ---- arc length and parallel transport: the only sequential part, one ring of every curve per pass ----
 (defn pw_seq :context value
   [(tg : (array vec3)) (bb : (array int)) (seglen : (array float)) (rfirst : (array int)) (rcount : (array int))
-   (steps : int)]
+   (steps : int) (leg : bool)]
   (let* [rn (array/count tg)]
     (iterate steps {:cum (array/float rn 0.0) :fr (array/vec3 rn) :k 0}
       (fn [(c : {:cum (array float) :fr (array vec3) :k int})]
@@ -320,7 +330,7 @@
                pr (exact (map (fn [(r : int)] (max 0 (int/sub r 1))) ar))
                arows (array/range (array/count ar) :type int)
                res (pw_trans_arr (int_gather_v tg pr) (int_gather_v tg ar) (int_gather_v c.fr pr)
-                     (exact (map (fn [(r : int)] (if (or (int/eq c.k 0) (int/eq (array/nth bb r) 1)) 1 0)) ar)))
+                     (exact (map (fn [(r : int)] (if (or (int/eq c.k 0) (int/eq (array/nth bb r) 1)) 1 0)) ar)) leg false)
                cumv (exact (map (fn [(i : int)]
                       (if (int/eq c.k 0) 0.0
                         (pw_fin (+ (array/nth c.cum (array/nth pr i)) (array/nth seglen (array/nth ar i)))))) arows))]
@@ -342,7 +352,7 @@
 
 (defn pw_roll :context value
   [(tg : (array vec3)) (fr : (array vec3)) (cum : (array float)) (rl : (array int)) (rp : (array int))
-   (rfirst : (array int)) (rcount : (array int)) (ec : (array int)) (total : (array float))]
+   (rfirst : (array int)) (rcount : (array int)) (ec : (array int)) (total : (array float)) (leg : bool)]
   (let* [rn (array/count rl)
          prows (array/range (array/count ec) :type int)
          fi (exact (map (fn [(p : int)] (max 0 (min (array/nth rfirst p) (int/sub rn 1)))) prows))
@@ -350,7 +360,7 @@
               (max 0 (min (int/sub (int/add (array/nth rfirst p) (array/nth rcount p)) 1) (int/sub rn 1)))) prows))
          saved (int_gather_v fr fi)
          t0 (int_gather_v tg fi)
-         cl (pw_trans_arr (int_gather_v tg li) t0 (int_gather_v fr li) (array/int (array/count ec) 0))
+         cl (pw_trans_arr (int_gather_v tg li) t0 (int_gather_v fr li) (array/int (array/count ec) 0) leg leg)
          cv (exact (map (fn [(u : vec3) (v : vec3)] (vec3_cross u v)) cl saved))
          corr (exact (map (fn [(i : int)]
                 (let* [t1 (array/nth t0 i) c (array/nth cv i) a (array/nth cl i) b (array/nth saved i)]
@@ -360,7 +370,10 @@
                     0.0))) prows))
          ang (exact (map (fn [(r : int) (l : int) (p : int)]
                (if (and (int/eq (array/nth ec p) 1) (int/gt l 0))
-                 (/ (* (array/nth corr p) (array/nth cum r)) (array/nth total p)) 0.0))
+                 (if leg
+                   (let* [span (array/nth cum (array/nth li p)) cr (array/nth corr p)]
+                     (if (and (> (abs cr) 1e-15) (> span 0.0)) (/ (* cr (array/nth cum r)) span) 0.0))
+                   (/ (* (array/nth corr p) (array/nth cum r)) (array/nth total p))) 0.0))
                (array/range rn :type int) rl rp))
          rot (exact (map (fn [(r : int) (an : float)]
                (let* [cosine (cos an) sine (sin an) t1 (array/nth tg r) v (array/nth fr r) c (vec3_cross t1 v)]
@@ -380,16 +393,32 @@
     (let* [proj (fma u.z t0.z (fma u.y t0.y (* u.x t0.x)))]
       (if (pw_nok (fma (- 0.0 proj) t0.x u.x) (fma (- 0.0 proj) t0.y u.y) (fma (- 0.0 proj) t0.z u.z)) 0 1))) tg up))))
 
+; legacy up frames: the up vector is scaled by its largest component before it is projected
+(defn pw_upleg :context value [(t0 : vec3) (u : vec3)]
+  (let* [sc (max (abs u.x) (max (abs u.y) (abs u.z)))
+         ux (if (= sc 0.0) 0.0 (/ u.x sc)) uy (if (= sc 0.0) 0.0 (/ u.y sc)) uz (if (= sc 0.0) 0.0 (/ u.z sc))
+         proj (fma uz t0.z (fma uy t0.y (* ux t0.x)))
+         x (fma (* -1.0 proj) t0.x ux) y (fma (* -1.0 proj) t0.y uy) z (fma (* -1.0 proj) t0.z uz)
+         rs (max (abs x) (max (abs y) (abs z)))
+         sx (if (= rs 0.0) 0.0 (/ x rs)) sy (if (= rs 0.0) 0.0 (/ y rs)) sz (if (= rs 0.0) 0.0 (/ z rs))
+         l (sqrt (fma sz sz (fma sy sy (* sx sx))))]
+    {:v [(/ sx l) (/ sy l) (/ sz l)] :bad (if (or (= sc 0.0) (or (<= rs 1e-12) (not (pw_finite l)))) 1 0)}))
+(defn pw_upframes_leg :context value [(tg : (array vec3)) (up : (array vec3))]
+  (exact (map (fn [(t0 : vec3) (u : vec3)] (let* [r (pw_upleg t0 u)] r.v)) tg up)))
+(defn pw_upbad_leg :context value [(tg : (array vec3)) (up : (array vec3))]
+  (array/sum (exact (map (fn [(t0 : vec3) (u : vec3)] (let* [r (pw_upleg t0 u)] r.bad)) tg up))))
+
 ; ---- the points of every ring ----
 (defn pw_ringpts :context value
   [(rpo : (array int)) (dv : (array int)) (cen : (array vec3)) (tg : (array vec3)) (fr : (array vec3))
-   (seam : (array int)) (rrad : (array float)) (jp : (array int)) (jin : (array vec3)) (jlim : (array float))]
+   (seam : (array int)) (rrad : (array float)) (jp : (array int)) (jin : (array vec3)) (jlim : (array float))
+   (leg : bool)]
   (let* [wp (array/nth rpo (array/count dv))
          rrows (array/range (array/count dv) :type int)
          own (loft_owners rpo)
          qrows (array/range wp :type int)
          bv (exact (map (fn [(u : vec3) (v : vec3)] (pw_cross_imp u v)) tg fr))
-         bn (exact (map (fn [(v : vec3)] (pw_normalize v.x v.y v.z)) bv))
+         bn (exact (map (fn [(v : vec3)] (if leg (pw_unit_leg v.x v.y v.z) (pw_normalize v.x v.y v.z))) bv))
          ang (exact (map (fn [(q : int) (r : int)]
                (let* [count (array/nth dv r)
                       profile (pw_addwrap (int/add (int/sub q (array/nth rpo r)) (array/nth seam r)) count)]
@@ -410,7 +439,9 @@
          pos (exact (map (fn [(nv : vec3) (sr : float) (r : int)]
                (let* [c (array/nth cen r)]
                  [(fma sr nv.x c.x) (fma sr nv.y c.y) (fma sr nv.z c.z)])) nrm scl own))
-         badframe (array/sum (exact (map (fn [(v : vec3)] (if (pw_nok v.x v.y v.z) 0 1)) bv)))
+         badframe (array/sum (exact (map (fn [(v : vec3)]
+                    (if leg (let* [l (sqrt (fma v.z v.z (fma v.y v.y (* v.x v.x))))] (if (or (= l 0.0) (not (pw_finite l))) 1 0))
+                      (if (pw_nok v.x v.y v.z) 0 1))) bv)))
          badpos (array/sum (exact (map (fn [(v : vec3)]
                   (if (and (pw_finite v.x) (and (pw_finite v.y) (pw_finite v.z))) 0 1)) pos)))]
     {:pos pos :nrm nrm :bad (int/add badframe badpos)}))
@@ -845,14 +876,14 @@
              tr (pw_tangents cen lk.prev lk.next rg.jp)
              ln (pw_lengths cen rg.rl rg.bb rg.rfirst rg.rcount ec has_scales)
              steps (if (int/eq rn 0) 0 (array/max rg.rcount))
-             sq (pw_seq tr.tg rg.bb ln.seglen rg.rfirst rg.rcount steps)
+             sq (pw_seq tr.tg rg.bb ln.seglen rg.rfirst rg.rcount steps legacy)
              total (pw_totals sq.cum ln.closing rg.rfirst rg.rcount)
              tot_bad (array/sum (exact (map (fn [(x : float) (c : int)]
                        (if (and (int/gt c 0) (or (not (pw_finite x)) (<= x 1e-20))) 1 0)) total rg.rcount)))
              ringup (if a.has_up (pw_centers a.up tvp rg.lv rg.rv rg.w) (array/vec3 rn))
-             fr (if a.has_up (pw_upframes tr.tg ringup)
-                  (pw_roll tr.tg sq.fr sq.cum rg.rl rg.rp rg.rfirst rg.rcount ec total))
-             up_bad (if a.has_up (pw_upbad tr.tg ringup) 0)
+             fr (if a.has_up (if legacy (pw_upframes_leg tr.tg ringup) (pw_upframes tr.tg ringup))
+                  (pw_roll tr.tg sq.fr sq.cum rg.rl rg.rp rg.rfirst rg.rcount ec total legacy))
+             up_bad (if a.has_up (if legacy (pw_upbad_leg tr.tg ringup) (pw_upbad tr.tg ringup)) 0)
              ; ---- ring points
              rrows (array/range rn :type int)
              rdv (exact (map (fn [(l : int) (c : int) (wt : float)]
@@ -869,7 +900,7 @@
                     rg.lv rg.rv rg.w))
              rad_bad (array/sum (exact (map (fn [(x : float)] (if (pw_finite x) 0 1)) rrad)))
              jlim (exact (map (fn [(j : int)] (if (int/ge j 0) (array/nth a.mjs j) 1.0)) rg.jp))
-             wp (pw_ringpts rpo rdv cen tr.tg fr rseam rrad rg.jp tr.jin jlim)
+             wp (pw_ringpts rpo rdv cen tr.tg fr rseam rrad rg.jp tr.jin jlim legacy)
              ; ---- transitions and their faces
              nxtflag (exact (map (fn [(r : int)]
                       (let* [p (array/nth rg.rp r) l (array/nth rg.rl r)]
@@ -938,7 +969,7 @@
         (if (int/gt bad 0) (pw_fail "invalid curve geometry")
           (let* [target (sop/mesh :points points_out :vertex_points vpt :primitive_offsets lay.poff :kinds okind)
                  base (sop/delete_attr (sop/delete_attr in0 "N" :owner "point") "N" :owner "vertex")
-                 cleaned (if generate_uv (sop/delete_attr base "uv" :owner "vertex") base)
+                 cleaned (if (and generate_uv (not legacy)) (sop/delete_attr base "uv" :owner "vertex") base)
                  has_eg (int/gt (array/count (sop/group_names in0 "" :owner "edge")) 0)
                  remapped (if has_eg
                             (sop/remap cleaned target :point_mix {:a pa :b pb :t pt} :vertex_mix {:a vl :b vr :t vw}
@@ -949,7 +980,7 @@
                               :primitives lay.op :positions "target"))
                  with_n (sop/with_attr remapped "N" pn_out :owner "point" :type vec3)
                  with_uv (if generate_uv (sop/with_attr with_n "uv" {:x uvx :y uvy} :owner "vertex" :type vec2) with_n)
-                 with_vn (if (or caps has_vn) (sop/with_attr with_uv "N" vn :owner "vertex" :type vec3) with_uv)]
+                 with_vn (if (or caps (and has_vn (not legacy))) (sop/with_attr with_uv "N" vn :owner "vertex" :type vec3) with_uv)]
             (if (text/blank? cname) with_vn
               (sop/with_group with_vn capmask :name cname :owner "primitive"))))))))
 
