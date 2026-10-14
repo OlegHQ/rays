@@ -1,18 +1,41 @@
-; PARTIAL Attribute Copy draft (BLOCKED: see the commit message). Covers: cyclic and "to source element"
-; matching, exact (not patterned) source/target groups, rule rows with glob selection and rewrite, float /
-; vec2 / vec3 / vec4 / int / text attributes of the selection owner and of detail, existing-target merge
-; (same-kind destinations keep unmatched rows, others start at zero), duplicate-destination refusal.
-; Not covered: by-value matching, group patterns, cross-owner projection, ragged (array) attributes,
-; canonical P through a pattern, construction-time rule validation.
+; Whole Attribute Copy port. Native Attribute_copy.copy: the rule rows select source attributes (glob, optional
+; rewrite, canonical P when allowed); a base element mapping (cyclic / by value / to source element) over the
+; selection owner is projected to each attribute's owner (last writer wins on shared targets) and overlaid onto
+; the target (same-kind existing attributes keep unmatched rows, others start at zero).
 (defn acopy_error :context value [(reason : text)]
-  (error "invalid_attribute" "attribute_copy could not produce valid geometry"
-    :cause (str "attribute_copy [invalid_attribute]: Attribute Copy: " reason)))
+  (error "invalid_copy" "attribute_copy could not produce valid geometry"
+    :cause (str "attribute_copy [invalid_copy]: Attribute Copy: " reason)))
 (defn acopy_count :context sop [(geo : geometry) (owner : text)]
   (case owner "vertex" (sop/count geo :vertices) "primitive" (sop/count geo :primitives)
     "detail" 1 :else (sop/count geo :points)))
-(defn acopy_elements :context sop [(geo : geometry) (owner : text) (name : text)]
-  (if (text/blank? name) (array/range (acopy_count geo owner) :type int)
-    (let* [order (sop/group_order geo :name name :owner owner)] order.indices)))
+(defn acopy_owner_token :context value [(raw : text)]
+  (let* [token (text/lower (text/trim raw))]
+    (case token "point" "point" "points" "point" "vertex" "vertex" "vertices" "vertex"
+      "primitive" "primitive" "primitives" "primitive" "detail" "detail" :else "")))
+; Ascending members of a union of element lists.
+(defn acopy_ascending :context value [(elements : (array int)) (size : int)]
+  (array/compact (exact (map (fn [(c : int)] (if (int/gt c 0) 1 0))
+    (array/scatter_add elements (array/int (array/count elements) 1) size)))))
+(defn acopy_group_exists :context sop [(geo : geometry) (owner : text) (pattern : text) (name : text)]
+  (if (not (text/blank? pattern)) true
+    (if (text/blank? name) true
+      (fold [found false] [probe (sop/group_names geo "" :owner owner)] (or found (equal? probe name))))))
+; Selected elements in native order: a pattern unions the matching groups (one group keeps its order), an exact
+; group keeps its order, no group selects every element.
+(defn acopy_elements :context sop [(geo : geometry) (owner : text) (pattern : text) (name : text)]
+  (cond
+    (not (text/blank? pattern))
+      (let* [names (sop/group_names geo pattern :owner owner)
+             n (array/count names)]
+        (cond (int/eq n 0) (array/int 0 0)
+              (int/eq n 1) (let* [order (sop/group_order geo :name (array/nth names 0) :owner owner)] order.indices)
+              :else (acopy_ascending
+                      (fold [found (array/int 0 0)] [member names]
+                        (let* [order (sop/group_order geo :name member :owner owner)]
+                          (array/concat found order.indices)))
+                      (acopy_count geo owner))))
+    (text/blank? name) (array/range (acopy_count geo owner) :type int)
+    :else (let* [order (sop/group_order geo :name name :owner owner)] order.indices)))
 ; mapping[target element] = source element or -1
 (defn acopy_cyclic :context value [(source_elements : (array int)) (target_elements : (array int)) (target_count : int)]
   (let* [n (array/count source_elements)]
@@ -37,6 +60,167 @@
 (defn acopy_selected_mask :context value [(elements : (array int)) (count : int)]
   (array/scatter_add elements (array/int (array/count elements) 1) count))
 
+; Last occurrence join: for each target element the greatest selected source element with an equal key.
+(defn acopy_join_int :context value
+  [(ascending : (array int)) (source_values : (array int)) (target_values : (array int))
+   (target_elements : (array int)) (target_count : int)]
+  (let* [n (array/count ascending)
+         keys (exact (map (fn [(i : int)] (array/nth source_values (array/nth ascending (int/sub (int/sub n 1) i))))
+                (array/range n :type int)))
+         queries (exact (map (fn [(e : int)] (array/nth target_values e)) target_elements))
+         found (array/index_of keys queries)
+         resolved (exact (map (fn [(p : int)]
+                    (if (int/ge p 0) (int/add (array/nth ascending (int/sub (int/sub n 1) p)) 1) 0)) found))]
+    (exact (map (fn [(one : int)] (int/sub one 1)) (array/scatter_add target_elements resolved target_count)))))
+(defn acopy_join_text :context value
+  [(ascending : (array int)) (source_values : (array text)) (target_values : (array text))
+   (target_elements : (array int)) (target_count : int)]
+  (let* [n (array/count ascending)
+         keys (exact (map (fn [(i : int)] (array/nth source_values (array/nth ascending (int/sub (int/sub n 1) i))))
+                (array/range n :type int)))
+         queries (exact (map (fn [(e : int)] (array/nth target_values e)) target_elements))
+         found (array/index_of keys queries)
+         resolved (exact (map (fn [(p : int)]
+                    (if (int/ge p 0) (int/add (array/nth ascending (int/sub (int/sub n 1) p)) 1) 0)) found))]
+    (exact (map (fn [(one : int)] (int/sub one 1)) (array/scatter_add target_elements resolved target_count)))))
+(defn acopy_match_ok :context sop [(source : geometry) (target : geometry) (owner : text) (source_name : text) (target_name : text)]
+  (if (and (sop/has_attr source source_name :owner owner :type int) (sop/has_attr target target_name :owner owner :type int))
+    true
+    (and (sop/has_attr source source_name :owner owner :type text) (sop/has_attr target target_name :owner owner :type text))))
+(defn acopy_by_values :context sop
+  [(source : geometry) (target : geometry) (owner : text) (source_name : text) (target_name : text)
+   (source_elements : (array int)) (target_elements : (array int)) (target_count : int)]
+  (let* [ascending (acopy_ascending source_elements (acopy_count source owner))]
+    (if (sop/has_attr source source_name :owner owner :type int)
+      (acopy_join_int ascending (sop/attr source source_name :owner owner :type int)
+        (sop/attr target target_name :owner owner :type int) target_elements target_count)
+      (acopy_join_text ascending (sop/attr source source_name :owner owner :type text)
+        (sop/attr target target_name :owner owner :type text) target_elements target_count))))
+
+; Rows are expanded by counts: owning row and local index of every expanded entry.
+(defn acopy_owners :context value [(offsets : (array int)) (total : int)]
+  (let* [segments (int/sub (array/count offsets) 1)
+         starts (exact (map (fn [(p : int)] (array/nth offsets p)) (array/range segments :type int)))
+         prefix (array/scan_sum (array/scatter_add starts (array/int segments 1) (int/add total 1)))]
+    (exact (map (fn [(s : int)] (int/sub (array/nth prefix (int/add s 1)) 1)) (array/range total :type int)))))
+; Related-element CSR of an owner pair: the elements of attribute owner `attr` belonging to a base element.
+(defn acopy_view_point :context sop [(geo : geometry) (attr : text)]
+  (let* [adjacency (sop/adjacency geo)]
+    (if (equal? attr "vertex") {:offs adjacency.point_vertex_offsets :list adjacency.point_vertices}
+      {:offs adjacency.point_vertex_offsets
+       :list (exact (map (fn [(v : int)] (array/nth adjacency.primitive_of_vertex v)) adjacency.point_vertices))})))
+(defn acopy_view_vertex :context sop [(geo : geometry) (attr : text)]
+  (let* [topology (sop/topology geo)
+         offs (array/range (int/add (array/count topology.vertex_points) 1) :type int)]
+    (if (equal? attr "point") {:offs offs :list topology.vertex_points}
+      (let* [adjacency (sop/adjacency geo)] {:offs offs :list adjacency.primitive_of_vertex}))))
+(defn acopy_view_primitive :context sop [(geo : geometry) (attr : text)]
+  (let* [topology (sop/topology geo)]
+    (if (equal? attr "vertex")
+      {:offs topology.primitive_offsets :list (array/range (array/count topology.vertex_points) :type int)}
+      {:offs topology.primitive_offsets :list topology.vertex_points})))
+(defn acopy_view :context sop [(geo : geometry) (base : text) (attr : text)]
+  (case base "point" (acopy_view_point geo attr) "vertex" (acopy_view_vertex geo attr)
+    :else (acopy_view_primitive geo attr)))
+; Last writer wins: mapping[d] = src of the last pair whose destination is d, else -1.
+(defn acopy_last :context value [(dest : (array int)) (src : (array int)) (size : int)]
+  (let* [n (array/count dest)
+         reversed (exact (map (fn [(i : int)] (array/nth dest (int/sub (int/sub n 1) i))) (array/range n :type int)))
+         found (array/index_of reversed (array/range size :type int))]
+    (exact (map (fn [(p : int)] (if (int/ge p 0) (array/nth src (int/sub (int/sub n 1) p)) -1)) found))))
+(defn acopy_pairs :context value
+  [(base_mapping : (array int)) (target_elements : (array int)) (attr_count : int)
+   (soffs : (array int)) (slist : (array int)) (toffs : (array int)) (tlist : (array int))]
+  (let* [counts (exact (map (fn [(tb : int)]
+                  (let* [sb (array/nth base_mapping tb)]
+                    (if (int/ge sb 0)
+                      (if (int/gt (int/sub (array/nth soffs (int/add sb 1)) (array/nth soffs sb)) 0)
+                        (int/sub (array/nth toffs (int/add tb 1)) (array/nth toffs tb))
+                        0)
+                      0)))
+                  target_elements))
+         offsets (array/scan_sum counts)
+         total (array/nth offsets (array/count counts))
+         rank (acopy_owners offsets total)
+         local (exact (map (fn [(j : int) (r : int)] (int/sub j (array/nth offsets r)))
+                 (array/range total :type int) rank))
+         dest (exact (map (fn [(r : int) (k : int)]
+                (array/nth tlist (int/add (array/nth toffs (array/nth target_elements r)) k)))
+                rank local))
+         src (exact (map (fn [(r : int) (k : int)]
+               (let* [sb (array/nth base_mapping (array/nth target_elements r))
+                      srel (int/sub (array/nth soffs (int/add sb 1)) (array/nth soffs sb))]
+                 (array/nth slist (int/add (array/nth soffs sb) (int/mod k srel)))))
+               rank local))]
+    (acopy_last dest src attr_count)))
+(defn acopy_project :context sop
+  [(source : geometry) (target : geometry) (base : text) (attr : text) (base_mapping : (array int))
+   (target_elements : (array int)) (attr_count : int)]
+  (let* [sv (acopy_view source base attr)
+         tv (acopy_view target base attr)]
+    (acopy_pairs base_mapping target_elements attr_count sv.offs sv.list tv.offs tv.list)))
+; Mapping of the target elements of attribute owner `owner`, or an empty array when no selected attribute uses it.
+(defn acopy_map_for :context sop
+  [(source : geometry) (target : geometry) (owner : text) (base_owner : text) (base : (array int))
+   (target_elements : (array int)) (used : bool)]
+  (cond (not used) (array/int 0 0)
+        (equal? owner base_owner) base
+        (equal? owner "detail")
+          base
+        :else (acopy_project source target base_owner owner base target_elements (acopy_count target owner))))
+
+; Selected attributes in native order: owners, names, destinations and owner-qualified keys.
+(defn acopy_plan :context sop [(source : geometry) (rules : text) (allow_position : bool)]
+  (let* [probe (sop/with_attr (sop/mesh :points (array/vec3 1) :vertex_points (array/int 0)
+                 :primitive_offsets (array/int 1) :kinds (array/int 0))
+                 "P" (array/float 1) :owner "detail" :type float)]
+    (fold [plan {:owners (array/text 0) :names (array/text 0) :dests (array/text 0) :keys (array/text 0) :bad false}]
+      [row (text/table_decode rules)]
+      (let* [o (acopy_owner_token (nth row 0))
+             pattern (nth row 1)
+             into (text/trim (nth row 2))
+             listed (if (and allow_position (equal? o "point"))
+                      (int/gt (array/count (sop/attr_names probe pattern :owner "detail")) 0) false)
+             stored (sop/attr_names source pattern :owner o)
+             names (if listed (array/concat (array/text 1 "P") stored) stored)]
+        (fold [inner plan] [name names]
+          (let* [dest (if (equal? into "") name (text/glob_rewrite pattern into name))
+                 refused (or (text/blank? dest)
+                           (or (and (equal? dest "P") (not (equal? o "point")))
+                               (and (equal? dest "P") (not allow_position))))]
+            {:owners (array/concat inner.owners (array/text 1 o))
+             :names (array/concat inner.names (array/text 1 name))
+             :dests (array/concat inner.dests (array/text 1 dest))
+             :keys (array/concat inner.keys (array/text 1 (str o ":" dest)))
+             :bad (or inner.bad refused)}))))))
+(defn acopy_duplicate :context value [(keys : (array text))]
+  (int/gt (array/sum (exact (map (fn [(f : int) (i : int)] (if (int/eq f i) 0 1))
+    (array/index_of keys keys) (array/range (array/count keys) :type int)))) 0))
+(defn acopy_uses :context value [(owners : (array text)) (owner : text)]
+  (int/ge (array/nth (array/index_of owners (array/text 1 owner)) 0) 0))
+
+(defn acopy_rule_ok :context value [(row : (list text))]
+  (if (int/eq (count row) 3)
+    (if (equal? (acopy_owner_token (nth row 0)) "") false
+      (if (text/blank? (nth row 2))
+        (equal? (text/glob_error (nth row 1)) "")
+        (equal? (text/glob_rewrite_error (nth row 1) (text/trim (nth row 2))) "")))
+    false))
+(defn acopy_name_ok :context value [(name : text)]
+  (and (not (text/blank? name)) (not (equal? name "P"))))
+(defn acopy_valid :context value
+  [(match_ : text) (group_owner : text) (source_match : text) (target_match : text) (element : text)
+   (source_pattern : text) (target_pattern : text) (rules : text)]
+  (let* [rows (text/table_decode rules)]
+    (and (and (int/gt (count rows) 0) (fold [ok true] [row rows] (if ok (acopy_rule_ok row) false)))
+      (and (and (or (text/blank? source_pattern) (equal? (text/glob_error source_pattern) ""))
+                (or (text/blank? target_pattern) (equal? (text/glob_error target_pattern) "")))
+        (case match_
+          "By attribute values" (and (not (equal? group_owner "Vertices"))
+                                     (and (acopy_name_ok source_match) (acopy_name_ok target_match)))
+          "To source element" (acopy_name_ok element)
+          :else true)))))
+
 (defn acopy_planes :context value
   [(width : int) (x : (array float)) (y : (array float)) (z : (array float)) (w : (array float))]
   {:width width :x x :y y :z z :w w})
@@ -54,23 +238,23 @@
              (int/sub (array/nth source_offsets (int/add m 1)) (array/nth source_offsets m))
              (int/sub (array/nth old_offsets (int/add i 1)) (array/nth old_offsets i))))
            mapping (array/range n :type int)))
-         offsets (array/scan_sum (array/concat lengths (array/int 1 0)))]
+         offsets (array/scan_sum lengths)]
     {:offsets offsets :total (array/nth offsets n)}))
-(defn acopy_owners :context value [(offsets : (array int)) (total : int)]
-  (let* [segments (int/sub (array/count offsets) 1)
-         starts (exact (map (fn [(p : int)] (array/nth offsets p)) (array/range segments :type int)))
-         prefix (array/scan_sum (array/scatter_add starts (array/int segments 1) (int/add total 1)))]
-    (exact (map (fn [(s : int)] (int/sub (array/nth prefix (int/add s 1)) 1)) (array/range total :type int)))))
 ; One attribute: kind is the source type name; mapping is the owner-level source row per target row.
 (defn acopy_one :context sop
   [(target : geometry) (source : geometry) (owner : text) (name : text) (dest : text) (kind : text)
-   (mapping : (array int))]
-  (let* [n (array/count mapping)]
+   (owner_mapping : (array int))]
+  (let* [mapping (if (equal? owner "detail")
+                   (if (int/gt (array/sum (exact (map (fn [(m : int)] (if (int/ge m 0) 1 0)) owner_mapping))) 0)
+                     (array/int 1 0) (array/int 1 -1))
+                   owner_mapping)
+         n (array/count mapping)]
     (cond
-      (or (int/eq n 0) (int/eq (array/max (exact (map (fn [(m : int)] (if (int/ge m 0) 1 0)) mapping))) 0)) target
+      (or (int/eq n 0) (int/eq (array/sum (exact (map (fn [(m : int)] (if (int/ge m 0) 1 0)) mapping))) 0)) target
+      (and (equal? dest "P") (not (equal? kind "vec3"))) (acopy_error "canonical P requires float3 storage")
       (or (equal? kind "float") (or (equal? kind "vec2") (or (equal? kind "vec3") (equal? kind "vec4"))))
         (let* [src (sop/attr_planes source name :owner owner)
-               same (and (sop/has_attr target dest :owner owner) (equal? (sop/attr_type target dest :owner owner) kind))
+               same (if (sop/has_attr target dest :owner owner) (equal? (sop/attr_type target dest :owner owner) kind) false)
                old (if same (sop/attr_planes target dest :owner owner) src)]
           (sop/with_planes target dest
             (acopy_planes src.width (acopy_pick mapping src.x old.x same) (acopy_pick mapping src.y old.y same)
@@ -144,11 +328,9 @@
                 :else (sop/with_attr target dest result :owner "detail" :type float_array))))))
 
 (defnode sop/attribute_copy :label "Attribute Copy" :category ["Attribute" "Transfer"]
-  :validate (and (or (not (equal? match_ "By attribute values")) (not (equal? group_owner "Vertices")))
-              (and (or (not (equal? match_ "By attribute values"))
-                       (and (not (text/blank? source_match_attribute)) (not (text/blank? target_match_attribute))))
-                   (or (not (equal? match_ "To source element")) (not (text/blank? target_element_attribute)))))
-  :code "E_PARAM" :message "sop/attribute_copy: matching requires nonblank attributes; value matching supports point or primitive groups"
+  :validate (acopy_valid match_ group_owner source_match_attribute target_match_attribute target_element_attribute
+              source_group_pattern target_group_pattern rules)
+  :code "E_PARAM" :message "sop/attribute_copy: invalid rules, matching attributes or group patterns"
   [(source : geometry)
    (target : geometry)
    (group_owner : text "Points" :label "Selection owner" :choices ["Points" "Vertices" "Primitives"])
@@ -163,35 +345,49 @@
    (target_group_pattern : text "" :label "Target group pattern" :folder ["Groups" "Target"])
    (rules : text "point\t*\t" :label "Rules (owner, pattern, destination)" :folder ["Attributes"])]
   (let* [owner (case group_owner "Vertices" "vertex" "Primitives" "primitive" :else "point")
-         source_name (text/trim source_group)
-         target_name (text/trim target_group)
-         rows (text/table_decode rules)
-         source_count (acopy_count source owner)
-         target_count (acopy_count target owner)
-         source_elements (acopy_elements source owner source_name)
-         target_elements (acopy_elements target owner target_name)
-         base (cond (equal? match_ "Cyclic") (acopy_cyclic source_elements target_elements target_count)
+         source_pattern (text/trim source_group_pattern)
+         target_pattern (text/trim target_group_pattern)
+         source_name (if (text/blank? source_pattern) (text/trim source_group) "")
+         target_name (if (text/blank? target_pattern) (text/trim target_group) "")
+         source_exists (acopy_group_exists source owner source_pattern source_name)
+         target_exists (acopy_group_exists target owner target_pattern target_name)
+         plan (acopy_plan source rules allow_position)
+         selected (array/count plan.names)
+         refused (or plan.bad (acopy_duplicate plan.keys))
+         ready (and source_exists (and target_exists (and (not refused) (int/gt selected 0))))
+         matching_ok (if ready
+           (cond (equal? match_ "Cyclic") true
+                 (equal? match_ "To source element")
+                   (sop/has_attr target target_element_attribute :owner owner :type int)
+                 :else (acopy_match_ok source target owner source_match_attribute target_match_attribute))
+           true)
+         go (and ready matching_ok)
+         source_count (if go (acopy_count source owner) 0)
+         target_count (if go (acopy_count target owner) 0)
+         source_elements (if go (acopy_elements source owner source_pattern source_name) (array/int 0 0))
+         target_elements (if go (acopy_elements target owner target_pattern target_name) (array/int 0 0))
+         base (cond (not go) (array/int 0 0)
+                    (equal? match_ "Cyclic") (acopy_cyclic source_elements target_elements target_count)
                     (equal? match_ "To source element")
                       (acopy_to_element (sop/attr target target_element_attribute :owner owner :type int)
                         target_elements target_count source_count (acopy_selected_mask source_elements source_count))
-                    :else (array/int target_count -1))]
-    (get (fold [state {:geometry target :seen (array/text 0)}] [row rows]
-      (let* [attr_owner (text/lower (text/trim (nth row 0)))
-             o (case attr_owner "points" "point" "vertices" "vertex" "primitives" "primitive" :else attr_owner)
-             pattern (nth row 1)
-             into (text/trim (nth row 2))
-             names (sop/attr_names source pattern :owner o)
-             mapping (cond (equal? o owner) base
-                           (equal? o "detail") (array/int 1 (if (int/gt (array/max (exact (map (fn [(m : int) ] (if (int/ge m 0) 1 0)) base))) 0) 0 -1))
-                           :else (acopy_error "cross-owner projection is not ported"))]
-        (fold [inner state] [index (array/range (array/count names) :type int)]
-          (let* [name (array/nth names index)
-                 dest (if (equal? into "") name (text/glob_rewrite pattern into name))
-                 identity (str o ":" dest)
-                 seen (fold [found false] [prior inner.seen] (or found (equal? prior identity)))]
-            (cond
-              (text/blank? dest) (acopy_error "rewrite produced an empty name")
-              seen (acopy_error (str "duplicate destination attribute " (text/repr dest)))
-              :else {:geometry (acopy_one inner.geometry source o name dest (sop/attr_type source name :owner o) mapping)
-                     :seen (array/concat inner.seen (array/text 1 identity))})))))
-      :geometry)))
+                    :else (acopy_by_values source target owner source_match_attribute target_match_attribute
+                            source_elements target_elements target_count))
+         m_point (acopy_map_for source target "point" owner base target_elements (and go (acopy_uses plan.owners "point")))
+         m_vertex (acopy_map_for source target "vertex" owner base target_elements (and go (acopy_uses plan.owners "vertex")))
+         m_primitive (acopy_map_for source target "primitive" owner base target_elements (and go (acopy_uses plan.owners "primitive")))
+         m_detail (acopy_map_for source target "detail" owner base target_elements (and go (acopy_uses plan.owners "detail")))]
+    (cond
+      (not source_exists)
+        (error "missing_group" (str "attribute_copy could not find " owner " group " (text/repr source_name)))
+      (not target_exists)
+        (error "missing_group" (str "attribute_copy could not find " owner " group " (text/repr target_name)))
+      refused (acopy_error "invalid selected attribute destinations")
+      (int/eq selected 0) target
+      (not matching_ok) (acopy_error "matching attribute is missing or has the wrong storage")
+      :else
+        (fold [acc target] [i (array/range selected :type int)]
+          (let* [o (array/nth plan.owners i)
+                 name (array/nth plan.names i)]
+            (acopy_one acc source o name (array/nth plan.dests i) (sop/attr_type source name :owner o)
+              (case o "point" m_point "vertex" m_vertex "primitive" m_primitive :else m_detail)))))))

@@ -1,6 +1,5 @@
-(* sop/attribute_copy: two geometry inputs (source, target). PARTIAL draft gate: cases cover cyclic and
-   to-element matching with exact groups, same-owner and detail rules; value matching, group patterns,
-   cross-owner projection and ragged attributes are listed as cases at the end and fail until ported. *)
+(* sop/attribute_copy: two geometry inputs (source, target). Cases cover every matching mode, exact and
+   patterned groups, every owner projection, ragged attributes, canonical P and construction refusals. *)
 open Rdk
 open Rdk_test_support
 open Port_gate
@@ -45,14 +44,68 @@ let cases =
       "by values vertex", [ch "match_" "By attribute values"; ch "group_owner" "Vertices"];
       "by values blank", [ch "match_" "By attribute values"; tx "source_match_attribute" " "];
       "allow P", [bo "allow_position" true; tx "rules" (rule "point" "P" "")];
-      (* not ported yet: each of these fails the gate *)
-      "TODO by values int", [ch "match_" "By attribute values"; tx "source_match_attribute" "integer";
+      "by values int", [ch "match_" "By attribute values"; tx "source_match_attribute" "integer";
                             tx "target_match_attribute" "integer"];
-      "TODO by values text", [ch "match_" "By attribute values"; tx "source_match_attribute" "text";
+      "by values text", [ch "match_" "By attribute values"; tx "source_match_attribute" "text";
                              tx "target_match_attribute" "text"; ch "group_owner" "Primitives";
                              tx "rules" (rule "primitive" "*" "")];
-      "TODO pattern groups", [tx "source_group_pattern" "*"; tx "target_group_pattern" "d*"];
-      "TODO projection", [ch "group_owner" "Primitives"; tx "rules" (rule "point" "*" "")];
-      "TODO ragged", [tx "rules" (rule "point" "*_rows" "")] ]
+      "by values grouped", [ch "match_" "By attribute values"; tx "source_match_attribute" "integer";
+                            tx "target_match_attribute" "integer"; tx "source_group" "a"; tx "target_group" "a"];
+      "by values mixed storage", [ch "match_" "By attribute values"; tx "source_match_attribute" "integer";
+                                  tx "target_match_attribute" "text"];
+      "by values missing", [ch "match_" "By attribute values"; tx "source_match_attribute" "absent"];
+      "by values P", [ch "match_" "By attribute values"; tx "source_match_attribute" "P"];
+      "by values none selected", [ch "match_" "By attribute values"; tx "source_match_attribute" "absent";
+                                  tx "rules" (rule "point" "absent*" "")];
+      "pattern groups", [tx "source_group_pattern" "*"; tx "target_group_pattern" "d*"];
+      "pattern one group", [tx "source_group_pattern" "a"; tx "target_group_pattern" "dest_a"];
+      "pattern no group", [tx "source_group_pattern" "zzz*"];
+      "pattern beats exact", [tx "source_group_pattern" "a"; tx "source_group" "nothing"];
+      "pattern vertices", [ch "group_owner" "Vertices"; tx "source_group_pattern" "[ao]*"; tx "target_group_pattern" "*_a"];
+      "pattern primitives", [ch "group_owner" "Primitives"; tx "source_group_pattern" "*"; tx "rules" (rule "vertex" "*" "")];
+      "bad group pattern", [tx "source_group_pattern" "["];
+      "projection point to primitive", [tx "rules" (rule "primitive" "*" "")];
+      "projection vertex to point", [ch "group_owner" "Vertices"; tx "rules" (rule "point" "*" "")];
+      "projection vertex to primitive grouped",
+        [ch "group_owner" "Vertices"; tx "rules" (rule "primitive" "*" ""); tx "source_group" "a"; tx "target_group" "dest_a"];
+      "projection primitive to vertex", [ch "group_owner" "Primitives"; tx "rules" (rule "vertex" "*" "")];
+      "projection primitive to point", [ch "group_owner" "Primitives"; tx "rules" (rule "point" "*" "")];
+      "projection point to vertex grouped", [tx "rules" (rule "vertex" "*" ""); tx "source_group" "dest_a"];
+      "projection every owner", [ch "group_owner" "Primitives";
+        tx "rules" (rule "point" "*" "" ^ "\n" ^ rule "vertex" "*" "" ^ "\n" ^ rule "primitive" "*" "" ^ "\n" ^ rule "detail" "*" "")];
+      "detail float", [tx "rules" (rule "detail" "float" "")];
+      "detail integer", [tx "rules" (rule "detail" "integer" "")];
+      "detail text", [tx "rules" (rule "detail" "text" "")];
+      "detail vec3", [tx "rules" (rule "detail" "vec3" "")];
+      "detail rows", [tx "rules" (rule "detail" "*_rows" "")];
+      "ragged", [tx "rules" (rule "point" "*_rows" "")];
+      "ragged vertex rewrite", [ch "group_owner" "Primitives"; tx "rules" (rule "vertex" "*_rows" "r_*")];
+      "ragged merge", [tx "rules" (rule "primitive" "int_rows" "float_rows")];
+      "kind mismatch merge", [ch "group_owner" "Primitives"; tx "rules" (rule "primitive" "float" "integer")];
+      "P rewrite", [bo "allow_position" true; tx "rules" (rule "point" "vec3" "P")];
+      "P all", [bo "allow_position" true; ch "group_owner" "Primitives"; tx "rules" (rule "point" "*" "")];
+      "P grouped", [bo "allow_position" true; tx "source_group" "a"; tx "target_group" "dest_a"; tx "rules" (rule "point" "[Pv]*" "")];
+      "P without allow", [tx "rules" (rule "point" "vec3" "P")];
+      "P float", [bo "allow_position" true; tx "rules" (rule "point" "float" "P")];
+      "P vertex owner", [bo "allow_position" true; tx "rules" (rule "vertex" "vec3" "P")];
+      "uppercase owner", [tx "rules" ("  Points \t" ^ "vec*" ^ "\t copy_* ")];
+      "bad owner", [tx "rules" (rule "edge" "*" "")];
+      "two columns", [tx "rules" "point\t*"];
+      "empty rules", [tx "rules" ""];
+      "bad pattern", [tx "rules" (rule "point" "[" "")];
+      "bad rewrite", [tx "rules" (rule "point" "a*b" "x")];
+      "bad escape", [tx "rules" "point\t*\t\\q"] ]
 
-let () = register { key = "attribute_copy"; native = Sop.Nodes.Attribute_copy.factory; inputs; cases; ulps = 4; bench = None }
+(* One million points: a float, an int and a vec3 attribute copied cyclically from a half-size source. *)
+let bench () =
+  let n = 1_000_000 in
+  let add name storage g = Geometry.with_attribute
+    (Attribute.create_owned ~name ~owner:Attribute.Point storage |> get_string_ok) g |> get_string_ok in
+  let source m = points m
+    |> add "f" (Attribute.Float (Array.init m float))
+    |> add "i" (Attribute.Int (Array.init m Fun.id))
+    |> add "v" (Attribute.Float3 (Packed.Float3.of_owned ~x:(Array.init m float) ~y:(Array.make m 1.)
+         ~z:(Array.make m 2.) |> get_string_ok)) in
+  [source (n / 2); points n], []
+let () = register { key = "attribute_copy"; native = Sop.Nodes.Attribute_copy.factory; inputs; cases; ulps = 4;
+  bench = Some bench }
