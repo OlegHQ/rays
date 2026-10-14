@@ -145,6 +145,15 @@ export function float_fma_checked(a, b, c) {
   a = fin('float/fma_checked', num(a)); b = fin('float/fma_checked', num(b)); c = fin('float/fma_checked', num(c));
   return checkedArithmetic(fused(a, b, c));
 }
+export function float_next_after(x, y) {
+  x = fin('float/next_after', num(x)); y = fin('float/next_after', num(y));
+  if (x === y) return y;
+  if (x === 0) return y > 0 ? 5e-324 : -5e-324;
+  fmaBytes.setFloat64(0, x, false);
+  const b = fmaBytes.getBigUint64(0, false) + ((y > x) === (x > 0) ? 1n : -1n);
+  fmaBytes.setBigUint64(0, b, false);
+  return fin('float/next_after', fmaBytes.getFloat64(0, false));
+}
 export const sqrt = x => Math.sqrt(Math.abs(num(x)));
 export const exp = x => fin('exp', Math.exp(num(x)));
 export const abs = x => typeof x === 'bigint' ? (x < 0n ? wrap(-x) : x) : Math.abs(num(x));

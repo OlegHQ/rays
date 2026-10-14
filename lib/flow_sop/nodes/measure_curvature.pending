@@ -1,0 +1,281 @@
+; Whole-node draft. Discrete curvature of a polygon surface (Rdk.Curvature): mean (cotangent Laplacian of the
+; scaled positions over the mixed Voronoi area, along the area-weighted normal), Gaussian (angle defect over
+; mixed area), principal minimum/maximum, curvedness and shape index, optional Jacobi smoothing over the edge
+; neighbours, optional point group. The surface metric (scaled positions, Rdk's ear-clipped sop/triangles,
+; cotangents) and the per-point incidence order are those of attribute_laplacian (helpers in the prelude).
+; Sums run per point in the native incidence order; multiply-adds that arm64 fuses are written with fma.
+(defn crv_error :context value [(reason : text)]
+  (error "invalid_curvature" "measure_curvature could not produce valid geometry"
+    :cause (str "measure_curvature [invalid_curvature]: " reason)))
+; Scaled positions, triangles (point ids), per-triangle cross products, double areas and cotangents.
+(defn crv_metric :context sop [(geo : geometry)]
+  (let* [topo (sop/topology geo)
+         points (sop/count geo :points)
+         positions (sop/attr geo :P)
+         tris (sop/triangles geo)
+         triangles (array/count tris.primitive)
+         ta (int_gather topo.vertex_points tris.a)
+         tb (int_gather topo.vertex_points tris.b)
+         tc (int_gather topo.vertex_points tris.c)
+         scale (if (int/eq points 0) 0.0 (array/max (exact (map (fn [(p : vec3)]
+                   (max (abs p.x) (max (abs p.y) (abs p.z)))) positions))))
+         safe (if (= scale 0.0) 1.0 scale)
+         scaled (exact (map (fn [(p : vec3)] (/ p safe)) positions))
+         u (exact (map (fn [(a : int) (b : int)] (- (array/nth scaled b) (array/nth scaled a))) ta tb))
+         v (exact (map (fn [(a : int) (c : int)] (- (array/nth scaled c) (array/nth scaled a))) ta tc))
+         cross (exact (map (fn [(p : vec3) (q : vec3)]
+           [(fma (* -1.0 p.z) q.y (* p.y q.z))
+            (fma (* -1.0 p.x) q.z (* p.z q.x))
+            (fma (* -1.0 p.y) q.x (* p.x q.y))]) u v))
+         area (exact (map (fn [(c : vec3)] (hypot c.x (hypot c.y c.z))) cross))
+         uv (exact (map (fn [(p : vec3) (q : vec3)] (fma p.z q.z (fma p.y q.y (* p.x q.x)))) u v))
+         uu (exact (map lap_sumsq u))
+         vv (exact (map lap_sumsq v))
+         bad (array/sum (exact (map (fn [(a : float)] (if (> a 0.0) 0 1)) area)))
+         ca (exact (map (fn [(d : float) (x : float)] (/ x d)) area uv))
+         cb (exact (map (fn [(d : float) (x : float) (y : float)] (/ (- x y) d)) area uu uv))
+         cc (exact (map (fn [(d : float) (x : float) (y : float)] (/ (- x y) d)) area vv uv))
+         reason (cond
+           (and (int/gt triangles 0) (= scale 0.0)) "surface triangles are metrically degenerate"
+           (int/lt (array/sum tris.ok) (array/count tris.ok)) "polygon triangulation failed"
+           (int/gt bad 0) "surface contains a degenerate or numerically unrepresentable triangle"
+           :else "")]
+    {:reason reason :triangles triangles :scale safe :ta ta :tb tb :tc tc :scaled scaled
+     :cross cross :area area :ca ca :cb cb :cc cc}))
+; Points on a boundary edge (an edge with one incident polygon): 1, else 0.
+(defn crv_boundary :context sop [(geo : geometry)]
+  (let* [adjacency (sop/adjacency geo)
+         points (sop/count geo :points)
+         usage (edge_usage adjacency (sop/count geo :edges))
+         count (array/segment_sum (exact (map (fn [(e : int)] (if (int/eq (array/nth usage e) 1) 1 0))
+                   adjacency.point_edges)) adjacency.point_edge_offsets)]
+    (exact (map (fn [(b : int)] (if (int/gt b 0) 1 0)) count))))
+; Corner c = 3 t + l of every triangle: its point, the two neighbours and the cotangents, grouped per point.
+(defn crv_corners :context value
+  [(points : int) (triangles : int) (ta : (array int)) (tb : (array int)) (tc : (array int))
+   (ca : (array float)) (cb : (array float)) (cc : (array float))]
+  (let* [total (int/mul 3 triangles)
+         range (array/range total :type int)
+         ct (exact (map (fn [(c : int)] (int/div c 3)) range))
+         cl (exact (map (fn [(c : int)] (int/mod c 3)) range))
+         point (exact (map (fn [(tri : int) (l : int)]
+           (lap_pick_int l (array/nth ta tri) (array/nth tb tri) (array/nth tc tri))) ct cl))
+         na (exact (map (fn [(tri : int) (l : int)]
+           (lap_pick_int l (array/nth tb tri) (array/nth tc tri) (array/nth ta tri))) ct cl))
+         nb (exact (map (fn [(tri : int) (l : int)]
+           (lap_pick_int l (array/nth tc tri) (array/nth ta tri) (array/nth tb tri))) ct cl))
+         cot (exact (map (fn [(tri : int) (l : int)]
+           (lap_pick l (array/nth ca tri) (array/nth cb tri) (array/nth cc tri))) ct cl))
+         cot_na (exact (map (fn [(tri : int) (l : int)]
+           (lap_pick l (array/nth cb tri) (array/nth cc tri) (array/nth ca tri))) ct cl))
+         cot_nb (exact (map (fn [(tri : int) (l : int)]
+           (lap_pick l (array/nth cc tri) (array/nth ca tri) (array/nth cb tri))) ct cl))
+         counts (array/scatter_add point (array/int total 1) points)]
+    {:ct ct :point point :na na :nb nb :cot cot :cot_na cot_na :cot_nb cot_nb
+     :order (array/grade point) :counts counts :offsets (array/scan_sum counts)
+     :rounds (if (int/eq points 0) 0 (array/max counts))}))
+; Per-point native sum of per-corner terms, corners in incidence order.
+(defn crv_ordered :context value [(terms : (array float)) (order : (array int)) (offsets : (array int))]
+  (array/segment_sum (exact (map (fn [(c : int)] (array/nth terms c)) order)) offsets))
+; Laplacian component: round k folds the k-th incident corner, two multiply-subtracts as the native loop.
+(defn crv_lap_plane :context value
+  [(da : (array float)) (db : (array float)) (wb : (array float)) (wa : (array float))
+   (order : (array int)) (offsets : (array int)) (counts : (array int)) (rounds : int)]
+  (let* [points (array/count counts)
+         indices (array/range points :type int)]
+    (get (iterate rounds {:k 0 :out (array/float points 0.0)}
+      (fn [(state : {:k int :out (array float)})]
+        (let* [corner (exact (map (fn [(p : int) (n : int)]
+                        (if (int/lt state.k n) (array/nth order (int/add (array/nth offsets p) state.k)) -1)) indices counts))]
+          {:k (int/add state.k 1)
+           :out (exact (map (fn [(c : int) (o : float)]
+                  (if (int/lt c 0) o
+                    (fma (* -1.0 (array/nth wb c)) (array/nth db c)
+                      (fma (* -1.0 (array/nth wa c)) (array/nth da c) o))))
+                  corner state.out))}))) :out)))
+(defn crv_dx :context value [(d : vec3)] d.x)
+(defn crv_dy :context value [(d : vec3)] d.y)
+(defn crv_dz :context value [(d : vec3)] d.z)
+; Per-point sums {:area :angle :nx :ny :nz :lx :ly :lz}.
+(defn crv_sums :context value
+  [(scaled : (array vec3)) (cross : (array vec3)) (area : (array float)) (ca : (array float)) (cb : (array float))
+   (cc : (array float))
+   (ct : (array int)) (point : (array int)) (na : (array int)) (nb : (array int)) (cot : (array float))
+   (cot_na : (array float)) (cot_nb : (array float)) (order : (array int)) (counts : (array int))
+   (offsets : (array int)) (rounds : int)]
+  (let* [total (array/count point)
+         range (array/range total :type int)
+         da (exact (map (fn [(p : int) (n : int)] (- (array/nth scaled n) (array/nth scaled p))) point na))
+         db (exact (map (fn [(p : int) (n : int)] (- (array/nth scaled n) (array/nth scaled p))) point nb))
+         len_a (exact (map lap_sumsq da))
+         len_b (exact (map lap_sumsq db))
+         negative (exact (map (fn [(x : float) (y : float) (z : float)]
+           (if (or (< x 0.0) (or (< y 0.0) (< z 0.0))) 1 0)) ca cb cc))
+         area_terms (exact (map (fn [(tri : int) (c : int) (k : float)]
+           (if (int/eq (array/nth negative tri) 1)
+             (/ (array/nth area tri) (if (< k 0.0) 4.0 8.0))
+             (/ (fma (array/nth len_b c) (array/nth cot_na c) (* (array/nth len_a c) (array/nth cot_nb c))) 8.0)))
+           ct range cot))
+         angle_terms (exact (map (fn [(k : float)] (atan2 1.0 k)) cot))
+         cn (exact (map (fn [(tri : int)] (array/nth cross tri)) ct))]
+    {:area (crv_ordered area_terms order offsets)
+     :angle (crv_ordered angle_terms order offsets)
+     :nx (crv_ordered (exact (map crv_dx cn)) order offsets)
+     :ny (crv_ordered (exact (map crv_dy cn)) order offsets)
+     :nz (crv_ordered (exact (map crv_dz cn)) order offsets)
+     :lx (crv_lap_plane (exact (map crv_dx da)) (exact (map crv_dx db)) cot_na cot_nb order offsets counts rounds)
+     :ly (crv_lap_plane (exact (map crv_dy da)) (exact (map crv_dy db)) cot_na cot_nb order offsets counts rounds)
+     :lz (crv_lap_plane (exact (map crv_dz da)) (exact (map crv_dz db)) cot_na cot_nb order offsets counts rounds)}))
+(defn crv_mean_at :context value
+  [(a : float) (n : vec3) (l : vec3) (scale : float)]
+  (let* [len (hypot n.x (hypot n.y n.z))
+         dot (+ (+ (* l.x (/ n.x len)) (* l.y (/ n.y len))) (* l.z (/ n.z len)))]
+    (/ (/ dot (* 4.0 a)) scale)))
+(defn crv_gauss_at :context value [(edge : int) (a : float) (angle : float) (scale : float)]
+  (let* [defect (- (if (int/eq edge 0) (* 2.0 pi) pi) angle)]
+    (/ (/ (/ defect a) scale) scale)))
+(defn crv_on :context value [(on : int) (v : float)] (if (int/eq on 1) v 0.0))
+; Curvature by kind: 0 mean, 1 gaussian, 2 minimum, 3 maximum, 4 curvedness, 5 shape index.
+(defn crv_derived :context value [(kind : int) (h : float) (k : float)]
+  (let* [delta (sqrt (max 0.0 (fma h h (* -1.0 k))))
+         mn (- h delta)
+         mx (+ h delta)]
+    (cond (int/eq kind 0) h
+          (int/eq kind 1) k
+          (int/eq kind 2) mn
+          (int/eq kind 3) mx
+          (int/eq kind 4) (sqrt (* (fma mx mx (* mn mn)) 0.5))
+          :else (if (and (= mn 0.0) (= mx 0.0)) 0.0 (* (/ 2.0 pi) (atan2 (+ mx mn) (- mx mn)))))))
+; One Jacobi pass over the edge neighbours. Locked or isolated points keep their value.
+(defn crv_smooth_pass :context value
+  [(cur : (array float)) (neighbour : (array int)) (offsets : (array int)) (degree : (array int))
+   (keep : (array int)) (strength : float)]
+  (let* [sums (array/segment_sum (exact (map (fn [(s : int)] (array/nth cur (array/nth neighbour s)))
+                  (array/range (array/count neighbour) :type int))) offsets)]
+    (exact (map (fn [(k : int) (c : float) (blended : float)] (if (int/eq k 1) c blended))
+      keep cur
+      (exact (map (fn [(c : float) (s : float) (d : int)]
+        (fma (- 1.0 strength) c (* (* strength s) (/ 1.0 (float d))))) cur sums degree))))))
+(defn crv_smooth :context sop
+  [(geo : geometry) (mean : (array float)) (gauss : (array float)) (locked : (array int)) (iterations : int)
+   (strength : float)]
+  (let* [adjacency (sop/adjacency geo)
+         points (sop/count geo :points)
+         offsets adjacency.point_edge_offsets
+         degree (exact (map (fn [(p : int)] (int/sub (array/nth offsets (int/add p 1)) (array/nth offsets p)))
+                  (array/range points :type int)))
+         slot_point (lap_rows degree)
+         neighbour (exact (map (fn [(s : int)]
+           (let* [p (array/nth slot_point s) e (array/nth adjacency.point_edges s)]
+             (if (int/eq (array/nth adjacency.edge_a e) p) (array/nth adjacency.edge_b e) (array/nth adjacency.edge_a e))))
+           (array/range (array/count adjacency.point_edges) :type int)))
+         keep (exact (map (fn [(l : int) (d : int)] (if (or (int/eq l 1) (int/eq d 0)) 1 0)) locked degree))]
+    (iterate iterations {:m mean :g gauss}
+      (fn [(state : {:m (array float) :g (array float)})]
+        {:m (crv_smooth_pass state.m neighbour offsets degree keep strength)
+         :g (crv_smooth_pass state.g neighbour offsets degree keep strength)}))))
+; {:reason :mean :gauss} (reason "" when valid): the (smoothed) mean and gaussian curvature of every point.
+(defn crv_measure :context sop
+  [(geo : geometry) (one_sided : bool) (iterations : int) (strength : float) (need_mean : bool) (need_gauss : bool)]
+  (let* [points (sop/count geo :points)
+         metric (crv_metric geo)
+         zero (array/float points 0.0)]
+    (if (not (equal? metric.reason ""))
+      {:reason metric.reason :mean zero :gauss zero}
+      (let* [boundary (crv_boundary geo)
+             c (crv_corners points metric.triangles metric.ta metric.tb metric.tc metric.ca metric.cb metric.cc)
+             s (crv_sums metric.scaled metric.cross metric.area metric.ca metric.cb metric.cc c.ct c.point c.na
+                 c.nb c.cot c.cot_na c.cot_nb c.order c.counts c.offsets c.rounds)
+             locked (exact (map (fn [(b : int)] (if (and (not one_sided) (int/eq b 1)) 1 0)) boundary))
+             active (exact (map (fn [(n : int) (l : int)] (if (and (int/gt n 0) (int/eq l 0)) 1 0)) c.counts locked))
+             normals (exact (map (fn [(x : float) (y : float) (z : float)] [x y z]) s.nx s.ny s.nz))
+             laplace (exact (map (fn [(x : float) (y : float) (z : float)] [x y z]) s.lx s.ly s.lz))
+             bad_area (array/sum (exact (map (fn [(on : int) (a : float)] (if (and (int/eq on 1) (not (> a 0.0))) 1 0))
+                        active s.area)))
+             bad_normal (if need_mean
+               (array/sum (exact (map (fn [(on : int) (n : vec3)]
+                 (if (and (int/eq on 1) (not (> (hypot n.x (hypot n.y n.z)) 0.0))) 1 0)) active normals)))
+               0)
+             mean (exact (map crv_on active (exact (map (fn [(a : float) (n : vec3) (l : vec3)]
+                    (crv_mean_at a n l metric.scale)) s.area normals laplace))))
+             gauss (exact (map crv_on active (exact (map (fn [(e : int) (a : float) (g : float)]
+                     (crv_gauss_at e a g metric.scale)) boundary s.area s.angle))))]
+        (cond
+          (or (int/gt bad_area 0) (int/gt bad_normal 0))
+            {:reason "surface curvature is numerically unrepresentable at one or more points" :mean zero :gauss zero}
+          (or (int/eq iterations 0) (= strength 0.0)) {:reason "" :mean mean :gauss gauss}
+          :else
+            (let* [smoothed (crv_smooth geo mean gauss locked iterations strength)]
+              {:reason "" :mean smoothed.m :gauss smoothed.g}))))))
+; The output attribute written into the geometry: reason "" when ok.
+(defn crv_publish :context sop
+  [(geo : geometry) (name : text) (kind : int) (mask : (array int)) (mean : (array float)) (gauss : (array float))]
+  (let* [points (sop/count geo :points)
+         present (sop/has_attr geo name :owner "point")
+         fresh (exact (map (fn [(h : float) (k : float)] (crv_derived kind h k)) mean gauss))
+         old (if present (sop/attr geo name :owner "point" :type float) (array/float points 0.0))]
+    (sop/with_attr geo name (exact (map (fn [(s : int) (v : float) (o : float)] (if (int/eq s 1) v o)) mask fresh old))
+      :owner "point" :type float)))
+(defn crv_dup :context value [(a : text) (b : text)] (if (and (not (equal? a "")) (equal? a b)) 1 0))
+(defn crv_isp :context value [(a : text)] (if (equal? a "P") 1 0))
+(defn crv_names_ok :context value
+  [(a : text) (b : text) (c : text) (d : text) (e : text) (f : text)]
+  (let* [n0 (text/trim a) n1 (text/trim b) n2 (text/trim c) n3 (text/trim d) n4 (text/trim e) n5 (text/trim f)
+         named (int/sub 6 (int/add (int/add (if (equal? n0 "") 1 0) (if (equal? n1 "") 1 0))
+                 (int/add (int/add (if (equal? n2 "") 1 0) (if (equal? n3 "") 1 0))
+                   (int/add (if (equal? n4 "") 1 0) (if (equal? n5 "") 1 0)))))
+         p (int/add (int/add (crv_isp n0) (crv_isp n1)) (int/add (int/add (crv_isp n2) (crv_isp n3))
+             (int/add (crv_isp n4) (crv_isp n5))))
+         d0 (int/add (int/add (crv_dup n0 n1) (crv_dup n0 n2)) (int/add (crv_dup n0 n3) (int/add (crv_dup n0 n4) (crv_dup n0 n5))))
+         d1 (int/add (int/add (crv_dup n1 n2) (crv_dup n1 n3)) (int/add (crv_dup n1 n4) (crv_dup n1 n5)))
+         d2 (int/add (crv_dup n2 n3) (int/add (crv_dup n2 n4) (crv_dup n2 n5)))
+         d3 (int/add (crv_dup n3 n4) (crv_dup n3 n5))
+         dups (int/add (int/add d0 d1) (int/add d2 (int/add d3 (crv_dup n4 n5))))]
+    (and (int/gt named 0) (and (int/eq p 0) (int/eq dups 0)))))
+; 1 when a named output exists as a point attribute of another type than float.
+(defn crv_wrong :context sop [(geo : geometry) (name : text)]
+  (if (and (not (equal? name ""))
+           (and (sop/has_attr geo name :owner "point") (not (sop/has_attr geo name :owner "point" :type float))))
+    1 0))
+(defnode sop/measure_curvature :label "Measure Curvature" :category ["Measure"]
+  :validate (crv_names_ok mean gaussian minimum maximum curvedness shape_index)
+  :code "E_PARAM" :message "sop/measure_curvature: outputs need at least one distinct name, none P"
+  [(in0 : geometry)
+   (point_group : text "" :label "Point group")
+   (boundary : text "Zero" :label "Boundary" :choices ["Zero" "One-sided"])
+   (smoothing_iterations : int 0 :label "Smoothing iterations" :min 0 :max 64 :hard_min 0)
+   (smoothing_strength : float 0.5 :label "Smoothing strength" :min 0 :max 1 :hard_min 0 :hard_max 1)
+   (mean : text "curvature" :label "Mean" :folder "Outputs")
+   (gaussian : text "" :label "Gaussian" :folder "Outputs")
+   (minimum : text "" :label "Minimum" :folder "Outputs")
+   (maximum : text "" :label "Maximum" :folder "Outputs")
+   (curvedness : text "" :label "Curvedness" :folder "Outputs")
+   (shape_index : text "" :label "Shape index" :folder "Outputs")]
+  (let* [group_name (text/trim point_group)
+         n0 (text/trim mean) n1 (text/trim gaussian) n2 (text/trim minimum)
+         n3 (text/trim maximum) n4 (text/trim curvedness) n5 (text/trim shape_index)
+         principal (or (not (equal? n2 "")) (or (not (equal? n3 "")) (or (not (equal? n4 "")) (not (equal? n5 "")))))
+         need_mean (or (not (equal? n0 "")) principal)
+         need_gauss (or (not (equal? n1 "")) principal)]
+    (cond
+      (deform_group_missing in0 "point" group_name)
+        (error "missing_group" (str "measure_curvature could not find point group " (text/repr group_name)))
+      :else
+        (let* [manifold (lap_manifold in0)
+               result (if (equal? manifold "")
+                        (crv_measure in0 (equal? boundary "One-sided") smoothing_iterations
+                          smoothing_strength need_mean need_gauss)
+                        {:reason manifold :mean (array/float 0 0.0) :gauss (array/float 0 0.0)})
+               mask (deform_mask in0 "point" group_name)
+               wrong (int/add (int/add (crv_wrong in0 n0) (int/add (crv_wrong in0 n1) (crv_wrong in0 n2)))
+                       (int/add (crv_wrong in0 n3) (int/add (crv_wrong in0 n4) (crv_wrong in0 n5))))]
+          (cond
+            (not (equal? result.reason "")) (crv_error result.reason)
+            (int/gt wrong 0) (crv_error "point curvature attribute exists with non-float storage")
+            :else
+              (let* [g1 (if (equal? n0 "") in0 (crv_publish in0 n0 0 mask result.mean result.gauss))
+                     g2 (if (equal? n1 "") g1 (crv_publish g1 n1 1 mask result.mean result.gauss))
+                     g3 (if (equal? n2 "") g2 (crv_publish g2 n2 2 mask result.mean result.gauss))
+                     g4 (if (equal? n3 "") g3 (crv_publish g3 n3 3 mask result.mean result.gauss))
+                     g5 (if (equal? n4 "") g4 (crv_publish g4 n4 4 mask result.mean result.gauss))]
+                (if (equal? n5 "") g5 (crv_publish g5 n5 5 mask result.mean result.gauss))))))))
