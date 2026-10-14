@@ -1,6 +1,3 @@
-(* sop/resample: one geometry input (pending draft nodes/resample.pending).
-   Not registered: polygon primitives and zero-length curves (the default parameters would
-   error and the gate's cache check needs the defaults to cook). *)
 open Rdk
 open Port_gate
 module P = Param
