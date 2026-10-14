@@ -515,6 +515,7 @@
         "type packed_form = Candidate of Paths.t | Refused of Diagnostic.t list",
         "type t = { name : string ; graphs : graph list ; defs : graph list ; nodes : node_definition list ; macros : Syntax.t list ; source : Syntax.t list ; live : Paths.t ; invariant : Paths.t ; approx : Paths.t ; packed : ( path * packed_form ) list ; packed_roots : ( Syntax.t * path ) list ; approx_reasons : ( path * Diagnostic.t list ) list ; kind_fns : ( string * ( string * Context.t * Check.slot list ) ) list ; ops : Op.t list ; }",
         "val max_iterations : int",
+        "val body_context_ops : string list",
         "val check : ? ops : Op.t list -> ? library : bool -> Check.catalog -> Syntax.t list -> t option * Diagnostic.t list",
         "val skip_tuples : Syntax.t -> int list list option",
         "val special_forms : string list",
@@ -528,7 +529,7 @@
         "val group_writer : Check.kind -> Check.parameter -> bool",
         "val validate_parameter : ? ty : Ty.t -> ( Diagnostic.severity -> string -> string -> unit ) -> Check.parameter -> term -> unit"
       ],
-      "api_sha256": "ea0106e625843a34178b175ad5fe862c9d81371a8e971845a943c723d39c7026",
+      "api_sha256": "eda98020cef29d77052a3d5b1e3e7407719a9ad5c655e691d35754ced6569c5f",
       "excluded_legacy_symbols": [],
       "library": "flow",
       "module": "Workspace",
@@ -1149,11 +1150,11 @@
         "val objects : t -> ( int * Network.t * int ) list",
         "val changes : Port.parameter -> Flow.Eval.value -> ( ( string * Param.value ) list , Flow.Diagnostic.t ) result",
         "val workspace : factories : Sop.Edit_graph.factory list -> ? extra : Catalog.descriptor list -> ? reference : bool -> ? compiled_ids : int Instance_path.Map.t -> ? sites : Flow.Workspace.path list -> ? inputs : ( string * ( string * Flow.Eval.value ) list ) list -> Flow.Syntax.t list -> ( t , Flow.Diagnostic.t ) result",
-        "val of_checked : factories : Sop.Edit_graph.factory list -> ? reference : bool -> ? compiled_ids : int Instance_path.Map.t -> ? sites : Flow.Workspace.path list -> ? inputs : ( string * ( string * Flow.Eval.value ) list ) list -> Flow.Workspace.t -> ( t , Flow.Diagnostic.t ) result",
+        "val of_checked : factories : Sop.Edit_graph.factory list -> ? provenance_tags : bool -> ? reference : bool -> ? compiled_ids : int Instance_path.Map.t -> ? sites : Flow.Workspace.path list -> ? inputs : ( string * ( string * Flow.Eval.value ) list ) list -> Flow.Workspace.t -> ( t , Flow.Diagnostic.t ) result",
         "val counts : t -> int * int",
         "val status : t -> seconds : float -> string option"
       ],
-      "api_sha256": "274828c13e847c9014190a871ba992b9762b35e9a981cadb63efc544bc88bdc6",
+      "api_sha256": "d319f2c1a24c3695eecb731ce3568239db21e5dcb5773fe432f4d4b6c9c00a0f",
       "excluded_legacy_symbols": [],
       "library": "flow_sop",
       "module": "Lower",
@@ -3373,9 +3374,11 @@
     {
       "api": [
         "val merge : ? cancel : Cancel.t -> ? grain : int -> ? pad_groups : bool -> ? source_attribute : string -> ? source_base : int -> Geometry.t list -> ( Geometry.t , string ) result",
-        "val run : ? cancel : Cancel.t -> ? grain : int -> ? source_attribute : string -> ? source_base : int -> Geometry.t list -> ( Geometry.t , Error.t ) result"
+        "val run : ? cancel : Cancel.t -> ? grain : int -> ? source_attribute : string -> ? source_base : int -> Geometry.t list -> ( Geometry.t , Error.t ) result",
+        "val provenance_attribute : string",
+        "val run_tagged : ? cancel : Cancel.t -> ? grain : int -> ? tag_base : int -> ? source_attribute : string -> ? source_base : int -> Geometry.t list -> ( Geometry.t , Error.t ) result"
       ],
-      "api_sha256": "31a2a2325c3e3ad81d76ad15db54fa2216280dfdfdef7f876d01cd5e32c2ceb4",
+      "api_sha256": "24ed7ab2e88ccfdadd8ae17e81f6d689becdbd8c6f2ef3af0a2d659b223a7e87",
       "excluded_legacy_symbols": [],
       "library": "rdk",
       "module": "Mesh_merge",
