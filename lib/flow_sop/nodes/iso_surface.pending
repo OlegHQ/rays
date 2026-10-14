@@ -136,13 +136,13 @@
                       lz (fma (float (int/div il plane)) dz min_z)
                       rx2 (fma (float (int/mod ir nx)) dx min_x) ry2 (fma (float (int/mod (int/div ir nx) ny)) dy min_y)
                       rz2 (fma (float (int/div ir plane)) dz min_z)]
-                 [(+ lx (* (- rx2 lx) a)) (+ ly (* (- ry2 ly) a)) (+ lz (* (- rz2 lz) a))]))
+                 [(fma (- rx2 lx) a lx) (fma (- ry2 ly) a ly) (fma (- rz2 lz) a lz)]))
                left_index right_index amount))
              normals (exact (map (fn [(il : int) (ir : int) (a : float)]
-               (let* [nx2 (* -1.0 (+ (array/nth gx il) (* (- (array/nth gx ir) (array/nth gx il)) a)))
-                      ny2 (* -1.0 (+ (array/nth gy il) (* (- (array/nth gy ir) (array/nth gy il)) a)))
-                      nz2 (* -1.0 (+ (array/nth gz il) (* (- (array/nth gz ir) (array/nth gz il)) a)))
-                      len (sqrt (+ (+ (* nx2 nx2) (* ny2 ny2)) (* nz2 nz2)))]
+               (let* [nx2 (* -1.0 (fma (- (array/nth gx ir) (array/nth gx il)) a (array/nth gx il)))
+                      ny2 (* -1.0 (fma (- (array/nth gy ir) (array/nth gy il)) a (array/nth gy il)))
+                      nz2 (* -1.0 (fma (- (array/nth gz ir) (array/nth gz il)) a (array/nth gz il)))
+                      len (sqrt (fma nz2 nz2 (fma ny2 ny2 (* nx2 nx2))))]
                  (if (<= len 1e-18) [0.0 0.0 0.0] [(/ nx2 len) (/ ny2 len) (/ nz2 len)])))
                left_index right_index amount))
              tri_ids (array/range triangles :type int)
@@ -152,13 +152,13 @@
                       c (array/nth positions (int/add (int/mul k 3) 2))
                       abx (- b.x a.x) aby (- b.y a.y) abz (- b.z a.z)
                       acx (- c.x a.x) acy (- c.y a.y) acz (- c.z a.z)]
-                 [(- (* aby acz) (* abz acy)) (- (* abz acx) (* abx acz)) (- (* abx acy) (* aby acx))]))
+                 [(fma (* -1.0 abz) acy (* aby acz)) (fma (* -1.0 abx) acz (* abz acx)) (fma (* -1.0 aby) acx (* abx acy))]))
                tri_ids))
              flips (exact (map (fn [(k : int) (g : vec3)]
                (let* [n0 (array/nth normals (int/mul k 3)) n1 (array/nth normals (int/add (int/mul k 3) 1))
                       n2 (array/nth normals (int/add (int/mul k 3) 2))
                       ox (+ (+ n0.x n1.x) n2.x) oy (+ (+ n0.y n1.y) n2.y) oz (+ (+ n0.z n1.z) n2.z)]
-                 (if (< (+ (+ (* g.x ox) (* g.y oy)) (* g.z oz)) 0.0) 1 0)))
+                 (if (< (fma g.z oz (fma g.y oy (* g.x ox))) 0.0) 1 0)))
                tri_ids face))
              source (exact (map (fn [(v : int)]
                (let* [k (int/div v 3) r (int/mod v 3) flipped (array/nth flips k)]
@@ -168,7 +168,7 @@
              out_normals (if smooth
                (exact (map (fn [(v : int)] (array/nth normals v)) source))
                (exact (map (fn [(v : int) (g : vec3)]
-                 (let* [len (sqrt (+ (+ (* g.x g.x) (* g.y g.y)) (* g.z g.z)))
+                 (let* [len (sqrt (fma g.z g.z (fma g.y g.y (* g.x g.x))))
                         sign (if (int/eq (array/nth flips (int/div v 3)) 1) -1.0 1.0)]
                    (if (<= len 1e-18) [0.0 0.0 0.0]
                      [(/ (* sign g.x) len) (/ (* sign g.y) len) (/ (* sign g.z) len)])))

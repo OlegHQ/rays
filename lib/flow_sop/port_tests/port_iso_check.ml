@@ -50,6 +50,7 @@ let () = if Sys.getenv_opt "PORT_ISO" <> None then at_exit (fun () ->
              Array.iteri (fun i v -> let d = Float.max (abs_float (v -. b.x.(i))) (Float.max (abs_float (a.y.(i) -. b.y.(i))) (abs_float (a.z.(i) -. b.z.(i)))) in
                if d > !w then (w := d; at := i)) a.x; !w, !at in
            let wp, ip = worst (pos e) (pos a) and wn, i_n = worst (nrm e) (nrm a) in
+           (let bad (e : Packed.Float3.Private.view) (a : Packed.Float3.Private.view) tag = let far x y = let m = Float.max (abs_float x) (abs_float y) in abs_float (x -. y) > 4. *. (Float.succ m -. m) in (try Array.iteri (fun i _ -> List.iter (fun (x, y) -> if far x y then (Printf.printf "  %s[%d] native %h lisp %h\n" tag i x y; raise Exit)) [e.x.(i), a.x.(i); e.y.(i), a.y.(i); e.z.(i), a.z.(i)]) e.x with Exit -> ()) in bad (pos e) (pos a) "P"; bad (nrm e) (nrm a) "N");
            Printf.sprintf "%s (max |dP| %.3g at %d, max |dN| %.3g at %d)"
              (if Rdk_test_support.close_geometry ~ulps:4 e a then "OK" else "DIFFERS") wp ip wn i_n)
     | Error e, Error a -> Printf.printf "%-6s %-8s both error (%s / %s)\n%!" fname pname e a
