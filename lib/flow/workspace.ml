@@ -389,6 +389,12 @@ let check ?(ops = []) ?(library = false) catalog forms =
         | Call_fn {args; body; _} -> all args; Option.iter visit body
         | _ -> () in
   let steps = ref 0 and zones = ref 0 in
+  (* The budget is per top-level definition: library node bodies are spliced into the
+     workspace (all of them for the node manifest), so a fixed total grows too small. *)
+  let max_steps =
+    match forms with
+    | [{ S.node = S.List (_ :: _ :: children); _ }] -> max_steps * max 1 (List.length children)
+    | _ -> max_steps in
   let add sev (x : S.t) code msg =
     let span = if x.span.start = 0 && x.span.finish = 0 then None else Some x.span in
     diags := (match sev with
