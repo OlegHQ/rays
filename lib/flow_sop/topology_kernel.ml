@@ -242,10 +242,14 @@ let concat ?cancel ~grain ~sources args =
   let base = match List.assoc_opt "source_base" args with
     | None -> Ok 0 | Some (E.Int value) -> Ok value
     | Some _ -> error "E_CONCAT_TYPE" "Concat source_base must be an integer." in
+  let tag_base = match List.assoc_opt "tag_base" args with
+    | None -> Ok (-1) | Some (E.Int value) -> Ok value
+    | Some _ -> error "E_CONCAT_TYPE" "Concat tag_base must be an integer." in
   Result.bind (text "source_attribute") (fun attribute -> Result.bind base (fun source_base ->
+    Result.bind tag_base (fun tag_base ->
     if grain <= 0 then error "E_CONCAT" "Concat grain must be positive."
     else Result.map_error (fun e -> Flow.Diagnostic.error ~code:(Rdk.Error.code e)
         ~cause:(Rdk.Error.to_string e) ~hints:(Rdk.Error.hints e)
         (Rdk.Error.operation e ^ " could not produce valid geometry"))
-      (Rdk.Mesh_merge.run ?cancel ~grain
-        ?source_attribute:(if attribute = "" then None else Some attribute) ~source_base sources)))
+      (Rdk.Mesh_merge.run_tagged ?cancel ~grain ~tag_base
+        ?source_attribute:(if attribute = "" then None else Some attribute) ~source_base sources))))

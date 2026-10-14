@@ -111,7 +111,8 @@ let depends ?(inputs=[]) ?(defs=[]) (graph:W.graph) =
   List.iter (fun (_,_,default) -> Option.iter (scan bindings) default) graph.inputs;
   !found
 
-let specialize ~context ~label graph = map (fun t -> match t.W.node with
+let specialize ?(provenance= -1) ~context ~label graph = map (fun t -> match t.W.node with
+  | W.Op {op="sop/provenance_base";_} -> {t with node=W.Lit (Param.Int_value provenance)}
   | W.Op {op="sop/context_seed";args=["namespace",{node=W.Text namespace;_}];_} ->
       let seed=Operators.seed_for ~seed:(Sop.Context.seed context) ~namespace ~label in
       {t with node=W.Lit (Param.Int_value seed)}

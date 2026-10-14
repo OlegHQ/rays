@@ -1345,6 +1345,16 @@ and an input that already has it keeps its values. No Core or Region instruction
 is added, there is no JavaScript twin (the rdk function is compiled for the
 browser later), and facts read and write all payload with changed topology.
 
+`:tag_base` (int, default -1) additionally writes the editor's provenance attribute
+`__flow_src` (`Rdk.Mesh_merge.provenance_attribute`), numbered from it, beside an
+authored `:source_attribute` (`Rdk.Mesh_merge.run_tagged`). Its only author is the
+`merge` node: `sop/provenance_base`, a zero-argument int, is available in a defnode
+body only (`E_NODE_CONTEXT` elsewhere or in a validator) and is specialized to the
+base the editor lowering allocated for that call, or -1 when the node is lowered
+without provenance (the port gate). The base is part of the node's cache source.
+The node's inputs are tagged `base + input index`, and `Lower.tags` reports them
+exactly as the former native lowering did.
+
 ### Float attributes as planes with a cook-time width
 
 A Lisp body cannot read an attribute whose storage type is only known at cook

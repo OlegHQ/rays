@@ -14,3 +14,12 @@ val merge : ?cancel:Cancel.t -> ?grain:int -> ?pad_groups:bool ->
 val run : ?cancel:Cancel.t -> ?grain:int -> ?source_attribute:string ->
   ?source_base:int -> Geometry.t list ->
   (Geometry.t, Error.t) result
+
+val provenance_attribute : string
+(** ["__flow_src"]: the primitive int attribute the editor's merge lowering writes. *)
+
+val run_tagged : ?cancel:Cancel.t -> ?grain:int -> ?tag_base:int -> ?source_attribute:string ->
+  ?source_base:int -> Geometry.t list -> (Geometry.t, Error.t) result
+(** [run] plus the provenance attribute {!provenance_attribute} numbered from [tag_base] (negative:
+    none) beside an authored [source_attribute]/[source_base]. Without an authored attribute it is
+    [run ~source_attribute:provenance_attribute ~source_base:tag_base]. *)

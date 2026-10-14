@@ -170,7 +170,7 @@ let lisp ctx changes =
   | Error d -> Error (Flow.Diagnostic.to_string d)
   | Ok forms -> match Flow_sop.Catalog.check_workspace ~sources:ctx.sources ~ops:Flow_sop.Operators.all ctx.catalog forms with
     | Some w, ds when errors ds = [] ->
-        let build reference = match Flow_sop.Lower.of_checked ~reference ~factories:ctx.factories w with
+        let build reference = match Flow_sop.Lower.of_checked ~provenance_tags:false ~reference ~factories:ctx.factories w with
           | Error d -> Error (Flow.Diagnostic.to_string d)
           | Ok lowered -> let g = List.hd lowered.graphs in
               Result.map (fun n -> n, lowered.factories)

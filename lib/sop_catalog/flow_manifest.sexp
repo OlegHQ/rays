@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "852b6a685459f9059795d67e15fe980b")
+  (digest "c5bb53fde4ca23a5d4271698a54a62be")
   (kinds
     (kind "sop/switch"
       (key "switch")
@@ -1559,18 +1559,6 @@
         (field "normalization" "Normalization" (folder) (choice "None" "Per component" "Global") (choice "None") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/merge"
-      (key "merge")
-      (aliases)
-      (operation "merge")
-      (label "Merge")
-      (category "Copy")
-      (slots (slot "input" rest))
-      (fields
-        (field "source_attribute" "Source attribute" (folder) (text) (text "") (primary false) (vec3))
-        (field "source_base" "Source base" (folder) (int (soft -1000 1000) (hard nil nil)) (int 0) (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode generic) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/triangulate_2d"
       (key "triangulate_2d")
       (aliases)
@@ -2837,6 +2825,19 @@
         (field "emission_r" "Emission red" (folder) (float (soft 0 1) (hard 0 1)) (float 0) (primary false) (vec3 "emission" 0))
         (field "emission_g" "Emission green" (folder) (float (soft 0 1) (hard 0 1)) (float 0) (primary false) (vec3 "emission" 1))
         (field "emission_b" "Emission blue" (folder) (float (soft 0 1) (hard 0 1)) (float 0) (primary false) (vec3 "emission" 2)))
+      (outputs (output "geo" geometry))
+      (body lisp)
+      (calls))
+    (kind "sop/merge"
+      (key "merge")
+      (aliases)
+      (operation "merge")
+      (label "Merge")
+      (category "Copy")
+      (slots (slot "input" rest))
+      (fields
+        (field "source_attribute" "Source attribute" (folder) (text) (text "") (primary false) (vec3))
+        (field "source_base" "Source base" (folder) (int (soft -1000 1000) (hard nil nil)) (int 0) (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (body lisp)
       (calls))

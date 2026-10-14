@@ -259,3 +259,37 @@ let merge ?cancel ?grain ?pad_groups ?source_attribute ?(source_base = 0) geomet
 let run ?cancel ?grain ?source_attribute ?source_base geometries =
   Error.guard ~operation:"merge" ~code:"schema_mismatch"
     (fun () -> merge ?cancel ?grain ?source_attribute ?source_base geometries)
+
+let provenance_attribute = "__flow_src"
+
+(* The editor's provenance tag (numbered from [tag_base]) beside an authored [source_attribute]
+   (numbered from [source_base]). An input that already has the authored attribute keeps it; mixed
+   presence of the tag is refused as a schema mismatch. *)
+let run_tagged ?cancel ?grain ?(tag_base = -1) ?source_attribute ?(source_base = 0) geometries =
+  let authored = match source_attribute with
+    | Some name when String.trim name <> "" -> Some (String.trim name) | _ -> None in
+  match tag_base, authored with
+  | tag_base, _ when tag_base < 0 -> run ?cancel ?grain ?source_attribute ~source_base geometries
+  | _, None -> run ?cancel ?grain ~source_attribute:provenance_attribute ~source_base:tag_base geometries
+  | _, Some attribute ->
+      let tag = provenance_attribute in
+      Result.bind (run ?cancel ?grain ~source_attribute:tag ~source_base:tag_base geometries)
+        (fun tagged -> Error.guard ~operation:"merge" ~code:"schema_mismatch" (fun () ->
+          Cancel.check_opt cancel;
+          let owner = Attribute.Primitive in
+          let has_tag geometry = Geometry.find_attribute ~owner tag geometry <> None in
+          if attribute <> tag && List.exists has_tag geometries
+              && List.exists (fun geometry -> not (has_tag geometry)) geometries then
+            Error "Rdk.Mesh_merge.merge: attribute schemas must match exactly"
+          else if geometries = [] || Geometry.find_attribute ~owner attribute tagged <> None
+          then Ok tagged
+          else
+            let values = Array.make (Geometry.primitive_count tagged) source_base in
+            let offset = ref 0 in
+            List.iteri (fun index geometry ->
+              Cancel.check_opt cancel;
+              let count = Geometry.primitive_count geometry in
+              if index > 0 then Array.fill values !offset count (source_base + index);
+              offset := !offset + count) geometries;
+            Result.bind (Attribute.create_owned ~name:attribute ~owner (Attribute.Int values))
+              (fun values -> Geometry.with_attribute values tagged)))

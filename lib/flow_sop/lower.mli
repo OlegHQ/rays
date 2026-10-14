@@ -169,11 +169,14 @@ val workspace :
 
 val of_checked :
   factories:Sop.Edit_graph.factory list ->
+  ?provenance_tags:bool ->
   ?reference:bool ->
   ?compiled_ids:int Instance_path.Map.t -> ?sites:Flow.Workspace.path list ->
   ?inputs:(string * (string * Flow.Eval.value) list) list ->
   Flow.Workspace.t -> (t, Flow.Diagnostic.t) result
-(** Lower an already checked document, without rebuilding a catalog or checking
+(** [provenance_tags] (default true) numbers a Lisp [sop/merge]'s inputs for the editor ({!tags});
+    the port gate turns it off to compare the node alone with its native oracle.
+    Lower an already checked document, without rebuilding a catalog or checking
     its source again. The retained evaluation includes probe records and
     qualifies actual packed captures, publishing [approx] and [approx_reasons].
     [reference:true] retains native catalog cooking but independently interprets

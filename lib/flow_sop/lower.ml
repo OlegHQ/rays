@@ -3,7 +3,7 @@ module Edit = Sop.Edit_graph
 module Zone = Sop.Zone
 module E = Eval
 
-let source_attribute = "__flow_src"
+let source_attribute = Rdk.Mesh_merge.provenance_attribute
 
 (* Serial for host-call nodes: they are cooked once in a session that keeps no cache entries, so their
    arguments need no content key (marshalling a million-element array costs more than the kernel). *)
@@ -150,7 +150,7 @@ let kernel_digest (checked : Workspace.t) =
     let d = Context_kernel.kernel_source checked in
     Atomic.set kernel_digest_cache (key, d); d end
 
-let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(defer_body_errors = false) ?(kernel_bindings = []) ?(compiled_ids = Instance_path.Map.empty)
+let rec lower_checked ~factories ?(provenance_tags = true) ?(reference = false) ?(strict_body = false) ?(defer_body_errors = false) ?(kernel_bindings = []) ?(compiled_ids = Instance_path.Map.empty)
     ?(sites = []) ?inputs checked =
   Phase_timer.measure Lower (fun () ->
   try
@@ -594,7 +594,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
       | None ->
           let parameters = ok (Port.parameters (Edit.factory_fields factory)) in
           Hashtbl.add params_cache key parameters; parameters in
-    let lisp_factory ?(functions = []) (definition : Workspace.node_definition) =
+    let lisp_factory ?(functions = []) ?provenance (definition : Workspace.node_definition) =
       let declaration_source=lazy(Context_kernel.declaration_source checked definition) in
       let rec function_elements = function
         | E.Fn fn -> [fn]
@@ -625,7 +625,7 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
                 Sop.Node.Private.{payload;diagnostics=[];instances=None}) (Lisp_node.input index))) in
           key, factory) inputs in
         let capture_factories = make_capture_factories [] in
-        let body = Context_kernel.specialize ~label ~context definition.body in
+        let body = Context_kernel.specialize ?provenance ~label ~context definition.body in
         let body = {body with inputs=List.map (fun (name, ty, default) ->
           let default = match List.assoc_opt name bindings with
             | None -> default
@@ -790,7 +790,8 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
               definition.slots)
             ~operation:definition.operation ~version:definition.version ~label:key
             ~fields:definition.fields ~normalizers:(Encoded_parameters.for_node checked definition)
-            ~source:(Lazy.force (if functions=[] then declaration_source else kernel_source)) ~build:(build bindings)
+            ~source:(Lazy.force (if functions=[] then declaration_source else kernel_source)
+              ^ Option.fold ~none:"" ~some:(Printf.sprintf ";provenance=%d") provenance) ~build:(build bindings)
             (List.filter_map Fun.id inputs) in
       if definition.slots=[] then
         Edit.factory ~key ~operation:definition.operation ~label:definition.label ~category ~fields:definition.fields ~arity:0
@@ -914,42 +915,6 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
                     | _ -> invalid_arg "Attribute deletion needs one geometry") in
                 {cid;factory;arity=1;changes=[];dynamic=[];zone=None;kernels=[];
                   slots=List.mapi (fun i source -> i,source) sources}
-            (* A library (Lisp-bodied) sop/merge takes the generic path; the native lowering below adds the
-               provenance tags the editor needs, which the Lisp body cannot yet carry. *)
-            | "sop/merge" when not(List.exists(fun(n:Workspace.node_definition)->n.kind.qualified="sop/merge")checked.nodes) ->
-                let sources = geo_of args in
-                let base = !tags in
-                tags := base + List.length sources;
-                List.iteri (fun index source ->
-                  let s = plan.nodes.(source) in
-                  provenance := Network.Int_map.add (base + index)
-                    {merge = cid; input = index; source = compiled.(source);
-                     site = s.site; iter = s.iter} !provenance) sources;
-                (* the catalog's merge (one rest slot) plus the provenance attribute *)
-                let attribute = match List.assoc_opt "source_attribute" args with
-                  | None -> ""
-                  | Some (E.Text name) -> String.trim name
-                  | Some _ -> fail "E_LOWER" "sop/merge :source_attribute must be text" in
-                let source_base = match List.assoc_opt "source_base" args with
-                  | None -> 0
-                  | Some (E.Int n) -> n
-                  | Some _ -> fail "E_LOWER" "sop/merge :source_base must be an integer" in
-                let arity = max 1 (List.length sources) in
-                let factory = Edit.factory_slots ~key:"merge" ~label:"Merge"
-                  ~slots:["input"] ~category:["Copy"] ~inputs:[Edit.Rest]
-                  (fun nodes ->
-                    if attribute <> "" then
-                      Merge_source.node ~tag:source_attribute ~attribute ~base ~source_base
-                        (List.filter_map Fun.id nodes)
-                    else
-                    let merged = Result.bind (Edit.instantiate Sop.Nodes.Merge.factory
-                        (List.filter_map Fun.id nodes)) (fun node ->
-                      Result.map fst (Sop.Node.apply_parameters node
-                        [ "source_attribute", Param.Text_value source_attribute;
-                          "source_base", Param.Int_value base ])) in
-                    match merged with Ok node -> node | Error message -> invalid_arg message) in
-                {cid; factory; arity; changes = []; dynamic = []; zone = None; kernels = [];
-                 slots = List.mapi (fun i s -> i, s) sources}
             | "sop/curve" ->
                 let encode points = [Curve.parameter, Param.Text_value (Curve.encode (curve_points points))] in
                 let closed = match List.assoc_opt "closed" args with
@@ -993,8 +958,19 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
                 let factory = if key = "image_noise" then Sop.Image_nodes.noise_factory
                   else match List.find_opt (fun (d : Workspace.node_definition) ->
                     d.kind.qualified = kind) checked.nodes with
-                    | Some definition -> lisp_factory
-                        ~functions:args definition
+                    | Some definition ->
+                        (* the editor's provenance: a Lisp sop/merge tags input i with base + i *)
+                        let tag_base = if kind <> "sop/merge" || not provenance_tags then None else begin
+                          let sources = geo_of args in
+                          let base = !tags in
+                          tags := base + List.length sources;
+                          List.iteri (fun index source ->
+                            let s = plan.nodes.(source) in
+                            provenance := Network.Int_map.add (base + index)
+                              {merge = cid; input = index; source = compiled.(source);
+                               site = s.site; iter = s.iter} !provenance) sources;
+                          Some base end in
+                        lisp_factory ~functions:args ?provenance:tag_base definition
                     | None -> find_factory key in
                 let names = Edit.factory_slot_names factory
                 and parameters = parameters factory in
@@ -1373,9 +1349,9 @@ let rec lower_checked ~factories ?(reference = false) ?(strict_body = false) ?(d
         approx = checked.approx; approx_reasons = checked.approx_reasons; profile; preview}
   with Fail diagnostic -> Error diagnostic)
 
-let of_checked ~factories ?reference ?compiled_ids ?sites ?inputs checked =
+let of_checked ~factories ?provenance_tags ?reference ?compiled_ids ?sites ?inputs checked =
   Result.bind (Encoded_parameters.checked checked)
-    (lower_checked ~factories ?reference ?compiled_ids ?sites ?inputs)
+    (lower_checked ~factories ?provenance_tags ?reference ?compiled_ids ?sites ?inputs)
 
 let workspace ~factories ?extra ?reference ?compiled_ids ?sites ?inputs source =
   Result.bind (Catalog.of_factories ~version:Manifest.version ?extra factories) (fun catalog ->

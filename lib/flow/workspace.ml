@@ -721,7 +721,7 @@ let check ?(ops = []) ?(library = false) catalog forms =
       | Call {ctx;args;_}->if mapper || not(List.mem ctx [Context.sop;Context.image])then impure t;fields args
       | Op {op;args;_}->
           (match find_op op cx.ctx with
-           |Some op when (if mapper then op.ctx=Context.value && not op.live && op.name<>"sop/context_seed"
+           |Some op when (if mapper then op.ctx=Context.value && not op.live && op.name<>"sop/context_seed" && op.name<>"sop/provenance_base"
                else List.mem op.ctx [Context.value;Context.sop;Context.image])->()
            |_->impure t);fields args
       | Ref_binding(name,_)->(match Smap.find_opt name cx.env with
@@ -1496,8 +1496,8 @@ let check ?(ops = []) ?(library = false) catalog forms =
                   apply_kind cx x k (args_of cx fn_slot args)))
 
   and apply_op ?(skip = []) cx x (o : Op.t) (args : arg list) : term * v =
-    if o.name="sop/context_seed" && not cx.in_def then
-      err x "E_NODE_CONTEXT" "Context seed is available inside a defnode body.";
+    if (o.name="sop/context_seed" || o.name="sop/provenance_base") && not cx.in_def then
+      err x "E_NODE_CONTEXT" "Context seed and provenance base are available inside a defnode body.";
     let position = ref 0 in
     let args = List.map (fun a ->
       let ty = match a.key with
@@ -2054,7 +2054,8 @@ let check ?(ops = []) ?(library = false) catalog forms =
         if not (Ty.fits bv.ty Ty.geometry) then err d.body "E_TYPE" (n^" must return geometry.");
         let validations=List.map (fun (v:Defnode.validation) ->
           let t,value=infer cx v.predicate in
-          if List.mem "sop/context_seed" (called_names ~include_ops:true t) then
+          if List.exists (fun name -> List.mem name (called_names ~include_ops:true t))
+              ["sop/context_seed";"sop/provenance_base"] then
             err v.predicate "E_NODE_CONTEXT" "A validation checks parameters; context seed is available inside the body.";
           if value.ty<>Ty.Bool then err v.predicate "E_TYPE" "A validation predicate returns bool.";
           t,v.code,v.message) d.validations in
