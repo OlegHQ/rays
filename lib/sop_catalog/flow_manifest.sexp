@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "c45b612f1c74f0d886dcdf4d7fbcb3bc")
+  (digest "8f954531b8c429eda634ed103198b5a8")
   (kinds
     (kind "sop/switch"
       (key "switch")
@@ -1058,20 +1058,6 @@
         (field "viewpoint_z" "Viewpoint Z" (folder "Viewpoint") (float (soft -100 100) (hard nil nil)) (float 10) (primary false) (vec3 "viewpoint" 2))
         (field "base" "Base group" (folder "Combine") (text) (text "") (primary false) (vec3))
         (field "merge" "Operation" (folder "Combine") (choice "Replace" "Union" "Intersection" "Subtract" "Exclusive or") (choice "Replace") (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/group_boundary_components"
-      (key "group_boundary_components")
-      (aliases)
-      (operation "group_boundary_components")
-      (label "Group Boundary Components")
-      (category "Group" "Create")
-      (slots (slot "in0" required))
-      (fields
-        (field "prefix" "Group prefix" (folder) (text) (text "boundary") (primary false) (vec3))
-        (field "conflict" "Conflict" (folder) (choice "Replace" "Union") (choice "Replace") (primary false) (vec3))
-        (field "max_groups" "Maximum groups" (folder "Limits") (int (soft 1 16384) (hard 1 nil)) (int 4096) (primary false) (vec3))
-        (field "max_payload_bytes" "Maximum payload bytes" (folder "Limits") (int (soft 1048576 1073741824) (hard 1 nil)) (int 268435456) (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/group_from_attribute_boundary"
@@ -2527,6 +2513,21 @@
         (field "center_z" "Center Z" (folder "Transform" "Center") (float (soft -10 10) (hard nil nil)) (float 0) (primary false) (vec3 "center" 2))
         (field "rotation" "Rotation" (folder "Transform") (float (soft -3.14159 3.14159) (hard nil nil)) (float 0) (primary false) (vec3))
         (field "uv_attribute" "UV attribute" (folder "Attributes") (text) (text "") (primary false) (vec3)))
+      (outputs (output "geo" geometry))
+      (body lisp)
+      (calls))
+    (kind "sop/group_boundary_components"
+      (key "group_boundary_components")
+      (aliases)
+      (operation "group_boundary_components")
+      (label "Group Boundary Components")
+      (category "Group" "Create")
+      (slots (slot "in0" required))
+      (fields
+        (field "prefix" "Group prefix" (folder) (text) (text "boundary") (primary false) (vec3))
+        (field "conflict" "Conflict" (folder) (choice "Replace" "Union") (choice "Replace") (primary false) (vec3))
+        (field "max_groups" "Maximum groups" (folder "Limits") (int (soft 1 16384) (hard 1 nil)) (int 4096) (primary false) (vec3))
+        (field "max_payload_bytes" "Maximum payload bytes" (folder "Limits") (int (soft 1048576 1073741824) (hard 1 nil)) (int 268435456) (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (body lisp)
       (calls))

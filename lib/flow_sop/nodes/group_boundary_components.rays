@@ -1,9 +1,13 @@
 ; Whole Group Boundary Components draft: one point group per connected set of unshared polygon edges.
-; Components are labelled by minimum-label propagation over the point-edge rows (the label of a
-; component is its smallest point), then numbered in ascending-label order like the union-find scan.
+; Boundary edges become a derived polyline graph labelled by sop/components (union-find, classes
+; numbered by first point); points without a boundary edge are dropped and the classes renumbered.
 (defn group_boundary_components_error :context value [(reason : text)]
   (error "invalid_group" "group_boundary_components could not produce valid geometry"
     :cause (str "group_boundary_components [invalid_group]: " reason)))
+(defn group_boundary_interleave :context value [(a : (array int)) (b : (array int))]
+  (exact (map (fn [(i : int)]
+    (if (int/eq (int/mod i 2) 0) (array/nth a (int/div i 2)) (array/nth b (int/div i 2))))
+    (array/range (int/mul 2 (array/count a)) :type int))))
 (defnode sop/group_boundary_components :label "Group Boundary Components" :category ["Group" "Create"]
   [(in0 : geometry)
    (prefix : text "boundary" :label "Group prefix")
@@ -31,33 +35,20 @@
                               (exact (map (fn [(e : int)] (array/nth adjacency.edge_b e)) boundary_edges)))
            active (exact (map (fn [(h : int)] (if (int/gt h 0) 1 0))
                     (array/scatter_add ends (array/int (array/count ends) 1) points)))
-           offsets adjacency.point_edge_offsets
-           has_edges (exact (map (fn [(p : int)]
-                       (if (int/gt (array/nth offsets (int/add p 1)) (array/nth offsets p)) 1 0))
-                       (array/range points :type int)))
-           rows (array/compact has_edges)
-           row_offsets (array/concat (exact (map (fn [(p : int)] (array/nth offsets p)) rows))
-                                     (array/int 1 (array/nth offsets points)))
-           labels (iterate points (exact (array/range points :type int))
-             (fn [(label : (array int))]
-               (let* [edge_label (exact (map (fn [(a : int) (b : int) (flag : int)]
-                                   (if (int/eq flag 1)
-                                     (if (int/lt (array/nth label a) (array/nth label b)) (array/nth label a) (array/nth label b))
-                                     points))
-                                   adjacency.edge_a adjacency.edge_b boundary))
-                      incident (exact (map (fn [(e : int)] (array/nth edge_label e)) adjacency.point_edges))
-                      row_min (array/scatter_add rows (array/segment_min incident row_offsets) points)]
-                 (exact (map (fn [(own : int) (best : int) (has : int)]
-                         (if (and (int/eq has 1) (int/lt best own)) best own))
-                         label row_min has_edges))))
-             :until (fn [(previous : (array int)) (next : (array int))]
-               (int/eq (array/sum previous) (array/sum next))))
-           root (exact (map (fn [(a : int) (label : int) (p : int)]
-                  (if (and (int/eq a 1) (int/eq label p)) 1 0)) active labels (array/range points :type int)))
-           numbering (array/scan_sum root)
-           component (exact (map (fn [(a : int) (label : int)]
-                       (if (int/eq a 1) (array/nth numbering label) -1)) active labels))
-           groups (array/nth numbering points)
+           ; each boundary edge is a two-point polyline; classes number points by first element
+           derived (sop/mesh :points (array/vec3 points)
+                     :vertex_points (group_boundary_interleave
+                       (exact (map (fn [(e : int)] (array/nth adjacency.edge_a e)) boundary_edges))
+                       (exact (map (fn [(e : int)] (array/nth adjacency.edge_b e)) boundary_edges)))
+                     :primitive_offsets (exact (map (fn [(i : int)] (int/mul i 2))
+                       (array/range (int/add (array/count boundary_edges) 1) :type int)))
+                     :kinds (array/int (array/count boundary_edges) 1))
+           labelled (sop/components derived :over "edges")
+           ; points without a boundary edge are singleton classes: drop them and renumber the rest
+           class_edges (array/scatter_add labelled.id active labelled.count)
+           class_rank (array/scan_sum (exact (map (fn [(n : int)] (if (int/gt n 0) 1 0)) class_edges)))
+           component (exact (map (fn [(a : int) (c : int)] (if (int/eq a 1) (array/nth class_rank c) -1)) active labelled.id))
+           groups (array/nth class_rank labelled.count)
            bytes_per_group (int/shr (int/add points 7) 3)]
       (cond
         (int/gt groups max_groups)
