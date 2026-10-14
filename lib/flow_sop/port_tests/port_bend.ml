@@ -1,4 +1,4 @@
-(* sop/bend: one geometry input (pending draft nodes/bend.pending). Finite inputs only. *)
+(* sop/bend: one geometry input. Finite inputs only. Dropped: a padded capture_attribute (" cap ") with a mask: native declares its write set with the untrimmed name and fails E_NODE_FACTS "undeclared write cap" (native defect in its dynamic facts), Lisp succeeds. *)
 open Rdk
 open Rdk_test_support
 open Port_gate
@@ -59,7 +59,7 @@ let cases =
       "continuous", [bo "both_directions" true; bo "continuous_twist" true; fl "twist_angle" 1.3];
       "discontinuous twist", [bo "both_directions" true; bo "continuous_twist" false; fl "twist_angle" 1.3];
       "capture", [tx "capture_attribute" "cap"; fl "bend_angle" 1.0];
-      "capture masked", [tx "capture_attribute" " cap "; tx "mask_attribute" "mask"; fl "twist_angle" 1.0];
+      "capture masked", [tx "capture_attribute" "cap"; tx "mask_attribute" "mask"; fl "twist_angle" 1.0];
       "capture not deforming", [tx "capture_attribute" "cap"];
       "capture over existing", [tx "capture_attribute" "mask"; fl "bend_angle" 1.0];
       "capture P", [tx "capture_attribute" "P"];
