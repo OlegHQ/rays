@@ -9,3 +9,7 @@ val declaration_source : Flow.Workspace.t -> Flow.Workspace.node_definition -> s
 (* Authored source plus the declarations the checked workspace's graphs reach: the key of
    prepared kernels, instead of the whole library. *)
 val kernel_source : Flow.Workspace.t -> string
+
+(** Whether [specialize] can change the graph: it names a context or provenance operator. A graph
+    for which this is false is its own specialization. *)
+val uses_context : Flow.Workspace.graph -> bool

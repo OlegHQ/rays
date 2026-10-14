@@ -594,6 +594,11 @@ let rec lower_checked ~factories ?(provenance_tags = true) ?(reference = false) 
       | None ->
           let parameters = ok (Port.parameters (Edit.factory_fields factory)) in
           Hashtbl.add params_cache key parameters; parameters in
+    (* a helper that names no context operator is its own specialization: shared across instances *)
+    let def_context_use =
+      let use = lazy (List.map (fun def -> def, Context_kernel.uses_context def) checked.defs)
+      and lock = Mutex.create () in
+      fun () -> Mutex.protect lock (fun () -> Lazy.force use) in
     let lisp_factory ?(functions = []) ?provenance (definition : Workspace.node_definition) =
       let declaration_source=lazy(Context_kernel.declaration_source checked definition) in
       let rec function_elements = function
@@ -673,7 +678,9 @@ let rec lower_checked ~factories ?(provenance_tags = true) ?(reference = false) 
           {body with name="lisp_validate_" ^ string_of_int index;
             context=Context.value;body=predicate}) definition.validations in
         let nested = {checked with graphs=body::validations;
-          defs=List.map (Context_kernel.specialize ~label ~context) checked.defs;
+          defs=List.map (fun (def, uses) ->
+            if uses then Context_kernel.specialize ~label ~context def else def)
+            (def_context_use ());
           nodes=List.filter (fun (d : Workspace.node_definition) ->
             d.kind.qualified <> definition.kind.qualified) checked.nodes} in
         let overrides = List.map (fun (g : Workspace.graph) -> g.name,
@@ -1112,7 +1119,7 @@ let rec lower_checked ~factories ?(provenance_tags = true) ?(reference = false) 
               group_node ?state ~elems:outer ~args:n.args ~sources:(deps n) (List.filter_map Fun.id options)
           | None when is_geometry_arrays n.kind ->
               geometry_arrays_node ?state ~elems:outer ~operation:n.kind ~args:n.args ~sources:(deps n) (List.filter_map Fun.id options)
-          | None -> edit (Edit.instantiate_optional p.factory options) in
+          | None -> edit (Lisp_node.with_initial_changes ~operation:(Edit.factory_operation p.factory) p.changes (fun () -> Edit.instantiate_optional p.factory options)) in
         let node = edit (Sop.Node.Private.restore_id p.cid node) in
         let changes = p.changes @ List.concat_map (fun (v, changes) ->
           changes (match E.force ?state:(Option.map E.fork_state state) ~elems:outer v ~live with
@@ -1276,7 +1283,7 @@ let rec lower_checked ~factories ?(provenance_tags = true) ?(reference = false) 
           | None -> match List.assoc_opt index p.slots with
           | Some source -> Edit.find graph ~node_id:compiled.(source)
           | None -> None) in
-        let node = edit (Edit.instantiate_optional p.factory options) in
+        let node = edit (Lisp_node.with_initial_changes ~operation:(Edit.factory_operation p.factory) p.changes (fun () -> Edit.instantiate_optional p.factory options)) in
         let node = edit (Sop.Node.Private.restore_id p.cid node) in
         let inputs = Array.of_list (List.map (Option.map Sop.Node.id)
           options) in
