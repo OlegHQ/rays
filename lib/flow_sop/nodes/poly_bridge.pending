@@ -1,0 +1,408 @@
+; Whole PolyBridge draft. Edge groups become ordered vertex paths (graph/chains over the group's edges, the
+; corner of each step found by a sorted (edge, point) -> lowest vertex table), source and destination
+; paths are paired by order or centroid, and every pair is aligned and zipped by the PolyLoft engine (the
+; prelude loft_* helpers; polygon output, shift = pairing shift). Divisions above one build the
+; intermediate point rows and the quad grid directly, carried by weighted sop/remap mixes.
+
+(defn bridge_error :context value [(reason : text)]
+  (error "invalid_topology" "poly_bridge could not produce valid geometry"
+    :cause (str "poly_bridge [invalid_topology]: " reason)))
+
+; Ordered vertex paths of the selected unique edges (a mask over the geometry's edges): the paths sorted
+; by (lowest point, first primitive), as ragged vertex rows with closed flags and first primitives.
+(defn bridge_paths :context sop [(in0 : geometry) (mask : (array int))]
+  (let* [n (sop/count in0 :points)
+         adj (sop/adjacency in0)
+         topology (sop/topology in0)
+         aea adj.edge_a aeb adj.edge_b aev adj.edge_of_vertex anv adj.next_vertex apv adj.primitive_of_vertex
+         tvp topology.vertex_points
+         vertex_total (array/count tvp)
+         sel (array/compact mask)
+         graph_total (array/count sel)
+         ga (exact (map (fn [(e : int)] (min (array/nth aea e) (array/nth aeb e))) sel))
+         gb (exact (map (fn [(e : int)] (max (array/nth aea e) (array/nth aeb e))) sel))
+         graph_keys (exact (map (fn [(a : int) (b : int)] (int/add (int/mul a n) b)) ga gb))
+         graph_mesh (sop/mesh :points (array/vec3 n)
+                      :vertex_points (exact (map (fn [(i : int)]
+                        (if (int/eq (int/mod i 2) 0) (array/nth ga (int/div i 2)) (array/nth gb (int/div i 2))))
+                        (array/range (int/mul 2 graph_total) :type int)))
+                      :primitive_offsets (exact (map (fn [(i : int)] (int/mul i 2)) (array/range (int/add graph_total 1) :type int)))
+                      :kinds (array/int graph_total 1))
+         graph_adjacency (sop/adjacency graph_mesh)
+         chains (graph/chains graph_adjacency)
+         cv chains.values co chains.offsets cc chains.closed
+         paths (array/count cc)
+         rows (array/count cv)
+         row_ids (array/range rows :type int)
+         cumulative (array/scan_sum (array/scatter_add (array/slice co 0 paths) (array/int paths 1) (int/add rows 1)))
+         owner (exact (map (fn [(r : int)] (int/sub (array/nth cumulative (int/add r 1)) 1)) row_ids))
+         is_last (exact (map (fn [(r : int) (p : int)]
+                   (if (int/eq r (int/sub (array/nth co (int/add p 1)) 1)) 1 0)) row_ids owner))
+         step_edge (array/index_of graph_keys
+                     (exact (map (fn [(r : int) (l : int)]
+                       (if (int/eq l 1) -1
+                         (let* [v (array/nth cv r) w (array/nth cv (int/add r 1))]
+                           (int/add (int/mul (min v w) n) (max v w))))) row_ids is_last)))
+         row_edge (exact (map (fn [(r : int) (l : int)]
+                    (array/nth sel (array/nth step_edge (if (int/eq l 1) (int/sub r 1) r)))) row_ids is_last))
+         ; Lowest vertex of an edge's corners lying at a point: sorted (edge * points + point, vertex) table.
+         vids (array/range vertex_total :type int)
+         nexts (exact (map (fn [(v : int)] (if (int/lt (array/nth anv v) 0) v (array/nth anv v))) vids))
+         key_a (exact (map (fn [(v : int)]
+                 (if (int/lt (array/nth aev v) 0) -1 (int/add (int/mul (array/nth aev v) n) (array/nth tvp v)))) vids))
+         key_b (exact (map (fn [(v : int)]
+                 (if (int/lt (array/nth aev v) 0) -1 (int/add (int/mul (array/nth aev v) n) (array/nth tvp (array/nth nexts v))))) vids))
+         table_key (array/concat key_a key_b)
+         table_vert (array/concat vids nexts)
+         table_order (array/grade (exact (map (fn [(i : int)]
+                       (int/add (int/mul (array/nth table_key i) (int/add vertex_total 1)) (array/nth table_vert i)))
+                       (array/range (array/count table_key) :type int))))
+         sorted_key (int_gather table_key table_order)
+         found (array/index_of sorted_key (exact (map (fn [(r : int)]
+                 (int/add (int/mul (array/nth row_edge r) n) (array/nth cv r))) row_ids)))
+         row_vertex (exact (map (fn [(f : int)] (array/nth table_vert (array/nth table_order f))) found))
+         ; Isolated loops repeat their first point last: that row is dropped.
+         keep (exact (map (fn [(l : int) (p : int)] (if (and (int/eq l 1) (int/eq (array/nth cc p) 1)) 0 1)) is_last owner))
+         kept_rows (array/compact keep)
+         path_vert (int_gather row_vertex kept_rows)
+         sizes (exact (map (fn [(p : int)]
+                 (int/sub (int/sub (array/nth co (int/add p 1)) (array/nth co p)) (array/nth cc p))) (array/range paths :type int)))
+         path_off (array/scan_sum sizes)
+         low (array/segment_min cv co)
+         first_vertex (exact (map (fn [(p : int)] (array/nth row_vertex (array/nth co p))) (array/range paths :type int)))
+         prim (int_gather apv first_vertex)
+         prims (sop/count in0 :primitives)
+         order (array/grade (exact (map (fn [(k : int) (q : int)] (int/add (int/mul k (int/add prims 1)) q)) low prim)))
+         s_sizes (int_gather sizes order)
+         s_off (array/scan_sum s_sizes)
+         s_owner (loft_owners s_off)
+         s_vert (exact (map (fn [(i : int) (s : int)]
+                  (array/nth path_vert (int/add (array/nth path_off (array/nth order s)) (int/sub i (array/nth s_off s)))))
+                  (array/range (array/count s_owner) :type int) s_owner))]
+    {:off s_off :vert s_vert :closed (int_gather cc order) :prim (int_gather prim order)}))
+
+; One axis of Poly_bridge.centroid for every path of a ragged coordinate list: scale = max |coordinate|,
+; sum of coordinate / scale (skipped at scale 0), centroid = sum * (1 / count) * scale.
+(defn bridge_axis :context value [(coords : (array float)) (off : (array int)) (owner : (array int))]
+  (let* [scale (array/segment_max (exact (map (fn [(x : float)] (abs x)) coords)) off)
+         sums (array/segment_sum (exact (map (fn [(x : float) (o : int)]
+                (if (= (array/nth scale o) 0.0) 0.0 (/ x (array/nth scale o)))) coords owner)) off)
+         inverse (exact (map (fn [(p : int)]
+                   (/ 1.0 (float (int/sub (array/nth off (int/add p 1)) (array/nth off p)))))
+                   (array/range (array/count scale) :type int)))]
+    (exact (map (fn [(u : float) (i : float) (s : float)] (* (* u i) s)) sums inverse scale))))
+
+; Positions of the paths sorted by centroid (x, then y, then z, then index): path indices in that order.
+(defn bridge_centroid_order :context value [(c : {:x (array float) :y (array float) :z (array float)})]
+  (let* [n (array/count c.x)
+         by_z (array/grade c.z)
+         by_y (int_gather by_z (array/grade (exact (map (fn [(i : int)] (array/nth c.y i)) by_z))))
+         by_x (int_gather by_y (array/grade (exact (map (fn [(i : int)] (array/nth c.x i)) by_y))))]
+    by_x))
+
+; Edge-group checks of Poly_bridge.extract_paths: no self edge, no point of degree above two.
+(defn bridge_check :context sop [(in0 : geometry) (mask : (array int)) (label : text)]
+  (let* [adj (sop/adjacency in0)
+         aea adj.edge_a aeb adj.edge_b
+         n (sop/count in0 :points)
+         selfs (array/sum (exact (map (fn [(a : int) (b : int) (m : int)] (if (and (int/eq m 1) (int/eq a b)) 1 0)) aea aeb mask)))
+         degree (exact (map (fn [(x : int) (y : int)] (int/add x y))
+                  (array/scatter_add aea mask n) (array/scatter_add aeb mask n)))
+         branching (array/compact (exact (map (fn [(d : int)] (if (int/gt d 2) 1 0)) degree)))]
+    (cond
+      (int/gt (array/count branching) 0)
+        (bridge_error (str label " edge group branches at point " (array/nth branching 0)))
+      (int/gt selfs 0) (bridge_error (str label " contains a degenerate path"))
+      :else nil)))
+
+; Output group, normals and the shared tail of both bridge builders.
+(defn bridge_finish :context sop
+  [(in0 : geometry) (remapped : geometry) (prefix : int) (total : int) (output_name : text) (recompute : bool)]
+  (let* [grouped (if (text/blank? output_name) remapped
+                   (sop/with_group remapped
+                     (exact (map (fn [(p : int)] (if (int/ge p prefix) 1 0)) (array/range total :type int)))
+                     :name output_name :owner "primitive"))
+         had_point (sop/has_attr in0 "N" :owner "point")
+         had_vertex (sop/has_attr in0 "N" :owner "vertex")
+         cleared (sop/delete_attr (sop/delete_attr grouped "N" :owner "point") "N" :owner "vertex")]
+    (if (and recompute (or had_point had_vertex))
+      (sop/normals cleared :owner (if had_point "Point" "Vertex") :weighting "Face area")
+      cleared)))
+
+; Plain bridge (divisions 1): polygons from the loft engine's zipper, the source primitives kept first.
+(defn bridge_plain :context sop
+  [(in0 : geometry)
+   (g : {:x (array float) :y (array float) :z (array float) :p (array int)})
+   (off : (array int)) (vert : (array int)) (closed : (array int)) (sec_prim : (array int))
+   (pa : (array int)) (pb : (array int)) (al : {:a_shift (array int) :a_rev (array int) :b_shift (array int) :b_rev (array int)})
+   (three : bool) (keep : bool) (tol : float) (output_name : text) (recompute : bool)]
+  (let* [topology (sop/topology in0)
+         offsets topology.primitive_offsets kinds topology.kinds tvp topology.vertex_points
+         prims (sop/count in0 :primitives)
+         points (sop/count in0 :points)
+         plan (loft_zip g off vert closed pa pb al three tol true)
+         generated (array/count plan.c0)
+         sizes (exact (map (fn [(p : int)] (int/sub (array/nth offsets (int/add p 1)) (array/nth offsets p))) (array/range prims :type int)))
+         kept (if keep (array/range prims :type int) (array/int 0))
+         kept_off (array/scan_sum (int_gather sizes kept))
+         kept_owner (loft_owners kept_off)
+         kept_vertices (exact (map (fn [(i : int) (s : int)]
+           (int/add (array/nth offsets (array/nth kept s)) (int/sub i (array/nth kept_off s))))
+           (array/range (array/count kept_owner) :type int) kept_owner))
+         arity (exact (map (fn [(c : int)] (if (int/lt c 0) 3 4)) plan.c3))
+         gen_off (array/scan_sum arity)
+         gen_owner (loft_owners gen_off)
+         corner_table (array/concat (array/concat plan.c0 plan.c1) (array/concat plan.c2 plan.c3))
+         gen_vertices (exact (map (fn [(i : int) (j : int)]
+           (array/nth corner_table (int/add (int/mul (int/sub i (array/nth gen_off j)) generated) j)))
+           (array/range (array/count gen_owner) :type int) gen_owner))
+         vertex_map (array/concat kept_vertices gen_vertices)
+         out_offsets (array/scan_sum (array/concat (int_gather sizes kept) arity))
+         target (sop/mesh :points (array/vec3 points) :vertex_points (int_gather tvp vertex_map)
+                  :primitive_offsets out_offsets
+                  :kinds (array/concat (int_gather kinds kept) (array/int generated 0)))
+         source_adjacency (sop/adjacency in0)
+         target_adjacency (sop/adjacency target)
+         remapped (sop/remap in0 target :points (array/range points :type int) :vertices vertex_map
+                    :primitives (array/concat kept (exact (map (fn [(pair : int)] (array/nth sec_prim (array/nth pa pair))) plan.pair)))
+                    :positions "mapped"
+                    :edges (edge_ancestry source_adjacency.edge_a source_adjacency.edge_b
+                             target_adjacency.edge_a target_adjacency.edge_b points))]
+    (bridge_finish in0 remapped (array/count kept) (int/add (array/count kept) generated) output_name recompute)))
+
+; Divided bridge: rows of intermediate points between the aligned boundaries, a quad per row and
+; segment, point and vertex payload blended by the row weight (weighted sop/remap mixes).
+(defn bridge_corner :context value
+  [(sp : (array int)) (dp : (array int)) (roff : (array int)) (noff : (array int)) (counts : (array int))
+   (points : int) (divisions : int) (pairs : (array int)) (rows : (array int)) (locals : (array int))]
+  (exact (map (fn [(i : int)]
+    (let* [q (array/nth pairs i) r (array/nth rows i) l (array/nth locals i)]
+      (if (int/eq r 0) (array/nth sp (int/add (array/nth roff q) l))
+        (if (int/eq r divisions) (array/nth dp (int/add (array/nth roff q) l))
+          (int/add (int/add points (array/nth noff q)) (int/add (int/mul (int/sub r 1) (array/nth counts q)) l))))))
+    (array/range (array/count pairs) :type int))))
+
+(defn bridge_lerp :context value
+  [(px : (array float)) (left : (array int)) (right : (array int)) (w : (array float))]
+  (exact (map (fn [(a : int) (b : int) (u : float)]
+    (let* [l (array/nth px a) r (array/nth px b) d (- r l)]
+      (if (= (- d d) 0.0) (fma d u l) (+ (* l (- 1.0 u)) (* r u))))) left right w)))
+
+(defn bridge_divided :context sop
+  [(in0 : geometry)
+   (off : (array int)) (vert : (array int)) (closed : (array int)) (sec_prim : (array int))
+   (pa : (array int)) (pb : (array int)) (al : {:a_shift (array int) :a_rev (array int) :b_shift (array int) :b_rev (array int)})
+   (divisions : int) (keep : bool) (tol : float) (output_name : text) (recompute : bool)]
+  (let* [topology (sop/topology in0)
+         offsets topology.primitive_offsets kinds topology.kinds tvp topology.vertex_points
+         prims (sop/count in0 :primitives)
+         points (sop/count in0 :points)
+         pairs (array/count pa)
+         idx (array/range pairs :type int)
+         counts (exact (map (fn [(p : int)] (int/sub (array/nth off (int/add (array/nth pa p) 1)) (array/nth off (array/nth pa p)))) idx))
+         bcounts (exact (map (fn [(p : int)] (int/sub (array/nth off (int/add (array/nth pb p) 1)) (array/nth off (array/nth pb p)))) idx))
+         mismatch (array/compact (exact (map (fn [(a : int) (b : int)] (if (int/eq a b) 0 1)) counts bcounts)))]
+    (if (int/gt (array/count mismatch) 0)
+      (bridge_error (str "bridge " (array/nth mismatch 0) " divisions require equal boundary cardinality"))
+      (let* [roff (array/scan_sum counts)
+             rtotal (array/nth roff pairs)
+             rowner (loft_owners roff)
+             rids (array/range rtotal :type int)
+             rlocal (exact (map (fn [(i : int) (q : int)] (int/sub i (array/nth roff q))) rids rowner))
+             ash al.a_shift arv al.a_rev bsh al.b_shift brv al.b_rev
+             sv (loft_vertices off vert (int_gather pa rowner) (int_gather ash rowner) (int_gather arv rowner) rlocal)
+             dv (loft_vertices off vert (int_gather pb rowner) (int_gather bsh rowner) (int_gather brv rowner) rlocal)
+             sp (int_gather tvp sv) dp (int_gather tvp dv)
+             positions (sop/attr in0 "P")
+             px (exact (map (fn [(q : vec3)] q.x) positions)) py (exact (map (fn [(q : vec3)] q.y) positions))
+             pz (exact (map (fn [(q : vec3)] q.z) positions))
+             ; ---- intermediate points ----
+             noff (array/scan_sum (exact (map (fn [(c : int)] (int/mul (int/sub divisions 1) c)) counts)))
+             ntotal (array/nth noff pairs)
+             nids (array/range ntotal :type int)
+             nowner (loft_owners noff)
+             nrow (exact (map (fn [(i : int) (q : int)]
+                    (int/add (int/div (int/sub i (array/nth noff q)) (array/nth counts q)) 1)) nids nowner))
+             nloc (exact (map (fn [(i : int) (q : int)]
+                    (int/mod (int/sub i (array/nth noff q)) (array/nth counts q))) nids nowner))
+             nleft (exact (map (fn [(q : int) (l : int)] (array/nth sp (int/add (array/nth roff q) l))) nowner nloc))
+             nright (exact (map (fn [(q : int) (l : int)] (array/nth dp (int/add (array/nth roff q) l))) nowner nloc))
+             nweight (exact (map (fn [(r : int)] (/ (float r) (float divisions))) nrow))
+             total_points (int/add points ntotal)
+             g {:x (array/concat px (bridge_lerp px nleft nright nweight))
+                :y (array/concat py (bridge_lerp py nleft nright nweight))
+                :z (array/concat pz (bridge_lerp pz nleft nright nweight))
+                :p (array/range total_points :type int)}
+             ; ---- faces: divisions rows of segments per pair ----
+             segments (exact (map (fn [(p : int)]
+                        (if (int/eq (array/nth closed (array/nth pa p)) 1) (array/nth counts p) (int/sub (array/nth counts p) 1))) idx))
+             foff (array/scan_sum (exact (map (fn [(s : int)] (int/mul divisions s)) segments)))
+             ftotal (array/nth foff pairs)
+             fids (array/range ftotal :type int)
+             fowner (loft_owners foff)
+             frow (exact (map (fn [(i : int) (q : int)] (int/div (int/sub i (array/nth foff q)) (array/nth segments q))) fids fowner))
+             frow1 (exact (map (fn [(r : int)] (int/add r 1)) frow))
+             floc (exact (map (fn [(i : int) (q : int)] (int/mod (int/sub i (array/nth foff q)) (array/nth segments q))) fids fowner))
+             fnext (exact (map (fn [(l : int) (q : int)] (int/mod (int/add l 1) (array/nth counts q))) floc fowner))
+             ca (bridge_corner sp dp roff noff counts points divisions fowner frow floc)
+             cb (bridge_corner sp dp roff noff counts points divisions fowner frow fnext)
+             cc (bridge_corner sp dp roff noff counts points divisions fowner frow1 fnext)
+             cd (bridge_corner sp dp roff noff counts points divisions fowner frow1 floc)
+             distinct (exact (map (fn [(f : int)]
+                      (let* [a (array/nth ca f) b (array/nth cb f) c (array/nth cc f) d (array/nth cd f)]
+                        (if (and (not (int/eq a b)) (and (not (int/eq b c)) (and (not (int/eq c d))
+                              (and (not (int/eq d a)) (and (not (int/eq a c)) (not (int/eq b d))))))) 1 0))) fids))
+             nc1 (loft_ncs g tol ca cb cc)
+             nc2 (loft_ncs g tol ca cc cd)
+             face_keep (exact (map (fn [(f : int)]
+                       (if (and (int/eq (array/nth distinct f) 1)
+                                (or (= tol 0.0) (or (int/eq (array/nth nc1 f) 1) (int/eq (array/nth nc2 f) 1)))) 1 0)) fids))
+             keepf (array/compact face_keep)
+             quads (array/count keepf)
+             ; ---- output topology ----
+             sizes (exact (map (fn [(p : int)] (int/sub (array/nth offsets (int/add p 1)) (array/nth offsets p))) (array/range prims :type int)))
+             prefix (if keep prims 0)
+             prefix_vertices (if keep (array/count tvp) 0)
+             kept (if keep (array/range prims :type int) (array/int 0))
+             kq (int_gather fowner keepf) kr (int_gather frow keepf) kl (int_gather floc keepf) kn (int_gather fnext keepf)
+             kr1 (exact (map (fn [(r : int)] (int/add r 1)) kr))
+             corner_points (array/concat (array/concat (int_gather ca keepf) (int_gather cb keepf))
+                                         (array/concat (int_gather cc keepf) (int_gather cd keepf)))
+             corner_local (array/concat (array/concat kl kn) (array/concat kn kl))
+             corner_row (array/concat (array/concat kr kr) (array/concat kr1 kr1))
+             corner_pair (array/concat (array/concat kq kq) (array/concat kq kq))
+             ; Corner order of face f is a, b, c, d: output vertex 4f + k reads table row k * quads + f.
+             gen_at (exact (map (fn [(i : int)] (int/add (int/mul (int/mod i 4) quads) (int/div i 4)))
+                      (array/range (int/mul 4 quads) :type int)))
+             gen_points (int_gather corner_points gen_at)
+             gen_left (exact (map (fn [(k : int)] (array/nth sv (int/add (array/nth roff (array/nth corner_pair k)) (array/nth corner_local k)))) gen_at))
+             gen_right (exact (map (fn [(k : int)] (array/nth dv (int/add (array/nth roff (array/nth corner_pair k)) (array/nth corner_local k)))) gen_at))
+             gen_weight (exact (map (fn [(k : int)] (/ (float (array/nth corner_row k)) (float divisions))) gen_at))
+             kept_vertices (array/range prefix_vertices :type int)
+             out_points (array/concat (if keep tvp (array/int 0)) gen_points)
+             out_offsets (array/scan_sum (array/concat (int_gather sizes kept) (array/int quads 4)))
+             target (sop/mesh :points (array/vec3 total_points) :vertex_points out_points
+                      :primitive_offsets out_offsets
+                      :kinds (array/concat (int_gather kinds kept) (array/int quads 0)))
+             source_adjacency (sop/adjacency in0)
+             target_adjacency (sop/adjacency target)
+             remapped (sop/remap in0 target
+                        :point_mix {:a (array/concat (array/range points :type int) nleft)
+                                    :b (array/concat (array/range points :type int) nright)
+                                    :t (array/concat (array/float points) nweight)}
+                        :vertex_mix {:a (array/concat kept_vertices gen_left) :b (array/concat kept_vertices gen_right)
+                                     :t (array/concat (array/float prefix_vertices) gen_weight)}
+                        :primitives (array/concat kept (exact (map (fn [(q : int)] (array/nth sec_prim (array/nth pa q))) kq)))
+                        :positions "mapped"
+                        :edges (edge_ancestry source_adjacency.edge_a source_adjacency.edge_b
+                                 (exact (map (fn [(p : int)] (if (int/lt p points) p -1)) target_adjacency.edge_a))
+                                 (exact (map (fn [(p : int)] (if (int/lt p points) p -1)) target_adjacency.edge_b)) points))]
+        (bridge_finish in0 remapped prefix (int/add prefix quads) output_name recompute)))))
+
+; Source and destination paths, pairing and sections, then the plain or divided builder.
+(defn bridge_run :context sop
+  [(in0 : geometry) (source_name : text) (destination_name : text) (centroid : bool) (connect : bool)
+   (three : bool) (reverse_source : bool) (reverse_destination : bool) (shift : int) (divisions : int)
+   (keep : bool) (output_name : text) (tol : float) (recompute : bool)]
+  (let* [smask (sop/group in0 :name source_name :owner "edge")
+         dmask (sop/group in0 :name destination_name :owner "edge")
+         overlap (array/compact (exact (map (fn [(a : int) (b : int)] (int/and a b)) smask dmask)))]
+    (if (int/gt (array/count overlap) 0)
+      (bridge_error (str "source and destination overlap at edge " (array/nth overlap 0)))
+      (let* [source_check (bridge_check in0 smask "source")]
+        (if (not (equal? source_check nil)) source_check
+          (let* [destination_check (bridge_check in0 dmask "destination")]
+            (if (not (equal? destination_check nil)) destination_check
+              (let* [src (bridge_paths in0 smask)
+                     dst (bridge_paths in0 dmask)
+                     pairs (array/count src.prim)]
+                (cond
+                  (not (int/eq pairs (array/count dst.prim)))
+                    (bridge_error (str "source has " pairs " components but destination has " (array/count dst.prim)))
+                  (int/eq pairs 0) in0
+                  :else
+                  (let* [topology (sop/topology in0)
+                         positions (sop/attr in0 "P")
+                         g {:x (exact (map (fn [(q : vec3)] q.x) positions)) :y (exact (map (fn [(q : vec3)] q.y) positions))
+                            :z (exact (map (fn [(q : vec3)] q.z) positions)) :p topology.vertex_points}
+                         total_src (array/nth src.off pairs)
+                         all_off (array/concat src.off (exact (map (fn [(o : int)] (int/add o total_src)) (array/slice dst.off 1 pairs))))
+                         all_vert (array/concat src.vert dst.vert)
+                         all_owner (loft_owners all_off)
+                         all_point (int_gather g.p all_vert)
+                         cx (bridge_axis (exact (map (fn [(p : int)] (array/nth g.x p)) all_point)) all_off all_owner)
+                         cy (bridge_axis (exact (map (fn [(p : int)] (array/nth g.y p)) all_point)) all_off all_owner)
+                         cz (bridge_axis (exact (map (fn [(p : int)] (array/nth g.z p)) all_point)) all_off all_owner)
+                         src_order (bridge_centroid_order {:x (array/slice cx 0 pairs) :y (array/slice cy 0 pairs) :z (array/slice cz 0 pairs)})
+                         dst_order (bridge_centroid_order {:x (array/slice cx pairs pairs) :y (array/slice cy pairs pairs) :z (array/slice cz pairs pairs)})
+                         inverse (array/grade src_order)
+                         paired (if centroid
+                                  (exact (map (fn [(s : int)] (array/nth dst_order (array/nth inverse s))) (array/range pairs :type int)))
+                                  (array/range pairs :type int))
+                         mixed (array/compact (exact (map (fn [(s : int) (d : int)]
+                                 (if (int/eq (array/nth src.closed s) (array/nth dst.closed d)) 0 1)) (array/range pairs :type int) paired)))
+                         open_source (array/compact (exact (map (fn [(c : int)] (int/sub 1 c)) src.closed)))]
+                    (cond
+                      (int/gt (array/count mixed) 0)
+                        (bridge_error (str "bridge " (array/nth mixed 0) " mixes an open path with a closed loop"))
+                      (and (not (int/eq shift 0)) (int/gt (array/count open_source) 0))
+                        (bridge_error "pairing shift requires closed loops")
+                      :else
+                      (let* [ssizes (exact (map (fn [(p : int)] (int/sub (array/nth src.off (int/add p 1)) (array/nth src.off p))) (array/range pairs :type int)))
+                             dsizes (exact (map (fn [(d : int)] (int/sub (array/nth dst.off (int/add d 1)) (array/nth dst.off d))) paired))
+                             sec_size (array/concat ssizes dsizes)
+                             off (array/scan_sum sec_size)
+                             owner (loft_owners off)
+                             vert (exact (map (fn [(i : int) (o : int)]
+                                    (let* [local (int/sub i (array/nth off o))
+                                           size (array/nth sec_size o)
+                                           is_source (int/lt o pairs)
+                                           reversed (if is_source reverse_source reverse_destination)
+                                           at (if reversed (int/sub (int/sub size 1) local) local)]
+                                      (if is_source
+                                        (array/nth src.vert (int/add (array/nth src.off o) at))
+                                        (array/nth dst.vert (int/add (array/nth dst.off (array/nth paired (int/sub o pairs))) at)))))
+                                  (array/range (array/count owner) :type int) owner))
+                             closed (array/concat src.closed (int_gather dst.closed paired))
+                             sec_prim (array/concat src.prim (int_gather dst.prim paired))
+                             pa (array/range pairs :type int)
+                             pb (exact (map (fn [(p : int)] (int/add p pairs)) pa))
+                             ; Native aligns indexed sections by the vertices numbered 0 .. count - 1 of the
+                             ; geometry (a.first = 0), not by the path vertices: the same quirk here.
+                             local_vert (exact (map (fn [(i : int) (o : int)] (int/sub i (array/nth off o)))
+                                          (array/range (array/count owner) :type int) owner))
+                             al (loft_align g off local_vert closed pa pb connect shift)]
+                        (if (int/gt divisions 1)
+                          (bridge_divided in0 off vert closed sec_prim pa pb al divisions keep tol output_name recompute)
+                          (bridge_plain in0 g off vert closed sec_prim pa pb al three keep tol output_name recompute))))))))))))))
+
+(defnode sop/poly_bridge :label "PolyBridge" :category ["Topology" "Polygon"]
+  :validate (and (and (not (text/blank? source_group)) (not (text/blank? destination_group)))
+              (and (int/ge divisions 1) (<= collinearity_tolerance 1.0)))
+  :code "E_PARAM" :message "sop/poly_bridge: group names must be present, divisions positive, tolerance within [0,1]"
+  [(in0 : geometry)
+   (source_group : text "source" :label "Source edge group")
+   (destination_group : text "destination" :label "Destination edge group")
+   (pairing : text "By order" :label "Pairing" :choices ["By order" "By centroid"])
+   (connect_closest_ends : bool true :label "Connect closest ends")
+   (minimize : text "Two point distance" :label "Minimize" :choices ["Two point distance" "Three point distance"])
+   (reverse_source : bool false :label "Reverse source")
+   (reverse_destination : bool false :label "Reverse destination")
+   (pairing_shift : int 0 :label "Pairing shift" :min -128 :max 128)
+   (divisions : int 1 :label "Divisions" :min 1 :max 256 :hard_min 1)
+   (keep_input : bool true :label "Keep input")
+   (output_group : text "bridge" :label "Output group")
+   (collinearity_tolerance : float 0.0 :label "Collinearity tolerance" :min 0 :max 1 :hard_min 0)
+   (recompute_normals : bool false :label "Recompute normals")]
+  (let* [edge_names (sop/group_names in0 "*" :owner "edge")
+         has_source (fold [seen false] [name edge_names] (or seen (equal? name source_group)))
+         has_destination (fold [seen false] [name edge_names] (or seen (equal? name destination_group)))]
+    (cond
+      (not has_source)
+        (error "missing_edge_group" (str "poly_bridge could not find source edge group " (text/repr source_group)))
+      (not has_destination)
+        (error "missing_edge_group" (str "poly_bridge could not find destination edge group " (text/repr destination_group)))
+      :else
+      (bridge_run in0 source_group destination_group (equal? pairing "By centroid") connect_closest_ends
+        (equal? minimize "Three point distance") reverse_source reverse_destination pairing_shift divisions
+        keep_input (text/trim output_group) collinearity_tolerance recompute_normals))))
