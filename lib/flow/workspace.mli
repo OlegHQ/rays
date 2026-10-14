@@ -160,7 +160,7 @@ val max_iterations : int
 
 val body_context_ops : string list
 (** Operators a defnode body reads from its cook context ([sop/context_seed], [sop/provenance_base],
-    [sop/context_frame]); a body elsewhere is [E_NODE_CONTEXT]. *)
+    [sop/context_frame], [sop/context_time]); a body elsewhere is [E_NODE_CONTEXT]. *)
 
 val check : ?ops:Op.t list -> ?library:bool -> Check.catalog -> Syntax.t list -> t option * Diagnostic.t list
 (** Check one [(workspace name ...)] form.  The workspace is returned only

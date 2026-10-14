@@ -737,6 +737,9 @@ let rec lower_checked ~factories ?(provenance_tags = true) ?(reference = false) 
         let dependencies = if Context_kernel.depends ~op:"sop/context_frame" ~inputs:parameters ~defs:checked.defs definition.body then
           Sop.Context.Dependencies.union dependencies (Sop.Context.Dependencies.one Frame)
           else dependencies in
+        let dependencies = if Context_kernel.depends ~op:"sop/context_time" ~inputs:parameters ~defs:checked.defs definition.body then
+          Sop.Context.Dependencies.union dependencies (Sop.Context.Dependencies.one Time)
+          else dependencies in
         let owned = Sop.Graph.inspect compiled |> List.filter (fun (node : Sop.Graph.info) ->
           not (String.starts_with ~prefix:"lisp_capture_" node.operation)) in
         let preserved = List.for_all (fun (node : Sop.Graph.info) ->
@@ -773,7 +776,7 @@ let rec lower_checked ~factories ?(provenance_tags = true) ?(reference = false) 
             if Context_kernel.depends ~op ~inputs:parameters ~defs:checked.defs definition.body
             then Sop.Context.Dependencies.union dependencies (Sop.Context.Dependencies.one fact)
             else dependencies) Sop.Context.Dependencies.static
-            ["sop/context_seed", Sop.Context.Dependencies.Seed; "sop/context_frame", Frame] in
+            ["sop/context_seed", Sop.Context.Dependencies.Seed; "sop/context_frame", Frame; "sop/context_time", Time] in
           let cook_mode=if inputs=[] then Sop.Node.Generator else Generic in
           let exact=Option.fold ~none:true ~some:(fun (facts:Check.kernel_facts)->facts.exact)
             definition.kind.facts in

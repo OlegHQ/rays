@@ -56,7 +56,7 @@ type node_definition = {
 }
 
 (* Zero-state operators a defnode body reads from its cook context; Context_kernel specializes them. *)
-let body_context_ops = ["sop/context_seed"; "sop/provenance_base"; "sop/context_frame"]
+let body_context_ops = ["sop/context_seed"; "sop/provenance_base"; "sop/context_frame"; "sop/context_time"]
 
 let called_names ~include_ops root =
   let rec calls (t:term) = match t.node with

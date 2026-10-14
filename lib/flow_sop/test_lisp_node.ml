@@ -782,3 +782,34 @@ let () =
    | Error d -> check (d.code = "E_NODE_CONTEXT") "context frame outside a body has the wrong code"
    | Ok _ -> failwith "context frame outside a defnode body was accepted");
   print_endline "Context frame: float cook frame, Frame dependency, rebuilt per frame, body only"
+
+(* sop/context_time: the cook time in seconds, a Time cache dependency (not Frame), body only. *)
+let () =
+  let source body=Printf.sprintf {|(workspace time_body
+    (defnode sop/time_probe [(geo : geometry)]
+      (sop/with_attr geo "t" (array/float (sop/count geo :points) %s) :owner "point" :type float))
+    (graph g :context sop (sop/time_probe (sop/line :points 3))))|} body in
+  let cook_at session time node=
+    match Sop.Session.cook session ~context:(ok (Sop.Context.create ~time ())) node with
+    | Ok output -> (match Sop.Payload.geometry output.payload with Ok g -> Rdk_test_support.geometry_bytes g | Error d -> failwith (Sop.Diagnostic.error_to_string d))
+    | Error d -> failwith (Sop.Diagnostic.error_to_string d) in
+  List.iter (fun reference ->
+    let node=lower ~reference (source "(sop/context_time)") in
+    check (Sop.Context.Dependencies.mem Time (Sop.Node.dependencies node))
+      "context time lost its Time cache dependency";
+    check (not (Sop.Context.Dependencies.mem Frame (Sop.Node.dependencies node)))
+      "context time added a Frame dependency";
+    with_session (fun session ->
+      List.iter (fun time ->
+        let expected=cook_at session time (lower ~reference (source (Printf.sprintf "%F" time))) in
+        check (cook_at session time node = expected) "context time changed with the cook time")
+        [0.; 1.25; 0.5; 1.25]);
+    check (not (Sop.Context.Dependencies.mem Time
+      (Sop.Node.dependencies (lower ~reference (source "1.0")))))
+      "a constant body gained a Time dependency")
+    [false; true];
+  (match Flow_sop.Lower.workspace ~factories:Sop_catalog.Editor.factories
+    (parse "(workspace w (graph g :context sop (sop/line :points (int (sop/context_time)))))") with
+   | Error d -> check (d.code = "E_NODE_CONTEXT") "context time outside a body has the wrong code"
+   | Ok _ -> failwith "context time outside a defnode body was accepted");
+  print_endline "Context time: float cook time, Time dependency, rebuilt per time, body only"

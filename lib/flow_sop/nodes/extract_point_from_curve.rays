@@ -1,0 +1,253 @@
+; Whole Extract Point from Curve draft. Every selected curve contributes one slot per edge (plus one
+; for the last point of an open curve); a slot crosses when the distance attribute reaches the cut value.
+; Crossing slots are compacted into the output points, positions use the native crossing weight, and
+; the transferred point attributes are mixed by sop/remap :point_mix (the helper native uses), detail
+; attributes first (sop/remap :lead), then primitive copies re-owned as point attributes and the
+; generated diagnostics.
+(defn xpc_fail :context value [(reason : text)]
+  (error "invalid_curve" "extract_point_from_curve could not produce valid geometry"
+    :cause (str "extract_point_from_curve [invalid_curve]: " reason)))
+
+(defn xpc_finite :context value [(x : float)] (= (- x x) 0.0))
+
+(defn xpc_weight :context value [(a : float) (b : float) (target : float)]
+  (if (= a target) 0.0
+    (let* [scale (max (abs target) (max (abs a) (abs b)))]
+      (if (= scale 0.0) 0.5
+        (let* [left (abs (- (/ target scale) (/ a scale)))
+               right (abs (- (/ b scale) (/ target scale)))]
+          (/ left (+ left right)))))))
+
+(defn xpc_lerp :context value [(l : float) (r : float) (w : float)]
+  (let* [delta (- r l)]
+    (if (xpc_finite delta) (fma delta w l) (+ (* l (- 1.0 w)) (* r w)))))
+
+; Row gather over a ragged attribute: new offsets and, per new value, its index in the source values.
+(defn xpc_rows :context value [(offsets : (array int)) (rows : (array int))]
+  (let* [n (array/count rows)
+         lengths (exact (map (fn [(r : int)] (int/sub (array/nth offsets (int/add r 1)) (array/nth offsets r))) rows))
+         starts (array/scan_sum lengths)
+         total (array/nth starts n)
+         marks (array/scatter_add (array/slice starts 0 n) (array/int n 1) (int/add total 1))
+         cumulative (array/scan_sum marks)
+         row_of (exact (map (fn [(v : int)] (int/sub (array/nth cumulative (int/add v 1)) 1)) (array/range total :type int)))
+         source (exact (map (fn [(v : int) (r : int)]
+           (int/add (array/nth offsets (array/nth rows r)) (int/sub v (array/nth starts r))))
+           (array/range total :type int) row_of))]
+    {:offsets starts :source source}))
+
+; A primitive attribute copied onto the output points, one row per output point.
+(defn xpc_copy :context sop
+  [(target : geometry) (source : geometry) (name : text) (rows : (array int))]
+  (let* [kind (sop/attr_type source name :owner "primitive")]
+    (cond
+      (equal? kind "float")
+        (let* [v (sop/attr source name :owner "primitive" :type float)]
+          (sop/with_attr target name (exact (map (fn [(p : int)] (array/nth v p)) rows)) :owner "point" :type float))
+      (equal? kind "int")
+        (let* [v (sop/attr source name :owner "primitive" :type int)]
+          (sop/with_attr target name (exact (map (fn [(p : int)] (array/nth v p)) rows)) :owner "point" :type int))
+      (equal? kind "text")
+        (let* [v (sop/attr source name :owner "primitive" :type text)]
+          (sop/with_attr target name (exact (map (fn [(p : int)] (array/nth v p)) rows)) :owner "point" :type text))
+      (equal? kind "vec2")
+        (let* [v (sop/attr source name :owner "primitive" :type vec2)]
+          (sop/with_attr target name (exact (map (fn [(p : int)] (array/nth v p)) rows)) :owner "point" :type vec2))
+      (equal? kind "vec3")
+        (let* [v (sop/attr source name :owner "primitive" :type vec3)]
+          (sop/with_attr target name (exact (map (fn [(p : int)] (array/nth v p)) rows)) :owner "point" :type vec3))
+      (equal? kind "vec4")
+        (let* [v (sop/attr source name :owner "primitive" :type vec4)]
+          (sop/with_attr target name (exact (map (fn [(p : int)] (array/nth v p)) rows)) :owner "point" :type vec4))
+      (equal? kind "float_array")
+        (let* [v (sop/attr source name :owner "primitive" :type float_array)
+               g (xpc_rows v.offsets rows)]
+          (sop/with_attr target name
+            {:offsets g.offsets :values (exact (map (fn [(i : int)] (array/nth v.values i)) g.source))}
+            :owner "point" :type float_array))
+      :else
+        (let* [v (sop/attr source name :owner "primitive" :type int_array)
+               g (xpc_rows v.offsets rows)]
+          (sop/with_attr target name
+            {:offsets g.offsets :values (exact (map (fn [(i : int)] (array/nth v.values i)) g.source))}
+            :owner "point" :type int_array)))))
+
+(defn xpc_name_ok :context value [(name : text)]
+  (let* [trimmed (text/trim name)] (and (not (text/blank? trimmed)) (not (equal? trimmed "P")))))
+
+(defn xpc_same :context value [(a : text) (b : text)]
+  (and (not (text/blank? a)) (equal? a b)))
+
+(defn xpc_valid :context value
+  [(distance_attribute : text) (constant : float) (cut : text) (primitive_attribute : text)
+   (point_attributes : text) (primitive_attributes : text)
+   (curve_u_attribute : text) (number_cuts_attribute : text) (curve_number_attribute : text)]
+  (let* [u (text/trim curve_u_attribute) n (text/trim number_cuts_attribute) c (text/trim curve_number_attribute)]
+    (and (xpc_name_ok distance_attribute)
+      (and (xpc_finite constant)
+        (and (or (not (equal? cut "Primitive attribute")) (xpc_name_ok primitive_attribute))
+          (and (not (or (equal? u "P") (or (equal? n "P") (equal? c "P"))))
+            (and (not (or (xpc_same u n) (or (xpc_same u c) (xpc_same n c))))
+              (and (equal? (text/glob_error point_attributes) "")
+                   (equal? (text/glob_error primitive_attributes) "")))))))))
+
+(defnode sop/extract_point_from_curve :label "Extract Point from Curve" :category ["Create" "Points"]
+  :validate (xpc_valid distance_attribute constant cut primitive_attribute point_attributes
+              primitive_attributes curve_u_attribute number_cuts_attribute curve_number_attribute)
+  :code "E_PARAM" :message "sop/extract_point_from_curve: invalid parameters"
+  [(in0 : geometry)
+   (group : text "" :label "Primitive group")
+   (distance_attribute : text "distance" :label "Distance attribute")
+   (cut : text "Constant" :label "Cut value" :choices ["Constant" "Primitive attribute" "Current time"])
+   (constant : float 0.0 :label "Constant" :folder ["Cut"] :min -10 :max 10)
+   (primitive_attribute : text "cut" :label "Primitive attribute" :folder ["Cut"])
+   (point_attributes : text "P" :label "Point attributes" :folder ["Transfer"])
+   (copy_primitive_attributes : bool false :label "Copy primitive attributes" :folder ["Transfer"])
+   (primitive_attributes : text "*" :label "Primitive attributes" :folder ["Transfer"])
+   (curve_u_attribute : text "" :label "Curve U" :folder ["Output"])
+   (number_cuts_attribute : text "" :label "Number of cuts" :folder ["Output"])
+   (curve_number_attribute : text "" :label "Curve number" :folder ["Output"])]
+  (let* [group_name (text/trim group)
+         found_group (or (text/blank? group_name)
+           (fold [found false] [name (sop/group_names in0 "" :owner "primitive")]
+             (or found (equal? name group_name))))
+         from_attribute (equal? cut "Primitive attribute")
+         distance_float (sop/has_attr in0 distance_attribute :owner "point" :type float)
+         distance_int (sop/has_attr in0 distance_attribute :owner "point" :type int)
+         cut_float (sop/has_attr in0 primitive_attribute :owner "primitive" :type float)
+         cut_int (sop/has_attr in0 primitive_attribute :owner "primitive" :type int)]
+    (cond
+      (not found_group)
+        (error "missing_group" (str "extract_point_from_curve could not find primitive group " (text/repr group_name)))
+      (not (or distance_float distance_int))
+        (xpc_fail "distance attribute was not found or is not scalar")
+      (and from_attribute (not (or cut_float cut_int)))
+        (xpc_fail "cut value attribute was not found or is not scalar")
+      :else
+        (let* [primitives (sop/count in0 :primitives)
+               point_total (sop/count in0 :points)
+               topology (sop/topology in0)
+               vertex_points topology.vertex_points
+               offsets topology.primitive_offsets
+               kinds topology.kinds
+               selection (if (text/blank? group_name) (array/int primitives 1)
+                           (sop/group in0 :name group_name :owner "primitive"))
+               primitive_range (array/range primitives :type int)
+               distance (if distance_float (sop/attr in0 distance_attribute :owner "point" :type float)
+                          (exact (map (fn [(i : int)] (float i))
+                            (sop/attr in0 distance_attribute :owner "point" :type int))))
+               cuts (cond (equal? cut "Constant") (array/float primitives constant)
+                          (equal? cut "Current time") (array/float primitives (sop/context_time))
+                          cut_float (sop/attr in0 primitive_attribute :owner "primitive" :type float)
+                          :else (exact (map (fn [(i : int)] (float i))
+                                  (sop/attr in0 primitive_attribute :owner "primitive" :type int))))
+               positions (sop/attr in0 "P")
+               ; ---- slots: one per edge of a selected curve, plus the last point of an open one
+               firsts (exact (map (fn [(p : int)] (array/nth offsets p)) primitive_range))
+               corners (exact (map (fn [(p : int)]
+                 (int/sub (array/nth offsets (int/add p 1)) (array/nth offsets p))) primitive_range))
+               edge_counts (exact (map (fn [(p : int)]
+                 (if (int/eq (array/nth selection p) 0) 0
+                   (max 0 (int/add (int/sub (array/nth corners p) 1) (if (int/eq (array/nth kinds p) 2) 1 0)))))
+                 primitive_range))
+               slot_counts (exact (map (fn [(p : int)]
+                 (if (and (int/eq (array/nth selection p) 1) (int/eq (array/nth kinds p) 1))
+                   (int/add (array/nth edge_counts p) 1) (array/nth edge_counts p))) primitive_range))
+               slot_offsets (array/scan_sum slot_counts)
+               slot_total (array/nth slot_offsets primitives)
+               slot_range (array/range slot_total :type int)
+               slot_marks (array/scatter_add (array/slice slot_offsets 0 primitives)
+                            (array/int primitives 1) (int/add slot_total 1))
+               slot_cumulative (array/scan_sum slot_marks)
+               slot_prim (exact (map (fn [(s : int)] (int/sub (array/nth slot_cumulative (int/add s 1)) 1)) slot_range))
+               slot_local (exact (map (fn [(s : int) (p : int)] (int/sub s (array/nth slot_offsets p))) slot_range slot_prim))
+               slot_edge (exact (map (fn [(l : int) (p : int)] (if (int/lt l (array/nth edge_counts p)) 1 0))
+                           slot_local slot_prim))
+               slot_left (exact (map (fn [(s : int)]
+                 (let* [p (array/nth slot_prim s) l (array/nth slot_local s) c (array/nth corners p)]
+                   (array/nth vertex_points (int/add (array/nth firsts p)
+                     (if (int/eq (array/nth slot_edge s) 1) (int/mod l c) (int/sub c 1)))))) slot_range))
+               slot_right (exact (map (fn [(s : int)]
+                 (let* [p (array/nth slot_prim s) l (array/nth slot_local s) c (array/nth corners p)]
+                   (array/nth vertex_points (int/add (array/nth firsts p)
+                     (if (int/eq (array/nth slot_edge s) 1) (int/mod (int/add l 1) c) (int/sub c 1)))))) slot_range))
+               flags (exact (map (fn [(s : int)]
+                 (let* [a (array/nth distance (array/nth slot_left s))
+                        b (array/nth distance (array/nth slot_right s))
+                        level (array/nth cuts (array/nth slot_prim s))]
+                   (if (int/eq (array/nth slot_edge s) 1)
+                     (if (or (= a level) (or (and (< a level) (< level b)) (and (< b level) (< level a)))) 1 0)
+                     (if (= a level) 1 0)))) slot_range))
+               ; ---- refusals: polygons, non-finite cut values or distances along a selected edge
+               bad_cuts (array/sum (exact (map (fn [(p : int)]
+                 (if (and (int/eq (array/nth selection p) 1) (not (xpc_finite (array/nth cuts p)))) 1 0)) primitive_range)))
+               bad_kinds (array/sum (exact (map (fn [(p : int)]
+                 (if (and (int/eq (array/nth selection p) 1) (int/eq (array/nth kinds p) 0)) 1 0)) primitive_range)))
+               bad_distances (array/sum (exact (map (fn [(s : int)]
+                 (if (and (int/eq (array/nth slot_edge s) 1)
+                          (not (and (xpc_finite (array/nth distance (array/nth slot_left s)))
+                                    (xpc_finite (array/nth distance (array/nth slot_right s)))))) 1 0)) slot_range)))
+               ; ---- output names and clashes
+               point_names (sop/attr_names in0 point_attributes :owner "point")
+               primitive_names (if copy_primitive_attributes
+                 (sop/attr_names in0 primitive_attributes :owner "primitive") (array/text 0))
+               u_name (text/trim curve_u_attribute) n_name (text/trim number_cuts_attribute)
+               c_name (text/trim curve_number_attribute)
+               generated (fold [names (array/text 0)] [name (list u_name n_name c_name)]
+                 (if (text/blank? name) names (array/concat names (array/text 1 name))))
+               requested (array/concat (array/concat point_names primitive_names) generated)
+               clashes (fold [n 0] [name requested]
+                 (int/add n (if (int/gt (fold [k 0] [other requested] (int/add k (if (equal? name other) 1 0))) 1) 1 0)))]
+          (if (int/gt (int/add (int/add bad_cuts bad_kinds) (int/add bad_distances clashes)) 0)
+            (xpc_fail "invalid curve input")
+            (let* [picks (array/compact flags)
+                   out_count (array/count picks)
+                   out_range (array/range out_count :type int)
+                   out_prim (exact (map (fn [(s : int)] (array/nth slot_prim s)) picks))
+                   out_edge (exact (map (fn [(s : int)] (array/nth slot_edge s)) picks))
+                   out_left (exact (map (fn [(s : int)] (array/nth slot_left s)) picks))
+                   out_right (exact (map (fn [(s : int)] (array/nth slot_right s)) picks))
+                   out_weight (exact (map (fn [(s : int)]
+                     (if (int/eq (array/nth slot_edge s) 1)
+                       (xpc_weight (array/nth distance (array/nth slot_left s))
+                                   (array/nth distance (array/nth slot_right s))
+                                   (array/nth cuts (array/nth slot_prim s)))
+                       0.0)) picks))
+                   out_positions (exact (map (fn [(l : int) (r : int) (w : float)]
+                     (let* [a (array/nth positions l) b (array/nth positions r)]
+                       [(xpc_lerp a.x b.x w) (xpc_lerp a.y b.y w) (xpc_lerp a.z b.z w)]))
+                     out_left out_right out_weight))
+                   bad_positions (array/sum (exact (map (fn [(p : vec3)]
+                     (if (and (xpc_finite p.x) (and (xpc_finite p.y) (xpc_finite p.z))) 0 1)) out_positions)))]
+              (if (int/gt bad_positions 0)
+                (xpc_fail "extracted position is not representable")
+                (let* [no_points (sop/mesh :points out_positions :vertex_points (array/int 0)
+                                   :primitive_offsets (array/int 1) :kinds (array/int 0))
+                       detail_only (sop/delete_group
+                         (sop/delete_attrs in0 :point "*" :vertex "*" :primitive "*") "*" :owner "any")
+                       with_detail (sop/remap detail_only no_points :points (array/int out_count -1)
+                                     :vertices (array/int 0) :primitives (array/int 0) :positions "target")
+                       trimmed (sop/delete_group
+                         (sop/delete_attrs in0 :vertex "*" :primitive "*" :detail "*") "*" :owner "any")
+                       transfer_source (fold [g trimmed] [name (sop/attr_names in0 "*" :owner "point")]
+                         (if (fold [found false] [kept point_names] (or found (equal? kept name))) g
+                           (sop/delete_attr g (text/glob_literal name) :owner "point")))
+                       mixed (sop/remap transfer_source with_detail
+                               :point_mix {:a out_left :b out_right :t out_weight}
+                               :vertices (array/int 0) :primitives (array/int 0)
+                               :positions "target" :lead true)
+                       copied (fold [geo mixed] [name primitive_names]
+                         (xpc_copy geo in0 name out_prim))
+                       counts (array/scatter_add out_prim (array/int out_count 1) primitives)
+                       with_u (if (text/blank? u_name) copied
+                         (sop/with_attr copied u_name (exact (map (fn [(j : int)]
+                           (let* [p (array/nth out_prim j)]
+                             (if (int/eq (array/nth out_edge j) 1)
+                               (/ (+ (float (array/nth slot_local (array/nth picks j))) (array/nth out_weight j))
+                                  (float (array/nth edge_counts p)))
+                               1.0))) out_range)) :owner "point" :type float))
+                       with_n (if (text/blank? n_name) with_u
+                         (sop/with_attr with_u n_name (exact (map (fn [(p : int)] (array/nth counts p)) out_prim))
+                           :owner "point" :type int))]
+                  (if (text/blank? c_name) with_n
+                    (sop/with_attr with_n c_name out_prim :owner "point" :type int))))))))))

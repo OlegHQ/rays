@@ -76,17 +76,19 @@ let node ?(unbound_function = false) ~operation ~version ~label ~fields ~normali
       let arguments = arguments fields parameters in
       let context = Result.get_ok (Sop.Context.create ()) in
       let body, dependencies, facts = build ~label ~context inputs arguments in
-      let prepared = Atomic.make ((Sop.Context.seed context, Sop.Context.frame context), body) in
+      let prepared = Atomic.make ((Sop.Context.seed context, Sop.Context.frame context, Sop.Context.time context), body) in
       let context_seeded = Sop.Context.Dependencies.mem Seed dependencies in
       let framed = Sop.Context.Dependencies.mem Frame dependencies in
+      let timed = Sop.Context.Dependencies.mem Time dependencies in
       N.Private.make ~label ~operation ~version ~parameters:source
         ~cook_mode:facts.N.cook_mode ~dependencies ~inputs:(Array.of_list inputs)
         (fun ~node_id:_ context payloads ->
-          let (seed, frame), previous_body = Atomic.get prepared in
+          let (seed, frame, time), previous_body = Atomic.get prepared in
           let body = if (not context_seeded || seed=Sop.Context.seed context)
-              && (not framed || frame=Sop.Context.frame context) then previous_body
+              && (not framed || frame=Sop.Context.frame context)
+              && (not timed || Int64.equal (Int64.bits_of_float time) (Int64.bits_of_float (Sop.Context.time context))) then previous_body
             else let body,_,_ = build ~label ~context inputs arguments in
-              Atomic.set prepared ((Sop.Context.seed context, Sop.Context.frame context),body); body in
+              Atomic.set prepared ((Sop.Context.seed context, Sop.Context.frame context, Sop.Context.time context),body); body in
           let previous = Domain.DLS.get cooked_inputs in
           Domain.DLS.set cooked_inputs (Array.to_list (Array.mapi (fun i payload -> i,payload) payloads));
           Fun.protect ~finally:(fun () -> Domain.DLS.set cooked_inputs previous) (fun () ->

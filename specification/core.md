@@ -1387,6 +1387,10 @@ specialized to a literal before core lowering, so a node that reaches it declare
 dependency and its body is rebuilt when the cook frame changes. No JavaScript twin and no fixture
 (the web target runs `:context draw` graphs, which have `frame/index`).
 
+`sop/context_time` is the same for the cook time in seconds (`Context.time`, what native
+`extract_point_from_curve`'s Current time cut reads) and declares the Time dependency.
+
+
 ### Float attributes as planes with a cook-time width
 
 A Lisp body cannot read an attribute whose storage type is only known at cook

@@ -117,6 +117,8 @@ let specialize ?(provenance= -1) ~context ~label graph = map (fun t -> match t.W
   | W.Op {op="sop/provenance_base";_} -> {t with node=W.Lit (Param.Int_value provenance)}
   | W.Op {op="sop/context_frame";_} ->
       {t with node=W.Lit (Param.Float_value (Int64.to_float (Sop.Context.frame context)))}
+  | W.Op {op="sop/context_time";_} ->
+      {t with node=W.Lit (Param.Float_value (Sop.Context.time context))}
   | W.Op {op="sop/context_seed";args=["namespace",{node=W.Text namespace;_}];_} ->
       let seed=Operators.seed_for ~seed:(Sop.Context.seed context) ~namespace ~label in
       {t with node=W.Lit (Param.Int_value seed)}

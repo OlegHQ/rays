@@ -316,6 +316,14 @@ let context_frame : Flow.Op.t = {
   body=(fun ~live:_ ~node:_ _ -> Flow.Value.fail "E_NODE_CONTEXT" "Context frame is available inside a defnode body.");
 }
 
+let context_time : Flow.Op.t = {
+  attr with name="sop/context_time";ctx=Flow.Context.value;category="Random";
+  signature={pos=[];opt=[];rest=None;kw=[]};
+  out=(fun _ -> Flow.Ty.Float);out_args=None;shape=Flow.Op.Scalar;
+  check=(fun _ -> ());
+  body=(fun ~live:_ ~node:_ _ -> Flow.Value.fail "E_NODE_CONTEXT" "Context time is available inside a defnode body.");
+}
+
 let seed_for ~seed ~namespace ~label =
   let identity=ref 0xcbf29ce484222325L in
   String.iter (fun c -> identity:=Int64.mul (Int64.logxor !identity (Int64.of_int (Char.code c)))
@@ -503,6 +511,6 @@ let concat : Flow.Op.t = {
 }
 
 let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; adjacency; components; shortest_paths; color; chains; mesh; mesh_planes; remap; concat; attr_planes; with_planes;
-  group; group_order; group_names; group_entries; with_group; context_seed; provenance_base; context_frame;
+  group; group_order; group_names; group_entries; with_group; context_seed; provenance_base; context_frame; context_time;
   rename_attr;swap_attr;delete_attrs;rename_group;delete_group;rename_edge;delete_edge;attr_type;attr_names;attr_entries;
   glob_error;glob_rewrite_error;glob_rewrite;glob_literal;group_name_valid;group_name_forced]
