@@ -1,0 +1,104 @@
+; Whole Attribute Fade: the cook frame is (sop/context_frame), the float of Context.frame; the node
+; declares the Frame cache dependency as native does.
+(defn fade_fail :context value [(reason : text)]
+  (error "invalid_attribute_fade" "attribute_fade could not produce valid geometry"
+    :cause (str "attribute_fade [invalid_attribute_fade]: Rdk.Attribute_fade.attribute_fade: " reason)))
+; Per-point scalar from a float or int point attribute of geo, or a constant when absent or unnamed.
+(defn fade_scalar :context sop [(geo : geometry) (name : text) (label : text) (fallback : float)]
+  (cond
+    (text/blank? name) (array/float (sop/count geo :points) fallback)
+    (not (sop/has_attr geo name :owner "point")) (array/float (sop/count geo :points) fallback)
+    (sop/has_attr geo name :owner "point" :type float) (sop/attr geo name :owner "point" :type float)
+    (sop/has_attr geo name :owner "point" :type int)
+      (exact (map (fn [(i : int)] (float i)) (sop/attr geo name :owner "point" :type int)))
+    :else (fade_fail (str label " point attribute " (text/repr name) " must have scalar float or integer storage"))))
+(defn fade_reference :context sop [(geo : geometry) (points : int) (label : text)]
+  (if (int/eq (sop/count geo :points) points) true
+    (fade_fail (str label " input point count does not match target point count"))))
+
+(defnode sop/attribute_fade :label "Attribute Fade" :category ["Attribute" "Motion"]
+  :validate (and (and (and (not (text/blank? fade_attribute)) (not (equal? fade_attribute "P")))
+                      (not (and visualize (equal? fade_attribute "Cd"))))
+                 (and (and (and (ramp_ok fade_in_ramp) (ramp_ok fade_out_ramp))
+                           (and (>= fade_in 0.0) (and (>= fade_hold 0.0) (>= fade_out 0.0))))
+                      true))
+  :code "E_PARAM" :message "sop/attribute_fade: invalid fade attribute, durations or ramps"
+  [(input : geometry)
+   (start_source : geometry :required false)
+   (hold_source : geometry :required false)
+   (group : text "" :label "Point group")
+   (fade_attribute : text "fade" :label "Fade attribute")
+   (start_attribute : text "" :label "Start attribute" :folder ["Sources"])
+   (start_retime_offset : float 0.0 :label "Start offset" :folder ["Sources" "Start retime"] :min -100 :max 100)
+   (start_retime_scale : float 1.0 :label "Start scale" :folder ["Sources" "Start retime"] :min -10 :max 10)
+   (hold_scale_attribute : text "" :label "Hold scale attribute" :folder ["Sources"])
+   (frame_offset : float 0.0 :label "Frame offset" :folder ["Timing"] :min -100 :max 100)
+   (fade_in : float 2.0 :label "Fade in" :folder ["Timing"] :min 0 :max 100 :hard_min 0)
+   (fade_hold : float 0.0 :label "Hold" :folder ["Timing"] :min 0 :max 100 :hard_min 0)
+   (fade_out : float 2.0 :label "Fade out" :folder ["Timing"] :min 0 :max 100 :hard_min 0)
+   (fade_in_ramp : text "0:0,1:1" :label "Fade in ramp"
+     :description "Comma-separated position:value knots spanning 0 to 1; blank is linear.")
+   (fade_out_ramp : text "0:1,1:0" :label "Fade out ramp"
+     :description "Comma-separated position:value knots spanning 0 to 1; blank is inverse linear.")
+   (visualize : bool false :label "Visualize fade" :folder ["Output"])]
+  (let* [points (sop/count input :points)
+         group_name (text/trim group)
+         has_group (not (text/blank? group_name))
+         group_literal (text/glob_literal (if has_group group_name "x"))
+         group_found (or (not has_group) (int/gt (array/count (sop/group_names input group_literal :owner "point")) 0))
+         start_name (text/trim start_attribute)
+         hold_name (text/trim hold_scale_attribute)
+         start_geo (if (equal? start_source nil) input start_source)
+         hold_geo (if (equal? hold_source nil) input hold_source)
+         frame (sop/context_frame)
+         in_text (if (text/blank? fade_in_ramp) "0:0,1:1" fade_in_ramp)
+         out_text (if (text/blank? fade_out_ramp) "0:1,1:0" fade_out_ramp)
+         source_exists (sop/has_attr input fade_attribute :owner "point")
+         source_is_float (sop/has_attr input fade_attribute :owner "point" :type float)]
+    (cond
+      (not group_found)
+        (error "missing_group" (str "attribute_fade could not find point group " (text/repr group_name)))
+      (not (fade_reference start_geo points "start")) input
+      (not (fade_reference hold_geo points "hold-scale")) input
+      (and source_exists (not source_is_float))
+        (fade_fail (str "fade point attribute " (text/repr fade_attribute) " must have scalar float storage"))
+      :else
+        (let* [source (if source_exists (sop/attr input fade_attribute :owner "point" :type float)
+                        (array/float points 1.0))
+               starts (fade_scalar start_geo start_name "fade start" 0.0)
+               hold_scales (fade_scalar hold_geo hold_name "hold scale" 1.0)
+               selected (if has_group (sop/group input :name group_name :owner "point") (array/int points 1))
+               bad_hold (array/sum (exact (map (fn [(h : float) (s : int)] (if (and (int/eq s 1) (< h 0.0)) 1 0))
+                          hold_scales selected)))
+               timing (exact (map (fn [(start : float) (scale : float)]
+                        (let* [begin (+ (fma start start_retime_scale start_retime_offset) frame_offset)
+                               hold (* fade_hold scale)
+                               elapsed (- frame begin)
+                               after (- elapsed fade_in)]
+                          [elapsed hold (if (> fade_in 0.0) (/ elapsed fade_in) 0.0)
+                           (if (> fade_out 0.0) (/ (- after hold) fade_out) 0.0)]))
+                        starts hold_scales))
+               in_samples (ramp_apply (exact (map (fn [(q : vec4)] q.z) timing)) (ramp_positions in_text) (ramp_values in_text))
+               out_samples (ramp_apply (exact (map (fn [(q : vec4)] q.w) timing)) (ramp_positions out_text) (ramp_values out_text))
+               factors (exact (map (fn [(q : vec4) (a : float) (b : float)]
+                         (let* [after (- q.x fade_in)]
+                           (cond (< q.x 0.0) 0.0
+                                 (and (> fade_in 0.0) (<= q.x fade_in)) a
+                                 (< after q.y) 1.0
+                                 (and (> fade_out 0.0) (<= (- after q.y) fade_out)) b
+                                 :else 0.0)))
+                         timing in_samples out_samples))
+               faded (exact (map (fn [(v : float) (f : float) (s : int)] (if (int/eq s 1) (* v f) v))
+                       source factors selected))
+               changed (or (and (not source_exists) (int/gt points 0))
+                           (int/gt (array/sum (exact (map (fn [(old : float) (new : float) (s : int)]
+                                     (if (and (int/eq s 1) (not (= new old))) 1 0)) source faded selected))) 0))]
+          (cond
+            (int/gt bad_hold 0) (fade_fail "hold scale is non-finite or negative")
+            (and (not changed) (not visualize)) input
+            :else
+              (let* [written (sop/with_attr input fade_attribute faded :owner "point" :type float)]
+                (if visualize
+                  (sop/with_planes written "Cd" {:width 4 :x faded :y faded :z faded :w (array/float points 1.0)}
+                    :owner "point")
+                  written)))))))

@@ -1355,6 +1355,12 @@ without provenance (the port gate). The base is part of the node's cache source.
 The node's inputs are tagged `base + input index`, and `Lower.tags` reports them
 exactly as the former native lowering did.
 
+`sop/context_frame` is the cook frame as a float (`Int64.to_float (Context.frame context)`, what the
+native `attribute_fade` reads). Like `sop/context_seed` it is available in a defnode body only,
+specialized to a literal before core lowering, so a node that reaches it declares the Frame cache
+dependency and its body is rebuilt when the cook frame changes. No JavaScript twin and no fixture
+(the web target runs `:context draw` graphs, which have `frame/index`).
+
 ### Float attributes as planes with a cook-time width
 
 A Lisp body cannot read an attribute whose storage type is only known at cook

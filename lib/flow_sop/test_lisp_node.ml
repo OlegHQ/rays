@@ -750,3 +750,35 @@ let disabled=fst(Flow.Lisp.print(List.map disable forms))in
     check(!calls=before && Rdk_test_support.geometry_bytes actual=Rdk_test_support.geometry_bytes original)
       "untaken child/mapper executed or altered successful geometry") [false;true]) [source;unused_source];
   print_endline "Diagnostic boundaries: deferred and unused protected children cook once; raw causes, hints, trace, untaken arms and one/four/eight domains agree"
+
+(* sop/context_frame: the cook frame as a float, a Frame cache dependency, rebuilt per frame. *)
+let () =
+  let source body=Printf.sprintf {|(workspace frame_body
+    (defnode sop/frame_probe [(geo : geometry)]
+      (sop/with_attr geo "f" (array/float (sop/count geo :points) %s) :owner "point" :type float))
+    (graph g :context sop (sop/frame_probe (sop/line :points 3))))|} body in
+  let cook_at session frame node=
+    match Sop.Session.cook session ~context:(ok (Sop.Context.create ~frame ())) node with
+    | Ok output -> (match Sop.Payload.geometry output.payload with Ok g -> Rdk_test_support.geometry_bytes g | Error d -> failwith (Sop.Diagnostic.error_to_string d))
+    | Error d -> failwith (Sop.Diagnostic.error_to_string d) in
+  List.iter (fun reference ->
+    let node=lower ~reference (source "(sop/context_frame)") in
+    check (Sop.Context.Dependencies.mem Frame (Sop.Node.dependencies node))
+      "context frame lost its Frame cache dependency";
+    check (not (Sop.Context.Dependencies.mem Seed (Sop.Node.dependencies node)))
+      "context frame added a seed dependency";
+    with_session (fun session ->
+      List.iter (fun frame ->
+        let expected=cook_at session frame (lower ~reference (source (Printf.sprintf "%Ld.0" frame))) in
+        check (cook_at session frame node = expected) "context frame changed with the cook frame";
+        check (cook_at session frame node = expected) "context frame cook is not repeatable")
+        [0L; 7L; 3L; 7L]);
+    check (not (Sop.Context.Dependencies.mem Frame
+      (Sop.Node.dependencies (lower ~reference (source "1.0")))))
+      "a constant body gained a Frame dependency")
+    [false; true];
+  (match Flow_sop.Lower.workspace ~factories:Sop_catalog.Editor.factories
+    (parse "(workspace w (graph g :context sop (sop/line :points (int (sop/context_frame)))))") with
+   | Error d -> check (d.code = "E_NODE_CONTEXT") "context frame outside a body has the wrong code"
+   | Ok _ -> failwith "context frame outside a defnode body was accepted");
+  print_endline "Context frame: float cook frame, Frame dependency, rebuilt per frame, body only"

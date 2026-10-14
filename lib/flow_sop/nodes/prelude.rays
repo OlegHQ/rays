@@ -526,4 +526,48 @@
               (map (fn [(total : vec3) (n : int)]
                 (if (int/gt n 1) (* total (/ 1.0 (float n))) total)) totals incidence))
           :else (deform_area_directions geo)))
+
+  ; Ramp text "position:value,..." (Support.decode_parameter_ramp): positions lie in [0,1], start at 0,
+  ; strictly increase and end at 1. Blank text is "no knots" and is accepted here.
+  (defn ramp_part :context value [(token : text) (index : int)]
+    (let* [parts (text/split token ":")]
+      (if (int/eq (array/count parts) 2) (text/to_float (array/nth parts index)) {:value 0.0 :valid false})))
+  (defn ramp_positions :context value [(raw : text)]
+    (exact (map (fn [(token : text)] (let* [r (ramp_part token 0)] r.value)) (text/split raw ","))))
+  (defn ramp_values :context value [(raw : text)]
+    (exact (map (fn [(token : text)] (let* [r (ramp_part token 1)] r.value)) (text/split raw ","))))
+  (defn ramp_ok :context value [(raw : text)]
+    (if (text/blank? raw) true
+      (let* [tokens (text/split raw ",")
+             count (array/count tokens)
+             positions (ramp_positions raw)
+             good (exact (map (fn [(token : text)]
+               (let* [a (ramp_part token 0) b (ramp_part token 1)]
+                 (if (and a.valid (and b.valid (and (>= a.value 0.0) (<= a.value 1.0)))) 1 0))) tokens))]
+        (and (int/eq (array/sum good) count)
+          (and (int/gt count 1)
+            (and (= (array/nth positions 0) 0.0) (and (= (array/nth positions (int/sub count 1)) 1.0)
+              (int/eq (array/sum (exact (map (fn [(i : int)]
+                (if (> (array/nth positions (int/add i 1)) (array/nth positions i)) 1 0))
+                (array/range (int/sub count 1) :type int)))) (int/sub count 1)))))))))
+  ; Piecewise-linear sample of validated knots at every x of a plane (Attribute_ops ramp_sample). The
+  ; segment of each x is found by one pass per knot, so the element kernels stay loop-free.
+  (defn ramp_apply :context value [(xs : (array float)) (p : (array float)) (v : (array float))]
+    (let* [knots (array/count p)
+           count (array/count xs)
+           ; counts[e] = number of knots at or below xs[e], summed per element over a flat element x knot grid
+           flags (exact (map (fn [(i : int)]
+                   (if (<= (array/nth p (int/mod i knots)) (array/nth xs (int/div i knots))) 1 0))
+                   (array/range (int/mul count knots) :type int)))
+           lows (array/segment_sum flags (exact (map (fn [(e : int)] (int/mul e knots))
+                  (array/range (int/add count 1) :type int))))]
+      (exact (map (fn [(x : float) (found : int)]
+        (let* [step (int/sub found 1)
+               low (if (int/lt step 0) 0 (if (int/lt step (int/sub knots 2)) step (int/sub knots 2)))
+               x0 (array/nth p low) x1 (array/nth p (int/add low 1))
+               y0 (array/nth v low) y1 (array/nth v (int/add low 1))]
+          (cond (<= x 0.0) (array/nth v 0)
+                (>= x 1.0) (array/nth v (int/sub knots 1))
+                :else (fma (/ (- x x0) (- x1 x0)) (- y1 y0) y0))))
+        xs lows))))
 )

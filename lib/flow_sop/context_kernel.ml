@@ -33,7 +33,9 @@ let map ?(select=Fun.id) transform (graph:W.graph) =
     transform {t with node} in
   {graph with W.body=term graph.W.body;inputs=List.map (fun (n,ty,df)->n,ty,Option.map term df) graph.inputs}
 
-let depends ?(inputs=[]) ?(defs=[]) (graph:W.graph) =
+let context_ops=Flow.Workspace.body_context_ops
+
+let depends ?(op="sop/context_seed") ?(inputs=[]) ?(defs=[]) (graph:W.graph) =
   let defaults=List.filter_map (fun (name,_,df)->Option.bind df (fun (t:W.term)->match t.node with
     | W.Lit (Param.Bool_value b)->Some (name,Flow.Eval.Bool b)
     | Lit (Int_value n)->Some (name,Flow.Eval.Int n)
@@ -53,7 +55,7 @@ let depends ?(inputs=[]) ?(defs=[]) (graph:W.graph) =
     | Lit (Float_value f)->Some (Flow.Eval.Float f)
     | Text text->Some (Flow.Eval.Text text)
     | Ref_binding (name,[])->List.assoc_opt name bindings
-    | Op {op;args;_} when op<>"sop/context_seed" ->
+    | Op {op;args;_} when not (List.mem op context_ops) ->
         let rec values = function
           |[]->Some []
           |(key,value)::rest->Option.bind (known bindings value) (fun value->Option.map (fun rest->(key,value)::rest) (values rest)) in
@@ -104,7 +106,7 @@ let depends ?(inputs=[]) ?(defs=[]) (graph:W.graph) =
           {t with node=Nil}
       |_->t in
     ignore (map ~select (fun t -> (match t.W.node with
-      | W.Op {op="sop/context_seed";_} -> found:=true | _->()); t)
+      | W.Op {op=name;_} when name=op -> found:=true | _->()); t)
       {graph with body;inputs=[]}) in
   let bindings=inputs@defaults in
   scan bindings graph.body;
@@ -113,6 +115,8 @@ let depends ?(inputs=[]) ?(defs=[]) (graph:W.graph) =
 
 let specialize ?(provenance= -1) ~context ~label graph = map (fun t -> match t.W.node with
   | W.Op {op="sop/provenance_base";_} -> {t with node=W.Lit (Param.Int_value provenance)}
+  | W.Op {op="sop/context_frame";_} ->
+      {t with node=W.Lit (Param.Float_value (Int64.to_float (Sop.Context.frame context)))}
   | W.Op {op="sop/context_seed";args=["namespace",{node=W.Text namespace;_}];_} ->
       let seed=Operators.seed_for ~seed:(Sop.Context.seed context) ~namespace ~label in
       {t with node=W.Lit (Param.Int_value seed)}

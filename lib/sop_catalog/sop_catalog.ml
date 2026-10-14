@@ -75,7 +75,6 @@ module Point_generate_from_input = Sop.Nodes.Point_generate_from_input [@@sop.re
 module Point_replicate = Sop.Nodes.Point_replicate [@@sop.register]
 module Blend_shapes = Sop.Nodes.Blend_shapes [@@sop.register]
 module Attribute_composite = Sop.Nodes.Attribute_composite [@@sop.register]
-module Attribute_fade = Sop.Nodes.Attribute_fade [@@sop.register]
 module Attribute_copy = Sop.Nodes.Attribute_copy [@@sop.register]
 module Attribute_interpolate = Sop.Nodes.Attribute_interpolate [@@sop.register]
 module Attribute_transfer = Sop.Nodes.Attribute_transfer [@@sop.register]
