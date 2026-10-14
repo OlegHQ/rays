@@ -1,0 +1,1015 @@
+; Whole PolyWire / Sweep Circle port (Rdk.Sweep_circle.run: the legacy fast path of mesh/sweep_circle.ml
+; and the general engine curve/polywire.ml). One engine, `pw_run`, shared by both nodes.
+; Everything is whole-array: rings per curve are laid out through prefix sums, the zipper between rings
+; of different side counts is a merge of two arithmetic key sequences (sorted with array/grade), the only
+; sequential steps (arc length and parallel transport) are one `iterate` over the ring index.
+
+(defn pw_finite :context value [(x : float)] (= (- x x) 0.0))
+(defn pw_fail :context value [(reason : text)]
+  (error "invalid_geometry" "polywire could not produce valid geometry"
+    :cause (str "polywire [invalid_geometry]: " reason)))
+
+; Native `interpolate` (the delta product fuses with the sum on arm64).
+(defn pw_interp :context value [(l : float) (r : float) (w : float)]
+  (let* [d (- r l)]
+    (if (pw_finite d) (fma d w l) (fma r w (* l (- 1.0 w))))))
+
+; Native robust_length (non-finite scale stays non-finite: callers only test finiteness and <= 1e-20).
+(defn pw_rlen :context value [(dx : float) (dy : float) (dz : float)]
+  (let* [scale (max (abs dx) (max (abs dy) (abs dz)))]
+    (if (= scale 0.0) 0.0
+      (if (not (pw_finite scale)) scale
+        (let* [x (/ dx scale) y (/ dy scale) z (/ dz scale)]
+          (* scale (sqrt (fma z z (fma y y (* x x))))))))))
+
+(defn pw_nok :context value [(x : float) (y : float) (z : float)]
+  (let* [s (max (abs x) (max (abs y) (abs z)))] (and (not (= s 0.0)) (pw_finite s))))
+(defn pw_normalize :context value [(x : float) (y : float) (z : float)]
+  (let* [s (max (abs x) (max (abs y) (abs z)))]
+    (if (or (= s 0.0) (not (pw_finite s))) [0.0 0.0 0.0]
+      (let* [a (/ x s) b (/ y s) c (/ z s) l (sqrt (fma c c (fma b b (* a a))))]
+        [(/ a l) (/ b l) (/ c l)]))))
+
+(defn pw_init_frame :context value [(tv : vec3)]
+  (let* [x (abs tv.x) y (abs tv.y) z (abs tv.z)
+         a (if (and (<= x y) (<= x z)) [1.0 0.0 0.0] (if (<= y z) [0.0 1.0 0.0] [0.0 0.0 1.0]))
+         c (vec3_cross a tv)]
+    (pw_normalize c.x c.y c.z)))
+
+; Rodrigues transport of frame `fp` from tangent `tp` to `tr` (native `transport`).
+(defn pw_transport :context value [(tp : vec3) (tr : vec3) (fp : vec3)]
+  (let* [a (vec3_cross tp tr)
+         sine (sqrt (fma a.z a.z (fma a.y a.y (* a.x a.x))))
+         cosine (fma tp.z tr.z (fma tp.y tr.y (* tp.x tr.x)))]
+    (if (<= sine 1e-12)
+      (if (>= cosine 0.0) fp (pw_init_frame tr))
+      (let* [kx (/ a.x sine) ky (/ a.y sine) kz (/ a.z sine)
+             c (vec3_cross [kx ky kz] fp)
+             dot (fma kz fp.z (fma ky fp.y (* kx fp.x)))
+             s1 (- 1.0 cosine)]
+        [(fma (* kx dot) s1 (fma c.x sine (* fp.x cosine)))
+         (fma (* ky dot) s1 (fma c.y sine (* fp.y cosine)))
+         (fma (* kz dot) s1 (fma c.z sine (* fp.z cosine)))]))))
+
+;
+; Native fused-multiply-add shapes. When both products of a difference or sum read arrays directly, the
+; compiler fuses the LEFT product and rounds the right one (cross_imp, dot_imp); with plain variables it
+; fuses the right one (vec3_cross, the models used elsewhere).
+(defn pw_cross_imp :context value [(l : vec3) (r : vec3)]
+  [(fma l.y r.z (* -1.0 (* l.z r.y))) (fma l.z r.x (* -1.0 (* l.x r.z))) (fma l.x r.y (* -1.0 (* l.y r.x)))])
+(defn pw_dot_imp :context value [(a : vec3) (b : vec3)]
+  (+ (fma a.x b.x (* a.y b.y)) (* a.z b.z)))
+
+(defn pw_param :context value [(sub : int) (smp : int) (has : bool) (first : float) (last : float)]
+  (if (int/le smp 0) 0.0
+    (if (int/ge smp sub) 1.0
+      (if (not has) (/ (float smp) (float sub))
+        (if (int/eq sub 2) (* (+ first last) 0.5)
+          (+ first (/ (* (- last first) (float (int/sub smp 1))) (float (int/sub sub 2)))))))))
+
+(defn pw_wrap :context value [(v : int) (count : int)]
+  (let* [m (int/mod v count)] (if (int/lt m 0) (int/add m count) m)))
+(defn pw_addwrap :context value [(v : int) (count : int)] (if (int/ge v count) (int/sub v count) v))
+
+; ---- per primitive: sizes, closed flags, breaks, first break, edge counts ----
+(defn pw_prims :context value
+  [(tvp : (array int)) (offs : (array int)) (kinds : (array int)) (mask : (array int)) (smooth_pt : (array int))]
+  (let* [prims (int/sub (array/count offs) 1)
+         prows (array/range prims :type int)
+         n (exact (map (fn [(p : int)] (int/sub (array/nth offs (int/add p 1)) (array/nth offs p))) prows))
+         closed (exact (map (fn [(k : int)] (if (int/eq k 2) 1 0)) kinds))
+         vo (loft_owners offs)
+         vrows (array/range (array/count vo) :type int)
+         flag (exact (map (fn [(v : int) (p : int)]
+                (let* [loc (int/sub v (array/nth offs p)) np (array/nth n p)]
+                  (if (and (int/eq (array/nth mask p) 1)
+                        (and (or (int/eq (array/nth closed p) 1) (and (int/ge loc 1) (int/le loc (int/sub np 2))))
+                             (int/eq (array/nth smooth_pt (array/nth tvp v)) 0))) 1 0))) vrows vo))
+         b (array/scatter_add vo flag prims)
+         first_ns (array/segment_argmax flag offs)]
+    {:n n :closed closed :b b
+     :start (exact (map (fn [(p : int)] (max 0 (int/sub (array/nth first_ns p) (array/nth offs p)))) prows))
+     :edges (exact (map (fn [(p : int)]
+              (if (int/eq (array/nth mask p) 1) (int/add (int/sub (array/nth n p) 1) (array/nth closed p)) 0)) prows))}))
+
+; ---- per edge of the selected curves, in curve order: vertices, sample count, lead ring, ring count ----
+(defn pw_edges :context value
+  [(tvp : (array int)) (offs : (array int)) (n : (array int)) (closed : (array int)) (b : (array int))
+   (start : (array int)) (edges : (array int)) (smooth_pt : (array int)) (seg_pt : (array int))]
+  (let* [eoff (array/scan_sum edges)
+         ep (loft_owners eoff)
+         erows (array/range (array/count ep) :type int)
+         eo (exact (map (fn [(e : int) (p : int)] (int/sub e (array/nth eoff p))) erows ep))
+         el (exact (map (fn [(o : int) (p : int)]
+              (if (and (int/eq (array/nth closed p) 1) (int/gt (array/nth b p) 0))
+                (int/mod (int/add (array/nth start p) o) (array/nth n p)) o)) eo ep))
+         lvx (exact (map (fn [(l : int) (p : int)] (int/add (array/nth offs p) (int/mod l (array/nth n p)))) el ep))
+         rvx (exact (map (fn [(l : int) (p : int)]
+               (int/add (array/nth offs p) (int/mod (int/add l 1) (array/nth n p)))) el ep))
+         sub (exact (map (fn [(a : int) (c : int)]
+               (let* [l (array/nth seg_pt (array/nth tvp a)) r (array/nth seg_pt (array/nth tvp c))]
+                 (int/add (int/add (int/div l 2) (int/div r 2))
+                          (int/div (int/add (int/add (int/mod l 2) (int/mod r 2)) 1) 2)))) lvx rvx))
+         lead (exact (map (fn [(o : int) (p : int) (a : int)]
+                (if (and (or (int/eq (array/nth closed p) 0) (int/gt (array/nth b p) 0))
+                         (or (int/eq o 0) (int/eq (array/nth smooth_pt (array/nth tvp a)) 0))) 1 0)) eo ep lvx))
+         rc (exact (map (fn [(l : int) (s : int)] (int/add l s)) lead sub))]
+    {:eoff eoff :ep ep :eo eo :el el :lvx lvx :rvx rvx :sub sub :lead lead :roff (array/scan_sum rc)}))
+
+; ---- ring layout: every ring of every curve, with its edge, sample, source vertices, weight, break flag ----
+(defn pw_rings :context value
+  [(tvp : (array int)) (closed : (array int)) (b : (array int)) (edges : (array int)) (smooth_pt : (array int))
+   (eoff : (array int)) (ep : (array int)) (eo : (array int)) (el : (array int)) (lvx : (array int))
+   (rvx : (array int)) (sub : (array int)) (lead : (array int)) (roff : (array int))
+   (has : bool) (scf : (array float)) (scl : (array float)) (buckling : bool) (legacy : bool)]
+  (let* [prims (array/count closed)
+         ne (array/count lvx)
+         lpt (int_gather tvp lvx)
+         rpt (int_gather tvp rvx)
+         rn (array/nth roff ne)
+         re (loft_owners roff)
+         rrows (array/range rn :type int)
+         prows (array/range prims :type int)
+         rj (exact (map (fn [(r : int) (e : int)] (int/sub r (array/nth roff e))) rrows re))
+         rp (int_gather ep re)
+         rfirst (exact (map (fn [(p : int)] (array/nth roff (array/nth eoff p))) prows))
+         rcount (exact (map (fn [(p : int)]
+                  (int/sub (array/nth roff (array/nth eoff (int/add p 1))) (array/nth roff (array/nth eoff p)))) prows))
+         rl (exact (map (fn [(r : int) (p : int)] (int/sub r (array/nth rfirst p))) rrows rp))
+         isl (exact (map (fn [(j : int) (e : int)] (if (int/lt j (array/nth lead e)) 1 0)) rj re))
+         smp (exact (map (fn [(j : int) (e : int) (p : int)]
+               (int/sub (int/add (if (and (int/eq (array/nth closed p) 1) (int/eq (array/nth b p) 0)) 0 1) j)
+                        (array/nth lead e))) rj re rp))
+         tail (exact (map (fn [(l : int) (s : int) (e : int)]
+                (if (and legacy (and (int/eq l 0) (int/eq s (array/nth sub e)))) 1 0)) isl smp re))
+         lv (exact (map (fn [(tl : int) (e : int)]
+              (if (int/eq tl 1) (array/nth rvx e) (array/nth lvx e))) tail re))
+         rv (exact (map (fn [(l : int) (e : int)] (if (int/eq l 1) (array/nth lvx e) (array/nth rvx e))) isl re))
+         w (exact (map (fn [(r : int)]
+             (let* [e (array/nth re r) a (array/nth lvx e)]
+               (if (or (int/eq (array/nth isl r) 1) (int/eq (array/nth tail r) 1)) 0.0
+                 (pw_param (array/nth sub e) (array/nth smp r) has (array/nth scf a) (array/nth scl a))))) rrows))
+         bb (exact (map (fn [(l : int) (e : int)] (if (and (int/eq l 1) (int/gt (array/nth eo e) 0)) 1 0)) isl re))
+         jpt (exact (map (fn [(r : int)]
+               (let* [e (array/nth re r)]
+                 (if (int/eq (array/nth closed (array/nth rp r)) 1) (array/nth lpt e) (array/nth rpt e)))) rrows))
+         jsm (int_gather smooth_pt jpt)
+         jp (exact (map (fn [(r : int)]
+              (let* [e (array/nth re r) p (array/nth rp r) s (array/nth smp r)
+                     cl (int/eq (array/nth closed p) 1)
+                     split (and cl (int/gt (array/nth b p) 0))
+                     sb (array/nth sub e)
+                     c1 (and cl (and (not split) (int/eq s 0)))
+                     c2 (and (or (not cl) split)
+                             (and (int/eq s sb) (or cl (int/lt (int/add (array/nth el e) 1) (array/nth edges p)))))]
+                (if (and buckling (and (int/eq (array/nth isl r) 0)
+                      (and (or c1 c2) (not (int/eq (array/nth jsm r) 0))))) (array/nth jpt r) -1))) rrows))]
+    {:re re :rp rp :rl rl :lv lv :rv rv :w w :bb bb :jp jp :rfirst rfirst :rcount rcount :rn rn}))
+
+; ---- ring centers ----
+(defn pw_centers :context value
+  [(pos : (array vec3)) (tvp : (array int)) (lv : (array int)) (rv : (array int)) (w : (array float))]
+  (let* [lp (int_gather tvp lv) rp (int_gather tvp rv)]
+    (exact (map (fn [(a : int) (c : int) (wt : float)]
+      (let* [p (array/nth pos a) q (array/nth pos c)]
+        [(pw_interp p.x q.x wt) (pw_interp p.y q.y wt) (pw_interp p.z q.z wt)])) lp rp w))))
+
+(defn pw_same :context value [(cen : (array vec3)) (a : int) (c : int)]
+  (let* [p (array/nth cen a) q (array/nth cen c)]
+    (<= (pw_rlen (- q.x p.x) (- q.y p.y) (- q.z p.z)) 1e-20)))
+
+; ---- tangent neighbours: previous and next ring of every ring, after merging coincident rings ----
+(defn pw_links :context value
+  [(cen : (array vec3)) (rl : (array int)) (bb : (array int)) (rp : (array int)) (rfirst : (array int))
+   (rcount : (array int)) (ec : (array int)) (flags_mode : bool)]
+  (let* [rn (array/count rl)
+         rrows (array/range rn :type int)
+         last (int/sub rn 1)
+         same (exact (map (fn [(r : int)] (if (pw_same cen (max 0 (int/sub r 1)) r) 1 0)) rrows))
+         s (exact (map (fn [(r : int)]
+             (if (and flags_mode (and (int/gt (array/nth rl r) 0)
+                   (and (int/eq (array/nth bb r) 0) (int/eq (array/nth same r) 1)))) 0 1)) rrows))
+         sc (array/scan_sum s)
+         gid (exact (map (fn [(r : int)] (int/sub (array/nth sc (int/add r 1)) 1)) rrows))
+         gst (array/compact s)
+         ng (array/count gst)
+         gs (int_gather gst gid)
+         ge (exact (map (fn [(g : int)]
+              (if (int/lt (int/add g 1) ng) (int/sub (array/nth gst (min (int/add g 1) (int/sub ng 1))) 1) last)) gid))
+         bprev (exact (map (fn [(a : int)]
+                 (if (or (int/eq (array/nth rl a) 0) (int/eq (array/nth bb a) 1)) a (int/sub a 1))) gs))
+         bnext (exact (map (fn [(e : int)]
+                 (let* [p (array/nth rp e)]
+                   (if (or (int/eq (array/nth rl e) (int/sub (array/nth rcount p) 1))
+                           (int/eq (array/nth bb (min (int/add e 1) last)) 1)) e (int/add e 1)))) ge))
+         gf (exact (map (fn [(r : int)] (array/nth gid (array/nth rfirst (array/nth rp r)))) rrows))
+         gl (exact (map (fn [(r : int)]
+              (let* [p (array/nth rp r)]
+                (array/nth gid (int/sub (int/add (array/nth rfirst p) (array/nth rcount p)) 1)))) rrows))
+         sm (exact (map (fn [(r : int)]
+              (let* [p (array/nth rp r) f (array/nth rfirst p) l (int/sub (int/add f (array/nth rcount p)) 1)]
+                (if (and (int/eq (array/nth ec p) 1) (pw_same cen l f)) 1 0))) rrows))
+         ; merged: the first and the last group of a closed curve are one run through the closing seam
+         mg (exact (map (fn [(r : int)]
+              (if (and (int/eq (array/nth sm r) 1) (not (int/eq (array/nth gf r) (array/nth gl r)))) 1 0)) rrows))
+         edge (exact (map (fn [(r : int)]
+              (let* [g (array/nth gid r)] (if (or (int/eq g (array/nth gf r)) (int/eq g (array/nth gl r))) 1 0))) rrows))
+         prev (exact (map (fn [(r : int)]
+              (let* [p (array/nth rp r) f (array/nth rfirst p) l (int/sub (int/add f (array/nth rcount p)) 1)]
+                (if (int/eq (array/nth ec p) 1)
+                  (if (and (int/eq (array/nth mg r) 1) (int/eq (array/nth edge r) 1))
+                    (int/sub (array/nth gst (array/nth gl r)) 1)
+                    (if (int/eq (array/nth gid r) (array/nth gf r)) l (array/nth bprev r)))
+                  (array/nth bprev r)))) rrows))
+         next (exact (map (fn [(r : int)]
+              (let* [p (array/nth rp r) f (array/nth rfirst p)]
+                (if (int/eq (array/nth ec p) 1)
+                  (if (and (int/eq (array/nth mg r) 1) (int/eq (array/nth edge r) 1))
+                    (array/nth gst (min (int/add (array/nth gf r) 1) (int/sub ng 1)))
+                    (if (int/eq (array/nth gid r) (array/nth gl r)) f (array/nth bnext r)))
+                  (array/nth bnext r)))) rrows))
+         bad (array/sum (exact (map (fn [(r : int)]
+              (if (and flags_mode (and (int/eq (array/nth sm r) 1) (int/eq (array/nth gf r) (array/nth gl r)))) 1 0)) rrows)))]
+    {:prev prev :next next :bad bad}))
+
+; ---- tangents (and the incoming direction of the joints that must not buckle) ----
+(defn pw_tangents :context value
+  [(cen : (array vec3)) (prev : (array int)) (next : (array int)) (jp : (array int))]
+  (let* [rrows (array/range (array/count prev) :type int)
+         ilen (exact (map (fn [(r : int) (a : int) (j : int)]
+                (let* [c (array/nth cen r) p (array/nth cen a)]
+                  (if (int/ge j 0) (pw_rlen (- c.x p.x) (- c.y p.y) (- c.z p.z)) 1.0))) rrows prev jp))
+         olen (exact (map (fn [(r : int) (a : int) (j : int)]
+                (let* [c (array/nth cen r) p (array/nth cen a)]
+                  (if (int/ge j 0) (pw_rlen (- p.x c.x) (- p.y c.y) (- p.z c.z)) 1.0))) rrows next jp))
+         jin (exact (map (fn [(r : int) (a : int) (j : int)]
+               (let* [c (array/nth cen r) p (array/nth cen a) l (array/nth ilen r)]
+                 (if (int/ge j 0) [(/ (- c.x p.x) l) (/ (- c.y p.y) l) (/ (- c.z p.z) l)] [0.0 0.0 0.0])))
+               rrows prev jp))
+         tin (exact (map (fn [(r : int) (a : int) (j : int)]
+               (let* [c (array/nth cen r) p (array/nth cen a) q (array/nth cen j)]
+                 [(- q.x p.x) (- q.y p.y) (- q.z p.z)])) rrows prev next))
+         tsum (exact (map (fn [(r : int) (a : int) (j : int)]
+                (let* [c (array/nth cen r) q (array/nth cen a) i (array/nth jin r) l (array/nth olen r)]
+                  [(+ i.x (/ (- q.x c.x) l)) (+ i.y (/ (- q.y c.y) l)) (+ i.z (/ (- q.z c.z) l))])) rrows next jp))
+         pick (exact (map (fn [(j : int) (a : vec3) (b : vec3)] (if (int/ge j 0) b a)) jp tin tsum))
+         bad (array/sum (exact (map (fn [(r : int) (j : int)]
+              (let* [v (array/nth pick r) il (array/nth ilen r) ol (array/nth olen r)]
+                (if (or (not (pw_nok v.x v.y v.z))
+                        (and (int/ge j 0) (or (or (<= il 1e-20) (<= ol 1e-20))
+                                              (not (and (pw_finite il) (pw_finite ol)))))) 1 0))) rrows jp)))]
+    {:tg (exact (map (fn [(v : vec3)] (pw_normalize v.x v.y v.z)) pick)) :jin jin :bad bad}))
+
+; ---- ring-to-ring lengths and the closing length of closed curves ----
+(defn pw_lengths :context value
+  [(cen : (array vec3)) (rl : (array int)) (bb : (array int)) (rfirst : (array int)) (rcount : (array int))
+   (ec : (array int)) (has : bool)]
+  (let* [rrows (array/range (array/count rl) :type int)
+         prows (array/range (array/count ec) :type int)
+         seglen (exact (map (fn [(r : int) (l : int)]
+                  (let* [c (array/nth cen r) p (array/nth cen (max 0 (int/sub r 1)))]
+                    (if (int/gt l 0) (pw_rlen (- c.x p.x) (- c.y p.y) (- c.z p.z)) 0.0))) rrows rl))
+         bad (array/sum (exact (map (fn [(l : int) (x : float) (k : int)]
+               (if (and (int/gt l 0)
+                        (or (not (pw_finite x)) (and (not has) (and (int/eq k 0) (<= x 1e-20))))) 1 0)) rl seglen bb)))
+         closing (exact (map (fn [(p : int)]
+                   (if (int/eq (array/nth ec p) 1)
+                     (let* [f (array/nth cen (array/nth rfirst p))
+                            l (array/nth cen (int/sub (int/add (array/nth rfirst p) (array/nth rcount p)) 1))]
+                       (pw_rlen (- f.x l.x) (- f.y l.y) (- f.z l.z)))
+                     0.0)) prows))
+         cbad (array/sum (exact (map (fn [(x : float) (e : int)]
+                (if (and (int/eq e 1) (or (not (pw_finite x)) (and (not has) (<= x 1e-20)))) 1 0)) closing ec)))]
+    {:seglen seglen :closing closing :bad (int/add bad cbad)}))
+
+; ---- arc length and parallel transport: the only sequential part, one ring of every curve per pass ----
+(defn pw_fin :context value [(x : float)] (if (pw_finite x) x 0.0))
+
+; pw_transport over arrays, in small kernel stages; `force` 1 starts a fresh frame (initialize_frame).
+(defn pw_trans_arr :context value
+  [(tp : (array vec3)) (tr : (array vec3)) (fp : (array vec3)) (force : (array int))]
+  (let* [arows (array/range (array/count tp) :type int)
+         ini (exact (map (fn [(v : vec3)] (pw_init_frame v)) tr))
+         av (exact (map (fn [(u : vec3) (v : vec3)] (pw_cross_imp u v)) tp tr))
+         sine (exact (map (fn [(v : vec3)] (sqrt (fma v.z v.z (fma v.y v.y (* v.x v.x))))) av))
+         cosine (exact (map (fn [(u : vec3) (v : vec3)] (pw_dot_imp u v)) tp tr))
+         kk (exact (map (fn [(v : vec3) (sn : float)] [(/ v.x sn) (/ v.y sn) (/ v.z sn)]) av sine))
+         cc (exact (map (fn [(u : vec3) (v : vec3)] (vec3_cross u v)) kk fp))
+         dd (exact (map (fn [(u : vec3) (v : vec3)] (fma u.z v.z (fma u.y v.y (* u.x v.x)))) kk fp))
+         rot (exact (map (fn [(i : int)]
+               (let* [kv (array/nth kk i) cv (array/nth cc i) d (array/nth dd i) f (array/nth fp i)
+                      sn (array/nth sine i) co (array/nth cosine i) s1 (- 1.0 co)]
+                 [(fma (* kv.x d) s1 (fma cv.x sn (* f.x co)))
+                  (fma (* kv.y d) s1 (fma cv.y sn (* f.y co)))
+                  (fma (* kv.z d) s1 (fma cv.z sn (* f.z co)))])) arows))]
+    (exact (map (fn [(i : int)]
+      (let* [sn (array/nth sine i) co (array/nth cosine i)
+             v (if (int/eq (array/nth force i) 1) (array/nth ini i)
+                 (if (<= sn 1e-12) (if (>= co 0.0) (array/nth fp i) (array/nth ini i)) (array/nth rot i)))]
+        [(pw_fin v.x) (pw_fin v.y) (pw_fin v.z)])) arows))))
+
+; ---- arc length and parallel transport: the only sequential part, one ring of every curve per pass ----
+(defn pw_seq :context value
+  [(tg : (array vec3)) (bb : (array int)) (seglen : (array float)) (rfirst : (array int)) (rcount : (array int))
+   (steps : int)]
+  (let* [rn (array/count tg)]
+    (iterate steps {:cum (array/float rn 0.0) :fr (array/vec3 rn) :k 0}
+      (fn [(c : {:cum (array float) :fr (array vec3) :k int})]
+        (let* [ac (array/compact (exact (map (fn [(n : int)] (if (int/gt n c.k) 1 0)) rcount)))
+               ar (exact (map (fn [(p : int)] (int/add (array/nth rfirst p) c.k)) ac))
+               pr (exact (map (fn [(r : int)] (max 0 (int/sub r 1))) ar))
+               arows (array/range (array/count ar) :type int)
+               res (pw_trans_arr (int_gather_v tg pr) (int_gather_v tg ar) (int_gather_v c.fr pr)
+                     (exact (map (fn [(r : int)] (if (or (int/eq c.k 0) (int/eq (array/nth bb r) 1)) 1 0)) ar)))
+               cumv (exact (map (fn [(i : int)]
+                      (if (int/eq c.k 0) 0.0
+                        (pw_fin (+ (array/nth c.cum (array/nth pr i)) (array/nth seglen (array/nth ar i)))))) arows))]
+          {:cum (exact (map (fn [(x : float) (y : float)] (+ x y)) c.cum (array/scatter_add ar cumv rn)))
+           :fr (exact (map (fn [(u : vec3) (v : vec3)] [(+ u.x v.x) (+ u.y v.y) (+ u.z v.z)])
+                 c.fr (array/scatter_add ar res rn)))
+           :k (int/add c.k 1)})))))
+
+(defn int_gather_v :context value [(source : (array vec3)) (index : (array int))]
+  (exact (map (fn [(at : int)] (array/nth source at)) index)))
+
+; ---- frames: closing roll of closed curves distributed by arc length, or frames from an up vector ----
+(defn pw_totals :context value
+  [(cum : (array float)) (closing : (array float)) (rfirst : (array int)) (rcount : (array int))]
+  (exact (map (fn [(p : int)]
+    (if (int/gt (array/nth rcount p) 0)
+      (+ (array/nth cum (int/sub (int/add (array/nth rfirst p) (array/nth rcount p)) 1)) (array/nth closing p))
+      0.0)) (array/range (array/count rfirst) :type int))))
+
+(defn pw_roll :context value
+  [(tg : (array vec3)) (fr : (array vec3)) (cum : (array float)) (rl : (array int)) (rp : (array int))
+   (rfirst : (array int)) (rcount : (array int)) (ec : (array int)) (total : (array float))]
+  (let* [rn (array/count rl)
+         prows (array/range (array/count ec) :type int)
+         fi (exact (map (fn [(p : int)] (max 0 (min (array/nth rfirst p) (int/sub rn 1)))) prows))
+         li (exact (map (fn [(p : int)]
+              (max 0 (min (int/sub (int/add (array/nth rfirst p) (array/nth rcount p)) 1) (int/sub rn 1)))) prows))
+         saved (int_gather_v fr fi)
+         t0 (int_gather_v tg fi)
+         cl (pw_trans_arr (int_gather_v tg li) t0 (int_gather_v fr li) (array/int (array/count ec) 0))
+         cv (exact (map (fn [(u : vec3) (v : vec3)] (vec3_cross u v)) cl saved))
+         corr (exact (map (fn [(i : int)]
+                (let* [t1 (array/nth t0 i) c (array/nth cv i) a (array/nth cl i) b (array/nth saved i)]
+                  (if (int/eq (array/nth ec i) 1)
+                    (atan2 (pw_dot_imp t1 c)
+                           (fma a.z b.z (fma a.y b.y (* a.x b.x))))
+                    0.0))) prows))
+         ang (exact (map (fn [(r : int) (l : int) (p : int)]
+               (if (and (int/eq (array/nth ec p) 1) (int/gt l 0))
+                 (/ (* (array/nth corr p) (array/nth cum r)) (array/nth total p)) 0.0))
+               (array/range rn :type int) rl rp))
+         rot (exact (map (fn [(r : int) (an : float)]
+               (let* [cosine (cos an) sine (sin an) t1 (array/nth tg r) v (array/nth fr r) c (vec3_cross t1 v)]
+                 [(fma c.x sine (* v.x cosine)) (fma c.y sine (* v.y cosine)) (fma c.z sine (* v.z cosine))]))
+               (array/range rn :type int) ang))]
+    (exact (map (fn [(r : int) (l : int) (p : int)]
+      (if (and (int/eq (array/nth ec p) 1) (int/gt l 0)) (array/nth rot r) (array/nth fr r)))
+      (array/range rn :type int) rl rp))))
+
+(defn pw_upframes :context value [(tg : (array vec3)) (up : (array vec3))]
+  (exact (map (fn [(t0 : vec3) (u : vec3)]
+    (let* [proj (fma u.z t0.z (fma u.y t0.y (* u.x t0.x)))]
+      (pw_normalize (fma (- 0.0 proj) t0.x u.x) (fma (- 0.0 proj) t0.y u.y) (fma (- 0.0 proj) t0.z u.z)))) tg up)))
+
+(defn pw_upbad :context value [(tg : (array vec3)) (up : (array vec3))]
+  (array/sum (exact (map (fn [(t0 : vec3) (u : vec3)]
+    (let* [proj (fma u.z t0.z (fma u.y t0.y (* u.x t0.x)))]
+      (if (pw_nok (fma (- 0.0 proj) t0.x u.x) (fma (- 0.0 proj) t0.y u.y) (fma (- 0.0 proj) t0.z u.z)) 0 1))) tg up))))
+
+; ---- the points of every ring ----
+(defn pw_ringpts :context value
+  [(rpo : (array int)) (dv : (array int)) (cen : (array vec3)) (tg : (array vec3)) (fr : (array vec3))
+   (seam : (array int)) (rrad : (array float)) (jp : (array int)) (jin : (array vec3)) (jlim : (array float))]
+  (let* [wp (array/nth rpo (array/count dv))
+         rrows (array/range (array/count dv) :type int)
+         own (loft_owners rpo)
+         qrows (array/range wp :type int)
+         bv (exact (map (fn [(u : vec3) (v : vec3)] (pw_cross_imp u v)) tg fr))
+         bn (exact (map (fn [(v : vec3)] (pw_normalize v.x v.y v.z)) bv))
+         ang (exact (map (fn [(q : int) (r : int)]
+               (let* [count (array/nth dv r)
+                      profile (pw_addwrap (int/add (int/sub q (array/nth rpo r)) (array/nth seam r)) count)]
+                 (/ (* 6.283185307179586 (float profile)) (float count)))) qrows own))
+         cs (exact (map (fn [(an : float)] (cos an)) ang))
+         sn (exact (map (fn [(an : float)] (sin an)) ang))
+         nrm (exact (map (fn [(q : int) (r : int)]
+               (let* [f (array/nth fr r) b (array/nth bn r) cosine (array/nth cs q) sine (array/nth sn q)]
+                 [(fma b.x sine (* f.x cosine)) (fma b.y sine (* f.y cosine)) (fma b.z sine (* f.z cosine))]))
+               qrows own))
+         dots (exact (map (fn [(nv : vec3) (r : int)]
+                (let* [j (array/nth jin r)] (pw_dot_imp nv j))) nrm own))
+         scl (exact (map (fn [(dt : float) (r : int)]
+               (let* [lim (array/nth jlim r) den (max 0.0 (fma (- 0.0 dt) dt 1.0))
+                      ideal (if (<= den 1e-24) lim (/ 1.0 (sqrt den)))
+                      js (if (int/ge (array/nth jp r) 0) (min lim (max 1.0 ideal)) 1.0)]
+                 (* (array/nth rrad r) js))) dots own))
+         pos (exact (map (fn [(nv : vec3) (sr : float) (r : int)]
+               (let* [c (array/nth cen r)]
+                 [(fma sr nv.x c.x) (fma sr nv.y c.y) (fma sr nv.z c.z)])) nrm scl own))
+         badframe (array/sum (exact (map (fn [(v : vec3)] (if (pw_nok v.x v.y v.z) 0 1)) bv)))
+         badpos (array/sum (exact (map (fn [(v : vec3)]
+                  (if (and (pw_finite v.x) (and (pw_finite v.y) (pw_finite v.z))) 0 1)) pos)))]
+    {:pos pos :nrm nrm :bad (int/add badframe badpos)}))
+
+; ---- the zipper between the rings of a transition: a merge of the side keys (i+1)/a and (j+1)/b ----
+(defn pw_gcd :context value [(a : (array int)) (b : (array int))]
+  (let* [fin (iterate 40 {:x a :y b}
+          (fn [(c : {:x (array int) :y (array int)})]
+            {:x (exact (map (fn [(x : int) (y : int)] (if (int/eq y 0) x y)) c.x c.y))
+             :y (exact (map (fn [(x : int) (y : int)] (if (int/eq y 0) 0 (int/mod x y))) c.x c.y))})
+          :until (fn [(p : {:x (array int) :y (array int)}) (n : {:x (array int) :y (array int)})]
+                   (int/eq (array/sum n.y) 0)))]
+    fin.x))
+
+; Faces of every transition in order: transition, side counters (i, j) before the face and its kind
+; (0 quad, 1 triangle advancing the current ring, 2 triangle advancing the next ring).
+(defn pw_faces :context value [(a : (array int)) (b : (array int))]
+  (let* [g (pw_gcd a b)
+         ag (exact (map (fn [(x : int) (d : int)] (int/div x d)) a g))
+         bg (exact (map (fn [(x : int) (d : int)] (int/div x d)) b g))
+         evn (exact (map (fn [(x : int) (y : int)] (int/add x y)) a b))
+         eoff (array/scan_sum evn)
+         eown (loft_owners eoff)
+         key (exact (map (fn [(e : int) (tt : int)]
+               (let* [k (int/sub e (array/nth eoff tt)) x (array/nth a tt)]
+                 (int/add (int/mul tt 33554432)
+                   (if (int/lt k x) (int/mul (int/add k 1) (array/nth bg tt))
+                     (int/mul (int/add (int/sub k x) 1) (array/nth ag tt)))))) (array/range (array/count eown) :type int) eown))
+         order (array/grade key)
+         skey (int_gather key order)
+         firsts (exact (map (fn [(e : int)]
+                  (if (or (int/eq e 0) (not (int/eq (array/nth skey e) (array/nth skey (max 0 (int/sub e 1)))))) 1 0))
+                  (array/range (array/count skey) :type int)))
+         picks (array/compact firsts)
+         ft (exact (map (fn [(e : int)] (int/div (array/nth skey e) 33554432)) picks))
+         kk (exact (map (fn [(e : int)] (int/mod (array/nth skey e) 33554432)) picks))]
+    {:ft ft
+     :fi (exact (map (fn [(k : int) (tt : int)] (int/div (int/sub k 1) (array/nth bg tt))) kk ft))
+     :fj (exact (map (fn [(k : int) (tt : int)] (int/div (int/sub k 1) (array/nth ag tt))) kk ft))
+     :kind (exact (map (fn [(k : int) (tt : int)]
+             (let* [adva (int/eq (int/mod k (array/nth bg tt)) 0) advb (int/eq (int/mod k (array/nth ag tt)) 0)]
+               (if (and adva advb) 0 (if adva 1 2)))) kk ft))}))
+
+(defn pw_cnext :context value [(kind : int) (k : int)]
+  (if (int/eq kind 0) (if (int/ge k 2) 1 0) (if (int/eq kind 1) (if (int/eq k 2) 1 0) (if (int/ge k 1) 1 0))))
+(defn pw_craw :context value [(kind : int) (k : int) (i : int) (j : int)]
+  (if (int/eq kind 0) (if (int/lt k 2) (int/add i k) (int/sub (int/add j 3) k))
+    (if (int/eq kind 1) (if (int/lt k 2) (int/add i k) j)
+      (if (int/eq k 0) i (int/sub (int/add j 2) k)))))
+
+; V at the two rings of every transition.
+(defn pw_tv :context value
+  [(tcur : (array int)) (tnext : (array int)) (tsrc : (array int)) (tclose : (array int))
+   (lv : (array int)) (rv : (array int)) (w : (array float)) (cum : (array float)) (total : (array float))
+   (rp : (array int)) (ec : (array int)) (rfirst : (array int)) (tvp : (array int))
+   (has_v : bool) (vv : (array float)) (need : bool) (ev0 : (array float)) (ev1 : (array float))]
+  (let* [rows (array/range (array/count tcur) :type int)
+         v0 (exact (map (fn [(tt : int) (c : int) (x : int)]
+              (let* [p (array/nth rp c) e0 (array/nth ev0 x) e1 (array/nth ev1 x)
+                     t0 (if (int/eq (array/nth tclose tt) 1) (array/nth w c)
+                          (if (int/eq (array/nth lv c) x) (array/nth w c) 0.0))]
+                (if has_v (pw_interp (array/nth vv (array/nth tvp (array/nth lv c))) (array/nth vv (array/nth tvp (array/nth rv c))) (array/nth w c))
+                  (if need (+ e0 (* (- e1 e0) t0)) (/ (array/nth cum c) (array/nth total p)))))) rows tcur tsrc))
+         v1 (exact (map (fn [(tt : int) (n : int) (x : int)]
+              (let* [p (array/nth rp n) e0 (array/nth ev0 x) e1 (array/nth ev1 x)
+                     t1 (if (int/eq (array/nth tclose tt) 1) 1.0 (array/nth w n))]
+                (if has_v (pw_interp (array/nth vv (array/nth tvp (array/nth lv n))) (array/nth vv (array/nth tvp (array/nth rv n))) (array/nth w n))
+                  (if need (+ e0 (* (- e1 e0) t1))
+                    (if (and (int/eq (array/nth ec p) 1) (int/eq n (array/nth rfirst p))) 1.0
+                      (/ (array/nth cum n) (array/nth total p))))))) rows tnext tsrc))]
+    {:v0 v0 :v1 v1}))
+
+; ---- output primitives: retained curves, zipper faces and caps, in native order ----
+(defn pw_outlayout :context value
+  [(mask : (array int)) (n : (array int)) (closed : (array int)) (ftp : (array int)) (fsz : (array int))
+   (dv : (array int)) (rfirst : (array int)) (rcount : (array int)) (caps : bool) (legacy : bool)]
+  (let* [prims (array/count mask)
+         prows (array/range prims :type int)
+         retained (array/compact (exact (map (fn [(m : int)] (int/sub 1 m)) mask)))
+         cp (array/compact (exact (map (fn [(p : int)]
+              (if (and caps (and (int/eq (array/nth mask p) 1) (int/eq (array/nth closed p) 0))) 1 0)) prows)))
+         na (array/count retained)
+         nb (array/count fsz)
+         nc (int/mul 2 (array/count cp))
+         cc (array/concat (array/int na 0) (array/concat (array/int nb 1) (array/int nc 2)))
+         cop (array/concat retained (array/concat ftp
+              (exact (map (fn [(c : int)] (array/nth cp (int/div c 2))) (array/range nc :type int)))))
+         caux (array/concat (array/int na 0) (array/concat (array/range nb :type int)
+              (exact (map (fn [(c : int)] (int/mod c 2)) (array/range nc :type int)))))
+         key (exact (map (fn [(k : int) (p : int)]
+               (let* [capped (if (int/eq k 2) 1 0)]
+                 (if legacy (int/add (int/mul capped (int/add prims 1)) p) (int/add (int/mul p 2) capped)))) cc cop))
+         ord (array/grade key)
+         scc (int_gather cc ord) sop (int_gather cop ord) saux (int_gather caux ord)
+         osz (exact (map (fn [(k : int) (p : int) (a : int)]
+               (if (int/eq k 0) (array/nth n p)
+                 (if (int/eq k 1) (array/nth fsz a)
+                   (array/nth dv (if (int/eq a 0) (array/nth rfirst p)
+                     (int/sub (int/add (array/nth rfirst p) (array/nth rcount p)) 1)))))) scc sop saux))]
+    {:cc scc :op sop :aux saux :osz osz :poff (array/scan_sum osz)}))
+
+; ---- output vertices: the ring and side (or source vertex) of every corner, with U and V ----
+(defn pw_corners :context value
+  [(poff : (array int)) (scc : (array int)) (sop : (array int)) (saux : (array int)) (offs : (array int))
+   (ftr : (array int)) (fi : (array int)) (fj : (array int)) (fkind : (array int))
+   (tcur : (array int)) (tnext : (array int)) (tsrc : (array int))
+   (dv : (array int)) (lv : (array int)) (rfirst : (array int)) (rcount : (array int)) (seam : (array int))
+   (segshift : (array int)) (v0t : (array float)) (v1t : (array float))
+   (eu0 : (array float)) (eu1 : (array float)) (ev0 : (array float)) (ev1 : (array float)) (custom_u : bool)]
+  (let* [vo (loft_owners poff)
+         urows (array/range (array/count vo) :type int)
+         vk (exact (map (fn [(u : int) (j : int)] (int/sub u (array/nth poff j))) urows vo))
+         ; the ring of the corner (-1 for a retained vertex) and the raw side before the segment shift
+         vring (exact (map (fn [(j : int) (k : int)]
+                 (let* [c (array/nth scc j) p (array/nth sop j) a (array/nth saux j)]
+                   (if (int/eq c 0) -1
+                     (if (int/eq c 1)
+                       (let* [tt (array/nth ftr a)]
+                         (if (int/eq (pw_cnext (array/nth fkind a) k) 1) (array/nth tnext tt) (array/nth tcur tt)))
+                       (if (int/eq a 0) (array/nth rfirst p)
+                         (int/sub (int/add (array/nth rfirst p) (array/nth rcount p)) 1)))))) vo vk))
+         vfk (exact (map (fn [(j : int)] (if (int/eq (array/nth scc j) 1) (array/nth fkind (array/nth saux j)) 0)) vo))
+         vfi (exact (map (fn [(j : int)] (if (int/eq (array/nth scc j) 1) (array/nth fi (array/nth saux j)) 0)) vo))
+         vfj (exact (map (fn [(j : int)] (if (int/eq (array/nth scc j) 1) (array/nth fj (array/nth saux j)) 0)) vo))
+         vcap (exact (map (fn [(j : int) (k : int) (r : int)]
+                (if (int/eq (array/nth scc j) 2)
+                  (if (int/eq (array/nth saux j) 0) (int/sub (int/sub (array/nth dv r) 1) k) k) 0)) vo vk vring))
+         vraw (exact (map (fn [(u : int)]
+                (let* [c (array/nth scc (array/nth vo u))]
+                  (if (int/eq c 1) (pw_craw (array/nth vfk u) (array/nth vk u) (array/nth vfi u) (array/nth vfj u))
+                    (if (int/eq c 2) (array/nth vcap u) 0)))) urows))
+         vsrc (exact (map (fn [(j : int) (k : int)]
+                (if (int/eq (array/nth scc j) 0) (int/add (array/nth offs (array/nth sop j)) k) -1)) vo vk))
+         ; the transition that owns the corner's face (retained: 0, caps: unused)
+         vt (exact (map (fn [(j : int)]
+              (if (int/eq (array/nth scc j) 1) (array/nth ftr (array/nth saux j)) 0)) vo))
+         vedge (exact (map (fn [(j : int) (r : int) (tt : int)]
+                 (if (int/eq (array/nth scc j) 1) (array/nth tsrc tt) (if (int/eq (array/nth scc j) 2) (array/nth lv r) 0)))
+                 vo vring vt))
+         vside (exact (map (fn [(r : int) (raw : int) (e : int)]
+                 (if (int/lt r 0) 0
+                   (let* [cnt (array/nth dv r) shift (pw_wrap (array/nth segshift e) cnt)]
+                     (pw_addwrap (int/add (pw_wrap raw cnt) shift) cnt)))) vring vraw vedge))
+         vang (exact (map (fn [(j : int) (r : int) (raw : int)]
+                (if (int/eq (array/nth scc j) 2)
+                  (let* [cnt (array/nth dv r)]
+                    (/ (* 6.283185307179586 (float (pw_addwrap (int/add raw (array/nth seam r)) cnt))) (float cnt)))
+                  0.0)) vo vring vraw))
+         vfrac (exact (map (fn [(u : int)]
+                 (let* [j (array/nth vo u) r (array/nth vring u)]
+                   (if (int/eq (array/nth scc j) 1) (/ (float (array/nth vraw u)) (float (array/nth dv r))) 0.0))) urows))
+         vu (exact (map (fn [(u : int)]
+              (let* [c (array/nth scc (array/nth vo u)) e (array/nth vedge u) f (array/nth vfrac u)]
+                (if (int/eq c 1) (if custom_u (pw_interp (array/nth eu0 e) (array/nth eu1 e) f) f)
+                  (if (int/eq c 2)
+                    (fma (- (array/nth eu1 e) (array/nth eu0 e)) (fma 0.5 (cos (array/nth vang u)) 0.5) (array/nth eu0 e))
+                    0.0)))) urows))
+         vv (exact (map (fn [(u : int)]
+              (let* [j (array/nth vo u) c (array/nth scc j) e (array/nth vedge u) tt (array/nth vt u)]
+                (if (int/eq c 1)
+                  (if (int/eq (pw_cnext (array/nth fkind (array/nth saux j)) (array/nth vk u)) 1)
+                    (array/nth v1t tt) (array/nth v0t tt))
+                  (if (int/eq c 2)
+                    (fma (- (array/nth ev1 e) (array/nth ev0 e)) (fma 0.5 (sin (array/nth vang u)) 0.5) (array/nth ev0 e))
+                    0.0)))) urows))]
+    {:vo vo :vk vk :vring vring :vsrc vsrc :vside vside :vu vu :vv vv}))
+
+; ---- optional named attributes: an array (the neutral fill when the name is blank) and a missing count ----
+(defn pw_m_pf :context sop [(geo : geometry) (name : text)]
+  (if (text/blank? name) 0 (if (sop/has_attr geo name :owner "point" :type float) 0 1)))
+(defn pw_m_pi :context sop [(geo : geometry) (name : text)]
+  (if (text/blank? name) 0 (if (sop/has_attr geo name :owner "point" :type int) 0 1)))
+(defn pw_m_pv :context sop [(geo : geometry) (name : text)]
+  (if (text/blank? name) 0 (if (sop/has_attr geo name :owner "point" :type vec3) 0 1)))
+(defn pw_m_vi :context sop [(geo : geometry) (name : text)]
+  (if (text/blank? name) 0 (if (sop/has_attr geo name :owner "vertex" :type int) 0 1)))
+(defn pw_m_v2 :context sop [(geo : geometry) (name : text)]
+  (if (text/blank? name) 0 (if (sop/has_attr geo name :owner "vertex" :type vec2) 0 1)))
+(defn pw_m_v4 :context sop [(geo : geometry) (name : text)]
+  (if (text/blank? name) 0 (if (sop/has_attr geo name :owner "vertex" :type vec4) 0 1)))
+(defn pw_a_pf :context sop [(geo : geometry) (name : text) (fill : float)]
+  (if (if (text/blank? name) false (sop/has_attr geo name :owner "point" :type float))
+    (sop/attr geo name :owner "point" :type float) (array/float (sop/count geo :points) fill)))
+(defn pw_a_pi :context sop [(geo : geometry) (name : text) (fill : int)]
+  (if (if (text/blank? name) false (sop/has_attr geo name :owner "point" :type int))
+    (sop/attr geo name :owner "point" :type int) (array/int (sop/count geo :points) fill)))
+(defn pw_a_pv :context sop [(geo : geometry) (name : text)]
+  (if (if (text/blank? name) false (sop/has_attr geo name :owner "point" :type vec3))
+    (sop/attr geo name :owner "point" :type vec3) (array/vec3 (sop/count geo :points))))
+(defn pw_a_vi :context sop [(geo : geometry) (name : text)]
+  (if (if (text/blank? name) false (sop/has_attr geo name :owner "vertex" :type int))
+    (sop/attr geo name :owner "vertex" :type int) (array/int (sop/count geo :vertices) 0)))
+(defn pw_a_v2 :context sop [(geo : geometry) (name : text) (comp : int) (fill : float)]
+  (if (if (text/blank? name) false (sop/has_attr geo name :owner "vertex" :type vec2))
+    (exact (map (fn [(v : vec2)] (if (int/eq comp 0) v.x v.y)) (sop/attr geo name :owner "vertex" :type vec2)))
+    (array/float (sop/count geo :vertices) fill)))
+(defn pw_a_v4 :context sop [(geo : geometry) (name : text) (comp : int) (fill : float)]
+  (if (if (text/blank? name) false (sop/has_attr geo name :owner "vertex" :type vec4))
+    (exact (map (fn [(v : vec4)] (if (int/eq comp 0) v.x (if (int/eq comp 1) v.y (if (int/eq comp 2) v.z v.w))))
+      (sop/attr geo name :owner "vertex" :type vec4)))
+    (array/float (sop/count geo :vertices) fill)))
+
+; ---- the legacy fast path of Sweep_circle.run (no group, one segment, defaults of every joint/UV option) ----
+(defn pw_legacy :context value
+  [(group : text) (divisions_attribute : text) (segments : int) (segments_attribute : text) (use_segment_scales : bool)
+   (segment_scales_attribute : text) (buckling : bool) (mjs_attribute : text) (generate_uv : bool)
+   (smooth_point : bool) (smooth_attribute : text) (use_max_valence : bool) (segment_seam_attribute : text)
+   (use_u_range : bool) (use_v_range : bool) (uv_range_attribute : text)]
+  (cond
+    (not (and (text/blank? group) (and (text/blank? divisions_attribute) (int/eq segments 1)))) false
+    (not (and (text/blank? segments_attribute) (and (not use_segment_scales) (text/blank? segment_scales_attribute)))) false
+    (not (and (not buckling) (and (text/blank? mjs_attribute) generate_uv))) false
+    (not (and smooth_point (and (text/blank? smooth_attribute) (not use_max_valence)))) false
+    (not (and (text/blank? segment_seam_attribute) (and (not use_u_range) (and (not use_v_range) (text/blank? uv_range_attribute))))) false
+    :else true))
+
+; Count of points that violate `bad` on the referenced points.
+(defn pw_count_bad_f :context value [(vals : (array float)) (rf : (array int)) (mode : int)]
+  (array/sum (exact (map (fn [(x : float) (r : int)]
+    (if (int/eq r 1)
+      (if (int/eq mode 0) (if (or (not (pw_finite x)) (< x 0.0)) 1 0)
+        (if (int/eq mode 1) (if (pw_finite x) 0 1)
+          (if (or (not (pw_finite x)) (< x 1.0)) 1 0)))
+      0)) vals rf))))
+(defn pw_count_bad_i :context value [(vals : (array int)) (rf : (array int)) (lo : int) (hi : int)]
+  (array/sum (exact (map (fn [(x : int) (r : int)] (if (and (int/eq r 1) (or (int/lt x lo) (int/gt x hi))) 1 0)) vals rf))))
+
+; ---- inputs: selection, attribute arrays and every refusal that does not need the ring layout ----
+(defn pw_prep :context sop
+  [(in0 : geometry) (group : text) (use_sides : bool) (sides : int) (divisions_attribute : text)
+   (segments : int) (segments_attribute : text) (use_segment_scales : bool) (first_segment_scale : float)
+   (last_segment_scale : float) (segment_scales_attribute : text) (buckling : bool)
+   (maximum_joint_scale : float) (maximum_joint_scale_attribute : text) (smooth_point : bool)
+   (smooth_attribute : text) (scale_attribute : text) (seam_attribute : text) (segment_seam_attribute : text)
+   (v_attribute : text) (up_attribute : text) (generate_uv : bool) (use_u_range : bool) (u_min : float)
+   (u_max : float) (use_v_range : bool) (v_min : float) (v_max : float) (uv_range_attribute : text)
+   (legacy : bool)]
+  (let* [gname (text/trim group)
+         grp_ok (or (text/blank? gname)
+                  (fold [found false] [name (sop/group_names in0 "" :owner "primitive")] (or found (equal? name gname))))
+         topology (sop/topology in0)
+         tvp topology.vertex_points offs topology.primitive_offsets kinds topology.kinds
+         prims (sop/count in0 :primitives)
+         points (sop/count in0 :points)
+         verts (sop/count in0 :vertices)
+         mask (if (text/blank? gname) (array/int prims 1) (sop/group in0 :name gname :owner "primitive"))
+         vo (loft_owners offs)
+         vsel (exact (map (fn [(p : int)] (array/nth mask p)) vo))
+         refsel (array/scatter_add tvp vsel points)
+         rfm (exact (map (fn [(c : int)] (if (or legacy (int/gt c 0)) 1 0)) refsel))
+         side_count (if use_sides sides 12)
+         polys (array/sum (exact (map (fn [(m : int) (k : int)] (if (and (int/eq m 1) (int/eq k 0)) 1 0)) mask kinds)))
+         selected (array/sum mask)
+         nm_scale (text/trim scale_attribute) nm_seam (text/trim seam_attribute) nm_v (if generate_uv (text/trim v_attribute) "")
+         nm_up (text/trim up_attribute) nm_div (text/trim divisions_attribute) nm_seg (text/trim segments_attribute)
+         nm_sseam (text/trim segment_seam_attribute) nm_ss (text/trim segment_scales_attribute)
+         nm_uvr (if generate_uv (text/trim uv_range_attribute) "")
+         nm_mjs (if buckling (text/trim maximum_joint_scale_attribute) "") nm_smooth (text/trim smooth_attribute)
+         miss (int/add (int/add (int/add (pw_m_pf in0 nm_scale) (pw_m_pi in0 nm_seam)) (int/add (pw_m_pf in0 nm_v) (pw_m_pv in0 nm_up)))
+               (int/add (int/add (int/add (pw_m_pi in0 nm_div) (pw_m_pi in0 nm_seg)) (int/add (pw_m_vi in0 nm_sseam) (pw_m_v2 in0 nm_ss)))
+                 (int/add (int/add (pw_m_v4 in0 nm_uvr) (pw_m_pf in0 nm_mjs)) (pw_m_pf in0 nm_smooth))))
+         sc (pw_a_pf in0 nm_scale 1.0)
+         seam (pw_a_pi in0 nm_seam 0)
+         vv (pw_a_pf in0 nm_v 0.0)
+         up (pw_a_pv in0 nm_up)
+         dvp (pw_a_pi in0 nm_div side_count)
+         sgp (pw_a_pi in0 nm_seg segments)
+         sseam (pw_a_vi in0 nm_sseam)
+         sf (pw_a_v2 in0 nm_ss 0 (if use_segment_scales first_segment_scale 0.0))
+         sl (pw_a_v2 in0 nm_ss 1 (if use_segment_scales last_segment_scale 1.0))
+         eu0 (pw_a_v4 in0 nm_uvr 0 (if use_u_range u_min 0.0))
+         eu1 (pw_a_v4 in0 nm_uvr 1 (if use_u_range u_max 1.0))
+         ev0 (pw_a_v4 in0 nm_uvr 2 (if use_v_range v_min 0.0))
+         ev1 (pw_a_v4 in0 nm_uvr 3 (if use_v_range v_max 1.0))
+         mjs (pw_a_pf in0 nm_mjs maximum_joint_scale)
+         sm (pw_a_pf in0 nm_smooth 1.0)
+         upx (exact (map (fn [(q : vec3)] q.x) up)) upy (exact (map (fn [(q : vec3)] q.y) up))
+         upz (exact (map (fn [(q : vec3)] q.z) up))
+         bad (int/add (int/add (int/add (pw_count_bad_f sc rfm 0) (pw_count_bad_f vv rfm 1))
+               (int/add (int/add (pw_count_bad_f upx rfm 1) (pw_count_bad_f upy rfm 1)) (pw_count_bad_f upz rfm 1)))
+               (int/add (int/add (if (text/blank? nm_div) 0 (pw_count_bad_i dvp rfm 3 4096))
+                                 (if (text/blank? nm_seg) 0 (pw_count_bad_i sgp rfm 1 1048576)))
+                 (int/add (pw_count_bad_f mjs rfm 2) (pw_count_bad_f sm rfm 1))))]
+    {:grp_ok grp_ok :tvp tvp :offs offs :kinds kinds :prims prims :points points :verts verts :mask mask
+     :side_count side_count :polys polys :selected selected :miss miss :bad bad :rfm rfm :refsel refsel
+     :sc sc :seam seam :vv vv :up up :dvp dvp :sgp sgp :sseam sseam :sf sf :sl sl
+     :eu0 eu0 :eu1 eu1 :ev0 ev0 :ev1 ev1 :mjs mjs :sm sm
+     :has_up (not (text/blank? nm_up)) :has_v (not (text/blank? nm_v)) :has_uvr (not (text/blank? nm_uvr))
+     :has_ss (not (text/blank? nm_ss)) :gname gname}))
+
+; ---- refusals per edge: zero-length source edge, bad segment scales, non-finite UV ranges ----
+(defn pw_edgebad :context value
+  [(pos : (array vec3)) (tvp : (array int)) (lvx : (array int)) (rvx : (array int)) (has : bool)
+   (sf : (array float)) (sl : (array float)) (gen_uv : bool) (eu0 : (array float)) (eu1 : (array float))
+   (ev0 : (array float)) (ev1 : (array float))]
+  (let* [lp (int_gather tvp lvx) rp (int_gather tvp rvx)
+         lens (array/sum (exact (map (fn [(pa : int) (pc : int)]
+           (let* [p (array/nth pos pa) q (array/nth pos pc)
+                  len (pw_rlen (- q.x p.x) (- q.y p.y) (- q.z p.z))]
+             (if (and has (or (not (pw_finite len)) (<= len 1e-20))) 1 0))) lp rp)))
+         scales (array/sum (exact (map (fn [(a : int)]
+           (let* [f (array/nth sf a) l (array/nth sl a)]
+             (if (and has (or (not (and (pw_finite f) (pw_finite l))) (or (< f 0.0) (or (> l 1.0) (> f l))))) 1 0))) lvx)))
+         uvs (array/sum (exact (map (fn [(a : int)]
+           (if (and gen_uv (not (and (pw_finite (array/nth eu0 a)) (and (pw_finite (array/nth eu1 a))
+                 (and (pw_finite (array/nth ev0 a)) (pw_finite (array/nth ev1 a))))))) 1 0)) lvx)))]
+    (int/add lens (int/add scales uvs))))
+
+; Selected unique edges at every point (Topology_index point_edges) for the valence limit.
+(defn pw_valence :context sop [(geo : geometry) (mask : (array int))]
+  (let* [adj (sop/adjacency geo)
+         topology (sop/topology geo)
+         ne (array/count adj.edge_a)
+         vo (loft_owners topology.primitive_offsets)
+         hit (array/scatter_add
+               (exact (map (fn [(e : int)] (if (int/lt e 0) ne e)) adj.edge_of_vertex))
+               (exact (map (fn [(e : int) (p : int)] (if (and (int/ge e 0) (int/eq (array/nth mask p) 1)) 1 0))
+                 adj.edge_of_vertex vo))
+               (int/add ne 1))
+         flags (exact (map (fn [(e : int)] (if (int/gt (array/nth hit e) 0) 1 0)) adj.point_edges))]
+    (array/segment_sum flags adj.point_edge_offsets)))
+
+; ---- edge groups: the source edge every output edge descends from (and none when two disagree) ----
+(defn pw_edgeanc :context sop
+  [(src : geometry) (vpt : (array int)) (poff : (array int)) (okind : (array int)) (npts : int)
+   (kps : (array int)) (nk : int) (tsrc : (array int)) (ta : (array int)) (tb : (array int)) (tcur : (array int))
+   (tnext : (array int)) (rpo : (array int)) (segshift : (array int))]
+  (let* [adj (sop/adjacency src)
+         sp (sop/count src :points)
+         m1 (int/add npts 1)
+         vrows (array/range (array/count vpt) :type int)
+         owner (loft_owners poff)
+         nxt (exact (map (fn [(v : int) (o : int)]
+               (let* [start (array/nth poff o) stop (array/nth poff (int/add o 1))]
+                 (if (int/lt (int/add v 1) stop) (int/add v 1)
+                   (if (int/eq (array/nth okind o) 1) -1 start)))) vrows owner))
+         key (exact (map (fn [(v : int) (n : int)]
+               (if (int/lt n 0) -1
+                 (let* [a (array/nth vpt v) b (array/nth vpt n)] (int/add (int/mul (min a b) m1) (max a b))))) vrows nxt))
+         first (exact (array/index_of key key))
+         flag (exact (map (fn [(v : int) (k : int)] (if (and (int/ge k 0) (int/eq (array/nth first v) v)) 1 0)) vrows key))
+         firsts (array/compact flag)
+         ukeys (int_gather key firsts)
+         ne (array/count ukeys)
+         erows (array/range ne :type int)
+         ; kept-to-kept edges descend from the source edge between the same points
+         skeys (exact (map (fn [(a : int) (b : int)] (int/add (int/mul (min a b) (int/add sp 1)) (max a b)))
+                 adj.edge_a adj.edge_b))
+         qa (exact (map (fn [(k : int)] (int/div k m1)) ukeys))
+         qb (exact (map (fn [(k : int)] (int/mod k m1)) ukeys))
+         qkey (exact (map (fn [(a : int) (b : int)]
+                (if (and (int/lt a nk) (int/lt b nk))
+                  (let* [x (array/nth kps (min a (int/sub nk 1))) y (array/nth kps (min b (int/sub nk 1)))]
+                    (int/add (int/mul (min x y) (int/add sp 1)) (max x y)))
+                  -1)) qa qb))
+         sfound (exact (array/index_of skeys qkey))
+         ; every rank of a zipper transition joins the same two strands as its source edge
+         g (pw_gcd ta tb)
+         goff (array/scan_sum g)
+         gown (loft_owners goff)
+         grows (array/range (array/nth goff (array/count g)) :type int)
+         ka (exact (map (fn [(r : int) (tt : int)]
+              (let* [a (array/nth ta tt) rank (int/sub r (array/nth goff tt)) sh (pw_wrap (array/nth segshift (array/nth tsrc tt)) a)]
+                (int/add (int/add nk (array/nth rpo (array/nth tcur tt)))
+                  (int/mod (int/add (int/mul rank (int/div a (array/nth g tt))) sh) a)))) grows gown))
+         kb (exact (map (fn [(r : int) (tt : int)]
+              (let* [b (array/nth tb tt) rank (int/sub r (array/nth goff tt)) sh (pw_wrap (array/nth segshift (array/nth tsrc tt)) b)]
+                (int/add (int/add nk (array/nth rpo (array/nth tnext tt)))
+                  (int/mod (int/add (int/mul rank (int/div b (array/nth g tt))) sh) b)))) grows gown))
+         tkey (exact (map (fn [(a : int) (b : int)] (int/add (int/mul (min a b) m1) (max a b))) ka kb))
+         tfound (exact (array/index_of ukeys tkey))
+         tsource (exact (map (fn [(tt : int)] (array/nth adj.edge_of_vertex (array/nth tsrc tt))) gown))
+         ; installs: (output edge, source edge) from both rules
+         pe (array/concat erows tfound)
+         ps (array/concat sfound tsource)
+         valid (exact (map (fn [(e : int) (x : int)] (if (and (int/ge e 0) (int/ge x 0)) 1 0)) pe ps))
+         pe2 (exact (map (fn [(e : int) (v : int)] (if (int/eq v 1) e ne)) pe valid))
+         ps2 (exact (map (fn [(x : int) (v : int)] (if (int/eq v 1) x 0)) ps valid))
+         cnt (array/scatter_add pe2 valid (int/add ne 1))
+         sm (array/scatter_add pe2 ps2 (int/add ne 1))
+         sq (array/scatter_add pe2 (exact (map (fn [(x : int)] (int/mul x x)) ps2)) (int/add ne 1))
+         ok (exact (map (fn [(e : int)]
+              (let* [c (array/nth cnt e)] (if (and (int/gt c 0) (int/eq (int/mul c (array/nth sq e)) (int/mul (array/nth sm e) (array/nth sm e)))) 1 0))) erows))]
+    {:offsets (array/scan_sum ok)
+     :values (exact (map (fn [(e : int)] (int/div (array/nth sm e) (array/nth cnt e))) (array/compact ok)))}))
+
+; ---- the engine ----
+(defn pw_run :context sop
+  [(in0 : geometry) (group : text) (radius : float) (use_sides : bool) (sides : int) (divisions_attribute : text)
+   (segments : int) (segments_attribute : text) (use_segment_scales : bool) (first_segment_scale : float)
+   (last_segment_scale : float) (segment_scales_attribute : text) (buckling : bool)
+   (maximum_joint_scale : float) (maximum_joint_scale_attribute : text) (smooth_point : bool)
+   (smooth_attribute : text) (use_max_valence : bool) (max_valence : int) (scale_attribute : text)
+   (seam_offset : int) (seam_attribute : text) (segment_seam_attribute : text) (v_attribute : text)
+   (up_attribute : text) (generate_uv : bool) (use_u_range : bool) (u_min : float) (u_max : float)
+   (use_v_range : bool) (v_min : float) (v_max : float) (uv_range_attribute : text) (caps : bool) (cap_group : text)]
+  (let* [legacy (pw_legacy group divisions_attribute segments segments_attribute use_segment_scales
+                  segment_scales_attribute buckling maximum_joint_scale_attribute generate_uv smooth_point
+                  smooth_attribute use_max_valence segment_seam_attribute use_u_range use_v_range uv_range_attribute)
+         a (pw_prep in0 group use_sides sides divisions_attribute segments segments_attribute use_segment_scales
+             first_segment_scale last_segment_scale segment_scales_attribute buckling maximum_joint_scale
+             maximum_joint_scale_attribute smooth_point smooth_attribute scale_attribute seam_attribute
+             segment_seam_attribute v_attribute up_attribute generate_uv use_u_range u_min u_max use_v_range
+             v_min v_max uv_range_attribute legacy)]
+    (cond
+      (not a.grp_ok) (error "missing_group" (str "polywire could not find primitive group " (text/repr a.gname)))
+      (or (and (not legacy) (or (int/gt a.side_count 4096) (int/gt segments 1048576))) (int/gt a.polys 0))
+        (pw_fail "invalid input curves")
+      (and (int/eq a.selected 0) (not legacy)) in0
+      (or (int/gt a.miss 0) (int/gt a.bad 0)) (pw_fail "invalid attribute")
+      :else
+      (let* [mask a.mask tvp a.tvp offs a.offs kinds a.kinds prims a.prims points a.points
+             pos (sop/attr in0 "P")
+             smooth0 (exact (map (fn [(r : int) (x : float)] (if (and (int/eq r 1) (< x 0.5)) 0 (if smooth_point 1 0)))
+                       a.rfm a.sm))
+             smooth_pt (if use_max_valence
+                         (exact (map (fn [(r : int) (sm : int) (v : int)]
+                           (if (and (int/eq r 1) (int/gt v max_valence)) 0 sm)) a.rfm smooth0 (pw_valence in0 mask)))
+                         smooth0)
+             pr (pw_prims tvp offs kinds mask smooth_pt)
+             ec (exact (map (fn [(c : int) (b : int) (m : int)] (if (and (int/eq c 1) (and (int/eq b 0) (int/eq m 1))) 1 0)) pr.closed pr.b mask))
+             ed (pw_edges tvp offs pr.n pr.closed pr.b pr.start pr.edges smooth_pt a.sgp)
+             has_scales (or use_segment_scales a.has_ss)
+             bad_e (int/add (pw_edgebad pos tvp ed.lvx ed.rvx has_scales a.sf a.sl generate_uv a.eu0 a.eu1 a.ev0 a.ev1)
+                     (array/sum (exact (map (fn [(m : int) (e : int)] (if (and (int/eq m 1) (int/lt e 1)) 1 0)) mask pr.edges))))
+             rg (pw_rings tvp pr.closed pr.b pr.edges smooth_pt ed.eoff ed.ep ed.eo ed.el ed.lvx ed.rvx ed.sub
+                  ed.lead ed.roff has_scales a.sf a.sl buckling legacy)
+             rn rg.rn
+             cen (pw_centers pos tvp rg.lv rg.rv rg.w)
+             flags_mode (or has_scales (or buckling (int/gt (array/sum pr.b) 0)))
+             lk (pw_links cen rg.rl rg.bb rg.rp rg.rfirst rg.rcount ec flags_mode)
+             tr (pw_tangents cen lk.prev lk.next rg.jp)
+             ln (pw_lengths cen rg.rl rg.bb rg.rfirst rg.rcount ec has_scales)
+             steps (if (int/eq rn 0) 0 (array/max rg.rcount))
+             sq (pw_seq tr.tg rg.bb ln.seglen rg.rfirst rg.rcount steps)
+             total (pw_totals sq.cum ln.closing rg.rfirst rg.rcount)
+             tot_bad (array/sum (exact (map (fn [(x : float) (c : int)]
+                       (if (and (int/gt c 0) (or (not (pw_finite x)) (<= x 1e-20))) 1 0)) total rg.rcount)))
+             ringup (if a.has_up (pw_centers a.up tvp rg.lv rg.rv rg.w) (array/vec3 rn))
+             fr (if a.has_up (pw_upframes tr.tg ringup)
+                  (pw_roll tr.tg sq.fr sq.cum rg.rl rg.rp rg.rfirst rg.rcount ec total))
+             up_bad (if a.has_up (pw_upbad tr.tg ringup) 0)
+             ; ---- ring points
+             rrows (array/range rn :type int)
+             rdv (exact (map (fn [(l : int) (c : int) (wt : float)]
+                   (array/nth a.dvp (array/nth tvp (if (< wt 0.5) l c)))) rg.lv rg.rv rg.w))
+             rpo (array/scan_sum rdv)
+             rseam (exact (map (fn [(r : int)]
+                     (let* [cnt (array/nth rdv r) wt (array/nth rg.w r)
+                            sa (array/nth a.seam (array/nth tvp (if (< wt 0.5) (array/nth rg.lv r) (array/nth rg.rv r))))]
+                       (pw_addwrap (int/add (pw_wrap seam_offset cnt) (pw_wrap sa cnt)) cnt))) rrows))
+             rlp (exact (map (fn [(l : int)] (array/nth tvp l)) rg.lv))
+             rrp (exact (map (fn [(l : int)] (array/nth tvp l)) rg.rv))
+             rrad (exact (map (fn [(l : int) (c : int) (wt : float)]
+                    (* radius (pw_interp (array/nth a.sc (array/nth tvp l)) (array/nth a.sc (array/nth tvp c)) wt)))
+                    rg.lv rg.rv rg.w))
+             rad_bad (array/sum (exact (map (fn [(x : float)] (if (pw_finite x) 0 1)) rrad)))
+             jlim (exact (map (fn [(j : int)] (if (int/ge j 0) (array/nth a.mjs j) 1.0)) rg.jp))
+             wp (pw_ringpts rpo rdv cen tr.tg fr rseam rrad rg.jp tr.jin jlim)
+             ; ---- transitions and their faces
+             nxtflag (exact (map (fn [(r : int)]
+                      (let* [p (array/nth rg.rp r) l (array/nth rg.rl r)]
+                        (if (int/lt (int/add l 1) (array/nth rg.rcount p))
+                          (if (int/eq (array/nth rg.bb (min (int/add r 1) (int/sub rn 1))) 0) 1 0)
+                          (array/nth ec p)))) rrows))
+             tcur (array/compact nxtflag)
+             tclose (exact (map (fn [(c : int)]
+                      (if (int/eq (int/add (array/nth rg.rl c) 1) (array/nth rg.rcount (array/nth rg.rp c))) 1 0)) tcur))
+             tnext (exact (map (fn [(c : int) (k : int)]
+                     (if (int/eq k 1) (array/nth rg.rfirst (array/nth rg.rp c)) (int/add c 1))) tcur tclose))
+             tsrc (exact (map (fn [(c : int) (n : int) (k : int)]
+                    (array/nth rg.lv (if (or (int/eq k 1) legacy) c n))) tcur tnext tclose))
+             zf (pw_faces (int_gather rdv tcur) (int_gather rdv tnext))
+             ftp (exact (map (fn [(tt : int)] (array/nth rg.rp (array/nth tcur tt))) zf.ft))
+             fsz (exact (map (fn [(k : int)] (if (int/eq k 0) 4 3)) zf.kind))
+             lay (pw_outlayout mask pr.n pr.closed ftp fsz rdv rg.rfirst rg.rcount caps legacy)
+             custom_u (or use_u_range a.has_uvr)
+             need (and generate_uv (and (not a.has_v) (or use_v_range a.has_uvr)))
+             tv (pw_tv tcur tnext tsrc tclose rg.lv rg.rv rg.w sq.cum total rg.rp ec rg.rfirst tvp a.has_v a.vv need
+                  a.ev0 a.ev1)
+             cn (pw_corners lay.poff lay.cc lay.op lay.aux offs zf.ft zf.fi zf.fj zf.kind tcur tnext tsrc rdv rg.lv
+                  rg.rfirst rg.rcount rseam a.sseam tv.v0 tv.v1 a.eu0 a.eu1 a.ev0 a.ev1 custom_u)
+             ; ---- points: kept source points then the ring points
+             refall (array/scatter_add tvp (array/int (array/count tvp) 1) points)
+             keep (exact (map (fn [(all : int) (sel : int)]
+                    (if (and (not legacy) (or (int/eq all 0) (int/gt (int/sub all sel) 0))) 1 0)) refall a.refsel))
+             kps (array/compact keep)
+             nk (array/count kps)
+             krank (array/scan_sum keep)
+             pown (loft_owners rpo)
+             pa (array/concat kps (int_gather rlp pown))
+             pb (array/concat kps (int_gather rrp pown))
+             pt (array/concat (array/float nk 0.0) (exact (map (fn [(r : int)] (array/nth rg.w r)) pown)))
+             points_out (array/concat (exact (map (fn [(i : int)] (array/nth pos i)) kps)) wp.pos)
+             has_pn (sop/has_attr in0 "N" :owner "point" :type vec3)
+             has_vn (sop/has_attr in0 "N" :owner "vertex" :type vec3)
+             has_uv (sop/has_attr in0 "uv" :owner "vertex" :type vec2)
+             src_pn (if has_pn (sop/attr in0 "N" :owner "point" :type vec3) (array/vec3 points))
+             src_vn (if has_vn (sop/attr in0 "N" :owner "vertex" :type vec3) (array/vec3 a.verts))
+             src_uv (if has_uv (sop/attr in0 "uv" :owner "vertex" :type vec2) (exact (map (fn [(i : int)] [0.0 0.0]) (array/range a.verts :type int))))
+             pn_out (array/concat (exact (map (fn [(i : int)] (array/nth src_pn i)) kps)) wp.nrm)
+             urows (array/range (array/count cn.vo) :type int)
+             vpt (exact (map (fn [(r : int) (side : int) (src : int)]
+                   (if (int/ge r 0) (int/add nk (int/add (array/nth rpo r) side)) (array/nth krank (array/nth tvp src))))
+                   cn.vring cn.vside cn.vsrc))
+             vl (exact (map (fn [(r : int) (src : int)] (if (int/ge r 0) (array/nth rg.lv r) src)) cn.vring cn.vsrc))
+             vr (exact (map (fn [(r : int) (src : int)] (if (int/ge r 0) (array/nth rg.rv r) src)) cn.vring cn.vsrc))
+             vw (exact (map (fn [(r : int)] (if (int/ge r 0) (array/nth rg.w r) 0.0)) cn.vring))
+             okind (exact (map (fn [(c : int) (p : int)] (if (int/eq c 0) (array/nth kinds p) 0)) lay.cc lay.op))
+             vn (exact (map (fn [(u : int)]
+                  (let* [j (array/nth cn.vo u) c (array/nth lay.cc j) r (array/nth cn.vring u)]
+                    (if (int/eq c 0) (array/nth src_vn (array/nth cn.vsrc u))
+                      (if (int/eq c 1) (array/nth pn_out (array/nth vpt u))
+                        (let* [tg0 (array/nth tr.tg r)]
+                          (if (int/eq (array/nth lay.aux j) 0) [(- 0.0 tg0.x) (- 0.0 tg0.y) (- 0.0 tg0.z)] tg0)))))) urows))
+             uvx (exact (map (fn [(u : int)]
+                   (if (and (int/eq (array/nth lay.cc (array/nth cn.vo u)) 0) generate_uv)
+                     (let* [q (array/nth src_uv (array/nth cn.vsrc u))] q.x) (array/nth cn.vu u))) urows))
+             uvy (exact (map (fn [(u : int)]
+                   (if (and (int/eq (array/nth lay.cc (array/nth cn.vo u)) 0) generate_uv)
+                     (let* [q (array/nth src_uv (array/nth cn.vsrc u))] q.y) (array/nth cn.vv u))) urows))
+             capmask (exact (map (fn [(c : int)] (if (int/eq c 2) 1 0)) lay.cc))
+             cname (if caps (text/trim cap_group) "")
+             bad (int/add (int/add (int/add bad_e lk.bad) (int/add tr.bad ln.bad)) (int/add (int/add tot_bad up_bad) (int/add wp.bad rad_bad)))]
+        (if (int/gt bad 0) (pw_fail "invalid curve geometry")
+          (let* [target (sop/mesh :points points_out :vertex_points vpt :primitive_offsets lay.poff :kinds okind)
+                 base (sop/delete_attr (sop/delete_attr in0 "N" :owner "point") "N" :owner "vertex")
+                 cleaned (if generate_uv (sop/delete_attr base "uv" :owner "vertex") base)
+                 has_eg (int/gt (array/count (sop/group_names in0 "" :owner "edge")) 0)
+                 remapped (if has_eg
+                            (sop/remap cleaned target :point_mix {:a pa :b pb :t pt} :vertex_mix {:a vl :b vr :t vw}
+                              :primitives lay.op :positions "target"
+                              :edges (pw_edgeanc in0 vpt lay.poff okind (array/count points_out) kps nk tsrc
+                                       (int_gather rdv tcur) (int_gather rdv tnext) tcur tnext rpo a.sseam))
+                            (sop/remap cleaned target :point_mix {:a pa :b pb :t pt} :vertex_mix {:a vl :b vr :t vw}
+                              :primitives lay.op :positions "target"))
+                 with_n (sop/with_attr remapped "N" pn_out :owner "point" :type vec3)
+                 with_uv (if generate_uv (sop/with_attr with_n "uv" {:x uvx :y uvy} :owner "vertex" :type vec2) with_n)
+                 with_vn (if (or caps has_vn) (sop/with_attr with_uv "N" vn :owner "vertex" :type vec3) with_uv)]
+            (if (text/blank? cname) with_vn
+              (sop/with_group with_vn capmask :name cname :owner "primitive"))))))))
+
+(defn pw_allfinite :context value [(a : float) (b : float) (c : float) (d : float) (e : float) (f : float) (g : float) (h : float)]
+  (and (and (and (pw_finite a) (pw_finite b)) (and (pw_finite c) (pw_finite d)))
+       (and (and (pw_finite e) (pw_finite f)) (and (pw_finite g) (pw_finite h)))))
+(defn pw_valid :context value
+  [(radius : float) (first : float) (last : float) (mjs : float) (u0 : float) (u1 : float) (v0 : float) (v1 : float)
+   (sides : int) (segments : int) (valence : int) (use_scales : bool) (mjs_attribute : text) (buckling : bool)]
+  (cond
+    (not (pw_allfinite radius first last mjs u0 u1 v0 v1)) false
+    (<= radius 0.0) false
+    (or (int/lt sides 3) (or (int/lt segments 1) (int/lt valence 1))) false
+    (or (or (< first 0.0) (> first 1.0)) (or (< last 0.0) (> last 1.0))) false
+    (and use_scales (> first last)) false
+    (< mjs 1.0) false
+    (and (not (text/blank? (text/trim mjs_attribute))) (not buckling)) false
+    :else true))
+
+(defnode sop/polywire :label "PolyWire" :category ["Topology" "Surface"]
+  :validate (pw_valid radius first_segment_scale last_segment_scale maximum_joint_scale u_min u_max v_min v_max
+    sides segments max_valence use_segment_scales maximum_joint_scale_attribute prevent_joint_buckling)
+  :code "E_PARAM" :message "sop/polywire: numeric values must be finite"
+  [(in0 : geometry)
+   (group : text "" :label "Primitive group")
+   (radius : float 0.1 :label "Radius" :min 0.0001 :max 10 :hard_min 0)
+   (use_sides : bool true :label "Set divisions")
+   (sides : int 8 :label "Divisions" :min 3 :max 256 :hard_min 3)
+   (divisions_attribute : text "" :label "Divisions attribute" :folder ["Overrides"])
+   (segments : int 1 :label "Segments" :min 1 :max 256 :hard_min 1)
+   (segments_attribute : text "" :label "Segments attribute" :folder ["Overrides"])
+   (use_segment_scales : bool false :label "Scale segment endpoints")
+   (first_segment_scale : float 0.0 :label "First segment scale" :folder ["Segments"] :min 0 :max 1 :hard_min 0 :hard_max 1)
+   (last_segment_scale : float 1.0 :label "Last segment scale" :folder ["Segments"] :min 0 :max 1 :hard_min 0 :hard_max 1)
+   (segment_scales_attribute : text "" :label "Segment scales attribute" :folder ["Overrides"])
+   (prevent_joint_buckling : bool false :label "Prevent joint buckling" :folder ["Joints"])
+   (maximum_joint_scale : float 10.0 :label "Maximum joint scale" :folder ["Joints"] :min 1 :max 100 :hard_min 1)
+   (maximum_joint_scale_attribute : text "" :label "Maximum scale attribute" :folder ["Overrides"])
+   (smooth_point : bool true :label "Smooth points" :folder ["Joints"])
+   (smooth_attribute : text "" :label "Smooth attribute" :folder ["Overrides"])
+   (use_max_valence : bool false :label "Limit smooth valence" :folder ["Joints"])
+   (max_valence : int 4 :label "Maximum valence" :folder ["Joints"] :min 1 :max 128 :hard_min 1)
+   (scale_attribute : text "" :label "Scale attribute" :folder ["Overrides"])
+   (seam_offset : int 0 :label "Seam offset" :folder ["Seams"] :min -256 :max 256)
+   (seam_attribute : text "" :label "Seam attribute" :folder ["Overrides"])
+   (segment_seam_attribute : text "" :label "Segment seam attribute" :folder ["Overrides"])
+   (v_attribute : text "" :label "V attribute" :folder ["Overrides"])
+   (up_attribute : text "" :label "Up attribute" :folder ["Overrides"])
+   (generate_uv : bool true :label "Generate UV" :folder ["UV"])
+   (use_u_range : bool true :label "Set U range" :folder ["UV" "U range"])
+   (u_min : float 0.0 :label "U minimum" :folder ["UV" "U range"] :min -10 :max 10)
+   (u_max : float 1.0 :label "U maximum" :folder ["UV" "U range"] :min -10 :max 10)
+   (use_v_range : bool true :label "Set V range" :folder ["UV" "V range"])
+   (v_min : float 0.0 :label "V minimum" :folder ["UV" "V range"] :min -10 :max 10)
+   (v_max : float 1.0 :label "V maximum" :folder ["UV" "V range"] :min -10 :max 10)
+   (uv_range_attribute : text "" :label "UV range attribute" :folder ["Overrides"])
+   (caps : bool false :label "End caps")
+   (cap_group : text "caps" :label "Cap group")]
+  (pw_run in0 group radius use_sides sides divisions_attribute segments segments_attribute use_segment_scales
+    first_segment_scale last_segment_scale segment_scales_attribute prevent_joint_buckling maximum_joint_scale
+    maximum_joint_scale_attribute smooth_point smooth_attribute use_max_valence max_valence scale_attribute
+    seam_offset seam_attribute segment_seam_attribute v_attribute up_attribute generate_uv use_u_range u_min u_max
+    use_v_range v_min v_max uv_range_attribute caps cap_group))
