@@ -96,7 +96,22 @@ let cases =
       "text average", route "Point" "Primitive" @ [tx "pattern" "text"; ch "method_" "Average"];
       "text unique", route "Point" "Primitive" @ [tx "pattern" "text"; ch "method_" "Unique values"];
       "vector array", route "Point" "Primitive" @ [tx "pattern" "vec3"; ch "method_" "Array of all"];
-      "ragged first", route "Point" "Primitive" @ [tx "pattern" "int_rows"; ch "method_" "First"] ]
+      "ragged first", route "Point" "Primitive" @ [tx "pattern" "int_rows"; ch "method_" "First"];
+      "rename tab separators", route "Point" "Primitive" @ [tx "pattern" "float\tvec3"; tx "into_pattern" "f_*\tv_*"];
+      "rename newline separators", route "Point" "Primitive" @ [tx "pattern" "float\nvec3"; tx "into_pattern" "f_*\n\tv_*"];
+      "rename mixed whitespace", route "Point" "Primitive" @ [tx "pattern" " \tfloat \t vec3\n"; tx "into_pattern" "f_* \tv_*"];
+      "rename escaped space", route "Point" "Primitive" @ [tx "pattern" "a\\ b"; tx "into_pattern" "x\\ y"];
+      "rename escaped space wildcard", route "Point" "Primitive" @ [tx "pattern" "a\\ * float"; tx "into_pattern" "q\\ * f_*"];
+      "rename escaped tab", route "Point" "Primitive" @ [tx "pattern" "c\\\td"; tx "into_pattern" "z\\\ty"];
+      "rename last match wins", route "Point" "Primitive" @ [tx "pattern" "float* *at"; tx "into_pattern" "first_* last_*"];
+      "rename exclusion first", route "Point" "Primitive" @ [tx "pattern" "^float vec*"; tx "into_pattern" "v_*"];
+      "rename exclusion unmatched name", route "Point" "Primitive" @ [tx "pattern" "^float vec3"; tx "into_pattern" "v_*"];
+      "rename dangling escape", route "Point" "Primitive" @ [tx "pattern" "float"; tx "into_pattern" "x\\"];
+      "rename tab term mismatch", route "Point" "Primitive" @ [tx "pattern" "float\tvec3"; tx "into_pattern" "f_*"];
+      "index tab separators", route "Point" "Primitive" @ [tx "pattern" "float\tvec3"; ch "method_" "First";
+                                                           tx "into_pattern" "f_*\tv_*"; tx "index_pattern" "i_*\tj_*"];
+      "index escaped space", route "Point" "Primitive" @ [tx "pattern" "a\\ b"; ch "method_" "First";
+                                                          tx "into_pattern" "x\\ y"; tx "index_pattern" "i\\ j"] ]
 
 let bench () =
   let g = Plane_generators.grid ~connectivity:Grid_quads ~columns:700 ~rows:700 ~size:8. () |> get_ok in
@@ -104,5 +119,12 @@ let bench () =
   let g = Geometry.with_attribute (Attribute.create_owned ~name:"w" ~owner:Attribute.Point
     (Attribute.Float (Array.init n (fun i -> float (i mod 97)))) |> get_string_ok) g |> get_string_ok in
   [g], [tx "pattern" "w"; ch "source" "Point"; ch "destination" "Primitive"; ch "method_" "Average"]
+(* point attributes whose names contain a space and a tab *)
+let spaced () =
+  let geometry = snd (List.nth (List.map (fun (l, gs) -> l, List.hd gs) standard_inputs) 3) in
+  let n = Geometry.point_count geometry in
+  List.fold_left (fun geometry name -> Geometry.with_attribute (Attribute.create_owned ~owner:Attribute.Point ~name
+    (Attribute.Float (Array.init n (fun i -> float i *. 0.5))) |> get_string_ok) geometry |> get_string_ok)
+    geometry ["a b"; "a c"; "c\td"]
 let () = register { key = "promote_attributes"; native = Sop.Nodes.Promote_attributes.factory;
-  inputs = standard_inputs; cases; ulps = 4; bench = Some bench }
+  inputs = standard_inputs @ ["spaced", [spaced ()]]; cases; ulps = 4; bench = Some bench }

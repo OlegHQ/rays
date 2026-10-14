@@ -1648,7 +1648,9 @@ literal glob term. It escapes glob syntax and the parser's ASCII term whitespace
 preserving UTF-8 bytes, hyphens, vertical tabs and other literal bytes. Empty text
 reports `E_METADATA_PATTERN`. `text/glob_rewrite pattern replacement text` uses
 the existing wildcard-capture rewrite contract and retains unmatched text;
-invalid rewrite syntax reports `E_METADATA_PATTERN`. Both expose ordinary
+invalid rewrite syntax reports `E_METADATA_PATTERN`. `text/glob_rewrite_set` does the
+same for a whitespace-separated rename set (escaped separators stay literal, the last
+matching term wins, `text/glob_rewrite_set_error` reports the compile error). All expose ordinary
 editable argument cards. Dynamic cooked uses run through typed host sources in
 structured native Core; direct JavaScript twins share the existing matcher.
 Production frame export still refuses dynamic host sources with `E_WEB_SOURCE`.

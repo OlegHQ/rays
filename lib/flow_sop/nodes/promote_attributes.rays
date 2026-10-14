@@ -2,8 +2,7 @@
 ; reduced over a relation (source owner elements -> destination owner elements, optionally partitioned into pieces)
 ; by one of twelve methods; sorted methods (minimum, maximum, median, mode, unique values) use two stable grades
 ; (value, then unit) and run starts; sums run in element order through array/segment_sum.
-; Limit: the rename/index patterns are split on ASCII spaces only (an escaped or tab-separated term list is not
-; split like Attribute_pattern.split_terms); exclusion terms and several positive terms are handled.
+; Rename/index patterns use text/glob_rewrite_set (whitespace separators, escapes, last matching positive term wins).
 (defn pa_error :context value [(reason : text)]
   (error "invalid_attribute" "attribute_promote could not produce valid geometry"
     :cause (str "attribute_promote [invalid_attribute]: Rdk.Attribute_ops.promote: " reason)))
@@ -357,26 +356,11 @@
     :else (pa_error "array storage does not support promotion")))
 
 ; ---- rename / index patterns: Attribute_pattern.rewrite_set (last matching positive term wins)
-(defn pa_touch :context sop [(geo : geometry)] (sop/count geo :points))
-(defn pa_nonblank :context sop [(parts : (array text)) (geo : geometry)]
-  (fold [acc (array/text 0)] [term parts]
-    (if (int/lt (pa_touch geo) 0) acc
-      (if (text/blank? term) acc (array/concat acc (array/text 1 term))))))
-(defn pa_positive :context sop [(pattern : text) (geo : geometry)]
-  (fold [acc (array/text 0)] [term (text/split pattern " ")]
-    (if (int/lt (pa_touch geo) 0) acc
-      (if (text/blank? term) acc
-        (if (equal? (array/nth (text/split term "^") 0) "") acc (array/concat acc (array/text 1 term)))))))
-; name is an attribute of geo with the given owner
+; name is an attribute of geo with the given owner; "" when no positive term matches (native refuses that)
 (defn pa_rewrite :context sop [(pattern : text) (replacement : text) (name : text) (geo : geometry) (owner : text)]
-  (let* [positive (pa_positive pattern geo)
-         reps (pa_nonblank (text/split replacement " ") geo)]
-    (fold [found ""] [j (pa_range (array/count positive))]
-      (let* [matches (sop/attr_names geo (array/nth positive j) :owner owner)
-             matched (int/ge (array/nth (array/index_of matches (array/text 1 name)) 0) 0)]
-        (if (and matched (int/lt j (array/count reps)))
-          (text/glob_rewrite (array/nth positive j) (array/nth reps j) name)
-          found)))))
+  (if (text/glob_rewrite_set_matches pattern replacement name)
+    (text/glob_rewrite_set pattern replacement name)
+    ""))
 (defn pa_duplicate :context value [(keys : (array text))]
   (int/gt (array/sum (exact (map (fn [(f : int) (i : int)] (if (int/eq f i) 0 1))
     (array/index_of keys keys) (pa_range (array/count keys))))) 0))
@@ -386,20 +370,8 @@
     (let* [v (sop/attr geo name :owner owner :type text)] (pa_ids (array/index_of v v)))))
 
 ; ---- construction-time validation (pure): pattern/rewrite compile and index method
-(defn pv_nonblank :context value [(parts : (array text))]
-  (fold [acc (array/text 0)] [term parts] (if (text/blank? term) acc (array/concat acc (array/text 1 term)))))
-(defn pv_positive :context value [(pattern : text)]
-  (fold [acc (array/text 0)] [term (text/split pattern " ")]
-    (if (text/blank? term) acc
-      (if (equal? (array/nth (text/split term "^") 0) "") acc (array/concat acc (array/text 1 term))))))
 (defn pv_rewrite_ok :context value [(pattern : text) (replacement : text)]
-  (let* [positive (pv_positive pattern)
-         reps (pv_nonblank (text/split replacement " "))]
-    (and (and (int/gt (array/count positive) 0) (int/eq (array/count positive) (array/count reps)))
-      (fold [ok true] [j (pa_range (array/count positive))]
-        (if (int/lt j (array/count reps))
-          (and ok (equal? (text/glob_rewrite_error (array/nth positive j) (array/nth reps j)) ""))
-          false)))))
+  (equal? (text/glob_rewrite_set_error pattern replacement) ""))
 (defn pa_valid :context value
   [(method : text) (pattern : text) (into_pattern : text) (index_pattern : text)]
   (let* [into_p (text/trim into_pattern)

@@ -604,6 +604,11 @@ arr1[0.;-0.;0.];arr1[1e16;1.;-1e16];
      "*","?";"??","?";"*?","*";"","";"a b","x";
      "^a","x";"a","^x";"*","x";"a","*";"[","x";"a","[";"a\\","x";"a","x\\"];
   List.iter(validation "text/glob_rewrite_error") [[E.Int 0;E.Text "x"];[E.Text "x";E.Int 0]];
+  List.iter(fun(pattern,replacement)->validation "text/glob_rewrite_set_error"[E.Text pattern;E.Text replacement])
+    ["*","x*";"a* b*","x* y*";"a*\tb*","x*\ty*";"a*\nb*","x*  y*";"a\\ b","c";"a\\ b*","x\\ y*";
+     "^a* b*","y*";"a* ^ab b*","x* y*";"^a","x";"","";"a b","x";"a","x y";"a b","x ^y";"a b","^x y";
+     "[","x";"a","[";"a\\","x";"a","x\\";"a [","x y";"a ^","x";"\195\169* \231\140\171*","x* y*";"*_??? a*","old_???_* b*"];
+  List.iter(validation "text/glob_rewrite_set_error") [[E.Int 0;E.Text "x"];[E.Text "x";E.Int 0]];
   let text_operation name keys args =
     add_host name args (host_result(fun()->Ok((op name).body
       ~live:(Frame_input.at_time 0.) ~node:(fun _ _->assert false) (List.combine keys args)))) in
@@ -624,6 +629,22 @@ arr1[0.;-0.;0.];arr1[1e16;1.;-1e16];
      "^a","x","a";"a","x\\","a"];
   List.iter(text_operation "text/glob_rewrite" ["pattern";"replacement";"text"])
     [[E.Int 0;E.Text "x";E.Text "a"];[E.Text "a";E.Int 0;E.Text "a"];[E.Text "a";E.Text "x";E.Int 0]];
+  List.iter(fun(pattern,replacement,text)->text_operation "text/glob_rewrite_set"
+    ["pattern";"replacement";"text"] [E.Text pattern;E.Text replacement;E.Text text])
+    ["a* b*","x* y*","abc";"a* b*","x* y*","bcd";"a* b*","x* y*","zzz";"a*\tb*","x*\ty*","bq";"a*\nb*","x*\ny*","aq";
+     "a* *c","x* y*","abc";"*c a*","y* x*","abc";"a\\ b*","x\\ y*","a bz";"a\\ b*","x\\ y*","a_bz";
+     "^a* *","x*","ab";"* ^a*","x*","ab";"* ^a*","x*","bb";"a* ^ab*","x*","abc";"a* ^ab*","x*","acd";
+     "\195\169* \231\140\171*","x* y*","\195\169\230\151\165";"\195\169* \231\140\171*","x* y*","\231\140\171\195\169";
+     "*_??? a*","old_???_* b*","tag_abc";"*_??? a*","old_???_* b*","atag";
+     "a* b*","x*","abc";"","","abc";"[","x","abc";"a b","x","a"];
+  List.iter(text_operation "text/glob_rewrite_set" ["pattern";"replacement";"text"])
+    [[E.Int 0;E.Text "x";E.Text "a"];[E.Text "a";E.Int 0;E.Text "a"];[E.Text "a";E.Text "x";E.Int 0]];
+  List.iter(fun(pattern,replacement,text)->text_operation "text/glob_rewrite_set_matches"
+    ["pattern";"replacement";"text"] [E.Text pattern;E.Text replacement;E.Text text])
+    ["a* b*","x* y*","abc";"a* b*","x* y*","zzz";"^a* b*","y*","ab";"^a* b*","y*","zz";"^a* b*","y*","bb";
+     "a\\ b*","x\\ y*","a bz";"a*\tb*","x*\ty*","bq";"[","x","abc";"a b","x","a"];
+  List.iter(text_operation "text/glob_rewrite_set_matches" ["pattern";"replacement";"text"])
+    [[E.Int 0;E.Text "x";E.Text "a"];[E.Text "a";E.Text "x";E.Int 0]];
   let read geometry name owner kind query =
     let args=["geometry",E.Deferred(T.geometry,0);"attribute",E.Text name;"owner",E.Text owner]
       @(if kind="" then [] else ["type",E.Text kind]) in
@@ -1495,4 +1516,4 @@ remap_case source unrelated fields;
       "sop/group";"sop/group_names";"sop/group_order";"sop/with_group";
       "sop/attr_type";"sop/attr_names";"sop/attr_entries";"sop/rename_attr";"sop/swap_attr";"sop/delete_attrs";
       "sop/rename_group";"sop/delete_group";"sop/rename_edge";"sop/delete_edge";"text/glob_error";"text/glob_rewrite_error";
-      "text/glob_literal";"text/glob_rewrite";"text/group_name_valid";"text/group_name_forced";"sop/group_entries";"$host/diagnostic_rows"])
+      "text/glob_literal";"text/glob_rewrite";"text/glob_rewrite_set_error";"text/glob_rewrite_set";"text/glob_rewrite_set_matches";"text/group_name_valid";"text/group_name_forced";"sop/group_entries";"$host/diagnostic_rows"])

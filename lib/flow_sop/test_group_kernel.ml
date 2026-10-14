@@ -260,6 +260,20 @@ let ()=
     assert(op "text/glob_rewrite"["pattern",E.Text pattern;"replacement",E.Text replacement;"text",E.Text text]
       =E.Text(Option.value ~default:text(Rdk.Attribute_pattern.rewrite native text))))
     ["*_???","old_???_*","tag_abc";"[a-c]*","*[a-c]","aé猫";"a\\*","b","a*";"*","x*","";"a*","x*","unmatched"];
+  (* rename sets: tab/newline separators, escaped spaces, exclusions and last-match-wins, as Attribute_pattern *)
+  List.iter(fun(pattern,replacement,text)->let native=Rdk.Attribute_pattern.compile_rewrite_set ~pattern ~replacement|>Result.get_ok in
+    let args=["pattern",E.Text pattern;"replacement",E.Text replacement;"text",E.Text text] in
+    assert(op "text/glob_rewrite_set" args
+      =E.Text(Option.value ~default:text(Rdk.Attribute_pattern.rewrite_set native text)));
+    assert(op "text/glob_rewrite_set_matches" args=E.Bool(Option.is_some(Rdk.Attribute_pattern.rewrite_set native text))))
+    ["a* b*","x* y*","abc";"a* b*","x* y*","bcd";"a* b*","x* y*","zzz";"a*\tb*","x*\ty*","bq";"a*\nb*","x*\n y*","aq";
+     "a* *c","x* y*","abc";"a\\ b*","x\\ y*","a bz";"a\\ b*","x\\ y*","a_bz";"^a* *","x*","ab";"* ^a*","x*","bb";
+     "* ^a*","x*","ab";"*_??? a*","old_???_* b*","tag_abc"];
+  List.iter(fun(pattern,replacement)->assert(match
+    op "text/glob_rewrite_set_error"["pattern",E.Text pattern;"replacement",E.Text replacement] with
+    |E.Text message->(message="")=Result.is_ok(Rdk.Attribute_pattern.compile_rewrite_set ~pattern ~replacement)
+    |_->false))
+    ["a b","x";"a","x y";"^a","x";"","";"a\\","x";"a","x\\";"[","x";"a b","x ^y"];
   let base=Rdk.Line_geometry.points[|(0.,0.,0.);(1.,0.,0.);(0.,1.,0.)|] in
   let topology=Rdk.Topology.create_owned ~point_count:3 ~vertex_points:[|0;1;2|]
     ~primitive_offsets:[|0;3|] ~primitive_kinds:[|Rdk.Topology.Polygon|]|>Result.get_ok in

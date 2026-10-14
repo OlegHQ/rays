@@ -103,13 +103,19 @@ let write ?order ~owner ~name:group_name mask geometry =
           else map_error (G.with_group group geometry)))
 
 let resolve ~geometry = function
-  |E.Source(("text/glob_rewrite"|"text/glob_literal" as operation),_,args)->
+  |E.Source(("text/glob_rewrite"|"text/glob_rewrite_set"|"text/glob_literal" as operation),_,args)->
       let text key=match List.assoc_opt key args with Some(E.Text text)->Ok text
         |_->error "E_METADATA_TEXT" "Metadata names and patterns must be text." in
       Result.bind(text "text")(fun value->if operation="text/glob_literal" then
         Result.map(fun value->E.Text value)(Attribute_metadata.glob_literal value) else
         Result.bind(text "pattern")(fun pattern->Result.bind(text "replacement")(fun replacement->
-          Result.map(fun value->E.Text value)(Attribute_metadata.glob_rewrite ~pattern ~replacement value))))
+          Result.map(fun value->E.Text value)((if operation="text/glob_rewrite_set" then Attribute_metadata.glob_rewrite_set
+            else Attribute_metadata.glob_rewrite) ~pattern ~replacement value))))
+  |E.Source("text/glob_rewrite_set_matches",_,args)->
+      let text key=match List.assoc_opt key args with Some(E.Text text)->Ok text
+        |_->error "E_METADATA_TEXT" "Metadata names and patterns must be text." in
+      Result.bind(text "text")(fun value->Result.bind(text "pattern")(fun pattern->Result.bind(text "replacement")(fun replacement->
+        Result.map(fun matched->E.Bool matched)(Attribute_metadata.glob_rewrite_set_matches ~pattern ~replacement value))))
   |E.Source(("text/group_name_valid"|"text/group_name_forced" as operation),_,args)->
       (match List.assoc_opt "text" args with
        |Some(E.Text value)->Ok(if operation="text/group_name_valid" then E.Bool(Rdk.Group_ops.valid_group_name value)

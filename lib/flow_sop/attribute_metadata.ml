@@ -2,6 +2,14 @@ let glob_rewrite ~pattern ~replacement text =
   Result.map_error(Flow.Diagnostic.error ~code:"E_METADATA_PATTERN")
     (Result.map(fun rewrite->Option.value ~default:text(Rdk.Attribute_pattern.rewrite rewrite text))
       (Rdk.Attribute_pattern.compile_rewrite ~pattern ~replacement))
+let glob_rewrite_set ~pattern ~replacement text =
+  Result.map_error(Flow.Diagnostic.error ~code:"E_METADATA_PATTERN")
+    (Result.map(fun rewrite->Option.value ~default:text(Rdk.Attribute_pattern.rewrite_set rewrite text))
+      (Rdk.Attribute_pattern.compile_rewrite_set ~pattern ~replacement))
+let glob_rewrite_set_matches ~pattern ~replacement text =
+  Result.map_error(Flow.Diagnostic.error ~code:"E_METADATA_PATTERN")
+    (Result.map(fun rewrite->Option.is_some(Rdk.Attribute_pattern.rewrite_set rewrite text))
+      (Rdk.Attribute_pattern.compile_rewrite_set ~pattern ~replacement))
 let glob_literal text =
   if text="" then Error(Flow.Diagnostic.error ~code:"E_METADATA_PATTERN" "A literal glob must not be empty.") else
   let out=Buffer.create(String.length text) in

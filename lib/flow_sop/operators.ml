@@ -466,6 +466,14 @@ let glob_rewrite_error : Flow.Op.t = {
     Ok _->""|Error message->message));
 }
 
+let glob_rewrite_set_error : Flow.Op.t = {
+  glob_error with name="text/glob_rewrite_set_error";
+  signature={glob_error.signature with pos=["pattern",Text;"replacement",Text]};
+  body=(fun ~live:_ ~node:_ args->Flow.Value.Text(match Rdk.Attribute_pattern.compile_rewrite_set
+    ~pattern:(metadata_text args "pattern") ~replacement:(metadata_text args "replacement") with
+    Ok _->""|Error message->message));
+}
+
 (* Symbolic prototype arguments retain the ordinary typed Source boundary,
    so these pure text operations also run inside structured cooked loops. *)
 let pure_source ty wrap name args run =
@@ -479,6 +487,24 @@ let glob_rewrite : Flow.Op.t = {
     let pattern=metadata_text args "pattern" and replacement=metadata_text args "replacement"
     and text=metadata_text args "text" in
     checked(Attribute_metadata.glob_rewrite ~pattern ~replacement text)));
+}
+let glob_rewrite_set : Flow.Op.t = {
+  glob_error with name="text/glob_rewrite_set";
+  signature={glob_error.signature with pos=["pattern",Text;"replacement",Text;"text",Text]};
+  body=(fun ~live:_ ~node:_ args->text_source "text/glob_rewrite_set" args(fun()->
+    let pattern=metadata_text args "pattern" and replacement=metadata_text args "replacement"
+    and text=metadata_text args "text" in
+    checked(Attribute_metadata.glob_rewrite_set ~pattern ~replacement text)));
+}
+let glob_rewrite_set_matches : Flow.Op.t = {
+  glob_error with name="text/glob_rewrite_set_matches";
+  signature={glob_error.signature with pos=["pattern",Text;"replacement",Text;"text",Text]};
+  out=(fun _->Flow.Ty.Bool);
+  body=(fun ~live:_ ~node:_ args->pure_source Flow.Ty.Bool (fun b->Flow.Value.Bool b)
+    "text/glob_rewrite_set_matches" args(fun()->
+    let pattern=metadata_text args "pattern" and replacement=metadata_text args "replacement"
+    and text=metadata_text args "text" in
+    checked(Attribute_metadata.glob_rewrite_set_matches ~pattern ~replacement text)));
 }
 let glob_literal : Flow.Op.t = {
   glob_error with name="text/glob_literal";
@@ -541,4 +567,4 @@ let concat : Flow.Op.t = {
 let all = Flow_ir.Operators.all @ [attr; attr_checked; with_attr; has_attr; delete_attr; count; edges; topology; adjacency; triangles; components; shortest_paths; forest; color; chains; mesh; mesh_planes; remap; concat; attr_planes; with_planes;
   group; group_order; group_names; group_entries; with_group; context_seed; provenance_base; context_frame; context_time;
   rename_attr;swap_attr;delete_attrs;rename_group;delete_group;rename_edge;delete_edge;attr_type;attr_names;attr_entries;
-  glob_error;float_g17;glob_rewrite_error;glob_rewrite;glob_literal;group_name_valid;group_name_forced]
+  glob_error;float_g17;glob_rewrite_error;glob_rewrite;glob_rewrite_set_error;glob_rewrite_set;glob_rewrite_set_matches;glob_literal;group_name_valid;group_name_forced]

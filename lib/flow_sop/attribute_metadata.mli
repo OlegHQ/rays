@@ -18,4 +18,8 @@ val entries : owner:Rdk.Attribute.owner option -> component:string -> Rdk.Geomet
 val resolve : geometry:(int -> Rdk.Geometry.t option) -> Flow.Eval.value -> (Flow.Eval.value, Flow.Diagnostic.t) result
 val glob_rewrite : pattern:string -> replacement:string -> string ->
   (string, Flow.Diagnostic.t) result
+val glob_rewrite_set : pattern:string -> replacement:string -> string ->
+  (string, Flow.Diagnostic.t) result
+val glob_rewrite_set_matches : pattern:string -> replacement:string -> string ->
+  (bool, Flow.Diagnostic.t) result
 val glob_literal : string -> (string, Flow.Diagnostic.t) result

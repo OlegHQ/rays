@@ -1021,6 +1021,54 @@ export function text_glob_error(pattern) {
   try { attributePattern(pattern); return ''; }
   catch (failure) { if (failure instanceof Fail) return failure.message; throw failure; }
 }
+// Aligned rename set: whitespace-separated terms with backslash escapes, each positive source term paired with
+// one replacement term, the last matching rename winning (native Attribute_pattern.compile_rewrite_set).
+function metadataRewriteSet(pattern, replacement) {
+  const fail = message => err('E_METADATA_PATTERN', message);
+  const whitespace = c => ' \t\n\r\f'.includes(c);
+  const terms = source => {
+    const raw = Array.from(textBytes(source), n => String.fromCharCode(n)).join(''), output = [];
+    let index = 0;
+    while (index < raw.length) {
+      while (index < raw.length && whitespace(raw[index])) index++;
+      if (index === raw.length) break;
+      let token = '', escaped = false;
+      while (index < raw.length && (escaped || !whitespace(raw[index]))) {
+        const c = raw[index++]; token += c;
+        escaped = !escaped && c === '\\';
+      }
+      if (escaped) fail('Attribute_pattern: dangling backslash escape');
+      output.push(textOfBytes(Uint8Array.from(token, character => character.charCodeAt(0))));
+    }
+    return output;
+  };
+  const sources = terms(pattern), replacements = terms(replacement), positive = [];
+  sources.forEach((token, index) => {
+    try { attributePattern(token); }
+    catch (failure) {
+      if (failure instanceof Fail) fail(`Attribute_pattern: rewrite source term ${index + 1}: ${
+        failure.message.replace(/^Attribute_pattern: term 1: /, '')}`);
+      throw failure;
+    }
+    if (!token.startsWith('^')) positive.push(token);
+  });
+  if (positive.length === 0) fail('Attribute_pattern: rewrite pattern has no positive terms');
+  if (positive.length !== replacements.length) fail(
+    `Attribute_pattern: rewrite term count differs (${positive.length} positive source, ${replacements.length} replacement)`);
+  const rules = positive.map((token, index) => metadataRewrite(token, replacements[index]));
+  return name => { let output = null; for (const rule of rules) { const value = rule(name); if (value !== null) output = value; } return output; };
+}
+export function text_glob_rewrite_set_error(pattern, replacement) {
+  if (typeof pattern !== 'string' || typeof replacement !== 'string') err('E_METADATA_TEXT', 'Metadata names and patterns must be text.');
+  try { metadataRewriteSet(pattern, replacement); return ''; }
+  catch (failure) { if (failure instanceof Fail) return failure.message; throw failure; }
+}
+export function text_glob_rewrite_set(pattern, replacement, text) {
+  if ([pattern, replacement, text].some(value => typeof value !== 'string'))
+    err('E_METADATA_TEXT', 'Metadata names and patterns must be text.');
+  try { return metadataRewriteSet(pattern, replacement)(text) ?? text; }
+  catch (failure) { if (failure instanceof Fail) err('E_METADATA_PATTERN', failure.message); throw failure; }
+}
 export function text_glob_rewrite_error(pattern, replacement) {
   if (typeof pattern !== 'string' || typeof replacement !== 'string') err('E_METADATA_TEXT', 'Metadata names and patterns must be text.');
   try { metadataRewrite(pattern, replacement); return ''; }
@@ -1030,6 +1078,12 @@ export function text_glob_rewrite(pattern, replacement, text) {
   if ([pattern, replacement, text].some(value => typeof value !== 'string'))
     err('E_METADATA_TEXT', 'Metadata names and patterns must be text.');
   try { return metadataRewrite(pattern, replacement)(text) ?? text; }
+  catch (failure) { if (failure instanceof Fail) err('E_METADATA_PATTERN', failure.message); throw failure; }
+}
+export function text_glob_rewrite_set_matches(pattern, replacement, text) {
+  if ([pattern, replacement, text].some(value => typeof value !== 'string'))
+    err('E_METADATA_TEXT', 'Metadata names and patterns must be text.');
+  try { return metadataRewriteSet(pattern, replacement)(text) !== null; }
   catch (failure) { if (failure instanceof Fail) err('E_METADATA_PATTERN', failure.message); throw failure; }
 }
 export function text_glob_literal(text) {
