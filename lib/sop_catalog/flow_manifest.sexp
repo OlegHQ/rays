@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "e0aa803fdf1e6cce0dac13cee84a1b7d")
+  (digest "0249541c4822f5d5d70966286f6bf243")
   (kinds
     (kind "sop/switch"
       (key "switch")
@@ -504,21 +504,6 @@
         (field "maximum" "Maximum" (folder "Outputs") (text) (text "") (primary false) (vec3))
         (field "curvedness" "Curvedness" (folder "Outputs") (text) (text "") (primary false) (vec3))
         (field "shape_index" "Shape index" (folder "Outputs") (text) (text "") (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/attribute_laplacian"
-      (key "attribute_laplacian")
-      (aliases)
-      (operation "attribute_laplacian")
-      (label "Attribute Laplacian")
-      (category "Attribute" "Filter")
-      (slots (slot "in0" required))
-      (fields
-        (field "point_group" "Point group" (folder) (text) (text "") (primary false) (vec3))
-        (field "weighting" "Weighting" (folder) (choice "Cotangent" "Positive cotangent" "Uniform") (choice "Cotangent") (primary false) (vec3))
-        (field "normalize" "Normalize" (folder) (bool) (bool true) (primary false) (vec3))
-        (field "source" "Source attribute" (folder) (text) (text "P") (primary false) (vec3))
-        (field "output" "Output attribute" (folder) (text) (text "laplacian") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/convex_hull"
@@ -1409,6 +1394,22 @@
         (field "fade_in_ramp" "Fade in ramp" (folder) (text) (text "0:0,1:1") (primary false) (vec3) (description "Comma-separated position:value knots spanning 0 to 1; blank is linear."))
         (field "fade_out_ramp" "Fade out ramp" (folder) (text) (text "0:1,1:0") (primary false) (vec3) (description "Comma-separated position:value knots spanning 0 to 1; blank is inverse linear."))
         (field "visualize" "Visualize fade" (folder "Output") (bool) (bool false) (primary false) (vec3)))
+      (outputs (output "geo" geometry))
+      (body lisp)
+      (calls))
+    (kind "sop/attribute_laplacian"
+      (key "attribute_laplacian")
+      (aliases)
+      (operation "attribute_laplacian")
+      (label "Attribute Laplacian")
+      (category "Attribute" "Filter")
+      (slots (slot "in0" required))
+      (fields
+        (field "point_group" "Point group" (folder) (text) (text "") (primary false) (vec3))
+        (field "weighting" "Weighting" (folder) (choice "Cotangent" "Positive cotangent" "Uniform") (choice "Cotangent") (primary false) (vec3))
+        (field "normalize" "Normalize" (folder) (bool) (bool true) (primary false) (vec3))
+        (field "source" "Source attribute" (folder) (text) (text "P") (primary false) (vec3))
+        (field "output" "Output attribute" (folder) (text) (text "laplacian") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (body lisp)
       (calls))

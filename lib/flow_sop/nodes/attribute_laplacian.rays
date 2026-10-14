@@ -2,8 +2,7 @@
 ; sop/adjacency) or cotangent (the ear-clipped triangulation of each polygon, cotangent weights, mixed Voronoi
 ; areas), optionally normalised and limited to a point group. Sums run per point in the native incidence order by
 ; counted rounds so the arithmetic keeps its order and its arm64 multiply-add fusion.
-; Limits: polygons are triangulated by clipping the first ear (exact for convex polygons and triangles);
-; the per-point fan connectivity walk of Topology_index is not repeated (manifold counts and winding are).
+; Limits: the per-point fan connectivity walk of Topology_index is not repeated (manifold counts and winding are).
 (defn lap_error :context value [(reason : text)]
   (error "invalid_laplacian" "attribute_laplacian could not produce valid geometry"
     :cause (str "attribute_laplacian [invalid_laplacian]: " reason)))
@@ -178,8 +177,8 @@
            :out (exact (map (fn [(p : int) (c : int) (o : float)]
                   (if (int/lt c 0) o
                     (let* [center (array/nth plane p)]
-                      (fma (array/nth wb c) (- (array/nth plane (array/nth nb c)) center)
-                        (fma (array/nth wa c) (- (array/nth plane (array/nth na c)) center) o)))))
+                      (+ (+ o (* (array/nth wa c) (- (array/nth plane (array/nth na c)) center)))
+                        (* (array/nth wb c) (- (array/nth plane (array/nth nb c)) center))))))
                   indices corner state.out))}))) :out)))
 (defn lap_vec_diff :context value [(a : vec3) (b : vec3)] (- a b))
 (defn lap_sumsq :context value [(d : vec3)] (fma d.z d.z (fma d.y d.y (* d.x d.x))))
@@ -191,28 +190,12 @@
          points (sop/count geo :points)
          prims (sop/count geo :primitives)
          positions (sop/attr geo :P)
-         starts (array/slice topo.primitive_offsets 0 prims)
-         ends (array/slice topo.primitive_offsets 1 prims)
-         sizes (exact (map (fn [(a : int) (b : int)] (int/sub b a)) starts ends))
-         counts (exact (map (fn [(n : int)] (int/sub n 2)) sizes))
-         tri_offsets (array/scan_sum counts)
-         tri_prim (lap_rows counts)
-         triangles (array/sum counts)
-         tri_range (array/range triangles :type int)
-         local (exact (map (fn [(tri : int) (p : int)] (int/sub tri (array/nth tri_offsets p))) tri_range tri_prim))
-         ; first clipped ear per polygon: (last, j, j+1) while j < size - 3, then the remaining triangle
-         slot_a (exact (map (fn [(p : int) (j : int)]
-           (if (int/lt j (int/sub (array/nth sizes p) 3)) (int/add (array/nth starts p) (int/sub (array/nth sizes p) 1))
-             (int/add (array/nth starts p) (int/sub (array/nth sizes p) 3)))) tri_prim local))
-         slot_b (exact (map (fn [(p : int) (j : int)]
-           (if (int/lt j (int/sub (array/nth sizes p) 3)) (int/add (array/nth starts p) j)
-             (int/add (array/nth starts p) (int/sub (array/nth sizes p) 2)))) tri_prim local))
-         slot_c (exact (map (fn [(p : int) (j : int)]
-           (if (int/lt j (int/sub (array/nth sizes p) 3)) (int/add (array/nth starts p) (int/add j 1))
-             (int/add (array/nth starts p) (int/sub (array/nth sizes p) 1)))) tri_prim local))
-         ta (int_gather topo.vertex_points slot_a)
-         tb (int_gather topo.vertex_points slot_b)
-         tc (int_gather topo.vertex_points slot_c)
+         ; Rdk's shared ear clipper, exactly the native surface metric's triangulation
+         tris (sop/triangles geo)
+         triangles (array/count tris.primitive)
+         ta (int_gather topo.vertex_points tris.a)
+         tb (int_gather topo.vertex_points tris.b)
+         tc (int_gather topo.vertex_points tris.c)
          scale (if (int/eq points 0) 0.0 (array/max (exact (map (fn [(p : vec3) ]
                    (max (abs p.x) (max (abs p.y) (abs p.z)))) positions))))
          safe (if (= scale 0.0) 1.0 scale)
@@ -276,6 +259,7 @@
          ow (lap_cotan_plane sw offsets order corners_at rounds na nb wa wb corner_point)]
     (cond
       (and (int/gt triangles 0) (= scale 0.0)) {:ok false :reason "surface triangles are metrically degenerate" :x sx :y sy :z sz :w sw}
+      (int/lt (array/sum tris.ok) (array/count tris.ok)) {:ok false :reason "polygon triangulation failed" :x sx :y sy :z sz :w sw}
       (int/gt bad_triangles 0)
         {:ok false :reason "surface contains a degenerate or numerically unrepresentable triangle" :x sx :y sy :z sz :w sw}
       (int/gt bad_area 0) {:ok false :reason "cotangent laplacian output is not finite" :x sx :y sy :z sz :w sw}
