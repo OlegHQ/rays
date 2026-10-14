@@ -1,6 +1,5 @@
-(* sop/group_range: one geometry input.
-   Cases that need a connectivity seam source (connectivity attributes or a collision group) are
-   not listed: the draft refuses them with E_UNSUPPORTED because sop/components cannot take seams. *)
+(* sop/group_range: one geometry input. Seam sources (connectivity attributes, collision groups of each owner,
+   both together, keep boundary, tolerance) are listed under "Connected with seams". *)
 open Rdk
 open Port_gate
 module P = Param
@@ -53,6 +52,33 @@ let cases =
       "connected base", ["connectivity_mode", c "Connected with seams"; "base", s "a"; "end_", i 1];
       "connected bad collision", ["connectivity_mode", c "Connected with seams"; "use_collision", b true; "collision_pattern", s " "]])
     owners
+let seams_cases =
+  let connected = ["connectivity_mode", c "Connected with seams"] in
+  List.concat_map (fun owner ->
+    List.map (fun (label, changes) -> Printf.sprintf "%s seams %s" owner label, ("owner", c owner) :: connected @ changes) [
+      "attribute float", ["connectivity_attributes", s "float"; "end_", i 3];
+      "attribute many", ["connectivity_attributes", s "float vec3 text"; "end_", i 2; "use_region", b true; "region", i 1];
+      "attribute integer", ["connectivity_attributes", s " integer "; "end_", i 1; "invert", b true];
+      "attribute star", ["connectivity_attributes", s "*"; "end_", i 3];
+      "attribute tolerance", ["connectivity_attributes", s "float vec2"; "connectivity_tolerance", Param.Float_value 1.0; "end_", i 2];
+      "attribute nothing", ["connectivity_attributes", s "zzz"];
+      "attribute bad pattern", ["connectivity_attributes", s "["];
+      "attribute base", ["connectivity_attributes", s "float"; "base", s "a"; "end_", i 3];
+      "attribute partition", ["connectivity_attributes", s "float"; "range_mode", c "Partition"; "partitions", i 2; "partition", i 1]]
+    @ List.concat_map (fun collision ->
+      List.map (fun (label, changes) -> Printf.sprintf "collision %s %s" collision label,
+        ["use_collision", b true; "collision_owner", c collision] @ changes) [
+        "a", ["collision_pattern", s "a"; "end_", i 3];
+        "keep", ["collision_pattern", s "a"; "keep_boundary", b true; "end_", i 3];
+        "multi", ["collision_pattern", s "dest_a old_x"; "end_", i 2];
+        "star", ["collision_pattern", s "*"; "end_", i 3; "use_region", b true; "region", i 0];
+        "none", ["collision_pattern", s "zzz"; "end_", i 3];
+        "bad pattern", ["collision_pattern", s "["];
+        "with attributes", ["collision_pattern", s "a"; "connectivity_attributes", s "float"; "end_", i 3];
+        "remove", ["collision_pattern", s "dest_a"; "remove_other_regions", b true; "use_region", b true; "region", i 0]])
+      owners) owners
+
+let cases = cases @ seams_cases
 let bench () =
   let grid = Plane_generators.grid ~connectivity:Grid_quads ~columns:700 ~rows:700 ~size:8. () |> Rdk_test_support.get_ok in
   [grid], ["owner", c "Primitives"; "end_", i 300000; "use_filter", b true; "filter_of", i 3]

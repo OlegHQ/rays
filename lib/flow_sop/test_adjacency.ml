@@ -82,3 +82,40 @@ let () =
       [ "edges", Rdk.Analysis.Connectivity_points, Rdk.Group.Point, G.point_count geometry;
         "points", Rdk.Analysis.Connectivity_primitives, Rdk.Group.Primitive, G.primitive_count geometry ])
     (fixtures ())
+
+(* sop/components :seams, a 0/1 edge mask: ids and count equal Analysis.classify_connectivity with the
+   same seam edge group (alone and with a mask), and a bad mask is E_COMPONENTS_SEAMS. *)
+let () =
+  List.iter (fun (_, geometry) ->
+    let topology = G.topology geometry in
+    let index = Rdk.Topology_index.create topology in
+    let edges = Rdk.Topology_index.edge_count index in
+    let seam_bit i = i mod 3 = 1 in
+    let seams = Rdk.Edge_group.init ~topology ~index ~name:"seams" seam_bit in
+    let seam_text = Printf.sprintf
+      "(exact (map (fn [(i : int)] (if (int/eq (int/mod i 3) 1) 1 0)) (array/range %d :type int)))" edges in
+    List.iter (fun (over, owner, group_owner, count) ->
+      let classify mask =
+        let group = Option.map (fun mask -> Rdk.Group.init ~owner:group_owner ~name:"m" count
+          (fun i -> mask.(i) = 1)) mask in
+        let primitives, points = if owner = Rdk.Analysis.Connectivity_primitives then group, None else None, group in
+        let ids, n = Rdk.Analysis.classify_connectivity ?primitives ?points ~seams owner geometry |> ok_error in
+        E.Record ["id", ints ids; "count", E.Int n] in
+      if edges > 0 then begin
+        agree geometry (Printf.sprintf "(sop/components geo :over \"%s\" :seams %s)" over seam_text) (classify None);
+        let mask = Array.init count (fun i -> if i mod 4 = 2 then 0 else 1) in
+        if count > 0 then
+          agree geometry (Printf.sprintf
+            "(sop/components geo :over \"%s\" :seams %s :mask (exact (map (fn [(i : int)] (if (int/eq (int/mod i 4) 2) 0 1)) (array/range %d :type int))))"
+            over seam_text count) (classify (Some mask))
+      end)
+      [ "edges", Rdk.Analysis.Connectivity_points, Rdk.Group.Point, G.point_count geometry;
+        "points", Rdk.Analysis.Connectivity_primitives, Rdk.Group.Primitive, G.primitive_count geometry ];
+    let refused body code =
+      let value, resolve = evaluate geometry body in
+      match E.Private.force_reference ~resolve value ~live:(Frame_input.at_time 0.25) with
+      | Error d -> assert (d.code = code) | Ok _ -> assert false in
+    refused (Printf.sprintf "(sop/components geo :seams (array/int %d 0))" (edges + 1)) "E_COMPONENTS_SEAMS";
+    if edges > 0 then refused (Printf.sprintf "(sop/components geo :seams (array/int %d 2))" edges) "E_COMPONENTS_SEAMS")
+    (fixtures ());
+  print_endline "Components seams: edge mask equals Analysis.classify_connectivity with seams, alone and masked"

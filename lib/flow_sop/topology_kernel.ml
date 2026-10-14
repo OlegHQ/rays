@@ -45,15 +45,29 @@ let components geometry args =
           else Ok (Some (Rdk.Group.init ~owner:group_owner ~name:"mask" count (fun i -> mask.(i) = 1)))
       | Some (E.Int_array _) -> error "E_COMPONENTS_MASK" "Components mask length differs from the labelled element count."
       | Some _ -> error "E_COMPONENTS_MASK" "Components mask is an integer array." in
+    (* [:seams] is a 0/1 edge mask (one entry per [sop/edges] edge): a seam edge joins nothing, and
+       primitives are then joined along shared non-seam edges instead of shared points. *)
+    let seams = match List.assoc_opt "seams" args with
+      | None -> Ok None
+      | Some (E.Int_array mask) ->
+          let topology = G.topology geometry in
+          let index = Rdk.Topology_index.create topology in
+          if Array.length mask <> Rdk.Topology_index.edge_count index then
+            error "E_COMPONENTS_SEAMS" "Components seams length differs from the edge count."
+          else if Array.exists (fun bit -> bit <> 0 && bit <> 1) mask then
+            error "E_COMPONENTS_SEAMS" "Components seams hold only 0 and 1."
+          else Ok (Some (Rdk.Edge_group.init ~topology ~index ~name:"seams" (fun i -> mask.(i) = 1)))
+      | Some _ -> error "E_COMPONENTS_SEAMS" "Components seams is an integer array." in
+    Result.bind seams (fun seams ->
     Result.bind group (fun group ->
       let primitives = if owner = Rdk.Analysis.Connectivity_primitives then group else None
       and points = if owner = Rdk.Analysis.Connectivity_points then group else None in
-      match Rdk.Analysis.classify_connectivity ?primitives ?points owner geometry with
+      match Rdk.Analysis.classify_connectivity ?primitives ?points ?seams owner geometry with
       | Error e -> error "E_COMPONENTS" (Rdk.Error.to_string e)
       | Ok (ids, n) -> (match List.assoc_opt "component" args with
           | Some (E.Text "count") -> Ok (E.Int n)
           | Some (E.Text "id") -> Ok (E.Int_array ids)
-          | _ -> error "E_DATA_SOURCE" "Components source requires id or count.")))
+          | _ -> error "E_DATA_SOURCE" "Components source requires id or count."))))
 
 (* Flow arrays remain reusable immutable inputs: owned native constructors
    receive copies, never the evaluator's retained input buffers. *)

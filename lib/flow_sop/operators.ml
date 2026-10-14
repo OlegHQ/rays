@@ -161,7 +161,7 @@ let components_type=Flow.Ty.Record["id",Array Int;"count",Int]
 let components : Flow.Op.t = {
   edges with name="sop/components";
   signature={pos=["geometry",Flow.Ty.geometry];opt=[];rest=None;
-    kw=["over",Flow.Ty.Text;"mask",Flow.Ty.Array Flow.Ty.Int]};
+    kw=["over",Flow.Ty.Text;"mask",Flow.Ty.Array Flow.Ty.Int;"seams",Flow.Ty.Array Flow.Ty.Int]};
   out=(fun _->components_type);choices=["over",["edges";"points"]];
   check=(fun args->Option.iter(function
     | Flow.Value.Text("edges"|"points")->()

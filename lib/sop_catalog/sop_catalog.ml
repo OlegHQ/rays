@@ -51,7 +51,6 @@ module Group_from_attribute_boundary = Sop.Nodes.Group_from_attribute_boundary [
 module Group_transfer = Sop.Nodes.Group_transfer [@@sop.register]
 module Group_combine = Sop.Nodes.Group_combine [@@sop.register]
 module Group_expand = Sop.Nodes.Group_expand [@@sop.register]
-module Group_range = Sop.Nodes.Group_range [@@sop.register]
 module Group_ranges = Sop.Nodes.Group_ranges [@@sop.register]
 module Group_find_path = Sop.Nodes.Group_find_path [@@sop.register]
 module Poly_cut = Sop.Nodes.Poly_cut [@@sop.register]

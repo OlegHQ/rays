@@ -1,7 +1,7 @@
-; Group Range draft. Every range mode, base, filter, invert and merge is here, plus connectivity
-; "Disconnected regions" and "Connected with seams" without seam sources. A seam source
-; (connectivity attributes or a collision group) needs sop/components to accept an edge mask of
-; seams, which the language does not have yet; that case is refused with E_UNSUPPORTED.
+; Group Range. Every range mode, base, filter, invert and merge is here, plus connectivity
+; "Disconnected regions" and "Connected with seams". The seam edges (attribute boundary, collision
+; group boundary) come from the native sop/group_from_attribute_boundary kind; sop/components takes
+; them as :seams and the collision-free elements as :mask.
 (defn group_range_error :context value [(reason : text)]
   (error "invalid_group" "group_range could not produce valid geometry"
     :cause (str "group_range [invalid_group]: " reason)))
@@ -44,6 +44,20 @@
                          (group_range_positive_mod offset of)) of)
               select)))
 
+; Include_any promotion of an edge mask to points or primitives (Group_ops.promote_predicate).
+(defn group_range_promote_edges :context sop
+  [(geo : geometry) (owner : text) (mask : (array int))]
+  (let* [adjacency (sop/adjacency geo)
+         topology (sop/topology geo)
+         edges (sop/count geo :edges)
+         padded (array/concat mask (array/int 1 0))]
+    (if (equal? owner "Points")
+      (exact (map (fn [(h : int)] (if (int/gt h 0) 1 0))
+        (array/scatter_add (array/concat adjacency.edge_a adjacency.edge_b) (array/concat mask mask) (sop/count geo :points))))
+      (exact (map (fn [(h : int)] (if (int/gt h 0) 1 0))
+        (array/segment_sum (exact (map (fn [(e : int)] (array/nth padded (if (int/ge e 0) e edges)))
+                              adjacency.edge_of_vertex)) topology.primitive_offsets))))))
+
 (defnode sop/group_range :label "Group Range" :category ["Group" "Create"]
   [(in0 : geometry)
    (owner : text "Points" :label "Group type" :choices ["Points" "Vertices" "Primitives" "Edges"])
@@ -83,8 +97,7 @@
          mode_index (case range_mode "Start and end" 0 "From ends" 1 "Start and length" 2 :else 3)
          trimmed_base (text/trim base)
          connected (not (equal? connectivity_mode "None"))
-         seam_source (and (equal? connectivity_mode "Connected with seams")
-                       (or use_collision (not (equal? (text/trim connectivity_attributes) ""))))]
+         use_seams (equal? connectivity_mode "Connected with seams")]
     (cond
       (text/blank? name) (group_range_error "Group Range: empty output name")
       (and connected (or (equal? owner "Vertices") (equal? owner "Edges")))
@@ -97,7 +110,6 @@
         (group_range_error "Group Range: relative offsets must be non-negative")
       (and (not (equal? trimmed_base "")) (not (equal? (text/glob_error trimmed_base) "")))
         (group_range_error (text/glob_error trimmed_base))
-      seam_source (error "E_UNSUPPORTED" "Group Range: seam sources need sop/components to accept an edge mask")
       :else
       (let* [elements (array/range total :type int)
              lo (group_range_bound mode_index total start end_ end_offset length partition partitions 0)
@@ -106,7 +118,44 @@
                      (if (let* [in_range (and (and (int/ge i lo) (int/le i hi))
                                            (group_range_filter use_filter i lo filter_select filter_of filter_offset))]
                            (if invert (not in_range) in_range)) 1 0)) elements))
-             components (sop/components in0 :over (if (equal? owner "Points") "edges" "points"))
+             over_text (if (equal? owner "Points") "edges" "points")
+             attr_pattern (text/trim connectivity_attributes)
+             attr_owner (if (equal? owner "Points") "point" "primitive")
+             collision_kind (case collision_owner "Points" "point" "Vertices" "vertex" "Primitives" "primitive" :else "edge")
+             edge_total (sop/count in0 :edges)
+             no_edges (array/int edge_total 0)
+             attr_seams (if (and use_seams (not (text/blank? attr_pattern)))
+               (sop/group (sop/group_from_attribute_boundary in0 :owner "Edges" :name "__rdk_range_attr_edges"
+                            :attributes (text/table_encode (list (list attr_owner attr_pattern)))
+                            :tolerance connectivity_tolerance)
+                 :name "__rdk_range_attr_edges" :owner "edge")
+               no_edges)
+             use_collision_seams (and use_seams use_collision)
+             collision_total (case collision_kind "point" (sop/count in0 :points) "vertex" (sop/count in0 :vertices)
+                               "primitive" (sop/count in0 :primitives) :else edge_total)
+             collision_selected (if use_collision_seams
+               (fold [acc (array/int collision_total 0)] [group (sop/group_names in0 collision_pattern :owner collision_kind)]
+                 (exact (map (fn [(a : int) (b : int)] (int/or a b)) acc (sop/group in0 :name group :owner collision_kind))))
+               (array/int collision_total 0))
+             collision_edges (cond
+               (not use_collision_seams) no_edges
+               (equal? collision_kind "edge") collision_selected
+               :else (sop/group (sop/group_from_attribute_boundary
+                                  (sop/with_attr in0 "__rdk_membership" collision_selected :owner collision_kind :type int)
+                                  :owner "Edges" :name "__rdk_range_collision_edges"
+                                  :attributes (text/table_encode (list (list collision_kind "__rdk_membership"))))
+                                :name "__rdk_range_collision_edges" :owner "edge"))
+             seam_mask (exact (map (fn [(a : int) (b : int)] (int/or a b)) attr_seams collision_edges))
+             has_seams (int/gt (array/sum seam_mask) 0)
+             has_mask (and use_collision_seams (not keep_boundary))
+             included (if has_mask
+               (exact (map (fn [(h : int)] (int/sub 1 h)) (group_range_promote_edges in0 owner collision_edges)))
+               (array/int total 1))
+             components (cond
+               (and has_seams has_mask) (sop/components in0 :over over_text :seams seam_mask :mask included)
+               has_seams (sop/components in0 :over over_text :seams seam_mask)
+               has_mask (sop/components in0 :over over_text :mask included)
+               :else (sop/components in0 :over over_text))
              ids components.id
              sizes (array/scatter_add ids (array/int total 1) components.count)
              starts (array/scan_sum sizes)
