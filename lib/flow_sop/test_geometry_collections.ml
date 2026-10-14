@@ -45,7 +45,7 @@ let ()=
      "filter-map", "(let* [picked (filter (fn [(geo : geometry)] true) parts)] (sop/merge (map (fn [(geo : geometry)] (nth (list geo) (int/mod (frame/index) 1))) picked)))"];
   List.iter(fun(body,code)->
     let text=Printf.sprintf "(workspace forbidden (defnode sop/forbidden [(parts : geometry :rest true)] %s) (graph g :context sop (sop/forbidden (sop/line))))"body in
-    let _,diagnostics=Flow_sop.Catalog.check_workspace ~ops:Flow_sop.Operators.all
+    let _,diagnostics=Flow_sop.Catalog.check_workspace ~sources:(Flow_sop.Catalog.sources ()|>flow) ~ops:Flow_sop.Operators.all
       (Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version factories|>flow)
       (Flow.Syntax.parse text|>flow)in
     check(List.exists(fun(d:Flow.Diagnostic.t)->d.code=code)diagnostics)
