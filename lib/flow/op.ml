@@ -754,6 +754,10 @@ let all = frame @ arrays @ reductions @ draw @ host @ integers @ images @ [
       let input n=fin name(num(List.assoc n args)) in
       let a=input "a" and b=input "b" and c=input "c" in
       Float(fin name(Float.fma a b c))};
+  mk ~category:"Math" "float/next_after" ["x",Ty.Float;"y",Ty.Float] (fun _->Ty.Float)
+    {run=fun ~name ~node:_ args ->
+      let x=fin name(num(List.assoc "x" args)) and y=fin name(num(List.assoc "y" args)) in
+      Float(fin name(Float.next_after x y))};
   mk ~category:"Math" "float/mul_checked" ["a",Ty.Float;"b",Ty.Float]
     (fun _ -> Ty.Record ["value",Ty.Float;"valid",Ty.Bool])
     {run=fun ~name ~node:_ args ->

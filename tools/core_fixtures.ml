@@ -40,7 +40,7 @@ let inventory = [
   Sequence_length; Sequence_get; Sequence_build; Sequence_slice; Sequence_concat;
   Array_reduce Minimum; Array_reduce Maximum; Array_segment Sum; Array_segment Minimum; Array_segment Maximum; Array_segment_argmax;
   Array_grade; Array_index_of; Array_compact; Array_scan_sum; Array_scatter_add; Array_max_length; Array_range; Array_int; Array_text; Array_float; Array_vec3; Array_vec4; Array_nth; Array_count; Array_slice; Array_concat;
-  Rand; Rand_at; Fma; Checked_mul; Checked_fma; Noise3; Color_parse; Color_byte Clamped; Coerce T.Any; Truthy; Error; Fail ("", "") ]
+  Rand; Rand_at; Fma; Next_after; Checked_mul; Checked_fma; Noise3; Color_parse; Color_byte Clamped; Coerce T.Any; Truthy; Error; Fail ("", "") ]
 
 let export name = match name with
   | "+" -> "add" | "-" -> "sub" | "*" -> "mul" | "/" -> "div" | "<" -> "lt" | "<=" -> "le"
@@ -111,6 +111,7 @@ let arg_name prim i = match prim, i with
   | Array_reduce _, _ -> "array"
   | Rand_at, 0 -> "seed" | Rand_at, _ -> "index"
   | Fma, _ | Checked_fma, _ | Checked_mul, _ -> [|"a";"b";"c"|].(i)
+  | Next_after, _ -> if i = 0 then "x" else "y"
   | Error, 0 -> "code" | Error, 1 -> "message" | Error, _ -> "cause"
   | Array_grade, _ -> [|"keys";"descending"|].(i) | Array_index_of, _ -> [|"keys";"queries"|].(i)
   | Array_compact, _ -> "mask" | Array_scan_sum, _ -> "array"
@@ -439,6 +440,12 @@ arr1[0.;-0.;0.];arr1[1e16;1.;-1e16];
     [Float.min_float;0.5;0.];[Int64.float_of_bits 1L;0.5;0.];
     [infinity;0.;1.];[1.;nan;0.];[1.;1.;neg_infinity]]);
   add C.Fma [txt "bad";flt_ 1.;flt_ 0.];
+  List.iter (add C.Next_after) (List.map (List.map flt_) [
+    [1.;2.];[1.;0.];[1.;1.];[-1.;-2.];[-1.;0.];[0.;1.];[0.;-1.];[-0.;1.];[0.;-0.];[-0.;0.];
+    [Float.max_float;0.];[-.Float.max_float;0.];[Float.max_float;Float.max_float];
+    [Int64.float_of_bits 1L;0.];[Int64.float_of_bits 1L;1.];[-.Int64.float_of_bits 1L;-1.];[0.;Int64.float_of_bits 1L];
+    [Float.min_float;0.];[-.Float.min_float;0.];[1.;infinity];[nan;1.];[1.;nan];[1e300;-1e300]]);
+  add C.Next_after [txt "bad";flt_ 1.];
   List.iter(fun(a,b,c)->
     add C.Checked_mul[flt_ a;flt_ b];
     add C.Checked_fma[flt_ a;flt_ b;flt_ c]) [
@@ -1411,7 +1418,7 @@ let fields=["points",E.Int_array[|0;1;2|];"vertices",E.Int_array[|0;1;2|];
 remap_case source changed_p fields;
 remap_case source unrelated fields;
   (* write *)
-  assert (List.length inventory = 101);
+  assert (List.length inventory = 102);
   if not (Sys.file_exists outdir) then Sys.mkdir outdir 0o755;
   List.iter (fun name ->
     let body = String.concat ",\n" (List.rev !(Hashtbl.find cases name)) in
