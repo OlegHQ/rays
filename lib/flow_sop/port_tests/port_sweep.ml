@@ -26,10 +26,70 @@ let axes_profile () =
     ~primitive_kinds:[|Topology.Open_polyline|] |> ok in
   Geometry.create ~positions ~topology () |> ok
 
+(* Backbones carrying the optional frame attributes (point owner), over the curves of [backbone ()]. *)
+let planes n f = Array.init n f
+let with_point name storage geometry = add Attribute.Point name storage geometry
+let f3 n fx fy fz = Attribute.Float3 (Packed.Float3.of_owned ~x:(planes n fx) ~y:(planes n fy) ~z:(planes n fz) |> ok)
+let f4 n fx fy fz fw = Attribute.Float4 (Packed.Float4.of_owned ~x:(planes n fx) ~y:(planes n fy) ~z:(planes n fz)
+  ~w:(planes n fw) |> ok)
+let npoints g = Geometry.point_count g
+let with_pscale g = with_point "pscale" (Attribute.Float (planes (npoints g) (fun i -> 0.6 +. 0.15 *. float (i mod 4)))) g
+let with_scale g = with_point "scale" (f3 (npoints g) (fun i -> 0.8 +. 0.1 *. float (i mod 3)) (fun i -> 1.2 -. 0.05 *. float (i mod 5))
+  (fun i -> 0.5 +. 0.2 *. float (i mod 2))) g
+let with_normals g = with_point "N" (f3 (npoints g) (fun i -> 0.2 *. sin (float i)) (fun i -> 0.3 +. 0.1 *. float (i mod 3))
+  (fun i -> 1. +. 0.1 *. cos (float i))) g
+let with_up g = with_point "up" (f3 (npoints g) (fun i -> 0.1 *. float (i mod 4)) (fun i -> 1. -. 0.1 *. float (i mod 3))
+  (fun i -> 0.3 *. sin (float (i + 1)))) g
+let with_orient g = with_point "orient" (f4 (npoints g) (fun i -> 0.3 *. sin (float i)) (fun i -> 0.2 *. cos (float (2 * i)))
+  (fun i -> 0.1 *. float (i mod 3)) (fun i -> 0.8 +. 0.1 *. float (i mod 2))) g
+let attr_backbone () = backbone () |> with_pscale |> with_scale
+
+(* Refusals: a polygon, a zero-length edge, a reversal, bad optional attributes. *)
+let polygon_backbone () = decorate (polygon_polyline ())
+let degenerate_backbone () =
+  let positions = Packed.Float3.of_owned ~x:[|0.; 1.; 1.; 2.|] ~y:[|0.; 0.; 0.; 1.|] ~z:[|0.; 0.; 0.; 0.|] |> ok in
+  let topology = Topology.create_owned ~point_count:4 ~vertex_points:[|0;1;2;3|] ~primitive_offsets:[|0;4|]
+    ~primitive_kinds:[|Topology.Open_polyline|] |> ok in
+  Geometry.create ~positions ~topology () |> ok
+let reversal_backbone () =
+  let positions = Packed.Float3.of_owned ~x:[|0.; 1.; 0.2|] ~y:[|0.; 0.; 0.|] ~z:[|0.; 0.; 0.|] |> ok in
+  let topology = Topology.create_owned ~point_count:3 ~vertex_points:[|0;1;2|] ~primitive_offsets:[|0;3|]
+    ~primitive_kinds:[|Topology.Open_polyline|] |> ok in
+  Geometry.create ~positions ~topology () |> ok
+let nan_pscale () = with_point "pscale" (Attribute.Float (Array.make 4 Float.nan)) (small_backbone ())
+let int_pscale () = with_point "pscale" (Attribute.Int (Array.make 4 1)) (small_backbone ())
+let zero_normal () = with_point "N" (f3 4 (fun _ -> 0.) (fun _ -> 0.) (fun _ -> 0.)) (small_backbone ())
+let parallel_up () = (* the up vector equals the first tangent direction approximately: exactly along the edge *)
+  let g = small_backbone () in
+  let v = Packed.Float3.Private.view (Geometry.positions g) in
+  with_point "up" (f3 4 (fun i -> v.x.(min (i + 1) 3) -. v.x.(i)) (fun i -> v.y.(min (i + 1) 3) -. v.y.(i))
+    (fun i -> v.z.(min (i + 1) 3) -. v.z.(i))) g
+let zero_orient () = with_point "orient" (f4 4 (fun _ -> 0.) (fun _ -> 0.) (fun _ -> 0.) (fun _ -> 0.)) (small_backbone ())
+let wrong_type_normal () = with_point "N" (Attribute.Float (Array.make 4 1.)) (small_backbone ())
+let empty_geometry () = points 0
+
 let inputs = [
   "small", [small_backbone (); small_profile ()];
-
   "axes", [small_backbone (); axes_profile ()];
+  "pscale scale", [attr_backbone (); profile ()];
+  "normals", [backbone () |> with_normals; profile ()];
+  "up", [backbone () |> with_up; profile ()];
+  "orient", [backbone () |> with_orient; profile ()];
+  "orient and normals", [backbone () |> with_orient |> with_normals |> with_up; profile ()];
+  "polygon backbone", [polygon_backbone (); profile ()];
+  "polygon profile", [backbone (); polygon_backbone ()];
+  "zero edge", [degenerate_backbone (); profile ()];
+  "zero edge profile", [backbone (); degenerate_backbone ()];
+  "reversal", [reversal_backbone (); profile ()];
+  "nan pscale", [nan_pscale (); small_profile ()];
+  "int pscale", [int_pscale (); small_profile ()];
+  "zero normal", [zero_normal (); small_profile ()];
+  "parallel up", [parallel_up (); small_profile ()];
+  "zero orient", [zero_orient (); small_profile ()];
+  "wrong type normal", [wrong_type_normal (); small_profile ()];
+  "empty backbone", [empty_geometry (); profile ()];
+  "empty profile", [backbone (); empty_geometry ()];
+  "closed backbone only", [build [sec ~kind:closed_k 6 0. ~radius:2.]; small_profile ()];
   "main", [backbone (); profile ()] ]
 
 let connectivities = ["Points"; "Rows"; "Columns"; "Rows and columns"; "Quads"; "Triangles"; "Alternating triangles";
@@ -95,4 +155,6 @@ let cases =
   "nan scale refused", [fl "scale" Float.nan];
 ]
 
+let inputs = match Sys.getenv_opt "SWEEP_FIX" with None -> inputs | Some n -> List.filter (fun (l, _) -> l = n) inputs
+let cases = match Sys.getenv_opt "SWEEP_CASE" with None -> cases | Some n -> List.filter (fun (l, _) -> l = n) cases
 let () = register { key = "sweep"; native = Sop.Nodes.Sweep.factory; inputs; cases; ulps = 4; bench = None }
