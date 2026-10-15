@@ -327,6 +327,9 @@ let resolve_source resolve source =
       Value.validate value;
       value
 
+(* Set below to [state_dependent]: strict executors reference-evaluate state-reading residuals. *)
+let state_dependent_hook = ref (fun (_ : value) -> false)
+
 let rec concrete c v =
   match v with
   | Residual r -> (match c.st.time with None -> raise Needs_t | Some _ -> force_res c r)
@@ -360,7 +363,8 @@ and force_res c r =
                   Option.iter (fun saved -> restore_state (Option.get c.st.state) saved) saved;
                   match result with
                   | Some (Error d) when c.st.strict_executor -> raise_diagnostic d
-                  | None when c.st.strict_executor -> fail "E_CORE_FORM" "This value needs a compiled executor."
+                  | None when c.st.strict_executor && not (!state_dependent_hook (Residual r)) ->
+                      fail "E_CORE_FORM" "This value needs a compiled executor."
                   | _ -> slow ()))
         | _ -> slow () in
       Hashtbl.replace c.st.memo r.rid v;
@@ -1221,6 +1225,7 @@ and term_dependent frame st env (term : W.term) =
 
 let frame_dependent = dependent true
 let state_dependent = dependent false
+let () = state_dependent_hook := state_dependent
 
 (* one live state per call, made from the first residual met *)
 let with_live ?state ?elems ?resolve ?execute ?(owner = ref ()) ?(compiled = true) ?(strict=false) (l : live) (f : (residual -> ctx) -> 'a) : ('a, Diagnostic.t) result =
