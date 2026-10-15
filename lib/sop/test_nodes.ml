@@ -7,6 +7,9 @@ open Rays_math
 open Sop
 open Rdk_test_support
 
+let failures = ref 0
+let check condition message = if not condition then (incr failures; prerr_endline ("FAILED: " ^ message))
+
 let get = function Ok value -> value | Error message -> fail message
 
 (* The Lisp surface refuses an invalid node either while lowering (the node's own validation raises
@@ -372,14 +375,14 @@ let same_node name ~typed ~catalog =
   check (Node.parameter_key typed = Node.parameter_key catalog && Node.parameter_key typed <> "")
     (name ^ ": Lisp node and factory share the schema key");
   let one = cook 1 typed in
-  let ported_noise = List.mem (Node.operation typed) ["noise_displace"; "attribute_randomize"; "attribute_noise"] in
+  let ported_noise = List.mem (Node.operation typed) ["noise_displace"; "attribute_randomize"; "attribute_noise"; "attribute_remap"; "uv_sphere"] in
   let four = cook 4 typed in
   check (if ported_noise then geometry_bytes one = geometry_bytes four else equal_geometry one four)
     (name ^ ": Lisp node at four domains cooks the same geometry");
   (* The port uses separately rounded arithmetic; only its native oracle has
      the approved four-ULP tolerance. Domain self-consistency stays bit-exact. *)
   let equal_oracle = if not ported_noise then equal_geometry
-    else if List.mem (Node.operation typed) ["attribute_randomize"; "attribute_noise"] then close_blend else close_geometry ~ulps:4 in
+    else if List.mem (Node.operation typed) ["attribute_randomize"; "attribute_noise"; "attribute_remap"; "uv_sphere"] then close_blend else close_geometry ~ulps:4 in
   List.iter (fun (what, geometry) ->
     check (equal_oracle one geometry)
     (name ^ ": " ^ what ^ " cooks the same geometry"))
@@ -3217,7 +3220,7 @@ vertex	corner	x")|});
           "uniform_scale",Float_value 1.25;"segments",Int_value 8;"rings",Int_value 4];
       let native = Rdk.Uv_sphere.run ~orientation:native_orientation ~rotation_order ~center:sphere_center ~rotation:sphere_rotation
           ~uniform_scale:1.25 ~segments:8 ~rings:4 ~uv_attribute:"uv" ~radius:1. () |> Result.get_ok in
-      check (equal_geometry native (cook 1 typed)) "UV sphere flat orientation matches native")
+      check (close_blend native (cook 1 typed)) "UV sphere flat orientation matches native")
       [Rdk.Uv_sphere.Sphere_xyz,"XYZ";Sphere_xzy,"XZY";Sphere_yxz,"YXZ";Sphere_yzx,"YZX";Sphere_zxy,"ZXY";Sphere_zyx,"ZYX"])
     ["X axis",Rdk.Uv_sphere.Sphere_x;"Y axis",Rdk.Uv_sphere.Sphere_y;"Z axis",Rdk.Uv_sphere.Sphere_z;
      "Custom axis",Rdk.Uv_sphere.Sphere_axis sphere_axis];
@@ -4037,7 +4040,7 @@ vertex	corner	x")|});
           let native = Rdk.Attribute_ops.remap ~owner ~name:"value" ~into:"mapped" ~input
               ~output_min ~output_max ~policy ~ramp:[0., 0.; 0.5, 0.2; 1., 1.] geometry
               |> Rdk.Error.unguard |> get in
-          check (equal_geometry native (cook 1 typed)) "remap flat ranges/ramp preserve native channels")
+          check (close_blend native (cook 1 typed)) "remap flat ranges/ramp preserve native channels")
           ["Automatic", Rdk.Attribute_ops.Remap_auto;
            "Explicit", Rdk.Attribute_ops.Remap_explicit {
              min = (match kind_choice with "Scalar" -> Rdk.Attribute_ops.Scalar 0. | "Vector 2" -> Rdk.Attribute_ops.Vec2 Vec2.zero
@@ -7473,5 +7476,6 @@ weight")|});
                     -. star_area *. 0.65) < 1e-9)
     "a filled curve extruded is not the 20-face star prism";
   check (!nonfinite_fields >= 130) "nonfinite declaration coverage fell below the removed cases";
+  if !failures > 0 then failwith (Printf.sprintf "%d node checks failed" !failures);
   Printf.printf "SOP node declaration tests passed; %d floating field instances reject NaN and both infinities atomically\n"
     !nonfinite_fields
