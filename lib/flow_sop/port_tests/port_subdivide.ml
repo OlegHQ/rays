@@ -162,9 +162,13 @@ let cases = match only with None -> cases | Some l -> List.filter (fun (label, _
 let inputs = match Sys.getenv_opt "SD_FIX" with
   | None -> inputs
   | Some l -> List.filter (fun (label, _) -> label <> l) inputs @ List.filter (fun (label, _) -> label = l) inputs
+(* A 200 x 200 quad grid (40,000 quads, 160,000 corners), one pass, no hole group. *)
+let bench () =
+  let g = Plane_generators.grid ~connectivity:Grid_quads ~columns:200 ~rows:200 ~size:8. () |> get_ok in
+  [with_holes g], base
 let enabled n = match Sys.getenv_opt "SD_REG" with None -> true | Some s -> s = string_of_int n
 let () = if enabled 1 then register { key = "subdivide"; native = Sop.Nodes.Subdivide.factory; inputs; cases; ulps = debug_ulps;
-  bench = None }
+  bench = Some bench }
 
 (* The creases input is connected: its fixtures carry two geometries. *)
 let crease_cases =
