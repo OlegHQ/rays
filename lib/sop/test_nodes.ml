@@ -369,10 +369,10 @@ let close_blend left right =
   close_geometry ~ulps:4 left right
   || compare_geometry (fun l r -> Array.length l = Array.length r && Array.for_all2 near l r) left right
 
-let same_node name ~typed ~catalog =
+let same_node ?(same_key = true) name ~typed ~catalog =
   reject_nonfinite name typed;
   reject_nonfinite name catalog;
-  check (Node.parameter_key typed = Node.parameter_key catalog && Node.parameter_key typed <> "")
+  check (not same_key || (Node.parameter_key typed = Node.parameter_key catalog && Node.parameter_key typed <> ""))
     (name ^ ": Lisp node and factory share the schema key");
   let one = cook 1 typed in
   let ported_noise = List.mem (Node.operation typed) ["noise_displace"; "attribute_randomize"; "attribute_noise"; "attribute_remap"; "uv_sphere"] in
@@ -4463,7 +4463,9 @@ vertex	corner	x")|});
   let merge_inputs = List.init 5 (fun index -> Lisp_sop.node (Printf.sprintf {|(sop/line :points %d :origin [%s 0.0 0.0])|} ((index + 2)) ((Lisp_sop.float (float_of_int index))))) in
   List.iter (fun count ->
     let inputs = List.filteri (fun index _ -> index < count) merge_inputs in
-    same_node (Printf.sprintf "merge %d inputs" count)
+    (* The editor lowering tags a Lisp merge with provenance itself (sop/provenance_base), where the
+       native factory carried the tag as its visible source_attribute: same bytes, not the same schema key. *)
+    same_node ~same_key:false (Printf.sprintf "merge %d inputs" count)
       ~typed:(sop ~inputs "merge" [])
       ~catalog:(from_factory Nodes.Merge.factory ["source_attribute", Parameter.Text_value "__flow_src"] inputs);
     same_node (Printf.sprintf "merge %d tagged inputs" count)
