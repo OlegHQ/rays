@@ -250,7 +250,7 @@
 (defn ctp_layout :context value
   [(tp : (array int)) (pp_off : (array int)) (pv_off : (array int)) (pf_off : (array int))
    (plist_points : (array int)) (plist_verts : (array int)) (plist_prims : (array int)) (plist_vlocal : (array int))
-   (vp : (array int)) (off : (array int)) (kinds : (array int))]
+   (vp : (array int)) (off : (array int)) (kinds : (array int)) (problem : int) (active : int)]
   (let* [poff (array/scan_sum (ctp_counts tp pp_off))
          voff (array/scan_sum (ctp_counts tp pv_off))
          foff (array/scan_sum (ctp_counts tp pf_off))
@@ -270,7 +270,8 @@
          new_kinds (exact (map (fn [(s : int)] (array/nth kinds s)) fmap))]
     {:poff poff :voff voff :foff foff :out_p out_p :out_v out_v :out_f out_f
      :tp_p tp_p :tp_v tp_v :tp_f tp_f :pmap pmap :vmap vmap :fmap fmap
-     :new_vp new_vp :new_off (array/scan_sum lengths) :new_kinds new_kinds}))
+     :new_vp new_vp :new_off (array/scan_sum lengths) :new_kinds new_kinds
+     :tp tp :problem problem :active active}))
 ; Copy-major order of an ordered group: per copy the source order shifted by that copy's block.
 (defn ctp_order :context value [(order : (array int)) (copies : int) (count : int)]
   (let* [width (array/count order)]
@@ -376,7 +377,7 @@
 (defn ctp_apply_attr :context sop
   [(acc : geometry) (tgt : geometry) (name : text) (ty : text) (owner : text) (op : int) (tix : (array int))]
   (let* [has (sop/has_attr acc name :owner owner)
-         same (and has (equal? (sop/attr_type acc name :owner owner) ty))
+         same (if has (equal? (sop/attr_type acc name :owner owner) ty) false)
          copy (int/eq op 0)
          use_ex (and has (and same (not copy)))
          m (array/count tix)
@@ -462,15 +463,147 @@
          topo (sop/topology src)]
     (ctp_layout (array/int nt 0) (array/concat (array/int 1 0) (array/int 1 n)) (array/concat (array/int 1 0) (array/int 1 verts))
       (array/concat (array/int 1 0) (array/int 1 prims)) (array/range n :type int) (array/range verts :type int)
-      (array/range prims :type int) topo.vertex_points topo.vertex_points topo.primitive_offsets topo.kinds)))
+      (array/range prims :type int) topo.vertex_points topo.vertex_points topo.primitive_offsets topo.kinds 0 0)))
+; ---- piece matching: the source piece each target copies --------------------------------------------------
+(defn ctp_intern_i :context value [(sv : (array int)) (tv : (array int))]
+  (let* [n (array/count sv)
+         first (array/index_of sv sv)
+         distinct (exact (map (fn [(f : int) (i : int)] (if (int/eq f i) 1 0)) first (array/range n :type int)))
+         rank (array/scan_sum distinct)
+         tf (array/index_of sv tv)]
+    {:ids (exact (map (fn [(f : int)] (array/nth rank f)) first))
+     :tpiece (exact (map (fn [(f : int)] (if (int/ge f 0) (array/nth rank f) -1)) tf))
+     :count (array/nth rank n)}))
+(defn ctp_intern_t :context value [(sv : (array text)) (tv : (array text))]
+  (let* [n (array/count sv)
+         first (array/index_of sv sv)
+         distinct (exact (map (fn [(f : int) (i : int)] (if (int/eq f i) 1 0)) first (array/range n :type int)))
+         rank (array/scan_sum distinct)
+         tf (array/index_of sv tv)]
+    {:ids (exact (map (fn [(f : int)] (array/nth rank f)) first))
+     :tpiece (exact (map (fn [(f : int)] (if (int/ge f 0) (array/nth rank f) -1)) tf))
+     :count (array/nth rank n)}))
+(defn ctp_gather :context value [(source : (array int)) (index : (array int))]
+  (exact (map (fn [(at : int)] (array/nth source at)) index)))
+; Stable sort of the rows with key >= 0 by key: the row ids in order, their keys, and per-key offsets.
+(defn ctp_by_piece :context value [(key : (array int)) (pc : int)]
+  (let* [sel (array/compact (exact (map (fn [(k : int)] (if (int/ge k 0) 1 0)) key)))
+         keys (ctp_gather key sel)
+         order (array/grade keys)]
+    {:rows (ctp_gather sel order) :keys (ctp_gather keys order)
+     :off (array/scan_sum (array/scatter_add keys (array/int (array/count keys) 1) pc))}))
+(defn ctp_piece_layout :context sop [(src : geometry) (tgt : geometry) (name : text)]
+  (let* [n (sop/count src :points)
+         nv (sop/count src :vertices)
+         nf (sop/count src :primitives)
+         nt (sop/count tgt :points)
+         topo (sop/topology src)
+         vp topo.vertex_points
+         off topo.primitive_offsets
+         t_has (sop/has_attr tgt name :owner "point")
+         t_int (sop/has_attr tgt name :owner "point" :type int)
+         t_text (sop/has_attr tgt name :owner "point" :type text)
+         sp_has (sop/has_attr src name :owner "primitive")
+         sp_int (sop/has_attr src name :owner "primitive" :type int)
+         sp_text (sop/has_attr src name :owner "primitive" :type text)
+         pt_has (sop/has_attr src name :owner "point")
+         pt_int (sop/has_attr src name :owner "point" :type int)
+         pt_text (sop/has_attr src name :owner "point" :type text)
+         src_has (or sp_has pt_has)
+         use_pt (and (not sp_has) pt_has)
+         s_int (if sp_has sp_int pt_int)
+         s_text (if sp_has sp_text pt_text)
+         problem (cond (not t_has) 1
+                       (not (or t_int t_text)) 2
+                       (and src_has (not (or s_int s_text))) 3
+                       (and src_has (or (and t_int (not s_int)) (and t_text (not s_text)))) 4
+                       (and (not src_has) t_text) 5
+                       :else 0)
+         tvi (if t_int (sop/attr tgt name :owner "point" :type int) (array/int nt 0))
+         tvt (if t_text (sop/attr tgt name :owner "point" :type text) (array/text nt ""))
+         svi (if (and src_has s_int)
+               (if sp_has (sop/attr src name :owner "primitive" :type int) (sop/attr src name :owner "point" :type int))
+               (array/int 0 0))
+         svt (if (and src_has s_text)
+               (if sp_has (sop/attr src name :owner "primitive" :type text) (sop/attr src name :owner "point" :type text))
+               (array/text 0 ""))
+         none_int (and (not src_has) t_int)
+         ii (ctp_intern_i svi tvi)
+         it (ctp_intern_t svt tvt)
+         interned (if t_int ii it)
+         ok (int/eq problem 0)
+         pc (cond none_int nf ok interned.count :else 0)
+         tpiece (cond none_int (exact (map (fn [(v : int)] (if (and (int/ge v 0) (int/lt v nf)) v -1)) tvi))
+                      ok interned.tpiece :else (array/int nt -1))
+         ids (cond none_int (array/range nf :type int) ok interned.ids :else (array/int (if use_pt n nf) -1))
+         ; point-owned pieces: a primitive belongs to the piece all its points share
+         pov (prim_of_vertex (array/slice off 0 nf) nv)
+         point_ids (if use_pt ids (array/int n -1))
+         vpc (exact (map (fn [(p : int)] (array/nth point_ids p)) vp))
+         firstp (exact (map (fn [(f : int)]
+                  (if (int/gt (int/sub (array/nth off (int/add f 1)) (array/nth off f)) 0) (array/nth vpc (array/nth off f)) -1))
+                  (array/range nf :type int)))
+         bad (array/segment_sum (exact (map (fn [(c : int) (f : int)] (if (int/eq c (array/nth firstp f)) 0 1)) vpc pov)) off)
+         coherent (exact (map (fn [(f : int) (b : int)] (if (int/eq b 0) f -1)) firstp bad))
+         prim_ids (if use_pt coherent ids)
+         vpiece (exact (map (fn [(f : int)] (array/nth prim_ids f)) pov))
+         fv (ctp_by_piece vpiece pc)
+         fp (ctp_by_piece prim_ids pc)
+         base (int/add n 1)
+         vkey (exact (map (fn [(v : int) (k : int)] (int/add (int/mul k base) (array/nth vp v))) fv.rows fv.keys))
+         pkey (exact (map (fn [(p : int) (i : int)] (if (int/ge p 0) (int/add (int/mul p base) i) -1))
+                point_ids (array/range n :type int)))
+         cand (if use_pt (ctp_gather pkey (array/compact (exact (map (fn [(k : int)] (if (int/ge k 0) 1 0)) pkey)))) vkey)
+         sorted (ctp_gather cand (array/grade cand))
+         firstk (array/index_of sorted sorted)
+         ukeys (ctp_gather sorted (array/compact (exact (map (fn [(f : int) (i : int)] (if (int/eq f i) 1 0))
+                  firstk (array/range (array/count sorted) :type int)))))
+         upiece (exact (map (fn [(u : int)] (int/div u base)) ukeys))
+         pp_off (array/scan_sum (array/scatter_add upiece (array/int (array/count ukeys) 1) pc))
+         kp (array/index_of ukeys vkey)
+         vlocal (exact (map (fn [(k : int) (piece : int)] (int/sub k (array/nth pp_off piece))) kp fv.keys))
+         active (if (int/gt (array/sum (exact (map (fn [(k : int)] (if (int/ge k 0) 1 0)) tpiece))) 0) 1 0)]
+    (ctp_layout tpiece pp_off fv.off fp.off (exact (map (fn [(u : int)] (int/mod u base)) ukeys)) fv.rows fp.rows vlocal
+      vp off topo.kinds problem active)))
+
+(defn ctp_piece_problem :context value [(code : int)]
+  (cond
+    (int/eq code 1) (ctp_fail "target point piece attribute does not exist")
+    (int/eq code 2) (ctp_fail "piece attribute must use int or text storage")
+    (int/eq code 3) (ctp_fail "piece attribute must use int or text storage")
+    (int/eq code 4) (ctp_fail "source and target piece attribute storage must match")
+    :else (ctp_fail "text target piece attribute requires a matching source point or primitive attribute")))
+; Output indices of the group members in the native order of a piece/copy layout: by piece, target, source rank.
+(defn ctp_group_order :context value
+  [(order : (array int)) (map_out : (array int)) (owner_of : (array int)) (tp : (array int)) (nt : int) (count : int)]
+  (let* [pos (array/scatter_add order (exact (map (fn [(j : int)] (int/add j 1)) (array/range (array/count order) :type int))) count)
+         key (exact (map (fn [(e : int) (k : int)]
+               (let* [p1 (array/nth pos e)]
+                 (if (int/gt p1 0)
+                   (int/add (int/mul (int/add (int/mul (array/nth tp k) (int/add nt 1)) k) (int/add count 1)) p1)
+                   -1)))
+               map_out owner_of))
+         sel (array/compact (exact (map (fn [(k : int)] (if (int/ge k 0) 1 0)) key)))]
+    (ctp_gather sel (array/grade (ctp_gather key sel)))))
+
+; Native piece mode merges the pieces without their detail attributes and restores them afterwards: they end up last.
+(defn ctp_move_detail :context sop [(acc : geometry) (src : geometry) (name : text) (ty : text)]
+  (let* [gone (sop/delete_attr acc name :owner "detail")]
+    (cond
+      (equal? ty "text") (sop/with_attr gone name (sop/attr src name :owner "detail" :type text) :owner "detail" :type text)
+      (equal? ty "int") (sop/with_attr gone name (sop/attr src name :owner "detail" :type int) :owner "detail" :type int)
+      (equal? ty "int_array") (sop/with_attr gone name (sop/attr src name :owner "detail" :type int_array) :owner "detail" :type int_array)
+      (equal? ty "float_array") (sop/with_attr gone name (sop/attr src name :owner "detail" :type float_array) :owner "detail" :type float_array)
+      :else (sop/with_planes gone name (sop/attr_planes src name :owner "detail") :owner "detail"))))
 (defn ctp_layout_for :context sop [(src : geometry) (tgt : geometry) (nt : int) (piece_attribute : text)]
-  (ctp_simple_layout src nt))
+  (if (text/blank? piece_attribute) (ctp_simple_layout src nt) (ctp_piece_layout src tgt (text/trim piece_attribute))))
 
 (defn ctp_build :context sop
-  [(src : geometry) (tgt : geometry) (piece_attribute : text) (s : (array vec3)) (r0 : (array vec3)) (r1 : (array vec3)) (r2 : (array vec3))
+  [(src0 : geometry) (tgt : geometry) (piece_attribute : text) (s : (array vec3)) (r0 : (array vec3)) (r1 : (array vec3)) (r2 : (array vec3))
    (tt : (array vec3)) (affine : bool) (nt : int)]
-  (let* [n (sop/count src :points)
-           lay (ctp_layout_for src tgt nt piece_attribute)
+  (let* [lay (ctp_layout_for src0 tgt nt piece_attribute)
+           src src0
+           n (sop/count src :points)
            verts (sop/count src :vertices)
            prims (sop/count src :primitives)
            mesh (sop/mesh :points (array/vec3 lay.out_p) :vertex_points lay.new_vp :primitive_offsets lay.new_off :kinds lay.new_kinds)
@@ -512,7 +645,7 @@
            cof2 (exact (map (fn [(i : int)] (ctp_cof2 (array/nth col_a i) (array/nth col_b i) (array/nth col_c i) (array/nth msc i))) sidx))
            dets (exact (map (fn [(i : int)] (ctp_det (array/nth col_a i) (array/nth col_b i) (array/nth col_c i) (array/nth msc i) (array/nth cof0 i))) sidx))
            sgn (exact (map (fn [(d : float)] (if (< d 0.0) -1.0 1.0)) dets))
-           singular (int/gt (array/sum (exact (map (fn [(d : float)] (if (<= (abs d) 1e-20) 1 0)) dets))) 0)
+           singular (int/gt (array/sum (exact (map (fn [(d : float) (p : int)] (if (and (int/ge p 0) (<= (abs d) 1e-20)) 1 0)) dets lay.tp))) 0)
            valid (not (and affine (and (or point_n vertex_n) singular)))
            n0 (if affine (exact (map (fn [(c : vec3) (g : float)] (ctp_scale_rows c g)) cof0 sgn)) r0)
            n1 (if affine (exact (map (fn [(c : vec3) (g : float)] (ctp_scale_rows c g)) cof1 sgn)) r1)
@@ -572,8 +705,14 @@
             (ctp_problem frames.problem)
             (if pack
               (sop/pack_instances src (ctp_carrier tgt frames.s frames.r0 frames.r1 frames.r2 frames.t))
-              (let* [lay (ctp_layout_for src tgt nt piece_attribute)
-                     built (ctp_build src tgt piece_attribute frames.s frames.r0 frames.r1 frames.r2 frames.t frames.matrix nt)
+              (let* [lay (ctp_layout_for src tgt nt piece_attribute)]
+               (if (int/gt lay.problem 0) (ctp_piece_problem lay.problem)
+              (let* [built0 (ctp_build src tgt piece_attribute frames.s frames.r0 frames.r1 frames.r2 frames.t frames.matrix nt)
+                     details (sop/attr_entries src :owner "detail")
+                     built (if (int/eq lay.active 1)
+                             (fold [acc built0] [index (array/range (array/count details.name) :type int)]
+                               (ctp_move_detail acc src (array/nth details.name index) (array/nth details.type index)))
+                             built0)
                      n (sop/count src :points)
                      verts (sop/count src :vertices)
                      prims (sop/count src :primitives)
@@ -585,7 +724,7 @@
                          per_copy (case owner "point" n "vertex" verts :else prims)]
                     (if (or (equal? owner "edge") (not ordering.ordered)) state
                       (sop/with_group state (exact (sop/group state :name name :owner owner)) :name name :owner owner
-                        :order {:ordered true :indices (ctp_order ordering.indices nt per_copy)}))))
+                        :order {:ordered true :indices (ctp_group_order ordering.indices (case owner "point" lay.pmap "vertex" lay.vmap :else lay.fmap) (case owner "point" lay.tp_p "vertex" lay.tp_v :else lay.tp_f) lay.tp nt per_copy)}))))
                 rows (if (text/blank? target_attributes) (list) (text/table_decode target_attributes))
                 attrs (sop/attr_entries tgt :owner "point")
                 attr_win (ctp_win_attr tgt attrs.name rows)
@@ -604,4 +743,4 @@
                          owner (case (nth row 1) "points" "point" "vertices" "vertex" :else "primitive")
                          tix (case owner "point" lay.tp_p "vertex" lay.tp_v :else lay.tp_f)]
                     (if (or (int/lt w 0) (equal? (nth row 2) "nothing")) state
-                      (ctp_apply_group state tgt (array/nth gents.names index) owner (case (nth row 2) "copy" 0 "add" 1 "subtract" 2 :else 3) tix)))))))))))
+                      (ctp_apply_group state tgt (array/nth gents.names index) owner (case (nth row 2) "copy" 0 "add" 1 "subtract" 2 :else 3) tix)))))))))))))

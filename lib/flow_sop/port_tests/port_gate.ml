@@ -267,6 +267,32 @@ let verify_case ~full ctx ulps label changes =
         | Ok _, Error g -> fail (at ("oracle: Lisp error " ^ Sop.Diagnostic.error_to_string g ^ " but native succeeded"))
         | Ok e, Ok g ->
             (if not (close_geometry ~ulps e g) && Sys.getenv_opt "PORT_DIFF" <> None then
+              (let counts h = Printf.sprintf "p%d v%d f%d" (Rdk.Geometry.point_count h) (Rdk.Geometry.vertex_count h) (Rdk.Geometry.primitive_count h) in
+               let attrs h = String.concat "," (List.map (fun a -> Rdk.Attribute.name a) (Rdk.Geometry.attributes h)) in
+               let groups h = String.concat "," (List.map (fun gr -> Printf.sprintf "%s/%d" (Rdk.Group.name gr) (Rdk.Group.cardinality gr)) (Rdk.Geometry.groups h)) in
+               if counts e <> counts g || attrs e <> attrs g || groups e <> groups g then
+                 Printf.eprintf "native %s [%s] [%s]\nlisp   %s [%s] [%s]\n" (counts e) (attrs e) (groups e) (counts g) (attrs g) (groups g);
+               List.iter (fun gr -> match Rdk.Geometry.find_group ~owner:(Rdk.Group.owner gr) (Rdk.Group.name gr) g with
+                 | None -> ()
+                 | Some other ->
+                     let members h = List.init (Rdk.Group.length h) Fun.id |> List.filter (fun i -> Rdk.Group.mem i h) in
+                     let order h = match Rdk.Group.Private.order_view h with None -> [] | Some o -> Array.to_list o in
+                     if members gr <> members other then Printf.eprintf "group %s members differ\n" (Rdk.Group.name gr)
+                     else if order gr <> order other then
+                       Printf.eprintf "group %s order native [%s] lisp [%s]\n" (Rdk.Group.name gr)
+                         (String.concat " " (List.map string_of_int (order gr))) (String.concat " " (List.map string_of_int (order other)))) (Rdk.Geometry.groups e);
+               List.iter (fun a -> match Rdk.Geometry.find_attribute ~owner:(Rdk.Attribute.owner a) (Rdk.Attribute.name a) g with
+                 | Some b -> (match Rdk.Attribute.Private.storage a, Rdk.Attribute.Private.storage b with
+                     | Rdk.Attribute.Int x, Rdk.Attribute.Int y when x <> y -> Printf.eprintf "int attr %s differs\n" (Rdk.Attribute.name a)
+                     | Rdk.Attribute.Text x, Rdk.Attribute.Text y when x <> y -> Printf.eprintf "text attr %s differs\n" (Rdk.Attribute.name a)
+                     | Rdk.Attribute.Float x, Rdk.Attribute.Float y when x <> y -> Printf.eprintf "float attr %s differs\n" (Rdk.Attribute.name a)
+                     | Rdk.Attribute.Int_array x, Rdk.Attribute.Int_array y when Rdk.Packed.Int_array.Private.view x <> Rdk.Packed.Int_array.Private.view y ->
+                         Printf.eprintf "int_array attr %s differs\n" (Rdk.Attribute.name a)
+                     | _ -> ())
+                 | None -> ()) (Rdk.Geometry.attributes e);
+               let tv h = let v = Rdk.Topology.Private.view (Rdk.Geometry.topology h) in (v.vertex_points, v.primitive_offsets, v.primitive_kinds) in
+               if tv e <> tv g then prerr_endline "topology differs";
+               Printf.eprintf "edge groups native %d lisp %d\n" (List.length (Rdk.Geometry.edge_groups e)) (List.length (Rdk.Geometry.edge_groups g)));
               (let x = Rdk.Packed.Float3.Private.view (Rdk.Geometry.positions e) and y = Rdk.Packed.Float3.Private.view (Rdk.Geometry.positions g) in
                 if Array.length x.x <> Array.length y.x then Printf.eprintf "P count %d vs %d\n" (Array.length x.x) (Array.length y.x) else
                 Array.iteri (fun i v -> if v <> y.x.(i) || x.y.(i) <> y.y.(i) || x.z.(i) <> y.z.(i) then

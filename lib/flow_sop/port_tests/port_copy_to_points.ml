@@ -73,11 +73,36 @@ let targets = [
   "mismatch", mismatch_targets ();
   "rules", rule_targets ()]
 let sources = [ "mixed", mixed (); "grid", grid_source () ]
+let ints a = Attribute.Int a
+let texts a = Attribute.Text a
+let piece_source () =
+  grid_source ()
+  |> put Attribute.Primitive "variant" (ints (Array.init 9 (fun i -> i mod 3)))
+  |> put Attribute.Primitive "tag" (texts (Array.init 9 (fun i -> [|"a"; "b"; "c"|].(i mod 3))))
+  |> put Attribute.Point "pvariant" (ints (Array.init 16 (fun i -> (i / 4) mod 2)))
+  |> put Attribute.Point "ptag" (texts (Array.init 16 (fun i -> [|"x"; "y"|].((i / 4) mod 2))))
+let piece_targets () =
+  base_targets ()
+  |> put Attribute.Point "variant" (ints [|0; 1; 2; 7; 1|])
+  |> put Attribute.Point "tag" (texts [|"a"; "c"; "zz"; "b"; "a"|])
+  |> put Attribute.Point "pvariant" (ints [|1; 0; 5; 1; 0|])
+  |> put Attribute.Point "ptag" (texts [|"y"; "x"; "q"; "y"; "x"|])
+  |> put Attribute.Point "nofloat" (Attribute.Float [|0.; 1.; 2.; 3.; 4.|])
 let inputs = List.concat_map (fun (tl, t) -> List.map (fun (sl, s) -> sl ^ "<-" ^ tl, [s; t]) sources) targets
+  @ ["pieces", [piece_source (); piece_targets ()]; "pieces from plain", [mixed (); piece_targets ()]; "pieces empty", [grid_source (); piece_targets ()]]
 
 let rule p o op = String.concat "\t" [p; o; op]
 let rules rs = tx "target_attributes" (String.concat "\n" rs)
 let cases = [
+  "piece variant", [tx "piece_attribute" "variant"];
+  "piece tag", [tx "piece_attribute" "tag"];
+  "piece point int", [tx "piece_attribute" "pvariant"];
+  "piece point text", [tx "piece_attribute" "ptag"];
+  "piece with groups", [tx "piece_attribute" "variant"; tx "source_group" "a"; tx "target_group" "a"];
+  "piece with rules", [tx "piece_attribute" "variant"; rules [rule "float*" "points" "add"; rule "a" "primitives" "copy"]];
+  "piece missing target", [tx "piece_attribute" "absent"];
+  "piece wrong type", [tx "piece_attribute" "nofloat"];
+  "piece blank", [tx "piece_attribute" "   "];
   "rules copy points", [rules [rule "*" "points" "copy"]];
   "rules copy vertices", [rules [rule "f*" "vertices" "copy"; rule "v*" "primitives" "copy"]];
   "rules add", [rules [rule "[fiv]*" "points" "add"]];
