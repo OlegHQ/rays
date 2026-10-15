@@ -115,6 +115,19 @@ let patterns () =
         source replacement))
     [("foo* bar*", "only_*"); ("^tmp*", "renamed_*");
      ("foo* ^tmp*", "one_* two_*")];
+  (* A class member must land on its own bit on every compile: with a tiny minor heap, ocamlopt 5.3.0 (arm64)
+     once stored a clobbered character from [escaped_character], so "[fa]*" intermittently missed "f". *)
+  let heap = (Gc.get ()).minor_heap_size in
+  Gc.set { (Gc.get ()) with minor_heap_size = 4096 };
+  Fun.protect ~finally:(fun () -> Gc.set { (Gc.get ()) with minor_heap_size = heap }) (fun () ->
+    for i = 1 to 200_000 do
+      let compiled = pattern "[fa]* ^[a-b]x \\[z]" in
+      ignore (Sys.opaque_identity (Array.make (i land 63) i));
+      if not (Attribute_pattern.matches compiled "f" && Attribute_pattern.matches compiled "alpha"
+              && Attribute_pattern.matches compiled "[z]")
+         || Attribute_pattern.matches compiled "g" then
+        fail (Printf.sprintf "class pattern compile %d placed a member on the wrong bit" i)
+    done);
   ()
 
 let lines () =

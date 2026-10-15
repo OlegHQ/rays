@@ -55,10 +55,15 @@ let split_terms source =
 
 let escaped_character token index limit =
   if index >= limit then Error "missing class character"
-  else if token.[index] = '\\' then
-    if index + 1 >= limit then Error "dangling class escape"
-    else Ok (token.[index + 1], index + 2)
-  else Ok (token.[index], index + 1)
+  else
+    (* Bind the character before building the pair: with the bounds-checked read written inside the
+       constructor, ocamlopt 5.3.0 (arm64) intermittently stored a clobbered byte after a minor GC, which put
+       a class member at the wrong bit (a flaky glob such as "[fa]*" missing "f"). *)
+    let character = token.[index] in
+    if character = '\\' then
+      if index + 1 >= limit then Error "dangling class escape"
+      else (let escaped = token.[index + 1] in Ok (escaped, index + 2))
+    else Ok (character, index + 1)
 
 let class_atom token first =
   let length = String.length token and closing = ref (-1)
