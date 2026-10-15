@@ -819,7 +819,12 @@ let rec lower_checked ~factories ?(provenance_tags = true) ?(reference = false) 
             List.filter_map (fun (index, input) ->
               if index=slot || (s.rest && index>=slot) then input else None) connected)
             definition.slots in
-          Lisp_node.node ~unbound_function:(List.exists
+          let slots = Array.of_list definition.slots in
+          let geometry_inputs = List.filter_map Fun.id (List.mapi (fun position input ->
+            Option.map (fun _ ->
+              let slot = slots.(min position (Array.length slots - 1)) in
+              Workspace.slot_ty ~slot definition.kind = Ty.geometry) input) inputs) in
+          Lisp_node.node ~geometry_inputs ~unbound_function:(List.exists
               (fun (slot : Check.slot) -> match slot.ty with Some (Ty.Fn _) ->
                 not (List.mem_assoc slot.name functions) && (slot.required ||
                   Option.value ~default:[] (List.assoc_opt slot.name bindings) <> []) | _ -> false)

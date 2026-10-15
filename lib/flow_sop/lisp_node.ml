@@ -73,7 +73,7 @@ let with_initial_changes ~operation changes f =
     Fun.protect ~finally:(fun () -> Domain.DLS.set initial None) f
   end
 
-let node ?(unbound_function = false) ~operation ~version ~label ~fields ~normalizers ~source ~build inputs =
+let node ?(unbound_function = false) ?(geometry_inputs = []) ~operation ~version ~label ~fields ~normalizers ~source ~build inputs =
   let schema = schema "parameters" fields normalizers in
   let defaults = Param.default schema in
   let values = match Domain.DLS.get initial with
@@ -102,6 +102,11 @@ let node ?(unbound_function = false) ~operation ~version ~label ~fields ~normali
       N.Private.make ~label ~operation ~version ~parameters:source
         ~cook_mode:facts.N.cook_mode ~dependencies ~inputs:(Array.of_list inputs)
         (fun ~node_id:_ context payloads ->
+          let wrong = List.find_mapi (fun i geometry ->
+            if geometry && i < Array.length payloads then
+              (match Sop.Payload.geometry payloads.(i) with Error error -> Some error | Ok _ -> None)
+            else None) geometry_inputs in
+          match wrong with Some error -> Error error | None ->
           let (seed, frame, time), previous_body = Atomic.get prepared in
           let body = if (not context_seeded || seed=Sop.Context.seed context)
               && (not framed || frame=Sop.Context.frame context)
