@@ -19,8 +19,11 @@ let with_holes ?(members = fun _ -> false) g =
   Geometry.with_group (Group.init ~owner:Group.Primitive ~name:"subdivision_hole" count members) g
   |> get_string_ok
 
-let inputs = List.map (fun (label, g) -> label, [with_holes g]) [
-  "box", box (); "trianglebox", tri_box (); "trianglegrid", tri_grid (); "grid", small_grid () ]
+let holes_some g = with_holes ~members:(fun p -> p mod 3 = 1) g
+let inputs = List.map (fun (label, g) -> label, [g]) [
+  "box+groups", fixture_groups (with_holes (box ())); "grid holes", fixture_groups (holes_some (small_grid ()));
+  "trianglegrid+groups", fixture_groups (with_holes (tri_grid ())); "trianglegrid holes", holes_some (tri_grid ());
+  "box", with_holes (box ()); "trianglebox", with_holes (tri_box ()); "trianglegrid", with_holes (tri_grid ()); "grid", with_holes (small_grid ()) ]
 
 let text name value = name, P.Text_value value
 let choice name value = name, P.Choice_value value
@@ -53,5 +56,15 @@ let cases =
         "iterations", P.Int_value 3];
       "weight 2.5 loop", with_ ["crease_weight", P.Float_value 2.5; choice "scheme" "Loop"; "iterations", P.Int_value 3];
       "generate resulting", with_ ["crease_weight", P.Float_value 3.; "generate_resulting_creases", P.Bool_value true] ]
+  @ (let holes extra = [ "remove_holes", P.Bool_value true ] @ extra in
+     [ "remove holes", holes base;
+       "remove holes depth 2", holes (with_ ["iterations", P.Int_value 2]);
+       "remove holes loop", holes (with_ [choice "scheme" "Loop"; "iterations", P.Int_value 2]);
+       "remove holes bilinear", holes (with_ [choice "scheme" "Bilinear"]);
+       "remove holes boundary none", holes (with_ [choice "boundary_interpolation" "None"]);
+       "keep holes boundary none", with_ [choice "boundary_interpolation" "None"; "iterations", P.Int_value 2];
+       "hole group copy", [ "remove_holes", P.Bool_value true; text "hole_group" "a" ];
+       "hole group default name", [ "remove_holes", P.Bool_value true ];
+       "hole group missing", [ text "hole_group" "missing_holes" ] ])
 let () = register { key = "subdivide"; native = Sop.Nodes.Subdivide.factory; inputs; cases; ulps = 4;
   bench = None }

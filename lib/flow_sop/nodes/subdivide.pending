@@ -752,8 +752,11 @@
          evalues (exact (map (fn [(e : int)]
              (int/sub (int/div (array/nth esum e) (if (int/gt (array/nth ecount e) 0) (array/nth ecount e) 1)) 1))
            (array/range tedges :type int)))
+         ehas (exact (map (fn [(a : int)] (if (int/ge a 0) 1 0)) evalues))
+         eidx (array/compact ehas)
+         eanc (exact (map (fn [(k : int)] (array/nth evalues (array/nth eidx k))) (array/range (array/count eidx) :type int)))
          remapped (sop/remap g mesh :points plan.st.rep :vertices plan.om.repv :primitives plan.om.psrc
-                    :edges {:offsets (array/range (int/add tedges 1) :type int) :values evalues})
+                    :edges {:offsets (array/scan_sum ehas) :values eanc})
          with_p (sop/with_attr remapped "P" (sd_join3 x y z))
          no_pw (sop/delete_attrs with_p :vertex "creaseweight" :primitive "creaseweight")
          ; cornerweight: kept (minus one) only when resulting creases are generated and one exceeds 1
