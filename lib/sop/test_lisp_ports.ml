@@ -797,9 +797,13 @@ let line () =
 let points_port () =
   check(not(List.exists(fun factory->Sop.Edit_graph.factory_key factory="points")
     Sop_catalog.Editor.factories)) "Points still registered as an OCaml body";
-  check(List.exists(fun factory->Sop.Edit_graph.factory_key factory="point_generate")
-    Sop_catalog.Editor.factories) "Points port removed the separate input-dependent generator";
   let sources=Flow_sop.Catalog.sources() |>flow_ok in
+  (* point_generate, the separate input-dependent generator Points builds on, is itself a Lisp node now. *)
+  check(not(List.exists(fun factory->Sop.Edit_graph.factory_key factory="point_generate")
+    Sop_catalog.Editor.factories)) "Point Generate still registered as an OCaml body";
+  check(List.exists(fun form->match Flow.Syntax.children form with
+      |{Flow.Syntax.node=Flow.Syntax.Sym "defnode";_}::{node=Sym "sop/point_generate";_}::_->true|_->false)
+    sources) "Points port removed the separate input-dependent generator";
   let factories=Sop_catalog.Editor.factories in
   let catalog=Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version factories |>flow_ok in
   let modes=["", "sourcepoint", "sourceindex";" \t\r\n", " sourceé ", " index猫 ";
