@@ -1,0 +1,59 @@
+; Whole-node draft. Pixels come from (sop/image_texels image): a carrier geometry with one point per
+; texel in row-major order, P = (x, y, width) and the Point vec4 "rgba" attribute (the decoded floats
+; the native kernel reads). Bilinear sample at the clamped UV, x then y, lerp a + (b - a) * t.
+(defn afi_error :context value [(reason : text)]
+  (error "invalid_image_attribute" "attr_from_image could not produce valid geometry"
+    :cause (str "attr_from_image [invalid_image_attribute]: " reason)))
+(defn afi_uvs :context sop [(g : geometry) (uv : text)]
+  (let* [ty (sop/attr_type g uv :owner "point")]
+    (if (equal? ty "vec2")
+      (let* [a (sop/attr_checked g uv :owner "point" :type "vec2")]
+        {:u (exact (map (fn [(p : vec2)] p.x) a.values)) :v (exact (map (fn [(p : vec2)] p.y) a.values))
+         :ok (int/eq (array/sum a.valid) (array/count a.valid))})
+      (let* [a (sop/attr_checked g uv :owner "point" :type "vec3")]
+        {:u (exact (map (fn [(p : vec3)] p.x) a.values)) :v (exact (map (fn [(p : vec3)] p.y) a.values))
+         :ok (int/eq (array/sum a.valid) (array/count a.valid))}))))
+(defn afi_channel :context value [(channel : text) (c : vec4)]
+  (cond (equal? channel "r") c.x
+        (equal? channel "g") c.y
+        (equal? channel "b") c.z
+        (equal? channel "a") c.w
+        :else (fma 0.0722 c.z (fma 0.7152 c.y (* 0.2126 c.x)))))
+(defn afi_lerp :context value [(a : float) (b : float) (k : float)] (fma (- b a) k a))
+(defn afi_sample :context value
+  [(plane : (array float)) (w : int) (h : int) (u : float) (v : float)]
+  (let* [x (* (max 0.0 (min 1.0 u)) (float (int/sub w 1)))
+         y (* (max 0.0 (min 1.0 v)) (float (int/sub h 1)))
+         x0 (floor x) y0 (floor y)
+         x1 (min (int/sub w 1) (int/add x0 1)) y1 (min (int/sub h 1) (int/add y0 1))
+         tx (- x (float x0)) ty (- y (float y0))
+         p00 (array/nth plane (int/add (int/mul y0 w) x0))
+         p10 (array/nth plane (int/add (int/mul y0 w) x1))
+         p01 (array/nth plane (int/add (int/mul y1 w) x0))
+         p11 (array/nth plane (int/add (int/mul y1 w) x1))]
+    (afi_lerp (afi_lerp p00 p10 tx) (afi_lerp p01 p11 tx) ty)))
+(defnode sop/attr_from_image :label "Attribute from Image" :category ["Attribute" "Image"]
+  :facts {:elementwise points :reads ["uv"] :writes ["image"] :topology preserved :exact true}
+  :validate (and (not (equal? attribute "P")) (not (text/blank? attribute))) :code "E_PARAM"
+  :message "sop/attr_from_image: attribute must be nonblank and cannot be P"
+  [(geometry : geometry)
+   (image : image)
+   (attribute : text "image" :label "Attribute" :primary true)
+   (channel : text "r" :label "Channel" :primary true :choices ["r" "g" "b" "a" "luminance"])
+   (uv : text "uv" :label "UV attribute")]
+  (if (not (sop/has_attr geometry uv :owner "point")) (afi_error (str "missing Point UV attribute " uv))
+      (if (not (or (equal? (sop/attr_type geometry uv :owner "point") "vec2")
+                   (equal? (sop/attr_type geometry uv :owner "point") "vec3")))
+        (afi_error "UV needs a Point Float2 or Float3 attribute")
+        (let* [uvs (afi_uvs geometry uv)
+               carrier (sop/image_texels image)
+               texels (sop/attr carrier "rgba" :owner "point" :type "vec4")
+               widths (exact (map (fn [(p : vec3)] p.z) (sop/attr carrier "P")))
+               plane (exact (map (fn [(c : vec4)] (afi_channel channel c)) texels))
+               count (array/count texels)
+               w (floor (array/nth widths 0))
+               h (int/div count w)]
+          (if (not uvs.ok) (afi_error "UV must be finite")
+            (sop/with_attr geometry attribute
+              (exact (map (fn [(u : float) (v : float)] (afi_sample plane w h u v)) uvs.u uvs.v))
+              :owner "point" :type float))))))

@@ -55,6 +55,10 @@ type t = {
 
 let registry : t list ref = ref []
 let register node = registry := node :: !registry
+(* A node with image slots lists its images per fixture label ("bench" for --bench); they follow
+   the geometries as trailing inputs on both sides. *)
+let image_registry : (string * (string -> Sop.Image.t list)) list ref = ref []
+let register_images key images = image_registry := (key, images) :: !image_registry
 let registered () = List.rev !registry
 
 (* ---- fixtures ---- *)
@@ -118,9 +122,14 @@ let snapshots geometries = List.map Lisp_sop.snapshot geometries
 
 (* Everything that depends only on the node and one input fixture. *)
 type ctx = { node : t; sources : Flow.Syntax.t list; factories : Sop.Edit_graph.factory list;
-             catalog : Flow.Check.catalog; head : string; native_inputs : N.t list }
+             catalog : Flow.Check.catalog; head : string; native_inputs : N.t list;
+             ops : Flow.Op.t list }
 let key_of f = Sop.Edit_graph.factory_key f
-let context ~dir node geometries =
+let image_node image = Sop.Node.Private.make ~operation:"image/external" ~version:1
+  ~parameters:(string_of_int (Sop.Image.data_id image)) ~cook_mode:Sop.Node.Generator
+  ~dependencies:Sop.Context.Dependencies.static ~inputs:[||] (fun ~node_id:_ _ _ ->
+    Ok Sop.Node.Private.{payload = Sop.Payload.Image image; diagnostics = []; instances = None})
+let context ?(label = "") ~dir node geometries =
   let accepted = Sys.file_exists (Filename.concat dir (node.key ^ ".rays")) in
   let others = List.filter (fun f -> key_of f <> node.key) Sop_catalog.Editor.factories in
   let sources = Flow_sop.Catalog.sources () |> checked in
@@ -129,13 +138,24 @@ let context ~dir node geometries =
       (node.key ^ ": accepted but still registered in Sop_catalog.Editor.factories"); sources)
     else sources @ (In_channel.with_open_text (Filename.concat dir (node.key ^ ".pending"))
       In_channel.input_all |> Flow.Syntax.parse |> checked) in
-  let natives = snapshots geometries in
+  let images = match List.assoc_opt node.key !image_registry with Some f -> f label | None -> [] in
+  let natives = snapshots geometries @ List.map image_node images in
   let inputs = List.mapi (fun i n -> Sop.Edit_graph.factory ~key:(Printf.sprintf "port_in%d" i)
-    ~label:"Input" ~category:["Test"] ~arity:0 (fun _ -> n)) natives in
-  let factories = inputs @ others in
-  { node; sources; factories; native_inputs = natives;
+    ~label:"Input" ~category:["Test"] ~arity:0 (fun _ -> n)) (snapshots geometries) in
+  let image_factories = List.mapi (fun i image -> let n = image_node image in
+    Sop.Edit_graph.factory ~key:(Printf.sprintf "port_img%d" i) ~label:"Image" ~category:["Test"] ~arity:0
+      (fun _ -> n)) images in
+  let image_ops = List.mapi (fun i _ ->
+    let prototype = Option.get (Flow.Op.find "image/noise" Flow.Context.value) in
+    { prototype with Flow.Op.name = Printf.sprintf "image/port_img%d" i;
+      signature = {pos = []; opt = []; rest = None; kw = []};
+      check = (fun _ -> ()); packed_extension = None;
+      body = (fun ~live:_ ~node _ -> node (Printf.sprintf "sop/port_img%d" i) []) }) images in
+  let factories = inputs @ image_factories @ others in
+  { node; sources; factories; native_inputs = natives; ops = image_ops @ Flow_sop.Operators.all;
     catalog = Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version factories |> checked;
-    head = String.concat " " (List.mapi (fun i _ -> Printf.sprintf "(sop/port_in%d)" i) natives) }
+    head = String.concat " " (List.mapi (fun i _ -> Printf.sprintf "(sop/port_in%d)" i) (snapshots geometries)
+      @ List.mapi (fun i _ -> Printf.sprintf "(image/port_img%d)" i) images) }
 
 (* A fixture with fewer geometries than the factory has slots leaves the trailing
    (optional) slots absent on both sides. *)
@@ -168,7 +188,7 @@ let lisp ctx changes =
   let text = Printf.sprintf "(workspace port (graph g :context sop (sop/%s %s %s)))" ctx.node.key ctx.head words in
   match Flow.Syntax.parse text with
   | Error d -> Error (Flow.Diagnostic.to_string d)
-  | Ok forms -> match Flow_sop.Catalog.check_workspace ~sources:ctx.sources ~ops:Flow_sop.Operators.all ctx.catalog forms with
+  | Ok forms -> match Flow_sop.Catalog.check_workspace ~sources:ctx.sources ~ops:ctx.ops ctx.catalog forms with
     | Some w, ds when errors ds = [] ->
         let build reference = match Flow_sop.Lower.of_checked ~provenance_tags:false ~reference ~factories:ctx.factories w with
           | Error d -> Error (Flow.Diagnostic.to_string d)
@@ -266,7 +286,7 @@ let run_gate ?(quick = false) ~dir node =
   let last = List.length node.inputs - 1 in
   List.iteri (fun i (fixture, geometries) ->
     let cases = if quick && i <> last then [List.hd all] else all in
-    let ctx = context ~dir node geometries in
+    let ctx = context ~label:fixture ~dir node geometries in
     let tag what = fun f -> try f () with Failure m -> fail (Printf.sprintf "%s/%s: %s: %s" node.key fixture what m) in
     List.iter (fun (label, changes) -> incr count;
       tag label (fun () -> verify_case ~full:(label = "defaults") ctx node.ulps (fixture ^ "/" ^ label) changes)) cases;
@@ -286,7 +306,7 @@ let run_gate ?(quick = false) ~dir node =
 let run_bench ~dir node = match node.bench with
   | None -> Printf.printf "| %s | - | no bench registered | - | - |\n%!" node.key; true
   | Some build -> let geometries, changes = build () in
-      let ctx = context ~dir node geometries in
+      let ctx = context ~label:"bench" ~dir node geometries in
       let actual = match lisp ctx changes with Ok b -> fst (get_string_ok (b false)) | Error m -> fail m
       and expected = get_string_ok (native ctx changes) in
       let sample domains n = List.init 3 (fun _ -> with_session (fun s -> Gc.full_major ();

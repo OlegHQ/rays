@@ -31,6 +31,7 @@ module Convert_line = Sop_topology.Convert_line
 module Blast = Sop_topology.Blast
 module Uv_flatten = Attributes.Uv_flatten
 module Attr_from_image = Attributes.Attr_from_image
+module Image_texels = Attributes.Image_texels
 module Iso_surface = Shapes.Iso_surface
 module Uv_relax = Attributes.Uv_relax
 module Rename_attributes = Attributes.Rename_attributes

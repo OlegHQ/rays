@@ -1,5 +1,6 @@
 module Switch = Sop.Nodes.Switch [@@sop.register]
 module Attr_from_image = Sop.Nodes.Attr_from_image [@@sop.register]
+module Image_texels = Sop.Nodes.Image_texels [@@sop.register]
 module Iso_surface = Sop.Nodes.Iso_surface [@@sop.register]
 module Clip = Sop.Nodes.Clip [@@sop.register]
 module Subdivide = Sop.Nodes.Subdivide [@@sop.register]

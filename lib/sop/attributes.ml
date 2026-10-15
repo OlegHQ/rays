@@ -41,6 +41,37 @@ module Attr_from_image = struct
   let factory = parameters_factory build
 end
 
+(* The decoded RGBA floats of an image as a carrier geometry, so a Lisp body can sample pixels:
+   one point per texel in row-major order, P = (x, y, width), and the Point Float4 attribute "rgba". *)
+module Image_texels = struct
+  type parameters = unit
+    [@@sop.node_key "image_texels"] [@@sop.node_label "Image Texels"]
+    [@@sop.node_category "Attribute/Image"] [@@sop.node_inputs 1]
+    [@@sop.node_slots "image"] [@@sop.node_types "image"]
+    [@@deriving sop_params, sop_node]
+  let build = parameters_build (fun ~label _parameters image ->
+    Node.Private.make ~label ~operation:"image_texels" ~version:1 ~parameters:""
+      ~cook_mode:Node.Generator ~dependencies:Context.Dependencies.static
+      ~inputs:[|image|] (fun ~node_id:_ _context inputs ->
+        Result.bind (Payload.image inputs.(0)) (fun image ->
+          let width = Image.width image and rgba = Image.Private.storage image in
+          let count = width * Image.height image in
+          let geometry = Rdk.Kernel.generate_point_ranges count (fun ~first ~last ~x ~y ~z ->
+            for i = first to last - 1 do
+              x.(i) <- float (i mod width); y.(i) <- float (i / width); z.(i) <- float width
+            done) in
+          let plane k = Array.init count (fun i -> rgba.(4 * i + k)) in
+          match Rdk.Packed.Float4.of_owned ~x:(plane 0) ~y:(plane 1) ~z:(plane 2) ~w:(plane 3) with
+          | Error message -> Error (Diagnostic.error ~code:"invalid_image_texels" message)
+          | Ok values ->
+              match Rdk.Attribute.create_owned ~name:"rgba" ~owner:Rdk.Attribute.Point (Float4 values) with
+              | Error message -> Error (Diagnostic.error ~code:"invalid_image_texels" message)
+              | Ok attribute -> (match Rdk.Geometry.with_attribute attribute geometry with
+                  | Error message -> Error (Diagnostic.error ~code:"invalid_image_texels" message)
+                  | Ok geometry -> Ok Node.Private.{payload = Payload.Geometry geometry; diagnostics = []; instances = None}))))
+  let factory = parameters_factory build
+end
+
 module Uv_flatten = struct
   type parameters = {
     name : string [@sop.default "uv"] [@sop.label "UV attribute"];
