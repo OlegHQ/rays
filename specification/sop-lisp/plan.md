@@ -753,8 +753,7 @@ Pending drafts (`nodes/<key>.pending`):
 | --- | --- |
 | `iso_surface` | smooth normals exact after mirroring arm64 FMA contraction; positions 1–6 ulp off |
 
-No draft yet: `subdivide` (split the crack path first, E.6),
-`copy_to_points`, `sweep` (agent).
+No draft yet: `subdivide` (split the crack path first, E.6).
 
 Fidelity gap: `group_from_attribute_boundary` does not raise native's non-finite-attribute error
 (the gate has no non-finite fixture).

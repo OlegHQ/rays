@@ -118,6 +118,7 @@ module Point_jitter : sig val factory : Edit_graph.factory end
 module Join_curves : sig val factory : Edit_graph.factory end
 module Exploded_view : sig val factory : Edit_graph.factory end
 module Copy_to_points : sig val factory : Edit_graph.factory end
+module Pack_instances : sig val factory : Edit_graph.factory end
 module Attribute_remap : sig val factory : Edit_graph.factory end
 module Attribute_mirror : sig val factory : Edit_graph.factory end
 module Attribute_fade : sig val factory : Edit_graph.factory end

@@ -113,6 +113,27 @@ let run () =
    | A.Float4 packed -> let view = Rdk.Packed.Float4.Private.view packed in
        assert (view.x = [|1.;0.;0.;1.|] && view.w = [|0.2;0.4;0.6;0.8|])
    | _ -> assert false);
+  (* pack_instances: the source unchanged, drawn at the affine rows r0 r1 r2 of the second input. *)
+  (let row name x y z w =
+     ok (A.create_owned ~name ~owner:A.Point (A.Float4 (ok (Rdk.Packed.Float4.of_owned ~x ~y ~z ~w)))) in
+   let carrier = List.fold_left (fun g a -> ok (Rdk.Geometry.with_attribute a g))
+       (Rdk.Line_geometry.points [|(0., 0., 0.); (1., 0., 0.)|])
+       [row "r0" [|2.;1.|] [|0.;0.|] [|0.;0.|] [|5.;6.|];
+        row "r1" [|0.;0.|] [|3.;1.|] [|0.;0.|] [|0.;0.|];
+        row "r2" [|0.;0.|] [|0.;0.|] [|1.;1.|] [|0.;1.|]] in
+   let packed = Rdk.Line_geometry.points [|(1., 1., 1.)|] in
+   let node = ok (Edit_graph.instantiate Nodes.Pack_instances.factory
+     [Lisp_sop.snapshot packed; Lisp_sop.snapshot carrier]) in
+   let session = ok (Session.create ~max_entries:0 ~max_payload_bytes:0) in
+   let output = ok (Session.cook session ~context:(ok (Context.create ())) node) in
+   Session.close session;
+   assert (Rdk.Geometry.point_count (ok (Payload.geometry output.payload)) = 1);
+   match output.instances with
+   | Some [|a; b|] ->
+       let m x ~row ~column = Rays_math.Mat4.get x ~row ~column in
+       assert (m a ~row:0 ~column:0 = 2. && m a ~row:0 ~column:3 = 5. && m a ~row:1 ~column:1 = 3.
+         && m b ~row:2 ~column:3 = 1. && m b ~row:3 ~column:3 = 1.)
+   | _ -> assert false);
   print_endline "attr_from_image: channels, bilinear/clamp/single-axis UV, exact domains, typed payloads, malformed inputs and cancellation pass"
 let benchmark () =
   let count = 1_000_000 in

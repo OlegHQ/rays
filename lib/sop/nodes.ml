@@ -118,6 +118,7 @@ module Point_jitter = Shapes.Point_jitter
 module Join_curves = Sop_topology.Join_curves
 module Exploded_view = Shapes.Exploded_view
 module Copy_to_points = Shapes.Copy_to_points
+module Pack_instances = Shapes.Pack_instances
 module Attribute_remap = Attributes.Attribute_remap
 module Attribute_mirror = Attributes.Attribute_mirror
 module Attribute_fade = Attributes.Attribute_fade
