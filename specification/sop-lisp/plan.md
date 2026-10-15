@@ -244,7 +244,6 @@ All 162 nodes, grouped by the phase that ports them. A node sits in the phase wh
 | `point_replicate` | 3 | C1 C4 B9 | Random, radical inverse and noise. | `gen/point_replicate.ml:249` |
 | `scatter` | 3 | C1 C2 B9 | Sequential alias table (`:328`) and a private keyed hash (`:370`). Both must be reproduced or the point set changes. | `gen/scatter.ml:392` |
 | `extract_point_from_curve` | 3 | C1 C4 | Count then fill. | `mesh/extract_point_curve.ml:66` |
-| `extract_centroid` | 2 | C1 C6 C8 | Hull method calls `sop/convex_hull`. | `mesh/extract_centroid.ml:314` |
 | `separate_pieces` | 2 | C5 C8 | Uses `Float.next_after` (`:224`); needs that operator. | `mesh/separate_pieces.ml:439` |
 | `enumerate` | 2 | C5 C8 B3 | Per-piece rank. | `attrib/attribute_enumerate.ml:252` |
 | `group_copy` | 2 | C8 B5 | Match by int or text key. | `attrib/group_ops.ml:4027` |
@@ -283,7 +282,6 @@ All 162 nodes, grouped by the phase that ports them. A node sits in the phase wh
 | `group_edge_depth` | 4 | D1 D3 |  | `attrib/group_ops.ml:2546` |
 | `group_expand` | 4 | D1 D3 | 870 lines of constraint modes, skimmed only. | `attrib/group_ops.ml:1642` |
 | `group_boundary_components` | 4 | D1 D2 | Number of output groups depends on data. | `attrib/group_ops.ml:2403` |
-| `group_from_attribute_boundary` | 4 | D1 |  | `attrib/group_ops.ml:562` |
 | `group_promote_boundary` | 4 | D1 |  | `attrib/group_ops.ml:868` |
 | `group_promotions` | 4 | D1 |  | `attrib/group_ops.ml:1906` |
 | `group_normal` | 2 | D1 B5 | Point and edge owners need reverse incidence. | `attrib/group_ops.ml:3158` |
@@ -744,19 +742,17 @@ whole fused native pass. Three shared fixes are in (`3bffaa15`, `8ba568d7`,
 source has no edge groups. Projection: 2× is not reachable for reindexing
 nodes without ancestry-aware host operators.
 
-**Status 2026-10-15: 117/128 registered, 4 drafts pending, 7 without a draft.**
+**Status 2026-10-15: 119/128 registered, 1 draft pending, 8 without a draft.**
 The earlier per-session tables are superseded; each registration commit
 ("Register …", "port-draft <key>: PASS-SLOW Nx") records its gate and bench.
 
 Registered (Lisp body is the production node; the OCaml kernel stays in `lib/rdk` as the oracle):
-`attribute_blur`, `attribute_copy`, `attribute_fade`, `attribute_interpolate`, `attribute_laplacian`, `attribute_noise_quaternion`, `attribute_noise`, `attribute_randomize`, `attribute_remap`, `bend`, `blast_by_attribute`, `blast`, `bound`, `box`, `carve`, `circle_from_edges`, `circle`, `color_by_height`, `compact_points`, `connectivity`, `convert_line`, `crease`, `delete_attributes`, `delete_edge_group`, `distance_along_geometry`, `distance_from_target`, `duplicate`, `edge_cusp`, `edge_divide`, `edge_equalize`, `edge_relax`, `edge_straighten`, `edge_transport_curves`, `edge_transport_parent`, `edge_transport`, `ends`, `enumerate`, `extract_point_from_curve`, `graph_color`, `grid`, `group_backface`, `group_boundary_components`, `group_bounds`, `group_combine`, `group_copy`, `group_delete`, `group_edge_depth`, `group_edges`, `group_expand`, `group_find_path`, `group_invert`, `group_non_planar`, `group_normal`, `group_promote_boundary`, `group_promotions`, `group_random`, `group_range`, `group_ranges`, `group_rename`, `group_unshared`, `groups_from_name`, `line`, `match_axis`, `match_size`, `material`, `measure_curvature`, `measure`, `merge`, `mirror`, `mountain`, `name_from_groups`, `noise_displace`, `normals`, `ordered_group`, `peak`, `platonic`, `point_generate`, `point_jitter`, `point_replicate`, `point_split`, `point_velocity`, `points`, `poly_bridge`, `poly_loft`, `poly_path`, `polyframe`, `polywire`, `promote_attributes`, `rename_attributes`, `rename_edge_group`, `resample`, `rest_position`, `reverse`, `revolve`, `rewire_vertices`, `separate_pieces`, `set_color`, `set_float`, `set_int`, `set_orient`, `set_transform`, `set_vector`, `skin`, `smooth`, `snap_to_grid`, `sort`, `spiral`, `swap_attributes`, `sweep_circle`, `torus`, `transform`, `tube`, `uv_auto_seam`, `uv_project`, `uv_sphere`, `uv_transform`, `uv_unitize`.
+`attribute_blur`, `attribute_copy`, `attribute_fade`, `attribute_interpolate`, `attribute_laplacian`, `attribute_noise_quaternion`, `attribute_noise`, `attribute_randomize`, `attribute_remap`, `bend`, `blast_by_attribute`, `blast`, `bound`, `box`, `carve`, `circle_from_edges`, `circle`, `color_by_height`, `compact_points`, `connectivity`, `convert_line`, `crease`, `delete_attributes`, `delete_edge_group`, `distance_along_geometry`, `distance_from_target`, `duplicate`, `edge_cusp`, `edge_divide`, `edge_equalize`, `edge_relax`, `edge_straighten`, `edge_transport_curves`, `edge_transport_parent`, `edge_transport`, `ends`, `enumerate`, `extract_centroid`, `extract_point_from_curve`, `graph_color`, `grid`, `group_backface`, `group_boundary_components`, `group_bounds`, `group_combine`, `group_copy`, `group_delete`, `group_edge_depth`, `group_edges`, `group_expand`, `group_find_path`, `group_from_attribute_boundary`, `group_invert`, `group_non_planar`, `group_normal`, `group_promote_boundary`, `group_promotions`, `group_random`, `group_range`, `group_ranges`, `group_rename`, `group_unshared`, `groups_from_name`, `line`, `match_axis`, `match_size`, `material`, `measure_curvature`, `measure`, `merge`, `mirror`, `mountain`, `name_from_groups`, `noise_displace`, `normals`, `ordered_group`, `peak`, `platonic`, `point_generate`, `point_jitter`, `point_replicate`, `point_split`, `point_velocity`, `points`, `poly_bridge`, `poly_loft`, `poly_path`, `polyframe`, `polywire`, `promote_attributes`, `rename_attributes`, `rename_edge_group`, `resample`, `rest_position`, `reverse`, `revolve`, `rewire_vertices`, `separate_pieces`, `set_color`, `set_float`, `set_int`, `set_orient`, `set_transform`, `set_vector`, `skin`, `smooth`, `snap_to_grid`, `sort`, `spiral`, `swap_attributes`, `sweep_circle`, `torus`, `transform`, `tube`, `uv_auto_seam`, `uv_project`, `uv_sphere`, `uv_transform`, `uv_unitize`.
 
 Pending drafts (`nodes/<key>.pending`):
 
 | Node | State |
 | --- | --- |
-| `extract_centroid` | per-piece convex hull: a fold calling a geometry node fails `E_PACKED_FORM` |
-| `group_from_attribute_boundary` | zone over attribute names `E_DATA_SOURCE`; `text/glob_rewrite` fails in fold bodies |
 | `iso_surface` | smooth normals exact after mirroring arm64 FMA contraction; positions 1–6 ulp off |
 
 No draft yet: `scatter`, `edge_flip`, `subdivide` (agent),
@@ -829,6 +825,7 @@ before optimizing. The OCaml kernels remain in `lib/rdk` as oracles.
 | `polywire` | 22.1× | 25.8× | K, H |
 | `point_replicate` | 10.7× | 11.0× | not profiled |
 | `promote_attributes` | 10.8× | 16.0× | not profiled |
+| `extract_centroid` | 10.3× | 6.6× | not profiled |
 | `attribute_interpolate` | 11.8× | 22.6× | not profiled |
 | `attribute_copy` | 15.2× | 8.2× | not profiled |
 | `point_split` | 17.5× | 27.2× | not profiled |
@@ -836,6 +833,7 @@ before optimizing. The OCaml kernels remain in `lib/rdk` as oracles.
 | `separate_pieces` | 39.3× | 31.6× | O(pieces²) placement scan |
 | `skin` | 43× | 34× | K, H |
 | `carve` | 53× | 47× | K, H |
+| `group_from_attribute_boundary` | 82× | 228× | fold carries geometry; state kept as attributes |
 | `edge_transport_parent` | 85.8× | 75.7× | D, I |
 | `poly_loft` | 90× | 108× | K, H |
 | `group_boundary_components` | 163× | | A, D |
