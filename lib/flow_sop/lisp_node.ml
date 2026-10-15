@@ -122,7 +122,10 @@ let node ?(unbound_function = false) ?(geometry_inputs = []) ~operation ~version
               let session = Result.get_ok (Sop.Session.create ~max_entries:0 ~max_payload_bytes:0) in
               Sop.Session.Private.set_parallel_override session (Some false);
               Fun.protect ~finally:(fun () -> Sop.Session.close session) (fun () ->
-                Result.map (fun (output : Sop.Session.output) ->
-                  N.Private.{payload=output.payload;diagnostics=output.diagnostics;instances=output.instances})
-                  (Sop.Session.cook session ~context body)))))
+                (* The body's nodes are implementation: the failure is traced by the enclosing session
+                   to this node, not through a card the author never wrote. *)
+                Result.map_error (fun (error : Sop.Diagnostic.error) -> {error with trace = []})
+                  (Result.map (fun (output : Sop.Session.output) ->
+                    N.Private.{payload=output.payload;diagnostics=output.diagnostics;instances=output.instances})
+                    (Sop.Session.cook session ~context body))))))
       |> N.Private.with_facts facts)
