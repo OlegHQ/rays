@@ -822,6 +822,11 @@ before optimizing. The OCaml kernels remain in `lib/rdk` as oracles.
 | `measure_curvature` | 15.8× | 15.3× | K, A |
 | `sweep_circle` | 18.4× | 18.5× | K, H |
 | `polywire` | 22.1× | 25.8× | K, H |
+| `point_replicate` | 10.7× | 11.0× | not profiled |
+| `promote_attributes` | 10.8× | 16.0× | not profiled |
+| `attribute_interpolate` | 11.8× | 22.6× | not profiled |
+| `attribute_copy` | 15.2× | 8.2× | not profiled |
+| `point_split` | 17.5× | 27.2× | not profiled |
 | `match_size` | 23× | | K |
 | `separate_pieces` | 39.3× | 31.6× | O(pieces²) placement scan |
 | `skin` | 43× | 34× | K, H |
