@@ -3,6 +3,22 @@
    oracle comparison for that node: the same expression is lowered natively (Lisp_sop.node) and through
    the draft, both are cooked, and the geometries must agree within 4 ulps (close_geometry). *)
 open Rdk
+(* The OCaml oracle: iso_surface is registered as a Lisp node, so native is rebuilt from Sop.Nodes.Iso_surface
+   over the embedded sources minus the iso_* definitions (Lisp_sop.node would now cook the Lisp node twice). *)
+let native_node ctx body =
+  let checked = function Ok v -> v | Error d -> failwith (Flow.Diagnostic.to_string d) in
+  let drop form = let text = Flow.Lisp.flat form in
+    List.exists (fun prefix -> String.starts_with ~prefix text) ["(defnode sop/iso_surface "; "(defn iso_"] in
+  let sources = List.filter (fun f -> not (drop f)) (checked (Flow_sop.Catalog.sources ())) in
+  let factories = Sop.Nodes.Iso_surface.factory :: ctx.Port_gate.factories in
+  let catalog = checked (Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version factories) in
+  let text = Printf.sprintf "(workspace port (graph g :context sop %s))" body in
+  match Flow_sop.Catalog.check_workspace ~sources ~ops:Flow_sop.Operators.all catalog (checked (Flow.Syntax.parse text)) with
+  | Some w, _ ->
+      let l = checked (Flow_sop.Lower.of_checked ~factories w) in
+      let g = List.hd l.graphs in
+      Result.get_ok (Sop.Edit_graph.compile_node g.network.geometry ~node_id:(Option.get g.root))
+  | None, ds -> failwith (String.concat "\n" (List.map Flow.Diagnostic.to_string ds))
 let () = if Sys.getenv_opt "PORT_ISO" <> None then at_exit (fun () ->
   let node = List.find (fun (n : Port_gate.t) -> n.key = "iso_surface") (Port_gate.registered ()) in
   let ctx = Port_gate.context ~dir:"lib/flow_sop/nodes" node [] in
@@ -36,7 +52,7 @@ let () = if Sys.getenv_opt "PORT_ISO" <> None then at_exit (fun () ->
     | Error d -> Error d.Sop.Diagnostic.code in
   List.iter (fun (fname, field) -> List.iter (fun (pname, words) -> if Sys.getenv "PORT_ISO" = "1" || Sys.getenv "PORT_ISO" = fname ^ ":" ^ pname then
     let body = Printf.sprintf "(sop/iso_surface :field %s %s)" field words in
-    let expected = cook (Lisp_sop.node body) in
+    let expected = cook (native_node ctx body) in
     let actual = match lisp_node body with Error m -> Error ("refused: " ^ m) | Ok n -> cook n in
     match expected, actual with
     | Ok e, Ok a ->
@@ -69,7 +85,7 @@ let () = if Sys.getenv_opt "PORT_ISO" = Some "bench" then at_exit (fun () ->
          | Ok l -> let g = List.hd l.graphs in Result.get_ok (Sop.Edit_graph.compile_node g.network.geometry ~node_id:(Option.get g.root))
          | Error d -> failwith (Flow.Diagnostic.to_string d))
      | _ -> failwith "check") | Error d -> failwith (Flow.Diagnostic.to_string d) in
-  let native = Lisp_sop.node body in
+  let native = native_node ctx body in
   List.iter (fun domains ->
     let time n = let best = ref infinity in
       for _ = 1 to 2 do
