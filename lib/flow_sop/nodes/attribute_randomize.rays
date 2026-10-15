@@ -516,10 +516,13 @@
                               theta4 (if (int/eq kd 4) (ar_cap4 (exact (map (fn [(u : vec4)]
                                          (if (= direction_bias 0.0) u.x (- 1.0 (pow (- 1.0 u.x) (/ 1.0 (+ direction_bias 1.0)))))) uniform)) plan.cap)
                                        (exact (map (fn [(u : vec4)] 0.0) uniform)))]
-                         (exact (map (fn [(u : vec4) (t4 : float)]
-                           (let* [d (ar_direction kd u.x u.y u.z t4 plan.axis plan.house plan.norm2 plan.cap direction_bias)
-                                  radius (pow (if (int/eq kd 2) u.y (if (int/eq kd 3) u.z u.w)) (/ 1.0 (float kd)))]
-                             [(* d.x radius) (* d.y radius) (* d.z radius) (* d.w radius)])) uniform theta4)))
+                         ; two passes: the direction and the radius together exceed a packed region's registers
+                         (let* [directions (exact (map (fn [(u : vec4) (t4 : float)]
+                                 (ar_direction kd u.x u.y u.z t4 plan.axis plan.house plan.norm2 plan.cap direction_bias))
+                                 uniform theta4))]
+                           (exact (map (fn [(d : vec4) (u : vec4)]
+                             (let* [radius (pow (if (int/eq kd 2) u.y (if (int/eq kd 3) u.z u.w)) (/ 1.0 (float kd)))]
+                               [(* d.x radius) (* d.y radius) (* d.z radius) (* d.w radius)])) directions uniform))))
                      "Custom ramp"
                        (let* [table (ar_ramp ramp)
                               q0 (ar_ramp_sample table.pos table.vals (exact (map (fn [(u : vec4)] u.x) uniform)))
