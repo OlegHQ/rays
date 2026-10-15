@@ -249,7 +249,7 @@ All 162 nodes, grouped by the phase that ports them. A node sits in the phase wh
 | `point_velocity` | 2 | C8 B1 | Match by attribute across frames. | `mesh/motion.ml:483` |
 | `attribute_interpolate` | 2 | C2 B1 | Array-valued attributes. 1,209 lines. | `attrib/attribute_interpolate.ml:774` |
 | `edge_transport_curves` | 4 | B11 | Running sum per curve: a segmented scan. | `mesh/edge_transport.ml:867` |
-| `iso_surface` | 3 | C1 C2 C4 | Count then fill. Uses `Float.fma` explicitly (`gen/iso_surface.ml:82`), so it needs an `fma` operator or its lattice stays a built-in. Port last in this phase. | `gen/iso_surface.ml:33` |
+| `iso_surface` | positions and normals bit-exact (x/y corners unfused, z and lerp fused, read from arm64 code); registering breaks function-slot tests with `E_PACKED_FORM` (agent) |
 
 ### Phase D: adjacency and iteration, 31 nodes
 
@@ -751,7 +751,7 @@ Pending drafts (`nodes/<key>.pending`):
 
 | Node | State |
 | --- | --- |
-| `iso_surface` | smooth normals exact after mirroring arm64 FMA contraction; positions 1–6 ulp off |
+| `iso_surface` | positions and normals bit-exact (x/y corners unfused, z and lerp fused, read from arm64 code); registering breaks function-slot tests with `E_PACKED_FORM` (agent) |
 
 
 Fidelity gap: `group_from_attribute_boundary` does not raise native's non-finite-attribute error
