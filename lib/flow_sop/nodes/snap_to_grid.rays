@@ -42,8 +42,8 @@
         (and (and (and (>= offset.x 0.0) (<= offset.x 1.0))
                   (and (and (>= offset.y 0.0) (<= offset.y 1.0)) (and (>= offset.z 0.0) (<= offset.z 1.0))))
           (and (and (snap_finite max_distance) (>= max_distance 0.0))
-            (and (reduce (fn [ok row] (and ok (snap_attribute_rule_ok row))) true (text/table_decode attribute_rules))
-                 (reduce (fn [ok row] (and ok (snap_group_rule_ok row))) true (text/table_decode group_rules)))))))))
+            (and (reduce (fn [ok row] (and ok (snap_attribute_rule_ok row))) true (if (text/blank? attribute_rules) (list) (text/table_decode attribute_rules)))
+                 (reduce (fn [ok row] (and ok (snap_group_rule_ok row))) true (if (text/blank? group_rules) (list) (text/table_decode group_rules))))))))))
 (defnode sop/snap_to_grid :label "Snap to Grid" :category "Point"
   :validate (snap_valid [spacing_x spacing_y spacing_z] [offset_x offset_y offset_z] max_distance
               attribute_rules group_rules)
