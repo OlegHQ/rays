@@ -27,6 +27,30 @@ and term_node =
 
 let symbol form = match form.Syntax.node with Syntax.Sym name -> Some name | _ -> None
 let list form = match form.Syntax.node with Syntax.List items -> Some items | _ -> None
+let resolve_component_names lookup names =
+  List.filter_map (fun name ->
+    if name = "" || name.[0] <> '$' then Some name else
+    let body = String.sub name 1 (String.length name - 1) in
+    let split sep = match String.index_opt body sep with
+      | Some i -> Some (String.sub body 0 i, String.sub body (i + 1) (String.length body - i - 1))
+      | None -> None in
+    match split '|', split '~' with
+    | Some (param, fallback), _ ->
+        (match Option.map String.trim (lookup param) with
+         | Some value when value <> "" -> Some value
+         | _ -> Some fallback)
+    | None, Some (param, prefix) ->
+        (* the part of the value after [prefix], for an encoded "attribute:name" parameter *)
+        (match Option.map String.trim (lookup param) with
+         | Some value when String.starts_with ~prefix value ->
+             let rest = String.trim (String.sub value (String.length prefix) (String.length value - String.length prefix)) in
+             if rest = "" then None else Some rest
+         | _ -> None)
+    | None, None ->
+        (match Option.map String.trim (lookup body) with
+         | Some value when value <> "" -> Some value
+         | _ -> None)) names
+
 let short qualified = match String.split_on_char '/' qualified with
   | [_; name] -> name | _ -> qualified
 

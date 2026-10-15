@@ -33,7 +33,7 @@
          p11 (array/nth plane (int/add (int/mul y1 w) x1))]
     (afi_lerp (afi_lerp p00 p10 tx) (afi_lerp p01 p11 tx) ty)))
 (defnode sop/attr_from_image :label "Attribute from Image" :category ["Attribute" "Image"]
-  :facts {:elementwise points :reads ["uv"] :writes ["image"] :topology preserved :exact true}
+  :facts {:elementwise points :reads ["$uv"] :writes ["$attribute"] :topology preserved :exact true}
   :validate (and (not (equal? attribute "P")) (not (text/blank? attribute))) :code "E_PARAM"
   :message "sop/attr_from_image: attribute must be nonblank and cannot be P"
   [(geometry : geometry)

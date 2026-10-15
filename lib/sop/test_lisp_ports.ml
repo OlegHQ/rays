@@ -469,8 +469,8 @@ let metadata_port ?reference_input ?(extra_geometries=[]) ~key ~native_factory ~
   let catalog=Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version
     (native_factory::List.filter(fun factory->Sop.Edit_graph.factory_key factory<>key)Sop_catalog.Editor.factories)|>flow_ok in
   let wrong_inputs=["17","";"(image/noise :width 1 :height 1)",""]@
-    (if key="delete_attributes" then ["(sop/grid)"," :reference 17";
-      "(sop/grid)"," :reference (image/noise :width 1 :height 1)"] else []) in
+    (if key="delete_attributes" then ["(sop/iso_surface)"," :reference 17";
+      "(sop/iso_surface)"," :reference (image/noise :width 1 :height 1)"] else []) in
   List.iter(fun(input,keywords)->let forms=Flow.Syntax.parse(Printf.sprintf
       "(workspace invalid_edges (graph g :context sop (sop/%s %s%s)))"key input keywords)|>flow_ok in
     let errors(workspace,ds)=check(workspace=None)(key^": wrong input accepted");
@@ -797,9 +797,13 @@ let line () =
 let points_port () =
   check(not(List.exists(fun factory->Sop.Edit_graph.factory_key factory="points")
     Sop_catalog.Editor.factories)) "Points still registered as an OCaml body";
-  check(List.exists(fun factory->Sop.Edit_graph.factory_key factory="point_generate")
-    Sop_catalog.Editor.factories) "Points port removed the separate input-dependent generator";
   let sources=Flow_sop.Catalog.sources() |>flow_ok in
+  (* point_generate, the separate input-dependent generator Points builds on, is itself a Lisp node now. *)
+  check(not(List.exists(fun factory->Sop.Edit_graph.factory_key factory="point_generate")
+    Sop_catalog.Editor.factories)) "Point Generate still registered as an OCaml body";
+  check(List.exists(fun form->match Flow.Syntax.children form with
+      |{Flow.Syntax.node=Flow.Syntax.Sym "defnode";_}::{node=Sym "sop/point_generate";_}::_->true|_->false)
+    sources) "Points port removed the separate input-dependent generator";
   let factories=Sop_catalog.Editor.factories in
   let catalog=Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version factories |>flow_ok in
   let modes=["", "sourcepoint", "sourceindex";" \t\r\n", " sourceé ", " index猫 ";

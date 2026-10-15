@@ -20,6 +20,10 @@
   (if (not (text/blank? pattern)) true
     (if (text/blank? name) true
       (fold [found false] [probe (sop/group_names geo "" :owner owner)] (or found (equal? probe name))))))
+; Members of one group in native order: the explicit order when it has one, else ascending.
+(defn acopy_members :context sop [(geo : geometry) (owner : text) (name : text)]
+  (let* [order (sop/group_order geo :name name :owner owner)]
+    (if order.ordered order.indices (array/compact (sop/group geo :name name :owner owner)))))
 ; Selected elements in native order: a pattern unions the matching groups (one group keeps its order), an exact
 ; group keeps its order, no group selects every element.
 (defn acopy_elements :context sop [(geo : geometry) (owner : text) (pattern : text) (name : text)]
@@ -28,14 +32,13 @@
       (let* [names (sop/group_names geo pattern :owner owner)
              n (array/count names)]
         (cond (int/eq n 0) (array/int 0 0)
-              (int/eq n 1) (let* [order (sop/group_order geo :name (array/nth names 0) :owner owner)] order.indices)
+              (int/eq n 1) (acopy_members geo owner (array/nth names 0))
               :else (acopy_ascending
                       (fold [found (array/int 0 0)] [member names]
-                        (let* [order (sop/group_order geo :name member :owner owner)]
-                          (array/concat found order.indices)))
+                        (array/concat found (acopy_members geo owner member)))
                       (acopy_count geo owner))))
     (text/blank? name) (array/range (acopy_count geo owner) :type int)
-    :else (let* [order (sop/group_order geo :name name :owner owner)] order.indices)))
+    :else (acopy_members geo owner name)))
 ; mapping[target element] = source element or -1
 (defn acopy_cyclic :context value [(source_elements : (array int)) (target_elements : (array int)) (target_count : int)]
   (let* [n (array/count source_elements)]

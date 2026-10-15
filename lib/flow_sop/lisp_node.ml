@@ -73,7 +73,7 @@ let with_initial_changes ~operation changes f =
     Fun.protect ~finally:(fun () -> Domain.DLS.set initial None) f
   end
 
-let node ?(unbound_function = false) ~operation ~version ~label ~fields ~normalizers ~source ~build inputs =
+let node ?(unbound_function = false) ?(geometry_inputs = []) ~operation ~version ~label ~fields ~normalizers ~source ~build inputs =
   let schema = schema "parameters" fields normalizers in
   let defaults = Param.default schema in
   let values = match Domain.DLS.get initial with
@@ -102,6 +102,11 @@ let node ?(unbound_function = false) ~operation ~version ~label ~fields ~normali
       N.Private.make ~label ~operation ~version ~parameters:source
         ~cook_mode:facts.N.cook_mode ~dependencies ~inputs:(Array.of_list inputs)
         (fun ~node_id:_ context payloads ->
+          let wrong = List.find_mapi (fun i geometry ->
+            if geometry && i < Array.length payloads then
+              (match Sop.Payload.geometry payloads.(i) with Error error -> Some error | Ok _ -> None)
+            else None) geometry_inputs in
+          match wrong with Some error -> Error error | None ->
           let (seed, frame, time), previous_body = Atomic.get prepared in
           let body = if (not context_seeded || seed=Sop.Context.seed context)
               && (not framed || frame=Sop.Context.frame context)
@@ -117,7 +122,14 @@ let node ?(unbound_function = false) ~operation ~version ~label ~fields ~normali
               let session = Result.get_ok (Sop.Session.create ~max_entries:0 ~max_payload_bytes:0) in
               Sop.Session.Private.set_parallel_override session (Some false);
               Fun.protect ~finally:(fun () -> Sop.Session.close session) (fun () ->
-                Result.map (fun (output : Sop.Session.output) ->
-                  N.Private.{payload=output.payload;diagnostics=output.diagnostics;instances=output.instances})
-                  (Sop.Session.cook session ~context body)))))
+                (* The body's kernel nodes (labelled flow.xxx or lisp_xxx) are implementation: the enclosing session traces
+                   the failure to this node, not through a card the author never wrote. Authored cards in
+                   the body keep their frames. *)
+                Result.map_error (fun (error : Sop.Diagnostic.error) ->
+                  {error with trace = List.filter (fun (frame : Sop.Diagnostic.trace) ->
+                    not (String.starts_with ~prefix:"flow." frame.label || String.starts_with ~prefix:"lisp_" frame.label))
+                    error.trace})
+                  (Result.map (fun (output : Sop.Session.output) ->
+                    N.Private.{payload=output.payload;diagnostics=output.diagnostics;instances=output.instances})
+                    (Sop.Session.cook session ~context body))))))
       |> N.Private.with_facts facts)

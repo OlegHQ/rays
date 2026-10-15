@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "d283bf1d93009be8af9e7e47a27cc2dc")
+  (digest "d5599765eb99d1bb4b33a15c9e065081")
   (kinds
     (kind "sop/switch"
       (key "switch")
@@ -1031,7 +1031,7 @@
         (field "lacunarity" "Lacunarity" (folder "Noise" "Fractal") (float (soft 0 8) (hard nil nil)) (float 2) (primary false) (vec3))
         (field "roughness" "Roughness" (folder "Noise" "Fractal") (float (soft 0 1) (hard nil nil)) (float 0.5) (primary false) (vec3)))
       (outputs (output "geo" geometry))
-      (facts (cook-mode generic) (elementwise points) (reads "P" "noise" "P") (writes "noise") (topology preserved) (exact false))
+      (facts (cook-mode generic) (elementwise points) (reads "P" "noise" "P") (writes "noise" "N") (topology preserved) (exact false))
       (body lisp)
       (calls))
     (kind "sop/attribute_noise_quaternion"
@@ -1176,6 +1176,7 @@
         (field "capture_attribute" "Capture attribute" (folder "Attributes") (text) (text "") (primary false) (vec3))
         (field "recompute_normals" "Recompute normals" (folder) (bool) (bool false) (primary false) (vec3)))
       (outputs (output "geo" geometry))
+      (facts (cook-mode generic) (elementwise points) (reads "P") (writes "P" "N") (topology preserved) (exact false))
       (body lisp)
       (calls "sop/normals"))
     (kind "sop/blast"

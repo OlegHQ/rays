@@ -519,7 +519,7 @@ let lower ?(fusion = true) ?(dynamic = false)
                   let seed,octaves,lacunarity,gain=try Operators.noise_settings configuration with
                     | Flow.Value.Fail (_,message,_) -> refuse ~at:t "E_PACKED_CONSTANT" message in
                   if not (Flow.Packed_ops.supported_noise_octaves octaves) then
-                    refuse ~at:t "E_PACKED_CONSTANT" (Printf.sprintf "Packed noise octaves must be 1 to 32, got %d." octaves);
+                    refuse ~at:t "E_PACKED_CONSTANT" (Printf.sprintf "Packed noise octaves must be 1 to 64, got %d." octaves);
                   [|emit (Noise3 (a.registers.(0), a.registers.(1), a.registers.(2), seed, octaves, lacunarity, gain))|]
               | Flow.Op.Exact, [a] -> a.registers
               | Flow.Op.Length, [a] when Array.length a.registers = 3 ->

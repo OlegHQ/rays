@@ -4,7 +4,7 @@
 (defn peak_error :context value [(reason : text)]
   (deform_error "peak" "invalid_deformation" reason))
 (defnode sop/peak :label "Peak" :category "Deform"
-  :facts {:elementwise points :reads ["P" "N"] :writes ["P" "N"] :topology preserved :exact false}
+  :facts {:elementwise points :reads ["P" "$direction_attribute|N" "$mask_attribute"] :writes ["P" "N"] :topology preserved :exact false}
   :validate (= (- distance distance) 0.0)
   :code "E_PARAM" :message "sop/peak: distance must be finite"
   [(in0 : geometry)

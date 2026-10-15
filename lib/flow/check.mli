@@ -23,6 +23,11 @@ type kernel_facts = {
 (** Domain-neutral kernel metadata at a catalog kind's default parameters.
     Runtime component dependencies come from the instantiated node. *)
 
+val resolve_component_names : (string -> string option) -> string list -> string list
+(** A [:facts] component name is literal, [$param] (the trimmed text of that parameter, dropped when
+    blank), [$param|fallback] (the fallback when blank) or [$param~prefix] (what follows [prefix] in
+    the parameter, dropped when it does not start with it). [lookup] gives a parameter's text. *)
+
 type kind = {
   qualified : string;
   aliases : string list;

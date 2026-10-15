@@ -3,7 +3,7 @@ val input : int -> (Sop.Payload.t, Sop.Diagnostic.error) result
 (** Immutable cooked input in the enclosing body's caller-domain scope. *)
 
 val node :
-  ?unbound_function:bool ->
+  ?unbound_function:bool -> ?geometry_inputs:bool list ->
   operation:string -> version:int -> label:string -> fields:Param.field_view list ->
   normalizers:(string * (string -> (string, Flow.Diagnostic.t) result)) list ->
   source:string ->
@@ -11,6 +11,9 @@ val node :
     (Sop.Context.t -> (Sop.Node.t, Sop.Diagnostic.error) result) *
     Sop.Context.Dependencies.t * Sop.Node.facts) ->
   Sop.Node.t list -> Sop.Node.t
+
+(** [geometry_inputs] flags, per connected input, a slot that must carry geometry: a cook that finds
+    another payload there fails with [E_PAYLOAD] before the body runs, as a native geometry node does. *)
 
 val with_initial_changes : operation:string -> (string * Param.value) list -> (unit -> 'a) -> 'a
 (** Run an instantiation whose first Lisp node of [operation] starts from these parameter changes

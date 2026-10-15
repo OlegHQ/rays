@@ -180,7 +180,7 @@
                      edges (sop/count in0 :edges)
                      topo (sop/topology in0)
                      per_vertex (array/count adjacency.edge_of_vertex)
-                     dual (gfp_dual adjacency.edge_of_vertex adjacency.primitive_of_vertex n edges)
+                     dual (gfp_dual adjacency.edge_of_vertex adjacency.primitive_of_vertex (sop/count in0 :primitives) edges)
                      non_manifold (if primitive_graph (array/sum (exact (map (fn [(c : int)] (if (int/ge c 3) 1 0)) dual.per_edge))) 0)]
                 (cond
                   (and primitive_graph (int/gt non_manifold 0)) (gfp_error "primitive paths require manifold topology")

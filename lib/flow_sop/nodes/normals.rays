@@ -221,7 +221,7 @@
           :else (sop/with_attr clean name result :owner "detail" :type vec3))))
 
 (defnode sop/normals :label "Normal" :category "Attribute"
-  :facts {:elementwise none :reads ["P" "N"] :writes ["N"] :topology preserved :exact false}
+  :facts {:elementwise none :reads ["P" "$attribute"] :writes ["$attribute"] :topology preserved :exact false}
   :validate (and (not (text/blank? attribute)) (and (>= cusp_angle 0.0) (<= cusp_angle 3.141592653589793)))
   :code "E_PARAM" :message "sop/normals: attribute must be named and cusp angle finite within [0,pi]"
   [(in0 : geometry)

@@ -127,6 +127,15 @@ let check_workspace ?ops ?library ?sources catalog forms =
       |Ok workspace->Some workspace,diagnostics
       |Error diagnostic->None,diagnostics@[diagnostic])
 
+(* The catalog describes a kind at its default parameters: the [:facts] names that read a parameter
+   ([$param], [$param|fallback], [$param~prefix]) resolve against the defaults, as the manifest prints them. *)
+let described_kind (node : Flow.Defnode.t) =
+  let resolve = Flow.Check.resolve_component_names (fun name ->
+    List.find_map (fun (field : Param.field_view) -> match field.default with
+      | Param.Text_value text when field.name = name -> Some text | _ -> None) node.fields) in
+  {node.kind with facts = Option.map (fun (f : Flow.Check.kernel_facts) ->
+    {f with reads = resolve f.reads; writes = resolve f.writes}) node.kind.facts}
+
 let of_factories ~version ?(extra = []) ?nodes factories =
   let declarations = Hashtbl.create (List.length factories) in
   List.iter (fun factory ->
@@ -203,9 +212,9 @@ let of_factories ~version ?(extra = []) ?nodes factories =
             if List.exists (fun (kind : Flow.Check.kind) -> kind.qualified = node.kind.qualified
                 || List.mem node.kind.qualified kind.aliases) catalog.Flow.Check.kinds then
               Error (Flow.Diagnostic.error ~code:"E_CATALOG" ("Duplicate kind " ^ node.kind.qualified))
-            else append {catalog with kinds = catalog.kinds @ [node.kind]} rest in
+            else append {catalog with kinds = catalog.kinds @ [described_kind node]} rest in
       Result.map (fun (checked:Flow.Check.catalog) ->
         let native, extra = List.partition (fun (kind:Flow.Check.kind) ->
           Hashtbl.mem declarations kind.qualified) catalog.kinds in
-        {checked with kinds=native @ List.map (fun (node:Flow.Defnode.t) -> node.kind) nodes @ extra})
+        {checked with kinds=native @ List.map described_kind nodes @ extra})
         (append catalog nodes)))

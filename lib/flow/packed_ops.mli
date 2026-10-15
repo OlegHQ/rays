@@ -9,7 +9,8 @@ type comparison = Ilt | Ile | Igt | Ige | Ieq
 type conversion = To_float | Truncate | Floor | Ceil | Round | Coerce_int | Integer_result of string
 
 val register_limit : int
-val supported_noise_octaves : int -> bool
+val supported_noise_octaves : int -> bool  (* 1 to 64, the native attribute noise range *)
+val supported_gpu_noise_octaves : int -> bool  (* 1 to 32: Metal and WGSL refuse more as E_GPU_FORM *)
 val finite_float32 : float -> bool
 (** Limits shared by packed compilation and GPU form qualification. *)
 

@@ -14,7 +14,7 @@
       (not (and (>= roughness 0.0) (<= roughness 1.0))) false
       :else (not (equal? (text/trim height_attribute) "P")))))
 (defnode sop/mountain :label "Mountain" :category "Deform"
-  :facts {:elementwise points :reads ["P" "N"] :writes ["P" "N"] :topology preserved :exact false}
+  :facts {:elementwise points :reads ["P" "$direction_attribute|N" "$mask_attribute" "$height_attribute"] :writes ["P" "N" "$height_attribute"] :topology preserved :exact false}
   :validate (mountain_valid height [frequency_x frequency_y frequency_z] [offset_x offset_y offset_z]
               octaves lacunarity roughness height_attribute)
   :code "E_PARAM" :message "sop/mountain: invalid numeric controls"

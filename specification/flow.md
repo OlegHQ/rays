@@ -1919,7 +1919,7 @@ RGB vec3, or `(list r g b a)` with normalized alpha. `color/hsl h s l` uses hue 
 returns RGB; `color/hsla h s l a` returns that four-component list. `color/gradient stops x`
 uses the native gradient's clamped interpolation and quantization and returns packed-compatible
 RGB (its stops must be opaque). `noise3 p :seed :octaves` defaults to seed 0 and one octave;
-1–32 octaves use native fBm with lacunarity 2 and gain 0.5. Seeds retain their native immutable
+1–64 octaves use native fBm (Metal and WGSL refuse more than 32 as `E_GPU_FORM`) with lacunarity 2 and gain 0.5. Seeds retain their native immutable
 permutation table in a per-domain cache of 16 tables. `noise3 [x y 0]` is the 2D form.
 
 The `host` context returns effect values or collections of them. `host/quit when`,

@@ -72,6 +72,7 @@
      (fma bent.y frame_z.z (fma bent.x frame_y.z (fma bent.z frame_x.z origin.z)))
      bent.w]))
 (defnode sop/bend :label "Bend" :category "Deform"
+  :facts {:elementwise points :reads ["P" "$mask_attribute"] :writes ["P" "N" "$capture_attribute"] :topology preserved :exact false}
   :validate (bend_valid length [direction_x direction_y direction_z] [up_x up_y up_z] capture_attribute)
   :code "E_PARAM" :message "sop/bend: invalid capture frame, length or attribute"
   [(in0 : geometry)

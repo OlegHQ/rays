@@ -52,7 +52,7 @@ let depends ?(op="sop/context_seed") ?(inputs=[]) ?(defs=[]) (graph:W.graph) =
     | Lit (Int_value n)->Some (name,Flow.Eval.Int n)
     | Lit (Float_value f)->Some (name,Flow.Eval.Float f)
     | Text text->Some (name,Flow.Eval.Text text)|_->None)) graph.inputs in
-  let found=ref false in
+  let found=ref false and fuel=ref 4096 in
   let rec names = function
     | W.Name name -> [name]
     | Seq patterns -> List.concat_map names patterns
@@ -66,6 +66,17 @@ let depends ?(op="sop/context_seed") ?(inputs=[]) ?(defs=[]) (graph:W.graph) =
     | Lit (Float_value f)->Some (Flow.Eval.Float f)
     | Text text->Some (Flow.Eval.Text text)
     | Ref_binding (name,[])->List.assoc_opt name bindings
+    | Call_fn call when !fuel > 0 ->
+        (* a helper over known arguments (a text predicate, say) decides its own branches *)
+        decr fuel;
+        Option.bind (List.find_opt (fun (d:W.graph) -> d.name=call.fn) defs) (fun helper->
+          let local=List.mapi (fun i (name,_,default) ->
+            let value=match List.nth_opt call.args i with
+              | Some argument -> known bindings argument
+              | None -> Option.bind default (known []) in
+            Option.map (fun value -> name,value) value) helper.inputs in
+          if List.mem None local then None
+          else known (List.filter_map Fun.id local) (Option.value ~default:helper.body call.body))
     | Op {op;args;_} when not (List.mem op context_ops) ->
         let rec values = function
           |[]->Some []
@@ -78,6 +89,20 @@ let depends ?(op="sop/context_seed") ?(inputs=[]) ?(defs=[]) (graph:W.graph) =
     let select (t:W.term)=match t.node with
       | W.If (test,yes,no)->(match known bindings test with
           | Some (Flow.Eval.Bool true)->yes|Some (Bool false)->no|_->t)
+      | Cond (arms,default) ->
+          (* An arm whose test is known false never runs; the first known-true arm is the result. *)
+          let rec live = function
+            | [] -> [], None
+            | ((test:W.term),yes)::rest ->
+                (match known bindings test with
+                 | Some (Flow.Eval.Bool false) -> live rest
+                 | Some (Bool true) -> [], Some yes
+                 | _ -> let arms,taken = live rest in (test,yes)::arms, taken) in
+          (match live arms with
+           | [], Some yes -> yes
+           | [], None -> default
+           | arms, Some yes -> {t with node=Cond (arms,yes)}
+           | arms, None -> {t with node=Cond (arms,default)})
       | Call_fn call ->
           (match List.find_opt (fun (d:W.graph) -> d.name=call.fn) defs with
            | Some helper ->
