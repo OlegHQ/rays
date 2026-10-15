@@ -80,7 +80,7 @@
   (/ (- (array/nth hp (array/nth vp index)) o) scale))
 (defn ec_hull_polygon :context value [(hp : (array vec3)) (vp : (array int)) (first : int) (last : int)]
   (let* [scale (array/max (exact (map ec_absmax hp)))
-         fallback (ec_mass_list (exact (map (fn [(i : int)] (array/nth hp i)) (array/slice vp first last))))
+         fallback (ec_mass_list (exact (map (fn [(i : int)] (array/nth hp i)) (array/slice vp first (int/sub last first)))))
          a (ec_corner hp vp first [0.0 0.0 0.0] scale)
          triangles (if (int/gt (int/sub last first) 2) (int/sub (int/sub last first) 2) 0)
          ks (array/range triangles :type int)
@@ -147,11 +147,22 @@
 ; Hull centre of piece number piece: members first..last of mp.
 (defn ec_hull_piece :context sop [(positions : (array vec3)) (mp : (array int)) (offsets : (array int)) (piece : int)]
   (let* [pts (exact (map (fn [(p : int)] (array/nth positions p))
-               (array/slice mp (array/nth offsets piece) (array/nth offsets (int/add piece 1)))))
+               (array/slice mp (array/nth offsets piece) (int/sub (array/nth offsets (int/add piece 1)) (array/nth offsets piece)))))
          source (sop/mesh :points pts :vertex_points (array/int 0) :primitive_offsets (array/int 1) :kinds (array/int 0))
          hull (with_error (sop/convex_hull source :preserve_point_payload false)
                 (fn [failure] (assoc failure :code "invalid_geometry")))]
     (ec_hull_center hull)))
+(defn ec_hull_append :context sop [(acc : geometry) (c : vec3)]
+  (let* [old (sop/attr acc "__ec_c" :owner "detail" :type float_array)
+         tail (exact (map (fn [(k : int)] (cond (int/eq k 0) c.x (int/eq k 1) c.y :else c.z)) (array/range 3 :type int)))
+         joined (array/concat old.values tail)]
+    (sop/with_attr acc "__ec_c" {:offsets (array/concat (array/int 1 0) (array/int 1 (array/count joined))) :values joined}
+      :owner "detail" :type float_array)))
+(defn ec_hull_read :context sop [(done : geometry) (count : int)]
+  (let* [v (sop/attr done "__ec_c" :owner "detail" :type float_array)]
+    (exact (map (fn [(i : int)]
+      [(array/nth v.values (int/mul 3 i)) (array/nth v.values (int/add (int/mul 3 i) 1)) (array/nth v.values (int/add (int/mul 3 i) 2))])
+      (array/range count :type int)))))
 (defnode sop/extract_centroid :label "Extract Centroid" :category ["Create" "Point"]
   :validate (and (or (not (or (equal? run_over "Point pieces") (equal? run_over "Primitive pieces")))
                      (and (not (text/blank? piece_attribute)) (not (equal? piece_attribute "P"))))
@@ -204,12 +215,18 @@
           (if (not plan.ok) (ec_error plan.reason)
             (let* [positions (sop/attr in0 :P)
                    mpos (exact (map (fn [(p : int)] (array/nth positions p)) plan.mp))
-                   centers (cond
+                   ; Convex hull: one hull call per piece in a zone that carries only geometry; the centres
+                   ; ride on the detail attribute __ec_c (x y z per piece) and are read back inside the final
+                   ; one-step zone that builds the output.
+                   hulled (fold [acc (sop/with_attr in0 "__ec_c" {:offsets (array/concat (array/int 1 0) (array/int 1 0)) :values (array/float 0 0.0)}
+                                       :owner "detail" :type float_array)]
+                            [piece (if (equal? method_ "Convex hull") (array/range plan.count :type int) (array/int 0))]
+                            (ec_hull_append acc (ec_hull_piece positions plan.mp plan.offsets piece)))]
+              (fold [done hulled] [step (array/int 1 0)]
+              (let* [centers (cond
                              (equal? method_ "Point mass") (ec_mass mpos plan.mq plan.offsets plan.count)
                              (equal? method_ "Bounding box") (ec_bounds mpos plan.offsets)
-                             ; one hull call per piece: the per-piece zone over cooked geometry is the blocker
-                             :else (fold [acc (array/vec3 0 [0.0 0.0 0.0])] [piece (array/range plan.count :type int)]
-                                     (array/concat acc (array/vec3 1 (ec_hull_piece positions plan.mp plan.offsets piece)))))
+                             :else (ec_hull_read done plan.count))
                    shell (sop/mesh :points centers :vertex_points (array/int 0) :primitive_offsets (array/int 1) :kinds (array/int 0))
                    detail_only (sop/delete_group
                      (sop/delete_attrs in0 :point "*" :vertex "*" :primitive "*") "*" :owner "any")
@@ -227,4 +244,4 @@
                 :else
                   (let* [column (sop/attr in0 piece_attribute :owner pieces_over :type text)]
                     (sop/with_attr with_source output_name
-                      (exact (map (fn [(i : int)] (array/nth column i)) plan.reps)) :owner "point" :type text)))))))))
+                      (exact (map (fn [(i : int)] (array/nth column i)) plan.reps)) :owner "point" :type text)))))))))))

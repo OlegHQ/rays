@@ -19,9 +19,16 @@
 (defn gab_len :context value [(offsets : (array int)) (i : int)]
   (int/sub (array/nth offsets (int/add i 1)) (array/nth offsets i)))
 (defn gab_safe :context value [(i : int)] (if (int/lt i 0) 0 i))
-(defn gab_owner_rows :context value [(rows : (list (list text))) (kind : text)]
-  (fold [patterns (array/text 0)] [row rows]
-    (if (equal? (nth row 0) kind) (array/concat patterns (array/text 1 (nth row 1))) patterns)))
+; probe is a geometry with one detail attribute named P: a pattern selects the position plane exactly when it
+; matches that name.
+(defn gab_matches_p :context sop [(probe : geometry) (pattern : text)]
+  (int/gt (array/count (sop/attr_names probe pattern :owner "detail")) 0))
+; Sets the __gab_m bit on every corner of the edges flagged in mask.
+(defn gab_stamp :context sop [(geo : geometry) (mask : (array int)) (ev : (array int))]
+  (sop/with_attr geo "__gab_m"
+    (exact (map (fn [(old : int) (e : int)] (if (int/gt (array/nth mask e) 0) 1 old))
+      (sop/attr geo "__gab_m" :owner "vertex" :type int) ev))
+    :owner "vertex" :type int))
 ; Per pair (left, right) of element indexes: 1 when the attribute differs between them.
 (defn gab_rows_float :context value
   [(rows : {:offsets (array int) :values (array float)}) (tolerance : float) (left : (array int)) (right : (array int))]
@@ -70,6 +77,10 @@
       (let* [p (sop/attr geo name :owner owner :type text)
              ids (array/index_of p p)]
         (exact (map (fn [(l : int) (r : int)] (if (int/eq (array/nth ids l) (array/nth ids r)) 0 1)) left right)))
+    (equal? kind "int_array")
+      (gab_rows_int (sop/attr geo name :owner owner :type int_array) left right)
+    (equal? kind "float_array")
+      (gab_rows_float (sop/attr geo name :owner owner :type float_array) tolerance left right)
     (equal? kind "vec2")
       (let* [p (sop/attr geo name :owner owner :type vec2)]
         (exact (map (fn [(l : int) (r : int)]
@@ -175,29 +186,28 @@
                context {:edges edge_count :ev ev :lead leader :live live :ea adjacency.edge_a :eb adjacency.edge_b
                         :prim adjacency.primitive_of_vertex :next adjacency.next_vertex :vp topo.vertex_points}
                zero (array/int edge_count 0)
-               ; a one-point geometry with a point group named P: a rule matches the position plane exactly
-               ; when its pattern matches that group name
-               probe (sop/with_group (sop/mesh :points (array/vec3 1 [0.0 0.0 0.0]) :vertex_points (array/int 0)
-                                       :primitive_offsets (array/int 1) :kinds (array/int 0))
-                       (array/int 1 1) :name "P" :owner "point")
-               ; one zone step per rule, one inner step per matched attribute name; the states carry the
-               ; geometry so the zone bodies may read attributes by name
-               point_scan (fold [state {:geometry in0 :mask zero :hit (array/int 1 0)}]
-                            [pattern (gab_owner_rows rows "point")]
-                            (let* [names (sop/attr_names state.geometry pattern :owner "point")
-                                   inner (fold [step {:geometry state.geometry :mask state.mask :hit state.hit}]
-                                           [attribute names]
-                                           {:geometry (sop/with_attr step.geometry "__gab_step" (array/int 1 0) :owner "detail" :type int)
-                                            :mask (gab_or step.mask (gab_plane step.geometry context "point" attribute
-                                                    (sop/attr_type step.geometry attribute :owner "point") tolerance))
-                                            :hit (array/int 1 1)})]
-                              {:geometry (sop/with_attr inner.geometry "__gab_step" (array/int 1 0) :owner "detail" :type int)
-                               :mask inner.mask :hit inner.hit}))
-               position_plane false
-               attribute_edges point_scan.mask
-               planes (array/nth point_scan.hit 0)
-               ; the zone's geometry carries a scratch marker; publishing on it keeps the zone a graph zone
-               published (sop/delete_attr point_scan.geometry "__gab_step" :owner "detail")
+               position_edges (gab_differs in0 "point" "P" "vec3" tolerance adjacency.edge_a adjacency.edge_b)
+               ; The zone carries only geometry: the edge mask of the planes seen so far lives on the corners of
+               ; the zone geometry as the vertex attribute __gab_m (every corner of an edge holds its edge's bit).
+               ; One zone step per rule, one inner step per matched attribute name (resolved at cook time).
+               ; A point rule whose pattern matches P also selects the position plane.
+               probe (sop/with_attr (sop/mesh :points (array/vec3 1 [0.0 0.0 0.0]) :vertex_points (array/int 0)
+                                      :primitive_offsets (array/int 1) :kinds (array/int 0))
+                       "P" (array/int 1 0) :owner "detail" :type int)
+               marked (sop/with_attr in0 "__gab_m" (array/int vertices 0) :owner "vertex" :type int)
+               bscan (fold [state marked] [row rows]
+                      (let* [names (sop/attr_names in0 (nth row 1) :owner (nth row 0))
+                             position (and (equal? (nth row 0) "point") (gab_matches_p probe (nth row 1)))
+                             start (if position (gab_stamp state position_edges ev) state)]
+                        (fold [step start] [attribute names]
+                          (gab_stamp step (gab_plane in0 context (nth row 0) attribute
+                                            (sop/attr_type in0 attribute :owner (nth row 0)) tolerance) ev))))
+               plane_names (fold [found (array/text 0)] [row rows]
+                 (array/concat found (sop/attr_names in0 (nth row 1) :owner (nth row 0))))
+               position_names (fold [found (array/text 0)] [row rows]
+                 (if (equal? (nth row 0) "point")
+                   (array/concat found (sop/attr_names probe (nth row 1) :owner "detail")) found))
+               planes (int/add (array/count plane_names) (array/count position_names))
                ; unshared edges: the sole corner of a used-once edge
                unshared (if include_unshared_edges
                  (exact (map (fn [(e : int) (u : int)]
@@ -214,7 +224,13 @@
                      0))
                    (array/range edge_count :type int) usage))
                  zero)
-               edge_mask (gab_or attribute_edges unshared)]
+               ]
+          (fold [final bscan] [step (array/int 1 0)]
+          (let* [stamp (sop/attr final "__gab_m" :owner "vertex" :type int)
+                 attribute_edges (exact (map (fn [(e : int)] (array/nth stamp (array/nth first_vertex e)))
+                   (array/range edge_count :type int)))
+                 published (sop/delete_attr final "__gab_m" :owner "vertex")
+                 edge_mask (gab_or attribute_edges unshared)]
           (cond
             (and (int/gt (count rows) 0) (int/eq planes 0))
               (gab_error "Group from Attribute Boundary: attribute patterns matched nothing")
@@ -231,4 +247,4 @@
                                   (exact (map (fn [(e : int)] (if (int/lt e 0) 0 (array/nth edge_mask e))) adjacency.edge_of_vertex)))
                          hits (array/segment_sum corner topo.primitive_offsets)]
                     (sop/with_group published (exact (map (fn [(h : int)] (if (int/gt h 0) 1 0)) hits))
-                      :name name :owner "primitive")))))))))
+                      :name name :owner "primitive")))))))))))

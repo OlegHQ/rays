@@ -385,6 +385,25 @@ let () =
       assert(List.length(G.groups output)=5001);
       match G.find_attribute ~owner:Rdk.Attribute.Detail "iteration" output |>Option.get |>Rdk.Attribute.storage with
       |Int values->assert(values=[|5001|])|_->assert false) [1;8]);
+  (* a node that reads the fold's geometry, and a nested fold over a list that depends on the outer step, are
+     deferred with the fold to cook time *)
+  let node=Lisp_sop.workspace_node ~with_:["source",Lisp_sop.snapshot geometry] {|(workspace cooked_consumer
+    (defnode sop/cooked_consumer [(geo : geometry)]
+      (let* [outer (fold [state {:geometry geo :seen 0}] [pattern (array/text 1 "entry_1*")]
+               (let* [names (sop/group_entries state.geometry pattern :owner "point")
+                      inner (fold [step {:geometry state.geometry :seen state.seen}] [name names.names]
+                              {:geometry (sop/with_attr step.geometry "iteration" (array/int 1 1) :owner detail :type int)
+                               :seen (int/add step.seen 1)})]
+                 inner))
+             marked (sop/with_attr outer.geometry "seen" (array/int 1 outer.seen) :owner detail :type int)]
+        (sop/delete_attr marked "iteration" :owner "detail")))
+    (graph g :context sop (sop/cooked_consumer (sop/ext_source))))|} in
+  let session=create_session() in
+  Fun.protect ~finally:(fun()->Sop.Session.close session)(fun()->
+    let output=cook session 1 node in
+    assert(G.find_attribute ~owner:Rdk.Attribute.Detail "iteration" output=None);
+    match G.find_attribute ~owner:Rdk.Attribute.Detail "seen" output |>Option.get |>Rdk.Attribute.storage with
+    |Int values->assert(values=[|1111|])|_->assert false);
   print_endline "Cooked defnode Fold traverses 5001 inventory entries through geometry handles; public array-node folds and collecting forms remain refused"
 
 let ()=
