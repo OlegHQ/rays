@@ -317,7 +317,7 @@
           (int/eq problem 19) (pr_error "transform must contain fixed-width affine matrices")
           :else (pr_error "invalid"))
       (let* [seed_main (if context_seed (sop/context_seed "point_replicate") seed)
-             seed_noise (if noise_context_seed (sop/context_seed "point_replicate" :salt -1582480459898762999) noise_seed)
+             seed_noise (if (and use_noise noise_context_seed) (sop/context_seed "point_replicate" :salt -1582480459898762999) noise_seed)
              counts_in (exact (map (fn [(w : float) (s : int) (id : int)]
                          (let* [expected (* points_per_point (if (int/eq s 1) w 0.0))
                                 integral (floor expected)
