@@ -26,6 +26,23 @@ let custom ?label ?(version = 1) ?(parameters = "")
           Error (Diagnostic.error ~code:(operation ^ "_failed") ~cause:message ~hints:[]
             (operation ^ " could not produce valid geometry")))
 
+(* What a native node's cache text said: a Lisp node's [Node.parameters] is its body digest, so the
+   readable "name=value;..." form of the cook-relevant parameters is rebuilt from the schema view. *)
+let readable node =
+  let token label = String.map (function
+    | 'a' .. 'z' | '0' .. '9' as c -> c | 'A' .. 'Z' as c -> Char.lowercase_ascii c | _ -> '_') label in
+  match Node.parameter_fields node with
+  | [] -> Node.parameters node
+  | fields -> List.filter_map (fun (f : Param.field_view) ->
+      if f.impact <> Param.Cook then None else Some (f.name ^ "=" ^ (match f.current with
+        | Param.Bool_value b -> string_of_bool b
+        | Int_value i -> string_of_int i
+        | Float_value x -> let short = Printf.sprintf "%.15g" x in
+            if float_of_string short = x then short else Printf.sprintf "%.17g" x
+        | Text_value text -> text
+        | Choice_value label -> token label))) fields
+      |> String.concat ";"
+
 let get_ok = function Ok value -> value | Error _ -> fail "unexpected error"
 let edit_parameters graph ~node_id changes =
   Result.bind (Edit_graph.apply_parameters (Edit_graph.of_graph graph)
@@ -350,7 +367,7 @@ let test_circle_generator_contract () =
    :rotation 0.25
    :uniform_scale 2.0
    :segments 8)|} in
-  check (contains (Node.parameters graph) "arc=sliced")
+  check (contains (readable graph) "arc=sliced")
     "procedural Circle cache identity omitted arc mode";
   let output = cook_ok evaluator current graph in
   check (Rdk.Geometry.point_count (Result.get_ok (Sop.Payload.geometry output.payload)) = 10
@@ -390,8 +407,8 @@ let test_box_generator_contract () =
       :rotation_order "YZX" :uniform_scale 1.5
       :x_divisions 2 :y_divisions 3 :z_divisions 4
       :uv_attribute "uv" :face_groups "side" :size [2.0 3.0 4.0])|} in
-  check (contains (Node.parameters graph) "connectivity=quads"
-      && contains (Node.parameters graph) "rotation_order=yzx")
+  check (contains (readable graph) "connectivity=quads"
+      && contains (readable graph) "rotation_order=yzx")
     "procedural Box cache identity omitted advanced parameters";
   let output = cook_ok evaluator current graph in
   check (Rdk.Geometry.point_count (Result.get_ok (Sop.Payload.geometry output.payload)) = 54
@@ -437,9 +454,9 @@ let test_uv_sphere_generator_contract () =
    :uniform_scale 1.5
    :segments 12
    :rings 6)|} in
-  check (contains (Node.parameters graph) "connectivity=quads"
-      && contains (Node.parameters graph) "unique_points_per_pole=true"
-      && contains (Node.parameters graph) "rotation_order=zxy")
+  check (contains (readable graph) "connectivity=quads"
+      && contains (readable graph) "unique_points_per_pole=true"
+      && contains (readable graph) "rotation_order=zxy")
     "procedural UV Sphere cache identity omitted advanced parameters";
   let output = cook_ok evaluator current graph in
   check (Rdk.Geometry.point_count (Result.get_ok (Sop.Payload.geometry output.payload)) = 84
@@ -491,10 +508,10 @@ let test_torus_generator_contract () =
    :columns 5
    :major_radius 3.0
    :minor_radius 1.0)|} ((Lisp_sop.float (-.Float.pi /. 2.))) ((Lisp_sop.float (Float.pi /. 2.)))) in
-  check (contains (Node.parameters graph) "connectivity=alternating_triangles"
-      && contains (Node.parameters graph) "rotation_order=zxy"
-      && contains (Node.parameters graph) "u_end_caps=true"
-      && contains (Node.parameters graph) "v_end_cap=true")
+  check (contains (readable graph) "connectivity=alternating_triangles"
+      && contains (readable graph) "rotation_order=zxy"
+      && contains (readable graph) "u_end_caps=true"
+      && contains (readable graph) "v_end_cap=true")
     "procedural Torus cache identity omitted advanced parameters";
   let output = cook_ok evaluator current graph in
   check (Rdk.Geometry.point_count (Result.get_ok (Sop.Payload.geometry output.payload)) = 40
@@ -537,10 +554,10 @@ let test_tube_generator_contract () =
    :top_radius 0.0
    :bottom_radius 3.0
    :height 4.0)|} in
-  check (contains (Node.parameters graph) "connectivity=alternating_triangles"
-      && contains (Node.parameters graph) "consolidate_cap_points=false"
-      && contains (Node.parameters graph) "rotation_order=zxy"
-      && contains (Node.parameters graph) "cap_group=caps")
+  check (contains (readable graph) "connectivity=alternating_triangles"
+      && contains (readable graph) "consolidate_cap_points=false"
+      && contains (readable graph) "rotation_order=zxy"
+      && contains (readable graph) "cap_group=caps")
     "procedural Tube cache identity omitted advanced parameters";
   let output = cook_ok evaluator current graph in
   check (Rdk.Geometry.point_count (Result.get_ok (Sop.Payload.geometry output.payload)) = 41
@@ -585,10 +602,10 @@ let test_platonic_generator_contract () =
    :rotation_order "ZXY"
    :face_groups "face"
    :radius 3.0)|} in
-  check (contains (Node.parameters graph) "kind=soccer_ball"
-      && contains (Node.parameters graph) "normals=vertex"
-      && contains (Node.parameters graph) "rotation_order=zxy"
-      && contains (Node.parameters graph) "face_groups=face")
+  check (contains (readable graph) "kind=soccer_ball"
+      && contains (readable graph) "normals=vertex"
+      && contains (readable graph) "rotation_order=zxy"
+      && contains (readable graph) "face_groups=face")
     "procedural Platonic cache identity omitted parameters";
   let output = cook_ok evaluator current graph in
   check (Rdk.Geometry.point_count (Result.get_ok (Sop.Payload.geometry output.payload)) = 60
@@ -640,12 +657,12 @@ let test_spiral_generator_contract () =
    :tangent_attribute "tangent"
    :orient_attribute "orient"
    :distance_attribute "distance")|} in
-  check (contains (Node.parameters graph) "extent_mode=height_and_pitch"
-      && contains (Node.parameters graph) "radius_mode=logarithmic_end"
-      && contains (Node.parameters graph) "height_ramp="
-      && contains (Node.parameters graph) "uniform_angle=false"
-      && contains (Node.parameters graph) "rotation_order=zxy"
-      && contains (Node.parameters graph) "orient_attribute=orient")
+  check (contains (readable graph) "extent_mode=height_and_pitch"
+      && contains (readable graph) "radius_mode=logarithmic_end"
+      && contains (readable graph) "height_ramp="
+      && contains (readable graph) "uniform_angle=false"
+      && contains (readable graph) "rotation_order=zxy"
+      && contains (readable graph) "orient_attribute=orient")
     "procedural Spiral cache identity omitted advanced parameters";
   let output = cook_ok evaluator current graph in
   check (Rdk.Geometry.point_count (Result.get_ok (Sop.Payload.geometry output.payload)) = 123
@@ -792,7 +809,7 @@ let test_snapshot_feedback_boundary () =
   check (x = 1.25) "snapshot feedback source/custom step";
   let source = List.hd (Node.inputs step) in
   check (Node.operation source = "snapshot"
-      && contains (Node.parameters source)
+      && contains (readable source)
            (string_of_int (Rdk.Geometry.data_id (Result.get_ok (Sop.Payload.geometry initial.payload)))))
     "snapshot source inspection identity";
   Session.close evaluator
@@ -877,7 +894,7 @@ let test_poly_path_contract () =
   let source = Rdk.Geometry.create ~positions ~topology () |> Result.get_ok in
   let graph = Lisp_sop.node ~with_:["source", (Lisp_sop.snapshot (source))] {|(sop/poly_path (sop/ext_source) :make_isolated_loops_closed true)|} in
   check (Node.operation graph = "poly_path"
-      && contains (Node.parameters graph) "make_isolated_loops_closed=true")
+      && contains (readable graph) "make_isolated_loops_closed=true")
     "procedural PolyPath operation/cache identity";
   let first = cook_ok evaluator current graph in
   check (Rdk.Geometry.primitive_count (Result.get_ok (Sop.Payload.geometry first.payload)) = 2
@@ -907,9 +924,9 @@ let test_revolve_contract () =
    :axis %s)|} ((Lisp_sop.vec3 Vec3.zero)) ((Lisp_sop.vec3 Vec3.unit_y))) in
   let graph = make () in
   check (Node.operation graph = "revolve"
-      && contains (Node.parameters graph) "type=closed"
-      && contains (Node.parameters graph) "connectivity=alternating_triangles"
-      && contains (Node.parameters graph) "divisions=16")
+      && contains (readable graph) "type=closed"
+      && contains (readable graph) "connectivity=alternating_triangles"
+      && contains (readable graph) "divisions=16")
     "procedural Revolve cache identity";
   let output = cook_ok evaluator current graph in
   check (Rdk.Geometry.point_count (Result.get_ok (Sop.Payload.geometry output.payload)) = 18
@@ -955,9 +972,9 @@ let test_sweep_contract () =
    :uv_attribute "st")|} in
   let graph = make () in
   check (Node.operation graph = "sweep"
-      && contains (Node.parameters graph) "tangent=central_difference"
-      && contains (Node.parameters graph) "connectivity=alternating_triangles"
-      && contains (Node.parameters graph) "twist=")
+      && contains (readable graph) "tangent=central_difference"
+      && contains (readable graph) "connectivity=alternating_triangles"
+      && contains (readable graph) "twist=")
     "procedural Sweep cache identity";
   let output = cook_ok evaluator current graph in
   check (Rdk.Geometry.point_count (Result.get_ok (Sop.Payload.geometry output.payload)) = 8
@@ -1001,13 +1018,13 @@ let test_local_subdivide_contract () =
    :scheme "Bilinear"
    :iterations 2)|} in
   check (Node.version graph = 13
-      && contains (Node.parameters graph) "group=left"
-      && contains (Node.parameters graph) "scheme=bilinear"
-      && contains (Node.parameters graph) "boundary_interpolation=edge_only"
-      && contains (Node.parameters graph) "face_varying_interpolation=all"
-      && contains (Node.parameters graph) "triangle_policy=catmull_clark"
-      && contains (Node.parameters graph) "creasing_method=uniform"
-      && contains (Node.parameters graph) "recompute_point_normals=false")
+      && contains (readable graph) "group=left"
+      && contains (readable graph) "scheme=bilinear"
+      && contains (readable graph) "boundary_interpolation=edge_only"
+      && contains (readable graph) "face_varying_interpolation=all"
+      && contains (readable graph) "triangle_policy=catmull_clark"
+      && contains (readable graph) "creasing_method=uniform"
+      && contains (readable graph) "recompute_point_normals=false")
     "procedural local Subdivide cache identity";
   let evaluator = session () and current = context ~domains:4 ~grain:1 () in
   let output = cook_ok evaluator current graph in
@@ -1032,7 +1049,7 @@ let test_local_subdivide_contract () =
    :hole_group ""
    :group "left"
    :cracks "Pull, no edge division")|} in
-  check (contains (Node.parameters pulled_graph) "cracks=pull__no_edge_division")
+  check (contains (readable pulled_graph) "cracks=pull__no_edge_division")
     "procedural Pull Closed cache identity";
   let pulled = cook_ok evaluator current pulled_graph in
   let stitch_graph = Lisp_sop.node ~with_:["source", (Lisp_sop.snapshot (source))] {|(sop/subdivide
@@ -1045,7 +1062,7 @@ let test_local_subdivide_contract () =
    :hole_group ""
    :group "left"
    :cracks "Stitch, no edge division")|} in
-  check (contains (Node.parameters stitch_graph) "cracks=stitch__no_edge_division")
+  check (contains (readable stitch_graph) "cracks=stitch__no_edge_division")
     "procedural Stitch cache identity";
   let stitched = cook_ok evaluator current stitch_graph in
   check (Rdk.Geometry.primitive_count (Result.get_ok (Sop.Payload.geometry stitched.payload))
@@ -1062,7 +1079,7 @@ let test_local_subdivide_contract () =
    :group "left"
    :cracks "Pull, divide edges"
    :crack_bias 0.75)|} in
-  check (contains (Node.parameters divided_pull_graph)
+  check (contains (readable divided_pull_graph)
       "cracks=pull__divide_edges")
     "procedural Pull Divide bias/cache identity";
   let divided_pull = cook_ok evaluator current divided_pull_graph in
@@ -1079,7 +1096,7 @@ let test_local_subdivide_contract () =
    :hole_group ""
    :group "left"
    :cracks "Stitch, divide edges")|} in
-  check (contains (Node.parameters divided_stitch_graph)
+  check (contains (readable divided_stitch_graph)
       "cracks=stitch__divide_edges")
     "procedural Stitch Divide cache identity";
   let divided_stitch = cook_ok evaluator current divided_stitch_graph in
@@ -1097,7 +1114,7 @@ let test_local_subdivide_contract () =
    :group "left"
    :cracks "Pull, triangulate"
    :crack_bias 0.75)|} in
-  check (contains (Node.parameters pull_tri_graph) "cracks=pull__triangulate")
+  check (contains (readable pull_tri_graph) "cracks=pull__triangulate")
     "procedural Pull Triangulate cache identity";
   let pull_tri = cook_ok evaluator current pull_tri_graph in
   check (Rdk.Geometry.primitive_count (Result.get_ok (Sop.Payload.geometry pull_tri.payload))
@@ -1113,7 +1130,7 @@ let test_local_subdivide_contract () =
    :hole_group ""
    :group "left"
    :cracks "Stitch, triangulate")|} in
-  check (contains (Node.parameters stitch_tri_graph)
+  check (contains (readable stitch_tri_graph)
       "cracks=stitch__triangulate")
     "procedural Stitch Triangulate cache identity";
   let stitch_tri = cook_ok evaluator current stitch_tri_graph in
@@ -1132,7 +1149,7 @@ let test_local_subdivide_contract () =
    :consistent_topology true
    :cracks "Stitch, divide edges")|} in
   check (Node.version consistent_graph = 13
-      && contains (Node.parameters consistent_graph) "consistent_topology=true"
+      && contains (readable consistent_graph) "consistent_topology=true"
       && Node.id consistent_graph <> Node.id divided_stitch_graph)
     "procedural consistent Subdivide cache identity";
   let consistent = cook_ok evaluator current consistent_graph in
@@ -1154,9 +1171,9 @@ let test_local_subdivide_contract () =
    :resulting_crease_group "remaining_creases")|} in
   check (Node.version crease_graph = 13
       && List.length (Node.inputs crease_graph) = 2
-      && contains (Node.parameters crease_graph) "creases=true"
-      && contains (Node.parameters crease_graph) "crease_group=crease_edges"
-      && contains (Node.parameters crease_graph) "generate_resulting_creases=true")
+      && contains (readable crease_graph) "creases=true"
+      && contains (readable crease_graph) "crease_group=crease_edges"
+      && contains (readable crease_graph) "generate_resulting_creases=true")
     "procedural second-input Subdivide cache identity";
   let creased = cook_ok evaluator current crease_graph in
   check (match Rdk.Geometry.find_edge_group "remaining_creases" (Result.get_ok (Sop.Payload.geometry creased.payload)) with
@@ -1174,8 +1191,8 @@ let test_local_subdivide_contract () =
    :resulting_crease_group "all_edge_creases")|} in
   check (Node.version all_edge_graph = 13
       && List.length (Node.inputs all_edge_graph) = 1
-      && contains (Node.parameters all_edge_graph) "crease_group=;"
-      && contains (Node.parameters all_edge_graph) "crease_weight=")
+      && contains (readable all_edge_graph) "crease_group=;"
+      && contains (readable all_edge_graph) "crease_weight=")
     "procedural all-edge crease override cache identity";
   let all_edge_output = cook_ok evaluator current all_edge_graph in
   let all_edge_cardinality = match Rdk.Geometry.find_edge_group
@@ -1228,7 +1245,7 @@ let test_local_subdivide_contract () =
    :creasing_method "Chaikin"
    :resulting_crease_group "chaikin_remaining")|} in
   check (Node.version chaikin_graph = 13
-      && contains (Node.parameters chaikin_graph) "creasing_method=chaikin")
+      && contains (readable chaikin_graph) "creasing_method=chaikin")
     "procedural Chaikin creasing cache identity";
   let chaikin_output = cook_ok evaluator current chaikin_graph
   and uniform_output = Lisp_sop.node ~with_:["chaikin_source", (Lisp_sop.snapshot (chaikin_source))] {|(sop/subdivide
@@ -1279,8 +1296,8 @@ let test_local_subdivide_contract () =
    :hole_group "holes"
    :iterations 2)|} in
   check (Node.version hole_graph = 13
-      && contains (Node.parameters hole_graph) "hole_group=holes"
-      && contains (Node.parameters hole_graph) "remove_holes=true")
+      && contains (readable hole_graph) "hole_group=holes"
+      && contains (readable hole_graph) "remove_holes=true")
     "procedural hole Subdivide cache identity";
   let holed = cook_ok evaluator current hole_graph in
   check (Rdk.Geometry.primitive_count (Result.get_ok (Sop.Payload.geometry holed.payload))
@@ -1309,7 +1326,7 @@ let test_local_subdivide_contract () =
    :generate_resulting_creases true
    :hole_group "")|} in
   check (Node.version boundary_graph = 13
-      && contains (Node.parameters boundary_graph)
+      && contains (readable boundary_graph)
            "boundary_interpolation=edge_and_corner")
     "procedural boundary interpolation cache identity";
   let boundary_output = cook_ok evaluator current boundary_graph in
@@ -1351,7 +1368,7 @@ let test_local_subdivide_contract () =
    :hole_group ""
    :face_varying_interpolation "None")|} in
   check (Node.version fvar_graph = 13
-      && contains (Node.parameters fvar_graph)
+      && contains (readable fvar_graph)
            "face_varying_interpolation=none")
     "procedural face-varying interpolation cache identity";
   let fvar_output = cook_ok evaluator current fvar_graph in
@@ -1374,7 +1391,7 @@ let test_local_subdivide_contract () =
    :hole_group ""
    :triangle_policy "Smooth")|} in
   check (Node.version triangle_graph = 13
-      && contains (Node.parameters triangle_graph) "triangle_policy=smooth")
+      && contains (readable triangle_graph) "triangle_policy=smooth")
     "procedural Smooth Triangles cache identity";
   let triangle_smooth = cook_ok evaluator current triangle_graph in
   let triangle_standard = Lisp_sop.node ~with_:["triangle_source", (Lisp_sop.snapshot (triangle_source))] {|(sop/subdivide
@@ -1415,8 +1432,8 @@ let test_local_subdivide_contract () =
    :boundary_interpolation "None"
    :face_varying_interpolation "All")|} in
   check (Node.version detail_graph = 13
-      && contains (Node.parameters detail_graph) "scheme=bilinear"
-      && contains (Node.parameters detail_graph) "triangle_policy=catmull_clark")
+      && contains (readable detail_graph) "scheme=bilinear"
+      && contains (readable detail_graph) "triangle_policy=catmull_clark")
     "procedural detail-override Subdivide cache identity";
   let detail_output = cook_ok evaluator current detail_graph in
   let expected_detail = Lisp_sop.node ~with_:["triangle_source", (Lisp_sop.snapshot (triangle_source))] {|(sop/subdivide
@@ -1502,11 +1519,11 @@ let test_local_subdivide_contract () =
    :hole_group ""
    :recompute_point_normals true)|} in
   check (Node.version independent_curve_graph = 13
-      && contains (Node.parameters shared_curve_graph)
+      && contains (readable shared_curve_graph)
            "treat_curves_as_independent=false"
-      && contains (Node.parameters independent_curve_graph)
+      && contains (readable independent_curve_graph)
            "treat_curves_as_independent=true"
-      && contains (Node.parameters recomputed_curve_graph)
+      && contains (readable recomputed_curve_graph)
            "recompute_point_normals=true"
       && Node.id shared_curve_graph <> Node.id independent_curve_graph
       && Node.id shared_curve_graph <> Node.id recomputed_curve_graph)
@@ -1574,9 +1591,9 @@ let test_edge_divide_contract () =
   let shared_graph = Lisp_sop.node ~with_:["source", (source)] {|(sop/edge_divide (sop/ext_source) :group "all_edges" :divisions 3)|}
   and unique_graph = Lisp_sop.node ~with_:["source", (source)] {|(sop/edge_divide (sop/ext_source) :group "all_edges" :divisions 3 :share_points false)|} in
   check (Node.version shared_graph = 1
-      && contains (Node.parameters shared_graph) "group=all_edges"
-      && contains (Node.parameters shared_graph) "divisions=3"
-      && contains (Node.parameters shared_graph) "share_points=true")
+      && contains (readable shared_graph) "group=all_edges"
+      && contains (readable shared_graph) "divisions=3"
+      && contains (readable shared_graph) "share_points=true")
     "procedural Edge Divide cache identity";
   let shared = cook_ok evaluator current shared_graph
   and unique = cook_ok evaluator current unique_graph in
@@ -1618,10 +1635,10 @@ let test_edge_collapse_contract () =
   let source_output = cook_ok evaluator current source in
   let graph = Lisp_sop.node ~with_:["source", (source)] {|(sop/edge_collapse (sop/ext_source) :group "short_edge" :connectivity_attribute "piece")|} in
   check (Node.version graph = 1
-      && contains (Node.parameters graph) "group=short_edge"
-      && contains (Node.parameters graph) "connectivity_attribute=piece"
-      && contains (Node.parameters graph) "remove_degenerate_primitives=true"
-      && contains (Node.parameters graph) "recompute_point_normals=true")
+      && contains (readable graph) "group=short_edge"
+      && contains (readable graph) "connectivity_attribute=piece"
+      && contains (readable graph) "remove_degenerate_primitives=true"
+      && contains (readable graph) "recompute_point_normals=true")
     "procedural Edge Collapse cache identity";
   let output = cook_ok evaluator current graph in
   check (Rdk.Geometry.point_count (Result.get_ok (Sop.Payload.geometry output.payload)) = 3
@@ -1661,10 +1678,10 @@ let test_edge_flip_contract () =
   let source_output = cook_ok evaluator current source in
   let graph = Lisp_sop.node ~with_:["source", (source)] {|(sop/edge_flip (sop/ext_source) :group "interior")|} in
   check (Node.version graph = 1
-      && contains (Node.parameters graph) "group=interior"
-      && contains (Node.parameters graph) "cycles=1"
-      && contains (Node.parameters graph) "cycle_vertex_attributes=true"
-      && contains (Node.parameters graph) "recompute_point_normals=false")
+      && contains (readable graph) "group=interior"
+      && contains (readable graph) "cycles=1"
+      && contains (readable graph) "cycle_vertex_attributes=true"
+      && contains (readable graph) "recompute_point_normals=false")
     "procedural Edge Flip cache identity";
   let output = cook_ok evaluator current graph in
   let source_topology = Rdk.Topology.Private.view
@@ -1703,8 +1720,8 @@ let test_edge_cusp_contract () =
   let source_output = cook_ok evaluator current source in
   let graph = Lisp_sop.node ~with_:["source", (source)] {|(sop/edge_cusp (sop/ext_source) :group "cusp_path")|} in
   check (Node.version graph = 1
-      && contains (Node.parameters graph) "group=cusp_path"
-      && contains (Node.parameters graph) "update_point_normals=true")
+      && contains (readable graph) "group=cusp_path"
+      && contains (readable graph) "update_point_normals=true")
     "procedural Edge Cusp cache identity";
   let output = cook_ok evaluator current graph in
   check (Rdk.Geometry.point_count (Result.get_ok (Sop.Payload.geometry output.payload))
@@ -1737,8 +1754,8 @@ let test_edge_straighten_contract () =
      (sop/group_edges :name "bend_edges"))|} in
   let graph = Lisp_sop.node ~with_:["source", (source)] {|(sop/edge_straighten (sop/ext_source) :group "bend_edges" :output_group "straightened")|} in
   check (Node.version graph = 1
-      && contains (Node.parameters graph) "group=bend_edges"
-      && contains (Node.parameters graph) "output_group=straightened")
+      && contains (readable graph) "group=bend_edges"
+      && contains (readable graph) "output_group=straightened")
     "procedural Edge Straighten cache identity";
   let output = cook_ok evaluator current graph in
   let positions = Rdk.Packed.Float3.Private.view
@@ -1788,10 +1805,10 @@ let test_edge_equalize_contract () =
    :tolerance 1e-07
    :output_group "equalized")|} in
   check (Node.version graph = 1
-      && contains (Node.parameters graph) "group=uneven"
-      && contains (Node.parameters graph) "method_=average"
-      && contains (Node.parameters graph) "iterations=80"
-      && contains (Node.parameters graph) "output_group=equalized")
+      && contains (readable graph) "group=uneven"
+      && contains (readable graph) "method_=average"
+      && contains (readable graph) "iterations=80"
+      && contains (readable graph) "output_group=equalized")
     "procedural Edge Equalize cache identity";
   let output = cook_ok evaluator current graph in
   let p = Rdk.Packed.Float3.Private.view
@@ -1827,8 +1844,8 @@ let test_edge_relax_contract () =
   and reference = Lisp_sop.node {|(sop/curve (list [0.0 0.0 0.0] [2.0 0.0 0.0] [3.0 0.0 0.0] [7.0 0.0 0.0]))|} in
   let graph = Lisp_sop.node ~with_:["source", (source); "reference", (reference)] {|(sop/edge_relax (sop/ext_source) (sop/ext_reference) :iterations 128 :tolerance 1e-07)|} in
   check (Node.version graph = 1
-      && contains (Node.parameters graph) "iterations=128"
-      && contains (Node.parameters graph) "target_mode=individual_lengths")
+      && contains (readable graph) "iterations=128"
+      && contains (readable graph) "target_mode=individual_lengths")
     "procedural Edge Relax cache identity";
   let output = cook_ok evaluator current graph in
   let p = Rdk.Packed.Float3.Private.view
@@ -1869,10 +1886,10 @@ let test_blend_shapes_contract () =
           :mask_attribute "" :mask_source "Shape" :mode "Differencing" :attributes "^*"
           :weight1 1.5 :weight2 -0.5)|} in
   check (Node.version graph = 1
-      && contains (Node.parameters graph) "mode=differencing"
-      && contains (Node.parameters graph) "weight1="
-      && contains (Node.parameters graph) ";weight2="
-      && contains (Node.parameters graph) "attributes=^*")
+      && contains (readable graph) "mode=differencing"
+      && contains (readable graph) "weight1="
+      && contains (readable graph) ";weight2="
+      && contains (readable graph) "attributes=^*")
     "procedural Blend Shapes cache identity";
   let cooked = cook_ok evaluator current graph in
   let position = Rdk.Packed.Float3.Private.view
@@ -1946,11 +1963,11 @@ let test_attribute_composite_contract () =
           :point_attributes "P value" :vertex_attributes "^*" :allow_position true
           :alpha_attribute "alpha" :weight1 1.0)|} in
   check (Node.version graph = 1
-      && contains (Node.parameters graph) "operation=mean"
-      && contains (Node.parameters graph) "point_attributes=P value"
-      && contains (Node.parameters graph) "allow_position=true"
-      && contains (Node.parameters graph) "alpha_attribute=alpha"
-      && contains (Node.parameters graph) ";weight1=")
+      && contains (readable graph) "operation=mean"
+      && contains (readable graph) "point_attributes=P value"
+      && contains (readable graph) "allow_position=true"
+      && contains (readable graph) "alpha_attribute=alpha"
+      && contains (readable graph) ";weight1=")
     "procedural Attribute Composite cache identity";
   let evaluator = session () and current = context ~domains:4 ~grain:2 () in
   let output = cook_ok evaluator current graph in
@@ -2038,9 +2055,9 @@ let test_edge_transport_contract () =
    :scale_by_edge_length true
    :attribute "distance")|} in
   check (Node.version network_graph = 1
-      && contains (Node.parameters network_graph) "roots=root_group"
-      && contains (Node.parameters network_graph) "root_group=tip"
-      && contains (Node.parameters network_graph) "scale_by_edge_length=true")
+      && contains (readable network_graph) "roots=root_group"
+      && contains (readable network_graph) "root_group=tip"
+      && contains (readable network_graph) "scale_by_edge_length=true")
     "procedural Edge Transport network cache identity";
   let network_output = cook_ok evaluator current network_graph in
   check (float_values Rdk.Attribute.Point "distance" (Result.get_ok (Sop.Payload.geometry network_output.payload))
@@ -2056,8 +2073,8 @@ let test_edge_transport_contract () =
    :integrate_constant true
    :merge "Maximum"
    :attribute "depth")|} in
-  check (contains (Node.parameters backward_network) "direction=backward"
-      && contains (Node.parameters backward_network) "merge=maximum")
+  check (contains (readable backward_network) "direction=backward"
+      && contains (readable backward_network) "merge=maximum")
     "procedural Edge Transport backward cache identity";
   let backward_output = cook_ok evaluator current backward_network in
   check (float_values Rdk.Attribute.Point "depth" (Result.get_ok (Sop.Payload.geometry backward_output.payload))
@@ -2091,9 +2108,9 @@ let test_edge_transport_contract () =
    :normalization "Per component"
    :attribute "distance")|} in
   check (Node.version curve_graph = 1
-      && contains (Node.parameters curve_graph) "owner=point"
-      && contains (Node.parameters curve_graph) "direction=forward"
-      && contains (Node.parameters curve_graph) "normalization=per_component")
+      && contains (readable curve_graph) "owner=point"
+      && contains (readable curve_graph) "direction=forward"
+      && contains (readable curve_graph) "normalization=per_component")
     "procedural Edge Transport Each Curve cache identity";
   let curve_output = cook_ok evaluator current curve_graph in
   check (float_values Rdk.Attribute.Point "distance" (Result.get_ok (Sop.Payload.geometry curve_output.payload))
@@ -2138,9 +2155,9 @@ let test_edge_transport_contract () =
    :scale_by_edge_length true
    :attribute "distance")|} in
   check (Node.version parent_graph = 1
-      && contains (Node.parameters parent_graph) "parent_attribute=parent"
-      && contains (Node.parameters parent_graph) "direction=forward"
-      && contains (Node.parameters parent_graph) "merge=add")
+      && contains (readable parent_graph) "parent_attribute=parent"
+      && contains (readable parent_graph) "direction=forward"
+      && contains (readable parent_graph) "merge=add")
     "procedural Edge Transport Parent cache identity";
   let parent_output = cook_ok evaluator current parent_graph in
   check (float_values Rdk.Attribute.Point "distance" (Result.get_ok (Sop.Payload.geometry parent_output.payload))
