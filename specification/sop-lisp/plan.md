@@ -637,7 +637,7 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 - [ ] B.14
 - [ ] B.15
 - [ ] B.16
-- [ ] B.F
+- [x] B.F — adjacent Lisp point deformers fold into one kernel run at lowering (`Context_kernel.fusable`/`fuse`, `Lower.fused_view`). Eligibility is derived, never written: one `let*` body with a single `sop/with_attr in0 :P` binding, no `sop/*` call besides attr/with_attr/delete_attr/context, no reducer, fold, loop, error or state, no `if`/`cond`/`case` whose test reads anything but literals and parameters, no validation, scalar parameters only, static arguments, and the producer has exactly one reader and does not use a cook-context operator. The consumer reads the producer's `P` values (its outer `exact` dropped) and the producer's own cook is skipped. Gate: `test_lisp_fusion.ml`, four `noise_displace` nodes, one kernel run, bytes equal to four native passes at 1 and 4 domains, a reparameterized middle node recooks, and a second reader of an intermediate splits the chain. At 1,000,000 points the chain cooks in 0.30 s (1 domain) and 0.105 s (4 domains) fused and unfused alike: the cook is noise-bound, so the saving is the passes and intermediates, not wall time. `bend`, `peak`, `point_jitter`, `uv_transform`, `snap_to_grid` and `color_by_height` keep their validity scans and are not fused.
 - [ ] B.R
 - [x] C.1 — owned topology queries and required-array mesh construction match five native fixtures and authored packed reconstruction across domains/grains; cache, lazy errors/state, cards/menu, JavaScript host and production 2D refusal gates pass. Evidence in `geometry-arrays-validation.md` and `results.md`.
 - [x] C.2 — numeric and immutable Text gathers pass typed bounds, lazy/error-order, ownership, strict/reference/domain, actual JavaScript/export/worker and GPU refusal checks; separate Text cost evidence remains above 2× and qualifies no whole port.
@@ -788,22 +788,12 @@ instance was lowered twice and re-specialized every prelude helper (d03a92ff), w
 `test_workspace_cook` from about 19 min to about 3 min. An explicit `~sources` library is pruned to
 the reachable definitions unless `~library:true`.
 
-Lost fusion (fixed 2026-10-15, partial B.F): a Lisp body with branches compiles to one opaque
+Lost fusion (fixed 2026-10-15): a Lisp body with branches compiles to one opaque
 `flow.geometry_select`, so the owned-node walk saw `topology=Changed`, `elementwise=None` and the
 node broke point-count origins. `lower.ml` now takes the node's declared `:facts` (`:elementwise`,
 `:topology`) when the walk cannot prove them, so `(sop/transform g :translate [0 0 1])` feeding an
-attribute kernel is 3 fused stages again (`test_attribute_kernel.ml`). Not done: the gate "four
-deformers, one kernel run". Barrier inventory (2026-10-15): `bend`, `peak`, `point_jitter`,
-`uv_transform`, `snap_to_grid`, `color_by_height` end in an `array/max`/`array/min` validity scan
-over the kernel result, so each is at least two passes; `set_float`/`set_vector`/`set_color` are
-constant fills that read no point data; only `noise_displace` (and `mountain`-style single-map
-bodies) is a pure map. The real blocker is structural: a Lisp node is a `Lisp_node.node` whose body
-is built per cook with its input as a `lisp_capture_` slot, so the attribute-kernel fusion
-(`source_origins`, which walks input nodes' facts) never sees the upstream node's kernel. Fusing
-two Lisp nodes means inlining a `defnode` body into its caller's plan (a `:inline` expansion before
-lowering, with its graph projection and `Flow_edit` gestures) so that `sop/attr` of an upstream
-`sop/with_attr` becomes an ordinary fused source, and removing the validity scans from the
-deformers that have them. B.F stays open.
+attribute kernel is 3 fused stages again (`test_attribute_kernel.ml`). Cross-node fusion of whole
+deformers is B.F above.
 
 ### Speed regressions accepted with the ports
 
