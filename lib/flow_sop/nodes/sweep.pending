@@ -64,6 +64,42 @@
          tot (exact (map (fn [(c : int)] (array/nth tot_c c)) sc))]
     {:ed ed :cum cum :tot tot :tot_c tot_c :lastv lastv :bad (int/add (int/add bad_len bad_pos) bad_dir)}))
 
+; ---- carriers ----
+; A mesh with only points: one point per element of the stage, further columns as point attributes. Writing a stage
+; into a carrier and reading it back with sop/attr makes it a cooked array, so later stages (and the reference
+; interpreter) read it instead of recomputing the whole chain behind it.
+(defn sw_pts :context sop [(pos : (array vec3))]
+  (sop/mesh :points pos :vertex_points (array/int 0 0) :primitive_offsets (array/int 1 0) :kinds (array/int 0 0)))
+(defn sw_zero :context value [(rows : (array int))] (exact (map (fn [(i : int)] [(float i) 0.0 0.0]) rows)))
+(defn sw_put_i :context sop [(geo : geometry) (label : text) (data : (array int))]
+  (sop/with_attr geo label data :owner "point" :type int))
+(defn sw_put_f :context sop [(geo : geometry) (label : text) (data : (array float))]
+  (sop/with_attr geo label data :owner "point" :type float))
+(defn sw_put_v :context sop [(geo : geometry) (label : text) (data : (array vec3))]
+  (sop/with_attr geo label data :owner "point" :type vec3))
+(defn sw_get_i :context sop [(geo : geometry) (label : text)] (sop/attr geo label :owner "point" :type int))
+(defn sw_get_f :context sop [(geo : geometry) (label : text)] (sop/attr geo label :owner "point" :type float))
+(defn sw_get_v :context sop [(geo : geometry) (label : text)] (sop/attr geo label :owner "point" :type vec3))
+
+; The selected curves of one input with their edge data, as cooked arrays: {:cb :gb} (see sw_curves, sw_geo).
+(defn sw_prep :context sop [(geo : geometry) (gname : text)]
+  (let* [c (sw_curves geo gname)
+         g (sw_geo c.spos c.sloc c.scnt c.sclosed c.sc c.coff)
+         kv (sw_put_v (sw_put_f (sw_put_f
+              (sw_put_i (sw_put_i (sw_put_i (sw_put_i (sw_put_i (sw_put_i (sw_pts c.spos)
+                "sloc" c.sloc) "scnt" c.scnt) "sclosed" c.sclosed) "sc" c.sc) "svtx" c.svtx) "spt" c.spt)
+              "cum" g.cum) "tot" g.tot) "ed" g.ed)
+         ns (sop/count kv :points)
+         kc (sw_put_f (sw_put_i (sw_put_i (sw_put_i (sw_put_i (sw_put_i (sw_pts (array/vec3 c.nc))
+              "cnt" c.cnt) "closed" c.closed) "coffs" (array/slice c.coff 0 c.nc)) "prims" c.prims) "lastv" g.lastv)
+              "tot_c" g.tot_c)]
+    {:cb {:nc c.nc :cnt (sw_get_i kc "cnt") :closed (sw_get_i kc "closed")
+          :coff (array/concat (sw_get_i kc "coffs") (array/int 1 ns)) :prims (sw_get_i kc "prims")
+          :svtx (sw_get_i kv "svtx") :sc (sw_get_i kv "sc") :sloc (sw_get_i kv "sloc") :spt (sw_get_i kv "spt")
+          :spos (sop/attr kv "P") :scnt (sw_get_i kv "scnt") :sclosed (sw_get_i kv "sclosed") :bad c.bad}
+     :gb {:ed (sw_get_v kv "ed") :cum (sw_get_f kv "cum") :tot (sw_get_f kv "tot") :tot_c (sw_get_f kc "tot_c")
+          :lastv (sw_get_i kc "lastv") :bad g.bad}}))
+
 ; ---- tangents ----
 ; Unit quaternion basis columns: which 0 out (x axis), 1 up (y axis), 2 tangent (z axis).
 (defn sw_quat_ok :context value [(q : vec4)]
@@ -337,7 +373,7 @@
       (/ (array/nth cum (int/add base pl)) total))))
 
 ; ---- the layout of the output: pairs, points, primitives and corners ----
-(defn sw_layout :context value
+(defn sw_layout_raw :context value
   [(cb : {:nc int :cnt (array int) :closed (array int) :coff (array int) :prims (array int) :svtx (array int)})
    (cp : {:nc int :cnt (array int) :closed (array int) :coff (array int) :prims (array int) :svtx (array int)})
    (conn : int) (caps : bool)]
@@ -371,9 +407,17 @@
          vpair (int_gather prim_pair vo)
          kk (exact (map (fn [(v : int) (s : int)] (int/sub v s)) (array/range nvert :type int) (int_gather poff vo)))
          ckv (int_gather ck vo)
-         cn (sw_corners ckv kk (int_gather bc vpair) (int_gather pc vpair) (int_gather pe vpair))]
+         cn (sw_corners ckv kk (int_gather bc vpair) (int_gather pc vpair) (int_gather pe vpair))
+         npts (array/nth pf npair)]
     {:npair npair :pbi pbi :pjj pjj :bc bc :pc pc :bcl bcl :pcl pcl :pf pf :tp tp :prim_pair prim_pair :code code
-     :poff poff :kinds kinds :nvert nvert :vo vo :vpair vpair :cn cn :npts (array/nth pf npair)}))
+     :poff poff :size size :kinds kinds :nvert nvert :vo vo :vpair vpair :cn cn :npts npts}))
+; The layout as cooked arrays (see sw_pts).
+(defn sw_layout :context sop
+  [(cb : {:nc int :cnt (array int) :closed (array int) :coff (array int) :prims (array int) :svtx (array int)})
+   (cp : {:nc int :cnt (array int) :closed (array int) :coff (array int) :prims (array int) :svtx (array int)})
+   (conn : int) (caps : bool)]
+  (let* [r (sw_layout_raw cb cp conn caps)]
+    r))
 
 ; ---- output points: the profile point placed in the frame of the backbone vertex (staged through arrays) ----
 (defn sw_points :context value
@@ -459,8 +503,28 @@
          p1 (sop/rename_group (sop/rename_attr pr "*" (str prefix "*") :owner "any" :conflict "error")
               "*" (str prefix "*") :owner "any" :conflict "error")
          p2 (if has_uv (sop/delete_attr (sop/delete_attr p1 uvn :owner "point") uvn :owner "vertex") p1)
-         r1 (sop/remap b2 target :points pts.bptm :vertices bvm :primitives bpm :positions "target")
-         r2 (sop/remap p2 r1 :points pts.pptm :vertices pvm :primitives ppm :positions "target" :lead true :lead_groups true)
+         tm (sop/with_attr (sop/with_attr target "bptm" pts.bptm :owner "point" :type int) "pptm" pts.pptm :owner "point" :type int)
+         bptm (sop/attr tm "bptm" :owner "point" :type int)
+         pptm (sop/attr tm "pptm" :owner "point" :type int)
+         te (sop/edges target)
+         has_eb (int/gt (array/count (sop/group_names bb "*" :owner "edge")) 0)
+         has_ep (int/gt (array/count (sop/group_names pr "*" :owner "edge")) 0)
+         sb_e (sop/edges bb)
+         sp_e (sop/edges pr)
+         anc_b (edge_ancestry sb_e.a sb_e.b
+                 (exact (map (fn [(a : int) (b : int)]
+                   (if (int/eq (array/nth pptm a) (array/nth pptm b)) (array/nth bptm a) -1)) te.a te.b))
+                 (exact (map (fn [(a : int) (b : int)]
+                   (if (int/eq (array/nth pptm a) (array/nth pptm b)) (array/nth bptm b) -1)) te.a te.b))
+                 (sop/count bb :points))
+         anc_p (edge_ancestry sp_e.a sp_e.b
+                 (exact (map (fn [(a : int) (b : int)]
+                   (if (int/eq (array/nth bptm a) (array/nth bptm b)) (array/nth pptm a) -1)) te.a te.b))
+                 (exact (map (fn [(a : int) (b : int)]
+                   (if (int/eq (array/nth bptm a) (array/nth bptm b)) (array/nth pptm b) -1)) te.a te.b))
+                 (sop/count pr :points))
+         r1 (sop/remap b2 target :points bptm :vertices bvm :primitives bpm :positions "target" :edges anc_b)
+         r2 (sop/remap p2 r1 :points pptm :vertices pvm :primitives ppm :positions "target" :lead true :lead_groups true :edges anc_p)
          r3 (if has_uv
               (sop/with_attr r2 uvn {:x uv.x :y uv.y} :owner (if (int/eq conn 0) "point" "vertex") :type vec2)
               r2)]
@@ -477,10 +541,12 @@
          conn (case connectivity "Points" 0 "Rows" 1 "Columns" 2 "Rows and columns" 3 "Quads" 4 "Triangles" 5
                 "Alternating triangles" 6 :else 7)
          mode (case tangent "Average edges" 0 "Central difference" 1 "Previous edge" 2 "Next edge" 3 :else 4)
-         cb (sw_curves bb bn)
-         cp (sw_curves pr pn)
-         gb (sw_geo cb.spos cb.sloc cb.scnt cb.sclosed cb.sc cb.coff)
-         gp (sw_geo cp.spos cp.sloc cp.scnt cp.sclosed cp.sc cp.coff)
+         pb (sw_prep bb bn)
+         pq (sw_prep pr pn)
+         cb pb.cb
+         gb pb.gb
+         cp pq.cb
+         gp pq.gb
          at (sw_attrs bb ta cb.spt)
          fr (sw_frames cb gb at mode continuous roll twist)
          lay (sw_layout cb cp conn caps)
