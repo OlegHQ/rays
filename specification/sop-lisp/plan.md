@@ -793,11 +793,17 @@ Lost fusion (fixed 2026-10-15, partial B.F): a Lisp body with branches compiles 
 node broke point-count origins. `lower.ml` now takes the node's declared `:facts` (`:elementwise`,
 `:topology`) when the walk cannot prove them, so `(sop/transform g :translate [0 0 1])` feeding an
 attribute kernel is 3 fused stages again (`test_attribute_kernel.ml`). Not done: the gate "four
-deformers, one kernel run". `bend`, `mountain`, `noise_displace` and `smooth` bodies are
-`geometry_select` cooks with `(exact ...)` stage boundaries, an `array/max` "changed" reduction and
-data-dependent `if` shortcuts, so each is several kernel runs plus a barrier; fusing them needs
-inlining the bodies into one program and dropping those reductions (a language change), not a
-facts fix. B.F stays open.
+deformers, one kernel run". Barrier inventory (2026-10-15): `bend`, `peak`, `point_jitter`,
+`uv_transform`, `snap_to_grid`, `color_by_height` end in an `array/max`/`array/min` validity scan
+over the kernel result, so each is at least two passes; `set_float`/`set_vector`/`set_color` are
+constant fills that read no point data; only `noise_displace` (and `mountain`-style single-map
+bodies) is a pure map. The real blocker is structural: a Lisp node is a `Lisp_node.node` whose body
+is built per cook with its input as a `lisp_capture_` slot, so the attribute-kernel fusion
+(`source_origins`, which walks input nodes' facts) never sees the upstream node's kernel. Fusing
+two Lisp nodes means inlining a `defnode` body into its caller's plan (a `:inline` expansion before
+lowering, with its graph projection and `Flow_edit` gestures) so that `sop/attr` of an upstream
+`sop/with_attr` becomes an ordinary fused source, and removing the validity scans from the
+deformers that have them. B.F stays open.
 
 ### Speed regressions accepted with the ports
 
