@@ -788,10 +788,16 @@ instance was lowered twice and re-specialized every prelude helper (d03a92ff), w
 `test_workspace_cook` from about 19 min to about 3 min. An explicit `~sources` library is pruned to
 the reachable definitions unless `~library:true`.
 
-Lost fusion (unfixed): a Lisp node's `elementwise` fact comes from its compiled root
-(`lower.ml`), so `sop/transform` no longer reports `Points` and a downstream attribute kernel
-reading it runs as 1 stage instead of 3 fused (`test_attribute_kernel.ml`, 8b5813b8). Outputs
-are still exact; re-derive the fact from the body's owned nodes to restore fusion.
+Lost fusion (fixed 2026-10-15, partial B.F): a Lisp body with branches compiles to one opaque
+`flow.geometry_select`, so the owned-node walk saw `topology=Changed`, `elementwise=None` and the
+node broke point-count origins. `lower.ml` now takes the node's declared `:facts` (`:elementwise`,
+`:topology`) when the walk cannot prove them, so `(sop/transform g :translate [0 0 1])` feeding an
+attribute kernel is 3 fused stages again (`test_attribute_kernel.ml`). Not done: the gate "four
+deformers, one kernel run". `bend`, `mountain`, `noise_displace` and `smooth` bodies are
+`geometry_select` cooks with `(exact ...)` stage boundaries, an `array/max` "changed" reduction and
+data-dependent `if` shortcuts, so each is several kernel runs plus a barrier; fusing them needs
+inlining the bodies into one program and dropping those reductions (a language change), not a
+facts fix. B.F stays open.
 
 ### Speed regressions accepted with the ports
 
