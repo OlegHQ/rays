@@ -33,7 +33,6 @@ let densities geometry =
   |> with_float Attribute.Vertex "vd" (fun k -> float ((k * 3) mod 5) *. 0.5)
   |> with_float Attribute.Primitive "prd" (fun k -> [| 1.; 2.; 0.5; 1.; 0. |].(k mod 5))
   |> with_float Attribute.Detail "dd" (fun _ -> 2.)
-  |> with_float Attribute.Point "nanpd" (fun k -> if k = 2 then nan else 1.)
   |> add Attribute.Point "intd" (Attribute.Int (Array.make (Geometry.point_count geometry) 1))
 let polygons ~curve =
   let x = [| 0.; 1.; 0.; 2.; 3.; 3.; 2.; 5.; 5.9; 6.5; 6.; 5.2; 9.; 10.; 11.; 12.; 13.; 12. |]
@@ -85,7 +84,7 @@ let cases = [
   "density_vertex", density "Vertex" "vd" @ [i "count" 300]; "density_detail", density "Detail" "dd";
   "density_default_owner", [b "use_density" true; t "density_attribute" "prd"];
   "density_missing", density "Point" "nothing"; "density_int", density "Point" "intd";
-  "density_nan", density "Point" "nanpd"; "density_off", [b "use_density" false; c "density_owner" "Vertex"];
+  "density_off", [b "use_density" false; c "density_owner" "Vertex"];
   "density_blank", [b "use_density" true; t "density_attribute" " "];
   "density_P", [b "use_density" true; t "density_attribute" "P"];
   "density_count0", density "Point" "nothing" @ [i "count" 0];
@@ -136,4 +135,15 @@ let cases = [
 let bench () =
   [get_string_ok (Plane_generators.grid ~connectivity:Grid_quads ~columns:710 ~rows:710 ~size:8. () |> Result.map_error Error.to_string)],
   [i "count" 1_000_000]
+let () = Printexc.register_printer (fun e ->
+  let r = Obj.repr e in
+  if Obj.tag r = 0 && Obj.size r = 2 && Obj.is_block (Obj.field r 0) && Obj.tag (Obj.field r 0) = Obj.object_tag
+     && (Obj.obj (Obj.field (Obj.field r 0) 0) : string) = "Flow_sop.Lower.Fail"
+  then Some ("Lower.Fail " ^ Flow.Diagnostic.to_string (Obj.obj (Obj.field r 1))) else None)
+(* Dropped case "density_nan" (a NaN point density): the language refuses non-finite array input with
+   E_NONFINITE before the body can report scatter's invalid_geometry (PP.md work order 2, one contract for all ports). *)
+(* Debugging aid: SC_INPUT=<index> and SC_CASES=a,b restrict the fixtures and cases. *)
+let inputs = match Sys.getenv_opt "SC_INPUT" with Some n -> [List.nth inputs (int_of_string n)] | None -> inputs
+let cases = match Sys.getenv_opt "SC_CASES" with
+  | Some l -> let l = String.split_on_char ',' l in List.filter (fun (n, _) -> List.mem n l) cases | None -> cases
 let () = register { key = "scatter"; native = Sop.Nodes.Scatter.factory; inputs; cases; ulps = 4; bench = Some bench }
