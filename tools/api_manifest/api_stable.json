@@ -113,6 +113,7 @@
         "type slot = { name : string ; required : bool ; rest : bool ; ty : Ty.t option }",
         "type kernel_elements = Points | Primitives | Irregular",
         "type kernel_facts = { elementwise : kernel_elements ; reads : string list ; writes : string list ; preserves_topology : bool ; exact : bool ; }",
+        "val resolve_component_names : ( string -> string option ) -> string list -> string list",
         "type kind = { qualified : string ; aliases : string list ; context : Context.t ; slots : slot list ; parameters : parameter list ; outputs : ( string * Port_type.t ) list ; facts : kernel_facts option ; }",
         "type catalog = { version : int ; kinds : kind list }",
         "val parameters_of_fields : Param.field_view list -> parameter list",
@@ -123,7 +124,7 @@
         "val suggestion : string -> string list -> string",
         "val short : string -> string"
       ],
-      "api_sha256": "011c6975bc25c59b7f9075d5672732364196eff7cc2960ce41e70f6ef91953f2",
+      "api_sha256": "19099ee5d4f6e6a08954d1064c1eb0c3cee86665899c14aebbfb6ff8c3c88ca2",
       "excluded_legacy_symbols": [],
       "library": "flow",
       "module": "Check",
@@ -327,6 +328,7 @@
         "type conversion = To_float | Truncate | Floor | Ceil | Round | Coerce_int | Integer_result of string",
         "val register_limit : int",
         "val supported_noise_octaves : int -> bool",
+        "val supported_gpu_noise_octaves : int -> bool",
         "val finite_float32 : float -> bool",
         "val scalar_width : Ty.t -> int option",
         "val array_width : Ty.t -> int option",
@@ -343,7 +345,7 @@
         "val names : string list",
         "val supports : string -> bool"
       ],
-      "api_sha256": "e4a3c985024fcaef39ff3dab64bd93ab3d71007190aef0abf9e10aa22281260f",
+      "api_sha256": "714b55d4f2ad732aab92beedb00c988f7cd1f5feff635e254c675c7d1de2b5ad",
       "excluded_legacy_symbols": [],
       "library": "flow",
       "module": "Packed_ops",

@@ -735,7 +735,7 @@ export function noise3(position, seed, octaves, lacunarity, gain) {
   for (const c of position) fin('noise3 position', c);
   const configuration = v => typeof v === 'bigint' ? v : intOf(v);
   const s = seed === undefined ? 0n : configuration(seed), n = octaves === undefined ? 1n : configuration(octaves);
-  if (n < 1n || n > 32n) err('E_NOISE_RANGE', 'Noise octaves are 1 to 32.');
+  if (n < 1n || n > 64n) err('E_NOISE_RANGE', 'Noise octaves are 1 to 64.');
   const lac = lacunarity === undefined ? 2 : num(lacunarity), g = gain === undefined ? 0.5 : num(gain);
   if (!(Number.isFinite(lac) && lac > 0)) err('E_NOISE_RANGE', 'Noise lacunarity must be finite and positive.');
   if (!(g >= 0 && g <= 1)) err('E_NOISE_RANGE', 'Noise gain is 0 to 1.');
