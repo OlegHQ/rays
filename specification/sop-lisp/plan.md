@@ -746,6 +746,16 @@ The earlier per-session tables are superseded; each registration commit
 Registered (Lisp body is the production node; the OCaml kernel stays in `lib/rdk` as the oracle):
 `attr_from_image`, `attribute_blur`, `attribute_composite`, `attribute_copy`, `attribute_fade`, `attribute_interpolate`, `attribute_laplacian`, `attribute_noise_quaternion`, `attribute_noise`, `attribute_randomize`, `attribute_remap`, `bend`, `blast_by_attribute`, `blast`, `blend_shapes`, `bound`, `box`, `carve`, `circle_from_edges`, `circle`, `color_by_height`, `compact_points`, `connectivity`, `convert_line`, `copy_to_points`, `crease`, `delete_attributes`, `delete_edge_group`, `distance_along_geometry`, `distance_from_target`, `duplicate`, `edge_cusp`, `edge_divide`, `edge_equalize`, `edge_flip`, `edge_relax`, `edge_straighten`, `edge_transport_curves`, `edge_transport_parent`, `edge_transport`, `ends`, `enumerate`, `extract_centroid`, `extract_point_from_curve`, `graph_color`, `grid`, `group_backface`, `group_boundary_components`, `group_bounds`, `group_combine`, `group_copy`, `group_delete`, `group_edge_depth`, `group_edges`, `group_expand`, `group_find_path`, `group_from_attribute_boundary`, `group_invert`, `group_non_planar`, `group_normal`, `group_promote_boundary`, `group_promotions`, `group_random`, `group_range`, `group_ranges`, `group_rename`, `group_unshared`, `groups_from_name`, `iso_surface`, `line`, `match_axis`, `match_size`, `material`, `measure_curvature`, `measure`, `merge`, `mirror`, `mountain`, `name_from_groups`, `noise_displace`, `normals`, `ordered_group`, `peak`, `platonic`, `point_generate`, `point_jitter`, `point_replicate`, `point_split`, `point_velocity`, `points`, `poly_bridge`, `poly_loft`, `poly_path`, `polyframe`, `polywire`, `promote_attributes`, `rename_attributes`, `rename_edge_group`, `resample`, `rest_position`, `reverse`, `revolve`, `rewire_vertices`, `scatter`, `separate_pieces`, `set_color`, `set_float`, `set_int`, `set_orient`, `set_transform`, `set_vector`, `skin`, `smooth`, `snap_to_grid`, `sort`, `spiral`, `subdivide`, `swap_attributes`, `sweep_circle`, `sweep`, `torus`, `transform`, `tube`, `uv_auto_seam`, `uv_project`, `uv_sphere`, `uv_transform`, `uv_unitize`.
 
+`@lib/sop/runtest` after the round (merge `045225ab`): the native-node suite (`run_nodes`) now
+checks the Lisp bodies and found port bugs the quick gate missed: `attribute_copy` (unordered
+groups), `snap_to_grid` (blank rules), `group_find_path` (primitive dual sized by point count),
+`attribute_randomize` (register overflow in "Inside sphere cone"), `point_replicate` and
+`Context_kernel.depends` (false seed dependencies), name-parameter facts of `attribute_noise`,
+`attribute_noise_quaternion`, `normals`, `attr_from_image`. A declared `:facts` is now the node's
+contract (`$param`, `$param|fallback`, `$param~prefix` name tokens). `noise3` takes 1 to 64 octaves
+on the CPU and web runtime (Metal and WGSL keep 32). Declared four-ULP ports are compared with four
+ULP or 1e-12 absolute (largest observed 2e-14). `run_nodes` takes about 70 minutes at `-j 2`.
+
 `iso_surface` is proved by the `PORT_ISO=1` oracle harness (bit-exact positions and normals on 5 fields
 × 6 parameter sets); the generic gate cannot feed a function slot.
 
