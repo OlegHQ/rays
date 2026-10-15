@@ -1153,9 +1153,13 @@
         "val workspace : factories : Sop.Edit_graph.factory list -> ? extra : Catalog.descriptor list -> ? reference : bool -> ? compiled_ids : int Instance_path.Map.t -> ? sites : Flow.Workspace.path list -> ? inputs : ( string * ( string * Flow.Eval.value ) list ) list -> Flow.Syntax.t list -> ( t , Flow.Diagnostic.t ) result",
         "val of_checked : factories : Sop.Edit_graph.factory list -> ? provenance_tags : bool -> ? reference : bool -> ? compiled_ids : int Instance_path.Map.t -> ? sites : Flow.Workspace.path list -> ? inputs : ( string * ( string * Flow.Eval.value ) list ) list -> Flow.Workspace.t -> ( t , Flow.Diagnostic.t ) result",
         "val counts : t -> int * int",
-        "val status : t -> seconds : float -> string option"
+        "val status : t -> seconds : float -> string option",
+        "module Private : sig",
+        "val record : bool ref",
+        "val profiles : Flow_ir.Profile.t list ref",
+        "end"
       ],
-      "api_sha256": "d319f2c1a24c3695eecb731ce3568239db21e5dcb5773fe432f4d4b6c9c00a0f",
+      "api_sha256": "8f98d9d45e4e82e674552355b0df9702abd20280e5e99a0b10eb0b6c7abfa3d8",
       "excluded_legacy_symbols": [],
       "library": "flow_sop",
       "module": "Lower",
