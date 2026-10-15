@@ -251,6 +251,8 @@ All 162 nodes, grouped by the phase that ports them. A node sits in the phase wh
 | `point_velocity` | 2 | C8 B1 | Match by attribute across frames. | `mesh/motion.ml:483` |
 | `attribute_interpolate` | 2 | C2 B1 | Array-valued attributes. 1,209 lines. | `attrib/attribute_interpolate.ml:774` |
 | `edge_transport_curves` | 4 | B11 | Running sum per curve: a segmented scan. | `mesh/edge_transport.ml:867` |
+| `scatter` | sampling written; attribute transfer needs a k-way corner-weight `sop/remap` mode (agent) |
+| `attribute_composite` | Core lowering budget 2048 exceeded; `E_KERNEL_FORM` in the fold; rest-slot geometry not a data source in folds (agent) |
 | `iso_surface` | 3 | C1 C2 C4 | Count then fill. Uses `Float.fma` explicitly (`gen/iso_surface.ml:82`), so it needs an `fma` operator or its lattice stays a built-in. Port last in this phase. | `gen/iso_surface.ml:33` |
 
 ### Phase D: adjacency and iteration, 31 nodes
@@ -742,7 +744,7 @@ whole fused native pass. Three shared fixes are in (`3bffaa15`, `8ba568d7`,
 source has no edge groups. Projection: 2× is not reachable for reindexing
 nodes without ancestry-aware host operators.
 
-**Status 2026-10-15: 119/128 registered, 1 draft pending, 8 without a draft.**
+**Status 2026-10-15: 119/128 registered, 3 drafts pending, 6 without a draft.**
 The earlier per-session tables are superseded; each registration commit
 ("Register …", "port-draft <key>: PASS-SLOW Nx") records its gate and bench.
 
@@ -755,7 +757,7 @@ Pending drafts (`nodes/<key>.pending`):
 | --- | --- |
 | `iso_surface` | smooth normals exact after mirroring arm64 FMA contraction; positions 1–6 ulp off |
 
-No draft yet: `scatter`, `edge_flip`, `subdivide` (agent),
+No draft yet: `edge_flip` (agent), `subdivide` (split the crack path first, E.6),
 `attr_from_image` (image sampling in a geometry body), `attribute_composite` and `blend_shapes`
 (loop over attribute names building geometry), `copy_to_points`, `sweep`.
 
