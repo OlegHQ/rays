@@ -38,7 +38,7 @@
         (noise_refuse "range bounds must be ordered")
       :else true)))
 (defnode sop/attribute_noise :label "Attribute Noise" :category ["Attribute" "Noise"]
-  :facts {:elementwise points :reads ["P" "noise" "P"] :writes ["noise"] :topology preserved :exact false}
+  :facts {:elementwise points :reads ["P" "$name" "$location_attribute"] :writes ["$name" "N"] :topology preserved :exact false}
   :validate (noise_validate owner name group kind location location_attribute range operation blend octaves
               lacunarity roughness min_x min_y min_z min_w max_x max_y max_z max_w)
   [(in0 : geometry)

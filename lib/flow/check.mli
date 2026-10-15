@@ -25,7 +25,8 @@ type kernel_facts = {
 
 val resolve_component_names : (string -> string option) -> string list -> string list
 (** A [:facts] component name is literal, [$param] (the trimmed text of that parameter, dropped when
-    blank) or [$param|fallback] (the fallback when blank). [lookup] gives a parameter's text. *)
+    blank), [$param|fallback] (the fallback when blank) or [$param~prefix] (what follows [prefix] in
+    the parameter, dropped when it does not start with it). [lookup] gives a parameter's text. *)
 
 type kind = {
   qualified : string;
