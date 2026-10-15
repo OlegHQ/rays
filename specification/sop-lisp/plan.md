@@ -242,7 +242,6 @@ All 162 nodes, grouped by the phase that ports them. A node sits in the phase wh
 | `sweep_circle`, `polywire` | 3 | C1 C2 | Both run `curve/polywire.ml` (1,434 lines). The joint and zipper code was not read. May move to Phase E or blocked. | `mesh/sweep_circle.ml:637`, `curve/polywire.ml:92` |
 | `point_generate` | 3 | C1 C4 B9 | Sum of per-point counts. | `gen/point_generate.ml:276` |
 | `point_replicate` | 3 | C1 C4 B9 | Random, radical inverse and noise. | `gen/point_replicate.ml:249` |
-| `scatter` | 3 | C1 C2 B9 | Sequential alias table (`:328`) and a private keyed hash (`:370`). Both must be reproduced or the point set changes. | `gen/scatter.ml:392` |
 | `extract_point_from_curve` | 3 | C1 C4 | Count then fill. | `mesh/extract_point_curve.ml:66` |
 | `separate_pieces` | 2 | C5 C8 | Uses `Float.next_after` (`:224`); needs that operator. | `mesh/separate_pieces.ml:439` |
 | `enumerate` | 2 | C5 C8 B3 | Per-piece rank. | `attrib/attribute_enumerate.ml:252` |
@@ -251,7 +250,6 @@ All 162 nodes, grouped by the phase that ports them. A node sits in the phase wh
 | `point_velocity` | 2 | C8 B1 | Match by attribute across frames. | `mesh/motion.ml:483` |
 | `attribute_interpolate` | 2 | C2 B1 | Array-valued attributes. 1,209 lines. | `attrib/attribute_interpolate.ml:774` |
 | `edge_transport_curves` | 4 | B11 | Running sum per curve: a segmented scan. | `mesh/edge_transport.ml:867` |
-| `scatter` | transfer via `sop/attribute_interpolate`; whole body refuses strict lowering, stage 3 very slow (agent) |
 | `attribute_composite` | PASS-SLOW 62×/93× but a nondeterministic `E_ARRAY_RANGE` in the full gate; rest slot capped at 8 (agent) |
 | `iso_surface` | 3 | C1 C2 C4 | Count then fill. Uses `Float.fma` explicitly (`gen/iso_surface.ml:82`), so it needs an `fma` operator or its lattice stays a built-in. Port last in this phase. | `gen/iso_surface.ml:33` |
 
@@ -744,12 +742,12 @@ whole fused native pass. Three shared fixes are in (`3bffaa15`, `8ba568d7`,
 source has no edge groups. Projection: 2× is not reachable for reindexing
 nodes without ancestry-aware host operators.
 
-**Status 2026-10-15: 120/128 registered, 3 drafts pending, 5 without a draft.**
+**Status 2026-10-15: 121/128 registered, 2 drafts pending, 5 without a draft.**
 The earlier per-session tables are superseded; each registration commit
 ("Register …", "port-draft <key>: PASS-SLOW Nx") records its gate and bench.
 
 Registered (Lisp body is the production node; the OCaml kernel stays in `lib/rdk` as the oracle):
-`attribute_blur`, `attribute_copy`, `attribute_fade`, `attribute_interpolate`, `attribute_laplacian`, `attribute_noise_quaternion`, `attribute_noise`, `attribute_randomize`, `attribute_remap`, `bend`, `blast_by_attribute`, `blast`, `bound`, `box`, `carve`, `circle_from_edges`, `circle`, `color_by_height`, `compact_points`, `connectivity`, `convert_line`, `crease`, `delete_attributes`, `delete_edge_group`, `distance_along_geometry`, `distance_from_target`, `duplicate`, `edge_cusp`, `edge_divide`, `edge_equalize`, `edge_flip`, `edge_relax`, `edge_straighten`, `edge_transport_curves`, `edge_transport_parent`, `edge_transport`, `ends`, `enumerate`, `extract_centroid`, `extract_point_from_curve`, `graph_color`, `grid`, `group_backface`, `group_boundary_components`, `group_bounds`, `group_combine`, `group_copy`, `group_delete`, `group_edge_depth`, `group_edges`, `group_expand`, `group_find_path`, `group_from_attribute_boundary`, `group_invert`, `group_non_planar`, `group_normal`, `group_promote_boundary`, `group_promotions`, `group_random`, `group_range`, `group_ranges`, `group_rename`, `group_unshared`, `groups_from_name`, `line`, `match_axis`, `match_size`, `material`, `measure_curvature`, `measure`, `merge`, `mirror`, `mountain`, `name_from_groups`, `noise_displace`, `normals`, `ordered_group`, `peak`, `platonic`, `point_generate`, `point_jitter`, `point_replicate`, `point_split`, `point_velocity`, `points`, `poly_bridge`, `poly_loft`, `poly_path`, `polyframe`, `polywire`, `promote_attributes`, `rename_attributes`, `rename_edge_group`, `resample`, `rest_position`, `reverse`, `revolve`, `rewire_vertices`, `separate_pieces`, `set_color`, `set_float`, `set_int`, `set_orient`, `set_transform`, `set_vector`, `skin`, `smooth`, `snap_to_grid`, `sort`, `spiral`, `swap_attributes`, `sweep_circle`, `torus`, `transform`, `tube`, `uv_auto_seam`, `uv_project`, `uv_sphere`, `uv_transform`, `uv_unitize`.
+`attribute_blur`, `attribute_copy`, `attribute_fade`, `attribute_interpolate`, `attribute_laplacian`, `attribute_noise_quaternion`, `attribute_noise`, `attribute_randomize`, `attribute_remap`, `bend`, `blast_by_attribute`, `blast`, `bound`, `box`, `carve`, `circle_from_edges`, `circle`, `color_by_height`, `compact_points`, `connectivity`, `convert_line`, `crease`, `delete_attributes`, `delete_edge_group`, `distance_along_geometry`, `distance_from_target`, `duplicate`, `edge_cusp`, `edge_divide`, `edge_equalize`, `edge_flip`, `edge_relax`, `edge_straighten`, `edge_transport_curves`, `edge_transport_parent`, `edge_transport`, `ends`, `enumerate`, `extract_centroid`, `extract_point_from_curve`, `graph_color`, `grid`, `group_backface`, `group_boundary_components`, `group_bounds`, `group_combine`, `group_copy`, `group_delete`, `group_edge_depth`, `group_edges`, `group_expand`, `group_find_path`, `group_from_attribute_boundary`, `group_invert`, `group_non_planar`, `group_normal`, `group_promote_boundary`, `group_promotions`, `group_random`, `group_range`, `group_ranges`, `group_rename`, `group_unshared`, `groups_from_name`, `line`, `match_axis`, `match_size`, `material`, `measure_curvature`, `measure`, `merge`, `mirror`, `mountain`, `name_from_groups`, `noise_displace`, `normals`, `ordered_group`, `peak`, `platonic`, `point_generate`, `point_jitter`, `point_replicate`, `point_split`, `point_velocity`, `points`, `poly_bridge`, `poly_loft`, `poly_path`, `polyframe`, `polywire`, `promote_attributes`, `rename_attributes`, `rename_edge_group`, `resample`, `rest_position`, `reverse`, `revolve`, `rewire_vertices`, `scatter`, `separate_pieces`, `set_color`, `set_float`, `set_int`, `set_orient`, `set_transform`, `set_vector`, `skin`, `smooth`, `snap_to_grid`, `sort`, `spiral`, `swap_attributes`, `sweep_circle`, `torus`, `transform`, `tube`, `uv_auto_seam`, `uv_project`, `uv_sphere`, `uv_transform`, `uv_unitize`.
 
 Pending drafts (`nodes/<key>.pending`):
 
@@ -840,6 +838,7 @@ before optimizing. The OCaml kernels remain in `lib/rdk` as oracles.
 | `skin` | 43× | 34× | K, H |
 | `carve` | 53× | 47× | K, H |
 | `group_from_attribute_boundary` | 82× | 228× | fold carries geometry; state kept as attributes |
+| `scatter` | 28.4× | 73.6× | shared bindings re-evaluated per reader; split into carrier geometries |
 | `edge_transport_parent` | 85.8× | 75.7× | D, I |
 | `poly_loft` | 90× | 108× | K, H |
 | `group_boundary_components` | 163× | | A, D |
