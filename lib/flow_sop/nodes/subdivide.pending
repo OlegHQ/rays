@@ -1,0 +1,593 @@
+; Whole Subdivide draft (whole-mesh path). A pass builds, from the mesh topology, the stencil of every
+; output point (CSR: offsets, sources, weights, in native's term order), the output topology and the
+; carried attributes and groups; the pass is a fold step. A cook with a primitive group delegates to the
+; native sop/subdivide_cracks carrier.
+(defn sd_flag :context value [(b : bool)] (if b 1 0))
+(defn sd_safe :context value [(index : int)] (if (int/ge index 0) index 0))
+; Owner segment of every slot given segment start offsets (length segments + 1).
+(defn sd_owners :context value [(offsets : (array int)) (total : int)]
+  (let* [segments (int/sub (array/count offsets) 1)
+         starts (exact (map (fn [(p : int)] (array/nth offsets p)) (array/range segments :type int)))
+         prefix (array/scan_sum (array/scatter_add starts (array/int segments 1) (int/add total 1)))]
+    (exact (map (fn [(s : int)] (int/sub (array/nth prefix (int/add s 1)) 1)) (array/range total :type int)))))
+; Native sums a stencil sequentially with a fused multiply-add per term: pass k adds term k of every
+; row that has one.
+(defn sd_sum :context value
+  [(offsets : (array int)) (sources : (array int)) (weights : (array float)) (plane : (array float))]
+  (let* [n (int/sub (array/count offsets) 1)
+         lens (exact (map (fn [(o : int)] (int/sub (array/nth offsets (int/add o 1)) (array/nth offsets o)))
+                (array/range n :type int)))
+         maxlen (array/max (array/concat lens (array/int 1 0)))
+         state (iterate maxlen (exact (map (fn [(o : int)] [0.0 0.0]) (array/range n :type int)))
+           (fn [(s : (array vec2))]
+             (exact (map (fn [(o : int) (q : vec2)]
+               (if (int/lt (int q.y) (array/nth lens o))
+                 (let* [at (int/add (array/nth offsets o) (int q.y))]
+                   [(fma (array/nth plane (array/nth sources at)) (array/nth weights at) q.x) (+ q.y 1.0)])
+                 [q.x (+ q.y 1.0)]))
+               (array/range n :type int) s))))]
+    (exact (map (fn [(q : vec2)] q.x) state))))
+(defn sd_xs :context value [(p : (array vec3))] (exact (map (fn [(q : vec3)] q.x) p)))
+(defn sd_ys :context value [(p : (array vec3))] (exact (map (fn [(q : vec3)] q.y) p)))
+(defn sd_zs :context value [(p : (array vec3))] (exact (map (fn [(q : vec3)] q.z) p)))
+(defn sd_join3 :context value [(x : (array float)) (y : (array float)) (z : (array float))]
+  (exact (map (fn [(a : float) (b : float) (c : float)] [a b c]) x y z)))
+
+; Edge incidences in native order (ascending corner id): the first and second corner of every edge (-1: none).
+(defn sd_ev :context value
+  [(adj : {:edge_of_vertex (array int) :opposite_vertex (array int)}) (edges : int) (vertices : int)]
+  (let* [vr (array/range vertices :type int)
+         first_key (exact (map (fn [(v : int)]
+           (let* [e (array/nth adj.edge_of_vertex v) o (array/nth adj.opposite_vertex v)]
+             (if (and (int/ge e 0) (or (int/lt o 0) (int/lt v o))) e edges))) vr))
+         second_key (exact (map (fn [(v : int)]
+           (let* [e (array/nth adj.edge_of_vertex v) o (array/nth adj.opposite_vertex v)]
+             (if (and (int/ge e 0) (and (int/ge o 0) (int/gt v o))) e edges))) vr))
+         plus (exact (map (fn [(v : int)] (int/add v 1)) vr))
+         first_sum (array/scatter_add first_key plus (int/add edges 1))
+         second_sum (array/scatter_add second_key plus (int/add edges 1))
+         er (array/range edges :type int)]
+    {:first (exact (map (fn [(e : int)] (int/sub (array/nth first_sum e) 1)) er))
+     :second (exact (map (fn [(e : int)] (int/sub (array/nth second_sum e) 1)) er))}))
+
+; Boundary edges at every point (edges with one corner), and the first and second boundary neighbour.
+(defn sd_boundary :context value
+  [(peo : (array int)) (pe : (array int)) (ea : (array int)) (eb : (array int)) (ev1 : (array int)) (points : int)]
+  (let* [slots (array/nth peo points)
+         owner (sd_owners peo slots)
+         flag (exact (map (fn [(s : int)] (if (int/lt (array/nth ev1 (array/nth pe s)) 0) 1 0)) (array/range slots :type int)))
+         prefix (array/scan_sum flag)
+         rank (exact (map (fn [(s : int) (o : int)] (int/sub (array/nth prefix s) (array/nth prefix (array/nth peo o))))
+                (array/range slots :type int) owner))
+         neighbor (exact (map (fn [(s : int) (o : int)]
+           (let* [e (array/nth pe s)]
+             (if (int/eq (array/nth ea e) o) (array/nth eb e) (array/nth ea e))))
+           (array/range slots :type int) owner))
+         key0 (exact (map (fn [(f : int) (r : int) (o : int)] (if (and (int/eq f 1) (int/eq r 0)) o points)) flag rank owner))
+         key1 (exact (map (fn [(f : int) (r : int) (o : int)] (if (and (int/eq f 1) (int/eq r 1)) o points)) flag rank owner))
+         plus (exact (map (fn [(n : int)] (int/add n 1)) neighbor))
+         left (array/scatter_add key0 plus (int/add points 1))
+         right (array/scatter_add key1 plus (int/add points 1))
+         count (array/scatter_add (exact (map (fn [(f : int) (o : int)] (if (int/eq f 1) o points)) flag owner))
+                 (array/int slots 1) (int/add points 1))
+         pr (array/range points :type int)]
+    {:count (exact (map (fn [(p : int)] (array/nth count p)) pr))
+     :left (exact (map (fn [(p : int)] (int/sub (array/nth left p) 1)) pr))
+     :right (exact (map (fn [(p : int)] (int/sub (array/nth right p) 1)) pr))}))
+
+(defn sd_vsize :context value [(po : (array int)) (pov : (array int)) (v : int)]
+  (let* [f (array/nth pov v)] (int/sub (array/nth po (int/add f 1)) (array/nth po f))))
+(defn sd_fsize :context value [(po : (array int)) (f : int)]
+  (int/sub (array/nth po (int/add f 1)) (array/nth po f)))
+(defn sd_faces :context value [(pvo : (array int)) (p : int)]
+  (int/sub (array/nth pvo (int/add p 1)) (array/nth pvo p)))
+(defn sd_corner :context value [(pvo : (array int)) (bmode : int) (p : int)]
+  (and (int/eq bmode 2) (int/eq (sd_faces pvo p) 1)))
+(defn sd_valence :context value [(peo : (array int)) (p : int)]
+  (int/sub (array/nth peo (int/add p 1)) (array/nth peo p)))
+(defn sd_at0 :context value [(a : (array int)) (i : int)] (if (int/ge i 0) (array/nth a i) 0))
+
+; The topology tables a pass reads: native Topology_index plus edge incidences, boundary neighbours and
+; flattened lookup arrays that keep every stencil kernel small.
+(defn sd_tables :context sop [(g : geometry)]
+  (let* [adj (sop/adjacency g)
+         topology (sop/topology g)
+         points (sop/count g :points)
+         edges (sop/count g :edges)
+         vertices (sop/count g :vertices)
+         prims (sop/count g :primitives)
+         ev (sd_ev adj edges vertices)
+         ev0 ev.first
+         ev1 ev.second
+         bd (sd_boundary adj.point_edge_offsets adj.point_edges adj.edge_a adj.edge_b ev1 points)
+         po topology.primitive_offsets
+         vp topology.vertex_points
+         pov adj.primitive_of_vertex
+         pvx adj.point_vertices
+         pe adj.point_edges
+         ea adj.edge_a
+         eb adj.edge_b
+         slots (array/count pvx)
+         vsize (exact (map (fn [(s : int)] (sd_vsize po pov (array/nth pvx s))) (array/range slots :type int)))
+         cum (array/scan_sum vsize)
+         corners (array/nth cum slots)
+         cslot (sd_owners cum corners)
+         cornerpt (exact (map (fn [(gi : int) (s : int)]
+           (let* [v (array/nth pvx s) f (array/nth pov v)]
+             (array/nth vp (int/add (array/nth po f) (int/sub gi (array/nth cum s))))))
+           (array/range corners :type int) cslot))
+         cornersz (exact (map (fn [(s : int)] (array/nth vsize s)) cslot))
+         eslots (array/count pe)
+         ends (exact (map (fn [(j : int)]
+           (let* [e (array/nth pe (int/div j 2))]
+             (if (int/eq (int/mod j 2) 0) (array/nth ea e) (array/nth eb e))))
+           (array/range (int/mul 2 eslots) :type int)))
+         er (array/range edges :type int)
+         e0f (exact (map (fn [(e : int)] (array/nth po (array/nth pov (array/nth ev0 e)))) er))
+         e0s (exact (map (fn [(e : int)] (sd_vsize po pov (array/nth ev0 e))) er))
+         e1f (exact (map (fn [(e : int)] (let* [v (array/nth ev1 e)] (if (int/ge v 0) (array/nth po (array/nth pov v)) 0))) er))
+         e1s (exact (map (fn [(e : int)] (let* [v (array/nth ev1 e)] (if (int/ge v 0) (sd_vsize po pov v) 0))) er))
+         ap0 (exact (map (fn [(e : int)] (array/nth vp (array/nth adj.next_vertex (array/nth adj.next_vertex (array/nth ev0 e))))) er))
+         ap1 (exact (map (fn [(e : int)] (let* [v (array/nth ev1 e)]
+           (if (int/ge v 0) (array/nth vp (array/nth adj.next_vertex (array/nth adj.next_vertex v))) 0))) er))]
+    {:vp vp :po po :pov pov :nv adj.next_vertex :pv adj.previous_vertex :eov adj.edge_of_vertex :ea ea :eb eb
+     :peo adj.point_edge_offsets :pe pe :pvo adj.point_vertex_offsets :pvx pvx :ev0 ev0 :ev1 ev1
+     :bc bd.count :bl bd.left :br bd.right :cum cum :ends ends :cornerpt cornerpt :cornersz cornersz
+     :e0f e0f :e0s e0s :e1f e1f :e1s e1s :ap0 ap0 :ap1 ap1
+     :points points :edges edges :vertices vertices :prims prims}))
+
+; Loop point weight beta for valence n.
+(defn sd_beta :context value [(n : int)]
+  (let* [nf (float n)
+         angle (/ (* 2.0 pi) nf)
+         c (fma 0.25 (cos angle) 0.375)]
+    (/ (- 0.625 (pow c 2.0)) nf)))
+; ---- stencil kernels (each stays under the 64-register packed limit) ----
+; Point class: type 0 regular, 1 boundary corner, 2 boundary edge, 3 isolated.
+(defn sd_ptype :context value
+  [(bc : (array int)) (pn : (array int)) (pf : (array int)) (bmode : int) (o : int)]
+  (cond (int/eq (array/nth bc o) 2) (if (and (int/eq bmode 2) (int/eq (array/nth pf o) 1)) 1 2)
+        (or (int/eq (array/nth pn o) 0) (int/eq (array/nth pf o) 0)) 3
+        :else 0))
+(defn sd_pcount :context value
+  [(ptype : (array int)) (pn : (array int)) (pfan : (array int)) (scheme : int) (o : int)]
+  (let* [ty (array/nth ptype o)]
+    (cond (int/eq scheme 2) 1
+          (int/eq ty 2) 3
+          (int/gt ty 0) 1
+          (int/eq scheme 1) (int/add 1 (array/nth pn o))
+          :else (int/add 1 (int/add (int/mul 2 (array/nth pn o)) (array/nth pfan o))))))
+(defn sd_ps :context value
+  [(ptype : (array int)) (pn : (array int)) (pe : (array int)) (pc : (array int))
+   (ends : (array int)) (cornerpt : (array int)) (bl : (array int)) (br : (array int))
+   (scheme : int) (o : int) (k : int)]
+  (let* [n (array/nth pn o)]
+    (cond
+      (int/eq k 0) o
+      (int/eq (array/nth ptype o) 2) (if (int/eq k 1) (array/nth bl o) (array/nth br o))
+      (int/eq scheme 1)
+        (let* [at (int/add (array/nth pe o) (int/mul 2 (int/sub k 1))) a (array/nth ends at)]
+          (if (int/eq a o) (array/nth ends (int/add at 1)) a))
+      (int/le k (int/mul 2 n)) (array/nth ends (int/add (array/nth pe o) (int/sub k 1)))
+      :else (array/nth cornerpt (int/add (array/nth pc o) (int/sub k (int/add 1 (int/mul 2 n))))))))
+(defn sd_pw :context value
+  [(ptype : (array int)) (pn : (array int)) (pprod : (array float)) (pc : (array int))
+   (cornersz : (array int)) (scheme : int) (o : int) (k : int)]
+  (let* [ty (array/nth ptype o) n (array/nth pn o) nf (float n)]
+    (cond
+      (int/eq scheme 2) 1.0
+      (int/eq ty 2) (if (int/eq k 0) 0.75 0.125)
+      (int/gt ty 0) 1.0
+      (int/eq scheme 1) (if (int/eq k 0) (fma (- 0.0 nf) (sd_beta n) 1.0) (sd_beta n))
+      (int/eq k 0) (/ (- nf 3.0) nf)
+      (int/le k (int/mul 2 n)) (/ 1.0 (* nf nf))
+      :else (/ 1.0 (* (array/nth pprod o)
+                      (float (array/nth cornersz (int/add (array/nth pc o) (int/sub k (int/add 1 (int/mul 2 n)))))))))))
+; Edge class.
+(defn sd_ecount :context value [(eint : (array int)) (e0s : (array int)) (e1s : (array int)) (scheme : int) (e : int)]
+  (cond (int/eq scheme 2) 2
+        (int/eq (array/nth eint e) 0) 2
+        (int/eq scheme 1) 4
+        :else (int/add 2 (int/add (array/nth e0s e) (array/nth e1s e)))))
+; Face weight of an interior edge point (native face_weight).
+(defn sd_efw :context value [(tri : int) (s0 : int) (s1 : int)]
+  (if (int/eq tri 0) 0.25
+    (* 0.5 (+ (if (int/eq s0 3) 0.470 0.25) (if (int/eq s1 3) 0.470 0.25)))))
+(defn sd_es :context value
+  [(ea : (array int)) (eb : (array int)) (vp : (array int)) (e0f : (array int)) (e1f : (array int))
+   (e0s : (array int)) (ap0 : (array int)) (ap1 : (array int)) (scheme : int) (e : int) (k : int)]
+  (let* [j (int/sub k 2) s0 (array/nth e0s e)]
+    (cond (int/eq k 0) (array/nth ea e)
+          (int/eq k 1) (array/nth eb e)
+          (int/eq scheme 1) (if (int/eq k 2) (array/nth ap0 e) (array/nth ap1 e))
+          (int/lt j s0) (array/nth vp (int/add (array/nth e0f e) j))
+          :else (array/nth vp (int/add (array/nth e1f e) (int/sub j s0))))))
+(defn sd_ew :context value
+  [(eint : (array int)) (efw : (array float)) (e0s : (array int)) (e1s : (array int)) (scheme : int) (e : int) (k : int)]
+  (let* [fw (array/nth efw e) j (int/sub k 2)]
+    (cond (int/eq scheme 2) 0.5
+          (int/eq (array/nth eint e) 0) 0.5
+          (int/eq scheme 1) (if (int/lt k 2) 0.375 0.125)
+          (int/lt k 2) (* 0.5 (- 1.0 (* 2.0 fw)))
+          (int/lt j (array/nth e0s e)) (/ fw (float (array/nth e0s e)))
+          :else (/ fw (float (array/nth e1s e))))))
+; Face class.
+(defn sd_fs :context value [(vp : (array int)) (po : (array int)) (f : int) (k : int)]
+  (array/nth vp (int/add (array/nth po f) k)))
+(defn sd_fw :context value [(po : (array int)) (f : int)] (/ 1.0 (float (sd_fsize po f))))
+
+; Local term index of every slot of a class given its counts.
+(defn sd_slots :context value [(counts : (array int))]
+  (let* [offsets (array/scan_sum counts)
+         total (array/nth offsets (array/count counts))
+         owner (sd_owners offsets total)
+         local (exact (map (fn [(s : int) (o : int)] (int/sub s (array/nth offsets o))) (array/range total :type int) owner))]
+    {:owner owner :local local}))
+
+; The stencil CSR of all output points: points, then edges, then (Catmull-Clark/Bilinear) faces.
+(defn sd_stencil :context value
+  [(tp : {:vp (array int) :po (array int) :ea (array int) :eb (array int) :peo (array int) :pvo (array int)
+          :ev1 (array int) :bc (array int) :bl (array int) :br (array int) :cum (array int) :ends (array int)
+          :cornerpt (array int) :cornersz (array int) :e0f (array int) :e0s (array int) :e1f (array int)
+          :e1s (array int) :ap0 (array int) :ap1 (array int) :points int :edges int :prims int})
+   (scheme : int) (bmode : int) (tri : int)]
+  (let* [points tp.points edges tp.edges prims tp.prims
+         pr (array/range points :type int)
+         pn (exact (map (fn [(o : int)] (int/sub (array/nth tp.peo (int/add o 1)) (array/nth tp.peo o))) pr))
+         pf (exact (map (fn [(o : int)] (int/sub (array/nth tp.pvo (int/add o 1)) (array/nth tp.pvo o))) pr))
+         ptype (exact (map (fn [(o : int)] (sd_ptype tp.bc pn pf bmode o)) pr))
+         pfan (exact (map (fn [(o : int)] (int/sub (array/nth tp.cum (array/nth tp.pvo (int/add o 1)))
+                                                   (array/nth tp.cum (array/nth tp.pvo o)))) pr))
+         pe (exact (map (fn [(o : int)] (int/mul 2 (array/nth tp.peo o))) pr))
+         pc (exact (map (fn [(o : int)] (array/nth tp.cum (array/nth tp.pvo o))) pr))
+         pprod (exact (map (fn [(n : int) (f : int)] (* (float n) (float f))) pn pf))
+         er (array/range edges :type int)
+         eint (exact (map (fn [(e : int)] (if (int/ge (array/nth tp.ev1 e) 0) 1 0)) er))
+         efw (exact (map (fn [(s0 : int) (s1 : int)] (sd_efw tri s0 s1)) tp.e0s tp.e1s))
+         pcount (exact (map (fn [(o : int)] (sd_pcount ptype pn pfan scheme o)) pr))
+         ecount (exact (map (fn [(e : int)] (sd_ecount eint tp.e0s tp.e1s scheme e)) er))
+         fcount (if (int/eq scheme 1) (array/int 0 0)
+                  (exact (map (fn [(f : int)] (sd_fsize tp.po f)) (array/range prims :type int))))
+         ps (sd_slots pcount) es (sd_slots ecount) fs (sd_slots fcount)
+         psrc (exact (map (fn [(o : int) (k : int)]
+                (sd_ps ptype pn pe pc tp.ends tp.cornerpt tp.bl tp.br scheme o k)) ps.owner ps.local))
+         pwgt (exact (map (fn [(o : int) (k : int)] (sd_pw ptype pn pprod pc tp.cornersz scheme o k)) ps.owner ps.local))
+         esrc (exact (map (fn [(e : int) (k : int)]
+                (sd_es tp.ea tp.eb tp.vp tp.e0f tp.e1f tp.e0s tp.ap0 tp.ap1 scheme e k)) es.owner es.local))
+         ewgt (exact (map (fn [(e : int) (k : int)] (sd_ew eint efw tp.e0s tp.e1s scheme e k)) es.owner es.local))
+         fsrc (exact (map (fn [(f : int) (k : int)] (sd_fs tp.vp tp.po f k)) fs.owner fs.local))
+         fwgt (exact (map (fn [(f : int)] (sd_fw tp.po f)) fs.owner))
+         counts (array/concat (array/concat pcount ecount) fcount)]
+    {:offsets (array/scan_sum counts)
+     :sources (array/concat (array/concat psrc esrc) fsrc)
+     :weights (array/concat (array/concat pwgt ewgt) fwgt)
+     :rep (array/concat (array/concat pr tp.ea)
+            (exact (map (fn [(f : int)] (array/nth tp.vp (array/nth tp.po f))) (array/range (array/count fcount) :type int))))}))
+
+; Output corners (point ids): Catmull-Clark/Bilinear make four quads per corner, Loop four triangles per triangle.
+(defn sd_out_cc :context value
+  [(vp : (array int)) (pov : (array int)) (eov : (array int)) (pv : (array int)) (points : int) (edges : int) (i : int)]
+  (let* [v (int/div i 4) s (int/mod i 4)]
+    (cond (int/eq s 0) (array/nth vp v)
+          (int/eq s 1) (int/add points (array/nth eov v))
+          (int/eq s 2) (int/add (int/add points edges) (array/nth pov v))
+          :else (int/add points (array/nth eov (array/nth pv v))))))
+(defn sd_out_loop :context value
+  [(vp : (array int)) (po : (array int)) (eov : (array int)) (points : int) (i : int)]
+  (let* [f (int/div i 12) s (int/mod i 12) first (array/nth po f)
+         code (int/and (int/shr 47725527896 (int/mul 3 s)) 7)]
+    (cond (int/lt code 3) (array/nth vp (int/add first code))
+          (int/eq code 3) (int/add points (array/nth eov first))
+          (int/eq code 4) (int/add points (array/nth eov (int/add first 1)))
+          :else (int/add points (array/nth eov (int/add first 2))))))
+
+; ---- creases ----
+; Flagged edge slots at every point: count, first and last neighbour (the point itself when none).
+(defn sd_pick :context value
+  [(peo : (array int)) (pe : (array int)) (ea : (array int)) (eb : (array int)) (flag : (array int)) (points : int)]
+  (let* [slots (array/nth peo points)
+         owner (sd_owners peo slots)
+         sr (array/range slots :type int)
+         prefix (array/scan_sum flag)
+         rank (exact (map (fn [(s : int) (o : int)] (int/sub (array/nth prefix s) (array/nth prefix (array/nth peo o)))) sr owner))
+         cnt (array/scatter_add owner flag (int/add points 1))
+         neighbor (exact (map (fn [(s : int) (o : int)]
+           (let* [e (array/nth pe s)] (if (int/eq (array/nth ea e) o) (array/nth eb e) (array/nth ea e)))) sr owner))
+         plus (exact (map (fn [(n : int)] (int/add n 1)) neighbor))
+         key0 (exact (map (fn [(f : int) (r : int) (o : int)] (if (and (int/eq f 1) (int/eq r 0)) o points)) flag rank owner))
+         keyl (exact (map (fn [(f : int) (r : int) (o : int)]
+           (if (and (int/eq f 1) (int/eq r (int/sub (array/nth cnt o) 1))) o points)) flag rank owner))
+         first (array/scatter_add key0 plus (int/add points 1))
+         last (array/scatter_add keyl plus (int/add points 1))
+         pr (array/range points :type int)]
+    {:count (exact (map (fn [(p : int)] (array/nth cnt p)) pr))
+     :first (exact (map (fn [(p : int)] (if (int/eq (array/nth cnt p) 0) p (int/sub (array/nth first p) 1))) pr))
+     :last (exact (map (fn [(p : int)] (if (int/eq (array/nth cnt p) 0) p (int/sub (array/nth last p) 1))) pr))}))
+(defn sd_clamp01 :context value [(x : float)] (if (<= x 0.0) 0.0 (if (>= x 1.0) 1.0 x)))
+(defn sd_kind :context value [(corner : float) (count : int)]
+  (if (or (> corner 0.0) (int/gt count 2)) 2 (if (int/eq count 2) 1 0)))
+; Chaikin child sharpness of a (point, edge) slot.
+(defn sd_chaikin :context value [(parent : float) (count : int) (total : float)]
+  (cond (<= parent 0.0) 0.0
+        (int/le count 1) (max 0.0 (- parent 1.0))
+        :else (let* [others (/ (- total parent) (float (int/sub count 1)))]
+                (max 0.0 (- (fma 0.75 parent (* 0.25 others)) 1.0)))))
+; Crease plan: edge sharpness, child sharpness (two per edge, by endpoint), vertex classification before and
+; after the pass, transition factors and edge factors.
+(defn sd_cplan :context value
+  [(tp : {:ea (array int) :eb (array int) :peo (array int) :pe (array int) :ev0 (array int) :ev1 (array int)
+          :pov (array int) :points int :edges int})
+   (vw : (array float)) (pw : (array float)) (cw : (array float)) (override : float) (method : int)]
+  (let* [points tp.points edges tp.edges
+         er (array/range edges :type int)
+         sharp (exact (map (fn [(e : int)]
+           (if (>= override 0.0) override
+             (let* [v0 (array/nth tp.ev0 e) v1 (array/nth tp.ev1 e)]
+               (max (max (array/nth vw v0) (if (int/ge v1 0) (array/nth vw v1) 0.0))
+                    (max (array/nth pw (array/nth tp.pov v0)) (if (int/ge v1 0) (array/nth pw (array/nth tp.pov v1)) 0.0))))))
+           er))
+         slots (array/nth tp.peo points)
+         sr (array/range slots :type int)
+         owner (sd_owners tp.peo slots)
+         se (exact (map (fn [(s : int)] (array/nth tp.pe s)) sr))
+         side (exact (map (fn [(e : int) (o : int)] (if (int/eq (array/nth tp.ea e) o) 0 1)) se owner))
+         psl (exact (map (fn [(e : int)] (array/nth sharp e)) se))
+         pflag (exact (map (fn [(w : float)] (if (> w 0.0) 1 0)) psl))
+         tsum (array/segment_sum (exact (map (fn [(w : float)] (if (> w 0.0) w 0.0)) psl)) tp.peo)
+         tcount (array/segment_sum pflag tp.peo)
+         csl (if (int/eq method 1)
+               (exact (map (fn [(w : float) (o : int)] (sd_chaikin w (array/nth tcount o) (array/nth tsum o))) psl owner))
+               (exact (map (fn [(w : float)] (max 0.0 (- w 1.0))) psl)))
+         cflag (exact (map (fn [(w : float)] (if (> w 0.0) 1 0)) csl))
+         child (array/scatter_add (exact (map (fn [(e : int) (sd : int)] (int/add (int/mul 2 e) sd)) se side)) csl (int/mul 2 edges))
+         pp (sd_pick tp.peo tp.pe tp.ea tp.eb pflag points)
+         cp (sd_pick tp.peo tp.pe tp.ea tp.eb cflag points)
+         pr (array/range points :type int)
+         pk (exact (map (fn [(p : int)] (sd_kind (array/nth cw p) (array/nth pp.count p))) pr))
+         ck (exact (map (fn [(p : int)] (sd_kind (max 0.0 (- (array/nth cw p) 1.0)) (array/nth cp.count p))) pr))
+         tval (if (int/eq method 1)
+                (exact (map (fn [(w : float) (c : float)] (if (and (> w 0.0) (<= c 0.0)) w 0.0)) psl csl))
+                (exact (map (fn [(w : float)] (if (and (> w 0.0) (<= w 1.0)) w 0.0)) psl)))
+         tflag (if (int/eq method 1)
+                 (exact (map (fn [(w : float) (c : float)] (if (and (> w 0.0) (<= c 0.0)) 1 0)) psl csl))
+                 (exact (map (fn [(w : float)] (if (and (> w 0.0) (<= w 1.0)) 1 0)) psl)))
+         ttotal (array/segment_sum tval tp.peo)
+         tnum (array/segment_sum tflag tp.peo)
+         factor (exact (map (fn [(p : int)]
+           (let* [pc (array/nth cw p) cc (max 0.0 (- (array/nth cw p) 1.0))
+                  lead (and (> pc 0.0) (<= cc 0.0))
+                  num (int/add (array/nth tnum p) (if lead 1 0))]
+             (if (int/eq num 0) 0.0
+               (sd_clamp01 (/ (+ (array/nth ttotal p) (if lead pc 0.0)) (float num))))))
+           pr))
+         ef (exact (map (fn [(e : int)]
+           (let* [parent (array/nth sharp e)]
+             (if (and (int/eq method 1) (and (and (> parent 0.0) (< parent 1.0))
+                       (and (> (array/nth child (int/mul 2 e)) 0.0) (> (array/nth child (int/add (int/mul 2 e) 1)) 0.0))))
+               1.0 (sd_clamp01 parent))))
+           er))]
+    {:sharp sharp :child child :pk pk :ck ck :pa pp.first :pb pp.last :ca cp.first :cb cp.last :factor factor :ef ef}))
+(defn sd_av :context value [(smooth : float) (src : (array float)) (kind : int) (p : int) (a : int) (b : int)]
+  (cond (int/eq kind 2) (array/nth src p)
+        (int/eq kind 1) (fma (array/nth src p) 0.75 (* (+ (array/nth src a) (array/nth src b)) 0.125))
+        :else smooth))
+(defn sd_adjust_points :context value
+  [(smooth : (array float)) (src : (array float)) (pk : (array int)) (ck : (array int))
+   (pa : (array int)) (pb : (array int)) (ca : (array int)) (cb : (array int)) (factor : (array float))]
+  (exact (map (fn [(p : int) (s : float)]
+    (let* [parent (sd_av s src (array/nth pk p) p (array/nth pa p) (array/nth pb p))]
+      (if (int/eq (array/nth pk p) (array/nth ck p)) parent
+        (let* [child (sd_av s src (array/nth ck p) p (array/nth ca p) (array/nth cb p))]
+          (fma (- parent child) (array/nth factor p) child)))))
+    (array/range (array/count smooth) :type int) smooth)))
+(defn sd_adjust_edges :context value
+  [(smooth : (array float)) (src : (array float)) (ea : (array int)) (eb : (array int)) (ef : (array float))]
+  (exact (map (fn [(e : int) (s : float)]
+    (let* [f (array/nth ef e)]
+      (if (= f 0.0) s
+        (fma (- (* (+ (array/nth src (array/nth ea e)) (array/nth src (array/nth eb e))) 0.5) s) f s))))
+    (array/range (array/count smooth) :type int) smooth)))
+; Creased point values for one plane: vertex points, edge points, then the face points untouched.
+(defn sd_apply :context value
+  [(smooth : (array float)) (src : (array float))
+   (cp : {:pk (array int) :ck (array int) :pa (array int) :pb (array int) :ca (array int) :cb (array int)
+          :factor (array float) :ef (array float)})
+   (ea : (array int)) (eb : (array int)) (points : int) (edges : int)]
+  (let* [outs (array/count smooth)
+         used (int/add points edges)
+         head (array/slice smooth 0 points)
+         mids (array/slice smooth points edges)
+         tail (array/slice smooth used (int/sub outs used))
+         pk cp.pk ck cp.ck pa cp.pa pb cp.pb ca cp.ca cb cp.cb factor cp.factor ef cp.ef]
+    (array/concat
+      (array/concat
+        (sd_adjust_points head src pk ck pa pb ca cb factor)
+        (sd_adjust_edges mids src ea eb ef))
+      tail)))
+
+; ---- output element maps (vertex kind 0 corner copy, 1 edge point, 2 face point) ----
+(defn sd_vk :context value [(scheme : int) (i : int)]
+  (if (int/eq scheme 1)
+    (int/sub 1 (int/and (int/shr 73 (int/mod i 12)) 1))
+    (let* [s (int/mod i 4)] (cond (int/eq s 0) 0 (int/eq s 2) 2 :else 1))))
+; Digit tables packed two bits per Loop slot (b and e are stored plus one).
+(defn sd_loop_a :context value [(s : int)] (int/and (int/shr 9544032 (int/mul 2 s)) 3))
+(defn sd_loop_b :context value [(s : int)] (int/sub (int/and (int/shr 8080152 (int/mul 2 s)) 3) 1))
+(defn sd_loop_e :context value [(s : int)] (int/sub (int/and (int/shr 144561 (int/mul 2 s)) 3) 1))
+(defn sd_va :context value [(pv : (array int)) (po : (array int)) (scheme : int) (i : int)]
+  (if (int/eq scheme 1)
+    (int/add (array/nth po (int/div i 12)) (sd_loop_a (int/mod i 12)))
+    (let* [v (int/div i 4) s (int/mod i 4)]
+      (cond (int/lt s 2) v (int/eq s 3) (array/nth pv v) :else -1))))
+(defn sd_vb :context value [(nv : (array int)) (po : (array int)) (scheme : int) (i : int)]
+  (if (int/eq scheme 1)
+    (let* [o (sd_loop_b (int/mod i 12))] (if (int/lt o 0) -1 (int/add (array/nth po (int/div i 12)) o)))
+    (let* [v (int/div i 4) s (int/mod i 4)]
+      (cond (int/eq s 1) (array/nth nv v) (int/eq s 3) v :else -1))))
+(defn sd_ve :context value [(eov : (array int)) (pv : (array int)) (po : (array int)) (scheme : int) (i : int)]
+  (if (int/eq scheme 1)
+    (let* [o (sd_loop_e (int/mod i 12))] (if (int/lt o 0) -1 (array/nth eov (int/add (array/nth po (int/div i 12)) o))))
+    (let* [v (int/div i 4) s (int/mod i 4)]
+      (cond (int/eq s 0) (array/nth eov v) (int/eq s 3) (array/nth eov (array/nth pv v)) :else -1))))
+(defn sd_omap :context value
+  [(tp : {:nv (array int) :pv (array int) :po (array int) :pov (array int) :eov (array int) :vertices int :prims int})
+   (scheme : int)]
+  (let* [corners (if (int/eq scheme 1) (int/mul 12 tp.prims) (int/mul 4 tp.vertices))
+         cr (array/range corners :type int)
+         vk (exact (map (fn [(i : int)] (sd_vk scheme i)) cr))
+         va (exact (map (fn [(i : int)] (sd_va tp.pv tp.po scheme i)) cr))
+         vb (exact (map (fn [(i : int)] (sd_vb tp.nv tp.po scheme i)) cr))
+         ve (exact (map (fn [(i : int)] (sd_ve tp.eov tp.pv tp.po scheme i)) cr))
+         vprim (exact (map (fn [(i : int)] (if (int/eq scheme 1) -1 (array/nth tp.pov (int/div i 4)))) cr))
+         outprims (if (int/eq scheme 1) (int/mul 4 tp.prims) tp.vertices)
+         psrc (exact (map (fn [(i : int)] (if (int/eq scheme 1) (int/div i 4) (array/nth tp.pov i))) (array/range outprims :type int)))
+         repa (exact (map (fn [(k : int) (a : int) (b : int)]
+           (cond (int/eq k 0) a (int/eq k 1) (if (int/lt a b) a b) :else -1)) vk va vb))
+         repv (exact (map (fn [(r : int) (f : int)] (if (int/ge r 0) r (array/nth tp.po (if (int/lt f 0) 0 f)))) repa vprim))]
+    {:vk vk :va va :vb vb :ve ve :vprim vprim :psrc psrc :repv repv}))
+
+; ---- group masks over the output elements ----
+(defn sd_mask_point :context value
+  [(gm : (array int)) (ea : (array int)) (eb : (array int)) (po : (array int)) (vp : (array int)) (scheme : int)]
+  (let* [edges (array/count ea)
+         faces (if (int/eq scheme 1) (array/int 0 0)
+                 (array/segment_min (exact (map (fn [(c : int)] (array/nth gm (array/nth vp c))) (array/range (array/count vp) :type int))) po))]
+    (array/concat (array/concat gm
+      (exact (map (fn [(e : int)] (if (and (int/eq (array/nth gm (array/nth ea e)) 1) (int/eq (array/nth gm (array/nth eb e)) 1)) 1 0))
+        (array/range edges :type int)))) faces)))
+(defn sd_mask_vertex :context value
+  [(gm : (array int)) (po : (array int)) (vk : (array int)) (va : (array int)) (vb : (array int)) (vprim : (array int))]
+  (let* [fm (array/segment_min gm po)
+         partial (exact (map (fn [(k : int) (a : int) (b : int)]
+           (cond (int/eq k 0) (array/nth gm a)
+                 (int/eq k 1) (if (and (int/eq (array/nth gm a) 1) (int/eq (array/nth gm b) 1)) 1 0)
+                 :else -1)) vk va vb))]
+    (exact (map (fn [(x : int) (f : int)] (if (int/ge x 0) x (array/nth fm f))) partial vprim))))
+(defn sd_ranks :context value [(order : {:ordered bool :indices (array int)}) (total : int)]
+  (array/scatter_add order.indices
+    (exact (map (fn [(j : int)] (int/add j 1)) (array/range (array/count order.indices) :type int))) total))
+; One group of the source carried to the output: mask over the output elements, sot = source element each output
+; element copies (-1: none), which decides the order of an ordered group.
+(defn sd_gset :context sop
+  [(acc : geometry) (source : geometry) (owner : text) (name : text) (mask : (array int)) (sot : (array int))]
+  (let* [gm (sop/group source :name name :owner owner)
+         order (sop/group_order source :name name :owner owner)
+         total (array/count gm)
+         ranks (sd_ranks order total)
+         members (array/compact mask)
+         keys (exact (map (fn [(tt : int)]
+           (let* [s (array/nth sot tt)]
+             (if (and (int/ge s 0) (int/gt (array/nth ranks (if (int/ge s 0) s 0)) 0))
+               (int/sub (array/nth ranks s) 1) (int/add total tt)))) members))
+         sorted (exact (map (fn [(j : int)] (array/nth members j)) (array/grade keys)))]
+    (sop/with_group acc (exact mask) :name name :owner owner :order {:ordered order.ordered :indices sorted})))
+(defn sd_group_p :context sop
+  [(acc : geometry) (source : geometry) (name : text)
+   (tp : {:ea (array int) :eb (array int) :po (array int) :vp (array int) :points int}) (scheme : int)]
+  (let* [gm (sop/group source :name name :owner "point")
+         mask (sd_mask_point gm tp.ea tp.eb tp.po tp.vp scheme)]
+    (sd_gset acc source "point" name mask
+      (exact (map (fn [(o : int)] (if (int/lt o tp.points) o -1)) (array/range (array/count mask) :type int))))))
+(defn sd_group_v :context sop
+  [(acc : geometry) (source : geometry) (name : text) (tp : {:po (array int)})
+   (om : {:vk (array int) :va (array int) :vb (array int) :vprim (array int)})]
+  (let* [gm (sop/group source :name name :owner "vertex")]
+    (sd_gset acc source "vertex" name (sd_mask_vertex gm tp.po om.vk om.va om.vb om.vprim)
+      (exact (map (fn [(k : int) (a : int)] (if (int/eq k 0) a -1)) om.vk om.va)))))
+(defn sd_group_f :context sop
+  [(acc : geometry) (source : geometry) (name : text) (om : {:psrc (array int)})]
+  (let* [gm (sop/group source :name name :owner "primitive")]
+    (sd_gset acc source "primitive" name (exact (map (fn [(s : int)] (array/nth gm s)) om.psrc)) om.psrc)))
+
+; One refinement pass up to the carried attributes; groups follow in sd_finish (a macro, so the group fold
+; is expanded in the node body).
+(defn sd_stage :context sop
+  [(g : geometry) (scheme : int) (bmode : int) (tri : int) (method : int) (ov : float) (genres : bool)]
+  (let* [tp (sd_tables g)
+         points tp.points edges tp.edges
+         outputs (if (int/eq scheme 1) (int/add points edges) (int/add (int/add points edges) tp.prims))
+         st (sd_stencil tp scheme bmode tri)
+         om (sd_omap tp scheme)
+         has_vw (sop/has_attr g "creaseweight" :owner "vertex")
+         has_pw (sop/has_attr g "creaseweight" :owner "primitive")
+         has_cw (sop/has_attr g "cornerweight" :owner "point")
+         vw (if has_vw (sop/attr g "creaseweight" :owner "vertex" :type float) (array/float tp.vertices))
+         pw (if has_pw (sop/attr g "creaseweight" :owner "primitive" :type float) (array/float tp.prims))
+         cw (if has_cw (sop/attr g "cornerweight" :owner "point" :type float) (array/float points))
+         cplan (sd_cplan tp vw pw cw ov method)
+         pos (sop/attr g "P")
+         sx (sd_sum st.offsets st.sources st.weights (sd_xs pos))
+         sy (sd_sum st.offsets st.sources st.weights (sd_ys pos))
+         sz (sd_sum st.offsets st.sources st.weights (sd_zs pos))
+         x (sd_apply sx (sd_xs pos) cplan tp.ea tp.eb points edges)
+         y (sd_apply sy (sd_ys pos) cplan tp.ea tp.eb points edges)
+         z (sd_apply sz (sd_zs pos) cplan tp.ea tp.eb points edges)
+         corners (if (int/eq scheme 1) (int/mul 12 tp.prims) (int/mul 4 tp.vertices))
+         sides (if (int/eq scheme 1) 3 4)
+         faces (int/div corners sides)
+         vpo (if (int/eq scheme 1)
+               (exact (map (fn [(i : int)] (sd_out_loop tp.vp tp.po tp.eov points i)) (array/range corners :type int)))
+               (exact (map (fn [(i : int)] (sd_out_cc tp.vp tp.pov tp.eov tp.pv points edges i)) (array/range corners :type int))))
+         poo (exact (map (fn [(f : int)] (int/mul f sides)) (array/range (int/add faces 1) :type int)))
+         mesh (sop/mesh :points (array/vec3 outputs) :vertex_points vpo :primitive_offsets poo
+                :kinds (array/int faces 0))
+         tadj (sop/adjacency mesh)
+         tedges (sop/count mesh :edges)
+         leaving (exact (map (fn [(te : int)] (if (int/lt te 0) tedges te)) tadj.edge_of_vertex))
+         ancestor (exact (map (fn [(e : int)] (int/add e 1)) om.ve))
+         ecount (array/scatter_add leaving (array/int corners 1) (int/add tedges 1))
+         esum (array/scatter_add leaving ancestor (int/add tedges 1))
+         evalues (exact (map (fn [(e : int)]
+             (int/sub (int/div (array/nth esum e) (if (int/gt (array/nth ecount e) 0) (array/nth ecount e) 1)) 1))
+           (array/range tedges :type int)))
+         remapped (sop/remap g mesh :points st.rep :vertices om.repv :primitives om.psrc
+                    :edges {:offsets (array/range (int/add tedges 1) :type int) :values evalues})
+         with_p (sop/with_attr remapped "P" (sd_join3 x y z))
+         no_pw (sop/delete_attrs with_p :vertex "creaseweight" :primitive "creaseweight")]
+    no_pw))
+(defmacro sd_finish [source stage scheme]
+  `(let* [sdf_tp# (sd_tables ~source)
+          sdf_om# (sd_omap sdf_tp# ~scheme)
+          sdf_pn# (sop/group_names ~source "*" :owner "point")
+          sdf_vn# (sop/group_names ~source "*" :owner "vertex")
+          sdf_fn# (sop/group_names ~source "*" :owner "primitive")
+          sdf_p# (fold [sdf_a# ~stage] [sdf_i# (array/range (array/count sdf_pn#) :type int)]
+                   (sd_group_p sdf_a# ~source (array/nth sdf_pn# sdf_i#) sdf_tp# ~scheme))
+          sdf_v# (fold [sdf_b# sdf_p#] [sdf_j# (array/range (array/count sdf_vn#) :type int)]
+                   (sd_group_v sdf_b# ~source (array/nth sdf_vn# sdf_j#) sdf_tp# sdf_om#))]
+     (fold [sdf_c# sdf_v#] [sdf_k# (array/range (array/count sdf_fn#) :type int)]
+       (sd_group_f sdf_c# ~source (array/nth sdf_fn# sdf_k#) sdf_om#))))
+
+(defnode sop/subdivide :label "Subdivide" :category ["Topology"]
+  [(input : geometry)
+   (creases : geometry :required false)
+   (group : text "" :label "Primitive group")
+   (scheme : text "Catmull-Clark" :label "Scheme" :choices ["Catmull-Clark" "Loop" "Bilinear"])
+   (iterations : int 1 :label "Depth" :min 1 :max 6 :hard_min 1)
+   (cracks : text "Do not close" :label "Close cracks" :choices ["Do not close" "Pull, no edge division" "Pull, divide edges" "Pull, triangulate" "Stitch, no edge division" "Stitch, divide edges" "Stitch, triangulate"])
+   (crack_bias : float 0.5 :label "Pull bias" :folder ["Cracks"] :min 0 :max 1)
+   (consistent_topology : bool false :label "Consistent topology" :folder ["Cracks"])
+   (crease_group : text "" :label "Crease group" :folder ["Creases"])
+   (crease_weight_mode : text "Explicit" :label "Crease weight mode" :folder ["Creases"] :choices ["Explicit" "Auto"])
+   (crease_weight : float 1.0 :label "Crease weight" :folder ["Creases"] :min 0 :max 10 :hard_min 0)
+   (generate_resulting_creases : bool false :label "Generate resulting creases" :folder ["Creases"])
+   (resulting_crease_group : text "" :label "Resulting crease group" :folder ["Creases"])
+   (hole_group : text "subdivision_hole" :label "Hole group" :folder ["Holes"])
+   (remove_holes : bool false :label "Remove holes" :folder ["Holes"])
+   (boundary_interpolation : text "Edge and corner" :label "Point boundaries" :folder ["Interpolation"] :choices ["None" "Edge only" "Edge and corner"])
+   (face_varying_interpolation : text "Boundaries" :label "Vertex boundaries" :folder ["Interpolation"] :choices ["None" "Corners only" "Corners plus 1" "Corners plus 2" "Boundaries" "All"])
+   (triangle_policy : text "Catmull-Clark" :label "Triangles" :folder ["Interpolation"] :choices ["Catmull-Clark" "Smooth"])
+   (creasing_method : text "Uniform" :label "Creasing method" :folder ["Creases"] :choices ["Uniform" "Chaikin"])
+   (treat_curves_as_independent : bool false :label "Treat curves independently")
+   (recompute_point_normals : bool false :label "Recompute point normals")]
+  (let* [scheme_i (cond (equal? scheme "Catmull-Clark") 0 (equal? scheme "Loop") 1 :else 2)
+         bmode (cond (equal? boundary_interpolation "None") 0 (equal? boundary_interpolation "Edge only") 1 :else 2)
+         tri (if (equal? triangle_policy "Smooth") 1 0)
+         method (if (equal? creasing_method "Chaikin") 1 0)
+         explicit (equal? crease_weight_mode "Explicit")]
+    (fold [acc input] [i (array/range iterations :type int)]
+      (sd_finish acc
+        (sd_stage acc scheme_i bmode tri method
+          (if (and explicit (int/eq i 0)) crease_weight -1.0)
+          (or generate_resulting_creases (int/lt i (int/sub iterations 1))))
+        scheme_i))))
