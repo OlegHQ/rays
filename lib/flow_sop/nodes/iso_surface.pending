@@ -132,9 +132,9 @@
                    (max 0.0 (min 1.0 (/ (- iso (array/nth samples il)) denominator))))))
                left_index right_index))
              positions (exact (map (fn [(il : int) (ir : int) (a : float)]
-               (let* [lx (fma (float (int/mod il nx)) dx min_x) ly (fma (float (int/mod (int/div il nx) ny)) dy min_y)
+               (let* [lx (+ min_x (* (float (int/mod il nx)) dx)) ly (+ min_y (* (float (int/mod (int/div il nx) ny)) dy))
                       lz (fma (float (int/div il plane)) dz min_z)
-                      rx2 (fma (float (int/mod ir nx)) dx min_x) ry2 (fma (float (int/mod (int/div ir nx) ny)) dy min_y)
+                      rx2 (+ min_x (* (float (int/mod ir nx)) dx)) ry2 (+ min_y (* (float (int/mod (int/div ir nx) ny)) dy))
                       rz2 (fma (float (int/div ir plane)) dz min_z)]
                  [(fma (- rx2 lx) a lx) (fma (- ry2 ly) a ly) (fma (- rz2 lz) a lz)]))
                left_index right_index amount))

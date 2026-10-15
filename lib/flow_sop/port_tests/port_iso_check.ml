@@ -56,3 +56,28 @@ let () = if Sys.getenv_opt "PORT_ISO" <> None then at_exit (fun () ->
     | Error e, Error a -> Printf.printf "%-6s %-8s both error (%s / %s)\n%!" fname pname e a
     | Ok _, Error a -> Printf.printf "%-6s %-8s native ok, lisp error %s\n%!" fname pname a
     | Error e, Ok _ -> Printf.printf "%-6s %-8s native error %s, lisp ok\n%!" fname pname e) params) fields)
+
+(* PORT_ISO=bench main.exe nonexistent: 100^3 cells sphere (1,030,301 samples), native vs draft, best of 2. *)
+let () = if Sys.getenv_opt "PORT_ISO" = Some "bench" then at_exit (fun () ->
+  let node = List.find (fun (n : Port_gate.t) -> n.key = "iso_surface") (Port_gate.registered ()) in
+  let ctx = Port_gate.context ~dir:"lib/flow_sop/nodes" node [] in
+  let body = "(sop/iso_surface :field (fn [p] (- (length p) 1.3)) :resolution [100 100 100])" in
+  let text = Printf.sprintf "(workspace port (graph g :context sop %s))" body in
+  let lisp = match Flow.Syntax.parse text with Ok forms ->
+    (match Flow_sop.Catalog.check_workspace ~sources:ctx.Port_gate.sources ~ops:Flow_sop.Operators.all ctx.catalog forms with
+     | Some w, _ -> (match Flow_sop.Lower.of_checked ~factories:ctx.factories w with
+         | Ok l -> let g = List.hd l.graphs in Result.get_ok (Sop.Edit_graph.compile_node g.network.geometry ~node_id:(Option.get g.root))
+         | Error d -> failwith (Flow.Diagnostic.to_string d))
+     | _ -> failwith "check") | Error d -> failwith (Flow.Diagnostic.to_string d) in
+  let native = Lisp_sop.node body in
+  List.iter (fun domains ->
+    let time n = let best = ref infinity in
+      for _ = 1 to 2 do
+        let s = Result.get_ok (Sop.Session.create ~max_entries:4 ~max_payload_bytes:2_000_000_000) in
+        let c = Result.get_ok (Sop.Context.create ~domains ~grain:4096 ()) in
+        let t = Unix.gettimeofday () in
+        (match Sop.Session.cook s ~context:c n with Ok _ -> () | Error d -> prerr_endline ("cook error " ^ d.Sop.Diagnostic.code));
+        best := Float.min !best (Unix.gettimeofday () -. t);
+        Sop.Session.close s done; !best in
+    let tn = time native and tl = time lisp in
+    Printf.printf "bench domains %d: native %.3fs lisp %.3fs ratio %.2fx\n%!" domains tn tl (tl /. tn)) [1; 4])
