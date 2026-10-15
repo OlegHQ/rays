@@ -356,19 +356,29 @@ let reject_nonfinite name node =
           [Float.nan; Float.infinity; Float.neg_infinity]
     | _ -> ()) fields
 
+(* Randomize blends a sample into the existing attribute with a different multiply-add rounding
+   than native, a four-ULP port (port_attribute_randomize). A blend that cancels towards zero keeps
+   its absolute error at one ULP of the operands, which is many ULP of the result, so the
+   comparison also accepts 1e-14 absolute on these O(1) fixtures. *)
+let close_blend left right =
+  let near a b = a = b || (Float.is_finite a && Float.is_finite b && abs_float (a -. b) <= 1e-14) in
+  close_geometry ~ulps:4 left right
+  || compare_geometry (fun l r -> Array.length l = Array.length r && Array.for_all2 near l r) left right
+
 let same_node name ~typed ~catalog =
   reject_nonfinite name typed;
   reject_nonfinite name catalog;
   check (Node.parameter_key typed = Node.parameter_key catalog && Node.parameter_key typed <> "")
     (name ^ ": Lisp node and factory share the schema key");
   let one = cook 1 typed in
-  let ported_noise = Node.operation typed = "noise_displace" in
+  let ported_noise = List.mem (Node.operation typed) ["noise_displace"; "attribute_randomize"] in
   let four = cook 4 typed in
   check (if ported_noise then geometry_bytes one = geometry_bytes four else equal_geometry one four)
     (name ^ ": Lisp node at four domains cooks the same geometry");
   (* The port uses separately rounded arithmetic; only its native oracle has
      the approved four-ULP tolerance. Domain self-consistency stays bit-exact. *)
-  let equal_oracle = if ported_noise then close_geometry ~ulps:4 else equal_geometry in
+  let equal_oracle = if not ported_noise then equal_geometry
+    else if Node.operation typed = "attribute_randomize" then close_blend else close_geometry ~ulps:4 in
   List.iter (fun (what, geometry) -> check (equal_oracle one geometry)
     (name ^ ": " ^ what ^ " cooks the same geometry"))
     [ "factory at one domain", cook 1 catalog;
@@ -666,7 +676,7 @@ let run () =
          "b_x",Float_value b.x;"b_y",Float_value b.y;"b_z",Float_value b.z;
          "entries",Text_value "0.2\t0.3\t0.4\t1\n1.1\t1.2\t1.3\t2"] quat_source;
       let native = Rdk.Attribute_ops.randomize ~seed:(Rand.seed 0) ~owner ~name:"random" native_distribution quat_geometry |> Result.get_ok in
-      check (equal_geometry native (cook 1 typed)) "flat randomize distributions match native")
+      check (close_blend native (cook 1 typed)) "flat randomize distributions match native")
       [Rdk.Attribute.Point,"Point";Vertex,"Vertex";Primitive,"Primitive";Detail,"Detail"])
     distributions;
   same_cook "randomize custom text" ~typed:(Lisp_sop.node ~with_:["quat_source", (quat_source)] {|(sop/attribute_randomize (sop/ext_quat_source) :distribution "Custom discrete text")|})
@@ -786,7 +796,7 @@ let run () =
           ?seed_attribute:(if sampling = 0 then Some "seed_values" else None)
           ?fraction_attribute:(if use_fraction then Some fraction_attribute else None)
           ~minimum:(numeric dimension (-2.) (-2.) (-2.) (-2.)) ~maximum:(numeric dimension 2. 2. 2. 2.) native_distribution random_geometry |> Result.get_ok in
-        check (equal_geometry native (cook 1 typed)) "expanded randomize controls match native";
+        check (close_blend native (cook 1 typed)) "expanded randomize controls match native";
         check (Context.Dependencies.mem Context.Dependencies.Seed (Node.dependencies typed) = context_seed)
           "randomize declares only the active context seed dependency") [0;1;2]) random_operations) random_owners)) modes) random_kinds;
   let selection_source = Lisp_sop.node ~with_:["quat_source", (quat_source)] {|(-> (sop/group_range (sop/ext_quat_source) :name "partial" :end_ 0)
@@ -820,7 +830,7 @@ let run () =
       and maximum = if vector_limits then numeric dimension 1. 2. 3. 4. else numeric dimension 1. 1. 1. 1. in
       let native = Rdk.Attribute_ops.randomize ~element_selection ~seed:(Rand.seed 17) ~owner ~name:"random" ~minimum ~maximum
           (Rdk.Attribute_ops.Random_uniform {min=numeric dimension 0. 0. 0. 0.;max=numeric dimension 1. 1. 1. 1.}) selection_geometry |> Result.get_ok in
-      check (equal_geometry native (cook 1 typed)) "randomize selection and component limits match native") [false;true]) selectors) random_owners) random_kinds;
+      check (close_blend native (cook 1 typed)) "randomize selection and component limits match native") [false;true]) selectors) random_owners) random_kinds;
   List.iter (fun (owner,owner_label) ->
     let text = "low\t1\nhigh\\tvalue\t3" in
     let typed = sop ~inputs:[random_input] "attribute_randomize"
@@ -831,7 +841,7 @@ let run () =
        "fraction_attribute",Text_value "fraction1";"seed_attribute",Text_value "ignored";"context_seed",Bool_value true;"seed",Int_value 99] random_input;
     let native = Rdk.Attribute_ops.randomize ~seed:(Rand.seed 0) ~owner ~name:"random" ~fraction_attribute:"fraction1"
       (Rdk.Attribute_ops.Random_custom_discrete_text ["low",1.;"high\tvalue",3.]) random_geometry |> Result.get_ok in
-    check (equal_geometry native (cook 1 typed)) "randomize weighted text matches native";
+    check (close_blend native (cook 1 typed)) "randomize weighted text matches native";
     check (not (Context.Dependencies.mem Context.Dependencies.Seed (Node.dependencies typed))) "fraction text ignores context seed") random_owners;
   let session = Session.create ~max_entries:32 ~max_payload_bytes:2_000_000 |> Result.get_ok in
   let context seed = Context.create ~domains:1 ~seed () |> Result.get_ok in
@@ -937,7 +947,7 @@ let run () =
       ["name",Parameter.Text_value "P";"kind",Choice_value "Vector 3";"operation",Choice_value operation_label] selection_input;
     let native = Rdk.Attribute_ops.randomize ~seed:(Rand.seed 0) ~owner:Rdk.Attribute.Point ~name:"P" ~operation
       (Rdk.Attribute_ops.Random_uniform {min=Vec3 Vec3.zero;max=Vec3 (Vec3.create 1. 1. 1.)}) selection_geometry |> Result.get_ok in
-    check (equal_geometry native (cook 1 typed)) "randomize position writes match native") random_operations;
+    check (close_blend native (cook 1 typed)) "randomize position writes match native") random_operations;
   let noise_input = quat_source and noise_geometry = quat_geometry in
   let noise = Lisp_sop.node ~with_:["noise_input", (noise_input)] {|(sop/attribute_noise (sop/ext_noise_input))|} in
   same_cook "attribute noise defaults" ~typed:noise ~factory:Nodes.Attribute_noise.factory [] noise_input;
