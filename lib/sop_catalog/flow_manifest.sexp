@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "240c4a0a5a59244254cfa5c8530fcca9")
+  (digest "29a3fe442e0c7819a09155c2c741203b")
   (kinds
     (kind "sop/switch"
       (key "switch")
@@ -170,19 +170,14 @@
         (field "group" "Primitive group" (folder) (text) (text "") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/copy_to_points"
-      (key "copy_to_points")
+    (kind "sop/pack_instances"
+      (key "pack_instances")
       (aliases)
-      (operation "copy_to_points")
-      (label "Copy to Points")
+      (operation "pack_instances")
+      (label "Pack Instances")
       (category "Copy")
-      (slots (slot "source" required) (slot "targets" required))
-      (fields
-        (field "source_group" "Source group" (folder "Selection") (text) (text "") (primary false) (vec3))
-        (field "target_group" "Target group" (folder "Selection") (text) (text "") (primary false) (vec3))
-        (field "piece_attribute" "Piece attribute" (folder "Matching") (text) (text "") (primary false) (vec3))
-        (field "pack" "Pack and instance" (folder) (bool) (bool false) (primary false) (vec3))
-        (field "target_attributes" "Target attribute rules" (folder) (text) (text "") (primary false) (vec3) (description "Escaped tab-separated rows: pattern, points/vertices/primitives, nothing/copy/add/subtract/multiply.")))
+      (slots (slot "source" required) (slot "instances" required))
+      (fields)
       (outputs (output "geo" geometry))
       (facts (cook-mode generic) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/clean"
@@ -1471,6 +1466,22 @@
       (outputs (output "geo" geometry))
       (body lisp)
       (calls "sop/compact_points" "sop/poly_path"))
+    (kind "sop/copy_to_points"
+      (key "copy_to_points")
+      (aliases)
+      (operation "copy_to_points")
+      (label "Copy to Points")
+      (category "Copy")
+      (slots (slot "source" required) (slot "targets" required))
+      (fields
+        (field "source_group" "Source group" (folder "Selection") (text) (text "") (primary false) (vec3))
+        (field "target_group" "Target group" (folder "Selection") (text) (text "") (primary false) (vec3))
+        (field "piece_attribute" "Piece attribute" (folder "Matching") (text) (text "") (primary false) (vec3))
+        (field "pack" "Pack and instance" (folder) (bool) (bool false) (primary false) (vec3))
+        (field "target_attributes" "Target attribute rules" (folder) (text) (text "") (primary false) (vec3) (description "Escaped tab-separated rows: pattern, points/vertices/primitives, nothing/copy/add/subtract/multiply.")))
+      (outputs (output "geo" geometry))
+      (body lisp)
+      (calls "sop/pack_instances"))
     (kind "sop/crease"
       (key "crease")
       (aliases)
