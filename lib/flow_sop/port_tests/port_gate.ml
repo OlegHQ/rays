@@ -205,7 +205,12 @@ let with_session f =
   Fun.protect ~finally:(fun () -> Sop.Session.close s) (fun () -> f s)
 let cook s domains grain node =
   let context = Sop.Context.create ~domains ~grain () |> get_string_ok in
-  Result.bind (Sop.Session.cook s ~context node) (fun o -> Sop.Payload.geometry o.Sop.Session.payload)
+  Result.bind (Sop.Session.cook s ~context node) (fun o ->
+    Result.bind (Sop.Payload.geometry o.Sop.Session.payload) (fun g -> match o.Sop.Session.instances with
+      | None -> Ok g
+      | Some transforms -> (* packed result: compared as its materialized copies *)
+          Result.map_error (fun e -> Sop.Diagnostic.error ~code:"E_INSTANCES" (Rdk.Error.to_string e))
+            (Rdk.Instance_copy.materialize_instances ~transforms g)))
 let must = function Ok g -> g | Error d -> fail (Sop.Diagnostic.error_to_string d)
 
 (* ---- checks ---- *)
@@ -262,6 +267,10 @@ let verify_case ~full ctx ulps label changes =
         | Ok _, Error g -> fail (at ("oracle: Lisp error " ^ Sop.Diagnostic.error_to_string g ^ " but native succeeded"))
         | Ok e, Ok g ->
             (if not (close_geometry ~ulps e g) && Sys.getenv_opt "PORT_DIFF" <> None then
+              (let x = Rdk.Packed.Float3.Private.view (Rdk.Geometry.positions e) and y = Rdk.Packed.Float3.Private.view (Rdk.Geometry.positions g) in
+                if Array.length x.x <> Array.length y.x then Printf.eprintf "P count %d vs %d\n" (Array.length x.x) (Array.length y.x) else
+                Array.iteri (fun i v -> if v <> y.x.(i) || x.y.(i) <> y.y.(i) || x.z.(i) <> y.z.(i) then
+                  Printf.eprintf "P[%d] native (%h %h %h) lisp (%h %h %h)\n" i v x.y.(i) x.z.(i) y.x.(i) y.y.(i) y.z.(i)) x.x);
               List.iter (fun a -> match Rdk.Geometry.find_attribute ~owner:(Rdk.Attribute.owner a) (Rdk.Attribute.name a) g with
                 | Some b -> (match Rdk.Attribute.Private.storage a, Rdk.Attribute.Private.storage b with
                     | Rdk.Attribute.Float3 x, Rdk.Attribute.Float3 y ->

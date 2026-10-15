@@ -1,0 +1,437 @@
+; Whole Copy to Points. The target point frames (pscale/scale, transform | orient | N/v with up, rot, trans,
+; pivot) follow Rdk copy_frames as point_replicate does. One generic layout then places, target after target,
+; the primitives/vertices/points of that target's source piece (the whole source, or the piece its piece
+; attribute value names), and one sop/remap carries every attribute and group. Positions and normals are
+; recomputed per copy; ordered groups get the native copy-major order. Pack hands the frames to the native
+; sop/pack_instances carrier. Native arm64 contracts a +. b *. c: explicit fma where that happens.
+(defn ctp_fail :context value [(reason : text)]
+  (error "invalid_attribute" "copy_to_points could not produce valid geometry"
+    :cause (str "copy_to_points [invalid_attribute]: Rdk.Instance_copy.copy_to_points: " reason)))
+(defmacro ctp_bad [geo name type]
+  `(and (sop/has_attr ~geo ~name :owner "point")
+        (not (sop/has_attr ~geo ~name :owner "point" :type ~type))))
+(defn ctp_ok :context value [(x : float)] (= (- x x) 0.0))
+(defn ctp_nf3 :context value [(v : vec3)] (if (and (ctp_ok v.x) (and (ctp_ok v.y) (ctp_ok v.z))) 0 1))
+(defn ctp_nf4 :context value [(v : vec4)] (if (and (and (ctp_ok v.x) (ctp_ok v.y)) (and (ctp_ok v.z) (ctp_ok v.w))) 0 1))
+
+; ---- quaternions: normalized like copy_frames' set_quaternion, rows of the rotation matrix
+(defn ctp_qn :context value [(q : vec4)]
+  (let* [scale (max (abs q.x) (max (abs q.y) (max (abs q.z) (abs q.w))))
+         live (> scale 0.0)
+         s (if live scale 1.0)
+         x (/ q.x s) y (/ q.y s) z (/ q.z s) w (/ q.w s)
+         length (sqrt (fma w w (fma z z (fma y y (* x x)))))
+         l (if live length 1.0)]
+    (if live [(/ x l) (/ y l) (/ z l) (/ w l)] [0.0 0.0 0.0 1.0])))
+(defn ctp_qrow0 :context value [(q : vec4)]
+  [(- 1.0 (* 2.0 (+ (* q.y q.y) (* q.z q.z)))) (* 2.0 (- (* q.x q.y) (* q.w q.z))) (* 2.0 (+ (* q.x q.z) (* q.w q.y)))])
+(defn ctp_qrow1 :context value [(q : vec4)]
+  [(* 2.0 (+ (* q.x q.y) (* q.w q.z))) (- 1.0 (* 2.0 (+ (* q.x q.x) (* q.z q.z)))) (* 2.0 (- (* q.y q.z) (* q.w q.x)))])
+(defn ctp_qrow2 :context value [(q : vec4)]
+  [(* 2.0 (- (* q.x q.z) (* q.w q.y))) (* 2.0 (+ (* q.y q.z) (* q.w q.x))) (- 1.0 (* 2.0 (+ (* q.x q.x) (* q.y q.y))))])
+(defn ctp_row_mul :context value [(a : vec3) (b0 : vec3) (b1 : vec3) (b2 : vec3)]
+  [(fma a.z b2.x (fma a.y b1.x (* a.x b0.x)))
+   (fma a.z b2.y (fma a.y b1.y (* a.x b0.y)))
+   (fma a.z b2.z (fma a.y b1.z (* a.x b0.z)))])
+; ---- N / v direction frames: z axis (w = 1 when the direction is nonzero), x = up x z (w = 1 when aligned)
+(defn ctp_dir_z :context value [(n : vec3)]
+  (let* [scale (max (abs n.x) (max (abs n.y) (abs n.z)))
+         live (> scale 0.0)
+         s (if live scale 1.0)
+         x (/ n.x s) y (/ n.y s) z (/ n.z s)
+         length (sqrt (fma z z (fma y y (* x x))))
+         l (if live length 1.0)]
+    (if live [(/ x l) (/ y l) (/ z l) 1.0] [0.0 0.0 1.0 0.0])))
+(defn ctp_dir_x :context value [(z : vec4) (u : vec3) (has_up : bool)]
+  (let* [uscale (max (abs u.x) (max (abs u.y) (abs u.z)))
+         live (and (> z.w 0.5) (and has_up (> uscale 0.0)))
+         us (if live uscale 1.0)
+         ux (/ u.x us) uy (/ u.y us) uz (/ u.z us)
+         cx (fma (* -1.0 uz) z.y (* uy z.z))
+         cy (fma (* -1.0 ux) z.z (* uz z.x))
+         cz (fma (* -1.0 uy) z.x (* ux z.y))
+         xscale (max (abs cx) (max (abs cy) (abs cz)))
+         ok (and live (> xscale 1e-20))
+         xs (if ok xscale 1.0)
+         nx (/ cx xs) ny (/ cy xs) nz (/ cz xs)
+         xl (sqrt (fma nz nz (fma ny ny (* nx nx))))
+         l (if ok xl 1.0)]
+    (if ok [(/ nx l) (/ ny l) (/ nz l) 1.0] [0.0 0.0 0.0 0.0])))
+(defn ctp_dir_q :context value [(z : vec4) (x : vec4)]
+  (cond (or (< z.w 0.5) (> x.w 0.5)) [0.0 0.0 0.0 1.0]
+        (<= z.z (+ -1.0 1e-12)) [0.0 1.0 0.0 0.0]
+        :else [(* -1.0 z.y) z.x 0.0 (+ 1.0 z.z)]))
+(defn ctp_aligned_row0 :context value [(z : vec4) (x : vec4)]
+  [x.x (fma (* -1.0 z.z) x.y (* z.y x.z)) z.x])
+(defn ctp_aligned_row1 :context value [(z : vec4) (x : vec4)]
+  [x.y (fma (* -1.0 z.x) x.z (* z.z x.x)) z.y])
+(defn ctp_aligned_row2 :context value [(z : vec4) (x : vec4)]
+  [x.z (fma (* -1.0 z.y) x.x (* z.x x.y)) z.z])
+
+; ---- cofactor matrix of the affine normal path (columns a b c of the rotation block, scaled by s)
+(defn ctp_matrix_scale :context value [(a3 : vec3) (b3 : vec3) (c3 : vec3)]
+  (let* [sc (max (abs a3.x) (max (abs b3.x) (max (abs c3.x) (max (abs a3.y) (max (abs b3.y) (max (abs c3.y)
+              (max (abs a3.z) (max (abs b3.z) (abs c3.z)))))))))]
+    (if (= sc 0.0) 1.0 sc)))
+(defn ctp_cof0 :context value [(a3 : vec3) (b3 : vec3) (c3 : vec3) (s : float)]
+  (let* [d (/ a3.y s) g (/ a3.z s) e (/ b3.y s) h (/ b3.z s) f (/ c3.y s) i (/ c3.z s)]
+    [(fma (* -1.0 f) h (* e i)) (fma (* -1.0 d) i (* f g)) (fma (* -1.0 e) g (* d h))]))
+(defn ctp_cof1 :context value [(a3 : vec3) (b3 : vec3) (c3 : vec3) (s : float)]
+  (let* [a (/ a3.x s) g (/ a3.z s) b (/ b3.x s) h (/ b3.z s) c (/ c3.x s) i (/ c3.z s)]
+    [(fma (* -1.0 b) i (* c h)) (fma (* -1.0 c) g (* a i)) (fma (* -1.0 a) h (* b g))]))
+(defn ctp_cof2 :context value [(a3 : vec3) (b3 : vec3) (c3 : vec3) (s : float)]
+  (let* [a (/ a3.x s) d (/ a3.y s) b (/ b3.x s) e (/ b3.y s) c (/ c3.x s) f (/ c3.y s)]
+    [(fma (* -1.0 c) e (* b f)) (fma (* -1.0 a) f (* c d)) (fma (* -1.0 b) d (* a e))]))
+(defn ctp_det :context value [(a3 : vec3) (b3 : vec3) (c3 : vec3) (s : float) (r : vec3)]
+  (fma (/ c3.x s) r.z (fma (/ b3.x s) r.y (* (/ a3.x s) r.x))))
+; A normal through three rows (the cofactor rows times the determinant sign, or the rotation rows over the
+; scale), renormalized; zero below 1e-20.
+(defn ctp_normal_through :context value [(r0 : vec3) (r1 : vec3) (r2 : vec3) (v : vec3)]
+  (let* [x (+ (fma r0.x v.x (* r0.y v.y)) (* r0.z v.z))
+         y (+ (fma r1.x v.x (* r1.y v.y)) (* r1.z v.z))
+         z (+ (fma r2.x v.x (* r2.y v.y)) (* r2.z v.z))
+         length (sqrt (fma z z (fma y y (* x x))))]
+    (if (> length 1e-20) [(/ x length) (/ y length) (/ z length)] [0.0 0.0 0.0])))
+(defn ctp_divide_guard :context value [(v : float) (s : float)] (if (<= (abs s) 1e-20) 0.0 (/ v s)))
+(defn ctp_scaled_normal :context value [(v : vec3) (s : vec3)]
+  [(ctp_divide_guard v.x s.x) (ctp_divide_guard v.y s.y) (ctp_divide_guard v.z s.z)])
+(defn ctp_scale_rows :context value [(r : vec3) (sign : float)] [(* r.x sign) (* r.y sign) (* r.z sign)])
+
+; The first target-index at each output slot of a block layout: starts has one entry per target plus the total.
+(defn ctp_cover :context value [(starts : (array int)) (total : int)]
+  (let* [targets (int/sub (array/count starts) 1)
+         marks (array/scatter_add (array/slice starts 0 targets) (array/int targets 1) (int/add total 1))
+         cover (array/scan_sum marks)]
+    (exact (map (fn [(i : int)] (int/sub (array/nth cover (int/add i 1)) 1)) (array/range total :type int)))))
+(defn ctp_counts :context value [(tp : (array int)) (offsets : (array int))]
+  (exact (map (fn [(piece : int)]
+    (if (int/ge piece 0) (int/sub (array/nth offsets (int/add piece 1)) (array/nth offsets piece)) 0)) tp)))
+; Source row of every output slot: block start of its target plus the local index through the piece list.
+(defn ctp_pick :context value
+  [(tp : (array int)) (owner : (array int)) (starts : (array int)) (piece_offsets : (array int)) (listed : (array int))]
+  (exact (map (fn [(k : int) (i : int)]
+    (array/nth listed (int/add (array/nth piece_offsets (array/nth tp k)) (int/sub i (array/nth starts k)))))
+    owner (array/range (array/count owner) :type int))))
+
+; The frame of every target: scale s, rotation rows r0 r1 r2, translation t, and a problem code (0 none).
+(defn ctp_frames :context sop [(tgt : geometry)]
+  (let* [pts (sop/count tgt :points)
+         idx (array/range pts :type int)
+         has_pscale (sop/has_attr tgt "pscale" :owner "point" :type float)
+         has_scale (sop/has_attr tgt "scale" :owner "point" :type vec3)
+         has_orient (sop/has_attr tgt "orient" :owner "point" :type vec4)
+         has_n (sop/has_attr tgt "N" :owner "point" :type vec3)
+         has_up (sop/has_attr tgt "up" :owner "point" :type vec3)
+         has_v (sop/has_attr tgt "v" :owner "point" :type vec3)
+         has_rot (sop/has_attr tgt "rot" :owner "point" :type vec4)
+         has_trans (sop/has_attr tgt "trans" :owner "point" :type vec3)
+         has_pivot (sop/has_attr tgt "pivot" :owner "point" :type vec3)
+         has_matrix (sop/has_attr tgt "transform" :owner "point" :type float_array)
+         has_dir (or has_n has_v)
+         vsrc (if has_v (sop/attr tgt "v" :owner "point" :type vec3) (array/vec3 pts [0.0 0.0 0.0]))
+         mat (if has_matrix (sop/attr tgt "transform" :owner "point" :type float_array)
+               {:offsets (array/int (int/add pts 1) 0) :values (array/float 16 0.0)})
+         moffs mat.offsets
+         mvals mat.values
+         mw (if (int/eq pts 0) 16 (int/sub (array/nth moffs 1) (array/nth moffs 0)))
+         bad_rows (array/sum (exact (map (fn [(i : int)]
+                    (let* [first (array/nth moffs i)
+                           width (int/sub (array/nth moffs (int/add i 1)) first)]
+                      (if (int/eq width mw)
+                        (if (int/eq mw 16)
+                          (if (or (or (> (abs (array/nth mvals (int/add first 12))) 1e-12)
+                                      (> (abs (array/nth mvals (int/add first 13))) 1e-12))
+                                  (or (> (abs (array/nth mvals (int/add first 14))) 1e-12)
+                                      (> (abs (- (array/nth mvals (int/add first 15)) 1.0)) 1e-12)))
+                            1 0)
+                          0)
+                        1))) idx)))
+         bad_values (array/sum (exact (map (fn [(v : float)] (if (ctp_ok v) 0 1)) mvals)))
+         type_problem (cond
+                   (ctp_bad tgt "pscale" float) 1
+                   (ctp_bad tgt "scale" vec3) 2
+                   (ctp_bad tgt "orient" vec4) 3
+                   (ctp_bad tgt "N" vec3) 4
+                   (ctp_bad tgt "up" vec3) 5
+                   (ctp_bad tgt "v" vec3) 6
+                   (ctp_bad tgt "rot" vec4) 7
+                   (ctp_bad tgt "trans" vec3) 8
+                   (ctp_bad tgt "pivot" vec3) 9
+                   (and (sop/has_attr tgt "transform" :owner "point") (not has_matrix)) 10
+                   (and has_matrix (and (not (int/eq mw 9)) (not (int/eq mw 16)))) 11
+                   (and has_matrix (or (int/gt bad_rows 0) (int/gt bad_values 0))) 12
+                   :else 0)]
+    (if (int/gt type_problem 0)
+      {:problem type_problem :matrix false :s (array/vec3 0) :r0 (array/vec3 0) :r1 (array/vec3 0) :r2 (array/vec3 0) :t (array/vec3 0)}
+      (let* [psrc (sop/attr tgt :P)
+             ps (if has_pscale (sop/attr tgt "pscale" :owner "point" :type float) (array/float pts 1.0))
+             sc (if has_scale (sop/attr tgt "scale" :owner "point" :type vec3) (array/vec3 pts [1.0 1.0 1.0]))
+             svec (if has_matrix (array/vec3 pts [1.0 1.0 1.0])
+                    (exact (map (fn [(a : float) (b : vec3)] [(* a b.x) (* a b.y) (* a b.z)]) ps sc)))
+             bad_scale (if has_matrix 0 (array/sum (exact (map ctp_nf3 svec))))
+             o1 (if (int/eq mw 9) 3 4)
+             o2 (if (int/eq mw 9) 6 8)
+             mr0 (if has_matrix (exact (map (fn [(i : int)] (let* [f (array/nth moffs i)] [(array/nth mvals f) (array/nth mvals (int/add f 1)) (array/nth mvals (int/add f 2))])) idx)) (array/vec3 0))
+             mr1 (if has_matrix (exact (map (fn [(i : int)] (let* [f (array/nth moffs i)] [(array/nth mvals (int/add f o1)) (array/nth mvals (int/add f (int/add o1 1))) (array/nth mvals (int/add f (int/add o1 2)))])) idx)) (array/vec3 0))
+             mr2 (if has_matrix (exact (map (fn [(i : int)] (let* [f (array/nth moffs i)] [(array/nth mvals (int/add f o2)) (array/nth mvals (int/add f (int/add o2 1))) (array/nth mvals (int/add f (int/add o2 2)))])) idx)) (array/vec3 0))
+             dirs (if has_n (sop/attr tgt "N" :owner "point" :type vec3) vsrc)
+             use_dir (and (not has_matrix) (and (not has_orient) has_dir))
+             za (if use_dir (exact (map (fn [(a : vec3)] (ctp_dir_z a)) dirs)) (array/vec4 pts [0.0 0.0 1.0 0.0]))
+             ups (if has_up (sop/attr tgt "up" :owner "point" :type vec3) (array/vec3 pts [0.0 0.0 0.0]))
+             xa (if use_dir (exact (map (fn [(z : vec4) (u : vec3)] (ctp_dir_x z u has_up)) za ups))
+                  (array/vec4 pts [0.0 0.0 0.0 0.0]))
+             orients (if has_orient (sop/attr tgt "orient" :owner "point" :type vec4) (array/vec4 pts [0.0 0.0 0.0 1.0]))
+             qa (cond has_orient orients
+                      use_dir (exact (map (fn [(z : vec4) (x : vec4)] (ctp_dir_q z x)) za xa))
+                      :else (array/vec4 pts [0.0 0.0 0.0 1.0]))
+             qn (exact (map (fn [(q : vec4)] (ctp_qn q)) qa))
+             br0 (if has_matrix mr0 (exact (map (fn [(q : vec4) (z : vec4) (x : vec4)]
+                    (if (> x.w 0.5) (ctp_aligned_row0 z x) (ctp_qrow0 q))) qn za xa)))
+             br1 (if has_matrix mr1 (exact (map (fn [(q : vec4) (z : vec4) (x : vec4)]
+                    (if (> x.w 0.5) (ctp_aligned_row1 z x) (ctp_qrow1 q))) qn za xa)))
+             br2 (if has_matrix mr2 (exact (map (fn [(q : vec4) (z : vec4) (x : vec4)]
+                    (if (> x.w 0.5) (ctp_aligned_row2 z x) (ctp_qrow2 q))) qn za xa)))
+             rot_src (if has_rot (sop/attr tgt "rot" :owner "point" :type vec4) (array/vec4 pts [0.0 0.0 0.0 1.0]))
+             post (and has_rot (not has_matrix))
+             rots (if post (exact (map (fn [(q : vec4)] (ctp_qn q)) rot_src)) rot_src)
+             rr0 (if post (exact (map (fn [(r : vec4) (i : int)]
+                   (ctp_row_mul (ctp_qrow0 r) (array/nth br0 i) (array/nth br1 i) (array/nth br2 i))) rots idx)) br0)
+             rr1 (if post (exact (map (fn [(r : vec4) (i : int)]
+                   (ctp_row_mul (ctp_qrow1 r) (array/nth br0 i) (array/nth br1 i) (array/nth br2 i))) rots idx)) br1)
+             rr2 (if post (exact (map (fn [(r : vec4) (i : int)]
+                   (ctp_row_mul (ctp_qrow2 r) (array/nth br0 i) (array/nth br1 i) (array/nth br2 i))) rots idx)) br2)
+             bad_orient (if has_matrix 0
+                          (int/add (int/add (if has_orient (array/sum (exact (map ctp_nf4 orients))) 0)
+                                            (if (and use_dir (not has_matrix)) (array/sum (exact (map ctp_nf3 dirs))) 0))
+                                   (int/add (if (and use_dir has_up) (array/sum (exact (map ctp_nf3 ups))) 0)
+                                            (if post (array/sum (exact (map ctp_nf4 rot_src))) 0))))
+             t0 (if has_trans (exact (map (fn [(p : vec3) (d : vec3)] (+ p d)) psrc
+                  (sop/attr tgt "trans" :owner "point" :type vec3))) psrc)
+             t1 (if (and has_matrix (int/eq mw 16))
+                  (exact (map (fn [(p : vec3) (i : int)]
+                    (let* [first (array/nth moffs i)]
+                      [(+ p.x (array/nth mvals (int/add first 3))) (+ p.y (array/nth mvals (int/add first 7)))
+                       (+ p.z (array/nth mvals (int/add first 11)))])) t0 idx))
+                  t0)
+             pivots (if has_pivot (sop/attr tgt "pivot" :owner "point" :type vec3) (array/vec3 pts [0.0 0.0 0.0]))
+             tt (if has_pivot
+                  (exact (map (fn [(tq : vec3) (i : int)]
+                    (let* [pv (array/nth pivots i) s (array/nth svec i)
+                           x (* pv.x s.x) y (* pv.y s.y) z (* pv.z s.z)
+                           r0 (array/nth rr0 i) r1 (array/nth rr1 i) r2 (array/nth rr2 i)]
+                      [(- tq.x (+ (fma r0.x x (* r0.y y)) (* r0.z z)))
+                       (- tq.y (+ (fma r1.x x (* r1.y y)) (* r1.z z)))
+                       (- tq.z (+ (fma r2.x x (* r2.y y)) (* r2.z z)))])) t1 idx))
+                  t1)
+             bad_translation (array/sum (exact (map ctp_nf3 tt)))]
+        {:problem (cond (int/gt bad_scale 0) 13 (int/gt bad_orient 0) 14 (int/gt bad_translation 0) 15 :else 0)
+         :matrix has_matrix :s svec :r0 rr0 :r1 rr1 :r2 rr2 :t tt}))))
+(defn ctp_problem :context value [(code : int)]
+  (cond
+    (int/eq code 1) (ctp_fail "pscale must be point float")
+    (int/eq code 2) (ctp_fail "scale must be point float3")
+    (int/eq code 3) (ctp_fail "orient must be point float4")
+    (int/eq code 4) (ctp_fail "N must be point float3")
+    (int/eq code 5) (ctp_fail "up must be point float3")
+    (int/eq code 6) (ctp_fail "v must be point float3")
+    (int/eq code 7) (ctp_fail "rot must be point float4")
+    (int/eq code 8) (ctp_fail "trans must be point float3")
+    (int/eq code 9) (ctp_fail "pivot must be point float3")
+    (int/eq code 10) (ctp_fail "transform must be a point float-array matrix")
+    (int/eq code 11) (ctp_fail "transform rows must contain 9 or 16 floats")
+    (int/eq code 12) (ctp_fail "transform must contain finite, fixed-width affine matrices")
+    (int/eq code 13) (ctp_fail "target scales must be finite")
+    (int/eq code 14) (ctp_fail "target orientations must be finite")
+    :else (ctp_fail "target translations must be finite")))
+
+; ---- the generic copy layout ------------------------------------------------------------------------------
+; Target t takes piece tp[t] (-1: none) whose points / vertices / primitives are the source rows listed in
+; plist_* from pp_off / pv_off / pf_off; plist_vlocal is the piece-local point of each listed vertex.
+(defn ctp_layout :context value
+  [(tp : (array int)) (pp_off : (array int)) (pv_off : (array int)) (pf_off : (array int))
+   (plist_points : (array int)) (plist_verts : (array int)) (plist_prims : (array int)) (plist_vlocal : (array int))
+   (vp : (array int)) (off : (array int)) (kinds : (array int))]
+  (let* [poff (array/scan_sum (ctp_counts tp pp_off))
+         voff (array/scan_sum (ctp_counts tp pv_off))
+         foff (array/scan_sum (ctp_counts tp pf_off))
+         targets (array/count tp)
+         out_p (array/nth poff targets)
+         out_v (array/nth voff targets)
+         out_f (array/nth foff targets)
+         tp_p (ctp_cover poff out_p)
+         tp_v (ctp_cover voff out_v)
+         tp_f (ctp_cover foff out_f)
+         pmap (ctp_pick tp tp_p poff pp_off plist_points)
+         vmap (ctp_pick tp tp_v voff pv_off plist_verts)
+         fmap (ctp_pick tp tp_f foff pf_off plist_prims)
+         vlocal (ctp_pick tp tp_v voff pv_off plist_vlocal)
+         new_vp (exact (map (fn [(k : int) (local : int)] (int/add (array/nth poff k) local)) tp_v vlocal))
+         lengths (exact (map (fn [(s : int)] (int/sub (array/nth off (int/add s 1)) (array/nth off s))) fmap))
+         new_kinds (exact (map (fn [(s : int)] (array/nth kinds s)) fmap))]
+    {:poff poff :voff voff :foff foff :out_p out_p :out_v out_v :out_f out_f
+     :tp_p tp_p :tp_v tp_v :tp_f tp_f :pmap pmap :vmap vmap :fmap fmap
+     :new_vp new_vp :new_off (array/scan_sum lengths) :new_kinds new_kinds}))
+; Copy-major order of an ordered group: per copy the source order shifted by that copy's block.
+(defn ctp_order :context value [(order : (array int)) (copies : int) (count : int)]
+  (let* [width (array/count order)]
+    (exact (map (fn [(i : int)]
+      (int/add (int/mul (int/div i (if (int/gt width 0) width 1)) count)
+               (array/nth order (int/mod i (if (int/gt width 0) width 1)))))
+      (array/range (int/mul copies width) :type int)))))
+
+(defn ctp_rule_ok :context value [(row : (list text))]
+  (and (int/eq (count row) 3)
+    (and (equal? (text/glob_error (nth row 0)) "")
+      (and (or (or (equal? (nth row 1) "points") (equal? (nth row 1) "vertices")) (equal? (nth row 1) "primitives"))
+           (or (or (or (equal? (nth row 2) "nothing") (equal? (nth row 2) "copy")) (equal? (nth row 2) "add"))
+               (or (equal? (nth row 2) "subtract") (equal? (nth row 2) "multiply")))))))
+(defn ctp_valid :context value [(pack : bool) (source_group : text) (piece_attribute : text) (rules : text)]
+  (and (not (and pack (or (not (text/blank? source_group)) (not (text/blank? piece_attribute)))))
+       (if (text/blank? rules) true (fold [ok true] [row (text/table_decode rules)] (and ok (ctp_rule_ok row))))))
+
+; One place of a source point in a copy: scale, rotate, translate.
+(defn ctp_place :context value [(p : vec3) (s : vec3) (r0 : vec3) (r1 : vec3) (r2 : vec3) (k : vec3)]
+  (let* [x (* p.x s.x) y (* p.y s.y) z (* p.z s.z)]
+    [(+ (+ (fma r0.x x (* r0.y y)) (* r0.z z)) k.x)
+     (+ (+ (fma r1.x x (* r1.y y)) (* r1.z z)) k.y)
+     (+ (+ (fma r2.x x (* r2.y y)) (* r2.z z)) k.z)]))
+(defn ctp_rows :context value [(r : vec3) (s : vec3) (k : float)] [(* r.x s.x) (* r.y s.y) (* r.z s.z) k])
+
+; The normals of one owner through the copies: source rows `from`, target of each output row `owner`.
+(defn ctp_normals :context value
+  [(source : (array vec3)) (from : (array int)) (owner : (array int))
+   (s : (array vec3)) (n0 : (array vec3)) (n1 : (array vec3)) (n2 : (array vec3))]
+  (exact (map (fn [(e : int) (k : int)]
+    (ctp_normal_through (array/nth n0 k) (array/nth n1 k) (array/nth n2 k)
+      (ctp_scaled_normal (array/nth source e) (array/nth s k)))) from owner)))
+
+(defn ctp_carrier :context sop
+  [(tgt : geometry) (s : (array vec3)) (r0 : (array vec3)) (r1 : (array vec3)) (r2 : (array vec3)) (tt : (array vec3))]
+  (sop/with_attr (sop/with_attr (sop/with_attr tgt "r0"
+                      (exact (map (fn [(r : vec3) (v : vec3) (k : vec3)] (ctp_rows r v k.x)) r0 s tt)) :owner "point" :type vec4)
+                      "r1" (exact (map (fn [(r : vec3) (v : vec3) (k : vec3)] (ctp_rows r v k.y)) r1 s tt)) :owner "point" :type vec4)
+                      "r2" (exact (map (fn [(r : vec3) (v : vec3) (k : vec3)] (ctp_rows r v k.z)) r2 s tt)) :owner "point" :type vec4))
+
+(defn ctp_build :context sop
+  [(src : geometry) (s : (array vec3)) (r0 : (array vec3)) (r1 : (array vec3)) (r2 : (array vec3))
+   (tt : (array vec3)) (affine : bool) (nt : int)]
+  (let* [n (sop/count src :points)
+           verts (sop/count src :vertices)
+           prims (sop/count src :primitives)
+           topo (sop/topology src)
+           tp (array/int nt 0)
+           lay (ctp_layout tp (array/concat (array/int 1 0) (array/int 1 n)) (array/concat (array/int 1 0) (array/int 1 verts))
+               (array/concat (array/int 1 0) (array/int 1 prims)) (array/range n :type int) (array/range verts :type int)
+               (array/range prims :type int) topo.vertex_points topo.vertex_points topo.primitive_offsets topo.kinds)
+           mesh (sop/mesh :points (array/vec3 lay.out_p) :vertex_points lay.new_vp :primitive_offsets lay.new_off :kinds lay.new_kinds)
+           edge_entries (sop/group_entries src "*" :owner "edge")
+           has_edge_groups (int/gt (array/count edge_entries.names) 0)
+           ancestry (if has_edge_groups
+                      (let* [adj_src (sop/adjacency src)
+                             adj_out (sop/adjacency mesh)
+                             out_edges (sop/count mesh :edges)
+                             te adj_out.edge_of_vertex
+                             first_seen (array/index_of te te)
+                             firsts (array/compact (exact (map (fn [(e : int) (f : int) (j : int)]
+                                      (if (and (int/ge e 0) (int/eq f j)) 1 0)) te first_seen (array/range lay.out_v :type int))))]
+                        {:offsets (array/range (int/add out_edges 1) :type int)
+                         :values (array/scatter_add
+                                   (exact (map (fn [(j : int)] (array/nth te j)) firsts))
+                                   (exact (map (fn [(j : int)] (array/nth adj_src.edge_of_vertex (array/nth lay.vmap j))) firsts)) out_edges)})
+                      {:offsets (array/int 1 0) :values (array/int 0)})
+           remapped (if has_edge_groups
+                      (sop/remap src mesh :points lay.pmap :vertices lay.vmap :primitives lay.fmap :positions "mapped" :edges ancestry)
+                      (sop/remap src mesh :points lay.pmap :vertices lay.vmap :primitives lay.fmap :positions "mapped"))
+           source_p (sop/attr src :P)
+           moved (exact (map (fn [(p : int) (k : int)]
+                   (ctp_place (array/nth source_p p) (array/nth s k) (array/nth r0 k) (array/nth r1 k) (array/nth r2 k) (array/nth tt k)))
+                   lay.pmap lay.tp_p))
+           placed (sop/with_attr remapped :P moved)
+           ; ---- normals
+           point_n (sop/has_attr src "N" :owner "point")
+           vertex_n (sop/has_attr src "N" :owner "vertex")
+           point_n3 (sop/has_attr src "N" :owner "point" :type vec3)
+           vertex_n3 (sop/has_attr src "N" :owner "vertex" :type vec3)
+           sidx (array/range nt :type int)
+           col_a (exact (map (fn [(a : vec3) (b : vec3) (c : vec3)] [a.x b.x c.x]) r0 r1 r2))
+           col_b (exact (map (fn [(a : vec3) (b : vec3) (c : vec3)] [a.y b.y c.y]) r0 r1 r2))
+           col_c (exact (map (fn [(a : vec3) (b : vec3) (c : vec3)] [a.z b.z c.z]) r0 r1 r2))
+           msc (exact (map (fn [(a : vec3) (b : vec3) (c : vec3)] (ctp_matrix_scale a b c)) col_a col_b col_c))
+           cof0 (exact (map (fn [(i : int)] (ctp_cof0 (array/nth col_a i) (array/nth col_b i) (array/nth col_c i) (array/nth msc i))) sidx))
+           cof1 (exact (map (fn [(i : int)] (ctp_cof1 (array/nth col_a i) (array/nth col_b i) (array/nth col_c i) (array/nth msc i))) sidx))
+           cof2 (exact (map (fn [(i : int)] (ctp_cof2 (array/nth col_a i) (array/nth col_b i) (array/nth col_c i) (array/nth msc i))) sidx))
+           dets (exact (map (fn [(i : int)] (ctp_det (array/nth col_a i) (array/nth col_b i) (array/nth col_c i) (array/nth msc i) (array/nth cof0 i))) sidx))
+           sgn (exact (map (fn [(d : float)] (if (< d 0.0) -1.0 1.0)) dets))
+           singular (int/gt (array/sum (exact (map (fn [(d : float)] (if (<= (abs d) 1e-20) 1 0)) dets))) 0)
+           valid (not (and affine (and (or point_n vertex_n) singular)))
+           n0 (if affine (exact (map (fn [(c : vec3) (g : float)] (ctp_scale_rows c g)) cof0 sgn)) r0)
+           n1 (if affine (exact (map (fn [(c : vec3) (g : float)] (ctp_scale_rows c g)) cof1 sgn)) r1)
+           n2 (if affine (exact (map (fn [(c : vec3) (g : float)] (ctp_scale_rows c g)) cof2 sgn)) r2)
+           unit (array/vec3 nt [1.0 1.0 1.0])
+           ns (if affine unit s)
+           with_point_n (if point_n (sop/delete_attr placed "N" :owner "point") placed)
+           with_point_new (if (and point_n3 valid)
+                            (sop/with_attr with_point_n "N"
+                              (ctp_normals (sop/attr src "N" :owner "point" :type vec3) lay.pmap lay.tp_p ns n0 n1 n2)
+                              :owner "point" :type vec3)
+                            with_point_n)
+           with_vertex_n (if vertex_n (sop/delete_attr with_point_new "N" :owner "vertex") with_point_new)
+           normalled (if (and vertex_n3 valid)
+                       (sop/with_attr with_vertex_n "N"
+                         (ctp_normals (sop/attr src "N" :owner "vertex" :type vec3) lay.vmap lay.tp_v ns n0 n1 n2)
+                         :owner "vertex" :type vec3)
+                       with_vertex_n)]
+    normalled))
+
+(defnode sop/copy_to_points :label "Copy to Points" :category "Copy"
+  :validate (ctp_valid pack source_group piece_attribute target_attributes)
+  :code "E_PARAM" :message "sop/copy_to_points: invalid parameters"
+  [(source : geometry)
+   (targets : geometry)
+   (source_group : text "" :label "Source group" :folder ["Selection"])
+   (target_group : text "" :label "Target group" :folder ["Selection"])
+   (piece_attribute : text "" :label "Piece attribute" :folder ["Matching"])
+   (pack : bool false :label "Pack and instance")
+   (target_attributes : text "" :label "Target attribute rules"
+     :description "Escaped tab-separated rows: pattern, points/vertices/primitives, nothing/copy/add/subtract/multiply.")]
+  (let* [source_name (text/trim source_group)
+         target_name (text/trim target_group)
+         has_source_group (not (text/blank? source_name))
+         has_target_group (not (text/blank? target_name))
+         source_literal (text/glob_literal (if has_source_group source_name "x"))
+         target_literal (text/glob_literal (if has_target_group target_name "x"))
+         source_missing (and has_source_group
+                          (int/eq (array/count (sop/group_names source source_literal :owner "primitive")) 0))
+         target_missing (and has_target_group
+                          (int/eq (array/count (sop/group_names targets target_literal :owner "point")) 0))]
+    (cond
+      source_missing (error "missing_group" (str "copy_to_points could not find source primitive group " (text/repr source_name)))
+      target_missing (error "missing_group" (str "copy_to_points could not find target point group " (text/repr target_name)))
+      :else
+        (let* [src (if has_source_group
+                     (blast_apply source "Primitives" "primitive" (sop/group source :name source_name :owner "primitive")
+                       false true "Destroy touched primitives")
+                     source)
+               tgt (if has_target_group
+                     (blast_apply targets "Points" "point" (sop/group targets :name target_name :owner "point")
+                       false false "Destroy touched primitives")
+                     targets)
+               frames (ctp_frames tgt)
+               nt (sop/count tgt :points)]
+          (if (int/gt frames.problem 0)
+            (ctp_problem frames.problem)
+            (if pack
+              (sop/pack_instances src (ctp_carrier tgt frames.s frames.r0 frames.r1 frames.r2 frames.t))
+              (let* [built (ctp_build src frames.s frames.r0 frames.r1 frames.r2 frames.t frames.matrix nt)
+                     n (sop/count src :points)
+                     verts (sop/count src :vertices)
+                     prims (sop/count src :primitives)
+                     ordered_entries (sop/group_entries src "*" :owner "any")]
+                (fold [state built] [index (array/range (array/count ordered_entries.names) :type int)]
+                  (let* [owner (array/nth ordered_entries.owners index)
+                         name (array/nth ordered_entries.names index)
+                         ordering (sop/group_order src :name name :owner owner)
+                         per_copy (case owner "point" n "vertex" verts :else prims)]
+                    (if (or (equal? owner "edge") (not ordering.ordered)) state
+                      (sop/with_group state (exact (sop/group state :name name :owner owner)) :name name :owner owner
+                        :order {:ordered true :indices (ctp_order ordering.indices nt per_copy)})))))))))))

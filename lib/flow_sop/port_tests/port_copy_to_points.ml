@@ -1,0 +1,95 @@
+(* sop/copy_to_points: source and targets. The source carries every attribute storage on every owner, the
+   standard groups (ordered ones, edge groups) and point/vertex normals; the target fixtures each carry one
+   family of frame attributes (pscale/scale, orient, N with or without up, v, rot, trans/pivot, 9- and
+   16-wide transform rows), so every branch of the frame rule meets a case. *)
+open Rdk
+open Rdk_test_support
+open Port_gate
+module P = Param
+let tx name v = name, P.Text_value v
+let bo name v = name, P.Bool_value v
+
+let plane f n = Array.init n f
+let float3 n fx fy fz = Attribute.Float3 (get_string_ok (Packed.Float3.of_owned ~x:(plane fx n) ~y:(plane fy n) ~z:(plane fz n)))
+let float4 n fx fy fz fw =
+  Attribute.Float4 (get_string_ok (Packed.Float4.of_owned ~x:(plane fx n) ~y:(plane fy n) ~z:(plane fz n) ~w:(plane fw n)))
+let put owner name storage geometry =
+  get_string_ok (Geometry.with_attribute (get_string_ok (Attribute.create_owned ~owner ~name storage)) geometry)
+let with_normals geometry =
+  let add owner count geometry =
+    let n = count geometry in
+    put owner "N" (float3 n (fun i -> float (i mod 3) -. 1.) (fun i -> 0.5 +. float (i mod 5))
+      (fun i -> if i mod 7 = 0 then 0. else -0.25)) geometry in
+  geometry |> add Attribute.Point Geometry.point_count |> add Attribute.Vertex Geometry.vertex_count
+let small_grid () = Plane_generators.grid ~connectivity:Grid_quads ~columns:3 ~rows:3 ~size:2. () |> get_ok
+let mixed () = with_normals (fixture_attributes (fixture_groups (polygon_polyline ())))
+let grid_source () = with_normals (fixture_attributes (fixture_groups (small_grid ())))
+
+(* five targets at distinct places; the groups of the standard fixtures give them point groups *)
+let base_targets () = fixture_groups (Kernel.generate_point_ranges 5 (fun ~first ~last ~x ~y ~z ->
+  for i = first to last - 1 do x.(i) <- float i *. 1.5; y.(i) <- 0.25 *. float (i * i); z.(i) <- -1. +. float i done))
+let pscale g = put Attribute.Point "pscale" (Attribute.Float [|1.; 2.; 0.5; -1.; 0.|]) g
+let scale g = put Attribute.Point "scale" (float3 5 (fun i -> 1. +. float i) (fun i -> 2. -. 0.25 *. float i) (fun _ -> 0.5)) g
+let orient g = put Attribute.Point "orient" (float4 5 (fun i -> 0.1 *. float i) (fun _ -> 0.2) (fun i -> 0.3 -. 0.1 *. float i)
+  (fun i -> if i = 4 then 0. else 1.)) g
+let zero_orient g = put Attribute.Point "orient" (float4 5 (fun _ -> 0.) (fun _ -> 0.) (fun _ -> 0.) (fun _ -> 0.)) g
+let normal g = put Attribute.Point "N" (float3 5 (fun i -> [|0.; 1.; 0.; 3.; 0.2|].(i)) (fun i -> [|0.; 0.; 1.; 0.; 0.4|].(i))
+  (fun i -> [|0.; 0.; -1.; -2.; 0.6|].(i))) g
+let up g = put Attribute.Point "up" (float3 5 (fun i -> [|0.; 1.; 0.; 1.; 0.|].(i)) (fun i -> [|1.; 0.; 0.; 1.; 0.|].(i))
+  (fun i -> [|0.; 0.; 1.; 0.; 0.|].(i))) g
+let velocity g = put Attribute.Point "v" (float3 5 (fun i -> float i -. 2.) (fun _ -> 1.) (fun i -> 0.5 *. float i)) g
+let rot g = put Attribute.Point "rot" (float4 5 (fun _ -> 0.) (fun i -> 0.3 *. float i) (fun _ -> 0.) (fun _ -> 1.)) g
+let trans g = put Attribute.Point "trans" (float3 5 (fun i -> 0.5 *. float i) (fun _ -> -0.25) (fun _ -> 2.)) g
+let pivot g = put Attribute.Point "pivot" (float3 5 (fun i -> 0.1 *. float i) (fun _ -> 0.5) (fun _ -> -0.5)) g
+let matrix_rows width g =
+  let row i =
+    let a = [|1.; 0.5 *. float i; 0.; 0.; 2.; 0.25; 0.; 0.; 1. +. float i|] in
+    if width = 9 then a
+    else [|a.(0); a.(1); a.(2); 0.5 *. float i; a.(3); a.(4); a.(5); -1.; a.(6); a.(7); a.(8); 0.25; 0.; 0.; 0.; 1.|] in
+  let rows = Array.init 5 row in
+  let rows = if width = 16 then (rows.(3).(0) <- 0.; rows.(3).(1) <- 0.; rows.(3).(2) <- 0.; rows.(3).(4) <- 0.; rows.(3).(5) <- 0.;
+    rows.(3).(6) <- 0.; rows.(3).(8) <- 0.; rows.(3).(9) <- 0.; rows.(3).(10) <- 0.; rows) else rows in
+  put Attribute.Point "transform" (Attribute.Float_array (get_string_ok (Packed.Float_array.create_owned
+    ~offsets:(Array.init 6 (fun i -> i * width)) ~values:(Array.concat (Array.to_list rows))))) g
+let all_frame g = g |> pscale |> scale |> orient |> rot |> trans |> pivot
+
+let targets = [
+  "plain", base_targets ();
+  "pscale", pscale (base_targets ());
+  "scale", scale (base_targets ());
+  "orient", orient (base_targets ());
+  "orient_zero", zero_orient (base_targets ());
+  "normal", normal (base_targets ());
+  "normal_up", up (normal (base_targets ()));
+  "velocity_up", up (velocity (base_targets ()));
+  "rot", rot (base_targets ());
+  "trans_pivot", pivot (trans (base_targets ()));
+  "matrix16", matrix_rows 16 (base_targets ());
+  "matrix9", matrix_rows 9 (base_targets ());
+  "frames", all_frame (base_targets ())]
+let sources = [ "mixed", mixed (); "grid", grid_source () ]
+let inputs = List.concat_map (fun (tl, t) -> List.map (fun (sl, s) -> sl ^ "<-" ^ tl, [s; t]) sources) targets
+
+let cases = [
+  "pack", [bo "pack" true];
+  "source group", [tx "source_group" "a"];
+  "source group ordered", [tx "source_group" "dest_a"];
+  "target group", [tx "target_group" "a"];
+  "target group ordered", [tx "target_group" "dest_a"];
+  "both groups", [tx "source_group" "a"; tx "target_group" "dest_a"];
+  "pack target group", [bo "pack" true; tx "target_group" "a"];
+  "missing source group", [tx "source_group" "nope"];
+  "missing target group", [tx "target_group" "nope"];
+  "missing target group pack", [bo "pack" true; tx "target_group" "nope"];
+  "pack with source group", [bo "pack" true; tx "source_group" "a"];
+  "pack with piece", [bo "pack" true; tx "piece_attribute" "integer"];
+  "literal group", [tx "source_group" "literal \\*\\?\\[\\]\\^\\\\"];
+  "unicode group", [tx "target_group" "\195\169\231\140\171"] ]
+
+let bench () =
+  let source = Plane_generators.grid ~connectivity:Grid_quads ~columns:9 ~rows:9 ~size:1. () |> get_ok in
+  let n = 10_000 in
+  let targets = Kernel.generate_point_ranges n (fun ~first ~last ~x ~y ~z ->
+    for i = first to last - 1 do x.(i) <- float (i mod 100); y.(i) <- float (i / 100); z.(i) <- 0. done) in
+  [source; put Attribute.Point "pscale" (Attribute.Float (plane (fun i -> 0.5 +. float (i mod 3) *. 0.25) n)) targets], []
+let () = register { key = "copy_to_points"; native = Sop.Nodes.Copy_to_points.factory; inputs; cases; ulps = 4; bench = Some bench }

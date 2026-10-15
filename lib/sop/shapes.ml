@@ -1846,6 +1846,37 @@ module Copy_to_points = struct
 
 end
 
+(* The packed result a Lisp body cannot say on its own: the source unchanged, drawn at the affine rows
+   r0, r1, r2 (Point Float4 attributes of the second input, one point per instance; row 3 is 0 0 0 1). *)
+module Pack_instances = struct
+  type parameters = unit
+    [@@sop.node_key "pack_instances"] [@@sop.node_label "Pack Instances"]
+    [@@sop.node_category "Copy"] [@@sop.node_inputs 2] [@@sop.node_slots "source, instances"]
+    [@@deriving sop_params, sop_node]
+
+  let build = parameters_build (fun ~label _parameters source instances ->
+    Node.Private.make_geometry ~label ~operation:"pack_instances" ~version:1 ~parameters:""
+      ~cook_mode:Node.Generic ~dependencies:Context.Dependencies.static
+      ~inputs:[|source; instances|]
+      (fun ~node_id:_ _context inputs ->
+        let row name = match Rdk.Geometry.find_attribute ~owner:Rdk.Attribute.Point name inputs.(1) with
+          | Some attribute -> (match Rdk.Attribute.Private.storage attribute with
+              | Rdk.Attribute.Float4 values -> Ok (Rdk.Packed.Float4.Private.view values)
+              | _ -> Error (Diagnostic.error ~code:"invalid_attribute"
+                  (Printf.sprintf "pack_instances: %s must be point float4" name)))
+          | None -> Error (Diagnostic.error ~code:"invalid_attribute"
+              (Printf.sprintf "pack_instances: missing point attribute %s" name)) in
+        Result.bind (row "r0") (fun r0 -> Result.bind (row "r1") (fun r1 -> Result.bind (row "r2") (fun r2 ->
+          let transforms = Array.init (Array.length r0.x) (fun i ->
+            Rays_math.Mat4.of_rows (r0.x.(i), r0.y.(i), r0.z.(i), r0.w.(i))
+              (r1.x.(i), r1.y.(i), r1.z.(i), r1.w.(i)) (r2.x.(i), r2.y.(i), r2.z.(i), r2.w.(i))
+              (0., 0., 0., 1.)) in
+          Ok Node.Private.{ geometry = inputs.(0); diagnostics = []; instances = Some transforms })))))
+
+  let factory = parameters_factory build
+
+end
+
 module Spiral = struct
   open Rays_math
   let extent_parameter = Parameter.choice ~equal:( = ) [
