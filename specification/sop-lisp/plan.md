@@ -740,12 +740,12 @@ whole fused native pass. Three shared fixes are in (`3bffaa15`, `8ba568d7`,
 source has no edge groups. Projection: 2× is not reachable for reindexing
 nodes without ancestry-aware host operators.
 
-**Status 2026-10-15: 124/128 registered, 1 draft pending, 3 without a draft.**
+**Status 2026-10-15: 125/128 registered, 2 drafts pending, 1 without a draft.**
 The earlier per-session tables are superseded; each registration commit
 ("Register …", "port-draft <key>: PASS-SLOW Nx") records its gate and bench.
 
 Registered (Lisp body is the production node; the OCaml kernel stays in `lib/rdk` as the oracle):
-`attr_from_image`, `attribute_blur`, `attribute_composite`, `attribute_copy`, `attribute_fade`, `attribute_interpolate`, `attribute_laplacian`, `attribute_noise_quaternion`, `attribute_noise`, `attribute_randomize`, `attribute_remap`, `bend`, `blast_by_attribute`, `blast`, `blend_shapes`, `bound`, `box`, `carve`, `circle_from_edges`, `circle`, `color_by_height`, `compact_points`, `connectivity`, `convert_line`, `crease`, `delete_attributes`, `delete_edge_group`, `distance_along_geometry`, `distance_from_target`, `duplicate`, `edge_cusp`, `edge_divide`, `edge_equalize`, `edge_flip`, `edge_relax`, `edge_straighten`, `edge_transport_curves`, `edge_transport_parent`, `edge_transport`, `ends`, `enumerate`, `extract_centroid`, `extract_point_from_curve`, `graph_color`, `grid`, `group_backface`, `group_boundary_components`, `group_bounds`, `group_combine`, `group_copy`, `group_delete`, `group_edge_depth`, `group_edges`, `group_expand`, `group_find_path`, `group_from_attribute_boundary`, `group_invert`, `group_non_planar`, `group_normal`, `group_promote_boundary`, `group_promotions`, `group_random`, `group_range`, `group_ranges`, `group_rename`, `group_unshared`, `groups_from_name`, `line`, `match_axis`, `match_size`, `material`, `measure_curvature`, `measure`, `merge`, `mirror`, `mountain`, `name_from_groups`, `noise_displace`, `normals`, `ordered_group`, `peak`, `platonic`, `point_generate`, `point_jitter`, `point_replicate`, `point_split`, `point_velocity`, `points`, `poly_bridge`, `poly_loft`, `poly_path`, `polyframe`, `polywire`, `promote_attributes`, `rename_attributes`, `rename_edge_group`, `resample`, `rest_position`, `reverse`, `revolve`, `rewire_vertices`, `scatter`, `separate_pieces`, `set_color`, `set_float`, `set_int`, `set_orient`, `set_transform`, `set_vector`, `skin`, `smooth`, `snap_to_grid`, `sort`, `spiral`, `swap_attributes`, `sweep_circle`, `torus`, `transform`, `tube`, `uv_auto_seam`, `uv_project`, `uv_sphere`, `uv_transform`, `uv_unitize`.
+`attr_from_image`, `attribute_blur`, `attribute_composite`, `attribute_copy`, `attribute_fade`, `attribute_interpolate`, `attribute_laplacian`, `attribute_noise_quaternion`, `attribute_noise`, `attribute_randomize`, `attribute_remap`, `bend`, `blast_by_attribute`, `blast`, `blend_shapes`, `bound`, `box`, `carve`, `circle_from_edges`, `circle`, `color_by_height`, `compact_points`, `connectivity`, `convert_line`, `crease`, `delete_attributes`, `delete_edge_group`, `distance_along_geometry`, `distance_from_target`, `duplicate`, `edge_cusp`, `edge_divide`, `edge_equalize`, `edge_flip`, `edge_relax`, `edge_straighten`, `edge_transport_curves`, `edge_transport_parent`, `edge_transport`, `ends`, `enumerate`, `extract_centroid`, `extract_point_from_curve`, `graph_color`, `grid`, `group_backface`, `group_boundary_components`, `group_bounds`, `group_combine`, `group_copy`, `group_delete`, `group_edge_depth`, `group_edges`, `group_expand`, `group_find_path`, `group_from_attribute_boundary`, `group_invert`, `group_non_planar`, `group_normal`, `group_promote_boundary`, `group_promotions`, `group_random`, `group_range`, `group_ranges`, `group_rename`, `group_unshared`, `groups_from_name`, `line`, `match_axis`, `match_size`, `material`, `measure_curvature`, `measure`, `merge`, `mirror`, `mountain`, `name_from_groups`, `noise_displace`, `normals`, `ordered_group`, `peak`, `platonic`, `point_generate`, `point_jitter`, `point_replicate`, `point_split`, `point_velocity`, `points`, `poly_bridge`, `poly_loft`, `poly_path`, `polyframe`, `polywire`, `promote_attributes`, `rename_attributes`, `rename_edge_group`, `resample`, `rest_position`, `reverse`, `revolve`, `rewire_vertices`, `scatter`, `separate_pieces`, `set_color`, `set_float`, `set_int`, `set_orient`, `set_transform`, `set_vector`, `skin`, `smooth`, `snap_to_grid`, `sort`, `spiral`, `swap_attributes`, `sweep_circle`, `sweep`, `torus`, `transform`, `tube`, `uv_auto_seam`, `uv_project`, `uv_sphere`, `uv_transform`, `uv_unitize`.
 
 Pending drafts (`nodes/<key>.pending`):
 
@@ -774,6 +774,9 @@ clobbered byte (0.5% of glob class compiles, the flaky `E_ARRAY_RANGE` in `attri
 Fixed by reading the byte into a `let` first (40fc746d, stress test in `test_rdk_sources.ml`).
 Unaudited elsewhere: grep for a repeated `s.[i]` / `Bytes.get b i` inside an allocating
 constructor after a guard on the same index.
+
+Unexplained flake: `attribute_interpolate --full` failed once on "computed half / patterns vertex" and passed
+on rerun (2026-10-15); suspect the arm64 GC hazard below first.
 
 Known language limits found by the ports: `cond`/`if` over records ("Cooked selection cannot
 compile record"); a host call whose data-dependent array arguments are shared with a second host
@@ -863,6 +866,7 @@ before optimizing. The OCaml kernels remain in `lib/rdk` as oracles.
 | `ordered_group`, `groups_from_name` | >200× | | T |
 | `poly_path` | 363× | 353× | D, H |
 | `group_promotions` | 798× | | T, B |
+| `sweep` | 2943× | 8684× | worst port: staged maps through point carriers; nested calls hit the lowering budget |
 | `material` | n/a | n/a | not benched |
 
 Cause classes, from the profile of `reverse`, `compact_points` and an empty
