@@ -4,11 +4,11 @@
   (error "ordered_group_failed" "ordered_group could not produce valid geometry" :cause reason))
 (defn ordered_group_index :context value [(token : text)]
   (let* [parsed (text/to_int token)]
-    (if parsed.valid parsed.value (error "E_PARAM" (str "expected integer, got " (text/repr token))))))
+    (if parsed.valid parsed.value (error "E_PARAM" (str "sop/ordered_group: expected integer, got " (text/repr token))))))
 (defn ordered_group_normalize :context value [(raw : text)]
   (fold [out ""] [token (text/tokens raw)]
     (let* [element (ordered_group_index token)]
-      (if (int/lt element 0) (error "E_PARAM" (str "expected a non-negative element index, got " element))
+      (if (int/lt element 0) (error "E_PARAM" (str "sop/ordered_group: expected a non-negative element index, got " element))
         (if (equal? out "") (str element) (str out " " element))))))
 (defnode sop/ordered_group :label "Group Ordered" :category ["Group" "Create"]
   [(in0 : geometry)
