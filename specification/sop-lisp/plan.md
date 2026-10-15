@@ -761,6 +761,8 @@ No draft yet: `subdivide` (split the crack path first, E.6),
 
 Fidelity gap: `group_from_attribute_boundary` does not raise native's non-finite-attribute error
 (the gate has no non-finite fixture).
+`scatter` with a non-finite density attribute fails `E_NONFINITE` at the language boundary instead of
+native's `invalid_geometry`; its `--full` gate skipped most cases on the 4,225-point grid for time.
 
 Known language limits found by the ports: `cond`/`if` over records ("Cooked selection cannot
 compile record"); a host call whose data-dependent array arguments are shared with a second host
