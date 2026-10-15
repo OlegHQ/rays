@@ -6396,3 +6396,49 @@ gate details are in [planar-attribute-validation.md](planar-attribute-validation
 No new API, primitive, whole port or milestone is counted: 16/128 ports,
 112 remaining; 25/60 milestones. Grid and Circle remain unaccepted drafts.
 The owner's finish-and-stop request and pending drafts are recorded in plan.md.
+
+## Round close (E.R) — 2026-10-15
+
+**Count.** 128/128 target nodes are registered with Lisp bodies (`lib/flow_sop/nodes/*.rays`);
+none is pending or blocked. The 37 native registrations left in `sop_catalog.ml` are the 31
+retained OCaml nodes, 3 wiring nodes (`switch`, `null`, `exploded_view`) and 3 native carrier
+kinds added by the ports: `sop/image_texels` (pixels for `attr_from_image`),
+`sop/pack_instances` (pack-mode instances for `copy_to_points`) and `sop/subdivide_cracks`
+(partial-group crack closing and polyline refinement for `subdivide`). Per-node gate and bench
+results are in each "Register …" / "port-draft <key>" commit; the accepted speed regressions,
+fidelity gaps and language limits are in [plan.md](plan.md), Status.
+
+**Proof.** Each node passed its port gate (`lib/flow_sop/port_tests`, quick, and `--full` by the
+porting agent) against the native factory, then `@lib/sop_catalog/runtest @tools/lisp/test/runtest
+@lib/flow_sop/runtest` at registration. `iso_surface` is proved by the `PORT_ISO=1` oracle harness
+(bit-exact on 5 fields × 6 parameter sets), since the generic gate cannot feed a function slot.
+
+**Moved semantics.** `subdivide` delegates partial primitive groups and meshes holding polylines to
+`sop/subdivide_cracks`. `attribute_composite` and `blend_shapes` refuse more than 8 rest-slot
+inputs (native has no cap). Non-finite masks/densities in `blend_shapes` and `scatter` fail
+`E_NONFINITE` at the language boundary instead of the native node error.
+
+**Engine changes made for the ports this round.** Cook-time folds over cooked metadata
+(908b29f1); a 32768-term Core budget for structural geometry programs (8723fc83); strict executors
+reference-evaluate state-reading kernels at compile and force (e931dd89 and its follow-up);
+`sop/remap :lead_groups` (01b46e8c); `sop/context_seed :salt` (fd16b578); `text/glob_rewrite_set*`
+(f4c9c0ba); lowering-time fusion of adjacent single-map deformers, B.F (ea291467); declared
+elementwise/topology facts for opaque-select bodies (restores fusion after `transform`).
+
+**Defect found outside the ports.** OCaml 5.3.0 on arm64 kept a string-index address across an
+allocation in `Attribute_pattern.escaped_character`; a minor GC moved the string and the stale read
+flipped glob class bits (0.07–0.5% of compiles). Reproduced in a 16-line standalone program; fixed
+by reading the byte first (40fc746d), with a stress regression in `test_rdk_sources.ml`.
+
+**OCaml reachable only from tests.** 127 of the 128 replaced `Sop.Nodes.X` modules are referenced
+only by tests and port gates (`Sop.Nodes.Iso_surface` stays live: `lib/flow_sop/lower.ml` reads its
+factory fields). 41 `lib/rdk` modules are reached only from tests, directly or transitively:
+Attribute_composite, Attribute_fade, Blend_shapes, Bound, Circle_from_edges, Color_by_height,
+Crease, Curvature, Edge_constraints, Edge_flip, Edge_ops, Edge_relax, Group_mesh, Group_path,
+Laplacian, Match_size, Material_assign, Mirror_geometry, Motion, Parametric_generators,
+Plane_generators, Point_generate, Point_jitter, Point_replicate, Point_replication, Point_split,
+Poly_bridge, Poly_loft, Polyframe, Polywire, Resample_curves, Revolve, Rewire_vertices, Scatter,
+Separate_pieces, Spiral, Surface_metric, Sweep, Sweep_circle, Sweep_modeling, Uv_sphere.
+`Voronoi2` has no referrer at all. This is module-level; functions used only by replaced nodes
+inside still-live modules (`Attribute_ops`, `Group_ops`, `Transform_ops`, …) were not audited.
+They stay as oracles until the port gates are retired.

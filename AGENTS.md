@@ -41,8 +41,10 @@ Web export: `dune exec rays-lisp -- web FILE.rays -o DIR` emits a standalone bro
 application; `web --watch FILE.rays [-o DIR] [--port 8000]` previews and reloads it.
 Its scope is the 2D canvas only (`:context draw` graphs
 and the values that feed them). PXUI and the editor are never exported; they are editor chrome and
-stay native. `scene` and `sop` graphs are a later phase, after the majority of SOPs are written in
-Rays Lisp, since a node whose body is OCaml has nothing to export. Generated `image/map`
+stay native. `scene` and `sop` graphs are a later phase. 128 of the 162 SOP nodes now have Rays Lisp bodies
+(`lib/flow_sop/nodes/*.rays`; the replaced OCaml kernels stay in `lib/rdk` as test oracles); the
+31 nodes on exact predicates, spatial indexes and solvers, 3 wiring nodes and 3 native carriers stay
+OCaml and have nothing to export. Generated `image/map`
 images run as WebGPU kernels; `image/noise` preserves native double arithmetic, `image/render` uses
 offscreen WebGPU textures, and static `image/load` files are bundled using the native decoder. The design summary and the
 task plan are `specification/web-export/plan.md`.
