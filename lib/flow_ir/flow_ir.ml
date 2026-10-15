@@ -763,6 +763,9 @@ module Executor = struct
       | _ -> None in
     Result.bind (optimize (finish b [|root|])) (fun ir ->
       match if strict then Array.find_map (fun node -> match node.kind with
+        | Kernel {body = Reference r; _} when E.state_dependent (E.Residual r) ->
+            (* state-reading kernels are reference-evaluated by design (make_reference above) *)
+            None
         | Kernel {body = Reference r; _} ->
             let term=(E.Private.residual_view r).term in
             (match Core_lower.lower ~strict:true r with

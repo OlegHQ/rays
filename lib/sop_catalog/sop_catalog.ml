@@ -1,6 +1,5 @@
 module Switch = Sop.Nodes.Switch [@@sop.register]
 module Image_texels = Sop.Nodes.Image_texels [@@sop.register]
-module Iso_surface = Sop.Nodes.Iso_surface [@@sop.register]
 module Clip = Sop.Nodes.Clip [@@sop.register]
 module Edge_collapse = Sop.Nodes.Edge_collapse [@@sop.register]
 module Dissolve = Sop.Nodes.Dissolve [@@sop.register]

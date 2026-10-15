@@ -3,27 +3,23 @@
 ; counts its triangles (min(pop, 4 - pop) of its four corner bits), `scan_sum` places them, and vertices,
 ; orientation flips and (optionally) flat normals are computed per triangle edge. Triangles own their
 ; three vertices; N is a point attribute.
-(defn iso_kx :context value [(k : int)] (case k 1 1 2 1 5 1 6 1 :else 0))
-(defn iso_ky :context value [(k : int)] (case k 2 1 3 1 6 1 7 1 :else 0))
+(defn iso_kx :context value [(k : int)] (int/and (int/shr 102 k) 1))
+(defn iso_ky :context value [(k : int)] (int/and (int/shr 204 k) 1))
 (defn iso_kz :context value [(k : int)] (if (int/ge k 4) 1 0))
-; Cube corner of local tetrahedron vertex `local` (0..3) in tetrahedron `tet`.
+; Cube corner of local tetrahedron vertex `local` (0..3) in tetrahedron `tet`; 3-bit table per local vertex.
 (defn iso_corner :context value [(tet : int) (local : int)]
   (case local
     0 0
-    1 (case tet 0 1 1 2 2 3 3 7 4 4 :else 5)
-    2 (case tet 0 2 1 3 2 7 3 4 4 5 :else 1)
+    1 (int/and (int/shr 184017 (int/mul tet 3)) 7)
+    2 (int/and (int/shr 55770 (int/mul tet 3)) 7)
     :else 6))
-; Edge `e` of triangle `j` of marching-tetrahedra case `code`, as local pair p * 4 + q.
-(defn iso_edge :context value [(code : int) (j : int) (e : int)]
-  (let* [family (case code 1 1 14 1 2 2 13 2 4 3 11 3 8 4 7 4 3 5 12 5 5 6 10 6 :else 7)]
-    (case family
-      1 (case e 0 1 1 2 :else 3)
-      2 (case e 0 4 1 6 :else 7)
-      3 (case e 0 8 1 9 :else 11)
-      4 (case e 0 12 1 13 :else 14)
-      5 (if (int/eq j 0) (case e 0 2 1 3 :else 7) (case e 0 2 1 7 :else 6))
-      6 (if (int/eq j 0) (case e 0 1 1 3 :else 11) (case e 0 1 1 11 :else 9))
-      :else (if (int/eq j 0) (case e 0 1 1 2 :else 14) (case e 0 1 1 14 :else 13)))))
+; Marching-tetrahedra family (1..7) of a four-corner case code.
+(defn iso_family :context value [(code : int)]
+  (case code 1 1 14 1 2 2 13 2 4 3 11 3 8 4 7 4 3 5 12 5 5 6 10 6 :else 7))
+;; Edge `e` of triangle `j` of marching-tetrahedra family f, key = f * 2 + j (2..15): a 4-bit local pair p * 4 + q per key,
+; one 56-bit table per edge slot.
+(defn iso_edge :context value [(key : int) (e : int)]
+  (int/and (int/shr (case e 0 4803915762123793 1 63810654957037090 :else 62658315518965555) (int/mul (int/sub key 2) 4)) 15))
 (defn iso_origin :context value [(c : int) (rx : int) (ry : int) (nx : int) (plane : int)]
   (int/add (int/add (int/mod c rx) (int/mul nx (int/mod (int/div c rx) ry))) (int/mul plane (int/div c (int/mul rx ry)))))
 (defn iso_corner_index :context value [(i0 : int) (k : int) (nx : int) (plane : int)]
@@ -62,7 +58,11 @@
            (let* [x (int/mod i nx) y (int/mod (int/div i nx) ny) z (int/div i plane)]
              [(fma (float x) dx min_x) (fma (float y) dy min_y) (fma (float z) dz min_z)]))
            (array/range total :type int)))
-         samples (exact (map field lattice))
+         ; the field is sampled by a mesh kernel (sample in the x lane of a point cloud), so a field that reads
+         ; time, state or cooked geometry runs there and the rest of the body only reads cooked samples
+         carrier (sop/mesh :points (exact (map (fn [(p : vec3)] [(field p) 0.0 0.0]) lattice))
+                   :vertex_points (array/int 0) :primitive_offsets (array/int 1 0) :kinds (array/int 0 0))
+         samples (exact (map (fn [(p : vec3)] p.x) (sop/attr carrier "P")))
          indices (array/range total :type int)
          gx (exact (map (fn [(i : int)]
            (let* [x (int/mod i nx)
@@ -80,18 +80,22 @@
              (/ (- (array/nth samples hi) (array/nth samples lo)) (if (or (int/eq z 0) (int/eq z rz)) dz (* 2.0 dz)))))
            indices))
          cells (int/mul (int/mul rx ry) rz)
-         masks (exact (map (fn [(c : int)]
-           (let* [i0 (iso_origin c rx ry nx plane)
-                  b0 (if (>= (array/nth samples (iso_corner_index i0 0 nx plane)) iso) 1 0)
+         cell_ids (array/range cells :type int)
+         cell_origin (exact (map (fn [(c : int)] (iso_origin c rx ry nx plane)) cell_ids))
+         ; corner-above-iso bits of every cell, four corners per kernel
+         low_bits (exact (map (fn [(i0 : int)]
+           (let* [b0 (if (>= (array/nth samples (iso_corner_index i0 0 nx plane)) iso) 1 0)
                   b1 (if (>= (array/nth samples (iso_corner_index i0 1 nx plane)) iso) 2 0)
                   b2 (if (>= (array/nth samples (iso_corner_index i0 2 nx plane)) iso) 4 0)
-                  b3 (if (>= (array/nth samples (iso_corner_index i0 3 nx plane)) iso) 8 0)
-                  b4 (if (>= (array/nth samples (iso_corner_index i0 4 nx plane)) iso) 16 0)
+                  b3 (if (>= (array/nth samples (iso_corner_index i0 3 nx plane)) iso) 8 0)]
+             (int/or (int/or b0 b1) (int/or b2 b3)))) cell_origin))
+         high_bits (exact (map (fn [(i0 : int)]
+           (let* [b4 (if (>= (array/nth samples (iso_corner_index i0 4 nx plane)) iso) 16 0)
                   b5 (if (>= (array/nth samples (iso_corner_index i0 5 nx plane)) iso) 32 0)
                   b6 (if (>= (array/nth samples (iso_corner_index i0 6 nx plane)) iso) 64 0)
                   b7 (if (>= (array/nth samples (iso_corner_index i0 7 nx plane)) iso) 128 0)]
-             (int/or (int/or (int/or b0 b1) (int/or b2 b3)) (int/or (int/or b4 b5) (int/or b6 b7)))))
-           (array/range cells :type int)))
+             (int/or (int/or b4 b5) (int/or b6 b7)))) cell_origin))
+         masks (exact (map (fn [(lo : int) (hi : int)] (int/or lo hi)) low_bits high_bits))
          slots (int/mul cells 6)
          codes (exact (map (fn [(s : int)]
            (let* [mask (array/nth masks (int/div s 6)) tet (int/mod s 6)]
@@ -110,22 +114,29 @@
       (let* [owner (prim_of_vertex (array/slice offsets 0 slots) triangles)
              edge_count (int/mul triangles 3)
              edge_ids (array/range edge_count :type int)
-             ; pair (left corner, right corner) of every triangle edge, and the lattice index of each end
-             pair (exact (map (fn [(m : int)]
-               (let* [k (int/div m 3) e (int/mod m 3) s (array/nth owner k)
-                      j (int/sub k (array/nth offsets s))
-                      code (array/nth codes s) tet (int/mod s 6)
-                      pq (iso_edge code j e)]
-                 (int/or (int/shl (iso_corner tet (int/div pq 4)) 3) (iso_corner tet (int/mod pq 4)))))
+             tri_ids (array/range triangles :type int)
+             ; family * 2 + j of every triangle, then one table lookup per edge slot e (three small kernels)
+             families (exact (map (fn [(code : int)] (iso_family code)) codes))
+             keys (exact (map (fn [(k : int)]
+               (let* [s (array/nth owner k)]
+                 (int/add (int/mul (array/nth families s) 2) (int/sub k (array/nth offsets s)))))
+               tri_ids))
+             pq0 (exact (map (fn [(key : int)] (iso_edge key 0)) keys))
+             pq1 (exact (map (fn [(key : int)] (iso_edge key 1)) keys))
+             pq2 (exact (map (fn [(key : int)] (iso_edge key 2)) keys))
+             ; local pair p * 4 + q of every triangle edge, the cube corner at each end, then its lattice index
+             pairs (exact (map (fn [(m : int)]
+               (let* [k (int/div m 3) e (int/mod m 3)]
+                 (case e 0 (array/nth pq0 k) 1 (array/nth pq1 k) :else (array/nth pq2 k))))
                edge_ids))
-             left_index (exact (map (fn [(m : int) (p : int)]
-               (let* [s (array/nth owner (int/div m 3)) left (int/shr p 3)]
-                 (iso_corner_index (iso_origin (int/div s 6) rx ry nx plane) left nx plane)))
-               edge_ids pair))
-             right_index (exact (map (fn [(m : int) (p : int)]
-               (let* [s (array/nth owner (int/div m 3)) right (int/and p 7)]
-                 (iso_corner_index (iso_origin (int/div s 6) rx ry nx plane) right nx plane)))
-               edge_ids pair))
+             left_corner (exact (map (fn [(m : int) (pq : int)]
+               (iso_corner (int/mod (array/nth owner (int/div m 3)) 6) (int/div pq 4))) edge_ids pairs))
+             right_corner (exact (map (fn [(m : int) (pq : int)]
+               (iso_corner (int/mod (array/nth owner (int/div m 3)) 6) (int/mod pq 4))) edge_ids pairs))
+             origins (exact (map (fn [(m : int)]
+               (iso_origin (int/div (array/nth owner (int/div m 3)) 6) rx ry nx plane)) edge_ids))
+             left_index (exact (map (fn [(i0 : int) (c : int)] (iso_corner_index i0 c nx plane)) origins left_corner))
+             right_index (exact (map (fn [(i0 : int) (c : int)] (iso_corner_index i0 c nx plane)) origins right_corner))
              amount (exact (map (fn [(il : int) (ir : int)]
                (let* [denominator (- (array/nth samples ir) (array/nth samples il))]
                  (if (<= (abs denominator) 1e-15) 0.5
@@ -145,7 +156,6 @@
                       len (sqrt (fma nz2 nz2 (fma ny2 ny2 (* nx2 nx2))))]
                  (if (<= len 1e-18) [0.0 0.0 0.0] [(/ nx2 len) (/ ny2 len) (/ nz2 len)])))
                left_index right_index amount))
-             tri_ids (array/range triangles :type int)
              ; geometric normal (cross product of two edges) and whether the vertex order flips
              face (exact (map (fn [(k : int)]
                (let* [a (array/nth positions (int/mul k 3)) b (array/nth positions (int/add (int/mul k 3) 1))

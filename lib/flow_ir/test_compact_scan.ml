@@ -123,4 +123,11 @@ let ()=
   List.iteri(fun frame time->let live={(Frame_input.at_time time)with frame;tick=frame}in
     same(I.Executor.force ~strict:true ~state:a executor ~live)(E.Private.force_reference ~state:b stateful ~live);
     assert(E.state_stamp a=E.state_stamp b && bytes(E.Private.state_values a)=bytes(E.Private.state_values b))) [-1.;1.;-1.;1.;-1.];
+  (* A state-reading map is a reference kernel by design: strict compilation accepts it and matches the reference. *)
+  let reader=live_value "(let* [counter (state [s 0.] (+ s 1.))] (map (fn [x] (+ x counter)) (array/range 4)))"in
+  let a=E.create_state()and b=E.create_state()in
+  let executor=ok(I.Executor.compile ~strict:true reader)in
+  List.iter(fun frame->let live={(Frame_input.at_time 1.)with frame;tick=frame}in
+    same(I.Executor.force ~strict:true ~state:a executor ~live)(E.Private.force_reference ~state:b reader ~live);
+    assert(bytes(E.Private.state_values a)=bytes(E.Private.state_values b))) [0;1;2];
   print_endline "Compact/scan: kept indices, exclusive offset boundaries, Int wrap, immutable sources, lazy errors and strict/reference domains"
