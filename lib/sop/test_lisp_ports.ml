@@ -469,8 +469,8 @@ let metadata_port ?reference_input ?(extra_geometries=[]) ~key ~native_factory ~
   let catalog=Flow_sop.Catalog.of_factories ~nodes:[] ~version:Flow_sop.Manifest.version
     (native_factory::List.filter(fun factory->Sop.Edit_graph.factory_key factory<>key)Sop_catalog.Editor.factories)|>flow_ok in
   let wrong_inputs=["17","";"(image/noise :width 1 :height 1)",""]@
-    (if key="delete_attributes" then ["(sop/grid)"," :reference 17";
-      "(sop/grid)"," :reference (image/noise :width 1 :height 1)"] else []) in
+    (if key="delete_attributes" then ["(sop/iso_surface)"," :reference 17";
+      "(sop/iso_surface)"," :reference (image/noise :width 1 :height 1)"] else []) in
   List.iter(fun(input,keywords)->let forms=Flow.Syntax.parse(Printf.sprintf
       "(workspace invalid_edges (graph g :context sop (sop/%s %s%s)))"key input keywords)|>flow_ok in
     let errors(workspace,ds)=check(workspace=None)(key^": wrong input accepted");
