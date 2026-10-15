@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "a8927c73b6076abe9ad0e88c4e72908f")
+  (digest "37f1db8500f90f54d39bcdb7d6aca4fe")
   (kinds
     (kind "sop/switch"
       (key "switch")
@@ -13,19 +13,6 @@
         (field "input" "Source" (folder) (int (soft 0 9999) (hard 0 nil)) (int 0) (primary false) (vec3) (description "Input branch displayed and cooked by this Switch SOP")))
       (outputs (output "geo" geometry))
       (facts (cook-mode passthrough 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/attr_from_image"
-      (key "attr_from_image")
-      (aliases)
-      (operation "attr_from_image")
-      (label "Attribute from Image")
-      (category "Attribute" "Image")
-      (slots (slot "geometry" required) (slot "image" required image))
-      (fields
-        (field "attribute" "Attribute" (folder) (text) (text "image") (primary true) (vec3))
-        (field "channel" "Channel" (folder) (choice "r" "g" "b" "a" "luminance") (choice "r") (primary true) (vec3))
-        (field "uv" "UV attribute" (folder) (text) (text "uv") (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise points) (reads "uv") (writes "image") (topology preserved) (exact true)))
     (kind "sop/image_texels"
       (key "image_texels")
       (aliases)
@@ -899,6 +886,21 @@
         (field "noise_seed" "Noise seed" (folder "Noise") (int (soft 0 9999) (hard nil nil)) (int 0) (primary false) (vec3) (impact view)))
       (outputs (output "geo" geometry))
       (facts (cook-mode passthrough 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
+    (kind "sop/attr_from_image"
+      (key "attr_from_image")
+      (aliases)
+      (operation "attr_from_image")
+      (label "Attribute from Image")
+      (category "Attribute" "Image")
+      (slots (slot "geometry" required) (slot "image" required image))
+      (fields
+        (field "attribute" "Attribute" (folder) (text) (text "image") (primary true) (vec3))
+        (field "channel" "Channel" (folder) (choice "r" "g" "b" "a" "luminance") (choice "r") (primary true) (vec3))
+        (field "uv" "UV attribute" (folder) (text) (text "uv") (primary false) (vec3)))
+      (outputs (output "geo" geometry))
+      (facts (cook-mode generic) (elementwise points) (reads "uv") (writes "image") (topology preserved) (exact true))
+      (body lisp)
+      (calls "sop/image_texels"))
     (kind "sop/attribute_blur"
       (key "attribute_blur")
       (aliases)
