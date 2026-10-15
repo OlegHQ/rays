@@ -96,13 +96,13 @@
 (defn ac_elem :context value
   [(code : int) (first : bool) (present : bool) (has : bool) (wt : float) (o : float) (v : float) (m : float)]
   (cond
-    (int/eq code 0) (if present (if has (fma (* v wt) m o) (fma v wt o)) o)
+    (int/eq code 0) (if present (if has (+ o (* (* v wt) m)) (fma v wt o)) o)
     first (if present (if (and has (int/le code 2)) (* (* v wt) m) (* v wt)) o)
     (int/le code 2)
       (let* [c (if present (ac_cand has wt v m) 0.0)]
         (if (int/eq code 1) (if (> c o) c o) (if (< c o) c o)))
     (int/eq code 3) (if present (fma (* v wt) m (* o (- 1.0 m))) (* o (- 1.0 m)))
-    :else (if present (fma (* v wt) (- 1.0 m) (* o m)) (* o m))))
+    :else (if present (fma o m (* (* v wt) (- 1.0 m))) (* o m))))
 ; One plane of one input applied to the running output; any non-finite source, candidate or result is an error.
 (defn ac_plane :context value
   [(code : int) (first : bool) (present : bool) (has : bool) (wt : float)
@@ -136,9 +136,9 @@
          present (not (equal? fam ""))
          usable (or (ac_is_float fam) (equal? fam "position"))
          ; an absent or unusable source reads the working geometry; the kernels ignore it when not present
-         pg (sop/attr_planes g name :owner owner)
-         out (sop/attr_planes a name :owner owner)
          use (and present usable)
+         pg (sop/attr_planes (if use g a) name :owner owner)
+         out (sop/attr_planes a name :owner owner)
          src (ac_planes_type (if use pg.width out.width) (if use pg.x out.x) (if use pg.y out.y)
                (if use pg.z out.z) (if use pg.w out.w))]
     (cond
@@ -227,9 +227,15 @@
          c2 (if (equal? layer2 nil) c1 (ac_collect c1 layer2 detail_attributes primitive_attributes point_attributes vertex_attributes))
          c3 (if (equal? layer3 nil) c2 (ac_collect c2 layer3 detail_attributes primitive_attributes point_attributes vertex_attributes))
          c4 (if (equal? layer4 nil) c3 (ac_collect c3 layer4 detail_attributes primitive_attributes point_attributes vertex_attributes))
-         c5 (fold [cc c4] [q (range nrest)]
-              (ac_collect cc (nth layers q) detail_attributes primitive_attributes point_attributes vertex_attributes))
-         entries (ac_finish c5)
+         c5 (if (int/gt nrest 0) (ac_collect c4 (nth layers 0) detail_attributes primitive_attributes point_attributes vertex_attributes) c4)
+         c6 (if (int/gt nrest 1) (ac_collect c5 (nth layers 1) detail_attributes primitive_attributes point_attributes vertex_attributes) c5)
+         c7 (if (int/gt nrest 2) (ac_collect c6 (nth layers 2) detail_attributes primitive_attributes point_attributes vertex_attributes) c6)
+         c8 (if (int/gt nrest 3) (ac_collect c7 (nth layers 3) detail_attributes primitive_attributes point_attributes vertex_attributes) c7)
+         c9 (if (int/gt nrest 4) (ac_collect c8 (nth layers 4) detail_attributes primitive_attributes point_attributes vertex_attributes) c8)
+         c10 (if (int/gt nrest 5) (ac_collect c9 (nth layers 5) detail_attributes primitive_attributes point_attributes vertex_attributes) c9)
+         c11 (if (int/gt nrest 6) (ac_collect c10 (nth layers 6) detail_attributes primitive_attributes point_attributes vertex_attributes) c10)
+         c12 (if (int/gt nrest 7) (ac_collect c11 (nth layers 7) detail_attributes primitive_attributes point_attributes vertex_attributes) c11)
+         entries (ac_finish c12)
          e_rank entries.owners
          e_name entries.names
          e_kind entries.kinds
@@ -249,15 +255,20 @@
          p2 (if (equal? layer2 nil) p1 (ac_pass_m p1 layer2 false weight2 input operation alpha_name mean_ranks es e_rank e_name e_kind))
          p3 (if (equal? layer3 nil) p2 (ac_pass_m p2 layer3 false weight3 input operation alpha_name mean_ranks es e_rank e_name e_kind))
          p4 (if (equal? layer4 nil) p3 (ac_pass_m p3 layer4 false weight4 input operation alpha_name mean_ranks es e_rank e_name e_kind))
-         p5 (fold [acc5 p4] [q (range nrest)]
-              (ac_pass_m acc5 (nth layers q) false (if (int/lt q ne) (array/nth extra q) 1.0)
-                input operation alpha_name mean_ranks es e_rank e_name e_kind))
-         divided (fold [a p5] [j mean_entries]
+         p5 (if (int/gt nrest 0) (ac_pass_m p4 (nth layers 0) false (if (int/lt 0 ne) (array/nth extra 0) 1.0) input operation alpha_name mean_ranks es e_rank e_name e_kind) p4)
+         p6 (if (int/gt nrest 1) (ac_pass_m p5 (nth layers 1) false (if (int/lt 1 ne) (array/nth extra 1) 1.0) input operation alpha_name mean_ranks es e_rank e_name e_kind) p5)
+         p7 (if (int/gt nrest 2) (ac_pass_m p6 (nth layers 2) false (if (int/lt 2 ne) (array/nth extra 2) 1.0) input operation alpha_name mean_ranks es e_rank e_name e_kind) p6)
+         p8 (if (int/gt nrest 3) (ac_pass_m p7 (nth layers 3) false (if (int/lt 3 ne) (array/nth extra 3) 1.0) input operation alpha_name mean_ranks es e_rank e_name e_kind) p7)
+         p9 (if (int/gt nrest 4) (ac_pass_m p8 (nth layers 4) false (if (int/lt 4 ne) (array/nth extra 4) 1.0) input operation alpha_name mean_ranks es e_rank e_name e_kind) p8)
+         p10 (if (int/gt nrest 5) (ac_pass_m p9 (nth layers 5) false (if (int/lt 5 ne) (array/nth extra 5) 1.0) input operation alpha_name mean_ranks es e_rank e_name e_kind) p9)
+         p11 (if (int/gt nrest 6) (ac_pass_m p10 (nth layers 6) false (if (int/lt 6 ne) (array/nth extra 6) 1.0) input operation alpha_name mean_ranks es e_rank e_name e_kind) p10)
+         p12 (if (int/gt nrest 7) (ac_pass_m p11 (nth layers 7) false (if (int/lt 7 ne) (array/nth extra 7) 1.0) input operation alpha_name mean_ranks es e_rank e_name e_kind) p11)
+         divided (fold [a p12] [j mean_entries]
                    (ac_divide a (ac_owner_name (array/nth e_rank j)) (array/nth e_name j)))
          cleaned (sop/delete_attrs divided :point "__ac_den" :vertex "__ac_den" :primitive "__ac_den" :detail "__ac_den")
          has_p listed
-         point_part (ac_part c5 2)
-         vertex_part (ac_part c5 3)
+         point_part (ac_part c12 2)
+         vertex_part (ac_part c12 3)
          point_n (int/ge (array/nth (array/index_of point_part.names (array/text 1 "N")) 0) 0)
          vertex_n (int/ge (array/nth (array/index_of vertex_part.names (array/text 1 "N")) 0) 0)
          ; the delete runs once or not at all: a fold over a zero- or one-element array

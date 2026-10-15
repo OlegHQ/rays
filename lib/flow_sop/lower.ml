@@ -237,7 +237,7 @@ let rec lower_checked ~factories ?(provenance_tags = true) ?(reference = false) 
       Sop.Node.Private.with_facts {(Sop.Node.facts node) with reads=(if operation="sop/remap" || operation="sop/concat" || operation="sop/with_planes" then ["*"] else Attribute_kernel.reads data);
         writes=["*"];topology=Changed;elementwise=None}node in
     let structural_node residual captures =
-      let program=match Flow_ir.Core_lower.lower ~strict:true residual with
+      let program=match Flow_ir.Core_lower.lower ~strict:true ~budget:32768 residual with
         |Ok program->program|Error name->fail "E_PACKED_FORM" ("Cooked selection cannot compile "^name^".") in
       let prepared=Flow_ir.Core_exec.prepare program in
       let inputs=Array.of_list(List.map(fun(_,_,node)->node)captures) in

@@ -79,10 +79,10 @@ let constant_storage (program:C.program) =
 
 (* [draw] writes the program's statements in place of lowering one residual; only a residual
    reached through [value] forces [root], which then stands for the whole evaluation. *)
-let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
+let lower_with ?budget ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
   let constants = ref [] and locals = ref [] and next_constant = ref 0
   and next_local = ref 0 and next_statement = ref 0 in
-  let budget = ref (if draw = None then 2048 else 32768) and active = Hashtbl.create 8 in
+  let budget = ref (match budget with Some b->b|None->if draw = None then 2048 else 32768) and active = Hashtbl.create 8 in
   let calls = Hashtbl.create 8 and next_call = ref 0 and next_function = ref (-1) in
   let mixed_numeric = Hashtbl.create 8 in
   let current=ref None in
@@ -1454,5 +1454,5 @@ let lower_with ~strict ~region_allowed ~draw (root : E.residual Lazy.t) =
   with Unsupported name -> Error name
     | V.Fail _ | V.Diagnostic_fail _ | Not_found | Invalid_argument _ | Failure _ -> Error "constant"
 
-let lower ?(strict=false) root = lower_with ~strict ~region_allowed:(fun _ -> true) ~draw:None (Lazy.from_val root)
+let lower ?(strict=false) ?budget root = lower_with ?budget ~strict ~region_allowed:(fun _ -> true) ~draw:None (Lazy.from_val root)
 let lower_draw ?(region_allowed=fun _ -> true) ~root build = lower_with ~strict:false ~region_allowed ~draw:(Some build) root

@@ -39,6 +39,10 @@ let () =
     | E.Residual r -> assert (Flow_ir.Core_lower.lower r = Error name)
     | _ -> assert false)
     ["(let* [a0 t " ^ String.concat " " (List.init 1100 (fun i -> Printf.sprintf "a%d (+ a%d t)" (i+1) i)) ^ "] a1100)","budget"];
+  (* a larger [~budget] admits the same program (cooked geometry folds are interpreted at cook time) *)
+  (match List.assoc "g" (ok (E.static (checked ("(let* [a0 t " ^ String.concat " " (List.init 1100 (fun i -> Printf.sprintf "a%d (+ a%d t)" (i+1) i)) ^ "] a1100)")))).results with
+   | E.Residual r -> assert (Result.is_ok (Flow_ir.Core_lower.lower ~budget:32768 r))
+   | _ -> assert false);
   let observed=ref false in
   ignore (ok (E.Private.static_with_kernels ~observe:(fun r ->
     match (E.Private.residual_view r).term.node with
