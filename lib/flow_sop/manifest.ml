@@ -103,10 +103,13 @@ let lisp_node ~calls (node : Flow.Defnode.t) =
       | true, true -> "rest" | false, true -> "optional-rest")] in
     group "slot" (if ty = "geometry" then parts else parts @
       [if Flow.Symbol.valid_name ty then ty else quote ty])) node.slots in
+  let resolve = Flow.Check.resolve_component_names (fun name ->
+    List.find_map (fun (field : Param.field_view) -> match field.default with
+      | Param.Text_value text when field.name = name -> Some text | _ -> None) node.fields) in
   let declaration = Option.map (fun (f : Flow.Check.kernel_facts) -> Sop.Node.{
     cook_mode = (if node.slots = [] then Generator else Generic);
     elementwise = (match f.elementwise with Points -> Points | Primitives -> Primitives | Irregular -> None);
-    reads = f.reads; writes = f.writes;
+    reads = resolve f.reads; writes = resolve f.writes;
     topology = (if f.preserves_topology then Preserved else Changed); exact = f.exact}) node.kind.facts in
   entry ?facts:declaration ~qualified:node.kind.qualified ~key ~operation:node.operation
     ~label:node.label ~category:node.category ~slots ~fields:node.fields

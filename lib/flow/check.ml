@@ -27,6 +27,17 @@ and term_node =
 
 let symbol form = match form.Syntax.node with Syntax.Sym name -> Some name | _ -> None
 let list form = match form.Syntax.node with Syntax.List items -> Some items | _ -> None
+let resolve_component_names lookup names =
+  List.filter_map (fun name ->
+    if name = "" || name.[0] <> '$' then Some name else
+    let body = String.sub name 1 (String.length name - 1) in
+    let param, fallback = match String.index_opt body '|' with
+      | Some i -> String.sub body 0 i, Some (String.sub body (i + 1) (String.length body - i - 1))
+      | None -> body, None in
+    match Option.map String.trim (lookup param) with
+    | Some value when value <> "" -> Some value
+    | _ -> fallback) names
+
 let short qualified = match String.split_on_char '/' qualified with
   | [_; name] -> name | _ -> qualified
 

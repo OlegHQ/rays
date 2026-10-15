@@ -749,22 +749,42 @@ let rec lower_checked ~factories ?(provenance_tags = true) ?(reference = false) 
           else dependencies in
         let owned = Sop.Graph.inspect compiled |> List.filter (fun (node : Sop.Graph.info) ->
           not (String.starts_with ~prefix:"lisp_capture_" node.operation)) in
-        let preserved = List.for_all (fun (node : Sop.Graph.info) ->
-          node.facts.topology=Sop.Node.Preserved) owned in
-        let input_count = List.length inputs in
-        let components declared inferred =
-          let inferred = List.sort_uniq String.compare inferred in
-          List.filter (fun name -> List.mem name inferred) declared
-          @ List.filter (fun name -> not (List.mem name declared)) inferred in
         let declared = definition.kind.facts in
+        (* A declared [:facts] is the node's contract, as the native factory's was: the body's
+           selection root reads "*" and replaces topology on paper, which would otherwise defeat
+           component caching for every node that declares it. Session still refuses an
+           undeclared write or a replaced topology at cook time. *)
+        let preserved = match declared with
+          | Some facts -> facts.preserves_topology
+          | None -> List.for_all (fun (node : Sop.Graph.info) ->
+              node.facts.topology=Sop.Node.Preserved) owned in
+        let input_count = List.length inputs in
+        let resolve names = Check.resolve_component_names (fun name ->
+          match List.assoc_opt name parameters with Some (E.Text text) -> Some text | _ -> None) names in
+        (* Declared names (parameter-named ones resolved), then what the body's attribute kernels
+           name themselves. Behind a wildcard (a selection root) only the declaration speaks;
+           otherwise only what the body reads counts. *)
+        let components declared names =
+          let inferred = List.sort_uniq String.compare
+            (List.concat_map (fun (node : Sop.Graph.info) -> names node.facts) owned) in
+          match declared with
+          | None -> inferred
+          | Some declared ->
+              let declared = resolve declared in
+              if List.mem "*" inferred then
+                declared @ List.filter (fun name -> name <> "*" && not (List.mem name declared)) inferred
+              else
+                List.filter (fun name -> List.mem name inferred) declared
+                @ List.filter (fun name -> not (List.mem name declared)) inferred in
         let facts = Sop.Node.{
           cook_mode=(if input_count=0 then Generator else if preserved && input_count=1
             then Duplicate_input 0 else Generic);
-          elementwise=(if preserved then (Sop.Node.facts compiled).elementwise else None);
-          reads=List.concat_map (fun (node : Sop.Graph.info) -> node.facts.reads) owned
-            |> components (Option.fold ~none:[] ~some:(fun (f : Check.kernel_facts) -> f.reads) declared);
-          writes=List.concat_map (fun (node : Sop.Graph.info) -> node.facts.writes) owned
-            |> components (Option.fold ~none:[] ~some:(fun (f : Check.kernel_facts) -> f.writes) declared);
+          elementwise=(match declared with
+            | Some f when preserved -> (match f.elementwise with
+                | Check.Points -> Points | Primitives -> Primitives | Irregular -> None)
+            | _ -> if preserved then (Sop.Node.facts compiled).elementwise else None);
+          reads=components (Option.map (fun (f : Check.kernel_facts) -> f.reads) declared) (fun f -> f.reads);
+          writes=components (Option.map (fun (f : Check.kernel_facts) -> f.writes) declared) (fun f -> f.writes);
           topology=(if preserved then Preserved else Changed);
           exact=Option.fold ~none:true ~some:(fun (facts : Check.kernel_facts) -> facts.exact)
             definition.kind.facts && List.for_all (fun (node : Sop.Graph.info) -> node.facts.exact) owned} in

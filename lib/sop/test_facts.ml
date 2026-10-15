@@ -196,10 +196,7 @@ let test_declarations () =
   let image = Image_nodes.noise ~width:1 ~height:1 () in
   let evaluator = session () in
   let preserved = ref [] in
-  List.iter (fun factory ->
-    let node = Edit_graph.instantiate_optional factory
-      (List.map (function "image" -> Some image | _ -> Some source)
-        (Edit_graph.factory_input_types factory)) |> get in
+  let verify key node =
     let declaration = Node.facts node in
     if declaration.topology = Node.Preserved && declaration.cook_mode = Node.Duplicate_input 0 then begin
       let input = (Result.get_ok (Sop.Payload.geometry (cook evaluator 1 source).payload)) in
@@ -210,8 +207,18 @@ let test_declarations () =
       check (Geometry.topology one == Geometry.topology input)
         (Node.operation node ^ " replaced Preserved topology");
       check (geometry_bytes one = geometry_bytes eight) (Node.operation node ^ " differs at eight domains");
-      preserved := Edit_graph.factory_key factory :: !preserved
-    end) factories;
+      preserved := key :: !preserved
+    end in
+  List.iter (fun factory ->
+    verify (Edit_graph.factory_key factory) (Edit_graph.instantiate_optional factory
+      (List.map (function "image" -> Some image | _ -> Some source)
+        (Edit_graph.factory_input_types factory)) |> get)) factories;
+  (* Ported nodes have no factory: the same contract is checked through the Lisp node. *)
+  List.iter (fun key ->
+    verify key (Lisp_sop.node ~with_:["source", source]
+      (Printf.sprintf "(sop/%s (sop/ext_source))" key)))
+    ["transform"; "noise_displace"; "peak"; "bend"; "mountain"; "normals"; "attribute_noise";
+     "attribute_noise_quaternion"; "color_by_height"];
   List.iter (fun name -> check (List.mem name !preserved) (name ^ " lacks a Preserved declaration"))
     ["transform"; "soft_transform"; "noise_displace"; "peak"; "bend"; "mountain";
      "normals"; "attribute_noise"; "attribute_noise_quaternion"; "color_by_height"];
