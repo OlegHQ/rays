@@ -775,6 +775,11 @@ instance was lowered twice and re-specialized every prelude helper (d03a92ff), w
 `test_workspace_cook` from about 19 min to about 3 min. An explicit `~sources` library is pruned to
 the reachable definitions unless `~library:true`.
 
+Lost fusion (unfixed): a Lisp node's `elementwise` fact comes from its compiled root
+(`lower.ml`), so `sop/transform` no longer reports `Points` and a downstream attribute kernel
+reading it runs as 1 stage instead of 3 fused (`test_attribute_kernel.ml`, 8b5813b8). Outputs
+are still exact; re-derive the fact from the body's owned nodes to restore fusion.
+
 ### Speed regressions accepted with the ports
 
 Owner decision 6 (2026-10-13): these nodes are registered with Lisp bodies
