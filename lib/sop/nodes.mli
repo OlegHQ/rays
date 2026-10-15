@@ -151,6 +151,7 @@ module Boolean_fracture : sig val factory : Edit_graph.factory end
 module Intersection_analysis : sig val factory : Edit_graph.factory end
 module Fuse : sig val factory : Edit_graph.factory end
 module Subdivide : sig val factory : Edit_graph.factory end
+module Subdivide_cracks : sig val factory : Edit_graph.factory end
 module Boolean : sig val factory : Edit_graph.factory end
 module Boolean_detect : sig val factory : Edit_graph.factory end
 module Duplicate : sig val factory : Edit_graph.factory end

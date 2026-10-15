@@ -150,6 +150,7 @@ module Boolean_fracture = Sop_topology.Boolean_fracture
 module Intersection_analysis = Sop_topology.Intersection_analysis
 module Fuse = Sop_topology.Fuse
 module Subdivide = Sop_topology.Subdivide
+module Subdivide_cracks = Sop_topology.Subdivide_cracks
 module Boolean = Sop_topology.Boolean
 module Boolean_detect = Sop_topology.Boolean_detect
 module Duplicate = Shapes.Duplicate

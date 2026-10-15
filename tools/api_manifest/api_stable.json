@@ -4708,6 +4708,9 @@
         "module Subdivide : sig",
         "val factory : Edit_graph.factory",
         "end",
+        "module Subdivide_cracks : sig",
+        "val factory : Edit_graph.factory",
+        "end",
         "module Boolean : sig",
         "val factory : Edit_graph.factory",
         "end",
@@ -4751,7 +4754,7 @@
         "val factory : Edit_graph.factory",
         "end"
       ],
-      "api_sha256": "e086dbaad43d9383aa2eff00953e5f85f117481f996c70eb427ec516f50efe7c",
+      "api_sha256": "d19b147fc8974a867fd23cf4a9b3efcb4053d3653d8039307c9376ff24d24875",
       "excluded_legacy_symbols": [],
       "library": "sop",
       "module": "Nodes",

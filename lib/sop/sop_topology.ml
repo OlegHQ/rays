@@ -3157,6 +3157,197 @@ module Subdivide = struct
   let factory = parameters_factory build
 end
 
+module Subdivide_cracks = struct
+  let scheme_parameter = Parameter.choice ~equal:( = ) [
+      "Catmull-Clark", Rdk.Subdivide.Catmull_clark;
+      "Loop", Rdk.Subdivide.Loop;
+      "Bilinear", Rdk.Subdivide.Bilinear;
+    ]
+
+  let cracks_parameter = Parameter.choice ~equal:( = ) [
+      "Do not close", Cracks_do_not_close;
+      "Pull, no edge division", Cracks_pull_no_division;
+      "Pull, divide edges", Cracks_pull_divide;
+      "Pull, triangulate", Cracks_pull_triangulate;
+      "Stitch, no edge division", Cracks_stitch_no_division;
+      "Stitch, divide edges", Cracks_stitch_divide;
+      "Stitch, triangulate", Cracks_stitch_triangulate;
+    ]
+
+  let boundary_parameter = Parameter.choice ~equal:( = ) [
+      "None", Rdk.Subdivide.Subdivide_boundary_none;
+      "Edge only", Rdk.Subdivide.Subdivide_boundary_edge_only;
+      "Edge and corner", Rdk.Subdivide.Subdivide_boundary_edge_and_corner;
+    ]
+
+  let fvar_parameter = Parameter.choice ~equal:( = ) [
+      "None", Rdk.Subdivide.Subdivide_fvar_none;
+      "Corners only", Rdk.Subdivide.Subdivide_fvar_corners_only;
+      "Corners plus 1", Rdk.Subdivide.Subdivide_fvar_corners_plus1;
+      "Corners plus 2", Rdk.Subdivide.Subdivide_fvar_corners_plus2;
+      "Boundaries", Rdk.Subdivide.Subdivide_fvar_boundaries;
+      "All", Rdk.Subdivide.Subdivide_fvar_all;
+    ]
+
+  let triangle_parameter = Parameter.choice ~equal:( = ) [
+      "Catmull-Clark", Rdk.Subdivide.Subdivide_triangles_catmull_clark;
+      "Smooth", Rdk.Subdivide.Subdivide_triangles_smooth;
+    ]
+
+  let creasing_parameter = Parameter.choice ~equal:( = ) [
+      "Uniform", Rdk.Subdivide.Subdivide_creasing_uniform;
+      "Chaikin", Rdk.Subdivide.Subdivide_creasing_chaikin;
+    ]
+
+  type parameters = {
+    group : string [@sop.default ""] [@sop.label "Primitive group"];
+    scheme : Rdk.Subdivide.scheme
+      [@sop.default Rdk.Subdivide.Catmull_clark]
+      [@sop.label "Scheme"] [@sop.kind scheme_parameter];
+    iterations : int [@sop.default 1] [@sop.label "Depth"]
+      [@sop.min 1] [@sop.max 6] [@sop.hard_min 1];
+    cracks : Support.subdivision_cracks [@sop.default Cracks_do_not_close]
+      [@sop.label "Close cracks"] [@sop.kind cracks_parameter];
+    crack_bias : float [@sop.default 0.5] [@sop.label "Pull bias"]
+      [@sop.folder "Cracks"] [@sop.min 0.] [@sop.max 1.];
+    consistent_topology : bool [@sop.default false]
+      [@sop.label "Consistent topology"] [@sop.folder "Cracks"];
+    crease_group : string [@sop.default ""] [@sop.label "Crease group"]
+      [@sop.folder "Creases"];
+
+    crease_weight_mode : Support.kernel_mode [@sop.default Kernel_explicit] [@sop.label "Crease weight mode"]
+      [@sop.folder "Creases"] [@sop.kind kernel_mode_parameter];
+    crease_weight : float [@sop.default 1.] [@sop.label "Crease weight"]
+      [@sop.folder "Creases"] [@sop.min 0.] [@sop.max 10.]
+      [@sop.hard_min 0.];
+    generate_resulting_creases : bool [@sop.default false]
+      [@sop.label "Generate resulting creases"] [@sop.folder "Creases"];
+    resulting_crease_group : string [@sop.default ""]
+      [@sop.label "Resulting crease group"] [@sop.folder "Creases"];
+    hole_group : string [@sop.default "subdivision_hole"]
+      [@sop.label "Hole group"] [@sop.folder "Holes"];
+    remove_holes : bool [@sop.default false] [@sop.label "Remove holes"]
+      [@sop.folder "Holes"];
+    boundary_interpolation : Rdk.Subdivide.boundary_interpolation
+      [@sop.default Rdk.Subdivide.Subdivide_boundary_edge_and_corner]
+      [@sop.label "Point boundaries"] [@sop.folder "Interpolation"]
+      [@sop.kind boundary_parameter];
+    face_varying_interpolation :
+      Rdk.Subdivide.face_varying_interpolation
+      [@sop.default Rdk.Subdivide.Subdivide_fvar_boundaries]
+      [@sop.label "Vertex boundaries"] [@sop.folder "Interpolation"]
+      [@sop.kind fvar_parameter];
+    triangle_policy : Rdk.Subdivide.triangle_policy
+      [@sop.default Rdk.Subdivide.Subdivide_triangles_catmull_clark]
+      [@sop.label "Triangles"] [@sop.folder "Interpolation"]
+      [@sop.kind triangle_parameter];
+    creasing_method : Rdk.Subdivide.creasing_method
+      [@sop.default Rdk.Subdivide.Subdivide_creasing_uniform]
+      [@sop.label "Creasing method"] [@sop.folder "Creases"]
+      [@sop.kind creasing_parameter];
+    treat_curves_as_independent : bool [@sop.default false]
+      [@sop.label "Treat curves independently"];
+    recompute_point_normals : bool [@sop.default false]
+      [@sop.label "Recompute point normals"];
+  } [@@sop.node_key "subdivide_cracks"] [@@sop.node_label "Subdivide Cracks"]
+
+    [@@sop.validate fun parameters ->
+      let refuse message = invalid_arg ("sop/subdivide_cracks: " ^ message) in
+      if parameters.iterations < 1 then refuse "iterations must be positive";
+      if not (Float.is_finite parameters.crack_bias) || parameters.crack_bias < 0. || parameters.crack_bias > 1. then refuse "crack bias must be finite and in [0, 1]";
+      if not (Float.is_finite parameters.crease_weight) || parameters.crease_weight < 0. then refuse "crease weight must be finite and nonnegative";
+      if not parameters.generate_resulting_creases && String.trim parameters.resulting_crease_group <> "" then
+        refuse "resulting crease group requires generated creases"]
+    [@@sop.node_category "Topology"] [@@sop.node_inputs 2] [@@sop.node_slots "input, creases"]
+    [@@sop.node_optional "1"]
+    [@@deriving sop_params, sop_node]
+
+  let build = parameters_build (fun ~label parameters input creases ->
+    if Option.is_none creases && String.trim parameters.crease_group <> "" then
+      invalid_arg "sop/subdivide_cracks: crease group requires a crease input";
+    let label = Some label in
+    let group = parameters.group in
+    let scheme = parameters.scheme in
+    let iterations = parameters.iterations in
+    let cracks = parameters.cracks in
+    let crack_bias = parameters.crack_bias in
+    let consistent_topology = parameters.consistent_topology in
+    let crease_group = parameters.crease_group in
+    let crease_weight_mode = parameters.crease_weight_mode in
+    let crease_weight = parameters.crease_weight in
+    let generate_resulting_creases = parameters.generate_resulting_creases in
+    let resulting_crease_group = parameters.resulting_crease_group in
+    let hole_group = parameters.hole_group in
+    let remove_holes = parameters.remove_holes in
+    let boundary_interpolation = parameters.boundary_interpolation in
+    let face_varying_interpolation = parameters.face_varying_interpolation in
+    let triangle_policy = parameters.triangle_policy in
+    let creasing_method = parameters.creasing_method in
+    let treat_curves_as_independent = parameters.treat_curves_as_independent in
+    let recompute_point_normals = parameters.recompute_point_normals in
+    let cracks = match cracks with
+      | Cracks_do_not_close -> Rdk.Subdivide.Subdivide_do_not_close
+      | Cracks_pull_no_division -> Rdk.Subdivide.Subdivide_pull_no_edge_division
+      | Cracks_pull_divide -> Rdk.Subdivide.Subdivide_pull_divide_edges crack_bias
+      | Cracks_pull_triangulate -> Rdk.Subdivide.Subdivide_pull_triangulate crack_bias
+      | Cracks_stitch_no_division -> Rdk.Subdivide.Subdivide_stitch_no_edge_division
+      | Cracks_stitch_divide -> Rdk.Subdivide.Subdivide_stitch_divide_edges
+      | Cracks_stitch_triangulate -> Rdk.Subdivide.Subdivide_stitch_triangulate in
+    let group = optional_text group and crease_group = optional_text crease_group
+    and resulting_crease_group = optional_text resulting_crease_group and hole_group = optional_text hole_group in
+    let crease_weight = match crease_weight_mode with Kernel_auto -> None | Kernel_explicit -> Some crease_weight in
+    let inputs = match creases with None -> [|input|] | Some creases -> [|input; creases|] in
+    Node.Private.make_geometry ?label ~operation:"subdivide_cracks" ~version:13
+      ~parameters:""
+      ~cook_mode:(match creases with None -> Node.Duplicate_input 0 | Some _ -> Node.Generic)
+      ~dependencies:Context.Dependencies.static ~inputs
+      (fun ~node_id:_ context inputs ->
+        let geometry = inputs.(0) in
+        let selection = match group with
+          | None -> Ok None
+          | Some name ->
+              (match Rdk.Geometry.find_group ~owner:Rdk.Group.Primitive name geometry with
+               | Some group -> Ok (Some group)
+               | None -> Error (Diagnostic.error ~code:"missing_group"
+                   (Printf.sprintf "subdivide could not find primitive group %S" name))) in
+        let crease_selection = match creases, crease_group with
+          | None, _ | Some _, None -> Ok None
+          | Some _, Some name ->
+              let creases = inputs.(1) in
+              (match Rdk.Geometry.find_group ~owner:Rdk.Group.Primitive name creases with
+               | Some group -> Ok (Some group)
+               | None -> Error (Diagnostic.error ~code:"missing_group"
+                   (Printf.sprintf
+                     "subdivide could not find crease primitive group %S" name))) in
+        let hole_selection = match hole_group with
+          | None -> Ok None
+          | Some name ->
+              (match Rdk.Geometry.find_group ~owner:Rdk.Group.Primitive name geometry with
+               | Some group -> Ok (Some group)
+               | None -> Error (Diagnostic.error ~code:"missing_group"
+                   (Printf.sprintf "subdivide could not find hole primitive group %S"
+                     name))) in
+        match selection, crease_selection, hole_selection with
+        | Error error, _, _ -> Error error
+        | _, Error error, _ -> Error error
+        | _, _, Error error -> Error error
+        | Ok primitives, Ok crease_primitives, Ok hole_primitives ->
+            match Rdk.Subdivide.subdivide ~cancel:(Context.cancel_token context)
+                ~grain:(Context.grain context) ~scheme ~iterations ?primitives
+                ~cracks ~consistent_topology
+                ?creases:(Option.map (fun _ -> inputs.(1)) creases)
+                ?crease_primitives ?crease_weight ~generate_resulting_creases
+                ?resulting_crease_group ?hole_primitives ~remove_holes
+                ~boundary_interpolation ~face_varying_interpolation
+                ~triangle_policy ~creasing_method ~treat_curves_as_independent
+                ~recompute_point_normals
+                geometry with
+            | Ok geometry -> cooked geometry
+            | Error error -> structured_rdk_error error)
+  )
+  let factory = parameters_factory build
+end
+
 module Boolean = struct
 
   let operation_parameter = Parameter.choice ~equal:( = ) [
