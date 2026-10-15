@@ -616,8 +616,14 @@ let run () =
     "custom snapshot repeated intrinsic identity hits";
   Session.close intrinsic_session;
   let schema_only = Lisp_sop.node {|(sop/grid)|} in
-  check (Node.Private.cache_parameters schema_only = "" && Node.parameters schema_only <> ""
-      && Node.parameter_key schema_only <> "") "schema-only nodes keep display text outside intrinsic cache identity";
+  (* A Lisp node's intrinsic identity is its body digest; its schema values are the separate
+     parameter key, so editing a parameter moves the key and leaves the intrinsic part alone. *)
+  let schema_edited, _ = Node.apply_parameters schema_only ["columns", Param.Int_value 3] |> Result.get_ok in
+  check (Node.Private.cache_parameters schema_only <> "" && Node.parameters schema_only <> ""
+      && Node.parameter_key schema_only <> ""
+      && Node.Private.cache_parameters schema_edited = Node.Private.cache_parameters schema_only
+      && Node.parameter_key schema_edited <> Node.parameter_key schema_only)
+    "schema-only nodes keep display text outside intrinsic cache identity";
   let quat_base = Lisp_sop.node {|(-> (sop/grid :columns 3 :rows 3)
      (sop/group_range :name "selected" :range_mode "From ends")
      (sop/group_range :owner "Vertices" :name "selected" :range_mode "From ends")
