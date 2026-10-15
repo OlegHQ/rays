@@ -29,9 +29,10 @@
          sloc (exact (map (fn [(s : int) (c : int)] (int/sub s (array/nth coff c))) srows sc))
          svtx (exact (map (fn [(c : int) (l : int)] (int/add (array/nth first c) l)) sc sloc))
          spt (int_gather tvp svtx)
-         pos (sop/attr geo "P")
+         pd (sop/attr_checked geo "P")
+         pos (sw_safe_v pd.values)
          spos (exact (map (fn [(p : int)] (array/nth pos p)) spt))]
-    {:nc nc :prims prims :cnt cnt :closed closed :bad bad :coff coff :sc sc :sloc sloc :svtx svtx :spt spt
+    {:nc nc :prims prims :cnt cnt :closed closed :bad (int/add bad (sw_invalid pd.valid spt)) :coff coff :sc sc :sloc sloc :svtx svtx :spt spt
      :spos spos :scnt (int_gather cnt sc) :sclosed (int_gather closed sc)}))
 
 ; ---- edges of the selected curves: next vertex, unit edge, length, arc length and curve totals ----

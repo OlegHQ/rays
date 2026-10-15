@@ -1,6 +1,9 @@
 (* sop/sweep: two inputs (backbone, cross_section) of polyline curves. Fixtures: open and closed backbones and
-   profiles of irregular lengths with attributes and groups on every owner (the node carries them under
-   a prefix), and backbones carrying the optional frame attributes (pscale, scale, N, up, orient). *)
+   profiles of irregular lengths with attributes and groups on every owner (carried under the prefix), backbones
+   carrying the optional frame attributes (pscale, scale, N, up, orient) and every refusal (polygon, zero-length
+   edge, reversal, bad or non-finite attributes and positions). Dropped on purpose: a NUL in the prefix (the
+   checker cannot spell one) and NaN attribute values (the gate compares NaN attributes unequal even to
+   themselves, so a successful cook with one never matches native). *)
 open Rdk
 open Port_gate
 open Port_loft_support
@@ -56,7 +59,11 @@ let reversal_backbone () =
   let topology = Topology.create_owned ~point_count:3 ~vertex_points:[|0;1;2|] ~primitive_offsets:[|0;3|]
     ~primitive_kinds:[|Topology.Open_polyline|] |> ok in
   Geometry.create ~positions ~topology () |> ok
-let nan_pscale () = with_point "pscale" (Attribute.Float (Array.make 4 Float.nan)) (small_backbone ())
+let nan_position () =
+  let positions = Packed.Float3.of_owned ~x:[|0.; 1.; Float.nan; 3.|] ~y:[|0.; 0.; 0.; 1.|] ~z:[|0.; 0.; 0.; 0.|] |> ok in
+  let topology = Topology.create_owned ~point_count:4 ~vertex_points:[|0;1;2;3|] ~primitive_offsets:[|0;4|]
+    ~primitive_kinds:[|Topology.Open_polyline|] |> ok in
+  Geometry.create ~positions ~topology () |> ok
 let int_pscale () = with_point "pscale" (Attribute.Int (Array.make 4 1)) (small_backbone ())
 let zero_normal () = with_point "N" (f3 4 (fun _ -> 0.) (fun _ -> 0.) (fun _ -> 0.)) (small_backbone ())
 let parallel_up () = (* the up vector equals the first tangent direction approximately: exactly along the edge *)
@@ -81,7 +88,7 @@ let inputs = [
   "zero edge", [degenerate_backbone (); profile ()];
   "zero edge profile", [backbone (); degenerate_backbone ()];
   "reversal", [reversal_backbone (); profile ()];
-  "nan pscale", [nan_pscale (); small_profile ()];
+  "nan position", [nan_position (); small_profile ()];
   "int pscale", [int_pscale (); small_profile ()];
   "zero normal", [zero_normal (); small_profile ()];
   "parallel up", [parallel_up (); small_profile ()];
@@ -155,6 +162,6 @@ let cases =
   "nan scale refused", [fl "scale" Float.nan];
 ]
 
-let inputs = match Sys.getenv_opt "SWEEP_FIX" with None -> inputs | Some n -> List.filter (fun (l, _) -> l = n) inputs
-let cases = match Sys.getenv_opt "SWEEP_CASE" with None -> cases | Some n -> List.filter (fun (l, _) -> l = n) cases
-let () = register { key = "sweep"; native = Sop.Nodes.Sweep.factory; inputs; cases; ulps = 4; bench = None }
+(* 1,000,000 output points: a 1,000-vertex open backbone swept with a 1,000-vertex closed profile (quads). *)
+let bench () = [build [sec ~kind:open_k 1000 0.]; build [sec ~kind:closed_k 1000 0. ~radius:0.3]], []
+let () = register { key = "sweep"; native = Sop.Nodes.Sweep.factory; inputs; cases; ulps = 4; bench = Some bench }
