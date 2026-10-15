@@ -78,6 +78,20 @@ let depends ?(op="sop/context_seed") ?(inputs=[]) ?(defs=[]) (graph:W.graph) =
     let select (t:W.term)=match t.node with
       | W.If (test,yes,no)->(match known bindings test with
           | Some (Flow.Eval.Bool true)->yes|Some (Bool false)->no|_->t)
+      | Cond (arms,default) ->
+          (* An arm whose test is known false never runs; the first known-true arm is the result. *)
+          let rec live = function
+            | [] -> [], None
+            | ((test:W.term),yes)::rest ->
+                (match known bindings test with
+                 | Some (Flow.Eval.Bool false) -> live rest
+                 | Some (Bool true) -> [], Some yes
+                 | _ -> let arms,taken = live rest in (test,yes)::arms, taken) in
+          (match live arms with
+           | [], Some yes -> yes
+           | [], None -> default
+           | arms, Some yes -> {t with node=Cond (arms,yes)}
+           | arms, None -> {t with node=Cond (arms,default)})
       | Call_fn call ->
           (match List.find_opt (fun (d:W.graph) -> d.name=call.fn) defs with
            | Some helper ->
