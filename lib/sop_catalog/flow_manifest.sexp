@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "7b3666921b7c7d88000bc047950a185b")
+  (digest "0af458d55cbc696ab3d17105d84754d3")
   (kinds
     (kind "sop/switch"
       (key "switch")
@@ -241,20 +241,6 @@
         (field "make_planar" "Make planar" (folder) (bool) (bool false) (primary false) (vec3))
         (field "post_compute_normals" "Post-compute normals" (folder "Normals") (bool) (bool false) (primary false) (vec3))
         (field "reverse_normals" "Reverse normals" (folder "Normals") (bool) (bool false) (primary false) (vec3)))
-      (outputs (output "geo" geometry))
-      (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
-    (kind "sop/edge_flip"
-      (key "edge_flip")
-      (aliases)
-      (operation "edge_flip")
-      (label "Edge Flip")
-      (category "Topology" "Edge")
-      (slots (slot "in0" required))
-      (fields
-        (field "group" "Edge group" (folder) (text) (text "") (primary false) (vec3))
-        (field "cycles" "Cycles" (folder) (int (soft 0 16) (hard 0 nil)) (int 1) (primary false) (vec3))
-        (field "cycle_vertex_attributes" "Cycle vertex attributes" (folder) (bool) (bool true) (primary false) (vec3))
-        (field "recompute_point_normals" "Recompute point normals" (folder) (bool) (bool false) (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/remesh"
@@ -1684,6 +1670,21 @@
       (outputs (output "geo" geometry))
       (body lisp)
       (calls))
+    (kind "sop/edge_flip"
+      (key "edge_flip")
+      (aliases)
+      (operation "edge_flip")
+      (label "Edge Flip")
+      (category "Topology" "Edge")
+      (slots (slot "in0" required))
+      (fields
+        (field "group" "Edge group" (folder) (text) (text "") (primary false) (vec3))
+        (field "cycles" "Cycles" (folder) (int (soft 0 16) (hard 0 nil)) (int 1) (primary false) (vec3))
+        (field "cycle_vertex_attributes" "Cycle vertex attributes" (folder) (bool) (bool true) (primary false) (vec3))
+        (field "recompute_point_normals" "Recompute point normals" (folder) (bool) (bool false) (primary false) (vec3)))
+      (outputs (output "geo" geometry))
+      (body lisp)
+      (calls "sop/normals"))
     (kind "sop/edge_relax"
       (key "edge_relax")
       (aliases)
