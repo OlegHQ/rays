@@ -319,7 +319,7 @@
   (cond (<= parent 0.0) 0.0
         (int/le count 1) (max 0.0 (- parent 1.0))
         :else (let* [others (/ (- total parent) (float (int/sub count 1)))]
-                (max 0.0 (- (fma 0.75 parent (* 0.25 others)) 1.0)))))
+                (max 0.0 (- (fma 0.25 others (* 0.75 parent)) 1.0)))))
 ; Crease plan: edge sharpness, child sharpness (two per edge, by endpoint), vertex classification before and
 ; after the pass, transition factors and edge factors.
 (defn sd_cplan :context value
@@ -686,6 +686,88 @@
          made (sop/with_group g union :name "subdivision_hole" :owner "primitive")]
     (sop/delete_group made (if (and (not has) (int/eq (array/sum fb) 0)) "subdivision_hole" "") :owner "primitive")))
 
+; ---- crease input (native apply_crease_input) ----
+(defn sd_cfail :context value [(reason : text)]
+  (error "invalid_topology" "subdivide could not produce valid geometry"
+    :cause (str "subdivide [invalid_topology]: Rdk_mesh.Subdivide.subdivide: " reason)))
+(defn sd_finite_ge0 :context value [(x : float)] (if (and (= (- x x) 0.0) (>= x 0.0)) 0 1))
+; Sharpness a crease corner contributes: the override, else the larger of its vertex and primitive weights.
+(defn sd_contrib :context value
+  [(cvw : (array float)) (cpw : (array float)) (pov : (array int)) (ov : float) (c : int)]
+  (if (>= ov 0.0) ov (max (array/nth cvw c) (array/nth cpw (array/nth pov c)))))
+(defn sd_cinput :context sop
+  [(src : geometry) (cr : geometry) (selname : text) (has_sel : bool) (ov : float)]
+  (let* [sadj (sop/adjacency src) stop (sop/topology src)
+         cadj (sop/adjacency cr) ctop (sop/topology cr)
+         edges (sop/count src :edges) cedges (sop/count cr :edges)
+         verts (sop/count src :vertices) cverts (sop/count cr :vertices)
+         sp (sop/count src :points) cp (sop/count cr :points)
+         prims (sop/count src :primitives) cprims (sop/count cr :primitives)
+         ident (if (and (int/eq sp cp) (and (int/eq verts cverts) (int/eq prims cprims)))
+                 (if (and (int/eq (array/sum (exact (map (fn [(a : int) (b : int)] (if (int/eq a b) 0 1)) stop.vertex_points ctop.vertex_points))) 0)
+                          (and (int/eq (array/sum (exact (map (fn [(a : int) (b : int)] (if (int/eq a b) 0 1)) stop.primitive_offsets ctop.primitive_offsets))) 0)
+                               (int/eq (array/sum (exact (map (fn [(a : int) (b : int)] (if (int/eq a b) 0 1)) stop.kinds ctop.kinds))) 0)))
+                   1 0)
+                 0)
+         has_cvw (sop/has_attr cr "creaseweight" :owner "vertex" :type float)
+         has_cpw (sop/has_attr cr "creaseweight" :owner "primitive" :type float)
+         any_cvw (sop/has_attr cr "creaseweight" :owner "vertex")
+         any_cpw (sop/has_attr cr "creaseweight" :owner "primitive")
+         cvw (if has_cvw (sop/attr cr "creaseweight" :owner "vertex" :type float) (array/float cverts))
+         cpw (if has_cpw (sop/attr cr "creaseweight" :owner "primitive" :type float) (array/float cprims))
+         bad_weights (int/add (array/sum (exact (map (fn [(x : float)] (sd_finite_ge0 x)) cvw)))
+                              (array/sum (exact (map (fn [(x : float)] (sd_finite_ge0 x)) cpw))))
+         contributes (or (>= ov 0.0) (or has_cvw has_cpw))
+         csel (if has_sel (sop/group cr :name selname :owner "primitive") (array/int cprims 1))
+         cv (array/range cverts :type int)
+         cweights (exact (map (fn [(c : int)] (sd_contrib cvw cpw cadj.primitive_of_vertex ov c)) cv))
+         csel_v (exact (map (fn [(c : int)] (array/nth csel (array/nth cadj.primitive_of_vertex c))) cv))
+         cev (sd_ev cadj cedges cverts)
+         ce (array/range cedges :type int)
+         eflag (exact (map (fn [(e : int)]
+           (let* [c0 (array/nth cev.first e) c1 (array/nth cev.second e)]
+             (if (or (int/eq (array/nth csel_v c0) 1) (and (int/ge c1 0) (int/eq (array/nth csel_v (if (int/ge c1 0) c1 0)) 1))) 1 0))) ce))
+         ew (exact (map (fn [(e : int)]
+           (let* [c0 (array/nth cev.first e) c1 (array/nth cev.second e)
+                  s0 (int/eq (array/nth csel_v c0) 1)
+                  s1 (and (int/ge c1 0) (int/eq (array/nth csel_v (if (int/ge c1 0) c1 0)) 1))
+                  w0 (array/nth cweights c0)
+                  w1 (array/nth cweights (if (int/ge c1 0) c1 0))]
+             (cond (and s0 s1) (max w0 w1) s0 w0 s1 w1 :else 0.0))) ce))
+         k (int/add (if (int/gt sp cp) sp cp) 1)
+         skeys (exact (map (fn [(e : int)] (int/add (int/mul (array/nth sadj.edge_a e) k) (array/nth sadj.edge_b e))) (array/range edges :type int)))
+         qkeys (exact (map (fn [(e : int)] (int/add (int/mul (array/nth cadj.edge_a e) k) (array/nth cadj.edge_b e))) ce))
+         found (if (int/eq ident 1) (array/range cedges :type int) (array/index_of skeys qkeys))
+         target (exact (map (fn [(f : int) (s : int)] (if (and (int/eq f 1) (int/ge s 0)) s edges)) eflag found))
+         aflag (array/scatter_add target (array/int cedges 1) (int/add edges 1))
+         aw (array/scatter_add target ew (int/add edges 1))
+         has_svw (sop/has_attr src "creaseweight" :owner "vertex" :type float)
+         has_spw (sop/has_attr src "creaseweight" :owner "primitive" :type float)
+         svw (if has_svw (sop/attr src "creaseweight" :owner "vertex" :type float) (array/float verts))
+         spw (if has_spw (sop/attr src "creaseweight" :owner "primitive" :type float) (array/float prims))
+         sev (sd_ev sadj edges verts)
+         er (array/range edges :type int)
+         base (exact (map (fn [(e : int)]
+           (let* [v0 (array/nth sev.first e) v1 (array/nth sev.second e)]
+             (max (max (array/nth svw v0) (if (int/ge v1 0) (array/nth svw v1) 0.0))
+                  (max (array/nth spw (array/nth sadj.primitive_of_vertex v0))
+                       (if (int/ge v1 0) (array/nth spw (array/nth sadj.primitive_of_vertex v1)) 0.0))))) er))
+         sharp (exact (map (fn [(e : int)] (if (int/gt (array/nth aflag e) 0) (array/nth aw e) (array/nth base e))) er))
+         changed (int/gt (array/sum (exact (map (fn [(e : int)]
+           (if (and (int/gt (array/nth aflag e) 0) (not (= (array/nth base e) (array/nth aw e)))) 1 0)) er))) 0)
+         cvals (exact (map (fn [(e : int)] (if (int/ge e 0) (array/nth sharp e) 0.0)) sadj.edge_of_vertex))
+         stage (sop/delete_attrs src :primitive "creaseweight")
+         written (sop/with_attr stage "creaseweight" cvals :owner "vertex" :type float)]
+    (cond
+      (or (and any_cvw (not has_cvw)) (and any_cpw (not has_cpw)))
+        (sd_cfail "second-input creaseweight must use float storage")
+      (int/gt bad_weights 0) (sd_cfail "second-input creaseweight values must be finite and non-negative")
+      (and (< ov 0.0) (and (or has_cvw has_cpw) (int/eq ident 0)))
+        (sd_cfail "creaseweight attributes require the source and crease inputs to have identical topology")
+      (not contributes) src
+      (and (not changed) (and has_svw (not has_spw))) src
+      :else written)))
+
 ; ---- one pass ----
 ; The arrays a pass needs: stencil, output maps and crease plan.
 (defn sd_plan :context sop
@@ -724,7 +806,7 @@
             :cp {:pk (array int) :ck (array int) :pa (array int) :pb (array int) :ca (array int) :cb (array int)
                  :factor (array float) :ef (array float) :child (array float)}
             :cw (array float) :unit (array int)})
-   (scheme : int) (ov : float) (genres : bool)]
+   (scheme : int) (ov : float) (genres : bool) (final : bool) (rname : text)]
   (let* [points tp.points edges tp.edges
          outputs (if (int/eq scheme 1) (int/add points edges) (int/add (int/add points edges) tp.prims))
          has_vw (sop/has_attr g "creaseweight" :owner "vertex")
@@ -767,11 +849,18 @@
          no_cw (sop/delete_attrs cw_set :point cw_need)
          edge_crease (if (or (>= ov 0.0) (or has_vw has_pw)) 1 0)
          child_any (if (int/gt (array/sum (exact (map (fn [(w : float)] (if (> w 0.0) 1 0)) plan.cp.child))) 0) 1 0)
-         need_res (if (and genres (int/eq (int/mul edge_crease child_any) 1)) "" "creaseweight")
+         needi (if (and genres (int/eq (int/mul edge_crease child_any) 1)) 1 0)
+         need_res (if (int/eq needi 1) "" "creaseweight")
          resvals (exact (map (fn [(i : int)] (sd_resval plan.om.ve vpo tp.ea plan.cp.child points sides i)) (array/range corners :type int)))
-         with_res (sop/with_attr no_cw "creaseweight" resvals :owner "vertex" :type float)]
-    (sop/delete_attrs with_res :vertex need_res)))
-(defmacro sd_pass [src scheme bmode tri method ov genres rm]
+         with_res (sop/with_attr no_cw "creaseweight" resvals :owner "vertex" :type float)
+         kept (sop/delete_attrs with_res :vertex need_res)
+         eflag (exact (map (fn [(r : float)] (if (and (int/eq needi 1) (> r 0.0)) 1 0)) resvals))
+         ecnt (array/scatter_add leaving eflag (int/add tedges 1))
+         emask (exact (map (fn [(e : int)] (if (int/gt (array/nth ecnt e) 0) 1 0)) (array/range tedges :type int)))]
+    (if (and final (not (text/blank? rname)))
+      (sop/with_group kept emask :name rname :owner "edge")
+      kept)))
+(defmacro sd_pass [src scheme bmode tri method ov genres rm final rname]
   `(let* [sdp_tp# (sd_tables ~src)
           sdp_topo# (sop/topology ~src)
           sdp_code# (sd_check sdp_tp# sdp_topo#.kinds (sop/attr ~src "P") ~scheme)]
@@ -787,7 +876,7 @@
               sdp_pn# (sop/group_names ~src "*" :owner "point")
               sdp_vn# (sop/group_names ~src "*" :owner "vertex")
               sdp_fn# (sop/group_names ~src "*" :owner "primitive")
-              sdp_0# (sd_stage ~src sdp_tp# sdp_plan# ~scheme ~ov ~genres)
+              sdp_0# (sd_stage ~src sdp_tp# sdp_plan# ~scheme ~ov ~genres ~final ~rname)
               sdp_1# (fold [sdp_a# sdp_0#] [sdp_i# (array/range (array/count sdp_pe#.name) :type int)]
                        (sd_attr_p sdp_a# ~src (array/nth sdp_pe#.name sdp_i#) (array/nth sdp_pe#.type sdp_i#)
                          sdp_tp# sdp_plan# ~scheme))
@@ -801,7 +890,36 @@
          (fold [sdp_e# sdp_4#] [sdp_m# (array/range (array/count sdp_fn#) :type int)]
            (sd_group_f sdp_e# ~src (array/nth sdp_fn# sdp_m#) sdp_om#))))))
 
+; The native sop/subdivide_cracks kind: the partial-group crack path, and polygon-curve meshes.
+(defn sd_delegate :context sop
+  [(geo : geometry) (cr : geometry) (has_cr : bool) (group : text) (scheme : text) (iterations : int) (cracks : text)
+   (crack_bias : float) (consistent_topology : bool) (crease_group : text) (crease_weight_mode : text)
+   (crease_weight : float) (generate_resulting_creases : bool) (resulting_crease_group : text) (hole_group : text)
+   (remove_holes : bool) (boundary_interpolation : text) (face_varying_interpolation : text)
+   (triangle_policy : text) (creasing_method : text) (treat_curves_as_independent : bool)
+   (recompute_point_normals : bool)]
+  (if has_cr
+    (sop/subdivide_cracks geo cr :group group :scheme scheme :iterations iterations :cracks cracks
+      :crack_bias crack_bias :consistent_topology consistent_topology :crease_group crease_group
+      :crease_weight_mode crease_weight_mode :crease_weight crease_weight
+      :generate_resulting_creases generate_resulting_creases :resulting_crease_group resulting_crease_group
+      :hole_group hole_group :remove_holes remove_holes :boundary_interpolation boundary_interpolation
+      :face_varying_interpolation face_varying_interpolation :triangle_policy triangle_policy
+      :creasing_method creasing_method :treat_curves_as_independent treat_curves_as_independent
+      :recompute_point_normals recompute_point_normals)
+    (sop/subdivide_cracks geo :group group :scheme scheme :iterations iterations :cracks cracks
+      :crack_bias crack_bias :consistent_topology consistent_topology :crease_group crease_group
+      :crease_weight_mode crease_weight_mode :crease_weight crease_weight
+      :generate_resulting_creases generate_resulting_creases :resulting_crease_group resulting_crease_group
+      :hole_group hole_group :remove_holes remove_holes :boundary_interpolation boundary_interpolation
+      :face_varying_interpolation face_varying_interpolation :triangle_policy triangle_policy
+      :creasing_method creasing_method :treat_curves_as_independent treat_curves_as_independent
+      :recompute_point_normals recompute_point_normals)))
 (defnode sop/subdivide :label "Subdivide" :category ["Topology"]
+  :validate (and (and (int/ge iterations 1) (and (>= crack_bias 0.0) (<= crack_bias 1.0)))
+                 (and (and (= (- crease_weight crease_weight) 0.0) (>= crease_weight 0.0))
+                      (or generate_resulting_creases (text/blank? (text/trim resulting_crease_group)))))
+  :code "E_PARAM" :message "sop/subdivide: invalid parameters"
   [(input : geometry)
    (creases : geometry :required false)
    (group : text "" :label "Primitive group")
@@ -828,17 +946,54 @@
          tri (if (equal? triangle_policy "Smooth") 1 0)
          method (if (equal? creasing_method "Chaikin") 1 0)
          explicit (equal? crease_weight_mode "Explicit")
+         has_creases (not (equal? creases nil))
+         sel_name (text/trim group)
+         has_sel (not (text/blank? sel_name))
+         sel_found (fold [found false] [probe (sop/group_names input "*" :owner "primitive")] (or found (equal? probe sel_name)))
+         csel_name (text/trim crease_group)
+         csel_blank (text/blank? csel_name)
+         has_csel (and has_creases (not csel_blank))
+         csel_found (if has_csel
+                      (fold [found false] [probe (sop/group_names creases "*" :owner "primitive")] (or found (equal? probe csel_name)))
+                      true)
          hole_name (text/trim hole_group)
          has_hole (not (text/blank? hole_name))
-         hole_found (fold [found false] [probe (sop/group_names input "*" :owner "primitive")] (or found (equal? probe hole_name)))]
+         hole_found (fold [found false] [probe (sop/group_names input "*" :owner "primitive")] (or found (equal? probe hole_name)))
+         rname (text/trim resulting_crease_group)
+         rlit (fold [l ""] [probe (array/text 1 (if (text/blank? rname) "x" rname))] (text/glob_literal probe))
+         has_rname (not (text/blank? rname))
+         topo (sop/topology input)
+         kinds topo.kinds
+         had_n (sop/has_attr input "N" :owner "point")]
     (cond
+      (and (not has_creases) (not csel_blank))
+        (error "invalid_argument" "sop/subdivide: crease group requires a crease input")
+      (and has_sel (not sel_found))
+        (error "missing_group" (str "subdivide could not find primitive group " (text/repr sel_name)))
+      (not csel_found)
+        (error "missing_group" (str "subdivide could not find crease primitive group " (text/repr csel_name)))
       (and has_hole (not hole_found))
         (error "missing_group" (str "subdivide could not find hole primitive group " (text/repr hole_name)))
+      (int/gt (array/sum kinds) 0)
+        (sd_delegate input creases has_creases group scheme iterations cracks crack_bias consistent_topology crease_group crease_weight_mode crease_weight generate_resulting_creases resulting_crease_group hole_group remove_holes boundary_interpolation face_varying_interpolation triangle_policy creasing_method treat_curves_as_independent recompute_point_normals)
       :else
-      (let* [p1 (if has_hole (sd_copy_hole input hole_name) input)
-             p2 (if (and (int/eq bmode 0) (not (int/eq scheme_i 2))) (sd_bholes p1) p1)]
-        (fold [acc p2] [i (array/range iterations :type int)]
-          (sd_pass acc scheme_i bmode tri method
-            (if (and explicit (int/eq i 0)) crease_weight -1.0)
-            (or generate_resulting_creases (int/lt i (int/sub iterations 1)))
-            (and remove_holes (int/eq i (int/sub iterations 1)))))))))
+      (let* [p0 (if has_creases (sd_cinput input creases csel_name has_csel (if explicit crease_weight -1.0)) input)
+             p1 (if has_hole (sd_copy_hole p0 hole_name) p0)
+             p2 (if (and (int/eq bmode 0) (not (int/eq scheme_i 2))) (sd_bholes p1) p1)
+             p3 (if (and has_rname (int/ge iterations 1)) (sop/with_group (sop/delete_group p2 rlit :owner "edge") (array/int (sop/count p2 :edges) 0) :name rname :owner "edge") p2)
+             prims (sop/count input :primitives)
+             smask (if has_sel (sop/group input :name sel_name :owner "primitive") (array/int prims 1))
+             hmask (if (and remove_holes (sd_has_hole p3)) (sop/group p3 :name "subdivision_hole" :owner "primitive") (array/int prims 0))
+             card (array/sum (exact (map (fn [(s : int) (h : int)] (if (or (int/eq s 1) (int/eq h 1)) 1 0)) smask hmask)))]
+        (cond
+          (and has_sel (int/eq card 0)) input
+          (and has_sel (int/lt card prims)) (sd_delegate input creases has_creases group scheme iterations cracks crack_bias consistent_topology crease_group crease_weight_mode crease_weight generate_resulting_creases resulting_crease_group hole_group remove_holes boundary_interpolation face_varying_interpolation triangle_policy creasing_method treat_curves_as_independent recompute_point_normals)
+          :else
+          (let* [result (fold [acc p3] [i (array/range iterations :type int)]
+            (sd_pass acc scheme_i bmode tri method
+              (if (and (and explicit (not has_creases)) (int/eq i 0)) crease_weight -1.0)
+              (or generate_resulting_creases (int/lt i (int/sub iterations 1)))
+              (and remove_holes (int/eq i (int/sub iterations 1)))
+              (int/eq i (int/sub iterations 1))
+              rname))]
+            (if (and recompute_point_normals had_n) (sop/normals result :owner "Point" :weighting "Face area") result)))))))
