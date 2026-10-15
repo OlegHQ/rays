@@ -1,0 +1,245 @@
+; Whole Edge Flip draft (Rdk.Edge_flip). Every selected edge must join two distinct, consistently wound polygons;
+; the two polygons are re-cut along the rotated diagonal (shift = cycles mod ring size) and, when asked, their
+; vertex attributes are cycled. All errors share one code, so the plan is checked as one pass of array maps:
+; per-edge preconditions, the claim of each primitive by at most one planned edge, no repeated point in the
+; joined boundary, a diagonal that is new, finite and non-degenerate, and polygons that still triangulate.
+; The output is one sop/remap: vertex attributes and groups follow the vertex map, edge groups follow an
+; explicit ancestry (the flipped edge inherits the source edge it replaces), N is dropped and optionally
+; recomputed by the Normal node's face-area point mode.
+(defn ef_error :context value [(reason : text)]
+  (error "invalid_topology" "edge_flip could not produce valid geometry"
+    :cause (str "edge_flip [invalid_topology]: Rdk.Edge_flip.edge_flip: " reason)))
+(defn ef_safe :context value [(index : int)] (if (int/ge index 0) index 0))
+(defn ef_mod :context value [(x : int) (m : int)] (if (int/gt m 0) (int/mod x m) 0))
+(defn ef_finite :context value [(x : float)] (= (- x x) 0.0))
+(defn ef_flag :context value [(b : bool)] (if b 1 0))
+; native `advance`: the vertex `amount` corners after `vertex` inside its polygon.
+(defn ef_advance :context value [(first : int) (size : int) (vertex : int) (amount : int)]
+  (int/add first (ef_mod (int/add (int/sub vertex first) amount) size)))
+; native `ring_point`: the point at `index` of the joined boundary of the two polygons.
+(defn ef_ring_pt :context value
+  [(index : int) (va : int) (vb : int) (sa : int) (sb : int) (fa : int) (fb : int)
+   (vp : (array int)) (nxt : (array int))]
+  (cond
+    (int/eq index 0) (array/nth vp va)
+    (int/lt index (int/sub sb 1)) (array/nth vp (ef_advance fb sb vb (int/add index 1)))
+    (int/eq index (int/sub sb 1)) (array/nth vp (array/nth nxt va))
+    :else (array/nth vp (ef_advance fa sa va (int/add (int/sub index sb) 2)))))
+; Preconditions of one selected edge (1 when all hold). Indices are clamped by the caller.
+(defn ef_pre :context value
+  [(count : int) (pa : int) (pb : int) (ka : int) (kb : int) (orient : bool) (sa : int) (sb : int)]
+  (if (and (and (int/eq count 2) (not (int/eq pa pb)))
+           (and (and (int/eq ka 0) (int/eq kb 0))
+                (and orient (and (int/ge sa 3) (int/ge sb 3)))))
+    1 0))
+(defn ef_effective :context value [(shift : int) (cva : bool) (aa : int) (ab : int)]
+  (if (or (not (int/eq shift 0)) (and cva (or (not (int/eq aa 0)) (not (int/eq ab 0))))) 1 0))
+; Local ring index of corner `local` of polygon A / B after the flip.
+(defn ef_ring_a :context value [(local : int) (shift : int) (diag : int) (ring : int)]
+  (cond (int/eq local 0) shift
+        (int/eq local 1) diag
+        :else (ef_mod (int/sub (int/add diag local) 1) ring)))
+(defn ef_ring_b :context value [(local : int) (shift : int) (diag : int) (ring : int)]
+  (cond (int/eq local 0) diag
+        (int/eq local 1) shift
+        :else (ef_mod (int/sub (int/add shift local) 1) ring)))
+(defn ef_take :context value [(source : (array int)) (plan : (array int))]
+  (exact (map (fn [(e : int)] (array/nth source e)) plan)))
+(defn ef_ring_at :context value
+  [(i : int) (index : int) (pva : (array int)) (pvb : (array int)) (psa : (array int)) (psb : (array int))
+   (pfa : (array int)) (pfb : (array int)) (vp : (array int)) (nxt : (array int))]
+  (ef_ring_pt index (array/nth pva i) (array/nth pvb i) (array/nth psa i) (array/nth psb i)
+    (array/nth pfa i) (array/nth pfb i) vp nxt))
+(defn ef_pair_key :context value [(a : int) (b : int) (points : int)]
+  (if (int/lt a b) (int/add (int/mul a points) b) (int/add (int/mul b points) a)))
+(defn ef_bad_diag :context value
+  [(left : int) (right : int) (lp : vec3) (rp : vec3) (found : int) (edge : int)]
+  (if (int/eq left right) 1
+    (if (and (int/ge found 0) (not (int/eq found edge))) 1
+      (if (not (and (and (ef_finite lp.x) (ef_finite lp.y)) (and (ef_finite lp.z)
+                (and (and (ef_finite rp.x) (ef_finite rp.y)) (ef_finite rp.z))))) 1
+        (if (and (and (= lp.x rp.x) (= lp.y rp.y)) (= lp.z rp.z)) 1 0)))))
+
+(defnode sop/edge_flip :label "Edge Flip" :category ["Topology" "Edge"]
+  [(in0 : geometry)
+   (group : text "" :label "Edge group")
+   (cycles : int 1 :label "Cycles" :min 0 :max 16 :hard_min 0)
+   (cycle_vertex_attributes : bool true :label "Cycle vertex attributes")
+   (recompute_point_normals : bool false :label "Recompute point normals")]
+  (let* [group_name (text/trim group)
+         has_group (not (text/blank? group_name))
+         group_literal (text/glob_literal (if has_group group_name "x"))
+         edge_total (sop/count in0 :edges)
+         selected (if has_group (sop/group in0 :name group_name :owner "edge") (array/int edge_total 0))]
+    (cond
+      (and has_group (int/eq (array/count (sop/group_names in0 group_literal :owner "edge")) 0))
+        (error "missing_group" (str "edge_flip could not find native edge group " (text/repr group_name)))
+      (or (int/eq cycles 0) (int/eq (array/sum selected) 0)) in0
+      :else
+      (let* [points (sop/count in0 :points)
+             vertex_total (sop/count in0 :vertices)
+             prims (sop/count in0 :primitives)
+             adj (sop/adjacency in0)
+             topo (sop/topology in0)
+             eov adj.edge_of_vertex
+             opp adj.opposite_vertex
+             nxt adj.next_vertex
+             pov adj.primitive_of_vertex
+             vp topo.vertex_points
+             offs topo.primitive_offsets
+             vrange (array/range vertex_total :type int)
+             erange (array/range edge_total :type int)
+             ; incidences per edge and the lower incident vertex (native vertex_a)
+             ekey (exact (map (fn [(e : int)] (if (int/lt e 0) edge_total e)) eov))
+             count (array/scatter_add ekey (array/int vertex_total 1) (int/add edge_total 1))
+             lead (exact (map (fn [(v : int) (e : int) (o : int)] (if (and (int/ge e 0) (int/gt o v)) e edge_total))
+                    vrange eov opp))
+             va1 (array/scatter_add lead (exact (map (fn [(v : int)] (int/add v 1)) vrange)) (int/add edge_total 1))
+             va (exact (map (fn [(e : int)] (int/sub (array/nth va1 e) 1)) erange))
+             sva (exact (map (fn [(v : int)] (ef_safe v)) va))
+             vb (exact (map (fn [(v : int)] (array/nth opp v)) sva))
+             svb (exact (map (fn [(v : int)] (ef_safe v)) vb))
+             pa (exact (map (fn [(v : int)] (array/nth pov v)) sva))
+             pb (exact (map (fn [(v : int)] (array/nth pov v)) svb))
+             fa (exact (map (fn [(p : int)] (array/nth offs p)) pa))
+             fb (exact (map (fn [(p : int)] (array/nth offs p)) pb))
+             sa (exact (map (fn [(p : int)] (int/sub (array/nth offs (int/add p 1)) (array/nth offs p))) pa))
+             sb (exact (map (fn [(p : int)] (int/sub (array/nth offs (int/add p 1)) (array/nth offs p))) pb))
+             orient (exact (map (fn [(a : int) (b : int)]
+                      (ef_flag (and (int/eq (array/nth vp a) (array/nth vp (ef_safe (array/nth nxt b))))
+                                    (int/eq (array/nth vp (ef_safe (array/nth nxt a))) (array/nth vp b)))))
+                      sva svb))
+             pre (exact (map (fn [(e : int)]
+                   (ef_pre (array/nth count e) (array/nth pa e) (array/nth pb e)
+                     (array/nth topo.kinds (array/nth pa e)) (array/nth topo.kinds (array/nth pb e))
+                     (int/eq (array/nth orient e) 1) (array/nth sa e) (array/nth sb e))) erange))
+             refused (array/sum (exact (map (fn [(s : int) (p : int)] (if (and (int/eq s 1) (int/eq p 0)) 1 0))
+                       selected pre)))]
+        (if (int/gt refused 0)
+          (ef_error "selected edge cannot be flipped (not two distinct consistently wound polygons)")
+          (let* [ring (exact (map (fn [(x : int) (y : int)] (int/sub (int/add x y) 2)) sa sb))
+                 shift (exact (map (fn [(r : int)] (ef_mod cycles r)) ring))
+                 effective (exact (map (fn [(s : int) (x : int) (y : int)]
+                             (ef_effective s cycle_vertex_attributes (ef_mod cycles x) (ef_mod cycles y)))
+                             shift sa sb))
+                 planned (exact (map (fn [(s : int) (e : int)] (if (and (int/eq s 1) (int/eq e 1)) 1 0)) selected effective))]
+            (if (int/eq (array/sum planned) 0) in0
+              (let* [plan (array/compact planned)
+                     m (array/count plan)
+                     prange (array/range m :type int)
+                     pva (ef_take va plan) pvb (ef_take vb plan) ppa (ef_take pa plan) ppb (ef_take pb plan)
+                     pfa (ef_take fa plan) pfb (ef_take fb plan) psa (ef_take sa plan) psb (ef_take sb plan)
+                     pshift (ef_take shift plan) pring (ef_take ring plan)
+                     pdiag (exact (map (fn [(s : int) (b : int) (r : int)] (ef_mod (int/sub (int/add s b) 1) r))
+                             pshift psb pring))
+                     claims (array/scatter_add (array/concat ppa ppb) (array/int (int/mul m 2) 1) prims)
+                     ; joined boundary rows, one run of `ring` points per planned edge
+                     rrow (lap_rows pring)
+                     roff (array/scan_sum pring)
+                     rows (array/count rrow)
+                     rpt (exact (map (fn [(j : int)]
+                           (let* [r (array/nth rrow j)]
+                             (ef_ring_pt (int/sub j (array/nth roff r)) (array/nth pva r) (array/nth pvb r)
+                               (array/nth psa r) (array/nth psb r) (array/nth pfa r) (array/nth pfb r) vp nxt)))
+                           (array/range rows :type int)))
+                     dkey (exact (map (fn [(j : int)] (int/add (int/mul (array/nth rrow j) points) (array/nth rpt j)))
+                            (array/range rows :type int)))
+                     dorder (array/grade dkey)
+                     repeated (array/sum (exact (map (fn [(j : int)]
+                                (if (int/lt (int/add j 1) rows)
+                                  (ef_flag (int/eq (array/nth dkey (array/nth dorder j))
+                                                   (array/nth dkey (array/nth dorder (int/add j 1)))))
+                                  0))
+                                (array/range rows :type int))))
+                     ; diagonals of the planned edges that really move
+                     positions (sop/attr in0 "P")
+                     left (exact (map (fn [(i : int)] (ef_ring_at i (array/nth pshift i) pva pvb psa psb pfa pfb vp nxt)) prange))
+                     right (exact (map (fn [(i : int)] (ef_ring_at i (array/nth pdiag i) pva pvb psa psb pfa pfb vp nxt)) prange))
+                     source_edge_key (exact (map (fn [(a : int) (b : int)] (ef_pair_key a b points)) adj.edge_a adj.edge_b))
+                     found (array/index_of source_edge_key
+                             (exact (map (fn [(l : int) (r : int)] (ef_pair_key l r points)) left right)))
+                     moves (exact (map (fn [(s : int)] (ef_flag (not (int/eq s 0)))) pshift))
+                     bad_diag (array/sum (exact (map (fn [(i : int)]
+                                (if (int/eq (array/nth moves i) 1)
+                                  (ef_bad_diag (array/nth left i) (array/nth right i)
+                                    (array/nth positions (array/nth left i)) (array/nth positions (array/nth right i))
+                                    (array/nth found i) (array/nth plan i))
+                                  0)) prange)))]
+                (cond
+                  (int/gt (array/max claims) 1)
+                    (ef_error "selected edges may not share an incident polygon; sequence dependent flips as separate nodes")
+                  (int/gt repeated 0) (ef_error "joined polygon boundary repeats a point")
+                  (int/gt bad_diag 0) (ef_error "flipped edge is degenerate or duplicates an existing edge")
+                  :else
+                  (let* [ra (lap_rows psa)
+                         rb (lap_rows psb)
+                         offa (array/scan_sum psa)
+                         offb (array/scan_sum psb)
+                         la (exact (map (fn [(j : int)] (int/sub j (array/nth offa (array/nth ra j)))) (array/range (array/count ra) :type int)))
+                         lb (exact (map (fn [(j : int)] (int/sub j (array/nth offb (array/nth rb j)))) (array/range (array/count rb) :type int)))
+                         a_target (exact (map (fn [(r : int) (l : int)]
+                                    (ef_advance (array/nth pfa r) (array/nth psa r) (array/nth pva r) l)) ra la))
+                         b_target (exact (map (fn [(r : int) (l : int)]
+                                    (ef_advance (array/nth pfb r) (array/nth psb r) (array/nth pvb r) l)) rb lb))
+                         a_ring (exact (map (fn [(r : int) (l : int)]
+                                  (ef_ring_a l (array/nth pshift r) (array/nth pdiag r) (array/nth pring r))) ra la))
+                         b_ring (exact (map (fn [(r : int) (l : int)]
+                                  (ef_ring_b l (array/nth pshift r) (array/nth pdiag r) (array/nth pring r))) rb lb))
+                         a_point (exact (map (fn [(r : int) (i : int)]
+                                   (ef_ring_at r i pva pvb psa psb pfa pfb vp nxt)) ra a_ring))
+                         b_point (exact (map (fn [(r : int) (i : int)]
+                                   (ef_ring_at r i pva pvb psa psb pfa pfb vp nxt)) rb b_ring))
+                         a_local (exact (map (fn [(r : int) (l : int)]
+                                   (ef_mod (int/add l (ef_mod cycles (array/nth psa r))) (array/nth psa r))) ra la))
+                         b_local (exact (map (fn [(r : int) (l : int)]
+                                   (ef_mod (int/add l (ef_mod cycles (array/nth psb r))) (array/nth psb r))) rb lb))
+                         a_source (exact (map (fn [(r : int) (l : int)]
+                                    (ef_advance (array/nth pfa r) (array/nth psa r) (array/nth pva r) l)) ra a_local))
+                         b_source (exact (map (fn [(r : int) (l : int)]
+                                    (ef_advance (array/nth pfb r) (array/nth psb r) (array/nth pvb r) l)) rb b_local))
+                         targets (array/concat a_target b_target)
+                         written (array/scatter_add targets (exact (map (fn [(p : int)] (int/add p 1))
+                                   (array/concat a_point b_point))) vertex_total)
+                         new_vp (exact (map (fn [(w : int) (old : int)] (if (int/gt w 0) (int/sub w 1) old)) written vp))
+                         mapped (array/scatter_add targets (exact (map (fn [(p : int)] (int/add p 1))
+                                  (array/concat a_source b_source))) vertex_total)
+                         vertex_map (if cycle_vertex_attributes
+                                      (exact (map (fn [(w : int) (v : int)] (if (int/gt w 0) (int/sub w 1) v)) mapped vrange))
+                                      vrange)
+                         target (sop/mesh :points positions :vertex_points new_vp
+                                  :primitive_offsets offs :kinds topo.kinds)
+                         tri (sop/triangles target)
+                         okv (if (int/gt (array/sum moves) 0) tri.ok (array/int prims 1))
+                         invalid (array/sum (exact (map (fn [(i : int)]
+                                   (if (int/eq (array/nth moves i) 1)
+                                     (ef_flag (or (int/eq (array/nth okv (array/nth ppa i)) 0)
+                                                  (int/eq (array/nth okv (array/nth ppb i)) 0)))
+                                     0)) prange)))]
+                    (if (int/gt invalid 0) (ef_error "flip creates an invalid polygon")
+                      (let* [has_edge_groups (int/gt (array/count (sop/group_names in0 "*" :owner "edge")) 0)
+                             tadj (sop/adjacency target)
+                             tedges (array/count tadj.edge_a)
+                             base (array/index_of source_edge_key
+                                    (exact (map (fn [(a : int) (b : int)] (ef_pair_key a b points)) tadj.edge_a tadj.edge_b)))
+                             target_key (exact (map (fn [(a : int) (b : int)] (ef_pair_key a b points)) tadj.edge_a tadj.edge_b))
+                             diag_at (array/index_of target_key
+                                       (exact (map (fn [(l : int) (r : int)] (ef_pair_key l r points)) left right)))
+                             override (array/scatter_add
+                                        (exact (map (fn [(i : int)] (if (int/eq (array/nth moves i) 1) (array/nth diag_at i) tedges)) prange))
+                                        (exact (map (fn [(e : int)] (int/add e 1)) plan))
+                                        (int/add tedges 1))
+                             ancestor (exact (map (fn [(te : int) (b : int)]
+                                        (if (int/gt (array/nth override te) 0) (int/sub (array/nth override te) 1) b))
+                                        (array/range tedges :type int) base))
+                             rewired (if has_edge_groups
+                                       (sop/remap in0 target :points (array/range points :type int)
+                                         :vertices vertex_map :primitives (array/range prims :type int)
+                                         :positions "mapped"
+                                         :edges {:offsets (array/range (int/add tedges 1) :type int) :values ancestor})
+                                       (sop/remap in0 target :points (array/range points :type int)
+                                         :vertices vertex_map :primitives (array/range prims :type int)
+                                         :positions "mapped"))
+                             cleaned (sop/delete_attr (sop/delete_attr rewired "N" :owner "point") "N" :owner "vertex")]
+                        (if (and recompute_point_normals (sop/has_attr in0 "N" :owner "point"))
+                          (sop/normals cleaned :owner "Point" :weighting "Face area")
+                          cleaned)))))))))))))

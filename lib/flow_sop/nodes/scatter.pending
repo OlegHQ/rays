@@ -238,56 +238,10 @@
 (defn sc_unit :context value [(c : vec3)]
   (let* [inverse (/ 1.0 (sqrt (sc_norm2 c.x c.y c.z)))]
     [(* c.x inverse) (* c.y inverse) (* c.z inverse)]))
-; ---- weighted attribute transfer (Attribute_interpolate.interpolate_weighted, vertex weights) ----
-; Rows of a ragged int attribute, gathered by source row.
-(defn sc_rows_int :context value [(off : (array int)) (vals : (array int)) (rows : (array int))]
-  (let* [n (array/count rows)
-         lens (exact (map (fn [(r : int)] (int/sub (array/nth off (int/add r 1)) (array/nth off r))) rows))
-         noff (array/scan_sum lens)
-         total (array/nth noff n)
-         owner (loft_owners noff)
-         out (exact (map (fn [(e : int)]
-               (let* [o (array/nth owner e) r (array/nth rows o)]
-                 (array/nth vals (int/add (array/nth off r) (int/sub e (array/nth noff o))))))
-               (array/range total :type int)))]
-    {:offsets noff :values out}))
-(defn sc_rows_float :context value [(off : (array int)) (vals : (array float)) (rows : (array int))]
-  (let* [n (array/count rows)
-         lens (exact (map (fn [(r : int)] (int/sub (array/nth off (int/add r 1)) (array/nth off r))) rows))
-         noff (array/scan_sum lens)
-         total (array/nth noff n)
-         owner (loft_owners noff)
-         out (exact (map (fn [(e : int)]
-               (let* [o (array/nth owner e) r (array/nth rows o)]
-                 (array/nth vals (int/add (array/nth off r) (int/sub e (array/nth noff o))))))
-               (array/range total :type int)))]
-    {:offsets noff :values out}))
-; Source element of each sample corner for an attribute owner.
-(defn sc_corner_index :context value
-  [(owner : text) (vp : (array int)) (pov : (array int)) (v : (array int))]
-  (cond
-    (equal? owner "point") (exact (map (fn [(x : int)] (array/nth vp x)) v))
-    (equal? owner "vertex") v
-    (equal? owner "primitive") (exact (map (fn [(x : int)] (array/nth pov x)) v))
-    :else (exact (map (fn [(x : int)] 0) v))))
-; Native accumulation of the three corner weights, then the blend with the existing value.
-(defn sc_acc :context value
-  [(s : (array float)) (ia : (array int)) (ib : (array int)) (ic : (array int))
-   (w0 : (array float)) (w1 : (array float)) (w2 : (array float)) (old : (array float))]
-  (exact (map (fn [(k : int)]
-    (let* [v (fma (array/nth w2 k) (array/nth s (array/nth ic k))
-               (fma (array/nth w1 k) (array/nth s (array/nth ib k))
-                 (fma (array/nth w0 k) (array/nth s (array/nth ia k)) 0.0)))
-           o (array/nth old k)]
-      (fma 1.0 (- v o) o)))
-    (array/range (array/count w0) :type int))))
-(defn sc_plane_x :context value [(v : (array vec3))] (exact (map (fn [(q : vec3)] q.x) v)))
-(defn sc_plane_y :context value [(v : (array vec3))] (exact (map (fn [(q : vec3)] q.y) v)))
-(defn sc_plane_z :context value [(v : (array vec3))] (exact (map (fn [(q : vec3)] q.z) v)))
-(defn sc_norm_n :context value [(x : float) (y : float) (z : float)]
-  (let* [len (sqrt (sc_norm2 x y z))
-         ok (> len 0.00000000000000000001)]
-    [(if ok (/ x len) x) (if ok (/ y len) y) (if ok (/ z len) z)]))
+; ---- attribute and group transfer: the Attribute Interpolate node (vertex weights driver) over the samples ----
+; Native hands the three corner numbers and weights of every sample to Attribute_ops.interpolate as point
+; attributes; the same node kind does it here, so patterns (P included), N renormalisation, groups and its
+; refusals are that node's. Only the refusals that native reports under scatter's own code are predicted below.
 (defn sc_in :context value [(names : (array text)) (name : text)]
   (fold [found false] [probe names] (or found (equal? probe name))))
 ; Expected storage name of the point attribute a transferred name lands on ("" when it is a fresh name).
@@ -301,142 +255,6 @@
     (and (not (text/blank? sv_name)) (equal? name sv_name)) "int_array"
     (and (not (text/blank? sw_name)) (equal? name sw_name)) "float_array"
     :else ""))
-(defn sc_protected :context value [(name : text) (sp_name : text) (sv_name : text) (sw_name : text)]
-  (or (or (equal? name "id") (and (not (text/blank? sp_name)) (equal? name sp_name)))
-      (or (and (not (text/blank? sv_name)) (equal? name sv_name)) (and (not (text/blank? sw_name)) (equal? name sw_name)))))
-; Which entries (name/type/owner of every source attribute, native order) a pattern per owner selects.
-(defn sc_hit :context value
-  [(owner : text) (name : text) (np : (array text)) (nv : (array text)) (npr : (array text)) (nd : (array text))]
-  (cond (equal? owner "point") (sc_in np name) (equal? owner "vertex") (sc_in nv name)
-        (equal? owner "primitive") (sc_in npr name) :else (sc_in nd name)))
-(defn sc_hit_group :context value [(owner : text) (name : text) (pat_p : text) (pat_v : text) (pat_pr : text)]
-  (let* [pat (cond (equal? owner "point") pat_p (equal? owner "vertex") pat_v (equal? owner "primitive") pat_pr :else "")]
-    (and (not (text/blank? pat))
-         (not (equal? (text/glob_rewrite (if (text/blank? pat) "x" pat) "~" name) name)))))
-; The transfer proper (Attribute_interpolate.interpolate_weighted with the three corner numbers per sample).
-; Every source attribute and group is visited in native order; a body acts only on those the owner's pattern
-; selects (a fold's length must come from cooked data, so the matches are not collected first).
-; The transfer (Attribute_interpolate.interpolate_weighted with the three corner numbers per sample) is a
-; geometry fold in the node body over every source attribute and group in native order; these steps are its
-; bodies and act only on the entries the owner's pattern selects.
-; P first: when the point pattern matches P, the positions are the weighted corner sum blended with the sampled ones.
-(defn sc_place :context sop
-  [(geo : geometry) (cur : geometry) (va : (array int)) (vb : (array int)) (vc : (array int))
-   (w0 : (array float)) (w1 : (array float)) (w2 : (array float)) (vp : (array int)) (on : bool)]
-  (let* [px (exact (map (fn [(q : vec3)] q.x) (sop/attr geo :P)))
-         py (exact (map (fn [(q : vec3)] q.y) (sop/attr geo :P)))
-         pz (exact (map (fn [(q : vec3)] q.z) (sop/attr geo :P)))
-         cx (exact (map (fn [(q : vec3)] q.x) (sop/attr cur :P)))
-         cy (exact (map (fn [(q : vec3)] q.y) (sop/attr cur :P)))
-         cz (exact (map (fn [(q : vec3)] q.z) (sop/attr cur :P)))
-         pia (exact (map (fn [(x : int)] (array/nth vp x)) va))
-         pib (exact (map (fn [(x : int)] (array/nth vp x)) vb))
-         pic (exact (map (fn [(x : int)] (array/nth vp x)) vc))
-         nx (sc_acc px pia pib pic w0 w1 w2 cx)
-         ny (sc_acc py pia pib pic w0 w1 w2 cy)
-         nz (sc_acc pz pia pib pic w0 w1 w2 cz)]
-    (if on
-      (sop/with_attr cur "P" (exact (map (fn [(x : float) (y : float) (z : float)] [x y z]) nx ny nz)))
-      cur)))
-(defn sc_attr_step :context sop
-  [(geo : geometry) (g : geometry) (g2 : geometry) (name : text) (owner : text) (has_c : bool)
-   (sp_name : text) (sv_name : text) (sw_name : text)]
-  (let* [va (sop/attr g2 "va" :owner "point" :type int)
-         vb (sop/attr g2 "vb" :owner "point" :type int)
-         vc (sop/attr g2 "vc" :owner "point" :type int)
-         bary (sop/attr g2 "bary" :owner "point" :type vec3)
-         w0 (exact (map (fn [(q : vec3)] q.x) bary))
-         w1 (exact (map (fn [(q : vec3)] q.y) bary))
-         w2 (exact (map (fn [(q : vec3)] q.z) bary))
-         vp (get (sop/topology geo) :vertex_points)
-         pov (loft_owners (get (sop/topology geo) :primitive_offsets))
-         ix (array/range (array/count vc) :type int)
-         kind (sop/attr_type geo name :owner owner)
-         hit true]
-    (cond
-      (or (not hit) (sc_protected name sp_name sv_name sw_name)) g
-      :else
-      (let* [ia (sc_corner_index owner vp pov va)
-             ib (sc_corner_index owner vp pov vb)
-             ic (sc_corner_index owner vp pov vc)
-             zeros (exact (map (fn [(k : int)] 0.0) ix))
-             best (exact (map (fn [(k : int)]
-                    (let* [a (array/nth w0 k) b (array/nth w1 k) c (array/nth w2 k)
-                           m (if (> b a) b a)]
-                      (if (> c m) (array/nth vc k) (if (> b a) (array/nth vb k) (array/nth va k)))))
-                    ix))
-             bi (sc_corner_index owner vp pov best)]
-        (cond
-          (equal? kind "float")
-            (sop/with_attr g name (sc_acc (sop/attr geo name :owner owner :type float) ia ib ic w0 w1 w2 zeros)
-              :owner "point" :type float)
-          (equal? kind "vec2")
-            (let* [v (sop/attr geo name :owner owner :type vec2)
-                   a (sc_acc (exact (map (fn [(q : vec2)] q.x) v)) ia ib ic w0 w1 w2 zeros)
-                   b (sc_acc (exact (map (fn [(q : vec2)] q.y) v)) ia ib ic w0 w1 w2 zeros)]
-              (sop/with_attr g name (exact (map (fn [(x : float) (y : float)] [x y]) a b)) :owner "point" :type vec2))
-          (equal? kind "vec3")
-            (let* [v (sop/attr geo name :owner owner :type vec3)
-                   old (if (equal? name "N") (sop/attr g "N" :owner "point" :type vec3) (exact (map (fn [(k : int)] [0.0 0.0 0.0]) ix)))
-                   a (sc_acc (sc_plane_x v) ia ib ic w0 w1 w2 (sc_plane_x old))
-                   b (sc_acc (sc_plane_y v) ia ib ic w0 w1 w2 (sc_plane_y old))
-                   c (sc_acc (sc_plane_z v) ia ib ic w0 w1 w2 (sc_plane_z old))]
-              (sop/with_attr g name
-                (if (equal? name "N")
-                  (exact (map (fn [(x : float) (y : float) (z : float)] (sc_norm_n x y z)) a b c))
-                  (exact (map (fn [(x : float) (y : float) (z : float)] [x y z]) a b c)))
-                :owner "point" :type vec3))
-          (equal? kind "vec4")
-            (let* [v (sop/attr geo name :owner owner :type vec4)
-                   old (if (and has_c (equal? name "Cd")) (sop/attr g "Cd" :owner "point" :type vec4) (exact (map (fn [(k : int)] [0.0 0.0 0.0 0.0]) ix)))
-                   a (sc_acc (exact (map (fn [(q : vec4)] q.x) v)) ia ib ic w0 w1 w2 (exact (map (fn [(q : vec4)] q.x) old)))
-                   b (sc_acc (exact (map (fn [(q : vec4)] q.y) v)) ia ib ic w0 w1 w2 (exact (map (fn [(q : vec4)] q.y) old)))
-                   c (sc_acc (exact (map (fn [(q : vec4)] q.z) v)) ia ib ic w0 w1 w2 (exact (map (fn [(q : vec4)] q.z) old)))
-                   d (sc_acc (exact (map (fn [(q : vec4)] q.w) v)) ia ib ic w0 w1 w2 (exact (map (fn [(q : vec4)] q.w) old)))]
-              (sop/with_attr g name
-                (exact (map (fn [(k : int)] [(array/nth a k) (array/nth b k) (array/nth c k) (array/nth d k)])
-                  ix))
-                :owner "point" :type vec4))
-          (equal? kind "int")
-            (let* [v (sop/attr geo name :owner owner :type int)]
-              (sop/with_attr g name (exact (map (fn [(x : int)] (array/nth v x)) bi)) :owner "point" :type int))
-          (equal? kind "text")
-            (let* [v (sop/attr geo name :owner owner :type text)]
-              (sop/with_attr g name (exact (map (fn [(x : int)] (array/nth v x)) bi)) :owner "point" :type text))
-          (equal? kind "int_array")
-            (let* [v (sop/attr geo name :owner owner :type int_array)]
-              (sop/with_attr g name (sc_rows_int v.offsets v.values bi) :owner "point" :type int_array))
-          :else
-            (let* [v (sop/attr geo name :owner owner :type float_array)]
-              (sop/with_attr g name (sc_rows_float v.offsets v.values bi) :owner "point" :type float_array)))))))
-(defn sc_group_step :context sop
-  [(geo : geometry) (g : geometry) (g2 : geometry) (name : text) (owner : text)]
-  (let* [va (sop/attr g2 "va" :owner "point" :type int)
-         vb (sop/attr g2 "vb" :owner "point" :type int)
-         vc (sop/attr g2 "vc" :owner "point" :type int)
-         bary (sop/attr g2 "bary" :owner "point" :type vec3)
-         w0 (exact (map (fn [(q : vec3)] q.x) bary))
-         w1 (exact (map (fn [(q : vec3)] q.y) bary))
-         w2 (exact (map (fn [(q : vec3)] q.z) bary))
-         vp (get (sop/topology geo) :vertex_points)
-         pov (loft_owners (get (sop/topology geo) :primitive_offsets))
-         ix (array/range (array/count vc) :type int)
-         hit true]
-    (cond
-      (not hit) g
-      :else
-      (let* [mask (sop/group geo :name name :owner owner)
-             ia (sc_corner_index owner vp pov va)
-             ib (sc_corner_index owner vp pov vb)
-             ic (sc_corner_index owner vp pov vc)
-             bits (exact (map (fn [(k : int)]
-                    (let* [s0 (if (int/eq (array/nth mask (array/nth ia k)) 1) (+ 0.0 (array/nth w0 k)) 0.0)
-                           s1 (if (int/eq (array/nth mask (array/nth ib k)) 1) (+ s0 (array/nth w1 k)) s0)
-                           s2 (if (int/eq (array/nth mask (array/nth ic k)) 1) (+ s1 (array/nth w2 k)) s1)]
-                      (if (>= s2 0.5) 1 0)))
-                    ix))]
-        (sop/with_group g bits :owner "point" :name name)))))
-; Names present in both text arrays.
 (defn sc_meet :context value [(a : (array text)) (b : (array text))]
   (fold [acc false] [x a] (or acc (sc_in b x))))
 ; An existing output name of another storage than the matched source attribute's.
@@ -592,7 +410,8 @@
 (defn sc_stage3 :context sop
   [(geo : geometry) (g1 : geometry) (g2 : geometry)
    (sp_name : text) (sv_name : text) (sw_name : text)
-   (pat_p : text) (pat_v : text) (pat_pr : text) (pat_d : text) (match_groups : bool)]
+   (pat_p : text) (pat_v : text) (pat_pr : text) (pat_d : text) (match_groups : bool)
+   (emit : bool)]
   (let* [nv (sop/has_attr geo "N" :owner "vertex")
          np (sop/has_attr geo "N" :owner "point")
          cdv (sop/has_attr geo "Cd" :owner "vertex")
@@ -600,9 +419,7 @@
          has_n (or nv np)
          has_c (or cdv cdp)
          has_sp (not (text/blank? sp_name))
-         keep (not (text/blank? sv_name))
-         interp (or (or (not (text/blank? pat_p)) (not (text/blank? pat_v)))
-                    (or (not (text/blank? pat_pr)) (not (text/blank? pat_d))))
+         keep emit
          vp (get (sop/topology geo) :vertex_points)
          pos (sop/attr geo :P)
          css (array/nth (sop/attr g1 "cs" :owner "detail" :type float) 0)
@@ -650,7 +467,7 @@
          mesh (sop/mesh :points placed :vertex_points (array/int 0) :primitive_offsets (array/int 1 0) :kinds (array/int 0))
          b1 (sop/with_attr mesh "id" idx :owner "point" :type int)
          b2 (sop/with_attr b1 "N" normals :owner "point")
-         b3 (sop/with_attr b2 "Cd" colors :owner "point" :type vec4)
+         b3 (if has_c (sop/with_attr b2 "Cd" colors :owner "point" :type vec4) b2)
          b4 (if has_sp (sop/with_attr b3 sp_name srcprim :owner "point" :type int) b3)
          numbers (exact (map (fn [(j : int)]
                    (let* [k (int/div j 3) r (int/sub j (int/mul k 3))]
@@ -732,46 +549,20 @@
                     (or (not (text/blank? pat_pr)) (not (text/blank? pat_d))))
          g1 (sc_stage1 in0 count gname grp use_density density_owner density_attribute)
          g2 (sc_stage2 in0 g1 count seed_value use_density density_owner density_attribute)
-         cur (sc_stage3 in0 g1 g2 sp_name sv_name sw_name pat_p pat_v pat_pr pat_d match_groups)
-         va (sop/attr g2 "va" :owner "point" :type int)
-         vb (sop/attr g2 "vb" :owner "point" :type int)
-         vc (sop/attr g2 "vc" :owner "point" :type int)
-         total (array/count vc)
-         ix (array/range total :type int)
-         bary (sop/attr g2 "bary" :owner "point" :type vec3)
-         w0 (exact (map (fn [(q : vec3)] q.x) bary))
-         w1 (exact (map (fn [(q : vec3)] q.y) bary))
-         w2 (exact (map (fn [(q : vec3)] q.z) bary))
-         vp (get (sop/topology in0) :vertex_points)
-         pov (loft_owners (get (sop/topology in0) :primitive_offsets))
+         keep (not (text/blank? sv_name))
+         dn (if keep sv_name "__rays_scatter_vertex_numbers")
+         dw (if keep sw_name "__rays_scatter_vertex_weights")
+         has_sp (not (text/blank? sp_name))
+         cur (sc_stage3 in0 g1 g2 sp_name dn dw pat_p pat_v pat_pr pat_d match_groups (or keep interp))
          has_c (or (sop/has_attr in0 "Cd" :owner "vertex") (sop/has_attr in0 "Cd" :owner "point"))
-         p_hit false
          src0 (sop/delete_attr in0 "__scatter_none" :owner "point")
          np (if (text/blank? pat_p) (array/text 0 "") (sop/attr_names src0 pat_p :owner "point"))
          nv (if (text/blank? pat_v) (array/text 0 "") (sop/attr_names src0 pat_v :owner "vertex"))
          npr (if (text/blank? pat_pr) (array/text 0 "") (sop/attr_names src0 pat_pr :owner "primitive"))
          nd (if (text/blank? pat_d) (array/text 0 "") (sop/attr_names src0 pat_d :owner "detail"))
-         placed (sc_place in0 cur va vb vc w0 w1 w2 vp p_hit)
-         done_p (fold [g placed] [j (array/range (array/count np) :type int)]
-                  (sc_attr_step in0 g g2 (array/nth np j) "point" has_c sp_name sv_name sw_name))
-         done_v (fold [g done_p] [j (array/range (array/count nv) :type int)]
-                  (sc_attr_step in0 g g2 (array/nth nv j) "vertex" has_c sp_name sv_name sw_name))
-         done_pr (fold [g done_v] [j (array/range (array/count npr) :type int)]
-                   (sc_attr_step in0 g g2 (array/nth npr j) "primitive" has_c sp_name sv_name sw_name))
-         done (fold [g done_pr] [j (array/range (array/count nd) :type int)]
-                (sc_attr_step in0 g g2 (array/nth nd j) "detail" has_c sp_name sv_name sw_name))
          gm_p (if (and match_groups (not (text/blank? pat_p))) (sop/group_names src0 pat_p :owner "point") (array/text 0 ""))
          gm_v (if (and match_groups (not (text/blank? pat_v))) (sop/group_names src0 pat_v :owner "vertex") (array/text 0 ""))
          gm_pr (if (and match_groups (not (text/blank? pat_pr))) (sop/group_names src0 pat_pr :owner "primitive") (array/text 0 ""))
-         grouped_p (fold [g done] [j (array/range (array/count gm_p) :type int)]
-                     (sc_group_step in0 g g2 (array/nth gm_p j) "point"))
-         grouped_v (fold [g grouped_p] [j (array/range (array/count gm_v) :type int)]
-                     (sc_group_step in0 g g2 (array/nth gm_v j) "vertex"))
-         grouped (fold [g grouped_v] [j (array/range (array/count gm_pr) :type int)]
-                   (sc_group_step in0 g g2 (array/nth gm_pr j) "primitive"))
-         grouped_n (sop/with_attr grouped "id" (sop/attr grouped "id" :owner "point" :type int) :owner "point" :type int)
-         moved (if (and interp (int/gt count 0)) grouped_n cur)
-         plain (sop/delete_attr moved "Cd" :owner "point")
          dup_attr (or (or (or (sc_meet np nv) (sc_meet np npr)) (or (sc_meet np nd) (sc_meet nv npr)))
                       (or (sc_meet nv nd) (sc_meet npr nd)))
          bad_kind (or (or (fold [acc false] [j (array/range (array/count np) :type int)] (or acc (sc_kind_bad in0 (array/nth np j) "point" has_c sp_name sv_name sw_name)))
@@ -784,5 +575,16 @@
       dup_attr (sc_error "duplicate target attribute")
       bad_kind (sc_error "target attribute has incompatible storage")
       dup_group (sc_error "duplicate target group")
-      has_c moved
-      :else plain)))
+      (not interp) cur
+      :else
+      (let* [moved (sop/attribute_interpolate in0 cur :target_owner "Point" :attributes ""
+                     :driver "Vertex weights" :numbers_attribute dn :weights_attribute dw
+                     :point_pattern pat_p :vertex_pattern pat_v :primitive_pattern pat_pr :detail_pattern pat_d
+                     :match_groups match_groups)
+             stripped (if keep moved (sop/delete_attr (sop/delete_attr moved dn :owner "point") dw :owner "point"))
+             r1 (if keep
+                  (sop/with_attr (sop/with_attr stripped dn (sop/attr cur dn :owner "point" :type int_array) :owner "point" :type int_array)
+                    dw (sop/attr cur dw :owner "point" :type float_array) :owner "point" :type float_array)
+                  stripped)
+             r2 (if has_sp (sop/with_attr r1 sp_name (sop/attr cur sp_name :owner "point" :type int) :owner "point" :type int) r1)]
+        (sop/with_attr r2 "id" (sop/attr cur "id" :owner "point" :type int) :owner "point" :type int)))))
