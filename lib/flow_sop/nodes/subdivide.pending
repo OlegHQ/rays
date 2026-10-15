@@ -1,7 +1,13 @@
-; Whole Subdivide draft (whole-mesh path). A pass builds, from the mesh topology, the stencil of every
-; output point (CSR: offsets, sources, weights, in native's term order), the output topology and the
-; carried attributes and groups; the pass is a fold step. A cook with a primitive group delegates to the
-; native sop/subdivide_cracks carrier.
+; Whole Subdivide draft. A pass (sd_pass, a macro so its group and attribute folds expand in the node
+; body) builds, from the mesh topology, the stencil of every output point (CSR: offsets, sources, weights, in
+; native's term order and summed with one fused multiply-add per term), the crease plan (edge sharpness,
+; child sharpness, vertex classification and transition factors), the output topology and element maps, then
+; carries attributes (point stencil, vertex face-varying modes, discrete copies through sop/remap) and
+; groups. The iteration is a geometry fold; the first pass reads the crease override, the final pass drops
+; holes and writes the resulting crease edge group. Detail overrides (osd_*) are read once.
+; Routed through the native sop/subdivide_cracks kind (sd_delegate): a primitive group that selects part of
+; the mesh (the crack-closing path), and meshes holding curves (the polygon-curve refinement and part
+; combining stay native). Everything else is this file.
 (defn sd_flag :context value [(b : bool)] (if b 1 0))
 (defn sd_safe :context value [(index : int)] (if (int/ge index 0) index 0))
 ; Owner segment of every slot given segment start offsets (length segments + 1).
@@ -47,8 +53,8 @@
          first_sum (array/scatter_add first_key plus (int/add edges 1))
          second_sum (array/scatter_add second_key plus (int/add edges 1))
          er (array/range edges :type int)]
-    {:first (exact (map (fn [(e : int)] (int/sub (array/nth first_sum e) 1)) er))
-     :second (exact (map (fn [(e : int)] (int/sub (array/nth second_sum e) 1)) er))}))
+    {:first (exact (map (fn [(e : int)] (let* [x (int/sub (array/nth first_sum e) 1)] (if (int/ge x vertices) (int/sub vertices 1) x))) er))
+     :second (exact (map (fn [(e : int)] (let* [x (int/sub (array/nth second_sum e) 1)] (if (int/ge x vertices) (int/sub vertices 1) x))) er))}))
 
 ; Boundary edges at every point (edges with one corner), and the first and second boundary neighbour.
 (defn sd_boundary :context value
@@ -170,19 +176,24 @@
           (if (int/eq a o) (array/nth ends (int/add at 1)) a))
       (int/le k (int/mul 2 n)) (array/nth ends (int/add (array/nth pe o) (int/sub k 1)))
       :else (array/nth cornerpt (int/add (array/nth pc o) (int/sub k (int/add 1 (int/mul 2 n))))))))
-(defn sd_pw :context value
+(defn sd_pw_cc :context value
   [(ptype : (array int)) (pn : (array int)) (pprod : (array float)) (pc : (array int))
-   (cornersz : (array int)) (scheme : int) (o : int) (k : int)]
+   (cornersz : (array int)) (o : int) (k : int)]
   (let* [ty (array/nth ptype o) n (array/nth pn o) nf (float n)]
     (cond
-      (int/eq scheme 2) 1.0
       (int/eq ty 2) (if (int/eq k 0) 0.75 0.125)
       (int/gt ty 0) 1.0
-      (int/eq scheme 1) (if (int/eq k 0) (fma (- 0.0 nf) (sd_beta n) 1.0) (sd_beta n))
       (int/eq k 0) (/ (- nf 3.0) nf)
       (int/le k (int/mul 2 n)) (/ 1.0 (* nf nf))
       :else (/ 1.0 (* (array/nth pprod o)
                       (float (array/nth cornersz (int/add (array/nth pc o) (int/sub k (int/add 1 (int/mul 2 n)))))))))))
+(defn sd_pw_loop :context value [(ptype : (array int)) (pn : (array int)) (pbeta : (array float)) (o : int) (k : int)]
+  (let* [ty (array/nth ptype o) nf (float (array/nth pn o))]
+    (cond
+      (int/eq ty 2) (if (int/eq k 0) 0.75 0.125)
+      (int/gt ty 0) 1.0
+      (int/eq k 0) (fma (- 0.0 nf) (array/nth pbeta o) 1.0)
+      :else (array/nth pbeta o))))
 ; Edge class.
 (defn sd_ecount :context value [(eint : (array int)) (e0s : (array int)) (e1s : (array int)) (scheme : int) (e : int)]
   (cond (int/eq scheme 2) 2
@@ -251,7 +262,11 @@
          ps (sd_slots pcount) es (sd_slots ecount) fs (sd_slots fcount)
          psrc (exact (map (fn [(o : int) (k : int)]
                 (sd_ps ptype pn pe pc tp.ends tp.cornerpt tp.bl tp.br scheme o k)) ps.owner ps.local))
-         pwgt (exact (map (fn [(o : int) (k : int)] (sd_pw ptype pn pprod pc tp.cornersz scheme o k)) ps.owner ps.local))
+         pbeta (if (int/eq scheme 1) (exact (map (fn [(n : int)] (sd_beta n)) pn)) (array/float points))
+         pwgt (cond
+           (int/eq scheme 2) (exact (map (fn [(o : int)] 1.0) ps.owner))
+           (int/eq scheme 1) (exact (map (fn [(o : int) (k : int)] (sd_pw_loop ptype pn pbeta o k)) ps.owner ps.local))
+           :else (exact (map (fn [(o : int) (k : int)] (sd_pw_cc ptype pn pprod pc tp.cornersz o k)) ps.owner ps.local)))
          esrc (exact (map (fn [(e : int) (k : int)]
                 (sd_es tp.ea tp.eb tp.vp tp.e0f tp.e1f tp.e0s tp.ap0 tp.ap1 scheme e k)) es.owner es.local))
          ewgt (exact (map (fn [(e : int) (k : int)] (sd_ew eint efw tp.e0s tp.e1s scheme e k)) es.owner es.local))
@@ -509,53 +524,6 @@
   (let* [gm (sop/group source :name name :owner "primitive")]
     (sd_gset acc source "primitive" name (exact (map (fn [(s : int)] (array/nth gm s)) om.psrc)) om.psrc)))
 
-; ---- validation (native Subdivide.validate): the first failing check as a code, 0 when the mesh is valid ----
-(defn sd_reason :context value [(code : int)]
-  (cond (int/eq code 1) "input must contain polygon geometry"
-        (int/eq code 2) "only polygon primitives are supported"
-        (int/eq code 3) "polygons must contain at least three vertices"
-        (int/eq code 4) "Loop subdivision requires triangle polygons"
-        (int/eq code 5) "a polygon contains a zero-length topology edge"
-        (int/eq code 6) "a polygon references the same point more than once"
-        (int/eq code 7) "positions must be finite"
-        (int/eq code 8) "non-manifold edges are not supported"
-        (int/eq code 9) "a boundary vertex does not have exactly two boundary edges"
-        (int/eq code 10) "a vertex has non-manifold polygon incidence"
-        :else "a vertex has disconnected polygon fans"))
-(defn sd_fail :context value [(code : int)]
-  (error "invalid_topology" "subdivide could not produce valid geometry"
-    :cause (str "subdivide [invalid_topology]: Rdk_mesh.Subdivide.subdivide: " (sd_reason code))))
-(defn sd_check :context value
-  [(tp : {:vp (array int) :po (array int) :pov (array int) :nv (array int) :eov (array int) :peo (array int)
-          :pvo (array int) :bc (array int) :points int :edges int :vertices int :prims int})
-   (kinds : (array int)) (pos : (array vec3)) (scheme : int)]
-  (let* [vr (array/range tp.vertices :type int)
-         pr (array/range tp.prims :type int)
-         sizes (exact (map (fn [(f : int)] (int/sub (array/nth tp.po (int/add f 1)) (array/nth tp.po f))) pr))]
-    (cond
-      (or (int/eq tp.points 0) (int/eq tp.prims 0)) 1
-      (int/gt (array/sum kinds) 0) 2
-      (int/lt (array/min sizes) 3) 3
-      (and (int/eq scheme 1) (int/gt (array/max sizes) 3)) 4
-      (int/gt (array/sum (exact (map (fn [(v : int)]
-        (if (int/eq (array/nth tp.vp v) (array/nth tp.vp (array/nth tp.nv v))) 1 0)) vr))) 0) 5
-      (int/gt (let* [keys (exact (map (fn [(v : int)] (int/add (int/mul (array/nth tp.vp v) tp.prims) (array/nth tp.pov v))) vr))
-                     order (array/grade keys)]
-                (array/sum (exact (map (fn [(i : int)]
-                  (if (int/eq (array/nth keys (array/nth order i)) (array/nth keys (array/nth order (int/add i 1)))) 1 0))
-                  (array/range (int/sub tp.vertices 1) :type int))))) 0) 6
-      (int/gt (array/sum (exact (map (fn [(q : vec3)]
-        (if (and (= (- q.x q.x) 0.0) (and (= (- q.y q.y) 0.0) (= (- q.z q.z) 0.0))) 0 1)) pos))) 0) 7
-      (int/gt (array/max (array/scatter_add (exact (map (fn [(e : int)] (if (int/ge e 0) e tp.edges)) tp.eov))
-                           (array/int tp.vertices 1) (int/add tp.edges 1))) 2) 8
-      (int/gt (array/sum (exact (map (fn [(c : int)] (if (or (int/eq c 0) (int/eq c 2)) 0 1)) tp.bc))) 0) 9
-      (int/gt (array/sum (exact (map (fn [(p : int)]
-        (let* [n (int/sub (array/nth tp.peo (int/add p 1)) (array/nth tp.peo p))
-               f (int/sub (array/nth tp.pvo (int/add p 1)) (array/nth tp.pvo p))]
-          (if (int/eq (array/nth tp.bc p) 0) (if (int/eq n f) 0 1) (if (int/eq n (int/add f 1)) 0 1))))
-        (array/range tp.points :type int)))) 0) 10
-      :else 0)))
-
 ; ---- resulting creases ----
 ; Child sharpness of the source edge a vertex starts (0 for vertices without one).
 (defn sd_resval :context value
@@ -745,6 +713,50 @@
       (and (not changed) (and has_svw (not has_spw))) src
       :else written)))
 
+; ---- detail attribute overrides (osd_*) ----
+; The value of an integer detail attribute within 0..hi, else the default; -1 outside, -2 not one value, -3 wrong storage.
+(defn sd_osd :context sop [(g : geometry) (name : text) (default : int) (hi : int)]
+  (let* [has (sop/has_attr g name :owner "detail")
+         is_int (sop/has_attr g name :owner "detail" :type int)
+         vals (if is_int (sop/attr g name :owner "detail" :type int) (array/int 1 0))]
+    (cond (not has) default
+          (not is_int) -3
+          (not (int/eq (array/count vals) 1)) -2
+          (or (int/lt (array/nth vals 0) 0) (int/gt (array/nth vals 0) hi)) -1
+          :else (array/nth vals 0))))
+; The scheme may also be a text: catmull-clark, loop or bilinear.
+(defn sd_osd_scheme :context sop [(g : geometry) (default : int)]
+  (let* [has (sop/has_attr g "osd_scheme" :owner "detail")
+         is_int (sop/has_attr g "osd_scheme" :owner "detail" :type int)
+         is_text (sop/has_attr g "osd_scheme" :owner "detail" :type text)
+         ints (if is_int (sop/attr g "osd_scheme" :owner "detail" :type int) (array/int 1 0))
+         texts (if is_text (sop/attr g "osd_scheme" :owner "detail" :type text) (array/text 1 ""))]
+    (cond (not has) default
+          is_int (cond (not (int/eq (array/count ints) 1)) -2
+                       (or (int/lt (array/nth ints 0) 0) (int/gt (array/nth ints 0) 2)) -1
+                       :else (array/nth ints 0))
+          is_text (cond (not (int/eq (array/count texts) 1)) -2
+                        (equal? (array/nth texts 0) "catmull-clark") 0
+                        (equal? (array/nth texts 0) "loop") 1
+                        (equal? (array/nth texts 0) "bilinear") 2
+                        :else -1)
+          :else -3)))
+; Creaseweight and cornerweight attributes must be float and finite non-negative (native crease_data).
+(defn sd_attr_bad :context sop [(g : geometry)]
+  (let* [vany (sop/has_attr g "creaseweight" :owner "vertex")
+         vflt (sop/has_attr g "creaseweight" :owner "vertex" :type float)
+         pany (sop/has_attr g "creaseweight" :owner "primitive")
+         pflt (sop/has_attr g "creaseweight" :owner "primitive" :type float)
+         cany (sop/has_attr g "cornerweight" :owner "point")
+         cflt (sop/has_attr g "cornerweight" :owner "point" :type float)
+         vv (if vflt (sop/attr g "creaseweight" :owner "vertex" :type float) (array/float 0))
+         pv (if pflt (sop/attr g "creaseweight" :owner "primitive" :type float) (array/float 0))
+         cv (if cflt (sop/attr g "cornerweight" :owner "point" :type float) (array/float 0))]
+    (int/add (int/add (if (or (and vany (not vflt)) (or (and pany (not pflt)) (and cany (not cflt)))) 1 0)
+                      (array/sum (exact (map (fn [(x : float)] (sd_finite_ge0 x)) vv))))
+             (int/add (array/sum (exact (map (fn [(x : float)] (sd_finite_ge0 x)) pv)))
+                      (array/sum (exact (map (fn [(x : float)] (sd_finite_ge0 x)) cv)))))))
+
 ; ---- one pass ----
 ; The arrays a pass needs: stencil, output maps and crease plan.
 (defn sd_plan :context sop
@@ -846,10 +858,13 @@
   (if (and (and (= (array/nth p0 a) (array/nth p0 b)) (= (array/nth p1 a) (array/nth p1 b)))
            (and (= (array/nth p2 a) (array/nth p2 b)) (= (array/nth p3 a) (array/nth p3 b)))) 1 0))
 ; Corners joined across their two edges at the point when their values are equal (self when not).
-(defn sd_nb1 :context value [(nv : (array int)) (opp : (array int)) (c : int)]
-  (let* [o (array/nth opp c)] (if (int/ge o 0) (array/nth nv o) c)))
-(defn sd_nb2 :context value [(pv : (array int)) (opp : (array int)) (c : int)]
-  (let* [o (array/nth opp (array/nth pv c))] (if (int/ge o 0) o c)))
+; The corner at the same point in the polygon across the outgoing / incoming edge of corner c (c itself when none).
+(defn sd_nb1 :context value [(vp : (array int)) (nv : (array int)) (opp : (array int)) (c : int)]
+  (let* [o (array/nth opp c)]
+    (if (int/ge o 0) (if (int/eq (array/nth vp o) (array/nth vp c)) o (array/nth nv o)) c)))
+(defn sd_nb2 :context value [(vp : (array int)) (nv : (array int)) (pv : (array int)) (opp : (array int)) (c : int)]
+  (let* [o (array/nth opp (array/nth pv c))]
+    (if (int/ge o 0) (if (int/eq (array/nth vp o) (array/nth vp c)) o (array/nth nv o)) c)))
 (defn sd_join_eq :context value
   [(p0 : (array float)) (p1 : (array float)) (p2 : (array float)) (p3 : (array float)) (nb : (array int)) (c : int)]
   (if (int/eq (sd_eq4 p0 p1 p2 p3 c (array/nth nb c)) 1) (array/nth nb c) c))
@@ -960,21 +975,19 @@
          onecorner (exact (map (fn [(f : int)] (if (int/eq f 1) 1 0)) cm.faces))
          hascorner (array/scatter_add cm.orig onecorner (int/add tp.points 1))
          coff (array/scan_sum cm.cnt)
+         policy (cond
+           (int/eq mode 0) (array/int n 0)
+           (int/eq mode 1) (exact (map (fn [(k : int)] (if (int/eq (array/nth cm.faces k) 1) 1 0)) kr))
+           (int/eq mode 2) (exact (map (fn [(k : int) (p : int)]
+                             (if (or (int/eq (array/nth cm.faces k) 1) (int/gt (array/nth cm.cnt p) 2)) 1 0)) kr cm.orig))
+           (int/eq mode 3) (exact (map (fn [(k : int) (p : int)]
+                             (let* [components (array/nth cm.cnt p) fk (array/nth cm.faces k) fb (array/nth ftp.bc k)]
+                               (if (or (or (int/eq fk 1) (int/gt components 2))
+                                       (or (and (int/eq components 1) (and (int/gt fb 0) (int/eq (array/nth tp.bc p) 0)))
+                                           (and (int/eq components 2) (int/gt (array/nth hascorner p) 0)))) 1 0)) ) kr cm.orig))
+           :else (exact (map (fn [(k : int)] (if (int/gt (array/nth ftp.bc k) 0) 1 0)) kr)))
          cw0 (exact (map (fn [(k : int) (p : int)]
-           (let* [components (array/nth cm.cnt p)
-                  fk (array/nth cm.faces k)
-                  fb (array/nth ftp.bc k)
-                  sb (array/nth tp.bc p)
-                  sf (array/nth pf p)
-                  policy (cond
-                    (int/eq mode 0) false
-                    (int/eq mode 1) (int/eq fk 1)
-                    (int/eq mode 2) (or (int/eq fk 1) (int/gt components 2))
-                    (int/eq mode 3) (or (or (int/eq fk 1) (int/gt components 2))
-                                        (or (and (int/eq components 1) (and (int/gt fb 0) (int/eq sb 0)))
-                                            (and (int/eq components 2) (int/gt (array/nth hascorner p) 0))))
-                    :else (int/gt fb 0))]
-             (if (or policy (and (int/eq bmode 2) (int/eq sf 1))) 1.0e300 (array/nth cw p))))
+           (if (or (int/eq (array/nth policy k) 1) (and (int/eq bmode 2) (int/eq (array/nth pf p) 1))) 1.0e300 (array/nth cw p)))
            kr cm.orig))
          fedge (array/range ftp.edges :type int)
          fsh (exact (map (fn [(e : int)]
@@ -1031,8 +1044,8 @@
          neq (exact (map (fn [(c : int)] (int/sub 1 (sd_eq4 p0 p1 p2 p3 c (array/nth fc (array/nth tp.vp c))))) vr))
          disc (array/scatter_add tp.vp neq (int/add points 1))
          anydisc (int/gt (array/sum (exact (map (fn [(d : int)] (if (int/gt d 0) 1 0)) disc))) 0)
-         nb1 (exact (map (fn [(c : int)] (sd_nb1 tp.nv tp.opp c)) vr))
-         nb2 (exact (map (fn [(c : int)] (sd_nb2 tp.pv tp.opp c)) vr))
+         nb1 (exact (map (fn [(c : int)] (sd_nb1 tp.vp tp.nv tp.opp c)) vr))
+         nb2 (exact (map (fn [(c : int)] (sd_nb2 tp.vp tp.nv tp.pv tp.opp c)) vr))
          e1 (exact (map (fn [(c : int)] (sd_join_eq p0 p1 p2 p3 nb1 c)) vr))
          e2 (exact (map (fn [(c : int)] (sd_join_eq p0 p1 p2 p3 nb2 c)) vr))
          label (sd_labels e1 e2 vertices)
@@ -1136,10 +1149,65 @@
             :owner "vertex" :type vec4))
       :else acc)))
 
+; ---- validation (native Subdivide.validate): the first failing check as a code, 0 when the mesh is valid ----
+(defn sd_reason :context value [(code : int)]
+  (cond (int/eq code 1) "input must contain polygon geometry"
+        (int/eq code 2) "only polygon primitives are supported"
+        (int/eq code 3) "polygons must contain at least three vertices"
+        (int/eq code 4) "Loop subdivision requires triangle polygons"
+        (int/eq code 5) "a polygon contains a zero-length topology edge"
+        (int/eq code 6) "a polygon references the same point more than once"
+        (int/eq code 7) "positions must be finite"
+        (int/eq code 8) "non-manifold edges are not supported"
+        (int/eq code 9) "a boundary vertex does not have exactly two boundary edges"
+        (int/eq code 10) "a vertex has non-manifold polygon incidence"
+        (int/eq code 11) "a vertex has disconnected polygon fans"
+        :else "creaseweight and cornerweight attributes must be float, finite and non-negative"))
+(defn sd_fail :context value [(code : int)]
+  (error "invalid_topology" "subdivide could not produce valid geometry"
+    :cause (str "subdivide [invalid_topology]: Rdk_mesh.Subdivide.subdivide: " (sd_reason code))))
+(defn sd_check :context value
+  [(tp : {:vp (array int) :po (array int) :pov (array int) :nv (array int) :pv (array int) :opp (array int) :eov (array int) :peo (array int)
+          :pvo (array int) :bc (array int) :points int :edges int :vertices int :prims int})
+   (kinds : (array int)) (pos : (array vec3)) (scheme : int) (abad : int)]
+  (let* [vr (array/range tp.vertices :type int)
+         pr (array/range tp.prims :type int)
+         sizes (exact (map (fn [(f : int)] (int/sub (array/nth tp.po (int/add f 1)) (array/nth tp.po f))) pr))]
+    (cond
+      (or (int/eq tp.points 0) (int/eq tp.prims 0)) 1
+      (int/gt (array/sum kinds) 0) 2
+      (int/lt (array/min sizes) 3) 3
+      (and (int/eq scheme 1) (int/gt (array/max sizes) 3)) 4
+      (int/gt (array/sum (exact (map (fn [(v : int)]
+        (if (int/eq (array/nth tp.vp v) (array/nth tp.vp (array/nth tp.nv v))) 1 0)) vr))) 0) 5
+      (int/gt (let* [keys (exact (map (fn [(v : int)] (int/add (int/mul (array/nth tp.vp v) tp.prims) (array/nth tp.pov v))) vr))
+                     order (array/grade keys)]
+                (array/sum (exact (map (fn [(i : int)]
+                  (if (int/eq (array/nth keys (array/nth order i)) (array/nth keys (array/nth order (int/add i 1)))) 1 0))
+                  (array/range (int/sub tp.vertices 1) :type int))))) 0) 6
+      (int/gt (array/sum (exact (map (fn [(q : vec3)]
+        (if (and (= (- q.x q.x) 0.0) (and (= (- q.y q.y) 0.0) (= (- q.z q.z) 0.0))) 0 1)) pos))) 0) 7
+      (int/gt (array/max (array/scatter_add (exact (map (fn [(e : int)] (if (int/ge e 0) e tp.edges)) tp.eov))
+                           (array/int tp.vertices 1) (int/add tp.edges 1))) 2) 8
+      (int/gt (array/sum (exact (map (fn [(c : int)] (if (or (int/eq c 0) (int/eq c 2)) 0 1)) tp.bc))) 0) 9
+      (int/gt (array/sum (exact (map (fn [(p : int)]
+        (let* [n (int/sub (array/nth tp.peo (int/add p 1)) (array/nth tp.peo p))
+               f (int/sub (array/nth tp.pvo (int/add p 1)) (array/nth tp.pvo p))]
+          (if (int/eq (array/nth tp.bc p) 0) (if (int/eq n f) 0 1) (if (int/eq n (int/add f 1)) 0 1))))
+        (array/range tp.points :type int)))) 0) 10
+      (int/gt (array/max (array/scatter_add tp.vp
+         (let* [e1 (exact (map (fn [(c : int)] (sd_nb1 tp.vp tp.nv tp.opp c)) vr))
+                e2 (exact (map (fn [(c : int)] (sd_nb2 tp.vp tp.nv tp.pv tp.opp c)) vr))
+                label (sd_labels e1 e2 tp.vertices)]
+           (exact (map (fn [(c : int) (l : int)] (if (int/eq c l) 1 0)) vr label)))
+         (int/add tp.points 1))) 1) 11
+      (int/gt abad 0) 12
+      :else 0)))
+
 (defmacro sd_pass [src scheme bmode tri method ov genres rm final rname mode]
   `(let* [sdp_tp# (sd_tables ~src)
           sdp_topo# (sop/topology ~src)
-          sdp_code# (sd_check sdp_tp# sdp_topo#.kinds (sop/attr ~src "P") ~scheme)]
+          sdp_code# (sd_check sdp_tp# sdp_topo#.kinds (sop/attr ~src "P") ~scheme (sd_attr_bad ~src))]
      (cond
        (int/gt sdp_code# 0) (sd_fail sdp_code#)
        :else
@@ -1218,11 +1286,17 @@
    (creasing_method : text "Uniform" :label "Creasing method" :folder ["Creases"] :choices ["Uniform" "Chaikin"])
    (treat_curves_as_independent : bool false :label "Treat curves independently")
    (recompute_point_normals : bool false :label "Recompute point normals")]
-  (let* [scheme_i (cond (equal? scheme "Catmull-Clark") 0 (equal? scheme "Loop") 1 :else 2)
-         bmode (cond (equal? boundary_interpolation "None") 0 (equal? boundary_interpolation "Edge only") 1 :else 2)
-         tri (if (equal? triangle_policy "Smooth") 1 0)
-         fvmode (cond (equal? face_varying_interpolation "None") 0 (equal? face_varying_interpolation "Corners only") 1 (equal? face_varying_interpolation "Corners plus 1") 2 (equal? face_varying_interpolation "Corners plus 2") 3 (equal? face_varying_interpolation "Boundaries") 4 :else 5)
-         method (if (equal? creasing_method "Chaikin") 1 0)
+  (let* [scheme_p (cond (equal? scheme "Catmull-Clark") 0 (equal? scheme "Loop") 1 :else 2)
+         bmode_p (cond (equal? boundary_interpolation "None") 0 (equal? boundary_interpolation "Edge only") 1 :else 2)
+         tri_p (if (equal? triangle_policy "Smooth") 1 0)
+         fvmode_p (cond (equal? face_varying_interpolation "None") 0 (equal? face_varying_interpolation "Corners only") 1 (equal? face_varying_interpolation "Corners plus 1") 2 (equal? face_varying_interpolation "Corners plus 2") 3 (equal? face_varying_interpolation "Boundaries") 4 :else 5)
+         method_p (if (equal? creasing_method "Chaikin") 1 0)
+         scheme_i (sd_osd_scheme input scheme_p)
+         bmode (sd_osd input "osd_vtxboundaryinterpolation" bmode_p 2)
+         fvmode (sd_osd input "osd_fvarlinearinterpolation" fvmode_p 5)
+         method (sd_osd input "osd_creasingmethod" method_p 1)
+         tri (sd_osd input "osd_trianglesubdiv" tri_p 1)
+         osd_bad (or (or (int/lt scheme_i 0) (int/lt bmode 0)) (or (int/lt fvmode 0) (or (int/lt method 0) (int/lt tri 0))))
          explicit (equal? crease_weight_mode "Explicit")
          has_creases (not (equal? creases nil))
          sel_name (text/trim group)
@@ -1252,6 +1326,9 @@
         (error "missing_group" (str "subdivide could not find crease primitive group " (text/repr csel_name)))
       (and has_hole (not hole_found))
         (error "missing_group" (str "subdivide could not find hole primitive group " (text/repr hole_name)))
+      osd_bad
+        (error "invalid_topology" "subdivide could not produce valid geometry"
+          :cause "subdivide [invalid_topology]: Rdk_mesh.Subdivide.subdivide: invalid osd detail attribute")
       (int/gt (array/sum kinds) 0)
         (sd_delegate input creases has_creases group scheme iterations cracks crack_bias consistent_topology crease_group crease_weight_mode crease_weight generate_resulting_creases resulting_crease_group hole_group remove_holes boundary_interpolation face_varying_interpolation triangle_policy creasing_method treat_curves_as_independent recompute_point_normals)
       :else

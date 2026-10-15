@@ -49,12 +49,22 @@ let with_vertex_attributes g =
   let uv_x = Array.init corners (fun v -> positions.x.(point v)) and uv_y = Array.init corners (fun v -> positions.z.(point v)) in
   let tint = Array.init corners (fun v -> 1. +. float v *. 0.125) in
   let seam = Array.init corners (fun v -> positions.x.(point v) +. float (primitive_of.(v) mod 2) *. 0.5) in
+  (* regions by the primitive centre: continuous inside a region, discontinuous across regions *)
+  let region = Array.init corners (fun v ->
+    let p = primitive_of.(v) in
+    let first = topology.primitive_offsets.(p) and last = topology.primitive_offsets.(p + 1) in
+    let sum = ref 0. in
+    for c = first to last - 1 do sum := !sum +. positions.x.(point c) +. positions.y.(point c) done;
+    if !sum /. float (last - first) > 0.1 then 1. else 0.) in
+  let split = Array.init corners (fun v -> positions.x.(point v) +. region.(v) *. 0.75) in
   let vertex name storage = Attribute.create_owned ~owner:Attribute.Vertex ~name storage |> get_string_ok in
   List.fold_left (fun g a -> Geometry.with_attribute a g |> get_string_ok) g [
     vertex "uv" (Attribute.Float2 (Packed.Float2.of_owned ~x:uv_x ~y:uv_y |> get_string_ok));
     vertex "tint" (Attribute.Float tint);
     vertex "seam" (Attribute.Float seam);
     vertex "seam3" (Attribute.Float3 (Packed.Float3.Private.of_owned_exn ~x:seam ~y:tint ~z:uv_x));
+    vertex "split" (Attribute.Float split);
+    vertex "split2" (Attribute.Float2 (Packed.Float2.of_owned ~x:split ~y:region |> get_string_ok));
     vertex "seam4" (Attribute.Float4 (Packed.Float4.of_owned ~x:seam ~y:seam ~z:uv_x ~w:tint |> get_string_ok)) ]
 
 let single = List.map (fun (label, g) -> label, [g]) [
@@ -152,7 +162,8 @@ let cases = match only with None -> cases | Some l -> List.filter (fun (label, _
 let inputs = match Sys.getenv_opt "SD_FIX" with
   | None -> inputs
   | Some l -> List.filter (fun (label, _) -> label <> l) inputs @ List.filter (fun (label, _) -> label = l) inputs
-let () = register { key = "subdivide"; native = Sop.Nodes.Subdivide.factory; inputs; cases; ulps = debug_ulps;
+let enabled n = match Sys.getenv_opt "SD_REG" with None -> true | Some s -> s = string_of_int n
+let () = if enabled 1 then register { key = "subdivide"; native = Sop.Nodes.Subdivide.factory; inputs; cases; ulps = debug_ulps;
   bench = None }
 
 (* The creases input is connected: its fixtures carry two geometries. *)
@@ -171,5 +182,49 @@ let crease_cases =
     "crease input resulting", with_ [choice "crease_weight_mode" "Auto"; "generate_resulting_creases", P.Bool_value true;
       text "resulting_crease_group" "r"];
     "crease input group a", with_ [text "group" "a"] ]
-let () = register { key = "subdivide"; native = Sop.Nodes.Subdivide.factory; inputs = two; cases = crease_cases;
+let () = if enabled 2 then register { key = "subdivide"; native = Sop.Nodes.Subdivide.factory; inputs = two; cases = crease_cases;
+  ulps = 4; bench = None }
+
+(* Odd inputs: empty and single-point geometry, invalid polygon topology, detail overrides (osd attributes) and
+   corner weights. Few cases each; the error paths compare codes with native. *)
+let raw ~points ~vertex_points ~offsets =
+  let kinds = Array.make (Array.length offsets - 1) Topology.Polygon in
+  let topology = Topology.create_owned ~point_count:points ~vertex_points ~primitive_offsets:offsets
+    ~primitive_kinds:kinds |> get_string_ok in
+  Geometry.create ~positions:(Geometry.positions (Port_gate.points points)) ~topology () |> get_string_ok
+let detail name storage = Attribute.create_owned ~owner:Attribute.Detail ~name storage |> get_string_ok
+let with_detail name storage g = with_attr (detail name storage) g
+let corner_weights g =
+  with_attr (float_attr Attribute.Point "cornerweight"
+    (Array.init (Geometry.point_count g) (fun p -> if p mod 4 = 0 then 2. else if p mod 4 = 1 then 0.5 else 0.))) g
+let odd = List.map (fun (label, g) -> label, [with_holes g]) [
+  "empty", points 0; "single", points 1;
+  "nonmanifold edge", raw ~points:5 ~vertex_points:[|0;1;2; 1;0;3; 0;1;4|] ~offsets:[|0;3;6;9|];
+  "bowtie", raw ~points:5 ~vertex_points:[|0;1;2; 0;3;4|] ~offsets:[|0;3;6|];
+  "pinched cones", raw ~points:7 ~vertex_points:[|0;1;2; 0;2;3; 0;3;1; 0;4;5; 0;5;6; 0;6;4|]
+    ~offsets:[|0;3;6;9;12;15;18|];
+  "repeated point", raw ~points:4 ~vertex_points:[|0;1;2;1|] ~offsets:[|0;4|];
+  "zero-length edge", raw ~points:3 ~vertex_points:[|0;0;1;2|] ~offsets:[|0;4|];
+  "corner weights", corner_weights (small_grid ());
+  "corner weights box", corner_weights (box ());
+  "osd scheme loop", with_detail "osd_scheme" (Attribute.Int [|1|]) (tri_grid ());
+  "osd scheme text", with_detail "osd_scheme" (Attribute.Text [|"bilinear"|]) (small_grid ());
+  "osd scheme text bad", with_detail "osd_scheme" (Attribute.Text [|"nurbs"|]) (small_grid ());
+  "osd scheme range", with_detail "osd_scheme" (Attribute.Int [|7|]) (small_grid ());
+  "osd scheme float", with_detail "osd_scheme" (Attribute.Float [|1.|]) (small_grid ());
+  "osd boundary none", with_detail "osd_vtxboundaryinterpolation" (Attribute.Int [|0|]) (small_grid ());
+  "osd fvar", with_detail "osd_fvarlinearinterpolation" (Attribute.Int [|1|]) (with_vertex_attributes (small_grid ()));
+  "osd fvar range", with_detail "osd_fvarlinearinterpolation" (Attribute.Int [|9|]) (small_grid ());
+  "osd creasing", with_detail "osd_creasingmethod" (Attribute.Int [|1|]) (small_grid ());
+  "osd triangles", with_detail "osd_trianglesubdiv" (Attribute.Int [|1|]) (tri_grid ());
+  "bad creaseweight", with_attr (float_attr Attribute.Vertex "creaseweight"
+    (Array.init 36 (fun v -> if v = 5 then -1. else 0.))) (small_grid ());
+  "int creaseweight", with_attr (Attribute.create_owned ~owner:Attribute.Vertex ~name:"creaseweight"
+    (Attribute.Int (Array.make 36 1)) |> get_string_ok) (small_grid ()) ]
+let odd_cases = [ "default", base; "loop", with_ [choice "scheme" "Loop"];
+  "depth 2", with_ ["iterations", P.Int_value 2];
+  "boundary none", with_ [choice "boundary_interpolation" "None"; "remove_holes", P.Bool_value true];
+  "fvar corners", with_ [choice "face_varying_interpolation" "Corners only"; "iterations", P.Int_value 2];
+  "no hole group", [] ]
+let () = if enabled 3 then register { key = "subdivide"; native = Sop.Nodes.Subdivide.factory; inputs = odd; cases = odd_cases;
   ulps = 4; bench = None }
