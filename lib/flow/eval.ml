@@ -234,6 +234,13 @@ let mk_node c ?(authored = 0) ?(ty = Ty.geometry) kind args =
   if c.data then fail "E_ARRAY_TYPE" "Packed-array functions produce data, not graph nodes.";
   if st.time <> None then
     failf "E_LIVE_GEOMETRY" "%s makes geometry; geometry cannot be created while evaluating a live value." kind;
+  (* A geometry computed from cooked data (a fold over sop/attr_names) is only a value at cook time;
+     a node reading it is deferred with it, up to the graph root, whose structural node cooks the lot. *)
+  let rec cooked_geometry = function
+    | Residual r -> r.rterm.W.ty = Ty.geometry
+    | Record fs | Struct (_, _, fs) -> List.exists (fun (_, v) -> cooked_geometry v) fs
+    | _ -> false in
+  if st.time = None && List.exists (fun (_, v) -> cooked_geometry v) args then raise Needs_t;
   let n = { id = st.nnodes; inst = c.inst; site = site c; iter = c.iter; kind; ty; args } in
   st.nodes <- n :: st.nodes;
   st.authored <- authored :: st.authored;
