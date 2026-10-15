@@ -34,12 +34,38 @@ let crease_prims g =
   |> get_string_ok
 let crease_both g = crease_prims (crease_vertex g)
 
+(* Vertex attributes of the three face-varying shapes: "uv" continuous (a function of the point), "tint"
+   different at every corner, "seam" continuous inside a region and different across regions (primitive
+   parity), plus a vec3 and a vec4 built from the same corner data. *)
+let with_vertex_attributes g =
+  let topology = Topology.Private.view (Geometry.topology g) in
+  let positions = Packed.Float3.Private.view (Geometry.positions g) in
+  let corners = Array.length topology.vertex_points in
+  let primitive_of = Array.make corners 0 in
+  for p = 0 to Bytes.length topology.primitive_kinds - 1 do
+    for v = topology.primitive_offsets.(p) to topology.primitive_offsets.(p + 1) - 1 do primitive_of.(v) <- p done
+  done;
+  let point v = topology.vertex_points.(v) in
+  let uv_x = Array.init corners (fun v -> positions.x.(point v)) and uv_y = Array.init corners (fun v -> positions.z.(point v)) in
+  let tint = Array.init corners (fun v -> 1. +. float v *. 0.125) in
+  let seam = Array.init corners (fun v -> positions.x.(point v) +. float (primitive_of.(v) mod 2) *. 0.5) in
+  let vertex name storage = Attribute.create_owned ~owner:Attribute.Vertex ~name storage |> get_string_ok in
+  List.fold_left (fun g a -> Geometry.with_attribute a g |> get_string_ok) g [
+    vertex "uv" (Attribute.Float2 (Packed.Float2.of_owned ~x:uv_x ~y:uv_y |> get_string_ok));
+    vertex "tint" (Attribute.Float tint);
+    vertex "seam" (Attribute.Float seam);
+    vertex "seam3" (Attribute.Float3 (Packed.Float3.Private.of_owned_exn ~x:seam ~y:tint ~z:uv_x));
+    vertex "seam4" (Attribute.Float4 (Packed.Float4.of_owned ~x:seam ~y:seam ~z:uv_x ~w:tint |> get_string_ok)) ]
+
 let single = List.map (fun (label, g) -> label, [g]) [
   "box+groups", fixture_groups (with_holes (box ())); "grid holes", fixture_groups (holes_some (small_grid ()));
   "trianglegrid+groups", fixture_groups (with_holes (tri_grid ())); "trianglegrid holes", holes_some (tri_grid ());
   "mixed", with_holes (polygon_polyline ());
   "box", with_holes (box ()); "trianglebox", with_holes (tri_box ()); "trianglegrid", with_holes (tri_grid ());
-  "grid", with_holes (small_grid ()) ]
+  "grid", with_holes (small_grid ());
+  "box+vertex", with_vertex_attributes (with_holes (box ()));
+  "trianglegrid+vertex", with_vertex_attributes (with_holes (tri_grid ()));
+  "grid+vertex", with_vertex_attributes (holes_some (small_grid ())) ]
 let two = [
   "box+creases", [with_holes (box ()); crease_vertex (box ())];
   "grid+primitive creases", [with_holes (small_grid ()); crease_prims (small_grid ())];
@@ -102,10 +128,31 @@ let cases =
   @ [ "group holes", with_ [text "group" "subdivision_hole"];
       "group missing", with_ [text "group" "missing_group"];
       "group a loop", with_ [text "group" "a"; choice "scheme" "Loop"] ]
+  (* face-varying vertex interpolation *)
+  @ List.concat_map (fun (label, v) ->
+      [ "fvar " ^ label, with_ [choice "face_varying_interpolation" v];
+        "fvar " ^ label ^ " depth 2 creased",
+          with_ [choice "face_varying_interpolation" v; "iterations", P.Int_value 2; "crease_weight", P.Float_value 2.5];
+        "fvar " ^ label ^ " loop",
+          with_ [choice "face_varying_interpolation" v; choice "scheme" "Loop"; "crease_weight", P.Float_value 1.5];
+        "fvar " ^ label ^ " auto edge only",
+          with_ [choice "face_varying_interpolation" v; choice "crease_weight_mode" "Auto";
+                 choice "boundary_interpolation" "Edge only"; "iterations", P.Int_value 2] ])
+      ["none", "None"; "corners only", "Corners only"; "corners plus 1", "Corners plus 1";
+       "corners plus 2", "Corners plus 2"; "boundaries", "Boundaries"; "all", "All"]
+  @ [ "fvar bilinear", with_ [choice "scheme" "Bilinear"; choice "face_varying_interpolation" "None"] ]
   (* normals *)
   @ [ "recompute normals", with_ ["recompute_point_normals", P.Bool_value true];
       "recompute normals depth 2", with_ ["recompute_point_normals", P.Bool_value true; "iterations", P.Int_value 2] ]
-let () = register { key = "subdivide"; native = Sop.Nodes.Subdivide.factory; inputs; cases; ulps = 4;
+(* Debugging switches: SD_ONLY=<label> narrows the single-input registration to one case, SD_FIX=<label>
+   makes one fixture the last (the quick gate runs every case on the last fixture), SD_ULPS tightens the tolerance. *)
+let only = Sys.getenv_opt "SD_ONLY"
+let debug_ulps = match Sys.getenv_opt "SD_ULPS" with Some n -> int_of_string n | None -> 4
+let cases = match only with None -> cases | Some l -> List.filter (fun (label, _) -> label = l) cases
+let inputs = match Sys.getenv_opt "SD_FIX" with
+  | None -> inputs
+  | Some l -> List.filter (fun (label, _) -> label <> l) inputs @ List.filter (fun (label, _) -> label = l) inputs
+let () = register { key = "subdivide"; native = Sop.Nodes.Subdivide.factory; inputs; cases; ulps = debug_ulps;
   bench = None }
 
 (* The creases input is connected: its fixtures carry two geometries. *)

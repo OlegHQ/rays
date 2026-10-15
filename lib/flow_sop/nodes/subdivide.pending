@@ -130,7 +130,7 @@
          ap0 (exact (map (fn [(e : int)] (array/nth vp (array/nth adj.next_vertex (array/nth adj.next_vertex (array/nth ev0 e))))) er))
          ap1 (exact (map (fn [(e : int)] (let* [v (array/nth ev1 e)]
            (if (int/ge v 0) (array/nth vp (array/nth adj.next_vertex (array/nth adj.next_vertex v))) 0))) er))]
-    {:vp vp :po po :pov pov :nv adj.next_vertex :pv adj.previous_vertex :eov adj.edge_of_vertex :ea ea :eb eb
+    {:vp vp :po po :pov pov :nv adj.next_vertex :pv adj.previous_vertex :eov adj.edge_of_vertex :opp adj.opposite_vertex :ea ea :eb eb
      :peo adj.point_edge_offsets :pe pe :pvo adj.point_vertex_offsets :pvx pvx :ev0 ev0 :ev1 ev1
      :bc bd.count :bl bd.left :br bd.right :cum cum :ends ends :cornerpt cornerpt :cornersz cornersz
      :e0f e0f :e0s e0s :e1f e1f :e1s e1s :ap0 ap0 :ap1 ap1
@@ -627,29 +627,6 @@
       (if (int/eq k 2)
         (/ (array/nth fsum f) (float (int/sub (array/nth po (int/add f 1)) (array/nth po f))))
         x)) partial om.vk om.vprim))))
-(defn sd_attr_v :context sop
-  [(acc : geometry) (source : geometry) (name : text) (kind : text) (po : (array int))
-   (om : {:vk (array int) :va (array int) :vb (array int) :vprim (array int)})]
-  (cond
-    (equal? name "creaseweight") acc
-    (equal? kind "float")
-      (sop/with_attr acc name (sd_linear (sop/attr source name :owner "vertex" :type float) po om) :owner "vertex" :type float)
-    (equal? kind "vec2")
-      (let* [v (sop/attr source name :owner "vertex" :type vec2)]
-        (sop/with_attr acc name (sd_join2 (sd_linear (sd_xs2 v) po om) (sd_linear (sd_ys2 v) po om))
-          :owner "vertex" :type vec2))
-    (equal? kind "vec3")
-      (let* [v (sop/attr source name :owner "vertex" :type vec3)]
-        (sop/with_attr acc name
-          (sd_join3 (sd_linear (sd_xs v) po om) (sd_linear (sd_ys v) po om) (sd_linear (sd_zs v) po om))
-          :owner "vertex" :type vec3))
-    (equal? kind "vec4")
-      (let* [v (sop/attr source name :owner "vertex" :type vec4)]
-        (sop/with_attr acc name
-          (sd_join4 (sd_linear (sd_xs4 v) po om) (sd_linear (sd_ys4 v) po om)
-                    (sd_linear (sd_zs4 v) po om) (sd_linear (sd_ws4 v) po om))
-          :owner "vertex" :type vec4))
-    :else acc))
 
 ; ---- preparation ----
 (defn sd_has_hole :context sop [(g : geometry)]
@@ -785,7 +762,11 @@
          vw (if has_vw (sop/attr g "creaseweight" :owner "vertex" :type float) (array/float tp.vertices))
          pw (if has_pw (sop/attr g "creaseweight" :owner "primitive" :type float) (array/float tp.prims))
          cw (if has_cw (sop/attr g "cornerweight" :owner "point" :type float) (array/float tp.points))]
-    {:st (sd_stencil tp scheme bmode tri) :om (sd_omap tp unit scheme) :cp (sd_cplan tp vw pw cw ov method) :cw cw :unit unit}))
+    {:st (sd_stencil tp scheme bmode tri) :om (sd_omap tp unit scheme) :cp (sd_cplan tp vw pw cw ov method) :cw cw :unit unit
+     :vpo (let* [points tp.points edges tp.edges corners (int/mul (if (int/eq scheme 1) 12 4) (array/count unit))]
+            (if (int/eq scheme 1)
+              (exact (map (fn [(i : int)] (sd_out_loop tp.vp tp.po tp.eov unit points i)) (array/range corners :type int)))
+              (exact (map (fn [(i : int)] (sd_out_cc tp.vp tp.pov tp.eov tp.pv unit points edges i)) (array/range corners :type int)))))}))
 
 ; One plane of a point attribute through the stencil, then the crease adjustments (not for Bilinear).
 (defn sd_plane :context value
@@ -805,7 +786,7 @@
             :om {:ve (array int) :psrc (array int) :repv (array int)}
             :cp {:pk (array int) :ck (array int) :pa (array int) :pb (array int) :ca (array int) :cb (array int)
                  :factor (array float) :ef (array float) :child (array float)}
-            :cw (array float) :unit (array int)})
+            :cw (array float) :unit (array int) :vpo (array int)})
    (scheme : int) (ov : float) (genres : bool) (final : bool) (rname : text)]
   (let* [points tp.points edges tp.edges
          outputs (if (int/eq scheme 1) (int/add points edges) (int/add (int/add points edges) tp.prims))
@@ -819,9 +800,7 @@
          corners (int/mul (if (int/eq scheme 1) 12 4) (array/count plan.unit))
          sides (if (int/eq scheme 1) 3 4)
          faces (int/div corners sides)
-         vpo (if (int/eq scheme 1)
-               (exact (map (fn [(i : int)] (sd_out_loop tp.vp tp.po tp.eov plan.unit points i)) (array/range corners :type int)))
-               (exact (map (fn [(i : int)] (sd_out_cc tp.vp tp.pov tp.eov tp.pv plan.unit points edges i)) (array/range corners :type int))))
+         vpo plan.vpo
          poo (exact (map (fn [(f : int)] (int/mul f sides)) (array/range (int/add faces 1) :type int)))
          mesh (sop/mesh :points (array/vec3 outputs) :vertex_points vpo :primitive_offsets poo
                 :kinds (array/int faces 0))
@@ -860,7 +839,304 @@
     (if (and final (not (text/blank? rname)))
       (sop/with_group kept emask :name rname :owner "edge")
       kept)))
-(defmacro sd_pass [src scheme bmode tri method ov genres rm final rname]
+; ---- face-varying vertex attributes (native fvar_refinement) ----
+; All components of two corners equal (float equality; a missing component is a zero plane).
+(defn sd_eq4 :context value
+  [(p0 : (array float)) (p1 : (array float)) (p2 : (array float)) (p3 : (array float)) (a : int) (b : int)]
+  (if (and (and (= (array/nth p0 a) (array/nth p0 b)) (= (array/nth p1 a) (array/nth p1 b)))
+           (and (= (array/nth p2 a) (array/nth p2 b)) (= (array/nth p3 a) (array/nth p3 b)))) 1 0))
+; Corners joined across their two edges at the point when their values are equal (self when not).
+(defn sd_nb1 :context value [(nv : (array int)) (opp : (array int)) (c : int)]
+  (let* [o (array/nth opp c)] (if (int/ge o 0) (array/nth nv o) c)))
+(defn sd_nb2 :context value [(pv : (array int)) (opp : (array int)) (c : int)]
+  (let* [o (array/nth opp (array/nth pv c))] (if (int/ge o 0) o c)))
+(defn sd_join_eq :context value
+  [(p0 : (array float)) (p1 : (array float)) (p2 : (array float)) (p3 : (array float)) (nb : (array int)) (c : int)]
+  (if (int/eq (sd_eq4 p0 p1 p2 p3 c (array/nth nb c)) 1) (array/nth nb c) c))
+; Smallest corner of every connected component of equal corners.
+(defn sd_labels :context value [(e1 : (array int)) (e2 : (array int)) (vertices : int)]
+  (iterate vertices (array/range vertices :type int)
+    (fn [lab]
+      (exact (map (fn [(c : int)]
+        (let* [a (array/nth lab c) b (array/nth lab (array/nth e1 c)) d (array/nth lab (array/nth e2 c))]
+          (if (int/lt a b) (if (int/lt a d) a d) (if (int/lt b d) b d))))
+        (array/range vertices :type int))))
+    :until (fn [(prev : (array int)) (next : (array int))]
+      (int/eq (array/sum (exact (map (fn [(a : int) (b : int)] (if (int/eq a b) 0 1)) prev next))) 0))))
+; Component numbering: per point in order of first appearance (native root_target / component_offsets).
+(defn sd_comp :context value
+  [(label : (array int)) (pvx : (array int)) (pvo : (array int)) (points : int) (vertices : int)]
+  (let* [slots (array/count pvx)
+         sr (array/range slots :type int)
+         spoint (sd_owners pvo slots)
+         sroot (exact (map (fn [(s : int)] (array/nth label (array/nth pvx s))) sr))
+         order (array/grade sroot)
+         firstsorted (exact (map (fn [(i : int)]
+           (if (or (int/eq i 0)
+                   (not (int/eq (array/nth sroot (array/nth order i))
+                                (array/nth sroot (array/nth order (if (int/eq i 0) 0 (int/sub i 1)))))))
+             1 0)) sr))
+         ffirst (array/scatter_add order firstsorted slots)
+         fscan (array/scan_sum ffirst)
+         ncomp (array/nth fscan slots)
+         rkey (exact (map (fn [(s : int)] (if (int/eq (array/nth ffirst s) 1) (array/nth sroot s) vertices)) sr))
+         rtarget (array/scatter_add rkey (exact (map (fn [(s : int)] (int/add (array/nth fscan s) 1)) sr)) (int/add vertices 1))
+         fvp (exact (map (fn [(c : int)] (int/sub (array/nth rtarget (array/nth label c)) 1)) (array/range vertices :type int)))
+         ckey (exact (map (fn [(s : int)] (if (int/eq (array/nth ffirst s) 1) (array/nth fscan s) ncomp)) sr))
+         src (array/scatter_add ckey (exact (map (fn [(s : int)] (int/add (array/nth pvx s) 1)) sr)) (int/add ncomp 1))
+         orig (array/scatter_add ckey (exact (map (fn [(s : int)] (int/add (array/nth spoint s) 1)) sr)) (int/add ncomp 1))
+         faces (array/scatter_add fvp (array/int vertices 1) (int/add ncomp 1))
+         cnt (array/scatter_add spoint ffirst (int/add points 1))
+         cr (array/range ncomp :type int)]
+    {:n ncomp :fvp fvp
+     :src (exact (map (fn [(k : int)] (int/sub (array/nth src k) 1)) cr))
+     :orig (exact (map (fn [(k : int)] (int/sub (array/nth orig k) 1)) cr))
+     :faces (exact (map (fn [(k : int)] (array/nth faces k)) cr))
+     :cnt (exact (map (fn [(p : int)] (array/nth cnt p)) (array/range points :type int)))}))
+
+; The kind of refinement: 0 continuous, 1 linear, 2 isolated corners, 3 split (a face-varying topology).
+(defn sd_fv_kind :context value
+  [(disc : int) (allone : int) (allpinned : int)]
+  (cond (int/eq disc 0) 0 (int/eq allone 0) 3 (int/eq allpinned 1) 1 :else 2))
+(defn sd_pinned_value :context value [] 1.0e300)
+
+; Corner weights of the single-corner components (native branch for "every component is one face").
+(defn sd_cw_single :context value
+  [(cw : (array float)) (orig : (array int)) (pf : (array int)) (bmode : int) (mode : int)]
+  (exact (map (fn [(k : int)]
+    (let* [p (array/nth orig k)]
+      (if (or (int/gt mode 0) (and (int/eq bmode 2) (int/eq (array/nth pf p) 1))) 1.0e300 (array/nth cw p))))
+    (array/range (array/count orig) :type int))))
+
+; One plane through the continuous refinement: refine the first corner values by the geometry stencil,
+; pin the policy points, read each output corner at its point.
+(defn sd_fv_cont :context value
+  [(plane : (array float)) (fc : (array int)) (pinned : (array int))
+   (st : {:offsets (array int) :sources (array int) :weights (array float)})
+   (cp : {:pk (array int) :ck (array int) :pa (array int) :pb (array int) :ca (array int) :cb (array int)
+          :factor (array float) :ef (array float)})
+   (ea : (array int)) (eb : (array int)) (points : int) (edges : int) (scheme : int) (vpo : (array int))]
+  (let* [srcv (exact (map (fn [(p : int)] (let* [c (array/nth fc p)] (if (int/ge c 0) (array/nth plane c) 0.0)))
+                (array/range points :type int)))
+         refined (sd_plane srcv st cp ea eb points edges scheme)
+         fixed (exact (map (fn [(o : int) (r : float)]
+           (if (and (int/lt o points) (int/eq (array/nth pinned (if (int/lt o points) o 0)) 1)) (array/nth srcv (if (int/lt o points) o 0)) r))
+           (array/range (array/count refined) :type int) refined))]
+    (exact (map (fn [(o : int)] (array/nth fixed o)) vpo))))
+; Isolated corners: a corner blends towards its own value by the corner sharpness.
+(defn sd_isolated :context value
+  [(src : (array float)) (po : (array int)) (pv : (array int)) (nv : (array int)) (csv : (array float))
+   (om : {:vk (array int) :va (array int) :vb (array int) :vprim (array int)})]
+  (let* [fsum (array/segment_sum src po)
+         part (exact (map (fn [(k : int) (a : int) (b : int)]
+           (cond
+             (int/eq k 0)
+               (let* [s (array/nth src a)
+                      smooth (fma 0.125 (array/nth src (array/nth nv a)) (fma 0.75 s (* 0.125 (array/nth src (array/nth pv a)))))
+                      factor (sd_clamp01 (array/nth csv a))]
+                 (fma (- s smooth) factor smooth))
+             (int/eq k 1) (* (+ (array/nth src a) (array/nth src b)) 0.5)
+             :else 0.0)) om.vk om.va om.vb))]
+    (exact (map (fn [(x : float) (k : int) (f : int)]
+      (if (int/eq k 2)
+        (/ (array/nth fsum f) (float (int/sub (array/nth po (int/add f 1)) (array/nth po f))))
+        x)) part om.vk om.vprim))))
+; ---- face-varying: split topology ----
+(defn sd_empty_cplan :context value []
+  {:sharp (array/float 0) :child (array/float 0) :pk (array/int 0 0) :ck (array/int 0 0) :pa (array/int 0 0)
+   :pb (array/int 0 0) :ca (array/int 0 0) :cb (array/int 0 0) :factor (array/float 0) :ef (array/float 0)})
+(defn sd_empty_stencil :context value []
+  {:offsets (array/int 0 0) :sources (array/int 0 0) :weights (array/float 0) :rep (array/int 0 0)})
+; The face-varying mesh (one point per component), its stencil and crease plan.
+(defn sd_split :context sop
+  [(cm : {:n int :fvp (array int) :src (array int) :orig (array int) :faces (array int) :cnt (array int)})
+   (tp : {:po (array int) :eov (array int) :bc (array int) :points int :prims int :vertices int})
+   (pf : (array int)) (sharp : (array float)) (cw : (array float)) (vk : (array int)) (va : (array int)) (vprim : (array int))
+   (scheme : int) (bmode : int) (tri : int) (method : int) (mode : int) (ecrease : int)]
+  (let* [n cm.n
+         fg (sop/mesh :points (array/vec3 n) :vertex_points cm.fvp :primitive_offsets tp.po :kinds (array/int tp.prims 0))
+         ftp (sd_tables fg)
+         kr (array/range n :type int)
+         onecorner (exact (map (fn [(f : int)] (if (int/eq f 1) 1 0)) cm.faces))
+         hascorner (array/scatter_add cm.orig onecorner (int/add tp.points 1))
+         coff (array/scan_sum cm.cnt)
+         cw0 (exact (map (fn [(k : int) (p : int)]
+           (let* [components (array/nth cm.cnt p)
+                  fk (array/nth cm.faces k)
+                  fb (array/nth ftp.bc k)
+                  sb (array/nth tp.bc p)
+                  sf (array/nth pf p)
+                  policy (cond
+                    (int/eq mode 0) false
+                    (int/eq mode 1) (int/eq fk 1)
+                    (int/eq mode 2) (or (int/eq fk 1) (int/gt components 2))
+                    (int/eq mode 3) (or (or (int/eq fk 1) (int/gt components 2))
+                                        (or (and (int/eq components 1) (and (int/gt fb 0) (int/eq sb 0)))
+                                            (and (int/eq components 2) (int/gt (array/nth hascorner p) 0))))
+                    :else (int/gt fb 0))]
+             (if (or policy (and (int/eq bmode 2) (int/eq sf 1))) 1.0e300 (array/nth cw p))))
+           kr cm.orig))
+         fedge (array/range ftp.edges :type int)
+         fsh (exact (map (fn [(e : int)]
+           (if (int/ge (array/nth ftp.ev1 e) 0) (array/nth sharp (array/nth tp.eov (array/nth ftp.ev0 e))) 0.0)) fedge))
+         internal (array/segment_max (exact (map (fn [(s : int)] (array/nth fsh (array/nth ftp.pe s)))
+                      (array/range (array/count ftp.pe) :type int))) ftp.peo)
+         fcw (if (and (int/eq ecrease 1) (or (int/eq mode 2) (int/eq mode 3)))
+               (exact (map (fn [(k : int) (p : int)]
+                 (let* [other (if (int/eq (array/nth cm.cnt p) 2)
+                                (if (int/eq k (array/nth coff p)) (int/add k 1) (int/sub k 1)) -1)
+                        o (if (int/ge other 0) other 0)
+                        w (array/nth cw0 k)]
+                   (if (and (int/ge other 0)
+                            (and (= (array/nth internal k) 0.0)
+                                 (and (> (array/nth internal o) 0.0) (int/gt (array/nth cm.faces o) 1))))
+                     (max w (array/nth internal o)) w)))
+                 kr cm.orig))
+               cw0)
+         fvw (if (int/eq ecrease 1)
+               (exact (map (fn [(v : int)] (let* [e (array/nth tp.eov v)] (if (int/ge e 0) (array/nth sharp e) 0.0)))
+                 (array/range tp.vertices :type int)))
+               (array/float tp.vertices))
+         fcp (sd_cplan ftp fvw (array/float tp.prims) fcw -1.0 method)
+         fst (sd_stencil ftp scheme 1 tri)
+         opf (exact (map (fn [(k : int) (a : int) (f : int)]
+           (cond (int/eq k 0) (array/nth cm.fvp a)
+                 (int/eq k 1) (int/add n (array/nth ftp.eov a))
+                 :else (int/add (int/add n ftp.edges) f))) vk va vprim))]
+    {:n n :src cm.src :opf opf :fedges ftp.edges :fst fst :fcp fcp :fea ftp.ea :feb ftp.eb}))
+(defn sd_split_plane :context value
+  [(plane : (array float))
+   (sp : {:n int :src (array int) :opf (array int) :fedges int
+          :fst {:offsets (array int) :sources (array int) :weights (array float)}
+          :fcp {:pk (array int) :ck (array int) :pa (array int) :pb (array int) :ca (array int) :cb (array int)
+                :factor (array float) :ef (array float)}
+          :fea (array int) :feb (array int)})
+   (scheme : int)]
+  (let* [srcc (exact (map (fn [(c : int)] (array/nth plane c)) sp.src))
+         refined (sd_plane srcc sp.fst sp.fcp sp.fea sp.feb sp.n sp.fedges scheme)]
+    (exact (map (fn [(o : int)] (array/nth refined o)) sp.opf))))
+
+; ---- face-varying context of one attribute ----
+(defn sd_fv_ctx :context sop
+  [(p0 : (array float)) (p1 : (array float)) (p2 : (array float)) (p3 : (array float))
+   (tp : {:vp (array int) :po (array int) :nv (array int) :pv (array int) :eov (array int) :opp (array int)
+          :pvo (array int) :pvx (array int) :bc (array int) :points int :vertices int :prims int})
+   (plan : {:cp {:sharp (array float)} :cw (array float) :om {:vk (array int) :va (array int) :vprim (array int)}})
+   (scheme : int) (bmode : int) (tri : int) (method : int) (mode : int) (ecrease : int)]
+  (let* [points tp.points vertices tp.vertices
+         pr (array/range points :type int)
+         vr (array/range vertices :type int)
+         pf (exact (map (fn [(p : int)] (int/sub (array/nth tp.pvo (int/add p 1)) (array/nth tp.pvo p))) pr))
+         fc (exact (map (fn [(p : int)] (if (int/gt (array/nth pf p) 0) (array/nth tp.pvx (array/nth tp.pvo p)) -1)) pr))
+         neq (exact (map (fn [(c : int)] (int/sub 1 (sd_eq4 p0 p1 p2 p3 c (array/nth fc (array/nth tp.vp c))))) vr))
+         disc (array/scatter_add tp.vp neq (int/add points 1))
+         anydisc (int/gt (array/sum (exact (map (fn [(d : int)] (if (int/gt d 0) 1 0)) disc))) 0)
+         nb1 (exact (map (fn [(c : int)] (sd_nb1 tp.nv tp.opp c)) vr))
+         nb2 (exact (map (fn [(c : int)] (sd_nb2 tp.pv tp.opp c)) vr))
+         e1 (exact (map (fn [(c : int)] (sd_join_eq p0 p1 p2 p3 nb1 c)) vr))
+         e2 (exact (map (fn [(c : int)] (sd_join_eq p0 p1 p2 p3 nb2 c)) vr))
+         label (sd_labels e1 e2 vertices)
+         cm (sd_comp label tp.pvx tp.pvo points vertices)
+         allone (int/eq (array/sum (exact (map (fn [(f : int)] (if (int/eq f 1) 0 1)) cm.faces))) 0)
+         cws (sd_cw_single plan.cw cm.orig pf bmode mode)
+         allpinned (int/eq (array/sum (exact (map (fn [(w : float)] (if (>= w 1.0) 0 1)) cws))) 0)
+         k (cond (not anydisc) 0 (not allone) 3 allpinned 1 :else 2)
+         pinned (if (int/eq k 0)
+                  (exact (map (fn [(p : int)]
+                    (cond (int/eq mode 0) 0
+                          (int/le mode 3) (if (int/eq (array/nth pf p) 1) 1 0)
+                          (int/eq mode 4) (if (int/gt (array/nth tp.bc p) 0) 1 0)
+                          :else 0)) pr))
+                  (array/int 0 0))
+         csv (if (int/eq k 2) (exact (map (fn [(c : int)] (array/nth cws (array/nth cm.fvp c))) vr)) (array/float 0))
+         sp (if (int/eq k 3)
+              (sd_split cm tp pf plan.cp.sharp plan.cw plan.om.vk plan.om.va plan.om.vprim scheme bmode tri method mode ecrease)
+              {:n 0 :src (array/int 0 0) :opf (array/int 0 0) :fedges 0 :fst (sd_empty_stencil) :fcp (sd_empty_cplan)
+               :fea (array/int 0 0) :feb (array/int 0 0)})]
+    {:k k :fc fc :pinned pinned :csv csv :sp sp}))
+(defn sd_fv_apply :context value
+  [(plane : (array float))
+   (ctx : {:k int :fc (array int) :pinned (array int) :csv (array float)
+           :sp {:n int :src (array int) :opf (array int) :fedges int
+                :fst {:offsets (array int) :sources (array int) :weights (array float)}
+                :fcp {:pk (array int) :ck (array int) :pa (array int) :pb (array int) :ca (array int) :cb (array int)
+                      :factor (array float) :ef (array float)}
+                :fea (array int) :feb (array int)}})
+   (tp : {:ea (array int) :eb (array int) :po (array int) :pv (array int) :nv (array int) :points int :edges int})
+   (plan : {:st {:offsets (array int) :sources (array int) :weights (array float)}
+            :cp {:pk (array int) :ck (array int) :pa (array int) :pb (array int) :ca (array int) :cb (array int)
+                 :factor (array float) :ef (array float)}
+            :om {:vk (array int) :va (array int) :vb (array int) :vprim (array int)}
+            :vpo (array int)})
+   (scheme : int)]
+  (cond
+    (int/eq ctx.k 0) (sd_fv_cont plane ctx.fc ctx.pinned plan.st plan.cp tp.ea tp.eb tp.points tp.edges scheme plan.vpo)
+    (int/eq ctx.k 1) (sd_linear plane tp.po plan.om)
+    (int/eq ctx.k 2) (sd_isolated plane tp.po tp.pv tp.nv ctx.csv plan.om)
+    :else (sd_split_plane plane ctx.sp scheme)))
+; A vertex attribute: face-varying refinement unless the interpolation is All (or Bilinear), which is linear.
+(defn sd_vplane :context value
+  [(plane : (array float)) (ctx : {:k int :fc (array int) :pinned (array int) :csv (array float)
+           :sp {:n int :src (array int) :opf (array int) :fedges int
+                :fst {:offsets (array int) :sources (array int) :weights (array float)}
+                :fcp {:pk (array int) :ck (array int) :pa (array int) :pb (array int) :ca (array int) :cb (array int)
+                      :factor (array float) :ef (array float)}
+                :fea (array int) :feb (array int)}})
+   (tp : {:ea (array int) :eb (array int) :po (array int) :pv (array int) :nv (array int) :points int :edges int})
+   (plan : {:st {:offsets (array int) :sources (array int) :weights (array float)}
+            :cp {:pk (array int) :ck (array int) :pa (array int) :pb (array int) :ca (array int) :cb (array int)
+                 :factor (array float) :ef (array float)}
+            :om {:vk (array int) :va (array int) :vb (array int) :vprim (array int)}
+            :vpo (array int)})
+   (scheme : int) (mode : int)]
+  (if (or (int/eq mode 5) (int/eq scheme 2))
+    (sd_linear plane tp.po plan.om)
+    (sd_fv_apply plane ctx tp plan scheme)))
+(defn sd_attr_v :context sop
+  [(acc : geometry) (source : geometry) (name : text) (kind : text)
+   (tp : {:vp (array int) :po (array int) :nv (array int) :pv (array int) :eov (array int) :opp (array int)
+          :ea (array int) :eb (array int) :pvo (array int) :pvx (array int) :bc (array int)
+          :points int :edges int :vertices int :prims int})
+   (plan : {:st {:offsets (array int) :sources (array int) :weights (array float)}
+            :cp {:sharp (array float) :pk (array int) :ck (array int) :pa (array int) :pb (array int) :ca (array int)
+                 :cb (array int) :factor (array float) :ef (array float)}
+            :cw (array float)
+            :om {:vk (array int) :va (array int) :vb (array int) :vprim (array int)}
+            :vpo (array int)})
+   (scheme : int) (bmode : int) (tri : int) (method : int) (mode : int) (ecrease : int)]
+  (let* [z (array/float tp.vertices)]
+    (cond
+      (equal? name "creaseweight") acc
+      (equal? kind "float")
+        (let* [p (sop/attr source name :owner "vertex" :type float)
+               ctx (sd_fv_ctx p z z z tp plan scheme bmode tri method mode ecrease)]
+          (sop/with_attr acc name (sd_vplane p ctx tp plan scheme mode) :owner "vertex" :type float))
+      (equal? kind "vec2")
+        (let* [v (sop/attr source name :owner "vertex" :type vec2)
+               x (sd_xs2 v) y (sd_ys2 v)
+               ctx (sd_fv_ctx x y z z tp plan scheme bmode tri method mode ecrease)]
+          (sop/with_attr acc name
+            (sd_join2 (sd_vplane x ctx tp plan scheme mode) (sd_vplane y ctx tp plan scheme mode))
+            :owner "vertex" :type vec2))
+      (equal? kind "vec3")
+        (let* [v (sop/attr source name :owner "vertex" :type vec3)
+               x (sd_xs v) y (sd_ys v) w (sd_zs v)
+               ctx (sd_fv_ctx x y w z tp plan scheme bmode tri method mode ecrease)]
+          (sop/with_attr acc name
+            (sd_join3 (sd_vplane x ctx tp plan scheme mode) (sd_vplane y ctx tp plan scheme mode)
+                      (sd_vplane w ctx tp plan scheme mode))
+            :owner "vertex" :type vec3))
+      (equal? kind "vec4")
+        (let* [v (sop/attr source name :owner "vertex" :type vec4)
+               x (sd_xs4 v) y (sd_ys4 v) w (sd_zs4 v) u (sd_ws4 v)
+               ctx (sd_fv_ctx x y w u tp plan scheme bmode tri method mode ecrease)]
+          (sop/with_attr acc name
+            (sd_join4 (sd_vplane x ctx tp plan scheme mode) (sd_vplane y ctx tp plan scheme mode)
+                      (sd_vplane w ctx tp plan scheme mode) (sd_vplane u ctx tp plan scheme mode))
+            :owner "vertex" :type vec4))
+      :else acc)))
+
+(defmacro sd_pass [src scheme bmode tri method ov genres rm final rname mode]
   `(let* [sdp_tp# (sd_tables ~src)
           sdp_topo# (sop/topology ~src)
           sdp_code# (sd_check sdp_tp# sdp_topo#.kinds (sop/attr ~src "P") ~scheme)]
@@ -882,7 +1158,8 @@
                          sdp_tp# sdp_plan# ~scheme))
               sdp_2# (fold [sdp_b# sdp_1#] [sdp_j# (array/range (array/count sdp_ve#.name) :type int)]
                        (sd_attr_v sdp_b# ~src (array/nth sdp_ve#.name sdp_j#) (array/nth sdp_ve#.type sdp_j#)
-                         sdp_tp#.po sdp_om#))
+                         sdp_tp# sdp_plan# ~scheme ~bmode ~tri ~method ~mode
+                         (if (or (>= ~ov 0.0) (or (sop/has_attr ~src "creaseweight" :owner "vertex") (sop/has_attr ~src "creaseweight" :owner "primitive"))) 1 0)))
               sdp_3# (fold [sdp_c# sdp_2#] [sdp_k# (array/range (array/count sdp_pn#) :type int)]
                        (sd_group_p sdp_c# ~src (array/nth sdp_pn# sdp_k#) sdp_tp# ~scheme))
               sdp_4# (fold [sdp_d# sdp_3#] [sdp_l# (array/range (array/count sdp_vn#) :type int)]
@@ -944,6 +1221,7 @@
   (let* [scheme_i (cond (equal? scheme "Catmull-Clark") 0 (equal? scheme "Loop") 1 :else 2)
          bmode (cond (equal? boundary_interpolation "None") 0 (equal? boundary_interpolation "Edge only") 1 :else 2)
          tri (if (equal? triangle_policy "Smooth") 1 0)
+         fvmode (cond (equal? face_varying_interpolation "None") 0 (equal? face_varying_interpolation "Corners only") 1 (equal? face_varying_interpolation "Corners plus 1") 2 (equal? face_varying_interpolation "Corners plus 2") 3 (equal? face_varying_interpolation "Boundaries") 4 :else 5)
          method (if (equal? creasing_method "Chaikin") 1 0)
          explicit (equal? crease_weight_mode "Explicit")
          has_creases (not (equal? creases nil))
@@ -995,5 +1273,5 @@
               (or generate_resulting_creases (int/lt i (int/sub iterations 1)))
               (and remove_holes (int/eq i (int/sub iterations 1)))
               (int/eq i (int/sub iterations 1))
-              rname))]
+              rname fvmode))]
             (if (and recompute_point_normals had_n) (sop/normals result :owner "Point" :weighting "Face area") result)))))))
