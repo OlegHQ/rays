@@ -759,6 +759,9 @@ No draft yet: `scatter`, `edge_flip`, `subdivide` (agent),
 `attr_from_image` (image sampling in a geometry body), `attribute_composite` and `blend_shapes`
 (loop over attribute names building geometry), `copy_to_points`, `sweep`.
 
+Fidelity gap: `group_from_attribute_boundary` does not raise native's non-finite-attribute error
+(the gate has no non-finite fixture).
+
 Known language limits found by the ports: `cond`/`if` over records ("Cooked selection cannot
 compile record"); a host call whose data-dependent array arguments are shared with a second host
 call (`E_KERNEL_FORM`); plan data inside `iterate` bodies is about 20x slower; `sop/adjacency` /
