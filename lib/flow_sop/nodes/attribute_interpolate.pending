@@ -1,0 +1,648 @@
+; Whole Attribute Interpolate port. Native Rdk.Attribute_interpolate: every destination of the target owner has a
+; row of weighted source entries. Primitive/UVW: the corners of the driver primitive weighted by the polygon or
+; curve basis at the driver UVW; weighted drivers: the numbers/weights row of the destination (point, vertex or
+; primitive numbers). Entries are flat arrays (row starts rs, lengths rl, weight ew, source element per owner).
+; Numeric attributes accumulate out = fma(weight, source, out) along the row position (native arm64 fuses the
+; Add of a product), blend fma(blend, out - old, old), N renormalizes; discrete attributes (int, text, arrays)
+; take the first strongest entry. Unmatched destinations keep the old value or become zero/empty. Matched
+; groups score the same way. Blend mode array: >= 0 blended destination, -1 keep old, -2 default value.
+(defn ai_error :context value [(reason : text)]
+  (error "invalid_interpolate" "attribute_interpolate could not produce valid geometry"
+    :cause (str "attribute_interpolate [invalid_interpolate]: Attribute Interpolate: " reason)))
+(defn ai_range :context value [(n : int)] (array/range n :type int))
+(defn ai_owner_token :context value [(raw : text)]
+  (let* [token (text/lower (text/trim raw))]
+    (case token "point" "point" "points" "point" "vertex" "vertex" "vertices" "vertex"
+      "primitive" "primitive" "primitives" "primitive" "detail" "detail" :else "")))
+(defn ai_count :context sop [(geo : geometry) (owner : text)]
+  (case owner "vertex" (sop/count geo :vertices) "primitive" (sop/count geo :primitives)
+    "detail" 1 :else (sop/count geo :points)))
+(defn ai_duplicate :context value [(keys : (array text))]
+  (int/gt (array/sum (exact (map (fn [(f : int) (i : int)] (if (int/eq f i) 0 1))
+    (array/index_of keys keys) (array/range (array/count keys) :type int)))) 0))
+(defn ai_uses :context value [(owners : (array text)) (owner : text)]
+  (int/ge (array/nth (array/index_of owners (array/text 1 owner)) 0) 0))
+(defn ai_pick_i :context value [(a : (array int)) (i : int)]
+  (if (and (int/ge i 0) (int/lt i (array/count a))) (array/nth a i) 0))
+; Owning row of every flat slot.
+(defn ai_owners :context value [(offsets : (array int)) (total : int)]
+  (let* [segments (int/sub (array/count offsets) 1)
+         starts (exact (map (fn [(p : int)] (array/nth offsets p)) (array/range segments :type int)))
+         prefix (array/scan_sum (array/scatter_add starts (array/int segments 1) (int/add total 1)))]
+    (exact (map (fn [(s : int)] (int/sub (array/nth prefix (int/add s 1)) 1)) (array/range total :type int)))))
+
+; ---- construction validation (mirrors the native validate closure)
+(defn ai_supported :context value [(driver : text) (owner : text)]
+  (case driver
+    "Point weights" (or (equal? owner "point") (equal? owner "detail"))
+    "Primitive weights" (or (equal? owner "primitive") (equal? owner "detail"))
+    :else true))
+(defn ai_row_ok :context value [(row : (list text)) (towner : text) (driver : text)]
+  (if (int/eq (count row) 3)
+    (let* [o (ai_owner_token (nth row 0))
+           src (nth row 1)
+           dst (nth row 2)]
+      (cond (equal? o "") false
+            (text/blank? src) false
+            (text/blank? dst) false
+            (and (equal? src "P") (not (equal? o "point"))) false
+            (and (equal? dst "P") (not (equal? towner "point"))) false
+            :else (ai_supported driver o)))
+    false))
+(defn ai_rows_valid :context value [(rows_text : text) (towner : text) (driver : text)]
+  (let* [state (fold [st {:ok true :dests (array/text 0)}] [row (text/table_decode rows_text)]
+                 {:ok (and st.ok (ai_row_ok row towner driver))
+                  :dests (if (int/eq (count row) 3) (array/concat st.dests (array/text 1 (nth row 2))) st.dests)})]
+    (and state.ok (not (ai_duplicate state.dests)))))
+(defn ai_pat_ok :context value [(pattern : text)]
+  (or (text/blank? pattern) (equal? (text/glob_error (text/trim pattern)) "")))
+(defn ai_valid :context value
+  [(blend : float) (threshold : float) (attributes : text) (target_owner : text) (group : text) (group_pattern : text)
+   (driver : text) (primitive_attribute : text) (uvw_attribute : text) (numbers_attribute : text) (weights_attribute : text)
+   (compute_weights : bool) (computed_numbers_attribute : text) (computed_weights_attribute : text)
+   (point_pattern : text) (vertex_pattern : text) (primitive_pattern : text) (detail_pattern : text)]
+  (let* [towner (ai_owner_token target_owner)
+         uvw (equal? driver "Primitive UVW")]
+    (and (and (and (>= blend 0.0) (<= blend 1.0)) (>= threshold 0.0))
+      (and (and (ai_rows_valid attributes towner driver)
+                (or (not (equal? towner "detail"))
+                    (and (text/blank? group) (text/blank? group_pattern))))
+        (and (and (ai_pat_ok group_pattern)
+                  (and (and (ai_pat_ok point_pattern) (ai_pat_ok vertex_pattern))
+                       (and (ai_pat_ok primitive_pattern) (ai_pat_ok detail_pattern))))
+          (and (if uvw
+                 (and (not (text/blank? primitive_attribute)) (not (text/blank? uvw_attribute)))
+                 (and (and (not (text/blank? numbers_attribute)) (not (text/blank? weights_attribute)))
+                      (and (> threshold 0.0) (not compute_weights))))
+               (if compute_weights
+                 (and (and (not (text/blank? computed_numbers_attribute)) (not (text/blank? computed_weights_attribute)))
+                      (and (not (equal? computed_numbers_attribute computed_weights_attribute))
+                           (or (not (equal? towner "point"))
+                               (and (not (equal? computed_numbers_attribute "P"))
+                                    (not (equal? computed_weights_attribute "P"))))))
+                 true)))))))
+
+; ---- the interpolation basis of a polygon or curve at (u, v), native polygon_weight / curve_weight
+(defn ai_w_tri :context value [(u : float) (v : float) (local : int)]
+  (cond (int/eq local 0) (- (- 1.0 u) v) (int/eq local 1) u :else v))
+(defn ai_w_quad :context value [(u : float) (v : float) (local : int)]
+  (cond (int/eq local 0) (* (- 1.0 u) (- 1.0 v))
+        (int/eq local 1) (* (- 1.0 u) v)
+        (int/eq local 2) (* u v)
+        :else (* u (- 1.0 v))))
+(defn ai_w_poly :context value [(size : int) (u : float) (v : float) (local : int)]
+  (let* [fs (float size)
+         scaled (* u fs)
+         fl (float_floor scaled)
+         edge (int/mod (int/add (int/mod (floor scaled) size) size) size)
+         nx (if (int/eq (int/add edge 1) size) 0 (int/add edge 1))
+         boundary (cond (int/eq local edge) (- 1.0 (- scaled fl)) (int/eq local nx) (- scaled fl) :else 0.0)]
+    (fma (- 1.0 v) boundary (/ v fs))))
+(defn ai_w_closed :context value [(size : int) (u : float) (local : int)]
+  (let* [scaled (* u (float size))
+         fl (float_floor scaled)
+         edge (int/mod (int/add (int/mod (floor scaled) size) size) size)
+         nx (if (int/eq (int/add edge 1) size) 0 (int/add edge 1))]
+    (cond (int/eq local edge) (- 1.0 (- scaled fl)) (int/eq local nx) (- scaled fl) :else 0.0)))
+(defn ai_w_open :context value [(size : int) (u : float) (local : int)]
+  (let* [scaled (* u (float (int/sub size 1)))
+         fl (float_floor scaled)
+         base (floor scaled)
+         t1 (- scaled fl)
+         t2 (- scaled (float (int/sub size 2)))]
+    (cond
+      (int/lt base 0) (cond (int/eq local 0) (- 1.0 scaled) (int/eq local 1) scaled :else 0.0)
+      (int/ge base (int/sub size 1))
+        (cond (int/eq local (int/sub size 2)) (- 1.0 t2) (int/eq local (int/sub size 1)) t2 :else 0.0)
+      :else (cond (int/eq local base) (- 1.0 t1) (int/eq local (int/add base 1)) t1 :else 0.0))))
+
+; ---- the plan: explicit rows, then the pattern expansions (P first when the point pattern matches it)
+(defn ai_expand :context sop
+  [(plan : {:owners (array text) :names (array text) :dests (array text)}) (source : geometry) (probe : geometry)
+   (owner : text) (raw : text)]
+  (let* [pattern (text/trim raw)]
+    (if (text/blank? pattern) plan
+      (let* [listed (if (equal? owner "point")
+                      (int/gt (array/count (sop/attr_names probe pattern :owner "detail")) 0) false)
+             stored (sop/attr_names source pattern :owner owner)
+             names (if listed (array/concat (array/text 1 "P") stored) stored)]
+        {:owners (array/concat plan.owners (array/text (array/count names) owner))
+         :names (array/concat plan.names names)
+         :dests (array/concat plan.dests names)}))))
+(defn ai_plan :context sop
+  [(source : geometry) (rows : text) (pp : text) (vp : text) (rp : text) (dp : text)]
+  (let* [probe (sop/with_attr (sop/mesh :points (array/vec3 1) :vertex_points (array/int 0)
+                 :primitive_offsets (array/int 1) :kinds (array/int 0))
+                 "P" (array/float 1) :owner "detail" :type float)
+         explicit (fold [plan {:owners (array/text 0) :names (array/text 0) :dests (array/text 0)}]
+                    [row (text/table_decode rows)]
+                    {:owners (array/concat plan.owners (array/text 1 (ai_owner_token (nth row 0))))
+                     :names (array/concat plan.names (array/text 1 (nth row 1)))
+                     :dests (array/concat plan.dests (array/text 1 (nth row 2)))})
+         p1 (ai_expand explicit source probe "point" pp)
+         p2 (ai_expand p1 source probe "vertex" vp)
+         p3 (ai_expand p2 source probe "primitive" rp)]
+    (ai_expand p3 source probe "detail" dp)))
+(defn ai_group_add :context sop
+  [(plan : {:owners (array text) :names (array text)}) (source : geometry) (owner : text) (raw : text)]
+  (let* [pattern (text/trim raw)]
+    (if (text/blank? pattern) plan
+      (let* [names (sop/group_names source pattern :owner owner)]
+        {:owners (array/concat plan.owners (array/text (array/count names) owner))
+         :names (array/concat plan.names names)}))))
+(defn ai_group_plan :context sop [(source : geometry) (pp : text) (vp : text) (rp : text)]
+  (ai_group_add (ai_group_add (ai_group_add {:owners (array/text 0) :names (array/text 0)} source "point" pp)
+    source "vertex" vp) source "primitive" rp))
+
+; ---- checks
+(defn ai_wsupported :context value [(wo : text) (owner : text)]
+  (case wo
+    "point" (or (equal? owner "point") (equal? owner "detail"))
+    "primitive" (or (equal? owner "primitive") (equal? owner "detail"))
+    :else true))
+(defn ai_job_bad :context sop
+  [(source : geometry) (target : geometry) (owner : text) (name : text) (dest : text) (towner : text) (wo : text)]
+  (cond (not (sop/has_attr source name :owner owner)) true
+        (and (equal? dest "P") (not (equal? towner "point"))) true
+        (not (ai_wsupported wo owner)) true
+        (sop/has_attr target dest :owner towner)
+          (not (equal? (sop/attr_type target dest :owner towner) (sop/attr_type source name :owner owner)))
+        :else false))
+(defn ai_jobs_bad :context sop
+  [(source : geometry) (target : geometry) (towner : text) (wo : text)
+   (plan : {:owners (array text) :names (array text) :dests (array text)})]
+  (let* [state (fold [st {:bad false :i 0}] [name plan.names]
+                 {:bad (or st.bad (ai_job_bad source target (array/nth plan.owners st.i) name
+                                    (array/nth plan.dests st.i) towner wo))
+                  :i (int/add st.i 1)})]
+    state.bad))
+(defn ai_groups_bad :context value
+  [(towner : text) (wo : text) (groups : {:owners (array text) :names (array text)})]
+  (let* [n (array/count groups.names)]
+    (cond (int/eq n 0) false
+          (equal? towner "detail") true
+          (ai_duplicate groups.names) true
+          :else (fold [bad false] [o groups.owners] (or bad (not (ai_wsupported wo o)))))))
+(defn ai_layout_ok :context sop [(target : geometry) (towner : text) (na : text) (wa : text)]
+  (if (and (sop/has_attr target na :owner towner :type int_array) (sop/has_attr target wa :owner towner :type float_array))
+    (let* [nums (sop/attr target na :owner towner :type int_array)
+           wts (sop/attr target wa :owner towner :type float_array)]
+      (and (int/eq (array/count nums.offsets) (array/count wts.offsets))
+           (int/eq (array/sum (exact (map (fn [(a : int) (b : int)] (if (int/eq a b) 0 1)) nums.offsets wts.offsets))) 0)))
+    false))
+(defn ai_drivers_ok :context sop
+  [(target : geometry) (towner : text) (uvw : bool) (pa : text) (ua : text) (na : text) (wa : text)]
+  (if uvw
+    (and (sop/has_attr target pa :owner towner :type int) (sop/has_attr target ua :owner towner :type vec3))
+    (ai_layout_ok target towner na wa)))
+(defn ai_compute_bad :context sop
+  [(target : geometry) (towner : text) (cn : text) (cw : text) (pa : text) (ua : text) (dests : (array text))]
+  (cond (or (equal? cn pa) (or (equal? cn ua) (or (equal? cw pa) (equal? cw ua)))) true
+        (int/ge (array/nth (array/index_of dests (array/text 1 cn)) 0) 0) true
+        (int/ge (array/nth (array/index_of dests (array/text 1 cw)) 0) 0) true
+        :else
+          (let* [hn (sop/has_attr target cn :owner towner)
+                 hw (sop/has_attr target cw :owner towner)]
+            (cond (and hn hw) (not (ai_layout_ok target towner cn cw))
+                  (or hn hw) true
+                  :else false))))
+; The union of the groups matching a pattern is one Group Combine call; its group is read back as a cooked mask.
+(defn ai_union_mask :context sop [(geo : geometry) (towner : text) (pattern : text)]
+  (sop/group (sop/group_combine geo :owner (case towner "vertex" "Vertices" "primitive" "Primitives" :else "Points")
+               :name "__ai_sel" :base_pattern pattern)
+    :name "__ai_sel" :owner towner))
+; Weighted driver rows that name a missing source element.
+(defn ai_bounds_bad :context value [(offsets : (array int)) (nv : (array int)) (sel : (array int)) (sc : int)]
+  (let* [rowd (ai_owners offsets (array/count nv))]
+    (int/gt (array/sum (exact (map (fn [(e : int)]
+      (let* [x (array/nth nv e)]
+        (if (and (int/eq (array/nth sel (array/nth rowd e)) 1) (or (int/lt x 0) (int/ge x sc))) 1 0)))
+      (ai_range (array/count nv))))) 0)))
+
+(defn ai_bounds_check :context sop
+  [(target : geometry) (towner : text) (na : text) (sel : (array int)) (sc : int)]
+  (let* [nums (sop/attr target na :owner towner :type int_array)]
+    (ai_bounds_bad nums.offsets nums.values sel sc)))
+
+; ---- entry tables: rs row starts, rl row lengths, ew entry weights, ep/ev/epr entry source point, vertex,
+; primitive, bs strongest entry of each row (-1 when empty), bm blend/mode per destination, de driver primitive
+(defn ai_uvw_valid :context value [(prim : (array int)) (sel : (array int)) (pc : int)]
+  (exact (map (fn [(p : int) (s : int)] (if (and (int/eq s 1) (and (int/ge p 0) (int/lt p pc))) 1 0)) prim sel)))
+(defn ai_uvw_lens :context value [(prim : (array int)) (valid : (array int)) (po : (array int))]
+  (exact (map (fn [(p : int) (v : int)]
+    (if (int/eq v 1) (int/sub (array/nth po (int/add p 1)) (array/nth po p)) 0)) prim valid)))
+(defn ai_modes :context value [(on : (array int)) (sel : (array int)) (blends : (array float)) (dflt : bool)]
+  (exact (map (fn [(m : int) (s : int) (b : float)]
+    (if (int/eq m 1) b (if (and (int/eq s 1) dflt) -2.0 -1.0))) on sel blends)))
+(defn ai_uvw_table :context sop
+  [(source : geometry) (prim : (array int)) (uvw : (array vec3)) (sel : (array int))
+   (pre_scale : float) (blend : float) (dflt : bool)]
+  (let* [topo (sop/topology source)
+         po topo.primitive_offsets
+         vp topo.vertex_points
+         kinds topo.kinds
+         pc (sop/count source :primitives)
+         n (array/count prim)
+         valid (ai_uvw_valid prim sel pc)
+         rl (ai_uvw_lens prim valid po)
+         rs (array/scan_sum rl)
+         total (array/nth rs n)
+         rowd (ai_owners rs total)
+         loc (exact (map (fn [(e : int) (d : int)] (int/sub e (array/nth rs d))) (ai_range total) rowd))
+         pe (exact (map (fn [(d : int)] (array/nth prim d)) rowd))
+         evv (exact (map (fn [(p : int) (l : int)] (int/add (array/nth po p) l)) pe loc))
+         epp (exact (map (fn [(v : int)] (array/nth vp v)) evv))
+         us (exact (map (fn [(d : int)] (let* [uv (array/nth uvw d)] (* uv.x pre_scale))) rowd))
+         vs (exact (map (fn [(d : int)] (let* [uv (array/nth uvw d)] (* uv.y pre_scale))) rowd))
+         sz (exact (map (fn [(p : int)] (int/sub (array/nth po (int/add p 1)) (array/nth po p))) pe))
+         cls (exact (map (fn [(p : int) (s : int)]
+               (let* [k (array/nth kinds p)]
+                 (if (int/eq k 1) 3 (if (int/eq k 2) 4 (if (int/eq s 3) 0 (if (int/eq s 4) 1 2)))))) pe sz))
+         w0 (exact (map (fn [(i : int)] (if (int/eq (array/nth cls i) 0)
+              (ai_w_tri (array/nth us i) (array/nth vs i) (array/nth loc i)) 0.0)) (ai_range total)))
+         w1 (exact (map (fn [(i : int)] (if (int/eq (array/nth cls i) 1)
+              (ai_w_quad (array/nth us i) (array/nth vs i) (array/nth loc i)) 0.0)) (ai_range total)))
+         w2 (exact (map (fn [(i : int)] (if (int/eq (array/nth cls i) 2)
+              (ai_w_poly (array/nth sz i) (array/nth us i) (array/nth vs i) (array/nth loc i)) 0.0)) (ai_range total)))
+         w3 (exact (map (fn [(i : int)]
+              (ai_w_open (array/nth sz i) (array/nth us i) (array/nth loc i))) (ai_range total)))
+         w4 (exact (map (fn [(i : int)] (if (int/eq (array/nth cls i) 4)
+              (ai_w_closed (array/nth sz i) (array/nth us i) (array/nth loc i)) 0.0)) (ai_range total)))
+         ew (exact (map (fn [(i : int)]
+              (let* [c (array/nth cls i)]
+                (cond (int/eq c 0) (array/nth w0 i) (int/eq c 1) (array/nth w1 i) (int/eq c 2) (array/nth w2 i)
+                      (int/eq c 3) (array/nth w3 i) :else (array/nth w4 i)))) (ai_range total)))
+         bm (ai_modes valid sel (array/float n blend) dflt)]
+    {:rs rs :rl rl :ew ew :ep epp :ev evv :epr pe :bs (array/segment_argmax ew rs) :bm bm
+     :de (exact (map (fn [(p : int) (v : int)] (if (int/eq v 1) p 0)) prim valid))
+     :steps (if (int/eq n 0) 0 (array/max rl)) :valid valid}))
+; raw weight sums (weights * pre_scale accumulated with fma along the row)
+(defn ai_raw :context value [(wv : (array float)) (offs : (array int)) (rl : (array int)) (steps : int) (ps : float)]
+  (let* [n (array/count rl)]
+    (get (iterate steps {:k 0 :a (array/float n 0.0)}
+      (fn [(s : {:k int :a (array float)})]
+        (let* [k s.k a s.a]
+          {:k (int/add k 1)
+           :a (exact (map (fn [(d : int)]
+                (if (int/lt k (array/nth rl d))
+                  (fma (array/nth wv (int/add (array/nth offs d) k)) ps (array/nth a d))
+                  (array/nth a d))) (ai_range n)))}))) :a)))
+(defn ai_weighted_table :context sop
+  [(source : geometry) (wo : text) (nums : {:offsets (array int) :values (array int)})
+   (wts : {:offsets (array int) :values (array float)}) (sel : (array int))
+   (pre_scale : float) (normalize : bool) (threshold : float) (blend : float) (dflt : bool)]
+  (let* [n (array/count sel)
+         offs nums.offsets
+         nv nums.values
+         total (array/count nv)
+         rl (exact (map (fn [(d : int)]
+              (if (int/eq (array/nth sel d) 1) (int/sub (array/nth offs (int/add d 1)) (array/nth offs d)) 0)) (ai_range n)))
+         steps (if (int/eq n 0) 0 (array/max rl))
+         rowd (ai_owners offs total)
+         raw (ai_raw wts.values offs rl steps pre_scale)
+         mag (exact (map (fn [(r : float)] (abs r)) raw))
+         norm (exact (map (fn [(r : float) (m : float)]
+                (if normalize (if (> m 1e-20) (/ 1.0 r) 0.0) 1.0)) raw mag))
+         infl (exact (map (fn [(m : float)] (if normalize (min 1.0 (/ m threshold)) 1.0)) mag))
+         ew (exact (map (fn [(e : int)]
+              (* (* (array/nth wts.values e) pre_scale) (array/nth norm (array/nth rowd e)))) (ai_range total)))
+         act (exact (map (fn [(e : int)] (array/nth sel (array/nth rowd e))) (ai_range total)))
+         nvs (exact (map (fn [(x : int) (a : int)] (if (int/eq a 1) x 0)) nv act))
+         zero (array/int total 0)
+         topo (sop/topology source)
+         vpoints topo.vertex_points
+         ep (case wo "point" nvs "vertex" (exact (map (fn [(x : int)] (if (int/lt x (array/count vpoints)) (array/nth vpoints x) 0)) nvs)) :else zero)
+         ev (if (equal? wo "vertex") nvs zero)
+         epr (case wo "primitive" nvs
+               "vertex" (let* [adj (sop/adjacency source)
+                               pov adj.primitive_of_vertex]
+                          (exact (map (fn [(x : int)] (if (int/lt x (array/count pov)) (array/nth pov x) 0)) nvs)))
+               :else zero)
+         on (exact (map (fn [(l : int)] (if (int/gt l 0) 1 0)) rl))
+         blends (exact (map (fn [(i : float)] (* blend i)) infl))]
+    {:rs offs :rl rl :ew ew :ep ep :ev ev :epr epr :bs (array/segment_argmax ew offs)
+     :bm (ai_modes on sel blends dflt) :de (array/int n 0) :steps steps :valid on}))
+
+; ---- numeric attributes
+(defn ai_accum1 :context value
+  [(src : (array float)) (el : (array int)) (ew : (array float)) (rs : (array int)) (rl : (array int)) (steps : int)]
+  (let* [n (array/count rl)]
+    (get (iterate steps {:k 0 :a (array/float n 0.0)}
+      (fn [(s : {:k int :a (array float)})]
+        (let* [k s.k a s.a]
+          {:k (int/add k 1)
+           :a (exact (map (fn [(d : int)]
+                (if (int/lt k (array/nth rl d))
+                  (let* [e (int/add (array/nth rs d) k)]
+                    (+ (array/nth a d) (* (array/nth ew e) (array/nth src (array/nth el e)))))
+                  (array/nth a d))) (ai_range n)))}))) :a)))
+(defn ai_direct1 :context value [(src : (array float)) (de : (array int))]
+  (exact (map (fn [(e : int)] (if (int/lt e (array/count src)) (array/nth src e) 0.0)) de)))
+(defn ai_final :context value [(acc : (array float)) (old : (array float)) (bm : (array float))]
+  (exact (map (fn [(i : int)]
+    (let* [b (array/nth bm i)
+           o (array/nth old i)]
+      (if (>= b 0.0) (fma b (- (array/nth acc i) o) o) (if (< b -1.5) 0.0 o))))
+    (ai_range (array/count acc)))))
+(defn ai_plane :context value
+  [(src : (array float)) (old : (array float)) (bm : (array float)) (accum : bool) (el : (array int))
+   (ew : (array float)) (rs : (array int)) (rl : (array int)) (steps : int) (de : (array int))]
+  (ai_final (if accum (ai_accum1 src el ew rs rl steps) (ai_direct1 src de)) old bm))
+(defn ai_planes_zero :context value [(width : int) (n : int)]
+  {:width width :x (array/float n 0.0) :y (array/float n 0.0) :z (array/float n 0.0) :w (array/float n 0.0)})
+(defn ai_normalize :context value [(x : (array float)) (y : (array float)) (z : (array float)) (bm : (array float))]
+  (let* [n (array/count x)
+         len (exact (map (fn [(i : int)]
+               (let* [a (array/nth x i) b (array/nth y i) c (array/nth z i)]
+                 (sqrt (fma c c (fma b b (* a a)))))) (ai_range n)))
+         live (exact (map (fn [(i : int)]
+                (if (and (> (array/nth bm i) 0.0) (> (array/nth len i) 1e-20)) 1 0)) (ai_range n)))]
+    {:x (exact (map (fn [(i : int)] (if (int/eq (array/nth live i) 1) (/ (array/nth x i) (array/nth len i)) (array/nth x i))) (ai_range n)))
+     :y (exact (map (fn [(i : int)] (if (int/eq (array/nth live i) 1) (/ (array/nth y i) (array/nth len i)) (array/nth y i))) (ai_range n)))
+     :z (exact (map (fn [(i : int)] (if (int/eq (array/nth live i) 1) (/ (array/nth z i) (array/nth len i)) (array/nth z i))) (ai_range n)))}))
+(defn ai_numeric :context sop
+  [(acc : geometry) (source : geometry) (target : geometry) (towner : text) (owner : text) (name : text)
+   (dest : text) (kind : text) (tcount : int) (bm : (array float)) (accum : bool) (el : (array int))
+   (ew : (array float)) (rs : (array int)) (rl : (array int)) (steps : int) (de : (array int))]
+  (let* [src (sop/attr_planes source name :owner owner)
+         same (if (sop/has_attr target dest :owner towner) (equal? (sop/attr_type target dest :owner towner) kind) false)
+         old (if same (sop/attr_planes target dest :owner towner) (ai_planes_zero src.width tcount))
+         px (ai_plane src.x old.x bm accum el ew rs rl steps de)
+         py (if (int/gt src.width 1) (ai_plane src.y old.y bm accum el ew rs rl steps de) old.y)
+         pz (if (int/gt src.width 2) (ai_plane src.z old.z bm accum el ew rs rl steps de) old.z)
+         pw (if (int/gt src.width 3) (ai_plane src.w old.w bm accum el ew rs rl steps de) old.w)
+         fin (if (and (equal? dest "N") (int/eq src.width 3)) (ai_normalize px py pz bm) {:x px :y py :z pz})]
+    (sop/with_planes acc dest {:width src.width :x fin.x :y fin.y :z fin.z :w pw} :owner towner)))
+
+; ---- discrete attributes: choice[d] is a source element, -1 the old value, -2 the default value
+(defn ai_choice :context value [(bm : (array float)) (best : (array int))]
+  (exact (map (fn [(i : int)]
+    (let* [b (array/nth bm i)]
+      (if (>= b 0.0) (if (< b 0.5) -1 (array/nth best i)) (if (< b -1.5) -2 -1))))
+    (ai_range (array/count bm)))))
+(defn ai_put_int :context sop [(geo : geometry) (dest : text) (owner : text) (data : (array int))]
+  (cond (equal? owner "point") (sop/with_attr geo dest data :owner "point" :type int)
+        (equal? owner "vertex") (sop/with_attr geo dest data :owner "vertex" :type int)
+        (equal? owner "primitive") (sop/with_attr geo dest data :owner "primitive" :type int)
+        :else (sop/with_attr geo dest data :owner "detail" :type int)))
+(defn ai_put_text :context sop [(geo : geometry) (dest : text) (owner : text) (data : (array text))]
+  (cond (equal? owner "point") (sop/with_attr geo dest data :owner "point" :type text)
+        (equal? owner "vertex") (sop/with_attr geo dest data :owner "vertex" :type text)
+        (equal? owner "primitive") (sop/with_attr geo dest data :owner "primitive" :type text)
+        :else (sop/with_attr geo dest data :owner "detail" :type text)))
+(defn ai_put_ia :context sop
+  [(geo : geometry) (dest : text) (owner : text) (data : {:offsets (array int) :values (array int)})]
+  (cond (equal? owner "point") (sop/with_attr geo dest data :owner "point" :type int_array)
+        (equal? owner "vertex") (sop/with_attr geo dest data :owner "vertex" :type int_array)
+        (equal? owner "primitive") (sop/with_attr geo dest data :owner "primitive" :type int_array)
+        :else (sop/with_attr geo dest data :owner "detail" :type int_array)))
+(defn ai_put_fa :context sop
+  [(geo : geometry) (dest : text) (owner : text) (data : {:offsets (array int) :values (array float)})]
+  (cond (equal? owner "point") (sop/with_attr geo dest data :owner "point" :type float_array)
+        (equal? owner "vertex") (sop/with_attr geo dest data :owner "vertex" :type float_array)
+        (equal? owner "primitive") (sop/with_attr geo dest data :owner "primitive" :type float_array)
+        :else (sop/with_attr geo dest data :owner "detail" :type float_array)))
+(defn ai_row_offsets :context value
+  [(choice : (array int)) (so : (array int)) (oo : (array int))]
+  (array/scan_sum (exact (map (fn [(i : int)]
+    (let* [c (array/nth choice i)]
+      (if (int/ge c 0) (int/sub (array/nth so (int/add c 1)) (array/nth so c))
+        (if (int/eq c -1) (int/sub (array/nth oo (int/add i 1)) (array/nth oo i)) 0))))
+    (ai_range (array/count choice))))))
+(defn ai_rows_int :context value
+  [(src : {:offsets (array int) :values (array int)}) (old : {:offsets (array int) :values (array int)})
+   (choice : (array int))]
+  (let* [n (array/count choice)
+         offsets (ai_row_offsets choice src.offsets old.offsets)
+         total (array/nth offsets n)
+         rows (ai_owners offsets total)]
+    {:offsets offsets
+     :values (exact (map (fn [(j : int) (r : int)]
+       (let* [c (array/nth choice r) local (int/sub j (array/nth offsets r))]
+         (if (int/ge c 0) (array/nth src.values (int/add (array/nth src.offsets c) local))
+           (array/nth old.values (int/add (array/nth old.offsets r) local)))))
+       (ai_range total) rows))}))
+(defn ai_rows_float :context value
+  [(src : {:offsets (array int) :values (array float)}) (old : {:offsets (array int) :values (array float)})
+   (choice : (array int))]
+  (let* [n (array/count choice)
+         offsets (ai_row_offsets choice src.offsets old.offsets)
+         total (array/nth offsets n)
+         rows (ai_owners offsets total)]
+    {:offsets offsets
+     :values (exact (map (fn [(j : int) (r : int)]
+       (let* [c (array/nth choice r) local (int/sub j (array/nth offsets r))]
+         (if (int/ge c 0) (array/nth src.values (int/add (array/nth src.offsets c) local))
+           (array/nth old.values (int/add (array/nth old.offsets r) local)))))
+       (ai_range total) rows))}))
+(defn ai_discrete :context sop
+  [(acc : geometry) (source : geometry) (target : geometry) (towner : text) (owner : text) (name : text)
+   (dest : text) (kind : text) (tcount : int) (bm : (array float)) (best : (array int))]
+  (let* [choice (ai_choice bm best)]
+    (cond
+      (equal? kind "int")
+        (let* [src (sop/attr source name :owner owner :type int)
+               old (if (sop/has_attr target dest :owner towner :type int)
+                     (sop/attr target dest :owner towner :type int) (array/int tcount 0))]
+          (ai_put_int acc dest towner (exact (map (fn [(i : int)]
+            (let* [c (array/nth choice i)]
+              (if (int/ge c 0) (array/nth src c) (if (int/eq c -1) (array/nth old i) 0))))
+            (ai_range tcount)))))
+      (equal? kind "text")
+        (let* [src (sop/attr source name :owner owner :type text)
+               old (if (sop/has_attr target dest :owner towner :type text)
+                     (sop/attr target dest :owner towner :type text) (array/text tcount ""))]
+          (ai_put_text acc dest towner (exact (map (fn [(i : int)]
+            (let* [c (array/nth choice i)]
+              (if (int/ge c 0) (array/nth src c) (if (int/eq c -1) (array/nth old i) ""))))
+            (ai_range tcount)))))
+      (equal? kind "int_array")
+        (let* [src (sop/attr source name :owner owner :type int_array)
+               old (if (sop/has_attr target dest :owner towner :type int_array)
+                     (sop/attr target dest :owner towner :type int_array)
+                     {:offsets (array/int (int/add tcount 1) 0) :values (array/int 0 0)})]
+          (ai_put_ia acc dest towner (ai_rows_int src old choice)))
+      :else
+        (let* [src (sop/attr source name :owner owner :type float_array)
+               old (if (sop/has_attr target dest :owner towner :type float_array)
+                     (sop/attr target dest :owner towner :type float_array)
+                     {:offsets (array/int (int/add tcount 1) 0) :values (array/float 0 0.0)})]
+          (ai_put_fa acc dest towner (ai_rows_float src old choice))))))
+(defn ai_job :context sop
+  [(acc : geometry) (source : geometry) (target : geometry) (towner : text) (owner : text) (name : text)
+   (dest : text) (tcount : int) (bm : (array float)) (accum : bool) (el : (array int)) (ew : (array float))
+   (rs : (array int)) (rl : (array int)) (steps : int) (de : (array int)) (best : (array int))]
+  (let* [kind (sop/attr_type source name :owner owner)]
+    (if (or (equal? kind "float") (or (equal? kind "vec2") (or (equal? kind "vec3") (equal? kind "vec4"))))
+      (ai_numeric acc source target towner owner name dest kind tcount bm accum el ew rs rl steps de)
+      (ai_discrete acc source target towner owner name dest kind tcount bm best))))
+
+; ---- groups: the score of a destination is the weight of its member entries
+(defn ai_put_group :context sop [(geo : geometry) (gn : text) (owner : text) (mask : (array int))]
+  (cond (equal? owner "point") (sop/with_group geo mask :name gn :owner "point")
+        (equal? owner "vertex") (sop/with_group geo mask :name gn :owner "vertex")
+        :else (sop/with_group geo mask :name gn :owner "primitive")))
+(defn ai_group_job :context sop
+  [(acc : geometry) (source : geometry) (target : geometry) (towner : text) (owner : text) (gn : text)
+   (tcount : int) (bm : (array float)) (direct : bool) (el : (array int)) (ew : (array float))
+   (rs : (array int)) (de : (array int))]
+  (let* [mask (sop/group source :name gn :owner owner)
+         glit (text/glob_literal gn)
+         has_old (int/gt (array/count (sop/group_names target glit :owner towner)) 0)
+         oldm (if has_old (sop/group target :name gn :owner towner) (array/int tcount 0))
+         score (if direct
+                 (exact (map (fn [(e : int)] (if (int/lt e (array/count mask)) (float (array/nth mask e)) 0.0)) de))
+                 (array/segment_sum (exact (map (fn [(e : int)]
+                   (let* [x (array/nth el e)]
+                     (if (int/lt x (array/count mask)) (if (int/eq (array/nth mask x) 1) (array/nth ew e) 0.0) 0.0))) (ai_range (array/count el))))
+                   rs))
+         bits (exact (map (fn [(i : int)]
+                (let* [b (array/nth bm i)
+                       o (float (array/nth oldm i))]
+                  (if (>= b 0.0)
+                    (if (>= (fma b (- (array/nth score i) o) o) 0.5) 1 0)
+                    (if (< b -1.5) 0 (array/nth oldm i)))))
+                (ai_range tcount)))]
+    (ai_put_group acc gn towner bits)))
+
+; ---- computed weight arrays (primitive/UVW only): numbers and weights of the driver primitive corners
+(defn ai_compute :context sop
+  [(acc : geometry) (target : geometry) (towner : text) (cowner : text) (cn : text) (cw : text) (tcount : int)
+   (sel : (array int)) (valid : (array int)) (dflt : bool) (rs : (array int)) (rl : (array int))
+   (el : (array int)) (ew : (array float))]
+  (let* [has (sop/has_attr target cn :owner towner)
+         old_n (if has (sop/attr target cn :owner towner :type int_array)
+                 {:offsets (array/int (int/add tcount 1) 0) :values (array/int 0 0)})
+         old_w (if has (sop/attr target cw :owner towner :type float_array)
+                 {:offsets (array/int (int/add tcount 1) 0) :values (array/float 0 0.0)})
+         rowmode (exact (map (fn [(v : int) (s : int)]
+                   (if (int/eq v 1) 2 (if (and (int/eq s 1) dflt) 0 1))) valid sel))
+         lens (exact (map (fn [(i : int)]
+                (let* [m (array/nth rowmode i)]
+                  (if (int/eq m 2) (array/nth rl i)
+                    (if (int/eq m 1) (int/sub (array/nth old_n.offsets (int/add i 1)) (array/nth old_n.offsets i)) 0))))
+                (ai_range tcount)))
+         offsets (array/scan_sum lens)
+         total (array/nth offsets tcount)
+         rows (ai_owners offsets total)
+         nums (exact (map (fn [(j : int) (r : int)]
+                (let* [local (int/sub j (array/nth offsets r))]
+                  (if (int/eq (array/nth rowmode r) 2) (array/nth el (int/add (array/nth rs r) local))
+                    (array/nth old_n.values (int/add (array/nth old_n.offsets r) local)))))
+                (ai_range total) rows))
+         wts (exact (map (fn [(j : int) (r : int)]
+               (let* [local (int/sub j (array/nth offsets r))]
+                 (if (int/eq (array/nth rowmode r) 2) (array/nth ew (int/add (array/nth rs r) local))
+                   (array/nth old_w.values (int/add (array/nth old_w.offsets r) local)))))
+               (ai_range total) rows))]
+    (ai_put_fa (ai_put_ia acc cn towner {:offsets offsets :values nums}) cw towner {:offsets offsets :values wts})))
+
+(defnode sop/attribute_interpolate :label "Attribute Interpolate" :category ["Attribute" "Transfer"]
+  :validate (ai_valid blend threshold attributes target_owner group group_pattern driver primitive_attribute uvw_attribute
+              numbers_attribute weights_attribute compute_weights computed_numbers_attribute
+              computed_weights_attribute point_pattern vertex_pattern primitive_pattern detail_pattern)
+  :code "E_PARAM" :message "sop/attribute_interpolate: invalid attributes, patterns, driver or weights"
+  [(source : geometry)
+   (target : geometry)
+   (target_owner : text "Point" :label "Target owner" :choices ["Point" "Vertex" "Primitive" "Detail"])
+   (attributes : text "point\tCd\tCd" :label "Attributes (owner, source, target)")
+   (group : text "" :label "Target group")
+   (group_pattern : text "" :label "Target group pattern")
+   (driver : text "Primitive UVW" :label "Driver" :choices ["Primitive UVW" "Point weights" "Vertex weights" "Primitive weights"])
+   (primitive_attribute : text "sourceprim" :label "Primitive attribute" :folder ["Driver"])
+   (uvw_attribute : text "sourceuvw" :label "UVW attribute" :folder ["Driver"])
+   (numbers_attribute : text "sourcenums" :label "Numbers attribute" :folder ["Driver"])
+   (weights_attribute : text "sourceweights" :label "Weights attribute" :folder ["Driver"])
+   (compute_weights : bool false :label "Compute weight arrays" :folder ["Output weights"])
+   (computed_owner : text "Point" :label "Computed owner" :folder ["Output weights"] :choices ["Point" "Vertex"])
+   (computed_numbers_attribute : text "computednums" :label "Computed numbers" :folder ["Output weights"])
+   (computed_weights_attribute : text "computedweights" :label "Computed weights" :folder ["Output weights"])
+   (point_pattern : text "" :label "Point pattern" :folder ["Patterns"])
+   (vertex_pattern : text "" :label "Vertex pattern" :folder ["Patterns"])
+   (primitive_pattern : text "" :label "Primitive pattern" :folder ["Patterns"])
+   (detail_pattern : text "" :label "Detail pattern" :folder ["Patterns"])
+   (match_groups : bool false :label "Match groups" :folder ["Patterns"])
+   (pre_scale : float 1.0 :label "Pre-scale" :folder ["Weights"] :min -10 :max 10)
+   (normalize_weights : bool true :label "Normalize weights" :folder ["Weights"])
+   (threshold : float 0.0 :label "Threshold" :folder ["Weights"] :min 0 :max 1 :hard_min 0)
+   (blend : float 1.0 :label "Blend" :folder ["Weights"] :min 0 :max 1 :hard_min 0 :hard_max 1)
+   (unmatched : text "Keep target" :label "Unmatched" :choices ["Keep target" "Default value"])]
+  (let* [towner (case target_owner "Vertex" "vertex" "Primitive" "primitive" "Detail" "detail" :else "point")
+         gname (text/trim group)
+         gpat (text/trim group_pattern)
+         use_pat (not (text/blank? gpat))
+         use_exact (and (not use_pat) (not (text/blank? gname)))
+         glit (text/glob_literal (if (text/blank? gname) "x" gname))]
+    (if (if use_exact (int/eq (array/count (sop/group_names target glit :owner towner)) 0) false)
+      (error "missing_group" (str "attribute_interpolate could not find " towner " group " (text/repr gname)))
+      (let* [tcount (ai_count target towner)
+             uvwmode (equal? driver "Primitive UVW")
+             wo (case driver "Point weights" "point" "Vertex weights" "vertex" "Primitive weights" "primitive" :else "uvw")
+             dflt (equal? unmatched "Default value")
+             sel (cond use_pat (ai_union_mask target towner gpat)
+                       use_exact (sop/group target :name gname :owner towner)
+                       :else (array/int tcount 1))
+             sel_count (array/sum sel)
+             plan (ai_plan source attributes point_pattern vertex_pattern primitive_pattern detail_pattern)
+             njobs (array/count plan.dests)
+             groups (if match_groups (ai_group_plan source point_pattern vertex_pattern primitive_pattern)
+                      {:owners (array/text 0) :names (array/text 0)})
+             ngroups (array/count groups.names)
+             drivers_ok (ai_drivers_ok target towner uvwmode primitive_attribute uvw_attribute numbers_attribute weights_attribute)
+             go (and (or (int/gt njobs 0) (or (int/gt ngroups 0) compute_weights)) (int/gt sel_count 0))
+             comp_bad (if (and compute_weights drivers_ok)
+                        (ai_compute_bad target towner computed_numbers_attribute computed_weights_attribute
+                          primitive_attribute uvw_attribute plan.dests)
+                        false)
+             bounds_bad (if (and (and go drivers_ok) (not uvwmode))
+                          (ai_bounds_check target towner numbers_attribute sel
+                            (case wo "point" (sop/count source :points) "vertex" (sop/count source :vertices)
+                              :else (sop/count source :primitives)))
+                          false)
+             problem (cond (not drivers_ok) 1
+                           (ai_jobs_bad source target towner wo plan) 2
+                           (ai_duplicate plan.dests) 3
+                           (ai_groups_bad towner wo groups) 4
+                           comp_bad 5
+                           bounds_bad 6
+                           :else 0)]
+        (cond
+          (int/eq problem 1) (ai_error "missing or mistyped driver attribute")
+          (int/eq problem 2) (ai_error "source attribute is missing, incompatible with the target, or unsupported by the driver")
+          (int/eq problem 3) (ai_error "duplicate target attribute")
+          (int/eq problem 4) (ai_error "invalid matched groups")
+          (int/eq problem 5) (ai_error "invalid computed weight attributes")
+          (int/eq problem 6) (ai_error "weighted source number is out of bounds")
+          (not go) target
+          :else
+            (let* [table (if uvwmode
+                           (ai_uvw_table source (sop/attr target primitive_attribute :owner towner :type int)
+                             (sop/attr target uvw_attribute :owner towner :type vec3) sel pre_scale blend dflt)
+                           (ai_weighted_table source wo (sop/attr target numbers_attribute :owner towner :type int_array)
+                             (sop/attr target weights_attribute :owner towner :type float_array) sel pre_scale
+                             normalize_weights threshold blend dflt))
+                   zero_d (array/int tcount 0)
+                   zero_e (array/int (array/count table.ew) 0)
+                   best_p (if (ai_uses plan.owners "point") (exact (map (fn [(b : int)] (if (int/ge b 0) (array/nth table.ep b) 0)) table.bs)) zero_d)
+                   best_v (if (ai_uses plan.owners "vertex") (exact (map (fn [(b : int)] (if (int/ge b 0) (array/nth table.ev b) 0)) table.bs)) zero_d)
+                   best_r (if (ai_uses plan.owners "primitive") (exact (map (fn [(b : int)] (if (int/ge b 0) (array/nth table.epr b) 0)) table.bs)) zero_d)
+                   jobs_done (fold [g target] [i (ai_range njobs)]
+                               (let* [o (array/nth plan.owners i)]
+                                 (ai_job g source target towner o (array/nth plan.names i) (array/nth plan.dests i)
+                                   tcount table.bm
+                                   (or (not uvwmode) (or (equal? o "point") (equal? o "vertex")))
+                                   (case o "point" table.ep "vertex" table.ev "primitive" table.epr :else zero_e)
+                                   table.ew table.rs table.rl table.steps
+                                   (if (equal? o "primitive") table.de zero_d)
+                                   (case o "point" best_p "vertex" best_v "primitive" best_r :else zero_d))))
+                   groups_done (fold [g jobs_done] [i (ai_range ngroups)]
+                                 (let* [o (array/nth groups.owners i)]
+                                   (ai_group_job g source target towner o (array/nth groups.names i) tcount table.bm
+                                     (and uvwmode (equal? o "primitive"))
+                                     (case o "point" table.ep "vertex" table.ev :else table.epr)
+                                     table.ew table.rs table.de)))]
+              (if compute_weights
+                (ai_compute groups_done target towner (case computed_owner "Vertex" "vertex" :else "point")
+                  computed_numbers_attribute computed_weights_attribute tcount sel table.valid dflt table.rs table.rl
+                  (if (equal? computed_owner "Vertex") table.ev table.ep) table.ew)
+                groups_done)))))))
