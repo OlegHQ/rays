@@ -1,0 +1,342 @@
+; Whole-node draft. A base input and up to twelve connected shapes (four slots, then the rest slot) are
+; blended into the base points. Per shape the point mapping (identity, or by integer or text point ID) and the
+; raw weight (constant, mask-set or mask-scaled) ride on the working geometry as the hidden point attributes
+; "__bs_m<p>" and "__bs_w<p>" (p = position among the connected shapes); "__bs_s" is the selected-point flag and
+; "__bs_sum" the running positive weight sum (Normalized). Fold state is always geometry. The native
+; "output + coefficient * target" is not fused natively (plain add and multiply). Position and every matching float-family
+; point attribute are blended; point N survives only when a shape blends it, vertex N never.
+(defn bs_error :context value [(reason : text)]
+  (error "invalid_blend_shapes" "blend_shapes could not produce valid geometry"
+    :cause (str "blend_shapes [invalid_blend_shapes]: Blend Shapes " reason)))
+(defn bs_pick_f :context value [(a : (array float)) (i : int)]
+  (if (and (int/ge i 0) (int/lt i (array/count a))) (array/nth a i) 0.0))
+(defn bs_pick :context value [(items : (array text)) (keep : (array int))]
+  (exact (map (fn [(i : int)] (array/nth items i)) keep)))
+(defn bs_dup_int :context value [(a : (array int))]
+  (int/gt (array/sum (exact (map (fn [(f : int) (i : int)] (if (int/eq f i) 0 1))
+    (array/index_of a a) (array/range (array/count a) :type int)))) 0))
+(defn bs_dup_text :context value [(a : (array text))]
+  (int/gt (array/sum (exact (map (fn [(f : int) (i : int)] (if (int/eq f i) 0 1))
+    (array/index_of a a) (array/range (array/count a) :type int)))) 0))
+(defn bs_has_int :context value [(a : (array int)) (i : int)]
+  (int/ge (array/nth (array/index_of a (array/int 1 i)) 0) 0))
+(defn bs_row_index :context value [(row : (list text))]
+  (let* [f (text/to_int (text/trim (nth row 0)))] (if f.valid f.value 0)))
+; The text of column field (1 name, 2 source) of the shape-mask row for shape index, trimmed; "" when none.
+(defn bs_ov :context value [(rows : text) (index : int) (field : int)]
+  (if (text/blank? rows) ""
+    (fold [acc ""] [row (text/table_decode rows)]
+      (if (int/eq (bs_row_index row) index) (text/trim (nth row field)) acc))))
+(defn bs_rows_ok :context value [(rows : text)]
+  (if (text/blank? rows) true
+    (let* [all (text/table_decode rows)]
+      (fold [ok true] [row all]
+        (and ok (and (int/eq (count row) 3)
+          (let* [i (bs_row_index row) src (text/trim (nth row 2))]
+            (and (int/ge i 1)
+              (and (or (equal? src "") (or (equal? src "first") (equal? src "shape")))
+                   (int/eq (fold [c 0] [r all] (if (int/eq (bs_row_index r) i) (int/add c 1) c)) 1))))))))))
+(defn bs_weights_ok :context value [(weights : text)]
+  (if (text/blank? weights) true
+    (fold [ok true] [row (text/table_decode weights)]
+      (and ok (and (int/eq (count row) 1) (let* [f (text/to_float (nth row 0))] f.valid))))))
+(defn bs_extra :context value [(extra : (array float)) (i : int)]
+  (if (int/lt i (array/count extra)) (array/nth extra i) 0.0))
+(defn bs_live :context value [(norm : bool) (masking : text) (wt : float)]
+  (cond (equal? masking "Set from attribute") true
+        (and norm (equal? masking "None")) (> wt 0.0)
+        :else (not (= wt 0.0))))
+(defn bs_flag :context value [(present : bool) (norm : bool) (masking : text) (wt : float)]
+  (if present (if (bs_live norm masking wt) 1 0) 0))
+(defn bs_planes :context value
+  [(width : int) (x : (array float)) (y : (array float)) (z : (array float)) (w : (array float))]
+  {:width width :x x :y y :z z :w w})
+; Position first, then the float-family point attributes of g matching the pattern.
+(defn bs_entries :context sop [(g : geometry) (pattern : text)]
+  (let* [ent (sop/attr_entries g :owner "point")
+         names (sop/attr_names g pattern :owner "point")
+         at (array/index_of ent.name names)
+         types (bs_pick ent.type at)
+         floats (array/concat (array/text 1 "float") (array/concat (array/text 1 "vec2")
+                  (array/concat (array/text 1 "vec3") (array/text 1 "vec4"))))
+         family (array/index_of floats types)
+         keep (array/compact (exact (map (fn [(p : int)] (if (int/ge p 0) 1 0)) family)))]
+    {:names (array/concat (array/text 1 "P") (bs_pick names keep))
+     :kinds (array/concat (array/text 1 "position") (bs_pick types keep))}))
+; "int" or "text": the storage of the first input's point ID attribute, which must be unique.
+(defn bs_id_type :context sop [(input : geometry) (pid : text)]
+  (cond (equal? pid "P") (bs_error "could not find point ID attribute on the first input")
+        (not (sop/has_attr input pid :owner "point")) (bs_error "could not find point ID attribute on the first input")
+        (equal? (sop/attr_type input pid :owner "point") "int")
+          (if (bs_dup_int (sop/attr input pid :owner "point" :type int)) (bs_error "first-input integer ID is ambiguous") "int")
+        (equal? (sop/attr_type input pid :owner "point") "text")
+          (if (bs_dup_text (sop/attr input pid :owner "point" :type text)) (bs_error "first-input text ID is ambiguous") "text")
+        :else (bs_error "point IDs must be integer or text attributes")))
+; Per base point the point of shape s to read, -1 when the ID has no match.
+(defn bs_mapping :context sop [(input : geometry) (s : geometry) (pid : text) (n : int)]
+  (if (equal? pid "")
+    (if (int/eq (sop/count s :points) n) (array/range n :type int) (bs_error "target point count differs from the first input"))
+    (let* [sty (bs_id_type input pid)
+           tty (if (and (not (equal? pid "P")) (sop/has_attr s pid :owner "point")) (sop/attr_type s pid :owner "point") "")]
+      (cond (equal? tty "") (bs_error "target is missing the point ID attribute")
+            (not (equal? tty sty)) (bs_error "target point ID storage differs from the first input")
+            (equal? sty "int")
+              (let* [tgt (sop/attr s pid :owner "point" :type int)]
+                (if (bs_dup_int tgt) (bs_error "target integer ID is ambiguous")
+                  (array/index_of tgt (sop/attr input pid :owner "point" :type int))))
+            :else
+              (let* [tgt (sop/attr s pid :owner "point" :type text)]
+                (if (bs_dup_text tgt) (bs_error "target text ID is ambiguous")
+                  (array/index_of tgt (sop/attr input pid :owner "point" :type text))))))))
+; The scalar float point mask of g or an empty array; the mask must be finite.
+(defn bs_mask :context sop [(g : geometry) (name : text) (use : bool)]
+  (cond (not use) (array/float 0 0.0)
+        (equal? name "P") (array/float 0 0.0)
+        (not (sop/has_attr g name :owner "point")) (array/float 0 0.0)
+        (not (equal? (sop/attr_type g name :owner "point") "float")) (bs_error "mask must be a scalar float point attribute")
+        :else (let* [m (sop/attr g name :owner "point" :type float)]
+                (if (int/gt (array/sum (exact (map (fn [(v : float)] (if (pw_finite v) 0 1)) m))) 0)
+                  (bs_error "mask is non-finite") m))))
+(defn bs_has_mask :context sop [(g : geometry) (name : text) (use : bool)]
+  (and use (and (not (equal? name "P")) (sop/has_attr g (if use name "__bs_none") :owner "point"))))
+; Raw weight per base point from the mask value at the matching index (when the mask exists).
+(defn bs_raw :context value [(has : bool) (set : bool) (wt : float) (mask : (array float)) (idx : (array int))]
+  (let* [padded (array/concat mask (array/float 1 0.0))]
+  (exact (map (fn [(i : int)]
+    (if has (let* [mv (array/nth padded (if (int/lt i 0) 0 i))] (if set mv (* wt mv))) wt)) idx))))
+; Shape s: mapping and raw weights stored on w, and its positive weights added to the running sum.
+(defn bs_resolve :context sop
+  [(w : geometry) (input : geometry)
+   (cfg : {:masking text :mask text :msource text :pid text :rows text :normalized bool :n int})
+   (s : geometry) (idx : int) (p : int) (wt : float)]
+  (let* [n cfg.n
+         sel (sop/attr w "__bs_s" :owner "point" :type int)
+         raw (bs_mapping input s cfg.pid n)
+         mapped (exact (map (fn [(m : int) (sl : int)] (if (int/gt sl 0) m -1)) raw sel))
+         over (bs_ov cfg.rows idx 1)
+         mk (if (equal? over "") cfg.mask over)
+         use (and (not (equal? cfg.masking "None")) (not (equal? mk "")))
+         osrc (bs_ov cfg.rows idx 2)
+         from_shape (cond (equal? osrc "shape") true (equal? osrc "first") false :else (equal? cfg.msource "Shape"))
+         use_s (and use from_shape)
+         use_i (and use (not from_shape))
+         has (if from_shape (bs_has_mask s mk use_s) (bs_has_mask input mk use_i))
+         mask (if from_shape (bs_mask s mk use_s) (bs_mask input mk use_i))
+         set (equal? cfg.masking "Set from attribute")
+         rw (bs_raw has set wt mask (if from_shape raw (array/range n :type int)))
+         tot (sop/attr w "__bs_sum" :owner "point" :type float)
+         sum2 (if cfg.normalized
+                (exact (map (fn [(sm : float) (m : int) (r : float)] (if (and (int/ge m 0) (> r 0.0)) (+ sm r) sm)) tot mapped rw))
+                tot)]
+    (sop/with_attr (sop/with_attr (sop/with_attr w (str "__bs_m" p) mapped :owner "point" :type int)
+      (str "__bs_w" p) rw :owner "point" :type float)
+      "__bs_sum" sum2 :owner "point" :type float)))
+; Replaces the raw weights of shape p with its blend coefficients.
+(defn bs_coef :context sop
+  [(w : geometry) (cfg : {:masking text :mask text :msource text :pid text :rows text :normalized bool :n int}) (p : int)]
+  (let* [rw (sop/attr w (str "__bs_w" p) :owner "point" :type float)
+         tot (sop/attr w "__bs_sum" :owner "point" :type float)
+         c (if cfg.normalized
+             (exact (map (fn [(r : float) (sm : float)] (/ (if (> r 0.0) r 0.0) (if (< sm 1.0) 1.0 sm))) rw tot))
+             rw)]
+    (sop/with_attr w (str "__bs_w" p) c :owner "point" :type float)))
+(defn bs_sc :context value [(v : (array float)) (sel : (array int)) (tot : (array float))]
+  (exact (map (fn [(x : float) (sl : int) (sm : float)]
+    (if (int/gt sl 0) (* (if (< sm 1.0) (- 1.0 sm) 0.0) x) x)) v sel tot)))
+; Normalized: the base term of every selected point, factor times the source.
+(defn bs_scale :context sop [(w : geometry) (name : text)]
+  (let* [sel (sop/attr w "__bs_s" :owner "point" :type int)
+         tot (sop/attr w "__bs_sum" :owner "point" :type float)
+         o (sop/attr_planes w name :owner "point")]
+    (sop/with_planes w name
+      (bs_planes o.width (bs_sc o.x sel tot)
+        (if (int/ge o.width 2) (bs_sc o.y sel tot) o.y)
+        (if (int/ge o.width 3) (bs_sc o.z sel tot) o.z)
+        (if (int/ge o.width 4) (bs_sc o.w sel tot) o.w))
+      :owner "point")))
+(defn bs_cell :context value
+  [(diff : bool) (has : bool) (mi : int) (ci : float) (tv0 : float) (sv : float) (ov : float)]
+  (if (int/ge mi 0)
+    (let* [tv (if has tv0 sv) dv (if diff (- tv sv) tv)] (+ ov (* ci dv)))
+    ov))
+(defn bs_plane :context value
+  [(diff : bool) (has : bool) (m : (array int)) (c : (array float)) (tg : (array float)) (s : (array float))
+   (o : (array float))]
+  (let* [padded (if (int/gt (array/count tg) 0) tg s)
+         idx (array/range (array/count m) :type int)
+         bad (array/sum (exact (map (fn [(i : int)]
+               (let* [mi (array/nth m i)
+                      v (bs_cell diff has mi (array/nth c i) (array/nth padded (if (int/lt mi 0) 0 mi))
+                          (array/nth s i) (array/nth o i))]
+                 (if (and (int/ge mi 0) (not (pw_finite v))) 1 0))) idx)))]
+    (if (int/gt bad 0) (bs_error "produced a non-finite output")
+      (exact (map (fn [(i : int)]
+        (let* [mi (array/nth m i)]
+          (bs_cell diff has mi (array/nth c i) (array/nth padded (if (int/lt mi 0) 0 mi))
+            (array/nth s i) (array/nth o i)))) idx)))))
+; Shape s (position p) blended into the running entry (name, kind) of w.
+(defn bs_apply :context sop
+  [(w : geometry) (input : geometry) (s : geometry) (p : int)
+   (cfg : {:masking text :mask text :msource text :pid text :rows text :normalized bool :n int})
+   (name : text) (kind : text)]
+  (let* [m (sop/attr w (str "__bs_m" p) :owner "point" :type int)
+         c (sop/attr w (str "__bs_w" p) :owner "point" :type float)
+         pos (equal? kind "position")
+         tty (if pos "position" (if (sop/has_attr s name :owner "point") (sop/attr_type s name :owner "point") ""))
+         has (not (equal? tty ""))
+         tp (sop/attr_planes (if has s input) name :owner "point")
+         sp (sop/attr_planes input name :owner "point")
+         o (sop/attr_planes w name :owner "point")
+         diff (not cfg.normalized)]
+    (if (and has (not (equal? tty kind)))
+      (bs_error (str "target attribute " (text/repr name) " storage differs from the first input"))
+      (sop/with_planes w name
+        (bs_planes o.width (bs_plane diff has m c tp.x sp.x o.x)
+          (if (int/ge o.width 2) (bs_plane diff has m c tp.y sp.y o.y) o.y)
+          (if (int/ge o.width 3) (bs_plane diff has m c tp.z sp.z o.z) o.z)
+          (if (int/ge o.width 4) (bs_plane diff has m c tp.w sp.w o.w) o.w))
+        :owner "point"))))
+(defn bs_bad :context value [(v : (array float)) (sel : (array int))]
+  (array/sum (exact (map (fn [(x : float) (sl : int)] (if (and (int/gt sl 0) (not (pw_finite x))) 1 0)) v sel))))
+(defn bs_check :context sop [(w : geometry) (name : text)]
+  (let* [sel (sop/attr w "__bs_s" :owner "point" :type int)
+         o (sop/attr_planes w name :owner "point")
+         bad (int/add (bs_bad o.x sel)
+               (int/add (if (int/ge o.width 2) (bs_bad o.y sel) 0)
+                 (int/add (if (int/ge o.width 3) (bs_bad o.z sel) 0)
+                          (if (int/ge o.width 4) (bs_bad o.w sel) 0))))]
+    (if (int/gt bad 0) (bs_error "produced a non-finite output") w)))
+(defn bs_valid :context value [(attributes : text) (weights : text) (shape_masks : text)]
+  (and (equal? (text/glob_error attributes) "") (and (bs_weights_ok weights) (bs_rows_ok shape_masks))))
+(defmacro bs_res_m [acc input cfg present s idx p wt]
+  `(fold [a# ~acc] [x# (if ~present (array/int 1 0) (array/int 0))] (bs_resolve a# ~input ~cfg ~s ~idx ~p ~wt)))
+(defmacro bs_app_m [acc input cfg present s p es names kinds]
+  `(fold [a# ~acc] [x# (if ~present (array/int 1 0) (array/int 0))]
+     (let* [g# (bs_coef a# ~cfg ~p)]
+       (fold [c# g#] [j# ~es] (bs_apply c# ~input ~s ~p ~cfg (array/nth ~names j#) (array/nth ~kinds j#))))))
+(defnode sop/blend_shapes :label "Blend Shapes" :category ["Attribute" "Transfer"]
+  :validate (bs_valid attributes weights shape_masks)
+  :code "E_PARAM" :message "sop/blend_shapes: invalid attribute pattern, shape weights or shape masks"
+  [(input : geometry)
+   (shape1 : geometry :required false)
+   (shape2 : geometry :required false)
+   (shape3 : geometry :required false)
+   (shape4 : geometry :required false)
+   (shapes : geometry :required false :rest true)
+   (group : text "" :label "Point group")
+   (mode : text "Normalized" :label "Mode" :choices ["Normalized" "Differencing"])
+   (attributes : text "*" :label "Attributes")
+   (weight1 : float 1.0 :label "Weight 1" :min -1.0 :max 2.0 :folder ["Weights"])
+   (weight2 : float 0.0 :label "Weight 2" :min -1.0 :max 2.0 :folder ["Weights"])
+   (weight3 : float 0.0 :label "Weight 3" :min -1.0 :max 2.0 :folder ["Weights"])
+   (weight4 : float 0.0 :label "Weight 4" :min -1.0 :max 2.0 :folder ["Weights"])
+   (masking : text "None" :label "Masking" :folder ["Mask"] :choices ["None" "Set from attribute" "Scale from attribute"])
+   (mask_attribute : text "mask" :label "Mask attribute" :folder ["Mask"])
+   (mask_source : text "First input" :label "Mask source" :folder ["Mask"] :choices ["First input" "Shape"])
+   (point_id_attribute : text "" :label "Point ID attribute" :folder ["Matching"])
+   (weights : text "" :label "Additional shape weights" :folder ["Weights"])
+   (shape_masks : text "" :label "Shape mask overrides" :folder ["Mask"])]
+  (let* [n (sop/count input :points)
+         nrest (count shapes)
+         rows (if (text/blank? weights) (list) (text/table_decode weights))
+         extra (fold [acc (array/float 0 0.0)] [row rows]
+                 (array/concat acc (array/float 1 (let* [f (text/to_float (nth row 0))] f.value))))
+         group_name (text/trim group)
+         gmiss (deform_group_missing input "point" group_name)
+         normalized (equal? mode "Normalized")
+         cfg {:masking masking :mask (if (equal? masking "None") "" (text/trim mask_attribute))
+              :msource mask_source :pid (text/trim point_id_attribute) :rows shape_masks
+              :normalized normalized :n n}
+         q1 (not (equal? shape1 nil)) q2 (not (equal? shape2 nil))
+         q3 (not (equal? shape3 nil)) q4 (not (equal? shape4 nil))
+         q5 (int/gt nrest 0) q6 (int/gt nrest 1) q7 (int/gt nrest 2) q8 (int/gt nrest 3)
+         q9 (int/gt nrest 4) q10 (int/gt nrest 5) q11 (int/gt nrest 6) q12 (int/gt nrest 7)
+         p1 0
+         p2 (if q1 1 0)
+         p3 (int/add p2 (if q2 1 0))
+         p4 (int/add p3 (if q3 1 0))
+         p5 (int/add p4 (if q4 1 0))
+         p6 (int/add p5 (if q5 1 0))
+         p7 (int/add p6 (if q6 1 0))
+         p8 (int/add p7 (if q7 1 0))
+         p9 (int/add p8 (if q8 1 0))
+         p10 (int/add p9 (if q9 1 0))
+         p11 (int/add p10 (if q10 1 0))
+         p12 (int/add p11 (if q11 1 0))
+         nshapes (int/add p12 (if q12 1 0))
+         w5 (bs_extra extra 0) w6 (bs_extra extra 1) w7 (bs_extra extra 2) w8 (bs_extra extra 3)
+         w9 (bs_extra extra 4) w10 (bs_extra extra 5) w11 (bs_extra extra 6) w12 (bs_extra extra 7)
+         l1 (bs_flag q1 normalized masking weight1)
+         l2 (int/add l1 (bs_flag q2 normalized masking weight2))
+         l3 (int/add l2 (bs_flag q3 normalized masking weight3))
+         l4 (int/add l3 (bs_flag q4 normalized masking weight4))
+         l5 (int/add l4 (bs_flag q5 normalized masking w5))
+         l6 (int/add l5 (bs_flag q6 normalized masking w6))
+         l7 (int/add l6 (bs_flag q7 normalized masking w7))
+         l8 (int/add l7 (bs_flag q8 normalized masking w8))
+         l9 (int/add l8 (bs_flag q9 normalized masking w9))
+         l10 (int/add l9 (bs_flag q10 normalized masking w10))
+         l11 (int/add l10 (bs_flag q11 normalized masking w11))
+         l12 (int/add l11 (bs_flag q12 normalized masking w12))
+         effect (int/gt l12 0)
+         go (and (int/gt nshapes 0) (and (not gmiss) effect))
+         a1 (and go q1) a2 (and go q2) a3 (and go q3) a4 (and go q4) a5 (and go q5) a6 (and go q6)
+         a7 (and go q7) a8 (and go q8) a9 (and go q9) a10 (and go q10) a11 (and go q11) a12 (and go q12)
+         sel (if gmiss (array/int n 1) (deform_mask input "point" group_name))
+         w0 (sop/with_attr (sop/with_attr input "__bs_s" sel :owner "point" :type int)
+              "__bs_sum" (array/float n 0.0) :owner "point" :type float)
+         entries (bs_entries input attributes)
+         names entries.names
+         kinds entries.kinds
+         es (array/range (array/count names) :type int)
+         r1 (bs_res_m w0 input cfg a1 shape1 1 p1 weight1)
+         r2 (bs_res_m r1 input cfg a2 shape2 2 p2 weight2)
+         r3 (bs_res_m r2 input cfg a3 shape3 3 p3 weight3)
+         r4 (bs_res_m r3 input cfg a4 shape4 4 p4 weight4)
+         r5 (bs_res_m r4 input cfg a5 (nth shapes 0) 5 p5 w5)
+         r6 (bs_res_m r5 input cfg a6 (nth shapes 1) 6 p6 w6)
+         r7 (bs_res_m r6 input cfg a7 (nth shapes 2) 7 p7 w7)
+         r8 (bs_res_m r7 input cfg a8 (nth shapes 3) 8 p8 w8)
+         r9 (bs_res_m r8 input cfg a9 (nth shapes 4) 9 p9 w9)
+         r10 (bs_res_m r9 input cfg a10 (nth shapes 5) 10 p10 w10)
+         r11 (bs_res_m r10 input cfg a11 (nth shapes 6) 11 p11 w11)
+         r12 (bs_res_m r11 input cfg a12 (nth shapes 7) 12 p12 w12)
+         scaled (fold [g r12] [j (if normalized es (array/int 0))] (bs_scale g (array/nth names j)))
+         b1 (bs_app_m scaled input cfg a1 shape1 p1 es names kinds)
+         b2 (bs_app_m b1 input cfg a2 shape2 p2 es names kinds)
+         b3 (bs_app_m b2 input cfg a3 shape3 p3 es names kinds)
+         b4 (bs_app_m b3 input cfg a4 shape4 p4 es names kinds)
+         b5 (bs_app_m b4 input cfg a5 (nth shapes 0) p5 es names kinds)
+         b6 (bs_app_m b5 input cfg a6 (nth shapes 1) p6 es names kinds)
+         b7 (bs_app_m b6 input cfg a7 (nth shapes 2) p7 es names kinds)
+         b8 (bs_app_m b7 input cfg a8 (nth shapes 3) p8 es names kinds)
+         b9 (bs_app_m b8 input cfg a9 (nth shapes 4) p9 es names kinds)
+         b10 (bs_app_m b9 input cfg a10 (nth shapes 5) p10 es names kinds)
+         b11 (bs_app_m b10 input cfg a11 (nth shapes 6) p11 es names kinds)
+         b12 (bs_app_m b11 input cfg a12 (nth shapes 7) p12 es names kinds)
+         checked (fold [g b12] [j es] (bs_check g (array/nth names j)))
+         cleaned (sop/delete_attrs checked :point "__bs_*")
+         ni (array/nth (array/index_of names (array/text 1 "N")) 0)
+         n_blendable (if (int/ge ni 0) (equal? (array/nth kinds ni) "vec3") false)
+         t1 (if q1 (if (sop/has_attr shape1 "N" :owner "point") 1 0) 0)
+         t2 (int/add t1 (if q2 (if (sop/has_attr shape2 "N" :owner "point") 1 0) 0))
+         t3 (int/add t2 (if q3 (if (sop/has_attr shape3 "N" :owner "point") 1 0) 0))
+         t4 (int/add t3 (if q4 (if (sop/has_attr shape4 "N" :owner "point") 1 0) 0))
+         t5 (int/add t4 (if q5 (if (sop/has_attr (nth shapes 0) "N" :owner "point") 1 0) 0))
+         t6 (int/add t5 (if q6 (if (sop/has_attr (nth shapes 1) "N" :owner "point") 1 0) 0))
+         t7 (int/add t6 (if q7 (if (sop/has_attr (nth shapes 2) "N" :owner "point") 1 0) 0))
+         t8 (int/add t7 (if q8 (if (sop/has_attr (nth shapes 3) "N" :owner "point") 1 0) 0))
+         t9 (int/add t8 (if q9 (if (sop/has_attr (nth shapes 4) "N" :owner "point") 1 0) 0))
+         t10 (int/add t9 (if q10 (if (sop/has_attr (nth shapes 5) "N" :owner "point") 1 0) 0))
+         t11 (int/add t10 (if q11 (if (sop/has_attr (nth shapes 6) "N" :owner "point") 1 0) 0))
+         t12 (int/add t11 (if q12 (if (sop/has_attr (nth shapes 7) "N" :owner "point") 1 0) 0))
+         blended (and n_blendable (int/gt t12 0))
+         no_vertex_n (sop/delete_attrs cleaned :vertex "N")]
+    (cond
+      (int/gt nrest 8) (bs_error "supports at most 8 shapes in the rest slot")
+      (int/eq nshapes 0) input
+      gmiss
+        (error "missing_group" (str "blend_shapes could not find point group " (text/repr group_name)))
+      (not effect) input
+      :else (fold [g no_vertex_n] [x (if blended (array/int 0) (array/int 1 0))]
+              (sop/delete_attrs g :point "N")))))
