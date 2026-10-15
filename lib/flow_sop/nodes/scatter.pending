@@ -41,7 +41,7 @@
 (defn sc_norm2 :context value [(x : float) (y : float) (z : float)]
   (+ (fma x x (* y y)) (* z z)))
 ; Triangle corner arrays {:prim :a :b :c} (vertex numbers), or an error.
-(defn sc_plan :context sop [(geo : geometry) (sel : (array int)) (grouped : bool)]
+(defn sc_plan :context sop [(geo : geometry) (sel : (array int)) (grouped : bool) (tg : geometry) (tok : geometry)]
   (let* [topo (sop/topology geo)
          prims (sop/count geo :primitives)
          sizes (exact (map (fn [(p : int)] (int/sub (array/nth topo.primitive_offsets (int/add p 1))
@@ -60,7 +60,12 @@
          :a (exact (map (fn [(p : int)] (array/nth topo.primitive_offsets p)) (array/range prims :type int)))
          :b (exact (map (fn [(p : int)] (int/add (array/nth topo.primitive_offsets p) 1)) (array/range prims :type int)))
          :c (exact (map (fn [(p : int)] (int/add (array/nth topo.primitive_offsets p) 2)) (array/range prims :type int)))}
-        (let* [tris (sop/triangles geo)
+        (let* [tt (sop/attr tg "t" :owner "point" :type vec4)
+               tris {:primitive (exact (map (fn [(q : vec4)] (floor q.w)) tt))
+                     :a (exact (map (fn [(q : vec4)] (floor q.x)) tt))
+                     :b (exact (map (fn [(q : vec4)] (floor q.y)) tt))
+                     :c (exact (map (fn [(q : vec4)] (floor q.z)) tt))
+                     :ok (sop/attr tok "ok" :owner "point" :type int)}
                refused (array/sum (exact (map (fn [(m : int) (ok : int) (n : int)] (if (and (int/eq m 1) (int/eq ok 0)) 1 0))
                          poly tris.ok sizes)))
                keep (array/compact (exact (map (fn [(p : int)] (array/nth poly p)) tris.primitive)))
@@ -242,6 +247,8 @@
 ; Native hands the three corner numbers and weights of every sample to Attribute_ops.interpolate as point
 ; attributes; the same node kind does it here, so patterns (P included), N renormalisation, groups and its
 ; refusals are that node's. Only the refusals that native reports under scatter's own code are predicted below.
+(defn sc_made :context value [(has_c : bool) (name : text)]
+  (or (or (equal? name "id") (equal? name "N")) (and has_c (equal? name "Cd"))))
 (defn sc_in :context value [(names : (array text)) (name : text)]
   (fold [found false] [probe names] (or found (equal? probe name))))
 ; Expected storage name of the point attribute a transferred name lands on ("" when it is a fresh name).
@@ -275,34 +282,116 @@
 (defn sc_carrier_of :context sop [(a : (array int))]
   (sop/mesh :points (exact (map (fn [(x : int)] [0.0 0.0 0.0]) a)) :vertex_points (array/int 0)
     :primitive_offsets (array/int 1 0) :kinds (array/int 0)))
+;; The alias table as carriers: the scan body must read leaves (cooked attributes) only, or every step would evaluate
+;; the arrays it captures again (quadratic in the triangle count).
+(defn sc_ak_w0 :context sop [(weights : (array float)) (total : float)]
+  (let* [n (array/count weights)
+         scale (/ (float n) total)]
+    (sop/with_attr (sc_carrier n) "w0" (exact (map (fn [(w : float)] (* w scale)) weights)) :owner "point" :type float)))
+(defn sc_ak_rev :context sop [(k0 : geometry) (large : bool)]
+  (let* [w0 (sop/attr k0 "w0" :owner "point" :type float)
+         pick (array/compact (exact (map (fn [(w : float)] (if (< w 1.0) (if large 0 1) (if large 1 0))) w0)))
+         m (array/count pick)]
+    (sop/with_attr (sc_carrier m) "rev"
+      (exact (map (fn [(k : int)] (array/nth pick (int/sub (int/sub m 1) k))) (array/range m :type int))) :owner "point" :type int)))
+(defn sc_ak_states :context sop [(k0 : geometry) (ks : geometry) (kl : geometry)]
+  (let* [w0 (sop/attr k0 "w0" :owner "point" :type float)
+         srev (sop/attr ks "rev" :owner "point" :type int)
+         lrev (sop/attr kl "rev" :owner "point" :type int)
+         n (array/count w0)
+         ns (array/count srev)
+         nl (array/count lrev)
+         init [0.0 0.0 (if (int/gt nl 0) (array/nth w0 (array/nth lrev 0)) 0.0) -1.0]]
+    (sop/with_attr (sc_carrier n) "st"
+      (scan [st init] [s (array/range n :type int)] (sc_step st w0 srev lrev ns nl)) :owner "point" :type vec4)))
+(defn sc_ak_emit :context sop [(k0 : geometry) (ks : geometry) (kl : geometry) (kst : geometry)]
+  (let* [w0 (sop/attr k0 "w0" :owner "point" :type float)
+         srev (sop/attr ks "rev" :owner "point" :type int)
+         lrev (sop/attr kl "rev" :owner "point" :type int)
+         states (sop/attr kst "st" :owner "point" :type vec4)
+         n (array/count w0)
+         ns (array/count srev)
+         nl (array/count lrev)
+         init [0.0 0.0 (if (int/gt nl 0) (array/nth w0 (array/nth lrev 0)) 0.0) -1.0]]
+    (sop/with_attr (sc_carrier n) "em"
+      (exact (map (fn [(s : int)] (sc_emit states s init w0 srev lrev ns nl)) (array/range n :type int))) :owner "point" :type vec4)))
+(defn sc_ak_slot :context sop [(kem : geometry)]
+  (let* [em (sop/attr kem "em" :owner "point" :type vec4)
+         n (array/count em)
+         taken (array/compact (exact (map (fn [(e : vec4)] (if (> e.x 0.5) 1 0)) em)))
+         below (exact (map (fn [(k : int)] (let* [e (array/nth em k)] (floor e.y))) taken))
+         slot (array/scatter_add below (exact (map (fn [(k : int)] (int/add k 1)) (array/range (array/count taken) :type int))) n)]
+    (sop/with_attr (sc_carrier n) "slot" slot :owner "point" :type int)))
+(defn sc_ak_prob :context sop [(kem : geometry) (kslot : geometry)]
+  (let* [em (sop/attr kem "em" :owner "point" :type vec4)
+         slot (sop/attr kslot "slot" :owner "point" :type int)
+         taken (array/compact (exact (map (fn [(e : vec4)] (if (> e.x 0.5) 1 0)) em)))
+         beloww (exact (map (fn [(k : int)] (let* [e (array/nth em k)] e.w)) taken))
+         above (exact (map (fn [(k : int)] (let* [e (array/nth em k)] (floor e.z))) taken))
+         n (array/count em)
+         prob (exact (map (fn [(s : int)] (if (int/gt s 0) (array/nth beloww (int/sub s 1)) 1.0)) slot))
+         alias (exact (map (fn [(s : int) (i : int)] (if (int/gt s 0) (array/nth above (int/sub s 1)) i))
+                 slot (array/range n :type int)))]
+    (sop/with_attr (sop/with_attr (sc_carrier n) "prob" prob :owner "point" :type float) "alias" alias :owner "point" :type int)))
+(defn sc_alias_k :context sop [(weights : (array float)) (total : float)]
+  (let* [k0 (sc_ak_w0 weights total)
+         ks (sc_ak_rev k0 false)
+         kl (sc_ak_rev k0 true)
+         kst (sc_ak_states k0 ks kl)
+         kem (sc_ak_emit k0 ks kl kst)
+         kslot (sc_ak_slot kem)]
+    (sc_ak_prob kem kslot)))
+; The ear-clipper output as leaves: [a b c primitive] per triangle, and its per-primitive success flag.
+(defn sc_tri_t :context sop [(geo : geometry)]
+  (let* [tris (sop/triangles geo)
+         n (array/count tris.primitive)]
+    (sop/with_attr (sc_carrier n) "t"
+      (exact (map (fn [(i : int)] [(float (array/nth tris.a i)) (float (array/nth tris.b i)) (float (array/nth tris.c i))
+                                   (float (array/nth tris.primitive i))]) (array/range n :type int)))
+      :owner "point" :type vec4)))
+(defn sc_tri_ok :context sop [(geo : geometry)]
+  (let* [tris (sop/triangles geo)]
+    (sop/with_attr (sc_carrier (sop/count geo :primitives)) "ok" tris.ok :owner "point" :type int)))
 (defn sc_flag :context sop [(g : geometry) (name : text)]
   (int/eq (array/nth (sop/attr g name :owner "detail" :type int) 0) 1))
 (defn sc_bit :context value [(b : bool)] (array/int 1 (if b 1 0)))
 
-; Stage 1: triangles, weights, alias table and every refusal of the native run, as a carrier of n triangles.
-(defn sc_stage1 :context sop
-  [(geo : geometry) (count : int) (gname : text) (has_group : bool) (use_density : bool) (owner : text) (dname : text)]
+; Stage 1 is four carriers, each reading only leaves (cooked attributes) of the earlier ones: a binding shared by
+; several geometry nodes is otherwise evaluated again by every node that uses it.
+(defn sc_ri :context sop [(g : geometry) (name : text)]
+  (array/nth (sop/attr g name :owner "detail" :type int) 0))
+(defn sc_rf1 :context sop [(g : geometry) (name : text)]
+  (array/nth (sop/attr g name :owner "detail" :type float) 0))
+; 1a: the triangles {prim, va, vb, vc} and whether they are the primitives themselves.
+(defn sc_s1a :context sop [(geo : geometry) (quiet : bool) (gname : text) (has_group : bool)]
   (let* [prims (sop/count geo :primitives)
-         sel (if has_group (sop/group geo :name gname :owner "primitive") (array/int prims 1))
-         plan (sc_plan geo sel has_group)
-         p_prim plan.prim
-         p_direct plan.direct
-         p_a plan.a
-         p_b plan.b
-         p_c plan.c
+         sel (if quiet (array/int prims 0)
+               (if has_group (sop/group geo :name gname :owner "primitive") (array/int prims 1)))
+         plan (sc_plan geo sel has_group (sc_tri_t geo) (sc_tri_ok geo))
+         c0 (sc_carrier_of plan.prim)
+         c1 (sop/with_attr c0 "prim" plan.prim :owner "point" :type int)
+         c2 (sop/with_attr c1 "va" plan.a :owner "point" :type int)
+         c3 (sop/with_attr c2 "vb" plan.b :owner "point" :type int)
+         c4 (sop/with_attr c3 "vc" plan.c :owner "point" :type int)]
+    (sop/with_attr c4 "direct" (sc_bit plan.direct) :owner "detail" :type int)))
+; 1b: density summary, input validity and the coordinate scale.
+(defn sc_s1b :context sop
+  [(geo : geometry) (ga : geometry) (quiet : bool) (count : int) (use_density : bool) (owner : text) (dname : text)]
+  (let* [p_prim (sop/attr ga "prim" :owner "point" :type int)
+         p_a (sop/attr ga "va" :owner "point" :type int)
+         p_b (sop/attr ga "vb" :owner "point" :type int)
+         p_c (sop/attr ga "vc" :owner "point" :type int)
+         p_direct (int/eq (sc_ri ga "direct") 1)
          den (sc_density geo use_density owner dname)
-         d_kind den.kind
-         d_vals den.values
          d_scale den.scale
-         d_detail den.detail
          nv (sop/has_attr geo "N" :owner "vertex")
          np (sop/has_attr geo "N" :owner "point")
          cdv (sop/has_attr geo "Cd" :owner "vertex")
          cdp (sop/has_attr geo "Cd" :owner "point")
-         n_bad (if nv (not (sop/has_attr geo "N" :owner "vertex" :type vec3))
-                 (if np (not (sop/has_attr geo "N" :owner "point" :type vec3)) false))
-         c_bad (if cdv (not (sop/has_attr geo "Cd" :owner "vertex" :type vec4))
-                 (if cdp (not (sop/has_attr geo "Cd" :owner "point" :type vec4)) false))
+         n_bad (and (not quiet) (if nv (not (sop/has_attr geo "N" :owner "vertex" :type vec3))
+                 (if np (not (sop/has_attr geo "N" :owner "point" :type vec3)) false)))
+         c_bad (and (not quiet) (if cdv (not (sop/has_attr geo "Cd" :owner "vertex" :type vec4))
+                 (if cdp (not (sop/has_attr geo "Cd" :owner "point" :type vec4)) false)))
          vp (get (sop/topology geo) :vertex_points)
          pos (sop/attr geo :P)
          n (array/count p_prim)
@@ -318,40 +407,78 @@
          bad_pos (and (int/gt count 0) (> (+ (+ e1.y e2.y) e3.y) 0.0))
          flat (and (int/gt count 0) (= cs 0.0))
          go (and go1 (and (not bad_pos) (not flat)))
-         css (if (= cs 0.0) 1.0 cs)
+         k (sc_carrier 1)
+         k1 (sop/with_attr k "kind" (array/int 1 den.kind) :owner "detail" :type int)
+         k2 (sop/with_attr k1 "scale" (array/float 1 d_scale) :owner "detail" :type float)
+         k3 (sop/with_attr k2 "dfirst" (array/float 1 den.detail) :owner "detail" :type float)
+         k4 (sop/with_attr k3 "n_bad" (sc_bit n_bad) :owner "detail" :type int)
+         k5 (sop/with_attr k4 "c_bad" (sc_bit c_bad) :owner "detail" :type int)
+         k6 (sop/with_attr k5 "zero" (sc_bit zero) :owner "detail" :type int)
+         k7 (sop/with_attr k6 "bad_pos" (sc_bit bad_pos) :owner "detail" :type int)
+         k8 (sop/with_attr k7 "flat" (sc_bit flat) :owner "detail" :type int)
+         k9 (sop/with_attr k8 "go" (sc_bit go) :owner "detail" :type int)]
+    (sop/with_attr k9 "cs" (array/float 1 (if (= cs 0.0) 1.0 cs)) :owner "detail" :type float)))
+; 1c: the triangle weights (float "w"), their compensated total and the count of non-finite ones.
+(defn sc_s1c :context sop
+  [(geo : geometry) (ga : geometry) (gb : geometry) (count : int) (use_density : bool) (owner : text) (dname : text)]
+  (let* [p_prim (sop/attr ga "prim" :owner "point" :type int)
+         p_a (sop/attr ga "va" :owner "point" :type int)
+         p_b (sop/attr ga "vb" :owner "point" :type int)
+         p_c (sop/attr ga "vc" :owner "point" :type int)
+         go (int/eq (sc_ri gb "go") 1)
+         css (sc_rf1 gb "cs")
+         den (sc_density geo use_density owner dname)
+         vp (get (sop/topology geo) :vertex_points)
+         pos (sop/attr geo :P)
          spos (exact (map (fn [(p : vec3)] [(/ p.x css) (/ p.y css) (/ p.z css)]) pos))
-         wr (sc_weights vp spos p_a p_b p_c p_prim d_kind d_vals d_detail d_scale (if (and go (int/gt count 0)) n 0))
-         w_weights wr.weights
-         w_total wr.total
-         w_bad wr.bad
+         n (array/count p_prim)
+         wr (sc_weights vp spos p_a p_b p_c p_prim (sc_ri gb "kind") den.values den.detail (sc_rf1 gb "scale")
+              (if (and go (int/gt count 0)) n 0))
+         k (sc_carrier (array/count wr.weights))
+         k1 (sop/with_attr k "w" (exact (map (fn [(x : float)] (if (sc_finite x) x 0.0)) wr.weights)) :owner "point" :type float)
+         k2 (sop/with_attr k1 "total" (array/float 1 (if (sc_finite wr.total) wr.total -1.0)) :owner "detail" :type float)]
+    (sop/with_attr k2 "bad" (array/int 1 wr.bad) :owner "detail" :type int)))
+; 1d: alias table and the gate, as a carrier of the n triangles.
+(defn sc_s1d :context sop [(ga : geometry) (gb : geometry) (gc : geometry) (count : int)]
+  (let* [p_prim (sop/attr ga "prim" :owner "point" :type int)
+         p_a (sop/attr ga "va" :owner "point" :type int)
+         p_b (sop/attr ga "vb" :owner "point" :type int)
+         p_c (sop/attr ga "vc" :owner "point" :type int)
+         n (array/count p_prim)
+         go (int/eq (sc_ri gb "go") 1)
+         w_weights (sop/attr gc "w" :owner "point" :type float)
+         w_total (sc_rf1 gc "total")
+         w_bad (sc_ri gc "bad")
          w_flat (and (and go (int/gt count 0)) (or (not (sc_finite w_total)) (<= w_total 0.0)))
          w_nan (and (and go (int/gt count 0)) (int/gt w_bad 0))
          ago (and (and go (int/gt count 0)) (and (not w_flat) (not w_nan)))
-         table (sc_alias (if ago w_weights (array/float 0)) (if ago w_total 1.0))
-         tprob table.prob
-         talias table.alias
-         m (if ago n 0)
+         tab (sc_alias_k (if ago w_weights (array/float 0)) (if ago w_total 1.0))
          tp (if ago p_prim (array/int 0))
          carrier (sc_carrier_of tp)
          c1 (sop/with_attr carrier "prim" tp :owner "point" :type int)
          c2 (sop/with_attr c1 "va" (if ago p_a (array/int 0)) :owner "point" :type int)
          c3 (sop/with_attr c2 "vb" (if ago p_b (array/int 0)) :owner "point" :type int)
          c4 (sop/with_attr c3 "vc" (if ago p_c (array/int 0)) :owner "point" :type int)
-         c5 (sop/with_attr c4 "prob" tprob :owner "point" :type float)
-         c6 (sop/with_attr c5 "alias" talias :owner "point" :type int)
-         gate (cond n_bad (sc_error "N has storage other than vec3")
-                    c_bad (sc_error "Cd has storage other than vec4")
-                    zero (sc_error "selected surface has zero weighted area")
-                    bad_pos (sc_error "non-finite selected position")
-                    flat (sc_error "selected surface has zero weighted area")
+         c5 (sop/with_attr c4 "prob" (sop/attr tab "prob" :owner "point" :type float) :owner "point" :type float)
+         c6 (sop/with_attr c5 "alias" (sop/attr tab "alias" :owner "point" :type int) :owner "point" :type int)
+         gate (cond (int/eq (sc_ri gb "n_bad") 1) (sc_error "N has storage other than vec3")
+                    (int/eq (sc_ri gb "c_bad") 1) (sc_error "Cd has storage other than vec4")
+                    (int/eq (sc_ri gb "zero") 1) (sc_error "selected surface has zero weighted area")
+                    (int/eq (sc_ri gb "bad_pos") 1) (sc_error "non-finite selected position")
+                    (int/eq (sc_ri gb "flat") 1) (sc_error "selected surface has zero weighted area")
                     w_nan (sc_error "non-finite area or density at a triangle")
                     w_flat (sc_error "selected surface has zero weighted area")
                     :else 0)
          c7 (sop/with_attr c6 "gate" (array/int 1 gate) :owner "detail" :type int)
          c14 (sop/with_attr c7 "ago" (sc_bit ago) :owner "detail" :type int)
-         c15 (sop/with_attr c14 "cs" (array/float 1 css) :owner "detail" :type float)
-         c16 (sop/with_attr c15 "n" (array/int 1 n) :owner "detail" :type int)]
-    c16))
+         c15 (sop/with_attr c14 "cs" (array/float 1 (sc_rf1 gb "cs")) :owner "detail" :type float)]
+    (sop/with_attr c15 "n" (array/int 1 n) :owner "detail" :type int)))
+(defn sc_stage1 :context sop
+  [(geo : geometry) (quiet : bool) (count : int) (gname : text) (has_group : bool) (use_density : bool) (owner : text) (dname : text)]
+  (let* [ga (sc_s1a geo quiet gname has_group)
+         gb (sc_s1b geo ga quiet count use_density owner dname)
+         gc (sc_s1c geo ga gb count use_density owner dname)]
+    (sc_s1d ga gb gc count)))
 
 ; Stage 2: the samples (triangle, corners, barycentric weights) as a carrier of `count` points.
 (defn sc_stage2 :context sop
@@ -547,8 +674,10 @@
          pat_d (text/trim detail_pattern)
          interp (or (or (not (text/blank? pat_p)) (not (text/blank? pat_v)))
                     (or (not (text/blank? pat_pr)) (not (text/blank? pat_d))))
-         g1 (sc_stage1 in0 count gname grp use_density density_owner density_attribute)
-         g2 (sc_stage2 in0 g1 count seed_value use_density density_owner density_attribute)
+         ; A missing group is reported before any sampling error: sample nothing then.
+         count_eff (if missing 0 count)
+         g1 (sc_stage1 in0 missing count_eff gname grp use_density density_owner density_attribute)
+         g2 (sc_stage2 in0 g1 count_eff seed_value use_density density_owner density_attribute)
          keep (not (text/blank? sv_name))
          dn (if keep sv_name "__rays_scatter_vertex_numbers")
          dw (if keep sw_name "__rays_scatter_vertex_weights")
@@ -565,22 +694,42 @@
          gm_pr (if (and match_groups (not (text/blank? pat_pr))) (sop/group_names src0 pat_pr :owner "primitive") (array/text 0 ""))
          dup_attr (or (or (or (sc_meet np nv) (sc_meet np npr)) (or (sc_meet np nd) (sc_meet nv npr)))
                       (or (sc_meet nv nd) (sc_meet npr nd)))
-         bad_kind (or (or (fold [acc false] [j (array/range (array/count np) :type int)] (or acc (sc_kind_bad in0 (array/nth np j) "point" has_c sp_name sv_name sw_name)))
-                          (fold [acc false] [j (array/range (array/count nv) :type int)] (or acc (sc_kind_bad in0 (array/nth nv j) "vertex" has_c sp_name sv_name sw_name))))
-                      (or (fold [acc false] [j (array/range (array/count npr) :type int)] (or acc (sc_kind_bad in0 (array/nth npr j) "primitive" has_c sp_name sv_name sw_name)))
-                          (fold [acc false] [j (array/range (array/count nd) :type int)] (or acc (sc_kind_bad in0 (array/nth nd j) "detail" has_c sp_name sv_name sw_name)))))
-         dup_group (or (or (sc_meet gm_p gm_v) (sc_meet gm_p gm_pr)) (sc_meet gm_v gm_pr))]
+         bad_kind (or (or (fold [acc false] [name np] (or acc (sc_kind_bad in0 name "point" has_c sp_name sv_name sw_name)))
+                          (fold [acc false] [name nv] (or acc (sc_kind_bad in0 name "vertex" has_c sp_name sv_name sw_name))))
+                      (or (fold [acc false] [name npr] (or acc (sc_kind_bad in0 name "primitive" has_c sp_name sv_name sw_name)))
+                          (fold [acc false] [name nd] (or acc (sc_kind_bad in0 name "detail" has_c sp_name sv_name sw_name)))))
+         dup_group (or (or (sc_meet gm_p gm_v) (sc_meet gm_p gm_pr)) (sc_meet gm_v gm_pr))
+         ; Native builds the sample points with Geometry.create, which refuses a provenance name that repeats a
+         ; created attribute (id, N, Cd when the source has colors).
+         dup_made (or (and has_sp (sc_made has_c sp_name))
+                      (and keep (or (sc_made has_c sv_name) (sc_made has_c sw_name))))]
     (cond
       missing (error "missing_group" (str "scatter could not find primitive group " (text/repr gname)))
+      dup_made (sc_error "Geometry.create: duplicate attribute")
       dup_attr (sc_error "duplicate target attribute")
       bad_kind (sc_error "target attribute has incompatible storage")
       dup_group (sc_error "duplicate target group")
       (not interp) cur
       :else
-      (let* [moved (sop/attribute_interpolate in0 cur :target_owner "Point" :attributes ""
+      (let* [attrs (sop/attribute_interpolate in0 cur :target_owner "Point" :attributes ""
                      :driver "Vertex weights" :numbers_attribute dn :weights_attribute dw
                      :point_pattern pat_p :vertex_pattern pat_v :primitive_pattern pat_pr :detail_pattern pat_d
-                     :match_groups match_groups)
+                     :match_groups false :threshold 0.000001 :normalize_weights false)
+             ; Groups follow the source's own group order across owners (one literal-name transfer each).
+             gent (sop/group_entries in0 "*" :owner "any")
+             moved (fold [acc attrs] [i (array/range (array/count gent.names) :type int)]
+                     (let* [o (array/nth gent.owners i)
+                            nm (array/nth gent.names i)
+                            pat (case o "point" pat_p "vertex" pat_v "primitive" pat_pr :else "")
+                            hit (and match_groups (and (not (text/blank? pat)) (sc_in (sop/group_names in0 (if (text/blank? pat) "x" pat) :owner (if (equal? o "point") "point" (if (equal? o "vertex") "vertex" "primitive"))) nm)))
+                            lit (text/glob_literal nm)]
+                       (if hit
+                         (sop/attribute_interpolate in0 acc :target_owner "Point" :attributes ""
+                           :driver "Vertex weights" :numbers_attribute dn :weights_attribute dw
+                           :point_pattern (if (equal? o "point") lit "") :vertex_pattern (if (equal? o "vertex") lit "")
+                           :primitive_pattern (if (equal? o "primitive") lit "") :detail_pattern ""
+                           :match_groups true :threshold 0.000001 :normalize_weights false)
+                         acc)))
              stripped (if keep moved (sop/delete_attr (sop/delete_attr moved dn :owner "point") dw :owner "point"))
              r1 (if keep
                   (sop/with_attr (sop/with_attr stripped dn (sop/attr cur dn :owner "point" :type int_array) :owner "point" :type int_array)
