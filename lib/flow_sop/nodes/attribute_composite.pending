@@ -1,0 +1,267 @@
+; Whole-node draft. The base input and its present weighted layers (four optional slots, then the rest slot with
+; the extra weights table) are composited attribute by attribute: Mean, Maximum, Minimum, Over and Under. Names
+; are the ordered union over the inputs of the attributes matching each owner's pattern (canonical P first when
+; allowed), kept when some input stores them as float, vec2, vec3 or vec4. Every attribute is accumulated in the
+; working geometry as planes, input by input, so each element sees the inputs in native order; the arm64
+; multiply-add fusion of the native loops is written with fma. Mean denominators ride on the "__ac_den"
+; attribute of each used owner and are removed at the end.
+(defn ac_error :context value [(reason : text)]
+  (error "invalid_attribute_composite" "attribute_composite could not produce valid geometry"
+    :cause (str "attribute_composite [invalid_attribute_composite]: Attribute Composite " reason)))
+(defn ac_count :context sop [(geo : geometry) (owner : text)]
+  (case owner "vertex" (sop/count geo :vertices) "primitive" (sop/count geo :primitives)
+    "detail" 1 :else (sop/count geo :points)))
+(defn ac_nonfinite :context value [(p : (array float))]
+  (array/sum (exact (map (fn [(v : float)] (if (pw_finite v) 0 1)) p))))
+(defn ac_fin :context value [(p : (array float)) (reason : text)]
+  (if (int/gt (ac_nonfinite p) 0) (ac_error (str "has a non-finite " reason)) p))
+(defn ac_is_float :context value [(ty : text)]
+  (or (or (equal? ty "float") (equal? ty "vec2")) (or (equal? ty "vec3") (equal? ty "vec4"))))
+(defn ac_width :context value [(kind : text)]
+  (case kind "float" 1 "vec2" 2 "vec4" 4 :else 3))
+; "" absent, "other" a storage that is not float-family, else the storage kind ("position" for canonical P).
+(defn ac_family :context sop [(g : geometry) (owner : text) (name : text)]
+  (cond (and (equal? owner "point") (equal? name "P")) "position"
+        (not (sop/has_attr g name :owner owner)) ""
+        :else (let* [ty (sop/attr_type g name :owner owner)] (if (ac_is_float ty) ty "other"))))
+(defn ac_has_alpha :context sop [(g : geometry) (owner : text) (alpha_name : text)]
+  (if (text/blank? alpha_name) false (sop/has_attr g alpha_name :owner owner)))
+; The alpha plane of one input, validated; ones when the input has none (the has flag selects inside kernels).
+(defn ac_mask :context sop [(g : geometry) (owner : text) (alpha_name : text) (count : int)]
+  (cond (not (ac_has_alpha g owner alpha_name)) (array/float count 1.0)
+        (not (equal? (sop/attr_type g alpha_name :owner owner) "float")) (ac_error "alpha must be a scalar float attribute")
+        :else (let* [a (sop/attr g alpha_name :owner owner :type float)]
+                (cond (not (int/eq (array/count a) count)) (ac_error "alpha has incompatible cardinality")
+                      (int/gt (ac_nonfinite a) 0) (ac_error "alpha is non-finite")
+                      :else a))))
+(defn ac_uniq_flags :context value [(names : (array text))]
+  (let* [first (array/index_of names names)]
+    (exact (map (fn [(i : int) (f : int)] (if (int/eq i f) 1 0)) (array/range (array/count names) :type int) first))))
+(defn ac_pick :context value [(items : (array text)) (keep : (array int))]
+  (exact (map (fn [(i : int)] (array/nth items i)) keep)))
+(defn ac_owner_name :context value [(rank : int)]
+  (case rank 0 "detail" 1 "primitive" 2 "point" :else "vertex"))
+; The float-family attributes of one owner matching a pattern: names and storage kinds.
+(defn ac_float_names :context sop [(g : geometry) (rank : int) (pattern : text)]
+  (let* [owner (ac_owner_name rank)
+         ent (sop/attr_entries g :owner owner)
+         names (sop/attr_names g pattern :owner owner)
+         at (array/index_of ent.name names)
+         types (ac_pick ent.type at)
+         floats (array/concat (array/text 1 "float") (array/concat (array/text 1 "vec2")
+                  (array/concat (array/text 1 "vec3") (array/text 1 "vec4"))))
+         family (array/index_of floats types)
+         keep (array/compact (exact (map (fn [(p : int)] (if (int/ge p 0) 1 0)) family)))]
+    {:names (ac_pick names keep) :kinds (ac_pick types keep)}))
+; Entries (owner rank, name, kind) found so far plus those of input g, in input order.
+(defn ac_collect :context sop
+  [(acc : {:owners (array int) :names (array text) :kinds (array text)}) (g : geometry)
+   (dp : text) (pp : text) (qp : text) (vp : text)]
+  (let* [d (ac_float_names g 0 dp)
+         p (ac_float_names g 1 pp)
+         q (ac_float_names g 2 qp)
+         v (ac_float_names g 3 vp)]
+    {:owners (array/concat acc.owners
+               (array/concat (array/int (array/count d.names) 0)
+                 (array/concat (array/int (array/count p.names) 1)
+                   (array/concat (array/int (array/count q.names) 2)
+                     (array/int (array/count v.names) 3)))))
+     :names (array/concat acc.names (array/concat d.names (array/concat p.names (array/concat q.names v.names))))
+     :kinds (array/concat acc.kinds (array/concat d.kinds (array/concat p.kinds (array/concat q.kinds v.kinds))))}))
+; The unique entries of one owner rank in first-seen order.
+(defn ac_part :context value
+  [(acc : {:owners (array int) :names (array text) :kinds (array text)}) (rank : int)]
+  (let* [mine (array/compact (exact (map (fn [(r : int)] (if (int/eq r rank) 1 0)) acc.owners)))
+         names (ac_pick acc.names mine)
+         kinds (ac_pick acc.kinds mine)
+         keep (array/compact (ac_uniq_flags names))]
+    {:names (ac_pick names keep) :kinds (ac_pick kinds keep)}))
+; Unique entries, grouped detail, primitive, point, vertex.
+(defn ac_finish :context value [(acc : {:owners (array int) :names (array text) :kinds (array text)})]
+  (let* [d (ac_part acc 0) p (ac_part acc 1) q (ac_part acc 2) v (ac_part acc 3)]
+    {:owners (array/concat (array/int (array/count d.names) 0)
+               (array/concat (array/int (array/count p.names) 1)
+                 (array/concat (array/int (array/count q.names) 2) (array/int (array/count v.names) 3))))
+     :names (array/concat d.names (array/concat p.names (array/concat q.names v.names)))
+     :kinds (array/concat d.kinds (array/concat p.kinds (array/concat q.kinds v.kinds)))}))
+(defn ac_planes_type :context value
+  [(width : int) (x : (array float)) (y : (array float)) (z : (array float)) (w : (array float))]
+  {:width width :x x :y y :z z :w w})
+; One plane of one input applied to the running output.
+(defn ac_flag :context value [(v : float)] (if (pw_finite v) 0 1))
+(defn ac_cand :context value [(has : bool) (wt : float) (v : float) (m : float)]
+  (if has (* (* v wt) m) (* v wt)))
+; One element. code: 0 Mean, 1 Maximum, 2 Minimum, 3 Over, 4 Under. Absent sources keep the output (Mean), take
+; candidate 0 (extremes) or use the source-less alpha formula (Over, Under).
+(defn ac_elem :context value
+  [(code : int) (first : bool) (present : bool) (has : bool) (wt : float) (o : float) (v : float) (m : float)]
+  (cond
+    (int/eq code 0) (if present (if has (fma (* v wt) m o) (fma v wt o)) o)
+    first (if present (if (and has (int/le code 2)) (* (* v wt) m) (* v wt)) o)
+    (int/le code 2)
+      (let* [c (if present (ac_cand has wt v m) 0.0)]
+        (if (int/eq code 1) (if (> c o) c o) (if (< c o) c o)))
+    (int/eq code 3) (if present (fma (* v wt) m (* o (- 1.0 m))) (* o (- 1.0 m)))
+    :else (if present (fma (* v wt) (- 1.0 m) (* o m)) (* o m))))
+; One plane of one input applied to the running output; any non-finite source, candidate or result is an error.
+(defn ac_plane :context value
+  [(code : int) (first : bool) (present : bool) (has : bool) (wt : float)
+   (out : (array float)) (src : (array float)) (mask : (array float))]
+  (let* [result (exact (map (fn [(o : float) (v : float) (m : float)] (ac_elem code first present has wt o v m)) out src mask))
+         bad (array/sum (exact (map (fn [(v : float) (m : float) (r : float)]
+               (+ (if present (ac_flag v) 0)
+                  (+ (if (and present (and (int/ge code 1) (int/le code 2))) (ac_flag (ac_cand has wt v m)) 0)
+                     (ac_flag r)))) src mask result)))]
+    (if (int/gt bad 0) (ac_error "has a non-finite value") result)))
+(defn ac_apply_planes :context value
+  [(code : int) (first : bool) (present : bool) (has : bool) (wt : float)
+   (out : {:width int :x (array float) :y (array float) :z (array float) :w (array float)})
+   (src : {:width int :x (array float) :y (array float) :z (array float) :w (array float)})
+   (mask : (array float))]
+  (ac_planes_type out.width
+    (ac_plane code first present has wt out.x src.x mask)
+    (ac_plane code first present has wt out.y src.y mask)
+    (ac_plane code first present has wt out.z src.z mask)
+    (ac_plane code first present has wt out.w src.w mask)))
+(defn ac_code :context value [(op : text)]
+  (case op "Mean" 0 "Maximum" 1 "Minimum" 2 "Over" 3 :else 4))
+; Input g applied to the running attribute (owner, name, kind) of the working geometry a.
+(defn ac_apply :context sop
+  [(a : geometry) (g : geometry) (first : bool) (op : text) (owner : text) (name : text) (kind : text)
+   (wt : float) (alpha_name : text) (count : int)]
+  (let* [fam (ac_family g owner name)
+         mask (ac_mask g owner alpha_name count)
+         has (ac_has_alpha g owner alpha_name)
+         code (ac_code op)
+         present (not (equal? fam ""))
+         usable (or (ac_is_float fam) (equal? fam "position"))
+         ; an absent or unusable source reads the working geometry; the kernels ignore it when not present
+         pg (sop/attr_planes g name :owner owner)
+         out (sop/attr_planes a name :owner owner)
+         use (and present usable)
+         src (ac_planes_type (if use pg.width out.width) (if use pg.x out.x) (if use pg.y out.y)
+               (if use pg.z out.z) (if use pg.w out.w))]
+    (cond
+      (equal? fam "other") (ac_error (str "attribute " (text/repr name) " is not a fixed-width floating attribute"))
+      (and present (not (equal? fam kind))) (ac_error (str "attribute " (text/repr name) " has a different type"))
+      (not (int/eq (array/count src.x) count)) (ac_error (str "attribute " (text/repr name) " has incompatible cardinality"))
+      :else (sop/with_planes a name (ac_apply_planes code first present has wt out src mask) :owner owner))))
+(defn ac_zero :context sop [(a : geometry) (owner : text) (name : text) (kind : text) (count : int)]
+  (let* [z (array/float count 0.0)]
+    (sop/with_planes a name (ac_planes_type (ac_width kind) z z z z) :owner owner)))
+(defn ac_den_init :context sop [(a : geometry) (owner : text) (count : int)]
+  (sop/with_attr a "__ac_den" (array/float count 0.0) :owner owner :type float))
+(defn ac_den :context sop
+  [(a : geometry) (g : geometry) (owner : text) (alpha_name : text) (wt : float) (count : int)]
+  (let* [den (sop/attr a "__ac_den" :owner owner :type float)
+         has (ac_has_alpha g owner alpha_name)
+         mask (ac_mask g owner alpha_name count)]
+    (sop/with_attr a "__ac_den"
+      (exact (map (fn [(d : float) (m : float)] (if has (fma wt m d) (+ d wt))) den mask))
+      :owner owner :type float)))
+(defn ac_divide_plane :context value [(p : (array float)) (den : (array float))]
+  (ac_fin (exact (map (fn [(o : float) (d : float)] (if (= d 0.0) 0.0 (/ o d))) p den)) "output"))
+(defn ac_divide :context sop [(a : geometry) (owner : text) (name : text)]
+  (let* [den (ac_fin (sop/attr a "__ac_den" :owner owner :type float) "mean denominator")
+         out (sop/attr_planes a name :owner owner)]
+    (sop/with_planes a name
+      (ac_planes_type out.width (ac_divide_plane out.x den)
+        (if (int/ge out.width 2) (ac_divide_plane out.y den) out.y)
+        (if (int/ge out.width 3) (ac_divide_plane out.z den) out.z)
+        (if (int/ge out.width 4) (ac_divide_plane out.w den) out.w))
+      :owner owner)))
+(defn ac_valid :context value [(p : text) (v : text) (pr : text) (d : text) (weights : text)]
+  (and (and (equal? (text/glob_error p) "") (equal? (text/glob_error v) ""))
+       (and (and (equal? (text/glob_error pr) "") (equal? (text/glob_error d) ""))
+            (if (text/blank? weights) true
+              (fold [ok true] [row (text/table_decode weights)]
+                (and ok (and (int/eq (count row) 1) (let* [f (text/to_float (nth row 0))] f.valid))))))))
+(defn ac_uniq_ints :context value [(items : (array int))]
+  (let* [first (array/index_of items items)]
+    (array/compact (exact (map (fn [(i : int) (f : int)] (if (int/eq i f) 1 0)) (array/range (array/count items) :type int) first)))))
+; One input applied to the working geometry: the mean denominators of the used owners, then every entry. A macro
+; because the loops over entries must sit in the node body (a defn over packed arrays cannot build graph nodes).
+(defmacro ac_pass_m [acc g first wt base op alpha ranks es e_rank e_name e_kind]
+  `(let* [stepped# (fold [b# ~acc] [r# ~ranks]
+                     (let* [o# (ac_owner_name r#)] (ac_den b# ~g o# ~alpha ~wt (ac_count ~base o#))))]
+     (fold [c# stepped#] [j# ~es]
+       (let* [p# (ac_owner_name (array/nth ~e_rank j#))]
+         (ac_apply c# ~g ~first ~op p# (array/nth ~e_name j#) (array/nth ~e_kind j#) ~wt ~alpha (ac_count ~base p#))))))
+(defnode sop/attribute_composite :label "Attribute Composite" :category ["Attribute" "Transfer"]
+  :validate (ac_valid point_attributes vertex_attributes primitive_attributes detail_attributes weights)
+  :code "E_PARAM" :message "sop/attribute_composite: invalid attribute pattern or layer weights"
+  [(input : geometry)
+   (layer1 : geometry :required false)
+   (layer2 : geometry :required false)
+   (layer3 : geometry :required false)
+   (layer4 : geometry :required false)
+   (layers : geometry :required false :rest true)
+   (operation : text "Mean" :label "Operation" :choices ["Mean" "Maximum" "Minimum" "Over" "Under"])
+   (weight : float 1.0 :label "Weight" :min 0.0 :max 1.0)
+   (point_attributes : text "*" :label "Point attributes")
+   (allow_position : bool false :label "Allow P")
+   (alpha_attribute : text "" :label "Alpha attribute")
+   (vertex_attributes : text "*" :label "Vertex attributes" :folder ["Attributes"])
+   (primitive_attributes : text "*" :label "Primitive attributes" :folder ["Attributes"])
+   (detail_attributes : text "*" :label "Detail attributes" :folder ["Attributes"])
+   (weight1 : float 1.0 :label "Weight 1" :min 0.0 :max 1.0 :folder ["Layers"])
+   (weight2 : float 1.0 :label "Weight 2" :min 0.0 :max 1.0 :folder ["Layers"])
+   (weight3 : float 1.0 :label "Weight 3" :min 0.0 :max 1.0 :folder ["Layers"])
+   (weight4 : float 1.0 :label "Weight 4" :min 0.0 :max 1.0 :folder ["Layers"])
+   (weights : text "" :label "Additional layer weights" :folder ["Layers"])]
+  (let* [alpha_name (text/trim alpha_attribute)
+         rows (if (text/blank? weights) (list) (text/table_decode weights))
+         extra (fold [acc (array/float 0 0.0)] [row rows]
+                 (array/concat acc (array/float 1 (let* [f (text/to_float (nth row 0))] f.value))))
+         ne (array/count extra)
+         nrest (count layers)
+         probe (sop/with_attr (sop/mesh :points (array/vec3 1) :vertex_points (array/int 0)
+                 :primitive_offsets (array/int 1) :kinds (array/int 0))
+                 "P" (array/float 1) :owner "detail" :type float)
+         listed (if allow_position (int/gt (array/count (sop/attr_names probe point_attributes :owner "detail")) 0) false)
+         start {:owners (if listed (array/int 1 2) (array/int 0))
+                :names (if listed (array/text 1 "P") (array/text 0))
+                :kinds (if listed (array/text 1 "position") (array/text 0))}
+         c0 (ac_collect start input detail_attributes primitive_attributes point_attributes vertex_attributes)
+         c1 (if (equal? layer1 nil) c0 (ac_collect c0 layer1 detail_attributes primitive_attributes point_attributes vertex_attributes))
+         c2 (if (equal? layer2 nil) c1 (ac_collect c1 layer2 detail_attributes primitive_attributes point_attributes vertex_attributes))
+         c3 (if (equal? layer3 nil) c2 (ac_collect c2 layer3 detail_attributes primitive_attributes point_attributes vertex_attributes))
+         c4 (if (equal? layer4 nil) c3 (ac_collect c3 layer4 detail_attributes primitive_attributes point_attributes vertex_attributes))
+         c5 (fold [cc c4] [q (range nrest)]
+              (ac_collect cc (nth layers q) detail_attributes primitive_attributes point_attributes vertex_attributes))
+         entries (ac_finish c5)
+         e_rank entries.owners
+         e_name entries.names
+         e_kind entries.kinds
+         total (array/count e_name)
+         es (array/range total :type int)
+         used_ranks (exact (map (fn [(i : int)] (array/nth e_rank i)) (ac_uniq_ints e_rank)))
+         mean (equal? operation "Mean")
+         mean_ranks (if mean used_ranks (array/int 0))
+         mean_entries (if mean es (array/int 0))
+         zeroed (fold [a input] [j es]
+                  (let* [o (ac_owner_name (array/nth e_rank j))]
+                    (ac_zero a o (array/nth e_name j) (array/nth e_kind j) (ac_count input o))))
+         denominators (fold [a zeroed] [r mean_ranks]
+                        (let* [o (ac_owner_name r)] (ac_den_init a o (ac_count input o))))
+         p0 (ac_pass_m denominators input true weight input operation alpha_name mean_ranks es e_rank e_name e_kind)
+         p1 (if (equal? layer1 nil) p0 (ac_pass_m p0 layer1 false weight1 input operation alpha_name mean_ranks es e_rank e_name e_kind))
+         p2 (if (equal? layer2 nil) p1 (ac_pass_m p1 layer2 false weight2 input operation alpha_name mean_ranks es e_rank e_name e_kind))
+         p3 (if (equal? layer3 nil) p2 (ac_pass_m p2 layer3 false weight3 input operation alpha_name mean_ranks es e_rank e_name e_kind))
+         p4 (if (equal? layer4 nil) p3 (ac_pass_m p3 layer4 false weight4 input operation alpha_name mean_ranks es e_rank e_name e_kind))
+         p5 (fold [acc5 p4] [q (range nrest)]
+              (ac_pass_m acc5 (nth layers q) false (if (int/lt q ne) (array/nth extra q) 1.0)
+                input operation alpha_name mean_ranks es e_rank e_name e_kind))
+         divided (fold [a p5] [j mean_entries]
+                   (ac_divide a (ac_owner_name (array/nth e_rank j)) (array/nth e_name j)))
+         cleaned (sop/delete_attrs divided :point "__ac_den" :vertex "__ac_den" :primitive "__ac_den" :detail "__ac_den")
+         has_p listed
+         point_part (ac_part c5 2)
+         vertex_part (ac_part c5 3)
+         point_n (int/ge (array/nth (array/index_of point_part.names (array/text 1 "N")) 0) 0)
+         vertex_n (int/ge (array/nth (array/index_of vertex_part.names (array/text 1 "N")) 0) 0)
+         ; the delete runs once or not at all: a fold over a zero- or one-element array
+         no_point (fold [g cleaned] [x (if (and has_p (not point_n)) (array/int 1 0) (array/int 0))]
+                    (sop/delete_attrs g :point "N"))]
+    (fold [g no_point] [x (if (and has_p (not vertex_n)) (array/int 1 0) (array/int 0))]
+      (sop/delete_attrs g :vertex "N"))))
