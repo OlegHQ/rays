@@ -740,12 +740,12 @@ whole fused native pass. Three shared fixes are in (`3bffaa15`, `8ba568d7`,
 source has no edge groups. Projection: 2× is not reachable for reindexing
 nodes without ancestry-aware host operators.
 
-**Status 2026-10-15: 126/128 registered, 1 draft pending, 1 without a draft.**
+**Status 2026-10-15: 127/128 registered, 1 draft pending.**
 The earlier per-session tables are superseded; each registration commit
 ("Register …", "port-draft <key>: PASS-SLOW Nx") records its gate and bench.
 
 Registered (Lisp body is the production node; the OCaml kernel stays in `lib/rdk` as the oracle):
-`attr_from_image`, `attribute_blur`, `attribute_composite`, `attribute_copy`, `attribute_fade`, `attribute_interpolate`, `attribute_laplacian`, `attribute_noise_quaternion`, `attribute_noise`, `attribute_randomize`, `attribute_remap`, `bend`, `blast_by_attribute`, `blast`, `blend_shapes`, `bound`, `box`, `carve`, `circle_from_edges`, `circle`, `color_by_height`, `compact_points`, `connectivity`, `convert_line`, `copy_to_points`, `crease`, `delete_attributes`, `delete_edge_group`, `distance_along_geometry`, `distance_from_target`, `duplicate`, `edge_cusp`, `edge_divide`, `edge_equalize`, `edge_flip`, `edge_relax`, `edge_straighten`, `edge_transport_curves`, `edge_transport_parent`, `edge_transport`, `ends`, `enumerate`, `extract_centroid`, `extract_point_from_curve`, `graph_color`, `grid`, `group_backface`, `group_boundary_components`, `group_bounds`, `group_combine`, `group_copy`, `group_delete`, `group_edge_depth`, `group_edges`, `group_expand`, `group_find_path`, `group_from_attribute_boundary`, `group_invert`, `group_non_planar`, `group_normal`, `group_promote_boundary`, `group_promotions`, `group_random`, `group_range`, `group_ranges`, `group_rename`, `group_unshared`, `groups_from_name`, `line`, `match_axis`, `match_size`, `material`, `measure_curvature`, `measure`, `merge`, `mirror`, `mountain`, `name_from_groups`, `noise_displace`, `normals`, `ordered_group`, `peak`, `platonic`, `point_generate`, `point_jitter`, `point_replicate`, `point_split`, `point_velocity`, `points`, `poly_bridge`, `poly_loft`, `poly_path`, `polyframe`, `polywire`, `promote_attributes`, `rename_attributes`, `rename_edge_group`, `resample`, `rest_position`, `reverse`, `revolve`, `rewire_vertices`, `scatter`, `separate_pieces`, `set_color`, `set_float`, `set_int`, `set_orient`, `set_transform`, `set_vector`, `skin`, `smooth`, `snap_to_grid`, `sort`, `spiral`, `swap_attributes`, `sweep_circle`, `sweep`, `torus`, `transform`, `tube`, `uv_auto_seam`, `uv_project`, `uv_sphere`, `uv_transform`, `uv_unitize`.
+`attr_from_image`, `attribute_blur`, `attribute_composite`, `attribute_copy`, `attribute_fade`, `attribute_interpolate`, `attribute_laplacian`, `attribute_noise_quaternion`, `attribute_noise`, `attribute_randomize`, `attribute_remap`, `bend`, `blast_by_attribute`, `blast`, `blend_shapes`, `bound`, `box`, `carve`, `circle_from_edges`, `circle`, `color_by_height`, `compact_points`, `connectivity`, `convert_line`, `copy_to_points`, `crease`, `delete_attributes`, `delete_edge_group`, `distance_along_geometry`, `distance_from_target`, `duplicate`, `edge_cusp`, `edge_divide`, `edge_equalize`, `edge_flip`, `edge_relax`, `edge_straighten`, `edge_transport_curves`, `edge_transport_parent`, `edge_transport`, `ends`, `enumerate`, `extract_centroid`, `extract_point_from_curve`, `graph_color`, `grid`, `group_backface`, `group_boundary_components`, `group_bounds`, `group_combine`, `group_copy`, `group_delete`, `group_edge_depth`, `group_edges`, `group_expand`, `group_find_path`, `group_from_attribute_boundary`, `group_invert`, `group_non_planar`, `group_normal`, `group_promote_boundary`, `group_promotions`, `group_random`, `group_range`, `group_ranges`, `group_rename`, `group_unshared`, `groups_from_name`, `line`, `match_axis`, `match_size`, `material`, `measure_curvature`, `measure`, `merge`, `mirror`, `mountain`, `name_from_groups`, `noise_displace`, `normals`, `ordered_group`, `peak`, `platonic`, `point_generate`, `point_jitter`, `point_replicate`, `point_split`, `point_velocity`, `points`, `poly_bridge`, `poly_loft`, `poly_path`, `polyframe`, `polywire`, `promote_attributes`, `rename_attributes`, `rename_edge_group`, `resample`, `rest_position`, `reverse`, `revolve`, `rewire_vertices`, `scatter`, `separate_pieces`, `set_color`, `set_float`, `set_int`, `set_orient`, `set_transform`, `set_vector`, `skin`, `smooth`, `snap_to_grid`, `sort`, `spiral`, `subdivide`, `swap_attributes`, `sweep_circle`, `sweep`, `torus`, `transform`, `tube`, `uv_auto_seam`, `uv_project`, `uv_sphere`, `uv_transform`, `uv_unitize`.
 
 Pending drafts (`nodes/<key>.pending`):
 
@@ -753,7 +753,6 @@ Pending drafts (`nodes/<key>.pending`):
 | --- | --- |
 | `iso_surface` | smooth normals exact after mirroring arm64 FMA contraction; positions 1–6 ulp off |
 
-No draft yet: `subdivide` (split the crack path first, E.6).
 
 Fidelity gap: `group_from_attribute_boundary` does not raise native's non-finite-attribute error
 (the gate has no non-finite fixture).
@@ -765,6 +764,8 @@ no cap. A geometry that is a fold element or a dynamic `nth` is not a data sourc
 texel, Point vec4 `rgba`); a blank or `P` attribute gives one combined message.
 `copy_to_points` raises frame errors for every target (native: only targets with a piece in piece
 mode) and treats a NaN `max` operand as non-finite; no gate case reaches either.
+`subdivide` delegates partial primitive groups (crack closing) and meshes holding polylines to the
+native carrier `sop/subdivide_cracks` (a copy of the native kind); curve refinement is not ported.
 `scatter` with a non-finite density attribute fails `E_NONFINITE` at the language boundary instead of
 native's `invalid_geometry`; its `--full` gate skipped most cases on the 4,225-point grid for time.
 
@@ -860,6 +861,7 @@ before optimizing. The OCaml kernels remain in `lib/rdk` as oracles.
 | `attribute_composite` | 62.1× | 92.8× | per-input passes over attribute names |
 | `blend_shapes` | 35.6× | 48.0× | rest slot unrolled to 8 |
 | `copy_to_points` | 36.1× | 44.8× | pack instances through native `sop/pack_instances` carrier |
+| `subdivide` | 53.2× | 46.8× | whole-mesh path in Lisp; partial groups and curves via `sop/subdivide_cracks` |
 | `edge_transport_parent` | 85.8× | 75.7× | D, I |
 | `poly_loft` | 90× | 108× | K, H |
 | `group_boundary_components` | 163× | | A, D |
