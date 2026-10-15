@@ -188,3 +188,9 @@ val counts : t -> int * int
 val status : t -> seconds:float -> string option
 (** The viewport header [t N live · M cached · cook X ms] ([t] for the study's
     ◷, which DepartureMono lacks); [None] when nothing is live. *)
+
+module Private : sig
+  val record : bool ref
+  val profiles : Flow_ir.Profile.t list ref
+  (** Test hook: with [record] set, the profile of every Lisp node body built is appended. *)
+end

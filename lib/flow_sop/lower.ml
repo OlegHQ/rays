@@ -119,6 +119,7 @@ let at_zero value =
   if E.is_live value then ok (E.force value ~live:(Frame_input.at_time (0.))) else value
 
 let is_zone kind = kind = "zone/points" || kind = "zone/pieces"
+module Private = struct let record = ref false let profiles : Flow_ir.Profile.t list ref = ref [] end
 let geo_of args =
   let rec sources = function
     | E.Deferred (ty, j) when Ty.is_cooked ty -> [j]
@@ -727,6 +728,7 @@ let rec lower_checked ~factories ?(provenance_tags = true) ?(reference = false) 
         let nested = ok (lower_checked ~reference ~strict_body:true ~defer_body_errors:true ~kernel_bindings
           ~factories:(List.map snd capture_factories @ List.map (fun (_,_,_,factory) -> factory) geometry_captures @ factories)
           ~inputs:[body_overrides] {nested with graphs=[body]}) in
+        if !Private.record then Private.profiles := nested.profile :: !Private.profiles;
         let graph = match nested.graphs with
           | [graph] -> graph | _ -> fail "E_LOWER" "A Lisp node body needs one SOP graph" in
         let root = match graph.root with Some root -> root
@@ -843,6 +845,38 @@ let rec lower_checked ~factories ?(provenance_tags = true) ?(reference = false) 
           | E.Vec3 (x, y, z) -> x, y, z
           | _ -> fail "E_LOWER" "sop/curve points must be vec3") values
       | _ -> fail "E_LOWER" "sop/curve needs :points" in
+    (* B.F: a Lisp point deformer whose only input is another such deformer's single-consumer output
+       reads that deformer's P values directly; the producer's own cook is skipped. *)
+    let consumers = lazy (let counts = Array.make (Array.length plan.nodes) 0 in
+      Array.iter (fun (n : E.node) -> List.iter (fun id -> counts.(id) <- counts.(id) + 1) (deps n)) plan.nodes;
+      let rec mark = function
+        | E.Deferred (_, id) -> counts.(id) <- counts.(id) + 1
+        | E.List values -> Array.iter mark values
+        | E.Record fields -> List.iter (fun (_, value) -> mark value) fields
+        | _ -> () in
+      Array.iter (fun (i : E.instance) -> mark i.result; List.iter (fun (_, value) -> mark value) i.inputs) plan.instances;
+      counts) in
+    let lisp_definition kind = List.find_opt (fun (d : Workspace.node_definition) -> d.kind.qualified = kind) checked.nodes in
+    let rec fused_view (n : E.node) = match lisp_definition n.kind with
+      | Some d when not templ.(n.id) && Context_kernel.fusable d ->
+          let slot = (List.hd d.slots).name in
+          let own = Some (d, n.args) in
+          (match List.assoc_opt slot n.args with
+           | Some (E.Deferred (_, id)) when (Lazy.force consumers).(id) = 1 && not templ.(id) ->
+               let u = plan.nodes.(id) in
+               if List.exists (fun (_, v) -> E.is_live v) u.args then own else
+               (match fused_view u with
+                | Some (du, uargs) ->
+                    let context_free = List.for_all (fun op ->
+                      not (Context_kernel.depends ~op ~inputs:u.args ~defs:checked.defs du.body))
+                      ["sop/context_seed"; "sop/context_frame"; "sop/context_time"] in
+                    (match if context_free then Context_kernel.fuse d du ~baked:u.args else None with
+                     | Some fused -> Some (fused, List.map (fun (name, v) ->
+                         if name = slot then name, List.assoc slot uargs else name, v) n.args)
+                     | None -> own)
+                | None -> own)
+           | _ -> own)
+      | _ -> None in
     let rec prepare (node : E.node) =
       match Hashtbl.find_opt prepared node.id with
       | Some p -> p
@@ -973,6 +1007,11 @@ let rec lower_checked ~factories ?(provenance_tags = true) ?(reference = false) 
             | kind ->
                 let args = if kind="image/noise" then List.map(fun(name,value)->
                   (if name="freq" then "frequency" else name),value)args else args in
+                let args, fused_definition = match fused_view node with
+                  | Some (d, fused_args) when fused_args != node.args ->
+                      let slot = (List.hd d.slots).name in
+                      List.map (fun (name, v) -> if name = slot then name, List.assoc slot fused_args else name, v) args, Some d
+                  | _ -> args, None in
                 let key = match String.split_on_char '/' kind with
                   | ["sop"; key] -> key
                   | ["image"; "noise"] -> "image_noise"
@@ -992,7 +1031,7 @@ let rec lower_checked ~factories ?(provenance_tags = true) ?(reference = false) 
                               {merge = cid; input = index; source = compiled.(source);
                                site = s.site; iter = s.iter} !provenance) sources;
                           Some base end in
-                        lisp_factory ~functions:args ?provenance:tag_base definition
+                        lisp_factory ~functions:args ?provenance:tag_base (Option.value fused_definition ~default:definition)
                     | None -> find_factory key in
                 let names = Edit.factory_slot_names factory
                 and parameters = parameters factory in

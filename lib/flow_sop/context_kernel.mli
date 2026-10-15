@@ -13,3 +13,11 @@ val kernel_source : Flow.Workspace.t -> string
 (** Whether [specialize] can change the graph: it names a context or provenance operator. A graph
     for which this is false is its own specialization. *)
 val uses_context : Flow.Workspace.graph -> bool
+
+(** B.F: whether a Lisp node body is one [let*] with a single [sop/with_attr in0 :P] and no scans,
+    folds, errors or branches on cooked data. *)
+val fusable : Flow.Workspace.node_definition -> bool
+
+(** [fuse x u ~baked]: [x] with [u]'s [P] kernel folded in; [baked] are [u]'s parameter values. *)
+val fuse : Flow.Workspace.node_definition -> Flow.Workspace.node_definition ->
+  baked:(string * Flow.Eval.value) list -> Flow.Workspace.node_definition option
