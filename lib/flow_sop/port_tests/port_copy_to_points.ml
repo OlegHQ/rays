@@ -51,6 +51,9 @@ let matrix_rows width g =
     rows.(3).(6) <- 0.; rows.(3).(8) <- 0.; rows.(3).(9) <- 0.; rows.(3).(10) <- 0.; rows) else rows in
   put Attribute.Point "transform" (Attribute.Float_array (get_string_ok (Packed.Float_array.create_owned
     ~offsets:(Array.init 6 (fun i -> i * width)) ~values:(Array.concat (Array.to_list rows))))) g
+let rule_targets () = fixture_groups (fixture_attributes (Kernel.generate_point_ranges 4 (fun ~first ~last ~x ~y ~z ->
+  for i = first to last - 1 do x.(i) <- float i; y.(i) <- 0.5; z.(i) <- -. float i done)))
+let mismatch_targets () = put Attribute.Point "integer" (Attribute.Float [|1.; 2.; 3.; 4.; 5.|]) (base_targets ())
 let all_frame g = g |> pscale |> scale |> orient |> rot |> trans |> pivot
 
 let targets = [
@@ -66,11 +69,29 @@ let targets = [
   "trans_pivot", pivot (trans (base_targets ()));
   "matrix16", matrix_rows 16 (base_targets ());
   "matrix9", matrix_rows 9 (base_targets ());
-  "frames", all_frame (base_targets ())]
+  "frames", all_frame (base_targets ());
+  "mismatch", mismatch_targets ();
+  "rules", rule_targets ()]
 let sources = [ "mixed", mixed (); "grid", grid_source () ]
 let inputs = List.concat_map (fun (tl, t) -> List.map (fun (sl, s) -> sl ^ "<-" ^ tl, [s; t]) sources) targets
 
+let rule p o op = String.concat "\t" [p; o; op]
+let rules rs = tx "target_attributes" (String.concat "\n" rs)
 let cases = [
+  "rules copy points", [rules [rule "*" "points" "copy"]];
+  "rules copy vertices", [rules [rule "f*" "vertices" "copy"; rule "v*" "primitives" "copy"]];
+  "rules add", [rules [rule "[fiv]*" "points" "add"]];
+  "rules subtract", [rules [rule "[fiv]*" "vertices" "subtract"]];
+  "rules multiply", [rules [rule "[fiv]*" "primitives" "multiply"; rule "text" "points" "copy"]];
+  "rules last wins", [rules [rule "*" "points" "copy"; rule "float*" "points" "nothing"; rule "i*" "vertices" "add"]];
+  "rules groups", [rules [rule "*" "points" "copy"; rule "a" "primitives" "add"]];
+  "rules groups subtract", [rules [rule "dest*" "vertices" "subtract"; rule "a" "points" "multiply"]];
+  "rules empty", [rules []];
+  "rules bad owner", [rules [rule "*" "edges" "copy"]];
+  "rules bad op", [rules [rule "*" "points" "scale"]];
+  "rules bad pattern", [rules [rule "[" "points" "copy"]];
+  "rules bad columns", [rules ["a\tb"]];
+  "rules array add", [rules [rule "*rows" "points" "add"; rule "*rows" "vertices" "copy"]];
   "pack", [bo "pack" true];
   "source group", [tx "source_group" "a"];
   "source group ordered", [tx "source_group" "dest_a"];
