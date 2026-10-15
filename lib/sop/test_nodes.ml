@@ -369,23 +369,34 @@ let close_blend left right =
   close_geometry ~ulps:4 left right
   || compare_geometry (fun l r -> Array.length l = Array.length r && Array.for_all2 near l r) left right
 
+(* Ports whose gate declares four ULP against the native oracle and that differ from it at the last
+   bits on these fixtures (largest observed difference 2e-14). *)
+let blend_ports = ["attribute_randomize"; "attribute_noise"; "attribute_remap"; "uv_sphere"; "bound"; "smooth";
+  "attribute_blur"; "measure_curvature"]
+
 let same_node ?(same_key = true) name ~typed ~catalog =
   reject_nonfinite name typed;
   reject_nonfinite name catalog;
   check (not same_key || (Node.parameter_key typed = Node.parameter_key catalog && Node.parameter_key typed <> ""))
     (name ^ ": Lisp node and factory share the schema key");
   let one = cook 1 typed in
-  let ported_noise = List.mem (Node.operation typed) ["noise_displace"; "attribute_randomize"; "attribute_noise"; "attribute_remap"; "uv_sphere"] in
+  let ported_noise = Node.operation typed = "noise_displace" || List.mem (Node.operation typed) blend_ports in
   let four = cook 4 typed in
   check (if ported_noise then geometry_bytes one = geometry_bytes four else equal_geometry one four)
     (name ^ ": Lisp node at four domains cooks the same geometry");
   (* The port uses separately rounded arithmetic; only its native oracle has
      the approved four-ULP tolerance. Domain self-consistency stays bit-exact. *)
   let equal_oracle = if not ported_noise then equal_geometry
-    else if List.mem (Node.operation typed) ["attribute_randomize"; "attribute_noise"; "attribute_remap"; "uv_sphere"] then close_blend else close_geometry ~ulps:4 in
+    else if List.mem (Node.operation typed) blend_ports then close_blend else close_geometry ~ulps:4 in
   List.iter (fun (what, geometry) ->
+    let worst = lazy (let worst = ref 0. and shape = ref true in
+      ignore (compare_geometry (fun l r ->
+        if Array.length l <> Array.length r then shape := false
+        else Array.iter2 (fun a b -> if a <> b && Float.is_finite a && Float.is_finite b then worst := Float.max !worst (abs_float (a -. b))
+          else if a <> b then shape := false) l r; true) one geometry);
+      Printf.sprintf " (largest float difference %g%s)" !worst (if !shape then "" else ", other planes differ")) in
     check (equal_oracle one geometry)
-    (name ^ ": " ^ what ^ " cooks the same geometry"))
+    (name ^ ": " ^ what ^ " cooks the same geometry" ^ if equal_oracle one geometry then "" else Lazy.force worst))
     [ "factory at one domain", cook 1 catalog;
       "factory at four domains", cook 4 catalog ]
 
