@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "60633eb3f42b313d2ab52385effebc1a")
+  (digest "a8927c73b6076abe9ad0e88c4e72908f")
   (kinds
     (kind "sop/switch"
       (key "switch")
@@ -26,6 +26,16 @@
         (field "uv" "UV attribute" (folder) (text) (text "uv") (primary false) (vec3)))
       (outputs (output "geo" geometry))
       (facts (cook-mode duplicate-input 0) (elementwise points) (reads "uv") (writes "image") (topology preserved) (exact true)))
+    (kind "sop/image_texels"
+      (key "image_texels")
+      (aliases)
+      (operation "image_texels")
+      (label "Image Texels")
+      (category "Attribute" "Image")
+      (slots (slot "image" required image))
+      (fields)
+      (outputs (output "geo" geometry))
+      (facts (cook-mode generator) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/iso_surface"
       (key "iso_surface")
       (aliases)

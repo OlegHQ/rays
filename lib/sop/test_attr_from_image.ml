@@ -102,6 +102,17 @@ let run () =
   let cancel = Rdk.Cancel.create () in Rdk.Cancel.cancel cancel;
   (match Rdk.Attribute_ops.from_image ~cancel ~attribute:"sample" ~channel:Red ~width:2 ~height:2 ~rgba source with
    | Error error -> assert (Rdk.Error.code error = "cancelled") | Ok _ -> assert false);
+  (* image_texels: one point per texel, row-major, P = (x, y, width), "rgba" holding the decoded floats. *)
+  let texels = ok (Sop.Edit_graph.instantiate Nodes.Image_texels.factory [image_node image]) in
+  let carrier = ok (Payload.geometry (ok (Session.cook (ok (Session.create ~max_entries:0 ~max_payload_bytes:0))
+    ~context:(ok (Context.create ())) texels)).payload) in
+  assert (Rdk.Geometry.point_count carrier = 4);
+  let planes = Rdk.Packed.Float3.Private.view (Rdk.Geometry.positions carrier) in
+  assert (planes.x = [|0.;1.;0.;1.|] && planes.y = [|0.;0.;1.;1.|] && planes.z = [|2.;2.;2.;2.|]);
+  (match Rdk.Attribute.Private.storage (Option.get (Rdk.Geometry.find_attribute ~owner:A.Point "rgba" carrier)) with
+   | A.Float4 packed -> let view = Rdk.Packed.Float4.Private.view packed in
+       assert (view.x = [|1.;0.;0.;1.|] && view.w = [|0.2;0.4;0.6;0.8|])
+   | _ -> assert false);
   print_endline "attr_from_image: channels, bilinear/clamp/single-axis UV, exact domains, typed payloads, malformed inputs and cancellation pass"
 let benchmark () =
   let count = 1_000_000 in

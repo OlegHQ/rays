@@ -4351,6 +4351,9 @@
         "module Attr_from_image : sig",
         "val factory : Edit_graph.factory",
         "end",
+        "module Image_texels : sig",
+        "val factory : Edit_graph.factory",
+        "end",
         "module Iso_surface : sig",
         "val factory : Edit_graph.factory",
         "end",
@@ -4745,7 +4748,7 @@
         "val factory : Edit_graph.factory",
         "end"
       ],
-      "api_sha256": "8ac7f30065a0807c6b47e241903b993f788455554d84348bf7989b448e64c300",
+      "api_sha256": "9fe0e4ed2162ea4c274e759fdc8ae7b0b9fd09973669c96e8a8492136281ab80",
       "excluded_legacy_symbols": [],
       "library": "sop",
       "module": "Nodes",
