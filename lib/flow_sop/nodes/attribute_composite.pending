@@ -274,5 +274,7 @@
          ; the delete runs once or not at all: a fold over a zero- or one-element array
          no_point (fold [g cleaned] [x (if (and has_p (not point_n)) (array/int 1 0) (array/int 0))]
                     (sop/delete_attrs g :point "N"))]
-    (fold [g no_point] [x (if (and has_p (not vertex_n)) (array/int 1 0) (array/int 0))]
-      (sop/delete_attrs g :vertex "N"))))
+    (if (int/gt nrest 8)
+      (ac_error "supports at most 8 layers in the rest slot")
+      (fold [g no_point] [x (if (and has_p (not vertex_n)) (array/int 1 0) (array/int 0))]
+        (sop/delete_attrs g :vertex "N")))))
