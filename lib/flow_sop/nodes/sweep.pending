@@ -7,11 +7,12 @@
 ; `sop/remap` calls (backbone first, cross-section second with `:lead true` and `:lead_groups true`).
 
 ; ---- the selected curves of one input and the layout of their vertices ----
-(defn sw_curves :context sop [(geo : geometry) (gname : text)]
+(defn sw_curves :context sop [(geo : geometry) (gname : text) (glit : text)]
   (let* [topology (sop/topology geo)
          tvp topology.vertex_points offs topology.primitive_offsets kinds topology.kinds
          nprim (sop/count geo :primitives)
-         mask (if (text/blank? gname) (array/int nprim 1) (sop/group geo :name gname :owner "primitive"))
+         mask (if (text/blank? gname) (array/int nprim 1)
+                (sop/group (sop/group_combine geo :owner "Primitives" :name "__sw_sel" :base_pattern glit) :name "__sw_sel" :owner "primitive"))
          prims (array/compact mask)
          nc (array/count prims)
          first (int_gather offs prims)
@@ -82,8 +83,8 @@
 (defn sw_get_v :context sop [(geo : geometry) (label : text)] (sop/attr geo label :owner "point" :type vec3))
 
 ; The selected curves of one input with their edge data, as cooked arrays: {:cb :gb} (see sw_curves, sw_geo).
-(defn sw_prep :context sop [(geo : geometry) (gname : text)]
-  (let* [c (sw_curves geo gname)
+(defn sw_prep :context sop [(geo : geometry) (gname : text) (glit : text)]
+  (let* [c (sw_curves geo gname glit)
          g (sw_geo c.spos c.sloc c.scnt c.sclosed c.sc c.coff)
          kv (sw_put_v (sw_put_f (sw_put_f
               (sw_put_i (sw_put_i (sw_put_i (sw_put_i (sw_put_i (sw_put_i (sw_pts c.spos)
@@ -477,6 +478,12 @@
            (/ (array/nth gb.cum (int/add (array/nth cb.coff (array/nth lay.pbi q)) (int c.x))) (array/nth gb.tot_c (array/nth lay.pbi q)))))
          lay.cn lay.vpair))}))
 
+; Keys "owner:name" of attribute / group entries, and how many of the queries are among the keys.
+(defn sw_keys :context value [(owners : (array text)) (names : (array text))]
+  (exact (map (fn [(o : text) (n : text)] (str o ":" n)) owners names)))
+(defn sw_hits :context value [(keys : (array text)) (queries : (array text))]
+  (array/sum (exact (map (fn [(i : int)] (if (int/ge i 0) 1 0)) (array/index_of keys queries)))))
+
 ; ---- the geometry: topology, then the backbone's and the cross-section's attributes and groups ----
 (defn sw_build :context sop
   [(bb : geometry) (pr : geometry)
@@ -500,8 +507,8 @@
          has_uv (not (text/blank? uvn))
          b1 (sop/delete_attr (sop/delete_attr bb "N" :owner "point") "N" :owner "vertex")
          b2 (if has_uv (sop/delete_attr (sop/delete_attr b1 uvn :owner "point") uvn :owner "vertex") b1)
-         p1 (sop/rename_group (sop/rename_attr pr "*" (str prefix "*") :owner "any" :conflict "error")
-              "*" (str prefix "*") :owner "any" :conflict "error")
+         p1 (sop/rename_group (sop/rename_attr pr "*" prefix :owner "any" :conflict "error")
+              "*" prefix :owner "any" :conflict "error")
          p2 (if has_uv (sop/delete_attr (sop/delete_attr p1 uvn :owner "point") uvn :owner "vertex") p1)
          tm (sop/with_attr (sop/with_attr target "bptm" pts.bptm :owner "point" :type int) "pptm" pts.pptm :owner "point" :type int)
          bptm (sop/attr tm "bptm" :owner "point" :type int)
@@ -523,26 +530,45 @@
                  (exact (map (fn [(a : int) (b : int)]
                    (if (int/eq (array/nth bptm a) (array/nth bptm b)) (array/nth pptm b) -1)) te.a te.b))
                  (sop/count pr :points))
+         ab (sop/attr_entries b2 :owner "any")
+         ap (sop/attr_entries p2 :owner "any")
+         gb0 (sop/group_entries b2 "*" :owner "any")
+         gp0 (sop/group_entries p2 "*" :owner "any")
+         kab (sw_keys ab.owner ab.name)
+         kap (sw_keys ap.owner ap.name)
+         kgb (sw_keys gb0.owners gb0.names)
+         kgp (sw_keys gp0.owners gp0.names)
+         uvk (array/text 1 (str (if (int/eq conn 0) "point" "vertex") ":" uvn))
+         capk (array/text 1 (str "primitive:" capname))
+         dup_a (int/add (sw_hits kab kap) (if has_uv (int/add (sw_hits kab uvk) (sw_hits kap uvk)) 0))
+         dup_g (int/add (sw_hits kgb kgp) (if (text/blank? capname) 0 (int/add (sw_hits kgb capk) (sw_hits kgp capk))))
          r1 (sop/remap b2 target :points bptm :vertices bvm :primitives bpm :positions "target" :edges anc_b)
-         r2 (sop/remap p2 r1 :points pptm :vertices pvm :primitives ppm :positions "target" :lead true :lead_groups true :edges anc_p)
+         pclean (sop/delete_group (sop/delete_attrs p2 :point "*" :vertex "*" :primitive "*" :detail "*") "*" :owner "any")
+         p2r (if (int/gt (int/add (sw_hits kab kap) (sw_hits kgb kgp)) 0) pclean p2)
+         r2 (sop/remap p2r r1 :points pptm :vertices pvm :primitives ppm :positions "target" :lead true :lead_groups true :edges anc_p)
          r3 (if has_uv
               (sop/with_attr r2 uvn {:x uv.x :y uv.y} :owner (if (int/eq conn 0) "point" "vertex") :type vec2)
               r2)]
-    (if (text/blank? capname) r3 (sop/with_group r3 capmask :name capname :owner "primitive"))))
+    (if (int/gt (int/add dup_a dup_g) 0) (sw_fail "duplicate attribute or group name")
+      (if (text/blank? capname) r3 (sop/with_group r3 capmask :name capname :owner "primitive")))))
 
 (defn sw_run :context sop
   [(bb : geometry) (pr : geometry) (bname : text) (pname : text) (connectivity : text) (tangent : text)
    (continuous : bool) (ta : bool) (rev : bool) (scale : float) (roll : float) (twist : float) (caps : bool)
-   (cap_group : text) (uv_attribute : text) (prefix : text)]
+   (cap_group : text) (uv_attribute : text) (prefix : text) (bglit : text) (pglit : text)]
   (let* [bn (text/trim bname)
          pn (text/trim pname)
-         b_found (or (text/blank? bn) (fold [seen false] [name (sop/group_names bb "*" :owner "primitive")] (or seen (equal? name bn))))
-         p_found (or (text/blank? pn) (fold [seen false] [name (sop/group_names pr "*" :owner "primitive")] (or seen (equal? name pn))))
+         bcount (int/gt (array/count (sop/group_names bb bglit :owner "primitive")) 0)
+         b_found (or (text/blank? bn) bcount)
+         pcount (int/gt (array/count (sop/group_names pr pglit :owner "primitive")) 0)
+         p_found (or (text/blank? pn) pcount)
          conn (case connectivity "Points" 0 "Rows" 1 "Columns" 2 "Rows and columns" 3 "Quads" 4 "Triangles" 5
                 "Alternating triangles" 6 :else 7)
          mode (case tangent "Average edges" 0 "Central difference" 1 "Previous edge" 2 "Next edge" 3 :else 4)
-         pb (sw_prep bb bn)
-         pq (sw_prep pr pn)
+
+
+         pb (sw_prep bb bn bglit)
+         pq (sw_prep pr pn pglit)
          cb pb.cb
          gb pb.gb
          cp pq.cb
@@ -592,4 +618,7 @@
    (uv_attribute : text "uv" :label "UV attribute")
    (cross_section_prefix : text "cross_section_" :label "Cross-section attribute prefix")]
   (sw_run backbone cross_section backbone_group cross_section_group connectivity tangent continuous_closed
-    transform_attributes reverse_cross_sections scale roll twist caps cap_group uv_attribute cross_section_prefix))
+    transform_attributes reverse_cross_sections scale roll twist caps cap_group uv_attribute
+    (if (equal? cross_section_prefix "") "*" (str (text/glob_literal cross_section_prefix) "*"))
+    (text/glob_literal (if (text/blank? (text/trim backbone_group)) "x" (text/trim backbone_group)))
+    (text/glob_literal (if (text/blank? (text/trim cross_section_group)) "x" (text/trim cross_section_group)))))
