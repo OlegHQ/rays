@@ -749,18 +749,24 @@ let rec lower_checked ~factories ?(provenance_tags = true) ?(reference = false) 
           else dependencies in
         let owned = Sop.Graph.inspect compiled |> List.filter (fun (node : Sop.Graph.info) ->
           not (String.starts_with ~prefix:"lisp_capture_" node.operation)) in
+        let declared = definition.kind.facts in
+        (* A body that compiles to a branching geometry_select is opaque to the owned-node
+           walk, so the node's declared facts decide (the author's contract). *)
         let preserved = List.for_all (fun (node : Sop.Graph.info) ->
-          node.facts.topology=Sop.Node.Preserved) owned in
+          node.facts.topology=Sop.Node.Preserved) owned
+          || Option.fold ~none:false ~some:(fun (f : Check.kernel_facts) -> f.preserves_topology) declared in
         let input_count = List.length inputs in
         let components declared inferred =
           let inferred = List.sort_uniq String.compare inferred in
           List.filter (fun name -> List.mem name inferred) declared
           @ List.filter (fun name -> not (List.mem name declared)) inferred in
-        let declared = definition.kind.facts in
         let facts = Sop.Node.{
           cook_mode=(if input_count=0 then Generator else if preserved && input_count=1
             then Duplicate_input 0 else Generic);
-          elementwise=(if preserved then (Sop.Node.facts compiled).elementwise else None);
+          elementwise=(if not preserved then None else
+            match Option.map (fun (f : Check.kernel_facts) -> f.elementwise) declared with
+            | Some Points -> Points | Some Primitives -> Primitives
+            | _ -> (Sop.Node.facts compiled).elementwise);
           reads=List.concat_map (fun (node : Sop.Graph.info) -> node.facts.reads) owned
             |> components (Option.fold ~none:[] ~some:(fun (f : Check.kernel_facts) -> f.reads) declared);
           writes=List.concat_map (fun (node : Sop.Graph.info) -> node.facts.writes) owned
