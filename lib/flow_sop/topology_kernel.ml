@@ -301,6 +301,11 @@ let remap ?cancel ~grain ~source ~target args =
       | Some (E.Bool true) -> G.attributes target @ attributes
       | None | Some (E.Bool false) -> attributes
       | _ -> refuse "E_REMAP_LEAD" "Remap lead is a Boolean." in
+    (* [:lead_groups true]: the groups and edge groups already on the target come first. *)
+    let groups, edge_groups = match List.assoc_opt "lead_groups" args with
+      | Some (E.Bool true) -> G.groups target @ groups, G.edge_groups target @ edge_groups
+      | None | Some (E.Bool false) -> groups, edge_groups
+      | _ -> refuse "E_REMAP_LEAD" "Remap lead_groups is a Boolean." in
     check ();
     let output = result "E_REMAP" (G.create ~positions ~topology:target_topology
         ~attributes ~groups ~edge_groups ()) in

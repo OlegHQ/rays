@@ -1,0 +1,641 @@
+; Whole Sweep draft (Rdk Sweep.run, curve/sweep.ml): every pair of a selected backbone curve and a selected
+; cross-section curve becomes a grid of points (cross-section point placed in the frame of the backbone vertex),
+; with eight connectivity variants, end caps, UVs, prefixed cross-section attributes/groups and edge groups.
+; Everything is whole-array over the "selected vertices" (the vertices of the selected curves in order). The
+; only sequential step, parallel transport along a curve, is one `scan` over the selected vertices whose
+; accumulator is the previous out vector (a curve start restarts it). Output attributes are carried by two
+; `sop/remap` calls (backbone first, cross-section second with `:lead true` and `:lead_groups true`).
+
+; ---- the selected curves of one input and the layout of their vertices ----
+(defn sw_curves :context sop [(geo : geometry) (gname : text) (glit : text)]
+  (let* [topology (sop/topology geo)
+         tvp topology.vertex_points offs topology.primitive_offsets kinds topology.kinds
+         nprim (sop/count geo :primitives)
+         mask (if (text/blank? gname) (array/int nprim 1)
+                (sop/group (sop/group_combine geo :owner "Primitives" :name "__sw_sel" :base_pattern glit) :name "__sw_sel" :owner "primitive"))
+         prims (array/compact mask)
+         nc (array/count prims)
+         first (int_gather offs prims)
+         cnt (exact (map (fn [(p : int)] (int/sub (array/nth offs (int/add p 1)) (array/nth offs p))) prims))
+         kind (int_gather kinds prims)
+         closed (exact (map (fn [(k : int)] (if (int/eq k 2) 1 0)) kind))
+         bad (array/sum (exact (map (fn [(k : int) (n : int)]
+               (cond (int/eq k 0) 1 (and (int/eq k 1) (int/lt n 2)) 1 (and (int/eq k 2) (int/lt n 3)) 1 :else 0))
+               kind cnt)))
+         coff (array/scan_sum cnt)
+         ns (array/nth coff nc)
+         sc (loft_owners coff)
+         srows (array/range ns :type int)
+         sloc (exact (map (fn [(s : int) (c : int)] (int/sub s (array/nth coff c))) srows sc))
+         svtx (exact (map (fn [(c : int) (l : int)] (int/add (array/nth first c) l)) sc sloc))
+         spt (int_gather tvp svtx)
+         pd (sop/attr_checked geo "P")
+         pos (sw_safe_v pd.values)
+         spos (exact (map (fn [(p : int)] (array/nth pos p)) spt))]
+    {:nc nc :prims prims :cnt cnt :closed closed :bad (int/add bad (sw_invalid pd.valid spt)) :coff coff :sc sc :sloc sloc :svtx svtx :spt spt
+     :spos spos :scnt (int_gather cnt sc) :sclosed (int_gather closed sc)}))
+
+; ---- edges of the selected curves: next vertex, unit edge, length, arc length and curve totals ----
+(defn sw_geo :context value
+  [(spos : (array vec3)) (sloc : (array int)) (scnt : (array int)) (sclosed : (array int))
+   (sc : (array int)) (coff : (array int))]
+  (let* [n (array/count spos)
+         rows (array/range n :type int)
+         nxt (exact (map (fn [(s : int)]
+               (let* [l (array/nth sloc s) c (array/nth scnt s) cl (array/nth sclosed s)]
+                 (if (int/lt (int/add l 1) c) (int/add s 1) (if (int/eq cl 1) (int/sub s l) -1)))) rows))
+         dv (exact (map (fn [(s : int) (x : int)]
+              (if (int/ge x 0)
+                (let* [p (array/nth spos s) q (array/nth spos x)] [(- q.x p.x) (- q.y p.y) (- q.z p.z)])
+                [0.0 0.0 0.0])) rows nxt))
+         len (exact (map (fn [(d : vec3) (x : int)] (if (int/ge x 0) (pw_rlen d.x d.y d.z) 0.0)) dv nxt))
+         bad_len (array/sum (exact (map (fn [(l : float) (x : int)]
+                   (if (and (int/ge x 0) (or (not (pw_finite l)) (<= l 1e-20))) 1 0)) len nxt)))
+         bad_pos (array/sum (exact (map (fn [(p : vec3)]
+                   (if (and (pw_finite p.x) (and (pw_finite p.y) (pw_finite p.z))) 0 1)) spos)))
+         bad_dir (array/sum (exact (map (fn [(d : vec3) (x : int)]
+                   (if (and (int/ge x 0) (not (pw_nok d.x d.y d.z))) 1 0)) dv nxt)))
+         ed0 (exact (map (fn [(d : vec3)] (pw_normalize d.x d.y d.z)) dv))
+         ed (exact (map (fn [(s : int) (x : int)]
+              (if (int/ge x 0) (array/nth ed0 s) (array/nth ed0 (max 0 (int/sub s 1))))) rows nxt))
+         cum (exact (scan [acc 0.0] [s rows]
+               (if (int/eq (array/nth sloc s) 0) 0.0 (+ acc (array/nth len (int/sub s 1))))))
+         nc (int/sub (array/count coff) 1)
+         lastv (exact (map (fn [(c : int)] (int/sub (array/nth coff (int/add c 1)) 1)) (array/range nc :type int)))
+         tot_c (exact (map (fn [(l : int)] (+ (array/nth cum l) (array/nth len l))) lastv))
+         tot (exact (map (fn [(c : int)] (array/nth tot_c c)) sc))]
+    {:ed ed :cum cum :tot tot :tot_c tot_c :lastv lastv :bad (int/add (int/add bad_len bad_pos) bad_dir)}))
+
+; ---- carriers ----
+; A mesh with only points: one point per element of the stage, further columns as point attributes. Writing a stage
+; into a carrier and reading it back with sop/attr makes it a cooked array, so later stages (and the reference
+; interpreter) read it instead of recomputing the whole chain behind it.
+(defn sw_pts :context sop [(pos : (array vec3))]
+  (sop/mesh :points pos :vertex_points (array/int 0 0) :primitive_offsets (array/int 1 0) :kinds (array/int 0 0)))
+(defn sw_zero :context value [(rows : (array int))] (exact (map (fn [(i : int)] [(float i) 0.0 0.0]) rows)))
+(defn sw_put_i :context sop [(geo : geometry) (label : text) (data : (array int))]
+  (sop/with_attr geo label data :owner "point" :type int))
+(defn sw_put_f :context sop [(geo : geometry) (label : text) (data : (array float))]
+  (sop/with_attr geo label data :owner "point" :type float))
+(defn sw_put_v :context sop [(geo : geometry) (label : text) (data : (array vec3))]
+  (sop/with_attr geo label data :owner "point" :type vec3))
+(defn sw_get_i :context sop [(geo : geometry) (label : text)] (sop/attr geo label :owner "point" :type int))
+(defn sw_get_f :context sop [(geo : geometry) (label : text)] (sop/attr geo label :owner "point" :type float))
+(defn sw_get_v :context sop [(geo : geometry) (label : text)] (sop/attr geo label :owner "point" :type vec3))
+
+; Non-finite values are replaced before they reach a carrier or a mesh (the stages that detect them raise the error).
+(defn sw_safe_v :context value [(a : (array vec3))]
+  (exact (map (fn [(v : vec3)] (if (and (pw_finite v.x) (and (pw_finite v.y) (pw_finite v.z))) v [0.0 0.0 0.0])) a)))
+(defn sw_safe_f :context value [(a : (array float))]
+  (exact (map (fn [(x : float)] (if (pw_finite x) x 0.0)) a)))
+
+; The selected curves of one input with their edge data, as cooked arrays: {:cb :gb} (see sw_curves, sw_geo).
+(defn sw_prep :context sop [(geo : geometry) (gname : text) (glit : text)]
+  (let* [c (sw_curves geo gname glit)
+         g (sw_geo c.spos c.sloc c.scnt c.sclosed c.sc c.coff)
+         kv (sw_put_v (sw_put_f (sw_put_f
+              (sw_put_i (sw_put_i (sw_put_i (sw_put_i (sw_put_i (sw_put_i (sw_pts (sw_safe_v c.spos))
+                "sloc" c.sloc) "scnt" c.scnt) "sclosed" c.sclosed) "sc" c.sc) "svtx" c.svtx) "spt" c.spt)
+              "cum" (sw_safe_f g.cum)) "tot" (sw_safe_f g.tot)) "ed" (sw_safe_v g.ed))
+         ns (sop/count kv :points)
+         kc (sw_put_f (sw_put_i (sw_put_i (sw_put_i (sw_put_i (sw_put_i (sw_pts (array/vec3 c.nc))
+              "cnt" c.cnt) "closed" c.closed) "coffs" (array/slice c.coff 0 c.nc)) "prims" c.prims) "lastv" g.lastv)
+              "tot_c" (sw_safe_f g.tot_c))]
+    {:cb {:nc c.nc :cnt (sw_get_i kc "cnt") :closed (sw_get_i kc "closed")
+          :coff (array/concat (sw_get_i kc "coffs") (array/int 1 ns)) :prims (sw_get_i kc "prims")
+          :svtx (sw_get_i kv "svtx") :sc (sw_get_i kv "sc") :sloc (sw_get_i kv "sloc") :spt (sw_get_i kv "spt")
+          :spos (sop/attr kv "P") :scnt (sw_get_i kv "scnt") :sclosed (sw_get_i kv "sclosed") :bad c.bad}
+     :gb {:ed (sw_get_v kv "ed") :cum (sw_get_f kv "cum") :tot (sw_get_f kv "tot") :tot_c (sw_get_f kc "tot_c")
+          :lastv (sw_get_i kc "lastv") :bad g.bad}}))
+
+; ---- tangents ----
+; Unit quaternion basis columns: which 0 out (x axis), 1 up (y axis), 2 tangent (z axis).
+(defn sw_quat_ok :context value [(q : vec4)]
+  (let* [norm (sqrt (fma q.w q.w (fma q.z q.z (fma q.y q.y (* q.x q.x)))))]
+    (if (or (<= norm 1e-20) (not (pw_finite norm))) 0 1)))
+(defn sw_quat_vec :context value [(q : vec4) (which : int)]
+  (let* [norm (sqrt (fma q.w q.w (fma q.z q.z (fma q.y q.y (* q.x q.x)))))
+         x (/ q.x norm) y (/ q.y norm) z (/ q.z norm) w (/ q.w norm)
+         xx (* x x) yy (* y y) zz (* z z) xy (* x y) xz (* x z) yz (* y z) wx (* w x) wy (* w y) wz (* w z)]
+    (if (or (<= norm 1e-20) (not (pw_finite norm))) [0.0 0.0 0.0]
+      (cond (int/eq which 0) [(- 1.0 (* 2.0 (+ yy zz))) (* 2.0 (+ xy wz)) (* 2.0 (- xz wy))]
+            (int/eq which 1) [(* 2.0 (- xy wz)) (- 1.0 (* 2.0 (+ xx zz))) (* 2.0 (+ yz wx))]
+            :else [(* 2.0 (+ xz wy)) (* 2.0 (- yz wx)) (- 1.0 (* 2.0 (+ xx yy)))]))))
+(defn sw_unit_arr :context value [(a : (array vec3))] (exact (map (fn [(v : vec3)] (pw_normalize v.x v.y v.z)) a)))
+(defn sw_bad_arr :context value [(a : (array vec3))]
+  (array/sum (exact (map (fn [(v : vec3)] (if (pw_nok v.x v.y v.z) 0 1)) a))))
+
+; Every source of tangents is computed (the choice between them depends on which attributes exist and is
+; made outside, where cooked facts are known). mode: 0 average edges, 1 central difference, 2 previous edge,
+; 3 next edge, 4 z axis. nrm and ori hold one value per selected vertex (zeros when the attribute is absent).
+; {:mt :mbad} mode tangents, {:nt :nbad} from N, {:qt :qo :qu :qbad} from the orient quaternion.
+(defn sw_tang :context value
+  [(mode : int) (spos : (array vec3)) (ed : (array vec3)) (sloc : (array int)) (scnt : (array int))
+   (sclosed : (array int)) (nrm : (array vec3)) (ori : (array vec4))]
+  (let* [n (array/count spos)
+         rows (array/range n :type int)
+         pv (exact (map (fn [(s : int)]
+              (let* [l (array/nth sloc s) c (array/nth scnt s) cl (array/nth sclosed s)]
+                (if (int/eq l 0) (if (int/eq cl 1) (int/sub (int/add s c) 1) s) (int/sub s 1)))) rows))
+         nv (exact (map (fn [(s : int)]
+              (let* [l (array/nth sloc s) c (array/nth scnt s) cl (array/nth sclosed s)]
+                (if (int/eq (int/add l 1) c) (if (int/eq cl 1) (int/sub s l) s) (int/add s 1)))) rows))
+         pe (exact (map (fn [(s : int)]
+              (if (and (int/eq (array/nth sloc s) 0) (int/eq (array/nth sclosed s) 0)) s (array/nth pv s))) rows))
+         ne (exact (map (fn [(s : int)]
+              (if (and (int/eq (int/add (array/nth sloc s) 1) (array/nth scnt s)) (int/eq (array/nth sclosed s) 0)) (int/sub s 1) s)) rows))
+         sumv (exact (map (fn [(a : int) (b : int)]
+                (let* [u (array/nth ed a) v (array/nth ed b)] [(+ u.x v.x) (+ u.y v.y) (+ u.z v.z)])) pe ne))
+         difv (exact (map (fn [(a : int) (b : int)]
+                (let* [u (array/nth spos a) v (array/nth spos b)] [(- v.x u.x) (- v.y u.y) (- v.z u.z)])) pv nv))
+         mt (cond (int/eq mode 4) (exact (map (fn [(s : int)] [0.0 0.0 1.0]) rows))
+                  (int/eq mode 2) (int_gather_v ed pe)
+                  (int/eq mode 3) (int_gather_v ed ne)
+                  (int/eq mode 0) (sw_unit_arr sumv)
+                  :else (sw_unit_arr difv))
+         mbad (cond (int/eq mode 0) (sw_bad_arr sumv) (int/eq mode 1) (sw_bad_arr difv) :else 0)]
+    {:mt mt :mbad mbad :nt (sw_unit_arr nrm) :nbad (sw_bad_arr nrm)
+     :qt (exact (map (fn [(q : vec4)] (sw_quat_vec q 2)) ori))
+     :qo (exact (map (fn [(q : vec4)] (sw_quat_vec q 0)) ori))
+     :qu (exact (map (fn [(q : vec4)] (sw_quat_vec q 1)) ori))
+     :qbad (array/sum (exact (map (fn [(q : vec4)] (int/sub 1 (sw_quat_ok q))) ori)))}))
+
+; ---- frames ----
+; The kernels below are staged through arrays on purpose: nested calls inside one kernel are inlined without
+; sharing, and a deep nest exceeds the lowering budget.
+; Rodrigues rotation of v about the unit axis k (native rotate_about_axis_into).
+(defn sw_rot :context value [(k : vec3) (angle : float) (v : vec3)]
+  (let* [cosine (cos angle) sine (sin angle) c (vec3_cross k v)
+         dot (fma k.z v.z (fma k.y v.y (* k.x v.x))) s1 (- 1.0 cosine)]
+    [(fma (* k.x dot) s1 (fma c.x sine (* v.x cosine)))
+     (fma (* k.y dot) s1 (fma c.y sine (* v.y cosine)))
+     (fma (* k.z dot) s1 (fma c.z sine (* v.z cosine)))]))
+(defn sw_dot :context value [(a : vec3) (b : vec3)] (fma a.z b.z (fma a.y b.y (* a.x b.x))))
+(defn sw_unit :context value [(v : vec3)] (pw_normalize v.x v.y v.z))
+(defn sw_unit_ok :context value [(v : vec3)] (if (pw_nok v.x v.y v.z) 1 0))
+; The first frame of a curve without an up attribute asks for +y, or +x when y is nearly the tangent.
+(defn sw_first_req :context value [(tv : vec3)]
+  (let* [np (* -1.0 tv.y)
+         u [(* np tv.x) (fma np tv.y 1.0) (* np tv.z)]]
+    (if (> (pw_rlen u.x u.y u.z) 1e-10) [0.0 1.0 0.0] [1.0 0.0 0.0])))
+; initialize_up for every vertex: up = requested made orthogonal to the tangent, out = up x tangent.
+; {:up :out :bad} with bad 1 where the up or the out vector cannot be normalised.
+(defn sw_frame0 :context value [(tg : (array vec3)) (req : (array vec3))]
+  (let* [proj (exact (map (fn [(tv : vec3) (r : vec3)] (sw_dot r tv)) tg req))
+         raw (exact (map (fn [(tv : vec3) (r : vec3) (pj : float)]
+               (let* [np (* -1.0 pj)] [(fma np tv.x r.x) (fma np tv.y r.y) (fma np tv.z r.z)])) tg req proj))
+         up (exact (map (fn [(v : vec3)] (sw_unit v)) raw))
+         upok (exact (map (fn [(v : vec3)] (sw_unit_ok v)) raw))
+         cr (exact (map (fn [(tv : vec3) (u : vec3)] (pw_cross_imp u tv)) tg up))
+         out (exact (map (fn [(v : vec3)] (sw_unit v)) cr))
+         outok (exact (map (fn [(v : vec3)] (sw_unit_ok v)) cr))]
+    {:up up :out out :bad (exact (map (fn [(a : int) (b : int)] (if (and (int/eq a 1) (int/eq b 1)) 0 1)) upok outok))}))
+
+; Out and up vectors along every curve: the scan restarts at each curve start, a step rotates the previous
+; out vector by the angle between the two tangents. {:out :up :bad}.
+(defn sw_transport :context value [(tg : (array vec3)) (sloc : (array int))]
+  (let* [rows (array/range (array/count tg) :type int)
+         prev (exact (map (fn [(s : int)] (array/nth tg (max 0 (int/sub s 1)))) rows))
+         av (exact (map (fn [(tp : vec3) (tv : vec3)] (pw_cross_imp tp tv)) prev tg))
+         sine (exact (map (fn [(a : vec3)] (pw_rlen a.x a.y a.z)) av))
+         cosine (exact (map (fn [(tp : vec3) (tv : vec3)] (pw_dot_imp tp tv)) prev tg))
+         kv (exact (map (fn [(a : vec3) (sn : float)] [(/ a.x sn) (/ a.y sn) (/ a.z sn)]) av sine))
+         ang (exact (map (fn [(sn : float) (co : float)] (atan2 sn co)) sine cosine))
+         small (exact (map (fn [(sn : float)] (if (<= sn 1e-12) 1 0)) sine))
+         req (exact (map (fn [(tv : vec3)] (sw_first_req tv)) tg))
+         f0 (sw_frame0 tg req)
+         out (exact (scan [acc [0.0 0.0 0.0]] [s rows]
+               (if (int/eq (array/nth sloc s) 0)
+                 (array/nth f0.out s)
+                 (if (int/eq (array/nth small s) 1) acc (sw_rot (array/nth kv s) (array/nth ang s) acc)))))
+         cu (exact (map (fn [(tv : vec3) (o : vec3)] (pw_cross_imp tv o)) tg out))
+         up (exact (map (fn [(c : vec3) (u : vec3) (l : int)] (if (int/eq l 0) u (sw_unit c))) cu f0.up sloc))
+         bad_first (array/sum (exact (map (fn [(b : int) (l : int)] (if (int/eq l 0) b 0)) f0.bad sloc)))
+         bad_step (array/sum (exact (map (fn [(sn : float) (co : float) (l : int)]
+                    (if (and (int/gt l 0) (and (<= sn 1e-12) (< co 0.0))) 1 0)) sine cosine sloc)))]
+    {:out out :up up :bad (int/add bad_first bad_step)}))
+
+; Roll and twist about the tangent, then the closing correction of closed curves.
+(defn sw_amount :context value [(roll : float) (twist : float) (cum : (array float)) (tot : (array float))]
+  (exact (map (fn [(c : float) (tv : float)] (+ roll (if (= tv 0.0) 0.0 (/ (* twist c) tv)))) cum tot)))
+(defn sw_turn :context value [(tg : (array vec3)) (v : (array vec3)) (amount : (array float))]
+  (exact (map (fn [(tv : vec3) (x : vec3) (a : float)] (if (= a 0.0) x (sw_rot tv a x))) tg v amount)))
+; Correction angle of every curve, from the rolled first and last frame.
+(defn sw_correction :context value
+  [(tg : (array vec3)) (out : (array vec3)) (coff : (array int)) (lastv : (array int))]
+  (let* [rows (array/range (array/count lastv) :type int)
+         fv (exact (map (fn [(c : int)] (array/nth coff c)) rows))
+         tf (int_gather_v tg fv) tl (int_gather_v tg lastv)
+         of (int_gather_v out fv) ol (int_gather_v out lastv)
+         a (exact (map (fn [(x : vec3) (y : vec3)] (pw_cross_imp x y)) tl tf))
+         sine (exact (map (fn [(v : vec3)] (pw_rlen v.x v.y v.z)) a))
+         cosine (exact (map (fn [(x : vec3) (y : vec3)] (pw_dot_imp x y)) tl tf))
+         kv (exact (map (fn [(v : vec3) (sn : float)] [(/ v.x sn) (/ v.y sn) (/ v.z sn)]) a sine))
+         ang (exact (map (fn [(sn : float) (co : float)] (atan2 sn co)) sine cosine))
+         rotd (exact (map (fn [(k : vec3) (an : float) (v : vec3)] (sw_rot k an v)) kv ang ol))
+         closing (exact (map (fn [(sn : float) (r : vec3) (v : vec3)] (if (<= sn 1e-12) v r)) sine rotd ol))
+         cr (exact (map (fn [(x : vec3) (y : vec3)] (pw_cross_imp x y)) closing of))
+         num (exact (map (fn [(x : vec3) (y : vec3)] (sw_dot x y)) tf cr))
+         den (exact (map (fn [(x : vec3) (y : vec3)] (pw_dot_imp x y)) closing of))]
+    (exact (map (fn [(n : float) (d : float)] (atan2 n d)) num den))))
+(defn sw_close_amount :context value
+  [(corr : (array float)) (cum : (array float)) (cum_last : (array float)) (sc : (array int)) (sloc : (array int))
+   (active : (array int))]
+  (exact (map (fn [(c : int) (x : float) (l : int)]
+    (let* [k (array/nth corr c) span (array/nth cum_last c)]
+      (if (and (int/eq (array/nth active c) 1) (and (int/gt l 0) (and (> span 0.0) (> (abs k) 1e-15))))
+        (/ (* k x) span) 0.0))) sc cum sloc)))
+
+; ---- layout of the pairs ----
+; conn: 0 points, 1 rows, 2 columns, 3 rows and columns, 4 quads, 5 triangles, 6 alternating, 7 reverse.
+(defn sw_pair_prims :context value [(conn : int) (bc : int) (pc : int) (be : int) (pe : int) (cap : int)]
+  (let* [cells (int/mul be pe) cp (int/mul 2 cap)]
+    (cond (int/eq conn 0) 0 (int/eq conn 1) bc (int/eq conn 2) pc (int/eq conn 3) (int/add bc pc)
+          (int/eq conn 4) (int/add cells cp) :else (int/add (int/mul cells 2) cp))))
+(defn sw_pair_verts :context value [(conn : int) (bc : int) (pc : int) (be : int) (pe : int) (cap : int)]
+  (let* [cells (int/mul be pe) cv (int/mul (int/mul 2 cap) pc)]
+    (cond (int/eq conn 0) 0 (int/le conn 2) (int/mul bc pc) (int/eq conn 3) (int/mul (int/mul bc pc) 2)
+          (int/eq conn 4) (int/add (int/mul cells 4) cv) :else (int/add (int/mul cells 6) cv))))
+; Primitive code + 16 * local index: 1 row, 2 column, 3 quad, 4..7 triangles, 8 first cap, 9 last cap.
+(defn sw_ck :context value [(conn : int) (within : int) (bc : int) (pc : int) (be : int) (pe : int)]
+  (let* [cells (int/mul be pe) sides (int/mul cells 2)
+         cell (int/div within 2) half (int/mod within 2)
+         rev (or (int/eq conn 7) (and (int/eq conn 6) (int/eq (int/mod (int/add (int/div cell pe) (int/mod cell pe)) 2) 1)))
+         tcode (if rev (if (int/eq half 0) 5 7) (if (int/eq half 0) 4 6))]
+    (cond (int/eq conn 1) (int/add 1 (int/mul 16 within))
+          (int/eq conn 2) (int/add 2 (int/mul 16 within))
+          (int/eq conn 3) (if (int/lt within bc) (int/add 1 (int/mul 16 within)) (int/add 2 (int/mul 16 (int/sub within bc))))
+          (int/eq conn 4) (if (int/lt within cells) (int/add 3 (int/mul 16 within)) (if (int/eq within cells) 8 9))
+          :else (if (int/lt within sides) (int/add tcode (int/mul 16 cell)) (if (int/eq within sides) 8 9)))))
+(defn sw_size :context value [(code : int) (bc : int) (pc : int)]
+  (cond (int/eq code 1) pc (int/eq code 2) bc (int/eq code 3) 4 (int/le code 7) 3 :else pc))
+; Corners of every primitive, staged through arrays: [b-local, p-local, flags] per corner with flags 1 = U wrapped,
+; 2 = V wrapped. Inputs per corner: ck (code + 16 * local), k (corner in primitive), and the pair's counts.
+(defn sw_corners :context value
+  [(ckv : (array int)) (kk : (array int)) (cbc : (array int)) (cpc : (array int)) (cpe : (array int))]
+  (let* [code (exact (map (fn [(c : int)] (int/mod c 16)) ckv))
+         loc (exact (map (fn [(c : int)] (int/div c 16)) ckv))
+         b0 (exact (map (fn [(l : int) (e : int)] (int/div l e)) loc cpe))
+         p0 (exact (map (fn [(l : int) (e : int)] (int/mod l e)) loc cpe))
+         b1 (exact (map (fn [(b : int) (n : int)] (int/mod (int/add b 1) n)) b0 cbc))
+         p1 (exact (map (fn [(p : int) (n : int)] (int/mod (int/add p 1) n)) p0 cpc))
+         ; bit k of the masks: corner k of a cell uses b1 / p1
+         ub (exact (map (fn [(c : int) (k : int)]
+              (int/and (int/shr (case c 3 12 4 4 5 4 :else 6) k) 1)) code kk))
+         up (exact (map (fn [(c : int) (k : int)]
+              (int/and (int/shr (case c 3 6 4 6 5 2 6 2 :else 3) k) 1) ) code kk))
+         bsel (exact (map (fn [(u : int) (x : int) (y : int)] (if (int/eq u 1) y x)) ub b0 b1))
+         psel (exact (map (fn [(u : int) (x : int) (y : int)] (if (int/eq u 1) y x)) up p0 p1))
+         wu (exact (map (fn [(u : int) (p : int)] (if (and (int/eq u 1) (int/eq p 0)) 1 0)) up p1))
+         wv (exact (map (fn [(u : int) (b : int)] (if (and (int/eq u 1) (int/eq b 0)) 2 0)) ub b1))
+         cell (exact (map (fn [(c : int)] (if (and (int/ge c 3) (int/le c 7)) 1 0)) code))
+         flags (exact (map (fn [(a : int) (b : int) (c : int)] (if (int/eq c 1) (int/add a b) 0)) wu wv cell))
+         x1 (exact (map (fn [(c : int) (l : int) (k : int)] (cond (int/eq c 1) l (int/eq c 2) k :else 0)) code loc kk))
+         x2 (exact (map (fn [(c : int) (x : int) (b : int)] (if (and (int/ge c 3) (int/le c 7)) b x)) code x1 bsel))
+         x3 (exact (map (fn [(c : int) (x : int) (n : int)] (cond (int/eq c 9) (int/sub n 1) :else x)) code x2 cbc))
+         y1 (exact (map (fn [(c : int) (l : int) (k : int)] (cond (int/eq c 1) k (int/eq c 2) l (int/eq c 9) k :else 0)) code loc kk))
+         y2 (exact (map (fn [(c : int) (x : int) (p : int)] (if (and (int/ge c 3) (int/le c 7)) p x)) code y1 psel))
+         pk (exact (map (fn [(n : int) (k : int)] (int/sub (int/sub n 1) k)) cpc kk))
+         y3 (exact (map (fn [(c : int) (x : int) (v : int)] (if (int/eq c 8) v x)) code y2 pk))]
+    (exact (map (fn [(a : int) (b : int) (f : int)] [(float a) (float b) (float f)]) x3 y3 flags))))
+
+
+(defn sw_fail :context value [(reason : text)]
+  (error "invalid_geometry" "sweep could not produce valid geometry" :cause (str "sweep [invalid_geometry]: " reason)))
+
+; ---- optional point attributes of the backbone that steer the frames (read only when transform_attributes) ----
+(defn sw_invalid :context value [(valid : (array int)) (spt : (array int))]
+  (array/sum (exact (map (fn [(p : int)] (int/sub 1 (array/nth valid p))) spt))))
+(defn sw_safe_q :context value [(a : (array vec4))]
+  (exact (map (fn [(v : vec4)] (if (and (pw_finite v.x) (and (pw_finite v.y) (and (pw_finite v.z) (pw_finite v.w)))) v [0.0 0.0 0.0 0.0])) a)))
+(defn sw_nonfinite_f :context value [(a : (array float)) (spt : (array int))]
+  (array/sum (exact (map (fn [(p : int)] (if (pw_finite (array/nth a p)) 0 1)) spt))))
+(defn sw_nonfinite_v :context value [(a : (array vec3)) (spt : (array int))]
+  (array/sum (exact (map (fn [(p : int)]
+    (let* [v (array/nth a p)] (if (and (pw_finite v.x) (and (pw_finite v.y) (pw_finite v.z))) 0 1))) spt))))
+(defn sw_nonfinite_q :context value [(a : (array vec4)) (spt : (array int))]
+  (array/sum (exact (map (fn [(p : int)]
+    (let* [v (array/nth a p)]
+      (if (and (pw_finite v.x) (and (pw_finite v.y) (and (pw_finite v.z) (pw_finite v.w)))) 0 1))) spt))))
+(defn sw_attrs :context sop [(bb : geometry) (ta : bool) (spt : (array int))]
+  (let* [e_ps (and ta (sop/has_attr bb "pscale" :owner "point"))
+         e_sc (and ta (sop/has_attr bb "scale" :owner "point"))
+         e_n (and ta (sop/has_attr bb "N" :owner "point"))
+         e_up (and ta (sop/has_attr bb "up" :owner "point"))
+         e_o (and ta (sop/has_attr bb "orient" :owner "point"))
+         has_ps (and e_ps (sop/has_attr bb "pscale" :owner "point" :type float))
+         has_sc (and e_sc (sop/has_attr bb "scale" :owner "point" :type vec3))
+         has_n (and e_n (sop/has_attr bb "N" :owner "point" :type vec3))
+         has_up (and e_up (sop/has_attr bb "up" :owner "point" :type vec3))
+         has_o (and e_o (sop/has_attr bb "orient" :owner "point" :type vec4))
+         np (sop/count bb :points)
+         cps (if has_ps (sop/attr_checked bb "pscale" :owner "point" :type float)
+               {:values (array/float np 1.0) :valid (array/int np 1)})
+         csc (if has_sc (sop/attr_checked bb "scale" :owner "point" :type vec3)
+               {:values (array/vec3 np [1.0 1.0 1.0]) :valid (array/int np 1)})
+         cn (if has_n (sop/attr_checked bb "N" :owner "point" :type vec3)
+              {:values (array/vec3 np) :valid (array/int np 1)})
+         cup (if has_up (sop/attr_checked bb "up" :owner "point" :type vec3)
+               {:values (array/vec3 np) :valid (array/int np 1)})
+         cor (if has_o (sop/attr_checked bb "orient" :owner "point" :type vec4)
+               {:values (array/vec4 np) :valid (array/int np 1)})
+         type_bad (int/add (int/add (int/add (if (and e_ps (not has_ps)) 1 0) (if (and e_sc (not has_sc)) 1 0))
+                    (int/add (if (and e_n (not has_n)) 1 0) (if (and e_up (not has_up)) 1 0)))
+                    (if (and e_o (not has_o)) 1 0))
+         fin_bad (int/add (int/add (int/add (sw_invalid cps.valid spt) (sw_invalid csc.valid spt))
+                   (int/add (sw_invalid cn.valid spt) (sw_invalid cup.valid spt)))
+                   (sw_invalid cor.valid spt))]
+    {:has_ps has_ps :has_sc has_sc :has_n has_n :has_up has_up :has_o has_o :ps (sw_safe_f cps.values)
+     :sc (sw_safe_v csc.values) :nrm (sw_safe_v cn.values) :up (sw_safe_v cup.values) :ori (sw_safe_q cor.values)
+     :bad (int/add type_bad fin_bad)}))
+
+; ---- the frame of every selected backbone vertex: {:tg :out :up :bad} ----
+; Every candidate (mode, N and orient tangents, transported frames, frames from the up attribute) is computed
+; as arrays; the choice depends on the attributes that exist, a cooked fact, so it is made here (sop level) and
+; never inside a kernel.
+(defn sw_frames :context sop
+  [(cb : {:nc int :cnt (array int) :closed (array int) :coff (array int) :sc (array int) :sloc (array int)
+          :spt (array int) :spos (array vec3) :scnt (array int) :sclosed (array int)})
+   (gb : {:ed (array vec3) :cum (array float) :tot (array float) :tot_c (array float) :lastv (array int)})
+   (at : {:has_ps bool :has_sc bool :has_n bool :has_up bool :has_o bool :ps (array float) :sc (array vec3)
+          :nrm (array vec3) :up (array vec3) :ori (array vec4)})
+   (mode : int) (continuous : bool) (roll : float) (twist : float)]
+  (let* [nrm_s (int_gather_v at.nrm cb.spt)
+         ori_s (exact (map (fn [(p : int)] (array/nth at.ori p)) cb.spt))
+         ups (int_gather_v at.up cb.spt)
+         tn (sw_tang mode cb.spos gb.ed cb.sloc cb.scnt cb.sclosed nrm_s ori_s)
+         use_up (and at.has_up (not at.has_o))
+         tg (cond at.has_o tn.qt at.has_n tn.nt :else tn.mt)
+         bad_t (cond at.has_o tn.qbad at.has_n tn.nbad :else tn.mbad)
+         fa (sw_frame0 tg ups)
+         tr (sw_transport tg cb.sloc)
+         out0 (cond at.has_o tn.qo use_up fa.out :else tr.out)
+         up0 (cond at.has_o tn.qu use_up fa.up :else tr.up)
+         bad_f (cond at.has_o 0 use_up (array/sum fa.bad) :else tr.bad)
+         amount (sw_amount roll twist gb.cum gb.tot)
+         out1 (sw_turn tg out0 amount)
+         up1 (sw_turn tg up0 amount)
+         plain (and continuous (and (not at.has_up) (not at.has_o)))
+         active (exact (map (fn [(c : int)] (if (and plain (int/eq c 1)) 1 0)) cb.closed))
+         corr (sw_correction tg out1 cb.coff gb.lastv)
+         cum_last (exact (map (fn [(l : int)] (array/nth gb.cum l)) gb.lastv))
+         amt2 (sw_close_amount corr gb.cum cum_last cb.sc cb.sloc active)]
+    {:tg tg :out (sw_turn tg out1 amt2) :up (sw_turn tg up1 amt2) :bad (int/add bad_t bad_f)}))
+
+(defn sw_pparam :context value
+  [(rev : bool) (cum : (array float)) (tot_c : (array float)) (base : int) (pj : int) (pl : int) (pc : int)]
+  (let* [total (max (array/nth tot_c pj) 1e-300)]
+    (if rev
+      (if (int/eq pl 0) 0.0
+        (/ (- (array/nth cum (int/sub (int/add base pc) 1)) (array/nth cum (int/add base (int/sub (int/sub pc 1) pl)))) total))
+      (/ (array/nth cum (int/add base pl)) total))))
+
+; ---- the layout of the output: pairs, points, primitives and corners ----
+(defn sw_layout_raw :context value
+  [(cb : {:nc int :cnt (array int) :closed (array int) :coff (array int) :prims (array int) :svtx (array int)})
+   (cp : {:nc int :cnt (array int) :closed (array int) :coff (array int) :prims (array int) :svtx (array int)})
+   (conn : int) (caps : bool)]
+  (let* [nb cb.nc np cp.nc
+         npair (int/mul nb np)
+         prow (array/range npair :type int)
+         pbi (exact (map (fn [(i : int)] (int/div i np)) prow))
+         pjj (exact (map (fn [(i : int)] (int/mod i np)) prow))
+         bc (int_gather cb.cnt pbi) bcl (int_gather cb.closed pbi)
+         pc (int_gather cp.cnt pjj) pcl (int_gather cp.closed pjj)
+         be (exact (map (fn [(c : int) (cl : int)] (if (int/eq cl 1) c (int/sub c 1))) bc bcl))
+         pe (exact (map (fn [(c : int) (cl : int)] (if (int/eq cl 1) c (int/sub c 1))) pc pcl))
+         cap (exact (map (fn [(a : int) (b : int)] (if (and caps (and (int/eq a 0) (int/eq b 1))) 1 0)) bcl pcl))
+         pf (array/scan_sum (exact (map (fn [(a : int) (b : int)] (int/mul a b)) bc pc)))
+         pprim (array/scan_sum (exact (map (fn [(q : int)] (sw_pair_prims conn (array/nth bc q) (array/nth pc q) (array/nth be q) (array/nth pe q) (array/nth cap q))) prow)))
+         tp (array/nth pprim npair)
+         prim_pair (loft_owners pprim)
+         within (exact (map (fn [(j : int) (q : int)] (int/sub j (array/nth pprim q))) (array/range tp :type int) prim_pair))
+         ck (exact (map (fn [(w : int) (q : int)]
+              (sw_ck conn w (array/nth bc q) (array/nth pc q) (array/nth be q) (array/nth pe q))) within prim_pair))
+         code (exact (map (fn [(x : int)] (int/mod x 16)) ck))
+         loc (exact (map (fn [(x : int)] (int/div x 16)) ck))
+         size (exact (map (fn [(c : int) (q : int)] (sw_size c (array/nth bc q) (array/nth pc q))) code prim_pair))
+         poff (array/scan_sum size)
+         kinds (exact (map (fn [(c : int) (q : int)]
+                 (cond (int/eq c 1) (if (int/eq (array/nth pcl q) 1) 2 1)
+                       (int/eq c 2) (if (int/eq (array/nth bcl q) 1) 2 1)
+                       :else 0)) code prim_pair))
+         nvert (array/nth poff tp)
+         vo (loft_owners poff)
+         vpair (int_gather prim_pair vo)
+         kk (exact (map (fn [(v : int) (s : int)] (int/sub v s)) (array/range nvert :type int) (int_gather poff vo)))
+         ckv (int_gather ck vo)
+         cn (sw_corners ckv kk (int_gather bc vpair) (int_gather pc vpair) (int_gather pe vpair))
+         npts (array/nth pf npair)]
+    {:npair npair :pbi pbi :pjj pjj :bc bc :pc pc :bcl bcl :pcl pcl :pf pf :tp tp :prim_pair prim_pair :code code
+     :poff poff :size size :kinds kinds :nvert nvert :vo vo :vpair vpair :cn cn :npts npts}))
+; The layout as cooked arrays (see sw_pts).
+(defn sw_layout :context sop
+  [(cb : {:nc int :cnt (array int) :closed (array int) :coff (array int) :prims (array int) :svtx (array int)})
+   (cp : {:nc int :cnt (array int) :closed (array int) :coff (array int) :prims (array int) :svtx (array int)})
+   (conn : int) (caps : bool)]
+  (let* [r (sw_layout_raw cb cp conn caps)]
+    r))
+
+; ---- output points: the profile point placed in the frame of the backbone vertex (staged through arrays) ----
+(defn sw_points :context value
+  [(cb : {:coff (array int) :spt (array int) :spos (array vec3) :svtx (array int)})
+   (cp : {:coff (array int) :spt (array int) :spos (array vec3)})
+   (lay : {:npts int :pf (array int) :pbi (array int) :pjj (array int) :pc (array int)})
+   (fr : {:tg (array vec3) :out (array vec3) :up (array vec3)})
+   (at : {:has_ps bool :has_sc bool :ps (array float) :sc (array vec3)})
+   (rev : bool) (scale : float)]
+  (let* [powner (loft_owners lay.pf)
+         rows (array/range lay.npts :type int)
+         lcl (exact (map (fn [(o : int) (q : int)] (int/sub o (array/nth lay.pf q))) rows powner))
+         pcq (int_gather lay.pc powner)
+         bl (exact (map (fn [(l : int) (n : int)] (int/div l n)) lcl pcq))
+         pl (exact (map (fn [(l : int) (n : int)] (int/mod l n)) lcl pcq))
+         bcoff (int_gather cb.coff (int_gather lay.pbi powner))
+         pcoff (int_gather cp.coff (int_gather lay.pjj powner))
+         sb (exact (map (fn [(b : int) (c : int)] (int/add c b)) bl bcoff))
+         psl (exact (map (fn [(p : int) (n : int)] (if rev (int/sub (int/sub n 1) p) p)) pl pcq))
+         psv (exact (map (fn [(p : int) (c : int)] (int/add c p)) psl pcoff))
+         bp (int_gather cb.spt sb)
+         uni (exact (map (fn [(p : int)] (* scale (if at.has_ps (array/nth at.ps p) 1.0))) bp))
+         sv (exact (map (fn [(p : int) (u : float)]
+              (let* [v (if at.has_sc (array/nth at.sc p) [1.0 1.0 1.0])] [(* u v.x) (* u v.y) (* u v.z)])) bp uni))
+         qv (int_gather_v cp.spos psv)
+         lv (exact (map (fn [(q : vec3) (s : vec3)] [(* q.x s.x) (* q.y s.y) (* q.z s.z)]) qv sv))
+         c0 (int_gather_v cb.spos sb)
+         a1 (exact (map (fn [(c : vec3) (l : vec3) (o : vec3)] [(+ c.x (* l.x o.x)) (+ c.y (* l.x o.y)) (+ c.z (* l.x o.z))])
+              c0 lv (int_gather_v fr.out sb)))
+         a2 (exact (map (fn [(a : vec3) (l : vec3) (u : vec3)] [(+ a.x (* l.y u.x)) (+ a.y (* l.y u.y)) (+ a.z (* l.y u.z))])
+              a1 lv (int_gather_v fr.up sb)))
+         pos (exact (map (fn [(a : vec3) (l : vec3) (tv : vec3)] [(+ a.x (* l.z tv.x)) (+ a.y (* l.z tv.y)) (+ a.z (* l.z tv.z))])
+               a2 lv (int_gather_v fr.tg sb)))
+         bad (array/sum (exact (map (fn [(p : vec3)]
+               (if (and (pw_finite p.x) (and (pw_finite p.y) (pw_finite p.z))) 0 1)) pos)))]
+    {:pos pos :sb sb :psv psv :pl pl :bl bl :powner powner :bad bad
+     :bptm bp :pptm (int_gather cp.spt psv)}))
+
+; ---- UV of every output vertex (or of every point for the Points connectivity): {:x :y} ----
+(defn sw_uv :context value
+  [(cb : {:coff (array int)}) (cp : {:coff (array int)})
+   (gb : {:cum (array float) :tot_c (array float)}) (gp : {:cum (array float) :tot_c (array float)})
+   (lay : {:pbi (array int) :pjj (array int) :pc (array int) :vpair (array int) :cn (array vec3)})
+   (pts : {:pl (array int) :bl (array int) :powner (array int)}) (conn : int) (rev : bool)]
+  (if (int/eq conn 0)
+    {:x (exact (map (fn [(l : int) (q : int)]
+         (sw_pparam rev gp.cum gp.tot_c (array/nth cp.coff (array/nth lay.pjj q)) (array/nth lay.pjj q) l (array/nth lay.pc q))) pts.pl pts.powner))
+     :y (exact (map (fn [(b : int) (q : int)]
+         (/ (array/nth gb.cum (int/add (array/nth cb.coff (array/nth lay.pbi q)) b)) (array/nth gb.tot_c (array/nth lay.pbi q))))
+         pts.bl pts.powner))}
+    {:x (exact (map (fn [(c : vec3) (q : int)]
+         (if (int/eq (int/mod (int c.z) 2) 1) 1.0
+           (sw_pparam rev gp.cum gp.tot_c (array/nth cp.coff (array/nth lay.pjj q)) (array/nth lay.pjj q) (int c.y) (array/nth lay.pc q))))
+         lay.cn lay.vpair))
+     :y (exact (map (fn [(c : vec3) (q : int)]
+         (if (int/ge (int c.z) 2) 1.0
+           (/ (array/nth gb.cum (int/add (array/nth cb.coff (array/nth lay.pbi q)) (int c.x))) (array/nth gb.tot_c (array/nth lay.pbi q)))))
+         lay.cn lay.vpair))}))
+
+; Keys "owner:name" of attribute / group entries, and how many of the queries are among the keys.
+(defn sw_keys :context value [(owners : (array text)) (names : (array text))]
+  (exact (map (fn [(o : text) (n : text)] (str o ":" n)) owners names)))
+(defn sw_hits :context value [(keys : (array text)) (queries : (array text))]
+  (array/sum (exact (map (fn [(i : int)] (if (int/ge i 0) 1 0)) (array/index_of keys queries)))))
+
+; ---- the geometry: topology, then the backbone's and the cross-section's attributes and groups ----
+(defn sw_build :context sop
+  [(bb : geometry) (pr : geometry)
+   (cb : {:coff (array int) :prims (array int) :svtx (array int)})
+   (cp : {:coff (array int) :prims (array int) :svtx (array int)})
+   (lay : {:pf (array int) :pbi (array int) :pjj (array int) :pc (array int) :poff (array int) :kinds (array int)
+           :vpair (array int) :cn (array vec3) :prim_pair (array int)})
+   (pts : {:pos (array vec3) :bptm (array int) :pptm (array int)})
+   (uv : {:x (array float) :y (array float)})
+   (conn : int) (rev : bool) (uvn : text) (prefix : text) (capname : text) (capmask : (array int))]
+  (let* [vpts (exact (map (fn [(c : vec3) (q : int)]
+                (int/add (int/add (array/nth lay.pf q) (int/mul (int c.x) (array/nth lay.pc q))) (int c.y))) lay.cn lay.vpair))
+         bvm (exact (map (fn [(c : vec3) (q : int)]
+               (array/nth cb.svtx (int/add (array/nth cb.coff (array/nth lay.pbi q)) (int c.x)))) lay.cn lay.vpair))
+         pvm (exact (map (fn [(c : vec3) (q : int)]
+               (array/nth cp.svtx (int/add (array/nth cp.coff (array/nth lay.pjj q))
+                 (if rev (int/sub (int/sub (array/nth lay.pc q) 1) (int c.y)) (int c.y))))) lay.cn lay.vpair))
+         bpm (exact (map (fn [(q : int)] (array/nth cb.prims (array/nth lay.pbi q))) lay.prim_pair))
+         ppm (exact (map (fn [(q : int)] (array/nth cp.prims (array/nth lay.pjj q))) lay.prim_pair))
+         target (sop/mesh :points (sw_safe_v pts.pos) :vertex_points vpts :primitive_offsets lay.poff :kinds lay.kinds)
+         has_uv (not (text/blank? uvn))
+         b1 (sop/delete_attr (sop/delete_attr bb "N" :owner "point") "N" :owner "vertex")
+         b2 (if has_uv (sop/delete_attr (sop/delete_attr b1 uvn :owner "point") uvn :owner "vertex") b1)
+         p1 (sop/rename_group (sop/rename_attr pr "*" prefix :owner "any" :conflict "error")
+              "*" prefix :owner "any" :conflict "error")
+         p2 (if has_uv (sop/delete_attr (sop/delete_attr p1 uvn :owner "point") uvn :owner "vertex") p1)
+         tm (sop/with_attr (sop/with_attr target "bptm" pts.bptm :owner "point" :type int) "pptm" pts.pptm :owner "point" :type int)
+         bptm (sop/attr tm "bptm" :owner "point" :type int)
+         pptm (sop/attr tm "pptm" :owner "point" :type int)
+         te (sop/edges target)
+         has_eb (int/gt (array/count (sop/group_names bb "*" :owner "edge")) 0)
+         has_ep (int/gt (array/count (sop/group_names pr "*" :owner "edge")) 0)
+         sb_e (sop/edges bb)
+         sp_e (sop/edges pr)
+         anc_b (edge_ancestry sb_e.a sb_e.b
+                 (exact (map (fn [(a : int) (b : int)]
+                   (if (int/eq (array/nth pptm a) (array/nth pptm b)) (array/nth bptm a) -1)) te.a te.b))
+                 (exact (map (fn [(a : int) (b : int)]
+                   (if (int/eq (array/nth pptm a) (array/nth pptm b)) (array/nth bptm b) -1)) te.a te.b))
+                 (sop/count bb :points))
+         anc_p (edge_ancestry sp_e.a sp_e.b
+                 (exact (map (fn [(a : int) (b : int)]
+                   (if (int/eq (array/nth bptm a) (array/nth bptm b)) (array/nth pptm a) -1)) te.a te.b))
+                 (exact (map (fn [(a : int) (b : int)]
+                   (if (int/eq (array/nth bptm a) (array/nth bptm b)) (array/nth pptm b) -1)) te.a te.b))
+                 (sop/count pr :points))
+         ab (sop/attr_entries b2 :owner "any")
+         ap (sop/attr_entries p2 :owner "any")
+         gb0 (sop/group_entries b2 "*" :owner "any")
+         gp0 (sop/group_entries p2 "*" :owner "any")
+         kab (sw_keys ab.owner ab.name)
+         kap (sw_keys ap.owner ap.name)
+         kgb (sw_keys gb0.owners gb0.names)
+         kgp (sw_keys gp0.owners gp0.names)
+         uvk (array/text 1 (str (if (int/eq conn 0) "point" "vertex") ":" uvn))
+         capk (array/text 1 (str "primitive:" capname))
+         dup_a (int/add (sw_hits kab kap) (if has_uv (int/add (sw_hits kab uvk) (sw_hits kap uvk)) 0))
+         dup_g (int/add (sw_hits kgb kgp) (if (text/blank? capname) 0 (int/add (sw_hits kgb capk) (sw_hits kgp capk))))
+         r1 (sop/remap b2 target :points bptm :vertices bvm :primitives bpm :positions "target" :edges anc_b)
+         pclean (sop/delete_group (sop/delete_attrs p2 :point "*" :vertex "*" :primitive "*" :detail "*") "*" :owner "any")
+         p2r (if (int/gt (int/add (sw_hits kab kap) (sw_hits kgb kgp)) 0) pclean p2)
+         r2 (sop/remap p2r r1 :points pptm :vertices pvm :primitives ppm :positions "target" :lead true :lead_groups true :edges anc_p)
+         r3 (if has_uv
+              (sop/with_attr r2 uvn {:x uv.x :y uv.y} :owner (if (int/eq conn 0) "point" "vertex") :type vec2)
+              r2)]
+    (if (int/gt (int/add dup_a dup_g) 0) (sw_fail "duplicate attribute or group name")
+      (if (text/blank? capname) r3 (sop/with_group r3 capmask :name capname :owner "primitive")))))
+
+(defn sw_run :context sop
+  [(bb : geometry) (pr : geometry) (bname : text) (pname : text) (connectivity : text) (tangent : text)
+   (continuous : bool) (ta : bool) (rev : bool) (scale : float) (roll : float) (twist : float) (caps : bool)
+   (cap_group : text) (uv_attribute : text) (prefix : text) (bglit : text) (pglit : text)]
+  (let* [bn (text/trim bname)
+         pn (text/trim pname)
+         bcount (int/gt (array/count (sop/group_names bb bglit :owner "primitive")) 0)
+         b_found (or (text/blank? bn) bcount)
+         pcount (int/gt (array/count (sop/group_names pr pglit :owner "primitive")) 0)
+         p_found (or (text/blank? pn) pcount)
+         conn (case connectivity "Points" 0 "Rows" 1 "Columns" 2 "Rows and columns" 3 "Quads" 4 "Triangles" 5
+                "Alternating triangles" 6 :else 7)
+         mode (case tangent "Average edges" 0 "Central difference" 1 "Previous edge" 2 "Next edge" 3 :else 4)
+
+
+         pb (sw_prep bb bn bglit)
+         pq (sw_prep pr pn pglit)
+         cb pb.cb
+         gb pb.gb
+         cp pq.cb
+         gp pq.gb
+         at (sw_attrs bb ta cb.spt)
+         fr (sw_frames cb gb at mode continuous roll twist)
+         lay (sw_layout cb cp conn caps)
+         pts (sw_points cb cp lay fr at rev scale)
+         uv (sw_uv cb cp gb gp lay pts conn rev)
+         uvn (text/trim uv_attribute)
+         capname (if caps (text/trim cap_group) "")
+         capmask (exact (map (fn [(c : int)] (if (int/ge c 8) 1 0)) lay.code))
+         bad (int/add (int/add (int/add cb.bad cp.bad) (int/add gb.bad gp.bad)) (int/add (int/add at.bad fr.bad) pts.bad))]
+    (cond
+      (not b_found) (error "missing_group" (str "sweep could not find backbone primitive group " (text/repr bn)))
+      (not p_found) (error "missing_group" (str "sweep could not find cross-section primitive group " (text/repr pn)))
+      (int/gt bad 0) (sw_fail "invalid curves, attributes, frames or generated points")
+      :else (sw_build bb pr cb cp lay pts uv conn rev uvn prefix capname capmask))))
+
+(defn sw_valid :context value
+  [(scale : float) (roll : float) (twist : float) (caps : bool) (connectivity : text) (uv_attribute : text)]
+  (cond
+    (not (pw_finite (+ scale (+ roll twist)))) false
+    (and caps (or (equal? connectivity "Points") (or (equal? connectivity "Rows")
+      (or (equal? connectivity "Columns") (equal? connectivity "Rows and columns"))))) false
+    (equal? (text/trim uv_attribute) "P") false
+    :else true))
+
+(defnode sop/sweep :label "Sweep" :category ["Topology" "Surface"]
+  :validate (sw_valid scale roll twist caps connectivity uv_attribute) :code "E_PARAM"
+  :message "sop/sweep: invalid transform, caps connectivity or UV attribute"
+  [(backbone : geometry) (cross_section : geometry)
+   (backbone_group : text "" :label "Backbone primitive group")
+   (cross_section_group : text "" :label "Cross-section primitive group")
+   (connectivity : text "Quads" :label "Connectivity"
+     :choices ["Points" "Rows" "Columns" "Rows and columns" "Quads" "Triangles" "Alternating triangles" "Reverse triangles"])
+   (tangent : text "Average edges" :label "Tangent"
+     :choices ["Average edges" "Central difference" "Previous edge" "Next edge" "Z axis"])
+   (continuous_closed : bool true :label "Continuous closed backbone")
+   (transform_attributes : bool true :label "Transform attributes")
+   (reverse_cross_sections : bool false :label "Reverse cross sections")
+   (scale : float 1.0 :label "Scale" :folder ["Transform"] :min -10 :max 10)
+   (roll : float 0.0 :label "Roll" :folder ["Transform"] :min -6.283185307179586 :max 6.283185307179586)
+   (twist : float 0.0 :label "Twist" :folder ["Transform"] :min -12.566370614359172 :max 12.566370614359172)
+   (caps : bool false :label "End caps")
+   (cap_group : text "caps" :label "Cap group")
+   (uv_attribute : text "uv" :label "UV attribute")
+   (cross_section_prefix : text "cross_section_" :label "Cross-section attribute prefix")]
+  (sw_run backbone cross_section backbone_group cross_section_group connectivity tangent continuous_closed
+    transform_attributes reverse_cross_sections scale roll twist caps cap_group uv_attribute
+    (if (equal? cross_section_prefix "") "*" (str (text/glob_literal cross_section_prefix) "*"))
+    (text/glob_literal (if (text/blank? (text/trim backbone_group)) "x" (text/trim backbone_group)))
+    (text/glob_literal (if (text/blank? (text/trim cross_section_group)) "x" (text/trim cross_section_group)))))

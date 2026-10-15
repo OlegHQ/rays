@@ -1276,7 +1276,9 @@ index is `E_REMAP_INDEX`.
 
 **Leading target attributes.** `:lead true` lists the attributes already on `target` before the
 carried source attributes (native `Revolve` conses its generated `uv` in front); default `false`
-appends nothing (the target's own attributes are otherwise dropped).
+appends nothing (the target's own attributes are otherwise dropped). `:lead_groups true` does the
+same for groups and edge groups (native `Sweep` lists the backbone's groups ahead of the
+cross-section's); the target's groups are valid as they are because the topology is the same.
 
 **Weighted carry.** In place of `:points`, `:vertices` or `:primitives` an owner may be given
 `:point_mix`, `:vertex_mix` or `:primitive_mix` (not both, `E_ARGS`), a record

@@ -581,3 +581,24 @@ let () =
      "(workspace w (graph g :context sop (sop/remap (sop/src) (sop/dst) :vertices (array/int 0) :primitives (array/int 0))))";
      "(workspace w (graph g :context sop (sop/remap (sop/src) (sop/dst) :point_mix {:a (array/int 0) :b (array/int 0)} :vertices (array/int 0) :primitives (array/int 0))))"];
   print_endline "Weighted remap: every owner and storage, N renormalisation, Curve_ops bytes, mixed owners, reference/CPU, 1 and 8 domains, refusals"
+
+(* [:lead_groups true] lists the target's own groups and edge groups ahead of the carried ones. *)
+let () =
+  let src = source 3 in
+  let dst = target 1 src in
+  let dst = Geometry.with_group (Group.init ~owner:Group.Point ~name:"lead" 3 (fun i -> i = 1)) dst |> get_string_ok in
+  let topology = Geometry.topology dst in
+  let dst = Geometry.with_edge_group (Edge_group.init ~topology ~index:(Topology_index.create topology)
+    ~name:"lead_edges" (fun i -> i = 0)) dst |> get_string_ok in
+  let identity = [|0;1;2|] in
+  let inputs = args identity identity [|0|] [|0;1;2;3|] [|0;1;2|] "target" in
+  let lead = "(sop/remap source target :points points :vertices vertices :primitives primitives :positions positions \
+    :edges edge_map :lead_groups true)" in
+  List.iter (fun reference ->
+    let carried = geometry (run (compile ~reference src dst inputs)) in
+    let led = geometry (run (compile ~reference ~body:lead src dst inputs)) in
+    let names = List.map Group.name in
+    check (names (Geometry.groups led) = "lead" :: names (Geometry.groups carried)) "lead_groups did not list the target groups first";
+    check (not (List.mem "lead" (names (Geometry.groups carried)))) "remap kept target groups without lead_groups";
+    check (List.map Edge_group.name (Geometry.edge_groups led) = "lead_edges" :: List.map Edge_group.name (Geometry.edge_groups carried))
+      "lead_groups did not list the target edge groups first") [false; true]

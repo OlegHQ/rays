@@ -124,6 +124,15 @@ let wrong_drivers () = target_mesh ()
 let mixed () = fixture_attributes (fixture_groups (polygon_polyline ()))
 let empty_source () = mesh ~points:0 ~vertex_points:[||] ~primitive_offsets:[|0|] ~kinds:[||] |> all_attributes
 let empty_target () = mesh ~points:0 ~vertex_points:[||] ~primitive_offsets:[|0|] ~kinds:[||] |> drivers_prim |> drivers_weights
+(* Groups of mixed owners added in interleaved order (point, primitive, point, vertex, primitive, vertex, point):
+   native keeps this cross-owner order for transferred groups. *)
+let interleaved () =
+  let add (owner, name, phase) geometry =
+    let count = count_of geometry (match owner with Group.Point -> Attribute.Point | Vertex -> Vertex | Primitive -> Primitive) in
+    let indices = Array.of_list (List.filter (fun i -> i mod 3 <> phase) (List.init count Fun.id)) in
+    Geometry.with_group (Group.ordered ~owner ~name ~length:count indices |> get_string_ok) geometry |> get_string_ok in
+  List.fold_left (fun g spec -> add spec g) (source ())
+    [Group.Point, "p1", 0; Primitive, "q1", 1; Point, "p2", 2; Vertex, "v1", 0; Primitive, "q2", 2; Vertex, "v2", 1; Point, "p3", 1]
 let inputs = [
   "rich", [source (); rich ()];
   "bare", [source (); bare ()];
@@ -137,7 +146,8 @@ let inputs = [
   "empty target", [source (); empty_target ()];
   "empty source", [empty_source (); rich ()];
   "mixed", [mixed (); mixed ()];
-  "grid", [source (); fixture_groups (grid ())] ]
+  "grid", [source (); fixture_groups (grid ())];
+  "interleaved groups", [interleaved (); rich ()] ]
 
 let names = ["Cd"; "f"; "n"; "s"; "v2"; "v4"; "fa"; "ia"; "N"]
 let owner_name = function Attribute.Point -> "point" | Vertex -> "vertex" | Primitive -> "primitive" | Detail -> "detail"
@@ -273,6 +283,10 @@ let cases = matrix @ [
                                          ch "driver" "Vertex weights"; w; fl "blend" 0.5; ch "unmatched" "Default value"];
   "match groups weighted primitive", [tx "attributes" ""; bo "match_groups" true; tx "primitive_pattern" "*";
                                       ch "driver" "Primitive weights"; w; ch "target_owner" "Primitive"];
+  "match groups interleaved", [tx "attributes" ""; bo "match_groups" true; tx "point_pattern" "p*"; tx "vertex_pattern" "v*";
+                               tx "primitive_pattern" "q*"];
+  "match groups interleaved prim target", [tx "attributes" ""; bo "match_groups" true; tx "point_pattern" "p*";
+                               tx "vertex_pattern" "v*"; tx "primitive_pattern" "q*"; ch "target_owner" "Primitive"];
   "match groups with attributes", [bo "match_groups" true; tx "point_pattern" "d*"; tx "attributes" (rows "point")];
   "match groups unused", [tx "attributes" (rows "point"); tx "point_pattern" ""; bo "match_groups" true];
   "match groups off", [tx "attributes" ""; tx "point_pattern" "a"];

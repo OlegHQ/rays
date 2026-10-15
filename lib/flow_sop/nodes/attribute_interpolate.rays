@@ -143,16 +143,30 @@
          p2 (ai_expand p1 source probe "vertex" vp)
          p3 (ai_expand p2 source probe "primitive" rp)]
     (ai_expand p3 source probe "detail" dp)))
-(defn ai_group_add :context sop
-  [(plan : {:owners (array text) :names (array text)}) (source : geometry) (owner : text) (raw : text)]
+(defn ai_group_in :context value [(names : (array text)) (name : text)]
+  (fold [found false] [probe names] (or found (equal? probe name))))
+(defn ai_group_names :context sop [(source : geometry) (owner : text) (raw : text)]
   (let* [pattern (text/trim raw)]
-    (if (text/blank? pattern) plan
-      (let* [names (sop/group_names source pattern :owner owner)]
-        {:owners (array/concat plan.owners (array/text (array/count names) owner))
-         :names (array/concat plan.names names)}))))
-(defn ai_group_plan :context sop [(source : geometry) (pp : text) (vp : text) (rp : text)]
-  (ai_group_add (ai_group_add (ai_group_add {:owners (array/text 0) :names (array/text 0)} source "point" pp)
-    source "vertex" vp) source "primitive" rp))
+    (if (text/blank? pattern) (array/text 0) (sop/group_names source pattern :owner owner))))
+; Matched groups keep the source's own group order across owners.
+(defmacro ai_group_plan [source pp vp rp]
+  `(let* [aip_ent# (sop/group_entries ~source "*" :owner "any")
+         aip_pn# (ai_group_names ~source "point" ~pp)
+         aip_vn# (ai_group_names ~source "vertex" ~vp)
+         aip_rn# (ai_group_names ~source "primitive" ~rp)
+         aip_done# (fold [aip_plan# {:geometry ~source :owners (array/text 0) :names (array/text 0)}] [aip_i# (array/range (array/count aip_ent#.names) :type int)]
+                (let* [aip_o# (array/nth aip_ent#.owners aip_i#)
+                       aip_nm# (array/nth aip_ent#.names aip_i#)
+                       aip_hit# (case aip_o# "point" (ai_group_in aip_pn# aip_nm#) "vertex" (ai_group_in aip_vn# aip_nm#)
+                                 "primitive" (ai_group_in aip_rn# aip_nm#) :else false)]
+                  (if aip_hit#
+                    {:geometry aip_plan#.geometry :owners (array/concat aip_plan#.owners (array/text 1 aip_o#))
+                     :names (array/concat aip_plan#.names (array/text 1 aip_nm#))}
+                    aip_plan#)))]
+    {:owners aip_done#.owners :names aip_done#.names}))
+(defn ai_group_count :context sop [(source : geometry) (pp : text) (vp : text) (rp : text)]
+  (int/add (int/add (array/count (ai_group_names source "point" pp)) (array/count (ai_group_names source "vertex" vp)))
+    (array/count (ai_group_names source "primitive" rp))))
 
 ; ---- checks
 (defn ai_wsupported :context value [(wo : text) (owner : text)]
@@ -587,7 +601,7 @@
              njobs (array/count plan.dests)
              groups (if match_groups (ai_group_plan source point_pattern vertex_pattern primitive_pattern)
                       {:owners (array/text 0) :names (array/text 0)})
-             ngroups (array/count groups.names)
+             ngroups (if match_groups (ai_group_count source point_pattern vertex_pattern primitive_pattern) 0)
              drivers_ok (ai_drivers_ok target towner uvwmode primitive_attribute uvw_attribute numbers_attribute weights_attribute)
              go (and (or (int/gt njobs 0) (or (int/gt ngroups 0) compute_weights)) (int/gt sel_count 0))
              comp_bad (if (and compute_weights drivers_ok)
