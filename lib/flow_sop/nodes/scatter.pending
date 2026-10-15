@@ -41,7 +41,7 @@
 (defn sc_norm2 :context value [(x : float) (y : float) (z : float)]
   (+ (fma x x (* y y)) (* z z)))
 ; Triangle corner arrays {:prim :a :b :c} (vertex numbers), or an error.
-(defn sc_plan :context sop [(geo : geometry) (sel : (array int)) (grouped : bool)]
+(defn sc_plan :context sop [(geo : geometry) (sel : (array int)) (grouped : bool) (tg : geometry) (tok : geometry)]
   (let* [topo (sop/topology geo)
          prims (sop/count geo :primitives)
          sizes (exact (map (fn [(p : int)] (int/sub (array/nth topo.primitive_offsets (int/add p 1))
@@ -60,7 +60,12 @@
          :a (exact (map (fn [(p : int)] (array/nth topo.primitive_offsets p)) (array/range prims :type int)))
          :b (exact (map (fn [(p : int)] (int/add (array/nth topo.primitive_offsets p) 1)) (array/range prims :type int)))
          :c (exact (map (fn [(p : int)] (int/add (array/nth topo.primitive_offsets p) 2)) (array/range prims :type int)))}
-        (let* [tris (sop/triangles geo)
+        (let* [tt (sop/attr tg "t" :owner "point" :type vec4)
+               tris {:primitive (exact (map (fn [(q : vec4)] (floor q.w)) tt))
+                     :a (exact (map (fn [(q : vec4)] (floor q.x)) tt))
+                     :b (exact (map (fn [(q : vec4)] (floor q.y)) tt))
+                     :c (exact (map (fn [(q : vec4)] (floor q.z)) tt))
+                     :ok (sop/attr tok "ok" :owner "point" :type int)}
                refused (array/sum (exact (map (fn [(m : int) (ok : int) (n : int)] (if (and (int/eq m 1) (int/eq ok 0)) 1 0))
                          poly tris.ok sizes)))
                keep (array/compact (exact (map (fn [(p : int)] (array/nth poly p)) tris.primitive)))
@@ -277,6 +282,76 @@
 (defn sc_carrier_of :context sop [(a : (array int))]
   (sop/mesh :points (exact (map (fn [(x : int)] [0.0 0.0 0.0]) a)) :vertex_points (array/int 0)
     :primitive_offsets (array/int 1 0) :kinds (array/int 0)))
+;; The alias table as carriers: the scan body must read leaves (cooked attributes) only, or every step would evaluate
+;; the arrays it captures again (quadratic in the triangle count).
+(defn sc_ak_w0 :context sop [(weights : (array float)) (total : float)]
+  (let* [n (array/count weights)
+         scale (/ (float n) total)]
+    (sop/with_attr (sc_carrier n) "w0" (exact (map (fn [(w : float)] (* w scale)) weights)) :owner "point" :type float)))
+(defn sc_ak_rev :context sop [(k0 : geometry) (large : bool)]
+  (let* [w0 (sop/attr k0 "w0" :owner "point" :type float)
+         pick (array/compact (exact (map (fn [(w : float)] (if (< w 1.0) (if large 0 1) (if large 1 0))) w0)))
+         m (array/count pick)]
+    (sop/with_attr (sc_carrier m) "rev"
+      (exact (map (fn [(k : int)] (array/nth pick (int/sub (int/sub m 1) k))) (array/range m :type int))) :owner "point" :type int)))
+(defn sc_ak_states :context sop [(k0 : geometry) (ks : geometry) (kl : geometry)]
+  (let* [w0 (sop/attr k0 "w0" :owner "point" :type float)
+         srev (sop/attr ks "rev" :owner "point" :type int)
+         lrev (sop/attr kl "rev" :owner "point" :type int)
+         n (array/count w0)
+         ns (array/count srev)
+         nl (array/count lrev)
+         init [0.0 0.0 (if (int/gt nl 0) (array/nth w0 (array/nth lrev 0)) 0.0) -1.0]]
+    (sop/with_attr (sc_carrier n) "st"
+      (scan [st init] [s (array/range n :type int)] (sc_step st w0 srev lrev ns nl)) :owner "point" :type vec4)))
+(defn sc_ak_emit :context sop [(k0 : geometry) (ks : geometry) (kl : geometry) (kst : geometry)]
+  (let* [w0 (sop/attr k0 "w0" :owner "point" :type float)
+         srev (sop/attr ks "rev" :owner "point" :type int)
+         lrev (sop/attr kl "rev" :owner "point" :type int)
+         states (sop/attr kst "st" :owner "point" :type vec4)
+         n (array/count w0)
+         ns (array/count srev)
+         nl (array/count lrev)
+         init [0.0 0.0 (if (int/gt nl 0) (array/nth w0 (array/nth lrev 0)) 0.0) -1.0]]
+    (sop/with_attr (sc_carrier n) "em"
+      (exact (map (fn [(s : int)] (sc_emit states s init w0 srev lrev ns nl)) (array/range n :type int))) :owner "point" :type vec4)))
+(defn sc_ak_slot :context sop [(kem : geometry)]
+  (let* [em (sop/attr kem "em" :owner "point" :type vec4)
+         n (array/count em)
+         taken (array/compact (exact (map (fn [(e : vec4)] (if (> e.x 0.5) 1 0)) em)))
+         below (exact (map (fn [(k : int)] (let* [e (array/nth em k)] (floor e.y))) taken))
+         slot (array/scatter_add below (exact (map (fn [(k : int)] (int/add k 1)) (array/range (array/count taken) :type int))) n)]
+    (sop/with_attr (sc_carrier n) "slot" slot :owner "point" :type int)))
+(defn sc_ak_prob :context sop [(kem : geometry) (kslot : geometry)]
+  (let* [em (sop/attr kem "em" :owner "point" :type vec4)
+         slot (sop/attr kslot "slot" :owner "point" :type int)
+         taken (array/compact (exact (map (fn [(e : vec4)] (if (> e.x 0.5) 1 0)) em)))
+         beloww (exact (map (fn [(k : int)] (let* [e (array/nth em k)] e.w)) taken))
+         above (exact (map (fn [(k : int)] (let* [e (array/nth em k)] (floor e.z))) taken))
+         n (array/count em)
+         prob (exact (map (fn [(s : int)] (if (int/gt s 0) (array/nth beloww (int/sub s 1)) 1.0)) slot))
+         alias (exact (map (fn [(s : int) (i : int)] (if (int/gt s 0) (array/nth above (int/sub s 1)) i))
+                 slot (array/range n :type int)))]
+    (sop/with_attr (sop/with_attr (sc_carrier n) "prob" prob :owner "point" :type float) "alias" alias :owner "point" :type int)))
+(defn sc_alias_k :context sop [(weights : (array float)) (total : float)]
+  (let* [k0 (sc_ak_w0 weights total)
+         ks (sc_ak_rev k0 false)
+         kl (sc_ak_rev k0 true)
+         kst (sc_ak_states k0 ks kl)
+         kem (sc_ak_emit k0 ks kl kst)
+         kslot (sc_ak_slot kem)]
+    (sc_ak_prob kem kslot)))
+; The ear-clipper output as leaves: [a b c primitive] per triangle, and its per-primitive success flag.
+(defn sc_tri_t :context sop [(geo : geometry)]
+  (let* [tris (sop/triangles geo)
+         n (array/count tris.primitive)]
+    (sop/with_attr (sc_carrier n) "t"
+      (exact (map (fn [(i : int)] [(float (array/nth tris.a i)) (float (array/nth tris.b i)) (float (array/nth tris.c i))
+                                   (float (array/nth tris.primitive i))]) (array/range n :type int)))
+      :owner "point" :type vec4)))
+(defn sc_tri_ok :context sop [(geo : geometry)]
+  (let* [tris (sop/triangles geo)]
+    (sop/with_attr (sc_carrier (sop/count geo :primitives)) "ok" tris.ok :owner "point" :type int)))
 (defn sc_flag :context sop [(g : geometry) (name : text)]
   (int/eq (array/nth (sop/attr g name :owner "detail" :type int) 0) 1))
 (defn sc_bit :context value [(b : bool)] (array/int 1 (if b 1 0)))
@@ -288,10 +363,11 @@
 (defn sc_rf1 :context sop [(g : geometry) (name : text)]
   (array/nth (sop/attr g name :owner "detail" :type float) 0))
 ; 1a: the triangles {prim, va, vb, vc} and whether they are the primitives themselves.
-(defn sc_s1a :context sop [(geo : geometry) (gname : text) (has_group : bool)]
+(defn sc_s1a :context sop [(geo : geometry) (quiet : bool) (gname : text) (has_group : bool)]
   (let* [prims (sop/count geo :primitives)
-         sel (if has_group (sop/group geo :name gname :owner "primitive") (array/int prims 1))
-         plan (sc_plan geo sel has_group)
+         sel (if quiet (array/int prims 0)
+               (if has_group (sop/group geo :name gname :owner "primitive") (array/int prims 1)))
+         plan (sc_plan geo sel has_group (sc_tri_t geo) (sc_tri_ok geo))
          c0 (sc_carrier_of plan.prim)
          c1 (sop/with_attr c0 "prim" plan.prim :owner "point" :type int)
          c2 (sop/with_attr c1 "va" plan.a :owner "point" :type int)
@@ -300,7 +376,7 @@
     (sop/with_attr c4 "direct" (sc_bit plan.direct) :owner "detail" :type int)))
 ; 1b: density summary, input validity and the coordinate scale.
 (defn sc_s1b :context sop
-  [(geo : geometry) (ga : geometry) (count : int) (use_density : bool) (owner : text) (dname : text)]
+  [(geo : geometry) (ga : geometry) (quiet : bool) (count : int) (use_density : bool) (owner : text) (dname : text)]
   (let* [p_prim (sop/attr ga "prim" :owner "point" :type int)
          p_a (sop/attr ga "va" :owner "point" :type int)
          p_b (sop/attr ga "vb" :owner "point" :type int)
@@ -312,10 +388,10 @@
          np (sop/has_attr geo "N" :owner "point")
          cdv (sop/has_attr geo "Cd" :owner "vertex")
          cdp (sop/has_attr geo "Cd" :owner "point")
-         n_bad (if nv (not (sop/has_attr geo "N" :owner "vertex" :type vec3))
-                 (if np (not (sop/has_attr geo "N" :owner "point" :type vec3)) false))
-         c_bad (if cdv (not (sop/has_attr geo "Cd" :owner "vertex" :type vec4))
-                 (if cdp (not (sop/has_attr geo "Cd" :owner "point" :type vec4)) false))
+         n_bad (and (not quiet) (if nv (not (sop/has_attr geo "N" :owner "vertex" :type vec3))
+                 (if np (not (sop/has_attr geo "N" :owner "point" :type vec3)) false)))
+         c_bad (and (not quiet) (if cdv (not (sop/has_attr geo "Cd" :owner "vertex" :type vec4))
+                 (if cdp (not (sop/has_attr geo "Cd" :owner "point" :type vec4)) false)))
          vp (get (sop/topology geo) :vertex_points)
          pos (sop/attr geo :P)
          n (array/count p_prim)
@@ -376,15 +452,15 @@
          w_flat (and (and go (int/gt count 0)) (or (not (sc_finite w_total)) (<= w_total 0.0)))
          w_nan (and (and go (int/gt count 0)) (int/gt w_bad 0))
          ago (and (and go (int/gt count 0)) (and (not w_flat) (not w_nan)))
-         table (sc_alias (if ago w_weights (array/float 0)) (if ago w_total 1.0))
+         tab (sc_alias_k (if ago w_weights (array/float 0)) (if ago w_total 1.0))
          tp (if ago p_prim (array/int 0))
          carrier (sc_carrier_of tp)
          c1 (sop/with_attr carrier "prim" tp :owner "point" :type int)
          c2 (sop/with_attr c1 "va" (if ago p_a (array/int 0)) :owner "point" :type int)
          c3 (sop/with_attr c2 "vb" (if ago p_b (array/int 0)) :owner "point" :type int)
          c4 (sop/with_attr c3 "vc" (if ago p_c (array/int 0)) :owner "point" :type int)
-         c5 (sop/with_attr c4 "prob" table.prob :owner "point" :type float)
-         c6 (sop/with_attr c5 "alias" table.alias :owner "point" :type int)
+         c5 (sop/with_attr c4 "prob" (sop/attr tab "prob" :owner "point" :type float) :owner "point" :type float)
+         c6 (sop/with_attr c5 "alias" (sop/attr tab "alias" :owner "point" :type int) :owner "point" :type int)
          gate (cond (int/eq (sc_ri gb "n_bad") 1) (sc_error "N has storage other than vec3")
                     (int/eq (sc_ri gb "c_bad") 1) (sc_error "Cd has storage other than vec4")
                     (int/eq (sc_ri gb "zero") 1) (sc_error "selected surface has zero weighted area")
@@ -398,9 +474,9 @@
          c15 (sop/with_attr c14 "cs" (array/float 1 (sc_rf1 gb "cs")) :owner "detail" :type float)]
     (sop/with_attr c15 "n" (array/int 1 n) :owner "detail" :type int)))
 (defn sc_stage1 :context sop
-  [(geo : geometry) (count : int) (gname : text) (has_group : bool) (use_density : bool) (owner : text) (dname : text)]
-  (let* [ga (sc_s1a geo gname has_group)
-         gb (sc_s1b geo ga count use_density owner dname)
+  [(geo : geometry) (quiet : bool) (count : int) (gname : text) (has_group : bool) (use_density : bool) (owner : text) (dname : text)]
+  (let* [ga (sc_s1a geo quiet gname has_group)
+         gb (sc_s1b geo ga quiet count use_density owner dname)
          gc (sc_s1c geo ga gb count use_density owner dname)]
     (sc_s1d ga gb gc count)))
 
@@ -600,7 +676,7 @@
                     (or (not (text/blank? pat_pr)) (not (text/blank? pat_d))))
          ; A missing group is reported before any sampling error: sample nothing then.
          count_eff (if missing 0 count)
-         g1 (sc_stage1 in0 count_eff gname grp use_density density_owner density_attribute)
+         g1 (sc_stage1 in0 missing count_eff gname grp use_density density_owner density_attribute)
          g2 (sc_stage2 in0 g1 count_eff seed_value use_density density_owner density_attribute)
          keep (not (text/blank? sv_name))
          dn (if keep sv_name "__rays_scatter_vertex_numbers")
