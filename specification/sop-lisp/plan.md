@@ -191,7 +191,7 @@ All 162 nodes, grouped by the phase that ports them. A node sits in the phase wh
 | `attribute_noise_quaternion` | 2 | B1 B9 | Shares the kernel above. | `attrib/attribute_generate.ml:1204` |
 | `attribute_remap` | 2 | B1 | Has a ramp parameter. Verify Lisp can declare and evaluate a ramp. | `attrib/attribute_generate.ml:1374` |
 | `attribute_randomize` | 2 | B1 B3 B9 | 1,040 lines, many distributions. Largest Phase B port; do it last. | `attrib/attribute_generate.ml:1000` |
-| `attribute_composite` | 2 | B1 | Several inputs. Sum order matters. | `attrib/attribute_composite.ml:421` |
+| `attribute_composite` | PASS-SLOW 62×/93× but a nondeterministic `E_ARRAY_RANGE` in the full gate; rest slot capped at 8 (agent) |
 | `attribute_fade` | 2 | B1 |  | `attrib/attribute_fade.ml:130` |
 | `color_by_height` | 2 | B1 B10 | Writes vec4 `Cd`. | `attrib/color_by_height.ml:3` |
 | `set_float`, `set_int`, `set_vector`, `set_orient` | 2 | B1 B4 | Constant attributes. B4 owner counts allow creating missing attributes at vertex/primitive/detail owners. | `lib/sop/attributes.ml:1291`, `1322`, `1352`, `1482` |
@@ -251,8 +251,8 @@ All 162 nodes, grouped by the phase that ports them. A node sits in the phase wh
 | `point_velocity` | 2 | C8 B1 | Match by attribute across frames. | `mesh/motion.ml:483` |
 | `attribute_interpolate` | 2 | C2 B1 | Array-valued attributes. 1,209 lines. | `attrib/attribute_interpolate.ml:774` |
 | `edge_transport_curves` | 4 | B11 | Running sum per curve: a segmented scan. | `mesh/edge_transport.ml:867` |
-| `scatter` | sampling written; attribute transfer needs a k-way corner-weight `sop/remap` mode (agent) |
-| `attribute_composite` | Core lowering budget 2048 exceeded; `E_KERNEL_FORM` in the fold; rest-slot geometry not a data source in folds (agent) |
+| `scatter` | transfer via `sop/attribute_interpolate`; whole body refuses strict lowering, stage 3 very slow (agent) |
+| `attribute_composite` | PASS-SLOW 62×/93× but a nondeterministic `E_ARRAY_RANGE` in the full gate; rest slot capped at 8 (agent) |
 | `iso_surface` | 3 | C1 C2 C4 | Count then fill. Uses `Float.fma` explicitly (`gen/iso_surface.ml:82`), so it needs an `fma` operator or its lattice stays a built-in. Port last in this phase. | `gen/iso_surface.ml:33` |
 
 ### Phase D: adjacency and iteration, 31 nodes
