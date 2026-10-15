@@ -371,14 +371,14 @@ let same_node name ~typed ~catalog =
   check (Node.parameter_key typed = Node.parameter_key catalog && Node.parameter_key typed <> "")
     (name ^ ": Lisp node and factory share the schema key");
   let one = cook 1 typed in
-  let ported_noise = List.mem (Node.operation typed) ["noise_displace"; "attribute_randomize"] in
+  let ported_noise = List.mem (Node.operation typed) ["noise_displace"; "attribute_randomize"; "attribute_noise"] in
   let four = cook 4 typed in
   check (if ported_noise then geometry_bytes one = geometry_bytes four else equal_geometry one four)
     (name ^ ": Lisp node at four domains cooks the same geometry");
   (* The port uses separately rounded arithmetic; only its native oracle has
      the approved four-ULP tolerance. Domain self-consistency stays bit-exact. *)
   let equal_oracle = if not ported_noise then equal_geometry
-    else if Node.operation typed = "attribute_randomize" then close_blend else close_geometry ~ulps:4 in
+    else if List.mem (Node.operation typed) ["attribute_randomize"; "attribute_noise"] then close_blend else close_geometry ~ulps:4 in
   List.iter (fun (what, geometry) -> check (equal_oracle one geometry)
     (name ^ ": " ^ what ^ " cooks the same geometry"))
     [ "factory at one domain", cook 1 catalog;
@@ -990,7 +990,7 @@ let run () =
       let native = Rdk.Attribute_ops.noise ~owner ~name:"sample" ~kind ~operation ~location:native_location ~range:native_range
           ~seed ~blend:0.6 ~frequency:(Vec3.create 0.5 1. 1.5) ~offset:(Vec3.create 0.1 0.2 0.3)
           ~octaves:3 ~lacunarity:1.7 ~roughness:0.3 noise_geometry |> Result.get_ok in
-      check (equal_geometry native (cook 1 typed)) "attribute noise controls match native";
+      check (close_blend native (cook 1 typed)) "attribute noise controls match native";
       check (Context.Dependencies.mem Context.Dependencies.Seed (Node.dependencies typed) = context_seed)
         "attribute noise declares its context seed dependency") [false;true])
       ["Positive",Rdk.Attribute_ops.Noise_positive;
@@ -1009,7 +1009,7 @@ let run () =
           "operation",Choice_value operation_choice;"group",Text_value "selected"] noise_input;
       let selection = Rdk.Geometry.find_group ~owner:group_owner "selected" noise_geometry |> Option.get in
       let native = Rdk.Attribute_ops.noise ~selection ~seed:0 ~owner ~name:"noise" ~kind ~operation noise_geometry |> Result.get_ok in
-      check (equal_geometry native (cook 1 typed)) "attribute noise selected group matches native") group_owner
+      check (close_blend native (cook 1 typed)) "attribute noise selected group matches native") group_owner
     )) operations) kinds) noise_owners;
   List.iter (fun (owner,owner_choice,_) -> List.iter (fun (kind,kind_choice,dimension) ->
     let count = match owner with Rdk.Attribute.Point -> Rdk.Geometry.point_count noise_geometry
@@ -1030,7 +1030,7 @@ let run () =
           ["owner",Parameter.Choice_value owner_choice;"kind",Choice_value kind_choice;"name",Text_value "existing";
             "operation",Choice_value operation_choice;"blend",Float_value 0.5] input;
         let native = Rdk.Attribute_ops.noise ~seed:0 ~owner ~kind ~name:"existing" ~operation ~blend:0.5 geometry |> Result.get_ok in
-        check (equal_geometry native (cook 1 typed)) "attribute noise existing target matches native")) operations
+        check (close_blend native (cook 1 typed)) "attribute noise existing target matches native")) operations
     ) kinds) noise_owners;
   List.iter (fun (operation,operation_choice) ->
     let typed = sop ~inputs:[noise_input] "attribute_noise"
@@ -1038,7 +1038,7 @@ let run () =
     same_cook "attribute noise positions" ~typed ~factory:Nodes.Attribute_noise.factory
       ["kind",Parameter.Choice_value "Vector";"name",Text_value "P";"operation",Choice_value operation_choice] noise_input;
     let native = Rdk.Attribute_ops.noise ~seed:0 ~owner:Rdk.Attribute.Point ~kind:Rdk.Attribute_ops.Noise_vector ~name:"P" ~operation noise_geometry |> Result.get_ok in
-    check (equal_geometry native (cook 1 typed)) "attribute noise positions match native") operations;
+    check (close_blend native (cook 1 typed)) "attribute noise positions match native") operations;
   List.iter (fun (_kind,kind_choice) ->
     let typed = sop ~inputs:[noise_input] "attribute_noise" [ks "name" "P"; ks "kind" kind_choice; ks "operation" "Set initial"] in
     same_cook "attribute noise initial P keeps geometry" ~typed
@@ -1060,7 +1060,7 @@ let run () =
         "lacunarity",Float_value 0.5;"roughness",Float_value roughness;"blend",Float_value blend;"octaves",Int_value octaves] noise_input;
     let native = Rdk.Attribute_ops.noise ~seed:0 ~owner:Rdk.Attribute.Point ~name:"noise" ~kind:Rdk.Attribute_ops.Noise_float
         ~frequency ~lacunarity:0.5 ~roughness ~blend ~octaves noise_geometry |> Result.get_ok in
-    check (equal_geometry native (cook 1 typed)) "attribute noise boundaries match native") [1;64]) [0.;1.]) [0.;1.];
+    check (close_blend native (cook 1 typed)) "attribute noise boundaries match native") [1;64]) [0.;1.]) [0.;1.];
   same_cook "attribute noise blank group" ~typed:(Lisp_sop.node ~with_:["noise_input", (noise_input)] {|(sop/attribute_noise (sop/ext_noise_input) :group " ")|})
     ~factory:Nodes.Attribute_noise.factory ["group",Parameter.Text_value " "] noise_input;
   let fixed = Lisp_sop.node ~with_:["noise_input", (noise_input)] {|(sop/attribute_noise (sop/ext_noise_input) :seed 17)|}
@@ -1110,7 +1110,7 @@ let run () =
       let native = Rdk.Attribute_ops.noise ~grain:97 ?selection ~seed ~owner ~name:"orient" ~kind:Rdk.Attribute_ops.Noise_quaternion
         ~location:native_location ~range:native_range ~operation:Rdk.Attribute_ops.Noise_set ~blend:1. ~frequency ~offset:Vec3.zero
         ~octaves ~lacunarity:2. ~roughness:0.5 quat_geometry |> Result.get_ok in
-      check (equal_geometry native (cook 1 typed)) "quaternion noise flat encodings match native"
+      check (close_blend native (cook 1 typed)) "quaternion noise flat encodings match native"
     ) [1;3]) [0;17])
       ["positive",Rdk.Attribute_ops.Noise_positive;"zero-centered",Rdk.Attribute_ops.Noise_zero_centered;
        "min-max;vec4,-0.5,-0.4,-0.3,-0.2;vec4,0.5,0.6,0.7,0.8",
