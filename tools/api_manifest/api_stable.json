@@ -4612,6 +4612,9 @@
         "module Copy_to_points : sig",
         "val factory : Edit_graph.factory",
         "end",
+        "module Pack_instances : sig",
+        "val factory : Edit_graph.factory",
+        "end",
         "module Attribute_remap : sig",
         "val factory : Edit_graph.factory",
         "end",
@@ -4748,7 +4751,7 @@
         "val factory : Edit_graph.factory",
         "end"
       ],
-      "api_sha256": "9fe0e4ed2162ea4c274e759fdc8ae7b0b9fd09973669c96e8a8492136281ab80",
+      "api_sha256": "e086dbaad43d9383aa2eff00953e5f85f117481f996c70eb427ec516f50efe7c",
       "excluded_legacy_symbols": [],
       "library": "sop",
       "module": "Nodes",

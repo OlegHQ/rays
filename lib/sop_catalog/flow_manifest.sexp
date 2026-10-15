@@ -1,6 +1,6 @@
 (flow_manifest
   (version 202609)
-  (digest "37f1db8500f90f54d39bcdb7d6aca4fe")
+  (digest "bd5d72564c9b6a394e2694683176c9a1")
   (kinds
     (kind "sop/switch"
       (key "switch")
@@ -183,6 +183,16 @@
         (field "piece_attribute" "Piece attribute" (folder "Matching") (text) (text "") (primary false) (vec3))
         (field "pack" "Pack and instance" (folder) (bool) (bool false) (primary false) (vec3))
         (field "target_attributes" "Target attribute rules" (folder) (text) (text "") (primary false) (vec3) (description "Escaped tab-separated rows: pattern, points/vertices/primitives, nothing/copy/add/subtract/multiply.")))
+      (outputs (output "geo" geometry))
+      (facts (cook-mode generic) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
+    (kind "sop/pack_instances"
+      (key "pack_instances")
+      (aliases)
+      (operation "pack_instances")
+      (label "Pack Instances")
+      (category "Copy")
+      (slots (slot "source" required) (slot "instances" required))
+      (fields)
       (outputs (output "geo" geometry))
       (facts (cook-mode generic) (elementwise none) (reads "*") (writes "*") (topology changed) (exact true)))
     (kind "sop/clean"

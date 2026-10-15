@@ -266,7 +266,7 @@ let verify_case ~full ctx ulps label changes =
         | Error e, Ok _ -> fail (at ("oracle: native error " ^ Sop.Diagnostic.error_to_string e ^ " but Lisp succeeded"))
         | Ok _, Error g -> fail (at ("oracle: Lisp error " ^ Sop.Diagnostic.error_to_string g ^ " but native succeeded"))
         | Ok e, Ok g ->
-            (if not (close_geometry ~ulps e g) && Sys.getenv_opt "PORT_DIFF" <> None then
+            (if not (close_geometry ~ulps e g) && Sys.getenv_opt "PORT_DIFF" <> None then begin
               (let counts h = Printf.sprintf "p%d v%d f%d" (Rdk.Geometry.point_count h) (Rdk.Geometry.vertex_count h) (Rdk.Geometry.primitive_count h) in
                let attrs h = String.concat "," (List.map (fun a -> Rdk.Attribute.name a) (Rdk.Geometry.attributes h)) in
                let groups h = String.concat "," (List.map (fun gr -> Printf.sprintf "%s/%d" (Rdk.Group.name gr) (Rdk.Group.cardinality gr)) (Rdk.Geometry.groups h)) in
@@ -304,7 +304,7 @@ let verify_case ~full ctx ulps label changes =
                         Array.iteri (fun i v -> if v <> y.x.(i) || x.y.(i) <> y.y.(i) || x.z.(i) <> y.z.(i) then
                           Printf.eprintf "%s[%d] native (%h %h %h) lisp (%h %h %h)\n" (Rdk.Attribute.name a) i v x.y.(i) x.z.(i) y.x.(i) y.y.(i) y.z.(i)) x.x
                     | _ -> ())
-                | None -> Printf.eprintf "missing %s\n" (Rdk.Attribute.name a)) (Rdk.Geometry.attributes e));
+                | None -> Printf.eprintf "missing %s\n" (Rdk.Attribute.name a)) (Rdk.Geometry.attributes e) end);
             protect "oracle" (fun () -> check (close_geometry ~ulps e g)
               (Printf.sprintf "Lisp differs from native beyond %d ulps" ulps));
             let bytes = geometry_bytes g in

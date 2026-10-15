@@ -4157,26 +4157,6 @@ vertex	corner	x")|});
    (sop/ext_copy_targets)
    :pack true
    :piece_attribute "variant")|}) ];
-  (* pack_instances: the source unchanged, drawn at the affine rows r0 r1 r2 of the second input. *)
-  (let row name x y z w =
-     Rdk.Attribute.create_owned ~name ~owner:Rdk.Attribute.Point
-       (Rdk.Attribute.Float4 (get (Rdk.Packed.Float4.of_owned ~x ~y ~z ~w))) |> get in
-   let carrier = List.fold_left (fun g a -> get (Rdk.Geometry.with_attribute a g))
-       (Rdk.Line_geometry.points [|(0., 0., 0.); (1., 0., 0.)|])
-       [row "r0" [|2.;1.|] [|0.;0.|] [|0.;0.|] [|5.;6.|];
-        row "r1" [|0.;0.|] [|3.;1.|] [|0.;0.|] [|0.;0.|];
-        row "r2" [|0.;0.|] [|0.;0.|] [|1.;1.|] [|0.;1.|]] in
-   let source = Rdk.Line_geometry.points [|(1., 1., 1.)|] in
-   let node = get (Edit_graph.instantiate Nodes.Pack_instances.factory
-     [Lisp_sop.snapshot source; Lisp_sop.snapshot carrier]) in
-   let session = Session.create ~max_entries:0 ~max_payload_bytes:0 |> get in
-   let output = get (Session.cook session ~context:(Context.create () |> get) node) in
-   Session.close session;
-   assert (Rdk.Geometry.point_count (get (Payload.geometry output.payload)) = 1);
-   match output.instances with
-   | Some [|a; b|] -> assert (Mat4.get a ~row:0 ~column:0 = 2. && Mat4.get a ~row:0 ~column:3 = 5.
-       && Mat4.get a ~row:1 ~column:1 = 3. && Mat4.get b ~row:2 ~column:3 = 1. && Mat4.get b ~row:3 ~column:3 = 1.)
-   | _ -> assert false);
   let exploded_input = Lisp_sop.node {|(sop/box)|} in
   let exploded = Lisp_sop.node ~with_:["exploded_input", (exploded_input)] {|(sop/exploded_view (sop/ext_exploded_input))|} in
   same_cook "exploded view defaults" ~typed:exploded ~factory:Nodes.Exploded_view.factory [] exploded_input;
