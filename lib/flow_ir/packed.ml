@@ -234,7 +234,7 @@ let gpu_refusals t =
   Array.iteri (fun i instruction -> if used.(i) then match unguarded instruction with
     | Noise3 (_, _, _, _, octaves, lacunarity, gain) ->
         if octaves > 1 && (lacunarity <> 2. || gain <> 0.5) then bad_noise := true else
-        if not (Flow.Packed_ops.supported_noise_octaves octaves) then bad_noise := true
+        if not (Flow.Packed_ops.supported_gpu_noise_octaves octaves) then bad_noise := true
     | Const value -> if not (Flow.Packed_ops.finite_float32 value) then bad_constant := true
     | _ -> ()) t.code;
   if !bad_noise then refuse "GPU noise supports 1 to 32 octaves with lacunarity 2 and gain 0.5.";

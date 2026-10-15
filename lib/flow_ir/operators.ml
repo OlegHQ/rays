@@ -11,7 +11,7 @@ let noise_settings args =
   let number key default = Option.fold ~none:default ~some:Flow.Value.num (List.assoc_opt key args) in
   let seed=integer "seed" 0 and octaves=integer "octaves" 1 in
   let lacunarity=number "lacunarity" 2. and gain=number "gain" 0.5 in
-  if octaves<1 || octaves>32 then Flow.Value.fail "E_NOISE_RANGE" "Noise octaves are 1 to 32.";
+  if octaves<1 || octaves>64 then Flow.Value.fail "E_NOISE_RANGE" "Noise octaves are 1 to 64.";
   if not (Float.is_finite lacunarity && lacunarity>0.) then
     Flow.Value.fail "E_NOISE_RANGE" "Noise lacunarity must be finite and positive.";
   if not (gain>=0. && gain<=1.) then Flow.Value.fail "E_NOISE_RANGE" "Noise gain is 0 to 1.";

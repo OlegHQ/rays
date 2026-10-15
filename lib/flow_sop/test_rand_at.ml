@@ -213,6 +213,6 @@ let () =
   List.iter (fun octaves ->
     match value (Printf.sprintf "(noise3 [0.1 -0.2 0.3] :octaves %d)" octaves) with
     | exception Failure message when String.starts_with ~prefix:"E_NOISE_RANGE" message -> ()
-    | _ -> failwith "out-of-range noise octaves accepted") [0;33];
+    | _ -> failwith "out-of-range noise octaves accepted") [0;65];
   Printf.printf "noise3: %d native/reference samples, %d native bit differences, max %.17g ULP; strict packed/reference bytes agree at one/eight domains for octaves1/4/32 and seeds0/1/42\n"
     !native_samples !native_bit_differences !native_max_ulps
