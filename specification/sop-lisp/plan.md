@@ -191,7 +191,6 @@ All 162 nodes, grouped by the phase that ports them. A node sits in the phase wh
 | `attribute_noise_quaternion` | 2 | B1 B9 | Shares the kernel above. | `attrib/attribute_generate.ml:1204` |
 | `attribute_remap` | 2 | B1 | Has a ramp parameter. Verify Lisp can declare and evaluate a ramp. | `attrib/attribute_generate.ml:1374` |
 | `attribute_randomize` | 2 | B1 B3 B9 | 1,040 lines, many distributions. Largest Phase B port; do it last. | `attrib/attribute_generate.ml:1000` |
-| `attribute_composite` | PASS-SLOW 62×/93× but a nondeterministic `E_ARRAY_RANGE` in the full gate; rest slot capped at 8 (agent) |
 | `attribute_fade` | 2 | B1 |  | `attrib/attribute_fade.ml:130` |
 | `color_by_height` | 2 | B1 B10 | Writes vec4 `Cd`. | `attrib/color_by_height.ml:3` |
 | `set_float`, `set_int`, `set_vector`, `set_orient` | 2 | B1 B4 | Constant attributes. B4 owner counts allow creating missing attributes at vertex/primitive/detail owners. | `lib/sop/attributes.ml:1291`, `1322`, `1352`, `1482` |
@@ -250,7 +249,6 @@ All 162 nodes, grouped by the phase that ports them. A node sits in the phase wh
 | `point_velocity` | 2 | C8 B1 | Match by attribute across frames. | `mesh/motion.ml:483` |
 | `attribute_interpolate` | 2 | C2 B1 | Array-valued attributes. 1,209 lines. | `attrib/attribute_interpolate.ml:774` |
 | `edge_transport_curves` | 4 | B11 | Running sum per curve: a segmented scan. | `mesh/edge_transport.ml:867` |
-| `attribute_composite` | PASS-SLOW 62×/93× but a nondeterministic `E_ARRAY_RANGE` in the full gate; rest slot capped at 8 (agent) |
 | `iso_surface` | 3 | C1 C2 C4 | Count then fill. Uses `Float.fma` explicitly (`gen/iso_surface.ml:82`), so it needs an `fma` operator or its lattice stays a built-in. Port last in this phase. | `gen/iso_surface.ml:33` |
 
 ### Phase D: adjacency and iteration, 31 nodes
@@ -742,12 +740,12 @@ whole fused native pass. Three shared fixes are in (`3bffaa15`, `8ba568d7`,
 source has no edge groups. Projection: 2× is not reachable for reindexing
 nodes without ancestry-aware host operators.
 
-**Status 2026-10-15: 121/128 registered, 2 drafts pending, 5 without a draft.**
+**Status 2026-10-15: 122/128 registered, 1 draft pending, 5 without a draft.**
 The earlier per-session tables are superseded; each registration commit
 ("Register …", "port-draft <key>: PASS-SLOW Nx") records its gate and bench.
 
 Registered (Lisp body is the production node; the OCaml kernel stays in `lib/rdk` as the oracle):
-`attribute_blur`, `attribute_copy`, `attribute_fade`, `attribute_interpolate`, `attribute_laplacian`, `attribute_noise_quaternion`, `attribute_noise`, `attribute_randomize`, `attribute_remap`, `bend`, `blast_by_attribute`, `blast`, `bound`, `box`, `carve`, `circle_from_edges`, `circle`, `color_by_height`, `compact_points`, `connectivity`, `convert_line`, `crease`, `delete_attributes`, `delete_edge_group`, `distance_along_geometry`, `distance_from_target`, `duplicate`, `edge_cusp`, `edge_divide`, `edge_equalize`, `edge_flip`, `edge_relax`, `edge_straighten`, `edge_transport_curves`, `edge_transport_parent`, `edge_transport`, `ends`, `enumerate`, `extract_centroid`, `extract_point_from_curve`, `graph_color`, `grid`, `group_backface`, `group_boundary_components`, `group_bounds`, `group_combine`, `group_copy`, `group_delete`, `group_edge_depth`, `group_edges`, `group_expand`, `group_find_path`, `group_from_attribute_boundary`, `group_invert`, `group_non_planar`, `group_normal`, `group_promote_boundary`, `group_promotions`, `group_random`, `group_range`, `group_ranges`, `group_rename`, `group_unshared`, `groups_from_name`, `line`, `match_axis`, `match_size`, `material`, `measure_curvature`, `measure`, `merge`, `mirror`, `mountain`, `name_from_groups`, `noise_displace`, `normals`, `ordered_group`, `peak`, `platonic`, `point_generate`, `point_jitter`, `point_replicate`, `point_split`, `point_velocity`, `points`, `poly_bridge`, `poly_loft`, `poly_path`, `polyframe`, `polywire`, `promote_attributes`, `rename_attributes`, `rename_edge_group`, `resample`, `rest_position`, `reverse`, `revolve`, `rewire_vertices`, `scatter`, `separate_pieces`, `set_color`, `set_float`, `set_int`, `set_orient`, `set_transform`, `set_vector`, `skin`, `smooth`, `snap_to_grid`, `sort`, `spiral`, `swap_attributes`, `sweep_circle`, `torus`, `transform`, `tube`, `uv_auto_seam`, `uv_project`, `uv_sphere`, `uv_transform`, `uv_unitize`.
+`attribute_blur`, `attribute_composite`, `attribute_copy`, `attribute_fade`, `attribute_interpolate`, `attribute_laplacian`, `attribute_noise_quaternion`, `attribute_noise`, `attribute_randomize`, `attribute_remap`, `bend`, `blast_by_attribute`, `blast`, `bound`, `box`, `carve`, `circle_from_edges`, `circle`, `color_by_height`, `compact_points`, `connectivity`, `convert_line`, `crease`, `delete_attributes`, `delete_edge_group`, `distance_along_geometry`, `distance_from_target`, `duplicate`, `edge_cusp`, `edge_divide`, `edge_equalize`, `edge_flip`, `edge_relax`, `edge_straighten`, `edge_transport_curves`, `edge_transport_parent`, `edge_transport`, `ends`, `enumerate`, `extract_centroid`, `extract_point_from_curve`, `graph_color`, `grid`, `group_backface`, `group_boundary_components`, `group_bounds`, `group_combine`, `group_copy`, `group_delete`, `group_edge_depth`, `group_edges`, `group_expand`, `group_find_path`, `group_from_attribute_boundary`, `group_invert`, `group_non_planar`, `group_normal`, `group_promote_boundary`, `group_promotions`, `group_random`, `group_range`, `group_ranges`, `group_rename`, `group_unshared`, `groups_from_name`, `line`, `match_axis`, `match_size`, `material`, `measure_curvature`, `measure`, `merge`, `mirror`, `mountain`, `name_from_groups`, `noise_displace`, `normals`, `ordered_group`, `peak`, `platonic`, `point_generate`, `point_jitter`, `point_replicate`, `point_split`, `point_velocity`, `points`, `poly_bridge`, `poly_loft`, `poly_path`, `polyframe`, `polywire`, `promote_attributes`, `rename_attributes`, `rename_edge_group`, `resample`, `rest_position`, `reverse`, `revolve`, `rewire_vertices`, `scatter`, `separate_pieces`, `set_color`, `set_float`, `set_int`, `set_orient`, `set_transform`, `set_vector`, `skin`, `smooth`, `snap_to_grid`, `sort`, `spiral`, `swap_attributes`, `sweep_circle`, `torus`, `transform`, `tube`, `uv_auto_seam`, `uv_project`, `uv_sphere`, `uv_transform`, `uv_unitize`.
 
 Pending drafts (`nodes/<key>.pending`):
 
@@ -756,13 +754,22 @@ Pending drafts (`nodes/<key>.pending`):
 | `iso_surface` | smooth normals exact after mirroring arm64 FMA contraction; positions 1–6 ulp off |
 
 No draft yet: `subdivide` (split the crack path first, E.6),
-`attr_from_image` (image sampling in a geometry body), `attribute_composite` and `blend_shapes`
-(loop over attribute names building geometry), `copy_to_points`, `sweep`.
+`attr_from_image` (image sampling in a geometry body), `blend_shapes`, `copy_to_points`, `sweep`.
 
 Fidelity gap: `group_from_attribute_boundary` does not raise native's non-finite-attribute error
 (the gate has no non-finite fixture).
+`attribute_composite` refuses more than 8 rest-slot layers (`invalid_attribute_composite`); native has
+no cap. A geometry that is a fold element or a dynamic `nth` is not a data source yet.
 `scatter` with a non-finite density attribute fails `E_NONFINITE` at the language boundary instead of
 native's `invalid_geometry`; its `--full` gate skipped most cases on the 4,225-point grid for time.
+
+Compiler hazard (OCaml 5.3.0, arm64, found 2026-10-15): in `Attribute_pattern.escaped_character`,
+`if s.[i] = c then … else Ok (s.[i], …)` let ocamlopt keep the address `s + i` across the
+allocation of the `Ok` pair; a minor GC moved the minor-heap string and the stale address read a
+clobbered byte (0.5% of glob class compiles, the flaky `E_ARRAY_RANGE` in `attribute_composite`).
+Fixed by reading the byte into a `let` first (40fc746d, stress test in `test_rdk_sources.ml`).
+Unaudited elsewhere: grep for a repeated `s.[i]` / `Bytes.get b i` inside an allocating
+constructor after a guard on the same index.
 
 Known language limits found by the ports: `cond`/`if` over records ("Cooked selection cannot
 compile record"); a host call whose data-dependent array arguments are shared with a second host
@@ -841,6 +848,7 @@ before optimizing. The OCaml kernels remain in `lib/rdk` as oracles.
 | `carve` | 53× | 47× | K, H |
 | `group_from_attribute_boundary` | 82× | 228× | fold carries geometry; state kept as attributes |
 | `scatter` | 28.4× | 73.6× | shared bindings re-evaluated per reader; split into carrier geometries |
+| `attribute_composite` | 62.1× | 92.8× | per-input passes over attribute names |
 | `edge_transport_parent` | 85.8× | 75.7× | D, I |
 | `poly_loft` | 90× | 108× | K, H |
 | `group_boundary_components` | 163× | | A, D |
