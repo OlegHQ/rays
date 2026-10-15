@@ -857,11 +857,11 @@
     },
     {
       "api": [
-        "val lower : ? strict : bool -> Flow.Eval.residual -> ( Core.program , string ) result",
+        "val lower : ? strict : bool -> ? budget : int -> Flow.Eval.residual -> ( Core.program , string ) result",
         "type draw_context = { value : Core.source -> Flow.Eval.value -> int ; local : Flow.Ty.t -> int ; emit : Core.source -> Core.statement_node -> unit ; }",
         "val lower_draw : ? region_allowed : ( Core.Region.t -> bool ) -> root : Flow.Eval.residual Lazy.t -> ( draw_context -> unit ) -> ( Core.program , string ) result"
       ],
-      "api_sha256": "e03ccae42f00ab96ceaf20b965793e0ead74aa026c07f4db977c8e0b51bcc73d",
+      "api_sha256": "7ad7f93ae20ba64ceba8194a3835d1637fba1d309f804316a7bc482cab76878f",
       "excluded_legacy_symbols": [],
       "library": "flow_ir",
       "module": "Core_lower",
