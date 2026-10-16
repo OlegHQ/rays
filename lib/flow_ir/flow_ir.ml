@@ -462,7 +462,8 @@ let place ?(approx=W.Paths.empty) ?(gpu_cost=fun _ ~count:_ -> None) ?(target=na
     List.fold_left (fun best tier -> if target.cost tier ~count < target.cost best ~count then tier else best)
       (List.hd legal) (List.tl legal) in
   let packed node ~count = cheapest node [Interp; Cpu_kernel] ~count in
-  let is_readback node = match node.kind with Kernel {body = Readback; _} -> true | _ -> false in
+  (* The SOP input sink reads a GPU producer back like (exact x): an implicit readback. *)
+  let is_readback node = match node.kind with Kernel {body = Readback; _} | Sink Sop_input -> true | _ -> false in
   let regions_of node = List.map (fun (_, i) -> i) (attribute_edges ir node) in
   let gpu = Array.map (fun node ->
     match node.kind, node.count with
@@ -495,7 +496,7 @@ let place ?(approx=W.Paths.empty) ?(gpu_cost=fun _ ~count:_ -> None) ?(target=na
       let approximate = List.exists (fun e -> nodes.(e.node).precision = Approx) node.args in
       let readback = is_readback node in
       let forbidden = match node.kind with
-        | Opaque _ | Sink (Export | Sop_input | State_seed | Cache_key) | Source (State_previous _) -> true
+        | Opaque _ | Sink (Export | State_seed | Cache_key) | Source (State_previous _) -> true
         | Kernel k -> k.requires_exact && not readback
         | _ -> false in
       if approximate && forbidden then
@@ -933,7 +934,7 @@ module Executor = struct
       display_packed ?state ?resolve ~backend ~policy ~approx:program.approx
         ~display:(match program.sink with Some(Display _)->true|_->false) ~profile:program.profile
         ~cached:(fun()->program.gpu_kernel) ~store:(fun k->program.gpu_kernel<-Some k)
-        ~readback packed ~live
+        ~readback:(readback||program.sink=Some Sop_input) packed ~live
   (* A region of a draw program offered to the GPU as a mark attribute: a closure owns the kernels
      of at most 64 regions. [None] leaves the region to the CPU. *)
   let region_display ?profile ?(approx=W.Paths.empty) ?policy () =

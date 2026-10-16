@@ -1111,9 +1111,23 @@ let () =
   ignore(Flow_ir.Gpu.with_backend backend(fun()->Flow_sop.Value_lane.resolve
     (Flow_sop.Value_lane.create()) ~time:1. (List.hd reference.graphs).network)|>flow_ok);
   assert(!calls=baseline);
-  let unwrapped=Flow.Syntax.parse(source ~columns:1024
-    "(sop/with_attr g :P (map (fn [i] [(+ i t) 0 0]) (array/range 2048)))") |> flow_ok in
-  (match Flow.Workspace.check ~ops:Flow_sop.Operators.all catalog unwrapped with
+  (* G.1: the SOP input sink is an implicit readback, so the bare map needs no (exact x). *)
+  let implicit=lower(source ~columns:1024
+    "(sop/with_attr g :P (map (fn [i] [(+ i t) 0 0]) (array/range 2048)))")in
+  let before= !calls in
+  time:=1.;
+  let resolved=Flow_ir.Gpu.with_backend backend(fun()->
+    Flow_sop.Value_lane.resolve (Flow_sop.Value_lane.create()) ~time:1. (List.hd implicit.graphs).network |> flow_ok)in
+  assert(!calls=before+1 && !reads=before+1);
+  let node=Edit.compile_node resolved.geometry ~node_id:(Option.get(List.hd implicit.graphs).root) |>get_string_ok in
+  let session=session()in
+  Fun.protect ~finally:(fun()->Session.close session)(fun()->
+    let positions=cook session ~domains:8 ~time:1. node |> geometry |>Geometry.positions in
+    for i=0 to count-1 do assert(Packed.Float3.get positions i=(float i+.1.,0.,0.))done);
+  (* A catalog parameter still requires (exact x). *)
+  (match Flow.Workspace.check ~ops:Flow_sop.Operators.all catalog
+      (Flow.Syntax.parse(source ~columns:1024
+        "(sop/box :size (array/sum (map (fn [i] (+ i t)) (array/range 2048))))")|> flow_ok) with
     |None, ds->assert(List.exists(fun(d:Flow.Diagnostic.t)->d.code="E_APPROX_SINK")ds)
     |_->assert false)
 let () =
@@ -1771,3 +1785,25 @@ let ()=
        |Error d->assert(d.code="E_CANCELLED" && d.message="Attribute kernel cancelled.")|Ok _->assert false)) [1;4;8]
   )cases) [false;true];
   print_endline "Full planar host mixed failures: actual Lower call cancellation before invalid options before failing Record source hydration"
+
+let () =
+  (* G.1: a defnode body qualifies as a packed producer like an inline map, and its attribute
+     write needs no (exact x): the SOP input sink reads a GPU result back. *)
+  let text=
+    "(workspace gen (defnode sop/gen_shift [(offset : float 0.5)]
+       (let* [g (sop/grid :counts \"Point counts\" :connectivity \"Points\" :columns 1024 :rows 2)]
+         (sop/with_attr g :P (map (fn [i] [(+ i offset) 0 0]) (array/range 2048)))))
+       (graph g :context sop (sop/gen_shift :offset 1.0)))" in
+  let forms=Flow.Syntax.parse text |> flow_ok in
+  match Flow.Workspace.check ~ops:Flow_sop.Operators.all catalog forms with
+  | Some checked, ds ->
+      assert(List.for_all(fun(d:Flow.Diagnostic.t)->d.severity<>Flow.Diagnostic.Error)ds);
+      assert(List.exists(fun(path,candidate)->List.mem "node:sop/gen_shift" path
+        &&(match candidate with Flow.Workspace.Candidate _->true|_->false))checked.packed);
+      let lowered=lower text in
+      let session=session() in
+      Fun.protect ~finally:(fun()->Session.close session)(fun()->
+        let positions=cook session ~domains:4 ~time:0. (compiled lowered) |> geometry |>Geometry.positions in
+        for i=0 to 2047 do assert(Packed.Float3.get positions i=(float i+.1.,0.,0.))done);
+      print_endline "SOP input sink: a bare map needs no (exact x), including inside a defnode body; catalog parameters still refuse GPU values"
+  | None, ds -> failwith(String.concat "; "(List.map Flow.Diagnostic.to_string ds))

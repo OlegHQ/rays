@@ -185,7 +185,8 @@ let () =
   let placed = ok (place (ir [source; forwarded; display] [2])) in
   assert (placed.nodes.(1).precision = Approx && placed.nodes.(2).precision = Approx);
   List.iter (fun sink -> approx_error (ir [source; forwarded;
-    node ~args:[edge "x" 1] "sink" (Sink sink)] [2])) [Export; Sop_input; State_seed; Cache_key];
+    node ~args:[edge "x" 1] "sink" (Sink sink)] [2])) [Export; State_seed; Cache_key];
+  assert ((ok (place (ir [source; forwarded; node ~args:[edge "x" 1] "sink" (Sink Sop_input)] [2]))).nodes.(2).precision = Exact);
   approx_error (ir [source; node ~args:[edge "x" 0] "catalog" (Opaque ("sop/transform", None))] [1]);
   let readback = node ~args:[edge "value" 0] "exact"
     (Kernel {body = Readback; elementwise = true; requires_exact = false}) in
@@ -440,7 +441,10 @@ let ()=
   List.iter(fun kind->assert(match place ~approx:approximable ~gpu_cost:(fun _ ~count:_->Some 0.)
       (ir[root;node "sink" ~args:[edge "value" 0]kind][1])with
     |Error d->d.Flow.Diagnostic.code="E_APPROX_SINK"|Ok _->false))
-    [Sink Sop_input;Sink State_seed;Sink Cache_key;Sink Export;Opaque("catalog",None)];
+    [Sink State_seed;Sink Cache_key;Sink Export;Opaque("catalog",None)];
+  let sink=ok(place ~approx:approximable ~gpu_cost:(fun _ ~count:_->Some 0.)
+    (ir[root;node "sink" ~args:[edge "value" 0](Sink Sop_input)][1]))in
+  assert(sink.nodes.(0).tier=Gpu && sink.nodes.(1).precision=Exact);
   assert((ok(place ~approx:approximable (ir[root][0]))).nodes.(0).tier=Cpu_kernel);
   assert((ok(place ~approx:approximable ~gpu_cost:(fun _ ~count:_->Some 1.) (ir[root][0]))).nodes.(0).tier=Cpu_kernel);
   let exact=node "exact" ~args:[edge "value" 0](Kernel{body=Readback;elementwise=true;requires_exact=false})in
@@ -487,7 +491,11 @@ let ()=
       [None;Some nan;Some(-1.)];
     assert(match ok(Executor.force_display ~reference:true ~policy:Gpu.Qualification program
       ~live:(Frame_input.at_time 1.))with Executor.Cpu _->true|_->false);
-    let illegal=ok(Executor.compile ~approx:ws.approx ~sink:Sop_input value)in
+    (* The SOP input sink is an implicit readback; a CPU or export sink still refuses a GPU array. *)
+    let sop_input=ok(Executor.compile ~approx:ws.approx ~sink:Sop_input value)in
+    assert(match Executor.force_display ~policy:Gpu.Qualification sop_input ~live:(Frame_input.at_time 1.)with
+      |Ok(Executor.Cpu _)->true|_->false);
+    let illegal=ok(Executor.compile ~approx:ws.approx ~sink:Export value)in
     assert(match Executor.force_display ~policy:Gpu.Qualification illegal ~live:(Frame_input.at_time 1.)with
       |Error d->d.Flow.Diagnostic.code="E_APPROX_SINK"|Ok _->false));
   assert(List.exists(fun report->report.tier=Gpu_compile)(Profile.executions profile));

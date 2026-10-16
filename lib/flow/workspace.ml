@@ -1519,8 +1519,17 @@ let check ?(ops = []) ?(library = false) catalog forms =
             Option.map snd (List.nth_opt (o.signature.pos @ o.signature.opt) i) in
       match ty with Some (Ty.Fn (Some signature)) -> instantiate_fn cx a signature
       | _ -> a) args in
-    if List.exists (fun prefix -> String.starts_with ~prefix o.name) ["sop/"; "settings/"; "scene/"] then
-      List.iter (fun a -> exact_sink cx a.aform o.name a.av) args;
+    if List.exists (fun prefix -> String.starts_with ~prefix o.name) ["sop/"; "settings/"; "scene/"] then begin
+      (* The values of an attribute write enter the geometry through the SOP input sink, an
+         implicit readback: the executor reads a GPU producer back once, so no (exact x). *)
+      let values_slot = List.length o.signature.pos - 1 in
+      let position = ref 0 in
+      List.iter (fun a ->
+        let slot = if a.key = None then (let i = !position in incr position; Some i) else None in
+        let readback = o.name = "sop/with_attr"
+          && (a.key = Some "values" || (a.key = None && slot = Some values_slot)) in
+        if not readback then exact_sink cx a.aform o.name a.av) args
+    end;
     let args = if o.name = "ui/canvas" then List.map (fun a ->
       if a.key = None && a.av.ty = Ty.image then
         { a with aterm = { a.aterm with ty = Ty.drawing;

@@ -72,7 +72,7 @@ ports and completed encoded boundary are recorded below.
 | B.11 | All six setters are embedded Lisp declarations with native factories retained as test oracles. Final Set Color passes the whole production oracle, metadata/cache/editor/refusal checks, raw Cd byte checks and all 78 fixed performance rows (maximum 1.7896493105836428×). | Complete: final production/native integration 8526 exited 0; evidence below. |
 | B.12 | All seven metadata nodes are embedded Lisp declarations. Encoded normalization and canonical keys, every owner/storage/mode, exact errors, public cache identity and graph/editor gates passed. Swap is the final whole metadata port; all 212 fixed timing rows pass under the recorded precision protocols. | Complete: final production/native integration 90589 exited 0; individual evidence below. |
 | C.15 | Full native Measure wrapper and kernel audit establishes topology/indexed position access and canonical n-gon triangulation with original-primitive mapping as prerequisites. The whole node moves from B.15 to C.15; no mode, registration or target is removed. | B.1/B.5/B.7/B.9/C.1/C.2 and a generic canonical triangulation + primitive mapping capability, then the complete port Verification gate. No implementation or completion claimed. |
-| G.1–G.2 | Optional tasks; no placement evidence recorded here yet. | Measured placement and CPU/GPU tolerance checks. |
+| G.1–G.2 | G.1 sink half implemented: the SOP input sink is an implicit readback (checker, `place`, `try_display`) and a defnode body is a producer; `test_ir` and `test_attribute_kernel` cover it. No placement of a ported node is claimed. | Node-body dispatch point, a GPU-legal grid position kernel, an instruction-aware cost row, and the staged cook (see "G.1 and G.2 status"). |
 
 The typed integer/text/source Core API snapshot was accepted separately in
 commit `621113d2` after API/dependency gate 37921 exited 0. Foundation
@@ -6469,3 +6469,33 @@ are fixed:
 SDL conformance tests, the exhaustive catalog sweep, the parallel-exact suite and the workspace IR
 sweep (43 standard files, 13 fixtures; the `wave.lisp` `E_GPU_FORM` line is the sweep's expected
 refusal). B.R, C.R, D.R and E.R are closed. G.1 and G.2 (GPU placement) stay optional and open.
+
+## G.1 and G.2 status (2026-10-16)
+
+Implemented: the SOP input sink is an implicit readback. The checker no longer reports
+`E_APPROX_SINK` for the `values` of `sop/with_attr` (catalog parameters, state, exports and cache keys
+still do), `Flow_ir.place` treats `Sink Sop_input` as a readback instead of a forbidden sink, and
+`Executor.try_display` reads a GPU producer back when the program's sink is `Sop_input`. Tests:
+`lib/flow_ir/test_ir.ml` (sink placement, `Sop_input` versus `Export`) and `lib/flow_sop/test_attribute_kernel.ml`
+(a bare `map` into `with_attr` dispatches once and reads back once through the real lane, bytes equal
+at 8 domains; a defnode body is a `Candidate` producer and cooks unwrapped).
+
+Open, with the reason each gate cannot be met by this change alone:
+
+- A defnode body cooks on a worker domain (`Lisp_node` runs `Value_lane.resolve` inside the cook), where
+  `Gpu.current` is unset, so its kernels never reach the GPU. Dispatch needs an initial-domain hook
+  that resolves the body's input-independent `with_attr` before the cook and bakes the result into the
+  node, like the top-level `frame_nodes` route.
+- `grid` computes its planes with `float/fma_checked` and integer index arithmetic. `Packed.gpu_refusals`
+  rejects both ("FMA requires exact single-rounding binary64", "Integer sources ... stay on the CPU")
+  and the native oracle needs those bits on the CPU body, so a GPU position kernel must be a separate
+  float-index form whose CPU result stays bit-identical.
+- `Flow_ir.Cost` is kernel-agnostic. GPU plus readback is 19.8 + 7.9 = 27.7 ns per element against 16.5 ns
+  for the one-domain CPU row at every count, so `Measured` never places a readback kernel on the GPU;
+  a win needs an instruction-aware cost (a noise chain), supplied through `Gpu.backend.cost`.
+- G.2 needs the input cooked before the dispatch. `Rays_editor.Cook` resolves lanes synchronously each
+  frame and cooks asynchronously afterwards, so a staged cook is a second `Async_cook` stage
+  (cook input, dispatch on the initial domain, submit the rest), not a lane change; a synchronous
+  input cook on the UI thread would block it.
+
+No timings are recorded: no ported node is placed on the GPU yet.

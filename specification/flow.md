@@ -1358,7 +1358,10 @@ Replacing the recorded workspace evaluation invalidates that cache; values and
 forked state belong to each probe snapshot. The IR retains lexical provenance, cardinality origins,
 frame/event rates and exact/approximate precision. Its placement pass refuses
 approximate inputs to catalog calls, exports, state seeds and cache keys with
-`E_APPROX_SINK`; `(exact x)` is the explicit readback card. CPU evaluation
+`E_APPROX_SINK`; `(exact x)` is the explicit readback card. The SOP input sink (the
+`values` of `sop/with_attr`) is an implicit readback: a GPU producer there needs no `(exact x)` and is
+read back once by the executor, while cache keys, state, exports and catalog parameters keep the
+explicit rule. CPU evaluation
 remains exact. A host GPU backend may place a
 covered approximable packed producer at a display sink after measured costs
 justify it; `(exact x)` explicitly materializes a selected GPU producer.
@@ -2053,7 +2056,7 @@ when timestamps are supported, otherwise wall time. Production placement compare
 the measured native GPU row of the Flow IR cost table (pack, upload and dispatch, plus the
 resident circle conversion for a display sink or the readback row for `(exact x)`) with the
 CPU kernel tier plus CPU instance building; an unmeasured backend keeps CPU. For an input-independent packed producer,
-`sop/with_attr` with `(exact x)` materializes selected GPU output on the initial
+`sop/with_attr` (with or without `(exact x)`) materializes selected GPU output on the initial
 domain before submitting CPU geometry work. The cook worker receives an owned
 CPU array. Attribute-reading cones retain their cooked-input CPU route.
 Fixed-step runs,

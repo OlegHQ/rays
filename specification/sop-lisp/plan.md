@@ -516,6 +516,8 @@ Rules for both tasks, all of which exist today:
 - Kernels with reductions, gather, compaction or integer work stay on the CPU. That limits the GPU to tier 1 deformers and generator kernels in this round.
 - The Verification gate is run against the CPU body. A GPU placement is checked against the CPU body within 32-bit tolerance.
 
+**Status 2026-10-16.** G.1 first half is done: the SOP input sink is an implicit readback in the checker (`values` of `sop/with_attr`), `Flow_ir.place` and `Executor.try_display`; a defnode body qualifies as a producer like an inline `map` (`lib/flow_sop/test_attribute_kernel.ml`, last two blocks). Both gates stay open for three reasons found while working, recorded in `results.md`: a defnode body cooks on a worker, where `Gpu.current` is unset, so a node-body kernel has no initial-domain dispatch point; `grid` builds points from checked binary64 `fma` and integer indices that `Packed.gpu_refusals` rejects and its native oracle needs bit for bit; and the cost table is kernel-agnostic, so GPU plus readback (27.7 ns per element) never beats the CPU row (16.5 ns) under `Measured`. G.2 additionally needs an asynchronous two-stage cook in `Rays_editor.Cook`.
+
 ### What the compiler does with a ported chain
 
 | Situation | Today | After B.F |
