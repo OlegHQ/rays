@@ -35,7 +35,8 @@ let () =
     Fun.protect ~finally:(fun () -> Workspace_gpu.close gpu) (fun () ->
       let worker () = Workspace_gpu.with_backend gpu (fun () ->
         let finished = Atomic.make false in
-        let domain = Domain.spawn (fun () -> let result = cook node in Atomic.set finished true; result) in
+        let domain = Domain.spawn (fun () -> Fun.protect ~finally:Rays_math.Parallel.release_current_domain_pools (fun () ->
+          let result = cook node in Atomic.set finished true; result)) in
         while not (Atomic.get finished) do Flow_ir.Gpu.pump (); Unix.sleepf 0.0005 done;
         Domain.join domain) in
       ignore (worker ());
@@ -52,5 +53,3 @@ let () =
         bytes (if bytes > 0 then "GPU" else "CPU") !worst) in
   run "measured" false;
   run "forced" true
-(* The task pool a worker domain created is not torn down by the exit hook of this domain. *)
-let () = flush_all (); Unix._exit 0
