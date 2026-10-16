@@ -4,9 +4,9 @@ description: "Checks that SDL3_ttf is at least the floor in packaging/sdl3.lock;
 maintainer: ["Oleg Pustovit <oleg@nexo.sh>"]
 authors: ["Rays contributors"]
 license: "MIT"
-homepage: "https://github.com/OlegHQ/rays"
-bug-reports: "https://github.com/OlegHQ/rays/issues"
-dev-repo: "git+https://github.com/OlegHQ/rays.git"
+homepage: "https://github.com/olegpustovit/rays"
+bug-reports: "https://github.com/olegpustovit/rays/issues"
+dev-repo: "git+https://github.com/olegpustovit/rays.git"
 flags: conf
 depends: [
   "conf-pkg-config" {build}

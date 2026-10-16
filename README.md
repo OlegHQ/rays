@@ -36,7 +36,7 @@ brew install opam direnv sdl3 sdl3_image sdl3_ttf sdl3_mixer pkg-config
 ## Build from source
 
 ```sh
-git clone https://github.com/OlegHQ/rays.git
+git clone https://github.com/olegpustovit/rays.git
 cd rays
 
 opam init

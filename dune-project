@@ -7,7 +7,7 @@
 (generate_opam_files true)
 
 (source
- (github OlegHQ/rays))
+ (github olegpustovit/rays))
 
 (authors "Oleg Pustovit <oleg@nexo.sh>")
 
