@@ -6480,12 +6480,19 @@ still do), `Flow_ir.place` treats `Sink Sop_input` as a readback instead of a fo
 (a bare `map` into `with_attr` dispatches once and reads back once through the real lane, bytes equal
 at 8 domains; a defnode body is a `Candidate` producer and cooks unwrapped).
 
-Open, with the reason each gate cannot be met by this change alone:
+Open, with the reason each gate cannot be met:
 
-- A defnode body cooks on a worker domain (`Lisp_node` runs `Value_lane.resolve` inside the cook), where
-  `Gpu.current` is unset, so its kernels never reach the GPU. Dispatch needs an initial-domain hook
-  that resolves the body's input-independent `with_attr` before the cook and bakes the result into the
-  node, like the top-level `frame_nodes` route.
+- A defnode body has no runtime kernel to place. I built the initial-domain hook (the enclosing lane
+  asks the Lisp node, through its cook function, to resolve and bake its input-independent `with_attr`
+  before the cook); it built, but the test showed the body it would resolve is already constants: a node's
+  parameters and context values are specialized into the body when it is built, and the static
+  evaluator then runs every numeric `map` over 4,096 elements through `Flow_ir.static_map` on the CPU,
+  accepting the array only when it equals the walked head bit for bit ("the value never depends on
+  the host", `Flow.Eval`). A GPU array (32-bit) can never pass that check, and with static parameters
+  the nested `with_attr` values are a `Source`, not a `Packed_map`, so nothing is eligible. Placing a
+  node-body kernel needs defnode bodies whose large maps stay symbolic with their parameters as live
+  inputs, or a tolerance-checked approximate bulk hook in the evaluator for sites in `approx`; both
+  change the evaluator's host-independence contract and were not attempted. The hook was reverted.
 - `grid` computes its planes with `float/fma_checked` and integer index arithmetic. `Packed.gpu_refusals`
   rejects both ("FMA requires exact single-rounding binary64", "Integer sources ... stay on the CPU")
   and the native oracle needs those bits on the CPU body, so a GPU position kernel must be a separate
