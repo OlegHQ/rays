@@ -874,7 +874,7 @@ Command: `node tools/web/test/open_all.mjs _build/default/tools/lisp/lisp.exe . 
 `@qualification-web`). Machine: Apple M1, Chrome 154 `--headless=new`, node 24. Each workspace is exported as
 `rays-lisp web` does, served with COOP/COEP, and its `index.html` is opened (`start`: one device, worker pool,
 presenter, rAF loop with the real clock). Pass: at least 5 frames within 20 s, still advancing 0.5 s later (about 30
-more frames), no failed frame (`__rays.error`), no presenter error, a non-empty mark table.
+more frames), no failed frame (`__rays.failure`), no presenter error, a non-empty mark table.
 
 | Workspace | Result | Frames after about 0.5 s | Mark entries | Region work |
 | --- | --- | --- | --- | --- |

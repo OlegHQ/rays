@@ -4,7 +4,7 @@
 // sketch.rays) run `rays-lisp web`; a refusal must print its code and span (recorded, nothing is loaded). Otherwise
 // serve the export with cross-origin isolation, open index.html in headless Chrome (`start`: one device, worker pool,
 // presenter) and require that the frame loop runs: at least FRAMES frames within 20 s, still advancing half a second
-// later, no failed frame (`__rays.error`), no presenter error and a non-empty mark table. Prints one line per DIR.
+// later, no failed frame (`__rays.failure`), no presenter error and a non-empty mark table. Prints one line per DIR.
 // Exit: 0 all opened or refused, 1 a workspace failed in the browser, 3 WebGPU unavailable.
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -38,14 +38,14 @@ for (const dir of dirs) {
   try {
     let state;
     for (let i = 0; i < 200; i++) {
-      state = await browser.evaluate(`({ frame: globalThis.__rays?.current?.frame ?? 0, error: globalThis.__rays?.error ? String(__rays.error.stack ?? __rays.error) : null,
+      state = await browser.evaluate(`({ frame: globalThis.__rays?.current?.frame ?? 0, error: globalThis.__rays?.failure ? String(__rays.failure.stack ?? __rays.failure) : null,
         marks: globalThis.__rays?.marks.length ?? 0, text: document.body.innerText.slice(0, 200), presenter: globalThis.__rays?.presenter?.errors ?? [] })`).catch(() => ({ frame: 0, text: '' }));
       if (state.error || state.frame >= FRAMES || /WebGPU/.test(state.text ?? '')) break;
       await sleep(100);
     }
     if (/WebGPU/.test(state.text ?? '')) { console.error(`open_all: WebGPU unavailable: ${state.text}`); process.exit(3); }
     await sleep(500);
-    const later = await browser.evaluate(`({ frame: globalThis.__rays?.current?.frame ?? 0, error: globalThis.__rays?.error ? String(__rays.error.message ?? __rays.error) : null, counts: globalThis.__rays?.counts })`);
+    const later = await browser.evaluate(`({ frame: globalThis.__rays?.current?.frame ?? 0, error: globalThis.__rays?.failure ? String(__rays.failure.message ?? __rays.failure) : null, counts: globalThis.__rays?.counts })`);
     const ok = !state.error && !later.error && state.frame >= FRAMES && later.frame > state.frame && state.marks > 0 && !state.presenter.length;
     if (!ok) bad++;
     line = `${ok ? 'opened' : 'FAIL  '} ${dir}: frame ${state.frame} then ${later.frame}, ${state.marks} marks, counts ${JSON.stringify(later.counts)}` +
