@@ -6464,3 +6464,8 @@ are fixed:
   `__rays.failure` now (e159b885); all 15 programs open.
 
 `@smoke` passed. The `lib/sop` native-node suite (`run_nodes`) passes and takes about 70 minutes.
+
+`@qualification` (including `@qualification-scale`) exits 0 on 5a276f10 at `nice -n 10 -j 2`: the
+SDL conformance tests, the exhaustive catalog sweep, the parallel-exact suite and the workspace IR
+sweep (43 standard files, 13 fixtures; the `wave.lisp` `E_GPU_FORM` line is the sweep's expected
+refusal). B.R, C.R, D.R and E.R are closed. G.1 and G.2 (GPU placement) stay optional and open.

@@ -630,15 +630,15 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 - [x] B.7 — scalar/rounding math, matrix/quaternion helpers and native four-ULP audit pass; explicit native-order cross/matrix FMA matches reference/CPU/JavaScript bits without automatic arithmetic contraction.
 - [x] B.8 — 100,000 exact random keys and 300,054 native noise samples passed with strict reference/domain/JavaScript parity; evidence in results.md.
 - [x] B.9 — named and CSR segmented reductions match ordered references at one/eight domains, including empty/malformed rows and captured compiled sources.
-- [ ] B.10
+- [x] B.10 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
 - [x] B.11 — all six whole setter ports passed native/reference/schema/cache/domain/grain/editor and fixed performance gates; final Set Color evidence in results.md.
 - [x] B.12
-- [ ] B.13
-- [ ] B.14
-- [ ] B.15
-- [ ] B.16
+- [x] B.13 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
+- [x] B.14 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
+- [x] B.15 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
+- [x] B.16 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
 - [x] B.F — adjacent Lisp point deformers fold into one kernel run at lowering (`Context_kernel.fusable`/`fuse`, `Lower.fused_view`). Eligibility is derived, never written: one `let*` body with a single `sop/with_attr in0 :P` binding, no `sop/*` call besides attr/with_attr/delete_attr/context, no reducer, fold, loop, error or state, no `if`/`cond`/`case` whose test reads anything but literals and parameters, no validation, scalar parameters only, static arguments, and the producer has exactly one reader and does not use a cook-context operator. The consumer reads the producer's `P` values (its outer `exact` dropped) and the producer's own cook is skipped. Gate: `test_lisp_fusion.ml`, four `noise_displace` nodes, one kernel run, bytes equal to four native passes at 1 and 4 domains, a reparameterized middle node recooks, and a second reader of an intermediate splits the chain. At 1,000,000 points the chain cooks in 0.30 s (1 domain) and 0.105 s (4 domains) fused and unfused alike: the cook is noise-bound, so the saving is the passes and intermediates, not wall time. `bend`, `peak`, `point_jitter`, `uv_transform`, `snap_to_grid` and `color_by_height` keep their validity scans and are not fused.
-- [ ] B.R
+- [x] B.R — review closed 2026-10-16: ` `, ``, `-native`, `-web` and `` exit 0 at `-j 2` (failures found and fixed in 5928c9dd, e159b885, 0983c05f; `results.md`, "Closing gates").
 - [x] C.1 — owned topology queries and required-array mesh construction match five native fixtures and authored packed reconstruction across domains/grains; cache, lazy errors/state, cards/menu, JavaScript host and production 2D refusal gates pass. Evidence in `geometry-arrays-validation.md` and `results.md`.
 - [x] C.2 — numeric and immutable Text gathers pass typed bounds, lazy/error-order, ownership, strict/reference/domain, actual JavaScript/export/worker and GPU refusal checks; separate Text cost evidence remains above 2× and qualifies no whole port.
 - [x] C.3 — exact identity/permutation/all-owner payload transfer, ordered groups, explicit edge ancestry, raw storage, strict/reference/domain/grain, cache/editor and native/JavaScript gates pass; original public Rewire bytes and before/after timings retained. Evidence in `payload-remap-validation.md` and `results.md`.
@@ -646,31 +646,31 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 - [x] C.5 — stable Int/Float/byte-Text grade and exact first-match Int/Text lookup pass native/reference/Core/domain, ownership/error/state, consumer, graph/editor, actual JavaScript runtime/worker and final shipping gates; evidence in `grade-index-validation.md` and `results.md`.
 - [x] C.6 — six physical array types compose through standalone Core and invariant packed gathers, including scoped lazy count/captures, exact domains, graph defaults/edits and actual JavaScript workers. Final native/shipping gates pass; evidence in `array-composition-validation.md` and `results.md`.
 - [x] C.7 — all eleven generators registered (2026-10-13/14): `line`, `points`, `grid`, `circle`, `box`, `uv_sphere`, `tube`, `torus`, `platonic`, `spiral`, `bound`; each passed the port gate against its OCaml oracle. `bound`, `grid` and `circle` are in the speed regressions table.
-- [ ] C.8
-- [ ] C.9
-- [ ] C.10
-- [ ] C.11
-- [ ] C.12
-- [ ] C.13
-- [ ] C.14
-- [ ] C.15
-- [ ] C.R
+- [x] C.8 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
+- [x] C.9 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
+- [x] C.10 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
+- [x] C.11 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
+- [x] C.12 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
+- [x] C.13 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
+- [x] C.14 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
+- [x] C.15 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
+- [x] C.R — review closed 2026-10-16: ` `, ``, `-native`, `-web` and `` exit 0 at `-j 2` (failures found and fixed in 5928c9dd, e159b885, 0983c05f; `results.md`, "Closing gates").
 - [x] D.1 — `sop/adjacency` equals `Topology_index.Private.view` on five fixtures, reference/compiled, 1 and 8 domains (`lib/flow_sop/test_adjacency.ml`, commit `6fc00ced`). Built ahead of C.R in parallel with the ports.
 - [x] D.2 — `sop/components` ids equal `Analysis.classify_connectivity`; `:over "edges"` labels points, `:over "points"` labels primitives, optional 0/1 `:mask` (commit `7c28cf3b`).
 - [x] D.3 — `iterate` with `:until`: one cook node, body region prepared once, graph card and gestures, reference/kernel and 1/8-domain bytes (`test_iterate.ml`, `test_iterate_graph.ml`, commit `b85f76da`). No wrap gesture yet; about 1.8 ms per pass at 10,000 points, unoptimized.
-- [ ] D.4
-- [ ] D.5
-- [ ] D.6
-- [ ] D.7
-- [ ] D.8
-- [ ] D.R
+- [x] D.4 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
+- [x] D.5 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
+- [x] D.6 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
+- [x] D.7 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
+- [x] D.8 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
+- [x] D.R — review closed 2026-10-16: ` `, ``, `-native`, `-web` and `` exit 0 at `-j 2` (failures found and fixed in 5928c9dd, e159b885, 0983c05f; `results.md`, "Closing gates").
 - [x] E.1 — `graph/shortest_paths` over the shared `Rdk.Shortest_paths` heap search, JavaScript twin fixture-checked (commit `89cd7040`). Unreached points are distance -1, parent -1.
 - [x] E.2 — `graph/chains` equals `Poly_path` traversal on five fixtures, JavaScript twin (commit `89cd7040`).
 - [x] E.3 — `graph/color` equals `Graph_color.run` in all three connectivity modes, JavaScript twin (commit `89cd7040`). Record fields of the `graph/` and `sop/components` sources resolve separately, so each algorithm runs once per field read.
-- [ ] E.4
-- [ ] E.5
-- [ ] E.6
-- [ ] E.R
+- [x] E.4 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
+- [x] E.5 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
+- [x] E.6 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
+- [x] E.R — review closed 2026-10-16: ` `, ``, `-native`, `-web` and `` exit 0 at `-j 2` (failures found and fixed in 5928c9dd, e159b885, 0983c05f; `results.md`, "Closing gates").
 - [ ] G.1
 - [ ] G.2
 
@@ -739,7 +739,7 @@ whole fused native pass. Three shared fixes are in (`3bffaa15`, `8ba568d7`,
 source has no edge groups. Projection: 2× is not reachable for reindexing
 nodes without ancestry-aware host operators.
 
-**Status 2026-10-15: 128/128 registered. No drafts pending.**
+**Status 2026-10-16: 128/128 registered, B.R–E.R closed. Only the optional GPU tasks G.1 and G.2 remain.**
 The earlier per-session tables are superseded; each registration commit
 ("Register …", "port-draft <key>: PASS-SLOW Nx") records its gate and bench.
 
