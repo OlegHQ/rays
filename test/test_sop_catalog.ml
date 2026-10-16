@@ -7,7 +7,9 @@ let registered_factories = lazy (
   let catalog = Flow_sop.Catalog.of_factories ~version:Flow_sop.Manifest.version native
     |> Result.get_ok in
   let source = Flow.Syntax.parse "(workspace registered_nodes)" |> Result.get_ok in
+  (* An explicit library keeps every definition; the default prunes to what the forms reach. *)
   let workspace = match Flow_sop.Catalog.check_workspace ~library:true
+      ~sources:(Flow_sop.Catalog.sources () |> Result.get_ok)
       ~ops:Flow_sop.Operators.all catalog source with
     | Some workspace, [] -> workspace
     | _, diagnostics -> fail (String.concat "\n" (List.map Flow.Diagnostic.to_string diagnostics)) in
@@ -474,8 +476,10 @@ let run ?(exhaustive = false) () =
   Session.close session;
   let factory_keys = List.map Edit_graph.factory_key
       (Lazy.force registered_factories) in
-  check (List.length factory_keys = 162
-      && List.length (List.sort_uniq String.compare factory_keys) = 162)
+  (* 162 SOP nodes and the three native carriers of ported ones (image_texels, pack_instances,
+     subdivide_cracks) *)
+  check (List.length factory_keys = 165
+      && List.length (List.sort_uniq String.compare factory_keys) = 165)
     "combined SOP registry has a missing or duplicate factory key";
   check (List.mem "material" factory_keys) "SOP editor catalog is missing material";
   check (not (List.mem "delete_attribute" factory_keys))

@@ -476,7 +476,7 @@ let run_library_navigation () =
   let authored = parse {|(workspace w
     (defn local_helper :context value [(x : float)] (* x 2))
     (defmacro local_macro [x] `(* ~x 2))
-    (graph g :context value (embedded_helper (local_helper 1))))|} in
+    (graph g :context value (embedded_helper (embedded_macro (local_helper 1)))))|} in
   let workspace = match Flow_sop.Catalog.check_workspace ~sources catalog authored with
     | Some workspace, [] -> workspace
     | _, diagnostics -> fail (String.concat "\n" (List.map Flow.Diagnostic.to_string diagnostics)) in

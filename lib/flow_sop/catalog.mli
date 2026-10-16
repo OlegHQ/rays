@@ -22,6 +22,11 @@ type descriptor = {
 val descriptor : Sop.Edit_graph.factory -> descriptor
 (** The [sop/] kind of a factory. *)
 
+val with_library : descriptor list -> descriptor list
+(** [present] then every embedded library node it lacks, whether or not a workspace uses it:
+    what the editor's node menu and completion offer (a workspace lowers only the library
+    definitions it reaches). *)
+
 val of_factories :
   version:int -> ?extra:descriptor list -> ?nodes:Flow.Defnode.t list -> Sop.Edit_graph.factory list ->
   (Flow.Check.catalog, Flow.Diagnostic.t) result

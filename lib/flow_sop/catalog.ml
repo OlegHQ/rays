@@ -17,6 +17,19 @@ let descriptor factory = {
   keyword_inputs = Edit.factory_keyword_inputs factory;
   fields = Edit.factory_fields factory }
 
+let of_defnode (node : Flow.Defnode.t) = {
+  qualified = node.kind.qualified;
+  key = (match String.index_opt node.kind.qualified '/' with
+    | Some i -> String.sub node.kind.qualified (i + 1) (String.length node.kind.qualified - i - 1)
+    | None -> node.kind.qualified);
+  operation = node.operation; label = node.label; category = node.category;
+  slots = List.map (fun (slot : Flow.Check.slot) -> slot.name, (match slot.required, slot.rest with
+    | true, true -> Edit.Rest | false, true -> Optional_rest
+    | true, false -> Required | false, false -> Optional)) node.slots;
+  slot_types = List.map (fun (slot : Flow.Check.slot) ->
+    Option.fold ~none:"geometry" ~some:Flow.Ty.to_string slot.ty) node.slots;
+  keyword_inputs = node.keyword_inputs; fields = node.fields }
+
 let context_of = Flow.Context.of_qualified
 
 let embedded_sources = lazy (
@@ -40,6 +53,13 @@ let definitions_of_sources forms =
   |> Result.map List.rev
 
 let node_definitions () = Result.bind (sources ()) definitions_of_sources
+
+let library_descriptors = lazy (match node_definitions () with
+  | Ok nodes -> List.map of_defnode nodes
+  | Error _ -> [])
+let with_library present =
+  present @ List.filter (fun d -> not (List.exists (fun p -> p.qualified = d.qualified) present))
+    (Lazy.force library_descriptors)
 
 (* Names a form mentions, as a set; a definition is keyed by the name it binds. *)
 let rec mentions into (form : Flow.Syntax.t) =

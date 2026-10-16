@@ -26,6 +26,12 @@ let catalog value context =
   else if context = Flow.Context.world then Layers.catalog
   else if context = Flow.Context.sop then value.factories @ (snd value.doc.workspace).factories else []
 
+(* [catalog] as descriptors, plus the library nodes this document does not use yet: a workspace
+   lowers only the library definitions it reaches. *)
+let kinds value context =
+  let present = List.map Flow_sop.Catalog.descriptor (catalog value context) in
+  if context = Flow.Context.sop then Flow_sop.Catalog.with_library present else present
+
 (* the open level's network; the scene's if the level is gone (every path resolves the level first) *)
 let network value =
   Option.value ~default:value.doc.Document.scene (Document.network value.doc value.level)

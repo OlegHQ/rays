@@ -1328,7 +1328,10 @@
         (error "missing_group" (str "subdivide could not find hole primitive group " (text/repr hole_name)))
       osd_bad
         (error "invalid_topology" "subdivide could not produce valid geometry"
-          :cause "subdivide [invalid_topology]: Rdk_mesh.Subdivide.subdivide: invalid osd detail attribute")
+          :cause (str "subdivide [invalid_topology]: Rdk_mesh.Subdivide.subdivide: invalid detail attribute "
+                      (cond (int/lt scheme_i 0) "osd_scheme" (int/lt bmode 0) "osd_vtxboundaryinterpolation"
+                            (int/lt fvmode 0) "osd_fvarlinearinterpolation" (int/lt method 0) "osd_creasingmethod"
+                            :else "osd_trianglesubdiv")))
       (int/gt (array/sum kinds) 0)
         (sd_delegate input creases has_creases group scheme iterations cracks crack_bias consistent_topology crease_group crease_weight_mode crease_weight generate_resulting_creases resulting_crease_group hole_group remove_holes boundary_interpolation face_varying_interpolation triangle_policy creasing_method treat_curves_as_independent recompute_point_normals)
       :else

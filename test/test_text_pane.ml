@@ -502,7 +502,8 @@ let lisp_text () =
   let colors = (L.language Pxui.Theme.default).colorize "(sop/box :size 1.5 \"s\" ; c" in
   check (List.length colors = 6) (Printf.sprintf "head, keyword, number, string, comment and the paren: %d runs" (List.length colors));
   (* completions over the catalog: ranked, for the token at the caret *)
-  let vocab = L.vocab (List.map Flow_sop.Catalog.descriptor Sop_catalog.Editor.factories
+  let vocab = L.vocab (Flow_sop.Catalog.with_library
+      (List.map Flow_sop.Catalog.descriptor Sop_catalog.Editor.factories)
     @ Editor_document.Contexts.descriptors) in
   let labels text = List.map (fun (c : Pxui.Ui.completion) -> c.label) (L.complete vocab text (String.length text)) in
   let first text = match labels text with l :: _ -> l | [] -> "" in

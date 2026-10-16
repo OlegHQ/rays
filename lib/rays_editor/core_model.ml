@@ -292,7 +292,8 @@ type ('prepared, 'panel) update = {
 
 let vocabulary factories (doc : Document.t) = lazy (
   Lisp_text.vocab ~ops:(fst doc.workspace).checked.ops
-    (List.map Flow_sop.Catalog.descriptor (factories @ (snd doc.workspace).factories)
+    (Flow_sop.Catalog.with_library
+       (List.map Flow_sop.Catalog.descriptor (factories @ (snd doc.workspace).factories))
       @ Contexts.descriptors))
 
 let vocabulary_for value (doc : Document.t) =

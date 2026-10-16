@@ -18,9 +18,10 @@ let load text = match Editor_document.Workspace_doc.of_text catalog text with
   | Error diagnostics -> failwith (String.concat "\n" (List.map Flow.Diagnostic.to_string diagnostics))
 let diagnostics text = snd (W.check catalog (ok (S.parse text)))
 let () =
-  let factory = List.find (fun f -> Edit_graph.factory_key f = "attr_from_image") factories in
-  assert (Edit_graph.factory_input_types factory = ["geometry";"image"]);
-  assert (Edit_graph.factory_slot_names factory = ["geometry";"image"]);
+  let kind = List.find (fun (d : Flow_sop.Catalog.descriptor) -> d.key = "attr_from_image")
+      (Flow_sop.Catalog.with_library []) in
+  assert (kind.slot_types = ["geometry";"image"]);
+  assert (List.map fst kind.slots = ["geometry";"image"]);
   List.iter (fun input_types ->
     assert (try ignore (Edit_graph.factory ~key:"typed" ~label:"Typed" ~category:["Test"]
       ~input_types ~arity:1 (fun inputs -> List.hd inputs)); false with Invalid_argument _ -> true))

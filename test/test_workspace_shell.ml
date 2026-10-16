@@ -358,10 +358,10 @@ let run_values () =
     let doc=build_ok(E3.workspace editor) in
     let lowered=snd doc.Document.workspace in
     let module Menu=Pxui_graph.Node_menu in
-    let entries=List.map(fun factory->Menu.{key=Edit_graph.factory_key factory;
-      label=Edit_graph.factory_label factory;category=Edit_graph.factory_category factory;
-      arity=Edit_graph.factory_arity factory;context="sop";output=Flow.Ty.geometry;off=None})
-      (factories@lowered.factories) in
+    let entries=List.map(fun(d:Flow_sop.Catalog.descriptor)->Menu.{key=d.key;
+      label=d.label;category=d.category;
+      arity=List.length d.slots-List.length d.keyword_inputs;context="sop";output=Flow.Ty.geometry;off=None})
+      (Flow_sop.Catalog.with_library(List.map Flow_sop.Catalog.descriptor(factories@lowered.factories))) in
     Menu.Private.keys (Menu.create ~x:0 ~y:0 entries) ~query:"points"
     |>List.find_index((=)"points") |>Option.get in
   let e=add ~pick:pick_points "points" in

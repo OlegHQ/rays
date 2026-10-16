@@ -142,9 +142,9 @@ let scope_add value key =
       let ws, _ = value.doc.Document.workspace in
       let is_value = String.length key > 0 && key.[0] = '=' in
       let material_of = String.starts_with ~prefix:"of-material:" key in
-      let factory = List.find_opt (fun f -> Edit_graph.factory_key f = key) (catalog value context) in
-      let arity = match factory with
-        | Some factory -> Edit_graph.factory_arity factory - List.length (Edit_graph.factory_keyword_inputs factory)
+      let kind = List.find_opt (fun (d : Flow_sop.Catalog.descriptor) -> d.key = key) (kinds value context) in
+      let arity = match kind with
+        | Some d -> List.length d.slots - List.length d.keyword_inputs
         | None -> if material_of then 1 else 0 in
       let selected = Pxui_graph.Scope.selected value.scope_view in
       let scope, input = match selected with
@@ -176,11 +176,11 @@ let scope_add value key =
           let positional = geometry @ (match input with
                | Some n -> [ Flow.Syntax.make (Flow.Syntax.Sym n) ]
                | None -> if arity > 0 && geometry = [] then [ Flow.Syntax.make (Flow.Syntax.Sym "nil") ] else []) in
-          let defaults = match factory with None -> [] | Some factory ->
+          let defaults = match kind with None -> [] | Some d ->
             let next_position = ref 0 in
-            let keywords = Edit_graph.factory_keyword_inputs factory in
-            List.combine (Edit_graph.factory_slot_names factory)
-              (List.combine (Edit_graph.factory_inputs factory) (Edit_graph.factory_input_types factory))
+            let keywords = d.keyword_inputs in
+            let types = if d.slot_types = [] then List.map (fun _ -> "geometry") d.slots else d.slot_types in
+            List.map2 (fun (name, required) ty -> name, (required, ty)) d.slots types
             |> List.map (fun (name, (required, ty)) ->
               let supplied = if List.mem name keywords then false else begin
                 let i = !next_position in incr next_position; i < List.length positional end in

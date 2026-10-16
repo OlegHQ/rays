@@ -1079,12 +1079,13 @@
       "api": [
         "type descriptor = { qualified : string ; key : string ; operation : string ; label : string ; category : string list ; slots : ( string * Sop.Edit_graph.input_requirement ) list ; slot_types : string list ; keyword_inputs : string list ; fields : Param.field_view list ; }",
         "val descriptor : Sop.Edit_graph.factory -> descriptor",
+        "val with_library : descriptor list -> descriptor list",
         "val of_factories : version : int -> ? extra : descriptor list -> ? nodes : Flow.Defnode.t list -> Sop.Edit_graph.factory list -> ( Flow.Check.catalog , Flow.Diagnostic.t ) result",
         "val sources : unit -> ( Flow.Syntax.t list , Flow.Diagnostic.t ) result",
         "val node_definitions : unit -> ( Flow.Defnode.t list , Flow.Diagnostic.t ) result",
         "val check_workspace : ? ops : Flow.Op.t list -> ? library : bool -> ? sources : Flow.Syntax.t list -> Flow.Check.catalog -> Flow.Syntax.t list -> Flow.Workspace.t option * Flow.Diagnostic.t list"
       ],
-      "api_sha256": "001dda4a3944e9895f369de77c0361d2885c03ed85d7c582b0d12331aa2a2e50",
+      "api_sha256": "cb6f1da3b5226e32747f53772bb1f9968d31beab250d0276fac47c6f27c62c59",
       "excluded_legacy_symbols": [],
       "library": "flow_sop",
       "module": "Catalog",

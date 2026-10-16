@@ -39,7 +39,7 @@ let readable node =
         | Int_value i -> string_of_int i
         | Float_value x -> let short = Printf.sprintf "%.15g" x in
             if float_of_string short = x then short else Printf.sprintf "%.17g" x
-        | Text_value text -> text
+        | Text_value text -> (match f.kind with Param.Choice_view _ -> token text | _ -> text)
         | Choice_value label -> token label))) fields
       |> String.concat ";"
 
@@ -1017,7 +1017,7 @@ let test_local_subdivide_contract () =
    :group "left"
    :scheme "Bilinear"
    :iterations 2)|} in
-  check (Node.version graph = 13
+  check (Node.version graph = 1
       && contains (readable graph) "group=left"
       && contains (readable graph) "scheme=bilinear"
       && contains (readable graph) "boundary_interpolation=edge_only"
@@ -1148,7 +1148,7 @@ let test_local_subdivide_contract () =
    :group "left"
    :consistent_topology true
    :cracks "Stitch, divide edges")|} in
-  check (Node.version consistent_graph = 13
+  check (Node.version consistent_graph = 1
       && contains (readable consistent_graph) "consistent_topology=true"
       && Node.id consistent_graph <> Node.id divided_stitch_graph)
     "procedural consistent Subdivide cache identity";
@@ -1169,7 +1169,7 @@ let test_local_subdivide_contract () =
    :crease_group "crease_edges"
    :crease_weight 2.5
    :resulting_crease_group "remaining_creases")|} in
-  check (Node.version crease_graph = 13
+  check (Node.version crease_graph = 1
       && List.length (Node.inputs crease_graph) = 2
       && contains (readable crease_graph) "creases=true"
       && contains (readable crease_graph) "crease_group=crease_edges"
@@ -1189,7 +1189,7 @@ let test_local_subdivide_contract () =
    :iterations 2
    :crease_weight 3.0
    :resulting_crease_group "all_edge_creases")|} in
-  check (Node.version all_edge_graph = 13
+  check (Node.version all_edge_graph = 1
       && List.length (Node.inputs all_edge_graph) = 1
       && contains (readable all_edge_graph) "crease_group=;"
       && contains (readable all_edge_graph) "crease_weight=")
@@ -1244,7 +1244,7 @@ let test_local_subdivide_contract () =
    :hole_group ""
    :creasing_method "Chaikin"
    :resulting_crease_group "chaikin_remaining")|} in
-  check (Node.version chaikin_graph = 13
+  check (Node.version chaikin_graph = 1
       && contains (readable chaikin_graph) "creasing_method=chaikin")
     "procedural Chaikin creasing cache identity";
   let chaikin_output = cook_ok evaluator current chaikin_graph
@@ -1295,7 +1295,7 @@ let test_local_subdivide_contract () =
    :generate_resulting_creases true
    :hole_group "holes"
    :iterations 2)|} in
-  check (Node.version hole_graph = 13
+  check (Node.version hole_graph = 1
       && contains (readable hole_graph) "hole_group=holes"
       && contains (readable hole_graph) "remove_holes=true")
     "procedural hole Subdivide cache identity";
@@ -1325,7 +1325,7 @@ let test_local_subdivide_contract () =
    :remove_holes true
    :generate_resulting_creases true
    :hole_group "")|} in
-  check (Node.version boundary_graph = 13
+  check (Node.version boundary_graph = 1
       && contains (readable boundary_graph)
            "boundary_interpolation=edge_and_corner")
     "procedural boundary interpolation cache identity";
@@ -1367,7 +1367,7 @@ let test_local_subdivide_contract () =
    :generate_resulting_creases true
    :hole_group ""
    :face_varying_interpolation "None")|} in
-  check (Node.version fvar_graph = 13
+  check (Node.version fvar_graph = 1
       && contains (readable fvar_graph)
            "face_varying_interpolation=none")
     "procedural face-varying interpolation cache identity";
@@ -1390,7 +1390,7 @@ let test_local_subdivide_contract () =
    :generate_resulting_creases true
    :hole_group ""
    :triangle_policy "Smooth")|} in
-  check (Node.version triangle_graph = 13
+  check (Node.version triangle_graph = 1
       && contains (readable triangle_graph) "triangle_policy=smooth")
     "procedural Smooth Triangles cache identity";
   let triangle_smooth = cook_ok evaluator current triangle_graph in
@@ -1431,7 +1431,7 @@ let test_local_subdivide_contract () =
    :scheme "Bilinear"
    :boundary_interpolation "None"
    :face_varying_interpolation "All")|} in
-  check (Node.version detail_graph = 13
+  check (Node.version detail_graph = 1
       && contains (readable detail_graph) "scheme=bilinear"
       && contains (readable detail_graph) "triangle_policy=catmull_clark")
     "procedural detail-override Subdivide cache identity";
@@ -1479,7 +1479,9 @@ let test_local_subdivide_contract () =
            | None -> false)
        && List.exists (fun trace -> trace.Diagnostic.operation = "subdivide")
             error.trace)
-       "procedural Subdivide detail-override diagnostic");
+       ("procedural Subdivide detail-override diagnostic: " ^ error.code ^ " "
+        ^ Option.value ~default:"" error.cause ^ " ["
+        ^ String.concat "," (List.map (fun t -> t.Diagnostic.operation) error.trace) ^ "]"));
   let curve_positions = Rdk.Packed.Float3.Private.of_owned_exn
       ~x:[|0.;1.;4.|] ~y:[|0.;2.;0.|] ~z:[|0.;0.;0.|] in
   let curve_topology = Rdk.Topology.create_owned ~point_count:3
@@ -1518,7 +1520,7 @@ let test_local_subdivide_contract () =
    :generate_resulting_creases true
    :hole_group ""
    :recompute_point_normals true)|} in
-  check (Node.version independent_curve_graph = 13
+  check (Node.version independent_curve_graph = 1
       && contains (readable shared_curve_graph)
            "treat_curves_as_independent=false"
       && contains (readable independent_curve_graph)

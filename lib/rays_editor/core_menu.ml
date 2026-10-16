@@ -34,13 +34,10 @@ let open_menu value (x, y) =
   | Some (_, context) ->
       let module M = Pxui_graph.Node_menu in
       let extra = (fst value.doc.workspace).checked.ops in
-      let factories context = List.map (fun factory -> M.{
-        key = Sop.Edit_graph.factory_key factory;
-        label = Sop.Edit_graph.factory_label factory;
-        category = Sop.Edit_graph.factory_category factory;
-        arity = Sop.Edit_graph.factory_arity factory
-          - List.length (Sop.Edit_graph.factory_keyword_inputs factory);
-        context = context_name context; output = Flow.Ty.geometry; off = None }) (catalog value context) in
+      let factories context = List.map (fun (d : Flow_sop.Catalog.descriptor) -> M.{
+        key = d.key; label = d.label; category = d.category;
+        arity = List.length d.slots - List.length d.keyword_inputs;
+        context = context_name context; output = Flow.Ty.geometry; off = None }) (kinds value context) in
       let not_here entries =
         List.map (fun (e : M.entry) -> { e with off = Some ("not in " ^ context_name context) }) entries in
       let elsewhere =
