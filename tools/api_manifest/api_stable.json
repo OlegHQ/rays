@@ -1082,10 +1082,11 @@
         "val with_library : descriptor list -> descriptor list",
         "val of_factories : version : int -> ? extra : descriptor list -> ? nodes : Flow.Defnode.t list -> Sop.Edit_graph.factory list -> ( Flow.Check.catalog , Flow.Diagnostic.t ) result",
         "val sources : unit -> ( Flow.Syntax.t list , Flow.Diagnostic.t ) result",
+        "val source_digest : unit -> string",
         "val node_definitions : unit -> ( Flow.Defnode.t list , Flow.Diagnostic.t ) result",
         "val check_workspace : ? ops : Flow.Op.t list -> ? library : bool -> ? sources : Flow.Syntax.t list -> Flow.Check.catalog -> Flow.Syntax.t list -> Flow.Workspace.t option * Flow.Diagnostic.t list"
       ],
-      "api_sha256": "cb6f1da3b5226e32747f53772bb1f9968d31beab250d0276fac47c6f27c62c59",
+      "api_sha256": "e588bfd9e09e5c4ea0fa854722fea48aa4c2859211f5e92293b9745542a984bd",
       "excluded_legacy_symbols": [],
       "library": "flow_sop",
       "module": "Catalog",

@@ -76,6 +76,7 @@ val sha256 : string -> string
 (** Lower-case hex SHA-256: the digest of a sketch source. *)
 
 val catalog_digest : Sop.Edit_graph.factory list -> string
-(** {!sha256} of the manifest text the catalog generates (with {!descriptors}),
-    or of its error: what a [.rays] binary compares against the catalog it
-    runs with. *)
+(** {!sha256} of the native manifest text the catalog generates (with {!descriptors}),
+    or of its error, and of the embedded node library's source text
+    ({!Flow_sop.Catalog.source_digest}): what a [.rays] binary compares against the
+    catalog it runs with. *)

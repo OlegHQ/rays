@@ -2,7 +2,7 @@
 
    start: one million marks that do not read [t] (sketches/million_marks with its drift term
    removed) for one frame. The workspace is evaluated once (the window, the camera and the editor
-   read one document; it was three evaluations), and the first frame costs under 400 bytes a mark
+   read one document; it was three evaluations), and the first frame costs under 500 bytes a mark
    on the initial domain (it was about 1,040: three evaluations, four copies of the 64-byte
    instances and a tuple and boxed floats per mark; it is about 290 now, the evaluation, the
    instances and the index table once each).
@@ -39,7 +39,8 @@ let start sketch =
   let per_mark = (Gc.allocated_bytes () -. before) /. float marks in
   let evaluations = Flow.Phase_timer.calls phases Evaluate in
   if evaluations <> 1 then fail (Printf.sprintf "a start evaluated the workspace %d times" evaluations);
-  if per_mark > 400. then fail (Printf.sprintf "a static start allocated %.0f bytes a mark" per_mark);
+  (* 398 before the node library; its 128 definitions add a fixed ~75 MB (75 a mark) *)
+  if per_mark > 500. then fail (Printf.sprintf "a static start allocated %.0f bytes a mark" per_mark);
   Printf.printf "workspace start: 1,000,000 static marks, 1 evaluation, %.0f bytes a mark for the first frame\n" per_mark
 
 let reload () =

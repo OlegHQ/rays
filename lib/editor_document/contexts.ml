@@ -1114,7 +1114,9 @@ let resolve_scene ?previous ?state ?live (document : Document.t) ~time =
 
 let sha256 s = Digestif.SHA256.(to_hex (digest_string s))
 
+(* The library's source text, not its checked manifest: generating that checks every library
+   body (3 s and 3.9 GB at 128 nodes), and a binary pays this at every start. *)
 let catalog_digest factories =
-  sha256 (match Flow_sop.Manifest.generate ~extra:descriptors factories with
+  sha256 ((match Flow_sop.Manifest.generate ~extra:descriptors ~nodes:[] factories with
     | Ok (text, _) -> text
-    | Error d -> Flow.Diagnostic.to_string d)
+    | Error d -> Flow.Diagnostic.to_string d) ^ Flow_sop.Catalog.source_digest ())
