@@ -6442,3 +6442,25 @@ Separate_pieces, Spiral, Surface_metric, Sweep, Sweep_circle, Sweep_modeling, Uv
 `Voronoi2` has no referrer at all. This is module-level; functions used only by replaced nodes
 inside still-live modules (`Attribute_ops`, `Group_ops`, `Transform_ops`, …) were not audited.
 They stay as oracles until the port gates are retired.
+
+**Closing gates (2026-10-16).** Run at `nice -n 10 -j 2` on dev after the `lib/sop` fix merge
+(045225ab). `@all @runtest` found 7 failures, `@runtest-native` 1 and `@qualification-web` 14; all
+are fixed:
+- The editor's add-node menu, node-add arity/defaults and text completion listed only the library
+  nodes a document already used, because a workspace lowers only the definitions it reaches
+  (1eb147fa). `Flow_sop.Catalog.with_library` adds the rest from their declarations (5928c9dd).
+  This failed `test_text_pane`, `test_workspace_shell`, `test_image_sop` and `test_sop_catalog`.
+- Tests written before the last two registrations: Subdivide is a Lisp node (version 1, choice
+  tokens in `test_sop`), the `delete_attributes` wrong-input probe uses native `sop/null`, the
+  catalog lists 165 keys (162 nodes and 3 carriers), the library-helper fixture uses its macro.
+  The Subdivide body now names the bad `osd_*` detail attribute in its cause.
+- Every `.rays` binary start and every `rays-lisp` code generation checked all library bodies to
+  compute `Contexts.catalog_digest`: 3 s and 3.9 GB, growing with each registration since
+  e71eb1f1 (bisect). It now hashes the library text (0983c05f): `test_workspace_start` 8244 →
+  475 bytes a mark, 9.2 s → 1.4 s. Its budget is 500 (398 with no library; the 128 definitions
+  add ~75 MB once).
+- `qualification-web` reported every page failed: the runtime spreads `prims` into `rt`, so the
+  Lisp `error` primitive (b0323372) shadowed the failed-frame slot `__rays.error`. It is
+  `__rays.failure` now (e159b885); all 15 programs open.
+
+`@smoke` passed. The `lib/sop` native-node suite (`run_nodes`) passes and takes about 70 minutes.

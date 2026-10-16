@@ -842,6 +842,19 @@ including calls through reusable functions. `:facts` accepts elementwise points,
 primitives or irregular, component name vectors for reads and writes, topology
 preserved or changed, and an exact bool. `Workspace.kind_calls` exposes the
 checked body's transitive calls through specialized functions and macros.
+A declared `:facts` is the node's contract for caching and fusion, as a native factory's facts
+are: topology and elementwise come from it, and its reads and writes lead the names the body's
+kernels report (behind a body's selection root, which reads `*`, only the declaration counts).
+A name that follows a text parameter is written `$param`, `$param|fallback` (the fallback when
+the parameter is blank) or `$param~prefix` (the parameter's value as a prefix pattern), resolved
+by `Check.resolve_component_names` at the node's parameters and, in the catalog, at their
+defaults. Cooking still refuses an undeclared write or a replaced topology.
+
+Adjacent Lisp nodes whose bodies each write `P` once over their single input
+(`Context_kernel.fusable`: one geometry slot, scalar parameters, no validators or normalizers,
+`map` as the only higher-order form, no loops, state, calls or other `sop/` operations, branch
+conditions over parameters only) lower into one kernel run (`Lower.fused_view`); four chained
+`noise_displace` nodes cook in one run.
 
 An authored node body's evaluated errors occur when the node cooks, even when
 static parameters select the failing arm during construction. Parameter edits
