@@ -26,6 +26,43 @@ module Gpu = struct
     Domain.DLS.set current_policy policy;
     Fun.protect ~finally:(fun()->Domain.DLS.set current previous;
       Domain.DLS.set current_policy previous_policy)run
+  (* The initial domain owns the device. A host that pumps it publishes the backend as a service; the
+     other domains (the cook workers) reach it through a mailbox the initial domain serves, so a worker
+     waits for the device, never the interface for a worker. *)
+  type job={run:unit->unit;mutable finished:bool}
+  let lock=Mutex.create() and served=Condition.create()
+  let jobs:job Queue.t=Queue.create()
+  let service:backend option Atomic.t=Atomic.make None
+  let proxied:(backend*backend)option Atomic.t=Atomic.make None
+  let set_service backend=Atomic.set service backend
+  let pump()=
+    if not(Domain.is_main_domain())then invalid_arg "Flow_ir.Gpu.pump: initial domain required";
+    let rec drain()=
+      Mutex.lock lock;let job=Queue.take_opt jobs in Mutex.unlock lock;
+      match job with None->()|Some job->
+        (try job.run()with _->());
+        Mutex.lock lock;job.finished<-true;Condition.broadcast served;Mutex.unlock lock;drain()in
+    drain()
+  let remote f=
+    if Domain.is_main_domain()then Some(f())else begin
+      let result=ref None in
+      let job={run=(fun()->result:=Some(f()));finished=false}in
+      Mutex.lock lock;Queue.add job jobs;
+      while not job.finished do Condition.wait served lock done;
+      Mutex.unlock lock;!result end
+  let unavailable=Flow.Diagnostic.error ~code:"E_GPU" "The GPU service did not run the request."
+  let proxy real=match Atomic.get proxied with
+    |Some(source,proxy)when source==real->proxy|_->
+    let proxy={cost=(fun packed ~count->Option.join(remote(fun()->real.cost packed ~count)));
+      prepare=(fun packed->match remote(fun()->real.prepare packed)with
+        |Some(Ok kernel)->Ok{run=(fun inputs->match remote(fun()->kernel.run inputs)with Some r->r|None->Error unavailable);
+          readback=(fun value->match remote(fun()->kernel.readback value)with Some r->r|None->Error unavailable)}
+        |Some(Error d)->Error d|None->Error unavailable)}in
+    Atomic.set proxied(Some(real,proxy));proxy
+  (* The backend a worker or the initial domain may use: its own scope, else the published service. *)
+  let available()=match Domain.DLS.get current with
+    |Some backend->Some backend
+    |None->Option.map(fun real->if Domain.is_main_domain()then real else proxy real)(Atomic.get service)
 end
 
 (* Set once the executor can run a region on the device: the host side of [bulk_approx]. *)
@@ -897,7 +934,7 @@ module Executor = struct
       | _ -> None in
     find false program.ir.roots.(0)
   let packed_root program = Option.map fst (root_packed program)
-  let force_into ?state ?elems ?resolve ?(strict=false) ~column_source ~count ~outputs program ~live =
+  let force_into_cpu ?state ?elems ?resolve ?(strict=false) ~column_source ~count ~outputs program ~live =
     match packed_root program with
     | Some packed when Packed.elementwise packed ->
         Result.map (fun () -> Some ()) (Packed.force_into ?state ?elems ?resolve
@@ -964,6 +1001,28 @@ module Executor = struct
         ~cached:find ~store:(fun((_,p,_)as k)->kernels:=k::take 63(List.filter(fun(_,q,_)->q!=p) !kernels))
         ~readback:false packed ~live in
       Result.map(Option.map(function Gpu v->v|Cpu _->assert false))result
+  (* A Sop_input write in a cook may take its region from the device: pack the inputs here, dispatch
+     and read back through the service, then copy the planes the writer asked for. The CPU region
+     answers when the device declines, is unmeasured, or fails. *)
+  let force_into ?state ?elems ?resolve ?(strict=false) ~column_source ~count ~outputs program ~live =
+    let cpu()=force_into_cpu ?state ?elems ?resolve ~strict ~column_source ~count ~outputs program ~live in
+    match program.sink,Array.length outputs,Gpu.available(),packed_root program with
+    |Some Sop_input,1,Some backend,Some packed when Packed.elementwise packed->
+        (match display_packed ?state ?resolve ~backend ~policy:(Domain.DLS.get Gpu.current_policy)
+            ~approx:program.approx ~display:false ~profile:program.profile
+            ~cached:(fun()->program.gpu_kernel) ~store:(fun k->program.gpu_kernel<-Some k)
+            ~readback:true packed ~live with
+         |Ok(Some(Cpu value))->
+             let data,width=match value with
+               |E.Float_array d->d,1|Vec2_array d->d,2|Vec3_array d->d,3|Vec4_array d->d,4|_->[||],0 in
+             if width=0 || width<>Array.length outputs.(0) || Array.length data<>count*width then cpu()
+             else begin
+               Array.iteri(fun component plane->Option.iter(fun plane->
+                 for i=0 to count-1 do plane.(i)<-data.(i*width+component) done)plane)outputs.(0);
+               Ok(Some())
+             end
+         |Ok _|Error _->cpu())
+    |_->cpu()
   let force_display ?state ?(reference=false) ?policy program ~live =
     Result.bind (try_display ?state ~reference ?policy program ~live) (function
       |Some value->Ok value

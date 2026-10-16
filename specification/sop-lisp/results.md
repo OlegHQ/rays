@@ -72,7 +72,7 @@ ports and completed encoded boundary are recorded below.
 | B.11 | All six setters are embedded Lisp declarations with native factories retained as test oracles. Final Set Color passes the whole production oracle, metadata/cache/editor/refusal checks, raw Cd byte checks and all 78 fixed performance rows (maximum 1.7896493105836428×). | Complete: final production/native integration 8526 exited 0; evidence below. |
 | B.12 | All seven metadata nodes are embedded Lisp declarations. Encoded normalization and canonical keys, every owner/storage/mode, exact errors, public cache identity and graph/editor gates passed. Swap is the final whole metadata port; all 212 fixed timing rows pass under the recorded precision protocols. | Complete: final production/native integration 90589 exited 0; individual evidence below. |
 | C.15 | Full native Measure wrapper and kernel audit establishes topology/indexed position access and canonical n-gon triangulation with original-primitive mapping as prerequisites. The whole node moves from B.15 to C.15; no mode, registration or target is removed. | B.1/B.5/B.7/B.9/C.1/C.2 and a generic canonical triangulation + primitive mapping capability, then the complete port Verification gate. No implementation or completion claimed. |
-| G.1–G.2 | G.1 closed: implicit readback sink, tolerance-checked device bulk maps, 32-bit fused/checked fma, grid float-index position planes, measured Metal cost; `test_gpu_bulk` and the native `test_grid_gpu_native`. G.2 open. | See "G.1 and G.2 status": G.2 needs the asynchronous staged cook. |
+| G.1–G.2 | Both closed: tolerance-checked device bulk maps and measured Metal cost for G.1; the device service (worker-domain cooks reach the device through a pumped mailbox) for G.2. Tests `test_gpu_bulk` (both blocks), `test_grid_gpu_native`, `test_chain_gpu_native`. | Instruction-aware CPU estimate: at 1M points the chain is a wash on this machine. |
 
 The typed integer/text/source Core API snapshot was accepted separately in
 commit `621113d2` after API/dependency gate 37921 exited 0. Foundation
@@ -6499,7 +6499,34 @@ The measured policy chose the GPU for all three planes (12,000,000 bytes read ba
 lowering is 8.3 s against 8.6 s on the CPU: the position planes are about 40 ms of it, the rest is the
 node's validation, row-error and topology kernels, which stay on the CPU.
 
-G.2 is open. The fused four-deformer chain reads cooked `P` and `N`, so its `map` is not a static
-bulk map: it runs in the cook of a worker domain, where `bulk_approx` never applies. Placing it needs the
-asynchronous second stage (cook the input, dispatch on the initial domain, submit the rest) in
-`Rays_editor.Cook`, which is not done.
+G.2 is closed. A kernel that reads cooked attributes runs inside a cook on a worker domain (`Async_cook`
+runs `Session.cook` on its own domain), so it cannot touch the device. The device is a service: a host
+that pumps publishes its backend (`Flow_ir.Gpu.set_service`, `Workspace_gpu.with_backend` does so and
+pumps at both ends of each frame), `Gpu.available` gives a worker a proxy whose `cost`, `prepare`, `run`
+and `readback` queue on a mailbox, and `Gpu.pump` serves them on the initial domain. The cook worker packs
+its own inputs from the cooked geometry, waits for the device and continues with the read-back planes;
+the interface never waits for a worker. `Executor.force_into` takes the region from the device when the
+attribute write is a `Sop_input` sink, the producer is approximable and the measured cost wins, and
+otherwise runs the CPU region. `Attribute_kernel.node` now compiles with the checker's `approx` and the
+`Sop_input` sink. Fixed-step runs, exports and reference comparisons publish no service and stay on the CPU.
+
+Tests: `lib/flow_sop/test_gpu_bulk.ml` (second block: four fused deformers cooked on a spawned domain
+while the initial domain pumps a mock device; one dispatch and one readback on the initial domain, bytes
+within 1e-4, and no dispatch when the device is slower) and the native
+`lib/rays_editor/native_qualification/test_chain_gpu_native.ml`.
+
+Measured on this Mac, fused chain of four `noise_displace` over a 1,000,000-point grid, four cook domains,
+median of five cooks, four runs (the machine was shared, so the spread is real):
+
+| Cook | Seconds |
+| --- | --- |
+| `grid` alone, CPU | 0.095 to 0.106 |
+| grid and chain, CPU | 0.131 to 0.154 |
+| grid and chain, measured policy (GPU chosen, 12 MB read back per cook) | 0.122 to 0.178 |
+| grid and chain, placement forced | 0.112 to 0.204 |
+
+The largest position difference from the CPU body is 2.9e-7. The chain itself is 30 to 50 ms on four CPU
+domains and 15 to 80 ms on the device: at this size the placement is a wash, not a win, because the CPU
+estimate is the flat table row and the device time is calibrated over zeroed inputs, so both ignore the
+noise cost. Placement correctness, tolerance and the non-blocking hand-off are what the gate establishes;
+an instruction-aware CPU estimate is the next step if the speedup matters.

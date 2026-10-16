@@ -56,7 +56,11 @@ let backend t = match t.backend with Some backend->backend|None->
   let backend:G.backend={cost=(fun packed ~count->measure t packed ~count);
     prepare=(fun packed->Result.bind(owner t)(fun(_,host)->(H.backend host).prepare packed))}in
   t.backend<-Some backend;backend
-let with_backend t run=G.with_backend ~policy:t.policy (backend t)run
+(* The frame is the pump: cook workers queue device requests, served here between frames' work. *)
+let with_backend t run=
+  G.set_service(Some(backend t));
+  G.pump();
+  G.with_backend ~policy:t.policy (backend t)(fun()->Fun.protect ~finally:G.pump run)
 let image t ~key ~width ~height ~publish value=
   Result.bind(owner t)(fun(gpu,host)->match H.output host value with
     |None->Error(error "The image's GPU producer was closed or superseded.")
@@ -90,6 +94,7 @@ let image_stats t=
   host,t.image_stats.created,t.image_stats.closed,!buffers,!textures
 let close t=
   if not(Domain.is_main_domain())then invalid_arg "Workspace_gpu.close: initial domain required";
+  G.set_service None;G.pump();
   if not t.closed then begin
   Slots.clear t.mark_sets;
   Images.clear t.images;

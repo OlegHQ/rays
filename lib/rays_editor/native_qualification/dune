@@ -9,8 +9,8 @@
 (copy_files ../marks_scene.mli)
 
 (executables
- (names test_workspace_gpu_native test_workspace_gpu_marks bench_marks_gpu test_grid_gpu_native)
- (modules test_workspace_gpu_native test_workspace_gpu_marks bench_marks_gpu test_grid_gpu_native drawing workspace_gpu workspace_images workspace_resources marks_scene)
+ (names test_workspace_gpu_native test_workspace_gpu_marks bench_marks_gpu test_grid_gpu_native test_chain_gpu_native)
+ (modules test_workspace_gpu_native test_workspace_gpu_marks bench_marks_gpu test_grid_gpu_native test_chain_gpu_native drawing workspace_gpu workspace_images workspace_resources marks_scene)
  (libraries rays flow flow_ir flow_sop flow_gpu rays_execution scene_command lru runtime_resources ogpu sop_catalog sop rdk))
 
 (rule

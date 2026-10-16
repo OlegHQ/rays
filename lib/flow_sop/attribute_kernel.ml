@@ -778,12 +778,12 @@ let write_constant ?state ?elems ~resolve ~owner ~kind ~name prepared target ~li
                    Result.bind sample (fun sample->
                      write_constant_source ~grain:4096 ~owner ~kind name sample target)))
 
-let node ?state ?(reference = false) ?(strict = false) ?elems ?profile ?selection ?default ?(owner=A.Point) ?(kind="vec3") ~source ~name ~values ~sources inputs =
+let node ?state ?(reference = false) ?(strict = false) ?elems ?profile ?approx ?selection ?default ?(owner=A.Point) ?(kind="vec3") ~source ~name ~values ~sources inputs =
   let selected=selection<>None || default<>None in
   let data=if not selected then values else E.Record(["values",values] @
     Option.to_list(Option.map(fun value->"selection",value)selection) @
     Option.to_list(Option.map(fun value->"default",value)default)) in
-  let program = prepare ?profile ~strict ~sources inputs data in
+  let program = prepare ?profile ?approx ~sink:Flow_ir.Sop_input ~strict ~sources inputs data in
   let owned_fields=if strict && not reference && List.mem kind ["float_array";"int_array"] then
     Result.fold ~ok:fresh_csr_fields ~error:(fun _->[]) program else [] in
   let constant = if reference then None else prepare_constant ~kind values in

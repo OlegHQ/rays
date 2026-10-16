@@ -59,7 +59,7 @@ val prepare : ?profile:Flow_ir.Profile.t -> ?strict:bool -> ?approx:Flow.Workspa
 
 val node : ?state:Flow.Eval.state -> ?reference:bool -> ?strict:bool ->
   ?elems:(string * Flow.Eval.value) list ->
-  ?profile:Flow_ir.Profile.t ->
+  ?profile:Flow_ir.Profile.t -> ?approx:Flow.Workspace.Paths.t ->
   ?selection:Flow.Eval.value -> ?default:Flow.Eval.value ->
   ?owner:Rdk.Attribute.owner -> ?kind:string ->
   source:string -> name:string -> values:Flow.Eval.value -> sources:int list ->

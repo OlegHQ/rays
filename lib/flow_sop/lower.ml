@@ -469,7 +469,7 @@ let rec lower_checked ~factories ?(provenance_tags = true) ?(reference = false) 
       Sop.Node.Private.with_facts {(Sop.Node.facts node) with reads=["*"];writes=["*"]} node in
     let attribute_node ?state ?elems ?selection ?default ?(owner=Rdk.Attribute.Point) ?(kind="vec3") ~name ~values ~sources inputs =
       if strict_body then ignore (ok (Attribute_kernel.prepare ~strict:true ~sources inputs values));
-      Attribute_kernel.node ?state ?elems ?selection ?default ~strict:strict_body ~reference ~profile ~owner ~kind
+      Attribute_kernel.node ?state ?elems ?selection ?default ~strict:strict_body ~reference ~profile ~approx:checked.approx ~owner ~kind
         ~source:(Lazy.force kernel_source) ~name ~values ~sources inputs in
     let group_data args = E.Record(List.filter(fun(name,_)->name="values"||name="order")args) in
     let attribute_data args=if not(List.mem_assoc "selection" args || List.mem_assoc "default" args) then List.assoc "values" args

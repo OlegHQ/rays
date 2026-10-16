@@ -937,6 +937,9 @@
         "type backend = { cost : Packed.t -> count : int -> float option ; prepare : Packed.t -> ( kernel , Flow.Diagnostic.t ) result }",
         "type policy = Measured | Qualification",
         "val with_backend : ? policy : policy -> backend -> ( unit -> 'a ) -> 'a",
+        "val set_service : backend option -> unit",
+        "val pump : unit -> unit",
+        "val available : unit -> backend option",
         "end",
         "type source = | Constant of Flow.Eval.value | Frame_field of string | Input of string | State_previous of Flow.Eval.residual",
         "type body = | Operation of string | Vector | Field of string | List_value | Record_value of string list | Struct_value of string * Flow.Ty.t * string list | Reference of Flow.Eval.residual | Packed_map of Packed.t | Readback",
@@ -983,7 +986,7 @@
         "val force_marks : ? state : Flow.Eval.state -> marks -> live : Frame_input.t -> ( ( string * Flow.Eval.value ) list , Flow.Diagnostic.t ) result",
         "end"
       ],
-      "api_sha256": "a962b51d3ac0581f906781944ea8f28d187301a8342693efc70909226cb4083e",
+      "api_sha256": "59741a0751a72c351ec958eaf676a7b8bddbc05534ac331b809a373aadb7ba91",
       "excluded_legacy_symbols": [],
       "library": "flow_ir",
       "module": "Flow_ir",
@@ -1067,9 +1070,9 @@
         "val write_selected : grain : int -> owner : Rdk.Attribute.owner -> kind : string -> string -> values : Flow.Eval.value -> selection : Flow.Eval.value -> default : Flow.Eval.value -> Rdk.Geometry.t -> ( Rdk.Geometry.t , Flow.Diagnostic.t ) result",
         "val write_constant_source : grain : int -> owner : Rdk.Attribute.owner -> kind : string -> string -> ? selection : Flow.Eval.value -> ? default : Flow.Eval.value -> Flow.Eval.value -> Rdk.Geometry.t -> ( Rdk.Geometry.t option , Flow.Diagnostic.t ) result",
         "val prepare : ? profile : Flow_ir.Profile.t -> ? strict : bool -> ? approx : Flow.Workspace.Paths.t -> ? sink : Flow_ir.sink -> sources : int list -> Sop.Node.t list -> Flow.Eval.value -> ( Flow_ir.Executor.program , Flow.Diagnostic.t ) result",
-        "val node : ? state : Flow.Eval.state -> ? reference : bool -> ? strict : bool -> ? elems : ( string * Flow.Eval.value ) list -> ? profile : Flow_ir.Profile.t -> ? selection : Flow.Eval.value -> ? default : Flow.Eval.value -> ? owner : Rdk.Attribute.owner -> ? kind : string -> source : string -> name : string -> values : Flow.Eval.value -> sources : int list -> Sop.Node.t list -> Sop.Node.t"
+        "val node : ? state : Flow.Eval.state -> ? reference : bool -> ? strict : bool -> ? elems : ( string * Flow.Eval.value ) list -> ? profile : Flow_ir.Profile.t -> ? approx : Flow.Workspace.Paths.t -> ? selection : Flow.Eval.value -> ? default : Flow.Eval.value -> ? owner : Rdk.Attribute.owner -> ? kind : string -> source : string -> name : string -> values : Flow.Eval.value -> sources : int list -> Sop.Node.t list -> Sop.Node.t"
       ],
-      "api_sha256": "df64cf982d4243792ceff5b61c5d8c782b4de9acc921c5728b9467e33ec0a24b",
+      "api_sha256": "3c4eb4e1229bf29a532dffc9d45eb0818342b3fe53087e7dc2cdb8cf0cfc8863",
       "excluded_legacy_symbols": [],
       "library": "flow_sop",
       "module": "Attribute_kernel",

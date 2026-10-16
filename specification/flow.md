@@ -2065,7 +2065,12 @@ producer the checker marks approximable; when the backend's measured cost beats 
 executor runs it, reads it back once, and the evaluator accepts it within 1e-4 (relative plus
 absolute) of the walked first 4,096 elements instead of bit for bit. Everything not so placed keeps
 the bit-for-bit check. The native device runs fused and checked multiply-add in 32 bits
-(`Packed.gpu_refusals ~fused:true`); the web export keeps the binary64 refusals. Fixed-step runs,
+(`Packed.gpu_refusals ~fused:true`); the web export keeps the binary64 refusals. A kernel that reads cooked attributes runs inside a cook on a worker domain, which may not drive the
+device. A host that pumps the device (`Workspace_gpu.with_backend`) publishes it as a service
+(`Gpu.set_service`); a worker's `Gpu.available` is then a proxy whose requests the initial domain serves
+in `Gpu.pump`, and `Executor.force_into` takes an approximable `Sop_input` write from the device when
+the measured cost wins and otherwise runs the CPU region. The interface never waits for a worker.
+Fixed-step runs,
 exports and reference comparisons continue to use CPU execution; the unstable
 qualification hook exists only to exercise and measure native selection.
 

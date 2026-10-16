@@ -66,6 +66,17 @@ module Gpu : sig
   val with_backend : ?policy:policy -> backend -> (unit -> 'a) -> 'a
   (** Initial-domain host scope. [None] cost means unmeasured and keeps CPU placement.
       Qualification explicitly forces the native test path; it is not production calibration. *)
+
+  val set_service : backend option -> unit
+  (** Publish the backend that cook workers may use through {!pump}, or withdraw it. Only a host that
+      calls {!pump} on the initial domain may publish one: a worker waits until the request is served. *)
+
+  val pump : unit -> unit
+  (** Serve the device requests the cook workers have queued. Initial domain only. *)
+
+  val available : unit -> backend option
+  (** The backend of this domain's scope, else the published service, reached through the mailbox
+      from a worker. *)
 end
 type source =
   | Constant of Flow.Eval.value
