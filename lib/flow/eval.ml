@@ -131,6 +131,8 @@ and st = {
   strict_executor : bool;
   mutable observe_kernel : (residual -> unit) option;
   mutable bulk : (residual -> value option) option;  (* the whole value of a large static packed map, see [hof] *)
+  mutable bulk_approx : (residual -> value option) option;
+    (* the same, from a device whose 32-bit result is taken within a tolerance of the walked elements *)
   source : string Lazy.t;
   state : state option;
   mutable states : value list;
@@ -815,7 +817,20 @@ and hof c env term kind f rest =
              while !i < Array.length walked
                    && Int64.equal (Int64.bits_of_float d.(!i)) (Int64.bits_of_float walked.(!i)) do incr i done;
              !i = Array.length walked) in
-           let whole = match bulk {rid = Atomic.fetch_and_add bulk_ids (-1); rterm = term;
+           let tolerant (d : float array) = Array.length d = n * width && (
+             let ok = ref true in
+             Array.iteri (fun i w -> let g = d.(i) in
+               if not (Float.abs (g -. w) <= 1e-4 *. (1. +. Float.abs w)) then ok := false) walked; !ok) in
+           let approx_whole = match c.st.bulk_approx with
+             | None -> None
+             | Some host -> (match host {rid = Atomic.fetch_and_add bulk_ids (-1); rterm = term;
+                 renv = capture term env; rc = c; previous = false; live = None; core = None; dep_frame = 0; dep_state = 0} with
+               | Some (Float_array d as v) when width = 1 && tolerant d -> Some v
+               | Some (Vec2_array d as v) when width = 2 && tolerant d -> Some v
+               | Some (Vec3_array d as v) when width = 3 && tolerant d -> Some v
+               | Some (Vec4_array d as v) when width = 4 && tolerant d -> Some v
+               | _ -> None) in
+           let whole = if Option.is_some approx_whole then approx_whole else match bulk {rid = Atomic.fetch_and_add bulk_ids (-1); rterm = term;
                renv = capture term env; rc = c; previous = false; live = None; core = None; dep_frame = 0; dep_state = 0} with
              | Some (Float_array d as v) when width = 1 && same d -> Some v
              | Some (Vec2_array d as v) when width = 2 && same d -> Some v
@@ -1114,7 +1129,7 @@ let new_state ?(budget=max_steps) ~record ws =
   let graphs = Hashtbl.create 8 and defs = Hashtbl.create 8 in
   List.iter (fun (g : W.graph) -> Hashtbl.replace graphs g.name g) ws.W.graphs;
   List.iter (fun (g : W.graph) -> Hashtbl.replace defs g.name g) ws.W.defs;
-  { time = None; resolve = None; execute = None; owner = ref (); compiled_residuals = true; strict_executor=false; observe_kernel = None; bulk = None;
+  { time = None; resolve = None; execute = None; owner = ref (); compiled_residuals = true; strict_executor=false; observe_kernel = None; bulk = None; bulk_approx = None;
     source = lazy (Digest.string (fst (Lisp.print ws.W.source))); state = None; states = [];
     nfns = 0; fn_calls = Hashtbl.create 1;
     steps = 0; budget; nodes = []; authored = []; nnodes = 0; cells = []; cache = Hashtbl.create 8;
@@ -1122,7 +1137,7 @@ let new_state ?(budget=max_steps) ~record ws =
     kind_fns = ws.W.kind_fns; ops = ws.ops; find_op = Op.finder ws.ops }
 
 let live_state (st : st) ~state ?(elems = Smap.empty) (l : live) =
-  { st with time = Some l; state = Some state; observe_kernel = None; bulk = None;
+  { st with time = Some l; state = Some state; observe_kernel = None; bulk = None; bulk_approx = None;
     steps = 0; memo = Hashtbl.create 16;
     fn_calls = Hashtbl.create 16; record = false; elems }
 
@@ -1136,7 +1151,7 @@ let protect f =
   | Stack_overflow -> Error (diagnostic "E_DEPTH" "Evaluation is nested too deeply." None)
   | Out_of_memory -> Error (diagnostic "E_ARRAY_MEMORY" "Frame data exceeds available memory." None)
 
-let static_impl ?budget ?(record = false) ?(inputs = []) ?observe ?bulk ws =
+let static_impl ?budget ?(record = false) ?(inputs = []) ?observe ?bulk ?bulk_approx ws =
   Phase_timer.measure Evaluate (fun () ->
   protect (fun () ->
     if List.length inputs <> List.length (List.sort_uniq String.compare (List.map fst inputs)) then
@@ -1146,8 +1161,8 @@ let static_impl ?budget ?(record = false) ?(inputs = []) ?observe ?bulk ws =
         failf "E_UNKNOWN_GRAPH" "Unknown graph input target: %s." name) inputs;
     List.iter (fun (_, ins) -> List.iter (fun (_, value) -> Value.validate value) ins) inputs;
     let st = new_state ?budget ~record ws in
-    st.observe_kernel <- observe; st.bulk <- bulk;
-    Fun.protect ~finally:(fun () -> st.observe_kernel <- None; st.bulk <- None) (fun () ->
+    st.observe_kernel <- observe; st.bulk <- bulk; st.bulk_approx <- bulk_approx;
+    Fun.protect ~finally:(fun () -> st.observe_kernel <- None; st.bulk <- None; st.bulk_approx <- None) (fun () ->
     let c = root st in
     let results = List.map (fun (g : W.graph) ->
       let over = Option.value (List.assoc_opt g.name inputs) ~default:[] in

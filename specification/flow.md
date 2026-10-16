@@ -2059,7 +2059,13 @@ CPU kernel tier plus CPU instance building; an unmeasured backend keeps CPU. For
 `sop/with_attr` (with or without `(exact x)`) materializes selected GPU output on the initial
 domain before submitting CPU geometry work. The cook worker receives an owned
 CPU array. Attribute-reading cones retain their cooked-input CPU route.
-Fixed-step runs,
+A large static map in a node body is the one producer the static evaluator may take from the device:
+`Eval.Private.static_with_kernels ~bulk_approx` offers a map of more than 4,096 elements whose
+producer the checker marks approximable; when the backend's measured cost beats the CPU row the
+executor runs it, reads it back once, and the evaluator accepts it within 1e-4 (relative plus
+absolute) of the walked first 4,096 elements instead of bit for bit. Everything not so placed keeps
+the bit-for-bit check. The native device runs fused and checked multiply-add in 32 bits
+(`Packed.gpu_refusals ~fused:true`); the web export keeps the binary64 refusals. Fixed-step runs,
 exports and reference comparisons continue to use CPU execution; the unstable
 qualification hook exists only to exercise and measure native selection.
 

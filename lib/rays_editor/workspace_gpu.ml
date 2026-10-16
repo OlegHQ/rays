@@ -13,13 +13,14 @@ let close_image stats sink=
 type t={mutable owner:(X.gpu * H.t)option; mark_sets:P.gpu_marks Slots.t;
   images:Flow_gpu.Image_sink.t Images.t;
   image_stats:image_stats;mutable closed_host:H.Private.stats;
-  mutable backend:G.backend option; mutable closed:bool; mutable policy:G.policy}
+  mutable backend:G.backend option; mutable closed:bool; mutable policy:G.policy;
+  mutable measured:((string*int)*float option)list}
 let create ()=let image_stats={created=0;closed=0;buffers=0;textures=0}in
   {owner=None;
   mark_sets=Slots.create ~release:(fun _->P.close_gpu_marks)64;
   images=Images.create ~release:(fun _->close_image image_stats)64;
   image_stats;closed_host=H.Private.zero;
-  backend=None;closed=false;policy=G.Measured}
+  backend=None;closed=false;policy=G.Measured;measured=[]}
 let qualification t=
   if t.closed || not(Domain.is_main_domain())then invalid_arg "Workspace_gpu.qualification: open initial-domain owner required";
   t.policy<-G.Qualification
@@ -30,10 +31,29 @@ let owner t =
   match t.owner with Some owner->Ok owner|None->
     Result.map(fun gpu->let owner=gpu,H.create ~clock:Unix.gettimeofday gpu in
       t.owner<-Some owner;owner)(native(X.acquire_gpu()))
+(* The cost of a producer is measured on this device: pack, upload and one synchronized dispatch of the
+   program over zeroed inputs of the real shape, median of three after a warm-up. At most 64 programs
+   (by emitted kernel, and count) are kept; one that cannot run is unmeasured and keeps the CPU. *)
+let measure t packed ~count=
+  match Flow_gpu.Emit.kernel packed with Error _->None|Ok msl->
+  let key=msl.entry,count in
+  match List.assoc_opt key t.measured with Some seconds->seconds|None->
+  let seconds=match owner t with Error _->None|Ok(_,host)->
+    (match (H.backend host).prepare packed with Error _->None|Ok kernel->
+      let view=Flow_ir.Packed.Private.view packed in
+      let inputs:Flow_ir.Packed.Private.inputs={
+        arrays=Array.map(fun width->Array.make(count*width)0.)view.widths;
+        uniforms=Array.map(fun width->Array.make width 0.)view.uniform_widths;
+        frame=Array.make(Array.length view.code)0.;count}in
+      let once()=let start=Unix.gettimeofday()in
+        match kernel.run inputs with Error _->None|Ok _->Some(Unix.gettimeofday()-.start)in
+      (match once()with None->None|Some _->
+        let runs=List.filter_map(fun _->once())[1;2;3]in
+        if List.length runs<3 then None else Some(List.nth(List.sort Float.compare runs)1)))in
+  t.measured<-(key,seconds)::(if List.length t.measured>=64 then List.filteri(fun i _->i<63)t.measured else t.measured);
+  seconds
 let backend t = match t.backend with Some backend->backend|None->
-  (* The measured cost is the Flow IR table's native GPU row;
-     placement compares it with the CPU kernel tier. *)
-  let backend:G.backend={cost=(fun _ ~count->Some(Flow_ir.Cost.estimate Gpu ~count));
+  let backend:G.backend={cost=(fun packed ~count->measure t packed ~count);
     prepare=(fun packed->Result.bind(owner t)(fun(_,host)->(H.backend host).prepare packed))}in
   t.backend<-Some backend;backend
 let with_backend t run=G.with_backend ~policy:t.policy (backend t)run

@@ -72,7 +72,7 @@ ports and completed encoded boundary are recorded below.
 | B.11 | All six setters are embedded Lisp declarations with native factories retained as test oracles. Final Set Color passes the whole production oracle, metadata/cache/editor/refusal checks, raw Cd byte checks and all 78 fixed performance rows (maximum 1.7896493105836428×). | Complete: final production/native integration 8526 exited 0; evidence below. |
 | B.12 | All seven metadata nodes are embedded Lisp declarations. Encoded normalization and canonical keys, every owner/storage/mode, exact errors, public cache identity and graph/editor gates passed. Swap is the final whole metadata port; all 212 fixed timing rows pass under the recorded precision protocols. | Complete: final production/native integration 90589 exited 0; individual evidence below. |
 | C.15 | Full native Measure wrapper and kernel audit establishes topology/indexed position access and canonical n-gon triangulation with original-primitive mapping as prerequisites. The whole node moves from B.15 to C.15; no mode, registration or target is removed. | B.1/B.5/B.7/B.9/C.1/C.2 and a generic canonical triangulation + primitive mapping capability, then the complete port Verification gate. No implementation or completion claimed. |
-| G.1–G.2 | G.1 sink half implemented: the SOP input sink is an implicit readback (checker, `place`, `try_display`) and a defnode body is a producer; `test_ir` and `test_attribute_kernel` cover it. No placement of a ported node is claimed. | Node-body dispatch point, a GPU-legal grid position kernel, an instruction-aware cost row, and the staged cook (see "G.1 and G.2 status"). |
+| G.1–G.2 | G.1 closed: implicit readback sink, tolerance-checked device bulk maps, 32-bit fused/checked fma, grid float-index position planes, measured Metal cost; `test_gpu_bulk` and the native `test_grid_gpu_native`. G.2 open. | See "G.1 and G.2 status": G.2 needs the asynchronous staged cook. |
 
 The typed integer/text/source Core API snapshot was accepted separately in
 commit `621113d2` after API/dependency gate 37921 exited 0. Foundation
@@ -6472,37 +6472,34 @@ refusal). B.R, C.R, D.R and E.R are closed. G.1 and G.2 (GPU placement) stay opt
 
 ## G.1 and G.2 status (2026-10-16)
 
-Implemented: the SOP input sink is an implicit readback. The checker no longer reports
-`E_APPROX_SINK` for the `values` of `sop/with_attr` (catalog parameters, state, exports and cache keys
-still do), `Flow_ir.place` treats `Sink Sop_input` as a readback instead of a forbidden sink, and
-`Executor.try_display` reads a GPU producer back when the program's sink is `Sop_input`. Tests:
-`lib/flow_ir/test_ir.ml` (sink placement, `Sop_input` versus `Export`) and `lib/flow_sop/test_attribute_kernel.ml`
-(a bare `map` into `with_attr` dispatches once and reads back once through the real lane, bytes equal
-at 8 domains; a defnode body is a `Candidate` producer and cooks unwrapped).
+G.1 is closed. Pieces: the SOP input sink is an implicit readback (checker, `Flow_ir.place`,
+`Executor.try_display`); a large static map in a node body can be taken from the device
+(`Eval.Private.static_with_kernels ~bulk_approx`, accepted within 1e-4 of the walked head, the
+bit-for-bit check kept for everything else); `Packed.gpu_refusals ~fused:true` admits fused and checked
+multiply-add for the native device (Metal `fma`, `isfinite`), the web export keeps the binary64
+refusals; `grid` computes its three position planes as float-index `map`s (`mod`, `float/fma_checked`),
+bit-identical on the CPU (`port_tests/main.exe grid --full` PASS, 92 cases); and the Metal backend
+measures its own cost (`Workspace_gpu.measure`: pack, upload and one synchronized dispatch over
+zeroed inputs, median of three after a warm-up, at most 64 kept by kernel and count).
 
-Open, with the reason each gate cannot be met:
+Tests: `lib/flow_sop/test_gpu_bulk.ml` (1,000,000-point grid, mock device that rounds the CPU result to
+float32: GPU when cheaper, CPU for an unmeasured or slower device, three plane dispatches, within
+1e-4 of the CPU body), `lib/flow_gpu/test_emit.ml`, and the native
+`lib/rays_editor/native_qualification/test_grid_gpu_native.ml` on this Mac (Apple Silicon, Metal).
 
-- A defnode body has no runtime kernel to place. I built the initial-domain hook (the enclosing lane
-  asks the Lisp node, through its cook function, to resolve and bake its input-independent `with_attr`
-  before the cook); it built, but the test showed the body it would resolve is already constants: a node's
-  parameters and context values are specialized into the body when it is built, and the static
-  evaluator then runs every numeric `map` over 4,096 elements through `Flow_ir.static_map` on the CPU,
-  accepting the array only when it equals the walked head bit for bit ("the value never depends on
-  the host", `Flow.Eval`). A GPU array (32-bit) can never pass that check, and with static parameters
-  the nested `with_attr` values are a `Source`, not a `Packed_map`, so nothing is eligible. Placing a
-  node-body kernel needs defnode bodies whose large maps stay symbolic with their parameters as live
-  inputs, or a tolerance-checked approximate bulk hook in the evaluator for sites in `approx`; both
-  change the evaluator's host-independence contract and were not attempted. The hook was reverted.
-- `grid` computes its planes with `float/fma_checked` and integer index arithmetic. `Packed.gpu_refusals`
-  rejects both ("FMA requires exact single-rounding binary64", "Integer sources ... stay on the CPU")
-  and the native oracle needs those bits on the CPU body, so a GPU position kernel must be a separate
-  float-index form whose CPU result stays bit-identical.
-- `Flow_ir.Cost` is kernel-agnostic. GPU plus readback is 19.8 + 7.9 = 27.7 ns per element against 16.5 ns
-  for the one-domain CPU row at every count, so `Measured` never places a readback kernel on the GPU;
-  a win needs an instruction-aware cost (a noise chain), supplied through `Gpu.backend.cost`.
-- G.2 needs the input cooked before the dispatch. `Rays_editor.Cook` resolves lanes synchronously each
-  frame and cooks asynchronously afterwards, so a staged cook is a second `Async_cook` stage
-  (cook input, dispatch on the initial domain, submit the rest), not a lane change; a synchronous
-  input cook on the UI thread would block it.
+Measured on this Mac, 1,000,000 points, per position plane (`nice -n 10`, four cook domains):
 
-No timings are recorded: no ported node is placed on the GPU yet.
+| Route | Plane time |
+| --- | --- |
+| CPU `static_map` (x, y, z) | 19.0, 19.5, 11.3 ms |
+| Metal, steady state (pack, upload, dispatch, readback) | 8.1 to 11.2 ms |
+| Metal, first call (pipeline compile and calibration) | 54 ms |
+
+The measured policy chose the GPU for all three planes (12,000,000 bytes read back). The whole `grid`
+lowering is 8.3 s against 8.6 s on the CPU: the position planes are about 40 ms of it, the rest is the
+node's validation, row-error and topology kernels, which stay on the CPU.
+
+G.2 is open. The fused four-deformer chain reads cooked `P` and `N`, so its `map` is not a static
+bulk map: it runs in the cook of a worker domain, where `bulk_approx` never applies. Placing it needs the
+asynchronous second stage (cook the input, dispatch on the initial domain, submit the rest) in
+`Rays_editor.Cook`, which is not done.

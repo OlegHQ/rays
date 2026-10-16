@@ -51,8 +51,10 @@ val count_origin : t -> origin option
 val elementwise : t -> bool
 (** False for sums and accumulator steps; they must not fuse as independent elements. *)
 
-val gpu_refusals : t -> Flow.Diagnostic.t list
+val gpu_refusals : ?fused:bool -> t -> Flow.Diagnostic.t list
 (** Pure form restrictions shared by placement, display execution and emission.
+    [fused] admits fused and checked multiply-add, which the native device runs in 32 bits within
+    the owner's device tolerance; the default keeps the binary64 forms (the web export).
     Constants/noise are checked only when reachable from outputs; ordered
     accumulators are refused even when unreachable. *)
 

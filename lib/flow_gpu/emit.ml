@@ -60,9 +60,13 @@ let unary operation a = match operation with
   | Exp -> "exp(" ^ a ^ ")"
   | Log -> "(" ^ a ^ "<=0.0f?as_type<float>(0x7fc00000u):log(" ^ a ^ "))"
   | Sign -> "(" ^ a ^ ">0.0f?1.0f:(" ^ a ^ "<0.0f?-1.0f:" ^ a ^ "))"
+(* The 32-bit lowering of checked arithmetic: the value or zero, or the finite flag. *)
+let checked projection expression = match projection with
+  | P.Value -> Printf.sprintf "(isfinite(%s)?%s:0.0f)" expression expression
+  | Valid -> Printf.sprintf "(isfinite(%s)?1.0f:0.0f)" expression
 let kernel program = try
   let view = P.Private.view program in
-  (match P.gpu_refusals program with [] -> () | reason :: _ -> fail reason.message);
+  (match P.gpu_refusals ~fused:true program with [] -> () | reason :: _ -> fail reason.message);
   let offset = ref 4 and uniform_layout = ref [] in
   let uniform name width =
     let first = !offset in offset := first+width*4;
@@ -90,7 +94,9 @@ let kernel program = try
       | Accumulator _ -> assert false
       | Binary (op,a,b) -> binary op (register a) (register b)
       | Unary (op,a) -> unary op (register a)
-      | Checked_mul _ | Checked_fma _ -> fail "Checked arithmetic requires binary64 overflow status."
+      | Fma (a,b,c) -> Printf.sprintf "fma(%s,%s,%s)" (register a) (register b) (register c)
+      | Checked_mul (projection,a,b) -> checked projection (Printf.sprintf "(%s*%s)" (register a) (register b))
+      | Checked_fma (projection,a,b,c) -> checked projection (Printf.sprintf "fma(%s,%s,%s)" (register a) (register b) (register c))
       | Array_prepare _ | Gather _ | Int_gather _ -> fail "Indexed array reads stay on the CPU."
       | Text_const _ | Text_input _ | Text_uniform _ | Text_gather _ | Text_select _ -> fail "Text kernels stay on the CPU."
       | Select (condition,yes,no) -> Printf.sprintf "(%s!=0.0f?%s:%s)" (register condition) (register yes) (register no)

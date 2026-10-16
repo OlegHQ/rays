@@ -516,7 +516,7 @@ Rules for both tasks, all of which exist today:
 - Kernels with reductions, gather, compaction or integer work stay on the CPU. That limits the GPU to tier 1 deformers and generator kernels in this round.
 - The Verification gate is run against the CPU body. A GPU placement is checked against the CPU body within 32-bit tolerance.
 
-**Status 2026-10-16.** G.1 first half is done: the SOP input sink is an implicit readback in the checker (`values` of `sop/with_attr`), `Flow_ir.place` and `Executor.try_display`; a defnode body qualifies as a producer like an inline `map` (`lib/flow_sop/test_attribute_kernel.ml`, last two blocks). Both gates stay open for three reasons found while working, recorded in `results.md`: a defnode body is specialized to constants and its large maps run through the host-independent static bulk path (an initial-domain hook was built and reverted: nothing is eligible); `grid` builds points from checked binary64 `fma` and integer indices that `Packed.gpu_refusals` rejects and its native oracle needs bit for bit; and the cost table is kernel-agnostic, so GPU plus readback (27.7 ns per element) never beats the CPU row (16.5 ns) under `Measured`. G.2 additionally needs an asynchronous two-stage cook in `Rays_editor.Cook`.
+**Status 2026-10-16.** G.1 is closed (see its row below and `results.md`). G.2 is open: the deformer chain reads cooked attributes, so its `map` runs in a worker cook and needs the asynchronous second stage in `Rays_editor.Cook`.
 
 ### What the compiler does with a ported chain
 
@@ -673,7 +673,7 @@ Tick a task when its gate passes. Record moved or blocked nodes under the task t
 - [x] E.5 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
 - [x] E.6 — every node of the row is registered (see the Status list below); gates and benches in its registration commit.
 - [x] E.R — review closed 2026-10-16: ` `, ``, `-native`, `-web` and `` exit 0 at `-j 2` (failures found and fixed in 5928c9dd, e159b885, 0983c05f; `results.md`, "Closing gates").
-- [ ] G.1
+- [x] G.1 — closed 2026-10-16: sink readback, `bulk_approx`, 32-bit fma, grid float-index planes (`port_tests grid --full` PASS), measured Metal cost; `lib/flow_sop/test_gpu_bulk.ml`, native `test_grid_gpu_native` (1M points: planes 8-11 ms GPU vs 11-19.5 ms CPU), see `results.md`.
 - [ ] G.2
 
 ### Completed whole-node ports

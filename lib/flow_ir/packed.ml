@@ -210,7 +210,7 @@ let finite_checks t =
     | body when Core.Region.text_register body -> false
     | _ -> true) t.code
 
-let gpu_refusals t =
+let gpu_refusals ?(fused=false) t =
   let reasons = ref [] in
   let refuse message = reasons := Flow.Diagnostic.error ~code:"E_GPU_FORM" message :: !reasons in
   if Array.exists Core.Region.text_register t.code then refuse "Text kernels stay on the CPU.";
@@ -221,10 +221,12 @@ let gpu_refusals t =
     refuse "Integer sources, uniforms and instructions stay on the CPU.";
   if Array.exists (fun instruction -> match unguarded instruction with Binary (Hypot,_,_) -> true | _ -> false) t.code then
     refuse "Hypot requires the CPU binary64 implementation.";
-  if Array.exists (fun instruction -> match unguarded instruction with Fma _ -> true | _ -> false) t.code then
-    refuse "FMA requires exact single-rounding binary64 arithmetic.";
-  if Array.exists (fun instruction -> match unguarded instruction with Checked_mul _ | Checked_fma _ -> true | _ -> false) t.code then
-    refuse "Checked arithmetic requires binary64 overflow status.";
+  if not fused then begin
+    if Array.exists (fun instruction -> match unguarded instruction with Fma _ -> true | _ -> false) t.code then
+      refuse "FMA requires exact single-rounding binary64 arithmetic.";
+    if Array.exists (fun instruction -> match unguarded instruction with Checked_mul _ | Checked_fma _ -> true | _ -> false) t.code then
+      refuse "Checked arithmetic requires binary64 overflow status."
+  end;
   if t.result <> Collect || not (zipped t) || t.skip <> [||] then
     refuse "GPU kernels require Collect with Zip iteration and no skipped elements.";
   if Array.exists (fun instruction -> match unguarded instruction with Accumulator _ | Int_accumulator -> true | _ -> false) t.code then

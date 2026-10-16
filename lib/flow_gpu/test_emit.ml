@@ -128,7 +128,7 @@ let () =
     let integer = Flow.Packed_ops.integer name <> None || Flow.Packed_ops.comparison name <> None || name = "rand/at" in
     let array = if integer then "(array/range 1024 :type \"int\")" else "(array/range 1024)" in
     let program = Test_program.compile ("(map (fn [x] " ^ body ^ ") " ^ array ^ ")") in
-    if integer || name = "hypot" || name = "fma" || name = "cross" then
+    if integer || name = "hypot" then
       (match Flow_gpu.Emit.kernel program with
        | Error d -> assert (d.code = "E_GPU_FORM")
        | Ok _ -> failwith ("Metal must refuse " ^ name))
@@ -154,10 +154,17 @@ let () =
         assert (reason.code = emitted.code && reason.message = emitted.message)
     | _ -> assert false)
     ["(sum [x (array/range 1024)] (+ x t))";
-     "(map (fn [x] (get (float/mul_checked x t) :value)) (array/range 1024))";
-     "(map (fn [x] (if (get (float/fma_checked x t 1.0) :valid) x 0.0)) (array/range 1024))";
      "(for [x (array/range 32) y (array/range 32)] (+ (+ x y) t))";
      "(for [x (array/range 1024)] :skip [0] (+ x t))"];
+  (* 32-bit fused and checked arithmetic is emitted for placed producers. *)
+  List.iter (fun (source, fragment) ->
+    let msl = Test_program.ok (Flow_gpu.Emit.kernel (Test_program.compile source)) in
+    let contains sub s = let n = String.length sub in
+      let rec at i = i + n <= String.length s && (String.sub s i n = sub || at (i + 1)) in at 0 in
+    assert (contains fragment msl.source))
+    ["(map (fn [x] (get (float/mul_checked x t) :value)) (array/range 1024))", "isfinite((";
+     "(map (fn [x] (if (get (float/fma_checked x t 1.0) :valid) x 0.0)) (array/range 1024))", "?1.0f:0.0f)";
+     "(map (fn [x] (get (float/fma_checked x t 1.0) :value)) (array/range 1024))", "fma("];
   let uniform=Test_program.ok(Flow_gpu.Emit.kernel(Test_program.compile "(map (fn [x] t) (array/range 1024))"))in
   assert(List.length uniform.interface=3 && not(List.exists(fun(binding:Ogpu.Shader.binding)->binding.binding=0)uniform.interface));
   let program=Test_program.compile

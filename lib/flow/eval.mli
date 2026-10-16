@@ -195,17 +195,20 @@ module Private : sig
     ?budget:int ->
     ?record:bool -> ?inputs:(string * (string * value) list) list ->
     ?observe:(residual -> unit) -> ?bulk:(residual -> value option) ->
-    Workspace.t -> (t, Diagnostic.t) result
+    ?bulk_approx:(residual -> value option) -> Workspace.t -> (t, Diagnostic.t) result
   (** [budget] overrides the ordinary AST-step guard for checked pure parameter
       normalization, whose accepted input size follows its encoded schema.
       [bulk] may shorten a static packed [map] of more than 4,096 elements. The
       walker evaluates the first 4,096 elements as usual, so their records, call
       indices and failures are the ordinary ones; [bulk] is then offered the
       map as a residual (the checked term and its captures) and may return the
+      whole packed array.
       whole packed array. It is used only when its element kind and length are
       the map's and its first 4,096 elements equal the walked ones bit for bit;
       in every other case the walker evaluates the rest, so the result never
-      depends on the callback. A record inside the function is then kept for
+      depends on the callback. [bulk_approx] is a device-side [bulk]: an array
+      of the map's kind and length within 1e-4 (relative plus absolute) of the walked elements is
+      taken, and a miss falls back to [bulk] and then the walker. A record inside the function is then kept for
       the first 4,096 elements only. Cleared like [observe].
 
       Ordinary static evaluation with an observational callback before each

@@ -11,6 +11,26 @@ module W = Flow.Workspace
 module V = Flow.Value
 module Ty = Flow.Ty
 
+module Gpu = struct
+  type value={identity:int;count:int;width:int;stamp:int64;gpu_seconds:float option}
+  type kernel={run:Packed.Private.inputs -> (value,Flow.Diagnostic.t)result;
+    readback:value -> (E.value,Flow.Diagnostic.t)result}
+  type backend={cost:Packed.t -> count:int -> float option;
+    prepare:Packed.t -> (kernel,Flow.Diagnostic.t)result}
+  type policy=Measured | Qualification
+  let current : backend option Domain.DLS.key=Domain.DLS.new_key(fun()->None)
+  let current_policy : policy Domain.DLS.key=Domain.DLS.new_key(fun()->Measured)
+  let with_backend ?(policy=Measured) backend run = let previous=Domain.DLS.get current
+    and previous_policy=Domain.DLS.get current_policy in
+    Domain.DLS.set current(Some backend);
+    Domain.DLS.set current_policy policy;
+    Fun.protect ~finally:(fun()->Domain.DLS.set current previous;
+      Domain.DLS.set current_policy previous_policy)run
+end
+
+(* Set once the executor can run a region on the device: the host side of [bulk_approx]. *)
+let gpu_bulk : (approx:W.Paths.t -> E.residual -> E.value option) ref = ref (fun ~approx:_ _ -> None)
+
 (* A static packed map of more than 4,096 elements runs as the kernel it would be at frame rate
    instead of through the walker for every element (about 22 microseconds and 79 KB each). The
    evaluator checks the result against the elements it walked and walks the rest itself when the
@@ -127,7 +147,7 @@ let qualify_workspace ?record ?inputs ?observe (workspace : W.t) =
       let reasons = match adapted with
         | Error reasons -> reasons
         | Ok residual -> (match Packed.compile_result residual (E.Private.residual_view residual).term with
-            | Error reasons -> reasons | Ok packed -> Packed.gpu_refusals packed) in
+            | Error reasons -> reasons | Ok packed -> Packed.gpu_refusals ~fused:true packed) in
       let reasons = List.map (fun (d : Flow.Diagnostic.t) ->
         {d with span = (match d.span with Some _ -> d.span | None -> Some view.term.form.span);
           message = Printf.sprintf "%s (producer %s, instance %d, tuple [%s])" d.message
@@ -136,8 +156,20 @@ let qualify_workspace ?record ?inputs ?observe (workspace : W.t) =
       | Some ((d : Flow.Diagnostic.t) :: _) when d.code <> "E_PACKED_PENDING" || reasons = [] -> ()
       | _ -> Hashtbl.replace outcomes path reasons) producer;
     Option.iter (fun callback -> callback producer (Result.value adapted ~default:residual)) observe in
+  (* A large static map the checker accepts as an approximable producer may run on the device and come
+     back as a 32-bit array: the SOP-input readback of the owner decision, taken within a tolerance. *)
+  let bulk_approx residual =
+    if Domain.DLS.get Gpu.current = None then None else
+    let value = E.Residual residual in
+    if E.frame_dependent value || E.state_dependent value then None else
+    match Packed.compile residual (E.Private.residual_view residual).term with
+    | None -> None
+    | Some packed ->
+        let _, site, _ = Packed.site packed in        if List.exists (fun (path, form) -> path = site && (match form with W.Candidate _ -> true | W.Refused _ -> false))
+             workspace.packed
+        then !gpu_bulk ~approx:(W.Paths.singleton site) residual else None in
   let (let*) = Result.bind in
-  let* evaluated = E.Private.static_with_kernels ?record ?inputs ~observe:observed ~bulk:static_map workspace in
+  let* evaluated = E.Private.static_with_kernels ?record ?inputs ~observe:observed ~bulk:static_map ~bulk_approx workspace in
   let packed_by_path = Hashtbl.create 64 in
   List.iter (fun (path, form) -> if not (Hashtbl.mem packed_by_path path) then Hashtbl.add packed_by_path path form) workspace.packed;
   let reasons path = match Hashtbl.find_opt packed_by_path path with
@@ -198,22 +230,6 @@ module Cost = struct
     | first :: rest -> List.fold_left (fun best tier ->
         if estimate tier ~count < estimate best ~count then tier else best) first rest
   let packed ~count = cheapest ~legal:[Interp;Cpu_kernel] ~count
-end
-module Gpu = struct
-  type value={identity:int;count:int;width:int;stamp:int64;gpu_seconds:float option}
-  type kernel={run:Packed.Private.inputs -> (value,Flow.Diagnostic.t)result;
-    readback:value -> (E.value,Flow.Diagnostic.t)result}
-  type backend={cost:Packed.t -> count:int -> float option;
-    prepare:Packed.t -> (kernel,Flow.Diagnostic.t)result}
-  type policy=Measured | Qualification
-  let current : backend option Domain.DLS.key=Domain.DLS.new_key(fun()->None)
-  let current_policy : policy Domain.DLS.key=Domain.DLS.new_key(fun()->Measured)
-  let with_backend ?(policy=Measured) backend run = let previous=Domain.DLS.get current
-    and previous_policy=Domain.DLS.get current_policy in
-    Domain.DLS.set current(Some backend);
-    Domain.DLS.set current_policy policy;
-    Fun.protect ~finally:(fun()->Domain.DLS.set current previous;
-      Domain.DLS.set current_policy previous_policy)run
 end
 type source = Constant of E.value | Frame_field of string | Input of string | State_previous of E.residual
 type body = Operation of string | Vector | Field of string | List_value
@@ -447,7 +463,7 @@ type target = { legal : node -> tier -> bool; cost : tier -> count:int -> float 
 let native = {
   legal = (fun node tier -> match tier, node.kind, node.count with
     | Gpu, Kernel {body = Packed_map packed; _}, Count.Static count ->
-        count >= 1024 && Packed.gpu_refusals packed = []
+        count >= 1024 && Packed.gpu_refusals ~fused:true packed = []
     | Gpu, Marks _, _ -> true
     | Gpu, _, _ -> false
     | _ -> true);
@@ -894,7 +910,7 @@ module Executor = struct
   let display_packed ?state ?resolve ~backend ~policy ~approx ~display ~profile ~cached ~store ~readback packed ~live =
     let cpu()=Ok None in
     let _,site,_=Packed.site packed in
-    if not(W.Paths.mem site approx) || Packed.gpu_refusals packed <> []
+    if not(W.Paths.mem site approx) || Packed.gpu_refusals ~fused:true packed <> []
       then cpu()else
     let cheaper count= count>=1024 && (policy=Gpu.Qualification ||
       Option.fold ~none:false ~some:(fun seconds->Float.is_finite seconds && seconds>=0.
@@ -1008,3 +1024,19 @@ module Executor = struct
     Ok (List.map (fun (name, _) -> name, List.assoc name values) m.programs)
 
 end
+
+(* The device side of a static packed map: placed by the same measured cost as any readback, then
+   read back once, so the walker receives an ordinary array (taken within a tolerance). *)
+let () = gpu_bulk := fun ~approx residual ->
+  match Domain.DLS.get Gpu.current with
+  | None -> None
+  | Some backend ->
+      (match Packed.compile residual (E.Private.residual_view residual).term with
+       | None -> None
+       | Some packed ->
+           (match Executor.display_packed ~backend ~policy:(Domain.DLS.get Gpu.current_policy) ~approx
+                    ~display:false ~profile:None ~cached:(fun () -> None) ~store:ignore ~readback:true
+                    packed ~live:(Frame_input.at_time 0.) with
+            | Ok (Some (Executor.Cpu value)) -> Some value
+            | Ok _ | Error _ -> None
+            | exception (V.Fail _ | V.Diagnostic_fail _ | Invalid_argument _ | Not_found | Failure _) -> None))
